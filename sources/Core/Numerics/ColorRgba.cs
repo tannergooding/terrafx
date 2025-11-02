@@ -146,7 +146,6 @@ public readonly struct ColorRgba
             return false;
         }
 
-
         numWritten += partLength;
         destination = destination.Slice(partLength);
 
