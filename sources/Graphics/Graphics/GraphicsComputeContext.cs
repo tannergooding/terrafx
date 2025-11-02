@@ -1,6 +1,5 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See License.md in the repository root for more information.
 
-using TerraFX.Graphics.Advanced;
 using static TerraFX.Utilities.UnsafeUtilities;
 
 namespace TerraFX.Graphics;
@@ -12,6 +11,6 @@ public sealed unsafe class GraphicsComputeContext : GraphicsContext
     {
     }
 
-    /// <inheritdoc cref="GraphicsCommandQueueObject.CommandQueue" />
+    /// <inheritdoc cref="GraphicsContext.CommandQueue" />
     public new GraphicsComputeCommandQueue CommandQueue => base.CommandQueue.As<GraphicsComputeCommandQueue>();
 }

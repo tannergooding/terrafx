@@ -3,6 +3,7 @@
 // This file includes code based on the MemoryBlock class from https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator/
 // The original code is Copyright © Advanced Micro Devices, Inc. All rights reserved. Licensed under the MIT License (MIT).
 
+using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -22,7 +23,7 @@ public partial class GraphicsMemoryAllocator
         private ValueList<ValueLinkedListNode<GraphicsMemoryRegion>> _freeMemoryRegionsByByteLength;
         private uint _freeMemoryRegionCount;
 
-        public DefaultMemoryAllocator(GraphicsDeviceObject deviceObject, in GraphicsMemoryAllocatorCreateOptions createOptions) : base(deviceObject)
+        public DefaultMemoryAllocator(IDisposable deviceObject, in GraphicsMemoryAllocatorCreateOptions createOptions) : base(deviceObject)
         {
             ThrowIfZero(createOptions.ByteLength);
 

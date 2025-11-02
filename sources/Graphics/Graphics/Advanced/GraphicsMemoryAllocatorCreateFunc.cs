@@ -10,11 +10,11 @@ namespace TerraFX.Graphics.Advanced;
 [StructLayout(LayoutKind.Auto)]
 public readonly unsafe struct GraphicsMemoryAllocatorCreateFunc
 {
-    private readonly delegate*<GraphicsDeviceObject, in GraphicsMemoryAllocatorCreateOptions, GraphicsMemoryAllocator> _value;
+    private readonly delegate*<IDisposable, in GraphicsMemoryAllocatorCreateOptions, GraphicsMemoryAllocator> _value;
 
     /// <summary>Initializes a new instance of the <see cref="GraphicsMemoryAllocatorCreateFunc" /> struct.</summary>
     /// <param name="value">A pointer to the function that will be called in <see cref="Invoke" />.</param>
-    public GraphicsMemoryAllocatorCreateFunc(delegate*<GraphicsDeviceObject, in GraphicsMemoryAllocatorCreateOptions, GraphicsMemoryAllocator> value)
+    public GraphicsMemoryAllocatorCreateFunc(delegate*<IDisposable, in GraphicsMemoryAllocatorCreateOptions, GraphicsMemoryAllocator> value)
     {
         _value = value;
     }
@@ -31,6 +31,6 @@ public readonly unsafe struct GraphicsMemoryAllocatorCreateFunc
     /// <returns>A new graphics memory allocator.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="deviceObject" /> is <c>null</c>.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><see cref="GraphicsMemoryAllocatorCreateOptions.ByteLength" /> is <c>zero</c>.</exception>
-    public GraphicsMemoryAllocator Invoke(GraphicsDeviceObject deviceObject, in GraphicsMemoryAllocatorCreateOptions createOptions)
+    public GraphicsMemoryAllocator Invoke(IDisposable deviceObject, in GraphicsMemoryAllocatorCreateOptions createOptions)
         => _value(deviceObject, in createOptions);
 }

@@ -84,7 +84,7 @@ public sealed unsafe class GraphicsTextureView : GraphicsResourceView
     /// <summary>Gets the width, in pixels, of the texture view.</summary>
     public uint PixelWidth => _pixelWidth;
 
-    /// <inheritdoc cref="GraphicsResourceObject.Resource" />
+    /// <inheritdoc cref="GraphicsResourceView.Resource" />
     public new GraphicsTexture Resource => base.Resource.As<GraphicsTexture>();
 
     internal UnmanagedReadOnlySpan<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> D3D12PlacedSubresourceFootprints => _d3d12PlacedSubresourceFootprints;

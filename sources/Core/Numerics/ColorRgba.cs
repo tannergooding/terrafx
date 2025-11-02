@@ -6,7 +6,6 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
-using static TerraFX.Utilities.VectorUtilities;
 
 namespace TerraFX.Numerics;
 

@@ -34,7 +34,7 @@ public sealed unsafe class GraphicsBufferView : GraphicsResourceView
     /// <summary>Gets the memory region in which the buffer view exists.</summary>
     public ref readonly GraphicsMemoryRegion MemoryRegion => ref _memoryRegion;
 
-    /// <inheritdoc cref="GraphicsResourceObject.Resource" />
+    /// <inheritdoc cref="GraphicsResourceView.Resource" />
     public new GraphicsBuffer Resource => base.Resource.As<GraphicsBuffer>();
 
     internal ulong D3D12GpuVirtualAddress => _d3d12GpuVirtualAddress;
