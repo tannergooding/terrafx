@@ -87,6 +87,8 @@ public sealed class Application : DisposableObject
             var eventArgs = new ApplicationIdleEventArgs(delta, framesPerSecond);
             idle(this, eventArgs);
         }
+
+
     }
 
     private void RunUnsafe()

@@ -9,7 +9,7 @@ using static TerraFX.Utilities.UnsafeUtilities;
 
 namespace TerraFX.Samples.Graphics;
 
-internal sealed class HelloInstancing(string name) : HelloWindow(name)
+internal sealed class HelloInstancing : HelloWindow
 {
     private const uint InstanceCount = 128;
 
@@ -22,6 +22,10 @@ internal sealed class HelloInstancing(string name) : HelloWindow(name)
     private UnmanagedArray<AffineTransform> _trianglePrimitivePerSecondDelta;
     private GraphicsBuffer _uploadBuffer = null!;
     private GraphicsBuffer _vertexBuffer = null!;
+
+    public HelloInstancing(string name) : base(name)
+    {
+    }
 
     public override void Cleanup()
     {

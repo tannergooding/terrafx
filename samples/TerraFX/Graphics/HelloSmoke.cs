@@ -9,9 +9,9 @@ using static TerraFX.Utilities.UnsafeUtilities;
 
 namespace TerraFX.Samples.Graphics;
 
-internal sealed class HelloSmoke(string name, bool isQuickAndDirty) : HelloWindow(name)
+internal sealed class HelloSmoke : HelloWindow
 {
-    private readonly bool _isQuickAndDirty = isQuickAndDirty;
+    private readonly bool _isQuickAndDirty;
 
     private GraphicsBuffer _constantBuffer = null!;
     private GraphicsBuffer _indexBuffer = null!;
@@ -20,6 +20,11 @@ internal sealed class HelloSmoke(string name, bool isQuickAndDirty) : HelloWindo
     private GraphicsBuffer _uploadBuffer = null!;
     private GraphicsBuffer _vertexBuffer = null!;
     private float _texturePosition;
+
+    public HelloSmoke(string name, bool isQuickAndDirty) : base(name)
+    {
+        _isQuickAndDirty = isQuickAndDirty;
+    }
 
     public override void Cleanup()
     {
