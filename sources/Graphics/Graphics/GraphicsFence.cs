@@ -1,10 +1,14 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See License.md in the repository root for more information.
 
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 using TerraFX.Graphics.Advanced;
 using TerraFX.Interop.DirectX;
 using TerraFX.Interop.Windows;
 using static TerraFX.Interop.DirectX.D3D12_FENCE_FLAGS;
+using static TerraFX.Interop.Windows.CREATE;
+using static TerraFX.Interop.Windows.EVENT;
 using static TerraFX.Interop.Windows.WAIT;
 using static TerraFX.Interop.Windows.Windows;
 using static TerraFX.Utilities.D3D12Utilities;
@@ -29,10 +33,14 @@ public sealed unsafe class GraphicsFence : GraphicsDeviceObject
         var d3d12Fence = CreateD3D12Fence(in createOptions, out _d3d12FenceVersion);
         _d3d12Fence.Attach(d3d12Fence);
 
-        _isSignaled = createOptions.IsSignaled;
+        uint flags = CREATE_EVENT_MANUAL_RESET;
 
-        var initialState = createOptions.IsSignaled ? TRUE : FALSE;
-        ThrowForLastErrorIfZero(_signalEventHandle = CreateEventW(lpEventAttributes: null, bManualReset: TRUE, initialState, lpName: null));
+        if (createOptions.IsSignaled)
+        {
+            flags |= CREATE_EVENT_INITIAL_SET;
+            _isSignaled = true;
+        }
+        ThrowForLastErrorIfZero(_signalEventHandle = CreateEventExW(lpEventAttributes: null, lpName: null, flags, EVENT_MODIFY_STATE | SYNCHRONIZE));
 
         SetNameUnsafe(Name);
 
