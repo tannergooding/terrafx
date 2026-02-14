@@ -75,7 +75,7 @@ internal sealed class HelloSmoke : HelloWindow
         _uploadBuffer.DisposeAllViews();
     }
 
-    protected override unsafe void Update(TimeSpan delta)
+    protected override void Update(TimeSpan delta)
     {
         const float TranslationSpeed = 0.05f;
 

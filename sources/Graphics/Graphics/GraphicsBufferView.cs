@@ -49,11 +49,11 @@ public sealed unsafe class GraphicsBufferView : GraphicsResourceView
         _ = Resource.RemoveBufferView(this);
     }
 
-    private protected override unsafe byte* MapForReadUnsafe() => Resource.MapForReadUnsafe(subresource: 0, ByteOffset, ByteLength);
+    private protected override byte* MapForReadUnsafe() => Resource.MapForReadUnsafe(subresource: 0, ByteOffset, ByteLength);
 
-    private protected override unsafe byte* MapForReadUnsafe(nuint byteStart, nuint byteLength) => Resource.MapForReadUnsafe(subresource: 0, ByteOffset + byteStart, byteLength);
+    private protected override byte* MapForReadUnsafe(nuint byteStart, nuint byteLength) => Resource.MapForReadUnsafe(subresource: 0, ByteOffset + byteStart, byteLength);
 
-    private protected override unsafe byte* MapUnsafe() => Resource.MapUnsafe(subresource: 0) + ByteOffset;
+    private protected override byte* MapUnsafe() => Resource.MapUnsafe(subresource: 0) + ByteOffset;
 
     private protected override void UnmapAndWriteUnsafe() => Resource.UnmapAndWriteUnsafe(subresource: 0, ByteOffset, ByteLength);
 

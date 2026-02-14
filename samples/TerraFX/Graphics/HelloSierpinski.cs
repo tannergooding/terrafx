@@ -76,7 +76,7 @@ internal class HelloSierpinski : HelloWindow
         _uploadBuffer.DisposeAllViews();
     }
 
-    protected override unsafe void Update(TimeSpan delta)
+    protected override void Update(TimeSpan delta)
     {
         const float RotationSpeed = 0.5f;
 

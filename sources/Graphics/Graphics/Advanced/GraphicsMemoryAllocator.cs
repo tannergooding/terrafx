@@ -14,7 +14,7 @@ using static TerraFX.Utilities.ExceptionUtilities;
 namespace TerraFX.Advanced;
 
 /// <summary>An allocator for graphics memory.</summary>
-public abstract unsafe partial class GraphicsMemoryAllocator
+public abstract partial class GraphicsMemoryAllocator
 {
     /// <summary>The minimum length, in bytes, of free memory regions to keep on either side of an allocated region.</summary>
     /// <remarks>This defaults to <c>0</c> so that no free regions are preserved around allocations.</remarks>

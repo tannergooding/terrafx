@@ -75,7 +75,7 @@ internal sealed class HelloTexture3D : HelloWindow
         _uploadBuffer.DisposeAllViews();
     }
 
-    protected override unsafe void Update(TimeSpan delta)
+    protected override void Update(TimeSpan delta)
     {
         var surface = RenderPass.Surface;
         var scale255_256 = 255f / 256f;

@@ -69,7 +69,7 @@ internal sealed class HelloTransform : HelloWindow
         base.Draw(renderContext);
     }
 
-    protected override unsafe void Update(TimeSpan delta)
+    protected override void Update(TimeSpan delta)
     {
         const float TranslationSpeed = 1.0f;
         const float OffsetBounds = 1.25f;
@@ -95,7 +95,7 @@ internal sealed class HelloTransform : HelloWindow
         constantBufferView.UnmapAndWrite();
     }
 
-    private unsafe GraphicsPrimitive CreateTrianglePrimitive(GraphicsCopyContext copyContext)
+    private GraphicsPrimitive CreateTrianglePrimitive(GraphicsCopyContext copyContext)
     {
         var renderPass = RenderPass;
         var surface = renderPass.Surface;

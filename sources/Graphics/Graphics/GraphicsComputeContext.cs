@@ -5,7 +5,7 @@ using static TerraFX.Utilities.UnsafeUtilities;
 namespace TerraFX.Graphics;
 
 /// <summary>Represents a graphics context, which can be used for executing compute commands.</summary>
-public sealed unsafe class GraphicsComputeContext : GraphicsContext
+public sealed class GraphicsComputeContext : GraphicsContext
 {
     internal GraphicsComputeContext(GraphicsComputeCommandQueue computeCommandQueue) : base(computeCommandQueue, GraphicsContextKind.Compute)
     {

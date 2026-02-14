@@ -71,7 +71,7 @@ internal sealed class HelloTextureTransform : HelloWindow
         _uploadBuffer.DisposeAllViews();
     }
 
-    protected override unsafe void Update(TimeSpan delta)
+    protected override void Update(TimeSpan delta)
     {
         const float TranslationSpeed = MathF.PI;
 

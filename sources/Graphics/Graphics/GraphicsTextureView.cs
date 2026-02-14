@@ -92,11 +92,11 @@ public sealed unsafe class GraphicsTextureView : GraphicsResourceView
     /// <inheritdoc />
     protected override void Dispose(bool isDisposing) => _ = Resource.RemoveTextureView(this);
 
-    private protected override unsafe byte* MapForReadUnsafe() => Resource.MapForReadUnsafe(D3D12SubresourceIndex);
+    private protected override byte* MapForReadUnsafe() => Resource.MapForReadUnsafe(D3D12SubresourceIndex);
 
-    private protected override unsafe byte* MapForReadUnsafe(nuint byteStart, nuint byteLength) => Resource.MapForReadUnsafe(D3D12SubresourceIndex, byteStart, byteLength);
+    private protected override byte* MapForReadUnsafe(nuint byteStart, nuint byteLength) => Resource.MapForReadUnsafe(D3D12SubresourceIndex, byteStart, byteLength);
 
-    private protected override unsafe byte* MapUnsafe() => Resource.MapUnsafe(D3D12SubresourceIndex);
+    private protected override byte* MapUnsafe() => Resource.MapUnsafe(D3D12SubresourceIndex);
 
     private protected override void UnmapAndWriteUnsafe() => Resource.UnmapAndWriteUnsafe(D3D12SubresourceIndex);
 

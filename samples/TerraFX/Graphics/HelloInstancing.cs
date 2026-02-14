@@ -108,7 +108,7 @@ internal sealed class HelloInstancing : HelloWindow
         base.Draw(renderContext);
     }
 
-    protected override unsafe void Update(TimeSpan delta)
+    protected override void Update(TimeSpan delta)
     {
         var offsetBoundsX = 1.25f;
         var offsetBoundsY = _aspectRatio / 1.25f;
@@ -151,7 +151,7 @@ internal sealed class HelloInstancing : HelloWindow
         constantBufferView.UnmapAndWrite();
     }
 
-    private unsafe GraphicsPrimitive CreateInstancedTrianglePrimitive(GraphicsCopyContext copyContext, uint instanceCount)
+    private GraphicsPrimitive CreateInstancedTrianglePrimitive(GraphicsCopyContext copyContext, uint instanceCount)
     {
         var renderPass = RenderPass;
         var surface = renderPass.Surface;

@@ -9,7 +9,7 @@ using static TerraFX.Utilities.AssertionUtilities;
 namespace TerraFX.Graphics;
 
 /// <summary>A graphics shader which performs a transformation for a graphics device.</summary>
-public sealed unsafe class GraphicsShader : IDisposable, INameable
+public sealed class GraphicsShader : IDisposable, INameable
 {
     private readonly GraphicsAdapter _adapter;
     private readonly GraphicsDevice _device;

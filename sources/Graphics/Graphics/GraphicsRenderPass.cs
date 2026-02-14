@@ -10,7 +10,7 @@ using static TerraFX.Utilities.ExceptionUtilities;
 namespace TerraFX.Graphics;
 
 /// <summary>A graphics render pass.</summary>
-public sealed unsafe class GraphicsRenderPass : IDisposable, INameable
+public sealed class GraphicsRenderPass : IDisposable, INameable
 {
     private readonly GraphicsAdapter _adapter;
     private readonly GraphicsDevice _device;

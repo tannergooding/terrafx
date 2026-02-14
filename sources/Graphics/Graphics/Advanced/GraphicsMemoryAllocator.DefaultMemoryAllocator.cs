@@ -17,7 +17,7 @@ namespace TerraFX.Advanced;
 
 public partial class GraphicsMemoryAllocator
 {
-    private sealed unsafe class DefaultMemoryAllocator : GraphicsMemoryAllocator
+    private sealed class DefaultMemoryAllocator : GraphicsMemoryAllocator
     {
         private ValueLinkedList<GraphicsMemoryRegion> _memoryRegions;
         private ValueList<ValueLinkedListNode<GraphicsMemoryRegion>> _freeMemoryRegionsByByteLength;

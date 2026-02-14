@@ -65,7 +65,7 @@ internal sealed class HelloQuad : HelloWindow
         base.Draw(renderContext);
     }
 
-    private unsafe GraphicsPrimitive CreateQuadPrimitive(GraphicsCopyContext copyContext)
+    private GraphicsPrimitive CreateQuadPrimitive(GraphicsCopyContext copyContext)
     {
         var renderPass = RenderPass;
         var surface = renderPass.Surface;

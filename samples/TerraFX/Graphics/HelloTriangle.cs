@@ -64,7 +64,7 @@ internal sealed class HelloTriangle : HelloWindow
         base.Draw(renderContext);
     }
 
-    private unsafe GraphicsPrimitive CreateTrianglePrimitive(GraphicsCopyContext copyContext)
+    private GraphicsPrimitive CreateTrianglePrimitive(GraphicsCopyContext copyContext)
     {
         var renderPass = RenderPass;
         var surface = renderPass.Surface;
