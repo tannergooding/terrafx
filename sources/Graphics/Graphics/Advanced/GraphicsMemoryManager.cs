@@ -237,6 +237,11 @@ public sealed unsafe class GraphicsMemoryManager : IDisposable, INameable
 
     private void Dispose(bool isDisposing)
     {
+        if (isDisposing)
+        {
+            // Nothing to handle
+        }
+
         var memoryAllocators = _memoryAllocators.AsSpanUnsafe(0, _memoryAllocators.Count);
 
         for (var index = 0; index < memoryAllocators.Length; index++)

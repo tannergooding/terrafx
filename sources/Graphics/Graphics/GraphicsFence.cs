@@ -171,6 +171,10 @@ public sealed unsafe class GraphicsFence : IDisposable, INameable
 
     private void Dispose(bool isDisposing)
     {
+        if (isDisposing)
+        {
+            // Nothing to handle
+        }
         _ = _d3d12Fence.Reset();
 
         CloseIfNotNull(_signalEventHandle);

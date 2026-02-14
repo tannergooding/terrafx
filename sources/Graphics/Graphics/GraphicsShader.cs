@@ -109,8 +109,12 @@ public sealed class GraphicsShader : IDisposable, INameable
 
     private void Dispose(bool isDisposing)
     {
-        _bytecode.Dispose();
+        if (isDisposing)
+        {
+            // Nothing to handle
+        }
 
+        _bytecode.Dispose();
         _ = Device.RemoveShader(this);
     }
 }

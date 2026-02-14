@@ -38,7 +38,7 @@ public sealed unsafe class UIWindow : IDisposable, IGraphicsSurface, INameable
     private uint _extendedStyle;
     private bool _isActive;
     private uint _style;
-    private string _title = null!;
+    private string _title = "";
     private UIWindowState _windowState;
 
     private string _name;
@@ -515,6 +515,11 @@ public sealed unsafe class UIWindow : IDisposable, IGraphicsSurface, INameable
 
     private void Dispose(bool isDisposing)
     {
+        if (isDisposing)
+        {
+            // Nothing to handle
+        }
+
         // We are only allowed to dispose of the window handle from the parent
         // thread. So, if we are on the wrong thread, we will close the window
         // and call DisposeHandle from the appropriate thread.

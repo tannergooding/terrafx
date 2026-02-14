@@ -323,6 +323,11 @@ public sealed unsafe class GraphicsPipelineSignature : IDisposable, INameable
 
     private void Dispose(bool isDisposing)
     {
+        if (isDisposing)
+        {
+            // Nothing to handle
+        }
+
         _ = _d3d12RootSignature.Reset();
         _ = Device.RemovePipelineSignature(this);
     }

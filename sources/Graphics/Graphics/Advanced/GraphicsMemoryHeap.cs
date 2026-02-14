@@ -132,6 +132,11 @@ public sealed unsafe class GraphicsMemoryHeap : IDisposable, INameable
 
     private void Dispose(bool isDisposing)
     {
+        if (isDisposing)
+        {
+            // Nothing to handle
+        }
+
         ReleaseIfNotNull(_d3d12Heap);
         _d3d12Heap = null;
     }

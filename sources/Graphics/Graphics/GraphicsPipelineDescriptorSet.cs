@@ -289,6 +289,11 @@ public sealed unsafe class GraphicsPipelineDescriptorSet : IDisposable, INameabl
 
     private void Dispose(bool isDisposing)
     {
+        if (isDisposing)
+        {
+            // Nothing to handle
+        }
+
         _ = _d3d12CbvSrvUavDescriptorHeap.Reset();
         _ = _d3d12SamplerDescriptorHeap.Reset();
     }

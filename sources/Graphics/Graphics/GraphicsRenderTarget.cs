@@ -146,7 +146,14 @@ public sealed unsafe class GraphicsRenderTarget : IDisposable, INameable
     /// <inheritdoc />
     public override string ToString() => _name;
 
-    private void Dispose(bool isDisposing) => _ = _d3d12RtvResource.Reset();
+    private void Dispose(bool isDisposing)
+    {
+        if (isDisposing)
+        {
+            // Nothing to handle
+        }
+        _ = _d3d12RtvResource.Reset();
+    }
 
     private void SetNameUnsafe(string value) => D3D12RtvResource->SetD3D12Name(value);
 }

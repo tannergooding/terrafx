@@ -141,6 +141,11 @@ public sealed class GraphicsPrimitive : IDisposable, INameable
 
     private void Dispose(bool isDisposing)
     {
+        if (isDisposing)
+        {
+            // Nothing to handle
+        }
+
         // In a real app this wouldn't necessarily be responsible for cleaning up the resource
         // views as they may be shared across multiple primitives or other device objects.
 
