@@ -614,7 +614,7 @@ public sealed unsafe class GraphicsMemoryManager : IDisposable, INameable
             var emptyMemoryAllocator = null as GraphicsMemoryAllocator;
             var minimumMemoryAllocatorCount = MinimumMemoryAllocatorCount;
 
-            for (var index = memoryAllocatorCount; index >= 0; index--)
+            for (var index = memoryAllocatorCount - 1; index >= 0; index--)
             {
                 var memoryAllocator = _memoryAllocators.GetReferenceUnsafe(index);
 
