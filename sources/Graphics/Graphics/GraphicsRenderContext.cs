@@ -31,6 +31,12 @@ public sealed unsafe class GraphicsRenderContext : GraphicsContext
 #pragma warning disable CA1822 // Mark members as static
     /// <summary>Gets the maximum number of vertex buffer views that can be bound at one time.</summary>
     public uint MaxBoundVertexBufferViewCount => D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT;
+
+    /// <summary>Gets the maximum number of scissors that can be set at one time.</summary>
+    public uint MaxSetScissorCount => D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+
+    /// <summary>Gets the maximum number of viewports that can be set at one time.</summary>
+    public uint MaxSetViewportCount => D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
 #pragma warning restore CA1822 // Mark members as static
 
     /// <summary>Gets the current render pass for the context or <c>null</c> if one has not been set.</summary>
@@ -141,7 +147,7 @@ public sealed unsafe class GraphicsRenderContext : GraphicsContext
     public void BindVertexBufferViews(ReadOnlySpan<GraphicsBufferView> vertexBufferViews, uint firstBindingSlot)
     {
         ArgumentOutOfRangeException.ThrowIfZero(vertexBufferViews.Length);
-        ThrowIfNotInInsertBounds(vertexBufferViews.Length, D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT);
+        ThrowIfNotInInsertBounds(firstBindingSlot + (uint)vertexBufferViews.Length, D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT);
 
         var d3d12VertexBufferViews = stackalloc D3D12_VERTEX_BUFFER_VIEW[D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
 
@@ -225,10 +231,13 @@ public sealed unsafe class GraphicsRenderContext : GraphicsContext
 
     /// <summary>Sets the scissors for the context.</summary>
     /// <param name="scissors">The scissors to set.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="scissors" /> is greater than <see cref="MaxSetScissorCount" />.</exception>
     public void SetScissors(ReadOnlySpan<BoundingRectangle> scissors)
     {
         var count = (uint)scissors.Length;
-        var d3d12Rects = AllocateArray<RECT>(count);
+        ThrowIfNotInInsertBounds(count, D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE);
+
+        var d3d12Rects = stackalloc RECT[D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
 
         for (var i = 0u; i < count; i++)
         {
@@ -267,10 +276,13 @@ public sealed unsafe class GraphicsRenderContext : GraphicsContext
 
     /// <summary>Sets the viewports for the context.</summary>
     /// <param name="viewports">The viewports to set.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="viewports" /> is greater than <see cref="MaxSetViewportCount" />.</exception>
     public void SetViewports(ReadOnlySpan<BoundingBox> viewports)
     {
         var count = (uint)viewports.Length;
-        var d3d12Viewports = AllocateArray<D3D12_VIEWPORT>(count);
+        ThrowIfNotInInsertBounds(count, D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE);
+
+        var d3d12Viewports = stackalloc D3D12_VIEWPORT[D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
 
         for (var i = 0u; i < count; i++)
         {
