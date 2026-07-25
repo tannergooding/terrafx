@@ -479,6 +479,10 @@ public static unsafe class UnmanagedValueLinkedList
         var previousNode = node->_previous;
         newNode->_previous = previousNode;
 
+        // The node memory is not zeroed on allocation, so this has to be cleared
+        // explicitly; AddFirst sets it back to true once the node is linked in.
+        newNode->_isFirstNode = false;
+
         AssertNotNull(previousNode);
 
         previousNode->_next = newNode;

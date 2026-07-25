@@ -4,6 +4,7 @@ using System;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Collections;
+using TerraFX.Utilities;
 
 namespace TerraFX.UnitTests.Collections;
 
@@ -313,6 +314,32 @@ internal static unsafe class UnmanagedValueLinkedListTests
 
         last->ValueRef = 300;
         Assert.That(last->Value, Is.EqualTo(300));
+
+        list.Dispose();
+    }
+
+    /// <summary>Provides validation that <see cref="UnmanagedValueLinkedList.AddLast{T}(ref UnmanagedValueLinkedList{T}, UnmanagedValueLinkedListNode{T}*)" /> clears the first node flag on a recycled allocation.</summary>
+    [Test]
+    public static void AddLastClearsIsFirstNodeTest()
+    {
+        // Node memory is not zeroed on allocation, so a recycled block can arrive
+        // with the first node flag already set.
+
+        var size = (nuint)sizeof(UnmanagedValueLinkedListNode<int>);
+        var dirty = (UnmanagedValueLinkedListNode<int>*)MemoryUtilities.Allocate(size);
+
+        new Span<byte>(dirty, (int)size).Fill(0xFF);
+        dirty->_next = null;
+
+        var list = new UnmanagedValueLinkedList<int>();
+
+        var first = list.AddLast(1);
+        var second = list.AddLast(dirty);
+
+        Assert.That(second->IsFirstNode, Is.False);
+
+        Assert.That(first->Next == second, Is.True);
+        Assert.That(second->Previous == first, Is.True);
 
         list.Dispose();
     }
