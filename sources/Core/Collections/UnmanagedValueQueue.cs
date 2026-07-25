@@ -50,7 +50,7 @@ public static unsafe class UnmanagedValueQueue
             }
             else
             {
-                return TryGetIndexOfUnsafe(items.GetPointerUnsafe(head), queue._count - head, item, out _)
+                return TryGetIndexOfUnsafe(items.GetPointerUnsafe(head), items.Length - head, item, out _)
                     || TryGetIndexOfUnsafe(items.GetPointerUnsafe(0), tail, item, out _);
             }
         }
@@ -83,7 +83,7 @@ public static unsafe class UnmanagedValueQueue
             else
             {
                 var items = queue._items;
-                var headLength = count - head;
+                var headLength = items.Length - head;
 
                 CopyArrayUnsafe(destination.GetPointerUnsafe(0), items.GetPointerUnsafe(head), headLength);
                 CopyArrayUnsafe(destination.GetPointerUnsafe(headLength), items.GetPointerUnsafe(0), tail);
@@ -158,7 +158,7 @@ public static unsafe class UnmanagedValueQueue
         if (index < count)
         {
             var head = queue._head;
-            var headLength = count - head;
+            var headLength = queue._items.Length - head;
 
             var actualIndex = ((head < queue._tail) || (index < headLength)) ? (head + index) : (index - headLength);
             item = queue._items.GetPointerUnsafe(actualIndex);
@@ -226,25 +226,39 @@ public static unsafe class UnmanagedValueQueue
             var head = queue._head;
             var tail = queue._tail;
 
-            if (TryGetIndexOfUnsafe(items.GetPointerUnsafe(head), count - head, item, out var index) || TryGetIndexOfUnsafe(items.GetPointerUnsafe(0), tail, item, out index))
+            var capacity = items.Length;
+            nuint index;
+            bool found;
+
+            if ((head < tail) || (tail == 0))
             {
-                var newTail = unchecked(tail - 1);
-                var newCount = count - 1;
+                found = TryGetIndexOfUnsafe(items.GetPointerUnsafe(head), count, item, out index);
+                index += head;
+            }
+            else if (TryGetIndexOfUnsafe(items.GetPointerUnsafe(head), capacity - head, item, out index))
+            {
+                index += head;
+                found = true;
+            }
+            else
+            {
+                found = TryGetIndexOfUnsafe(items.GetPointerUnsafe(0), tail, item, out index);
+            }
 
-                CopyArrayUnsafe(items.GetPointerUnsafe(index), items.GetPointerUnsafe(index + 1), newCount - index);
+            if (found)
+            {
+                var newTail = ((tail != 0) ? tail : capacity) - 1;
 
-                if (tail == 0)
+                for (var current = index; current != newTail;)
                 {
-                    newTail = newCount;
-                }
-                else if (head >= tail)
-                {
-                    items[newCount] = items[0];
-                    CopyArrayUnsafe(items.GetPointerUnsafe(0), items.GetPointerUnsafe(1), newTail);
+                    var next = ((current + 1) != capacity) ? (current + 1) : 0;
+
+                    items[current] = items[next];
+                    current = next;
                 }
 
                 queue._tail = newTail;
-                queue._count = newCount;
+                queue._count = count - 1;
 
                 return true;
             }
@@ -344,7 +358,9 @@ public static unsafe class UnmanagedValueQueue
         {
             var head = queue._head;
 
-            var actualIndex = ((head < queue._tail) || (index < (count - head))) ? (head + index) : index;
+            var headLength = queue._items.Length - head;
+
+            var actualIndex = ((head < queue._tail) || (index < headLength)) ? (head + index) : (index - headLength);
             item = queue._items[actualIndex];
 
             return true;

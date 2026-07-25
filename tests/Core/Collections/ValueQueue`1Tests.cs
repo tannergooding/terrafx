@@ -717,4 +717,85 @@ internal static class ValueQueueTests
             Is.False
         );
     }
+
+    /// <summary>Provides validation of the <see cref="ValueQueue{T}" /> struct when its items wrap around the end of the backing array.</summary>
+    [Test]
+    public static void WrappedQueueTest()
+    {
+        var expected = new int[] { 5, 6, 7, 100, 101 };
+        var valueQueue = CreateWrappedQueue();
+
+        Assert.That(valueQueue.Count, Is.EqualTo(expected.Length));
+
+        for (var index = 0; index < expected.Length; index++)
+        {
+            Assert.That(valueQueue.Peek(index), Is.EqualTo(expected[index]));
+        }
+
+        var destination = new int[valueQueue.Count];
+        valueQueue.CopyTo(destination);
+
+        Assert.That(destination, Is.EqualTo(expected));
+
+        foreach (var item in expected)
+        {
+            Assert.That(valueQueue.Contains(item), Is.True);
+        }
+
+        Assert.That(valueQueue.Contains(4), Is.False);
+        Assert.That(Drain(ref valueQueue), Is.EqualTo(expected));
+
+        // Removing from the head segment
+
+        valueQueue = CreateWrappedQueue();
+
+        Assert.That(valueQueue.Remove(6), Is.True);
+        Assert.That(Drain(ref valueQueue), Is.EqualTo((int[])[5, 7, 100, 101]));
+
+        // Removing from the tail segment
+
+        valueQueue = CreateWrappedQueue();
+
+        Assert.That(valueQueue.Remove(100), Is.True);
+        Assert.That(Drain(ref valueQueue), Is.EqualTo((int[])[5, 6, 7, 101]));
+
+        valueQueue = CreateWrappedQueue();
+
+        Assert.That(valueQueue.Remove(4), Is.False);
+        Assert.That(valueQueue.Count, Is.EqualTo(expected.Length));
+
+        // Builds a queue whose items wrap, leaving head (5) greater than tail (2)
+
+        static ValueQueue<int> CreateWrappedQueue()
+        {
+            var valueQueue = new ValueQueue<int>(capacity: 8);
+
+            for (var index = 0; index < 8; index++)
+            {
+                valueQueue.Enqueue(index);
+            }
+
+            for (var index = 0; index < 5; index++)
+            {
+                _ = valueQueue.Dequeue();
+            }
+
+            valueQueue.Enqueue(100);
+            valueQueue.Enqueue(101);
+
+            return valueQueue;
+        }
+
+        static int[] Drain(ref ValueQueue<int> valueQueue)
+        {
+            var items = new int[valueQueue.Count];
+
+            for (var index = 0; index < items.Length; index++)
+            {
+                items[index] = valueQueue.Dequeue();
+            }
+
+            return items;
+        }
+    }
 }

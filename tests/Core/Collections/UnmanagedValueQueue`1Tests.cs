@@ -1029,4 +1029,81 @@ internal static class UnmanagedValueQueueTests
         }
         valueQueue.Dispose();
     }
+
+    /// <summary>Provides validation of the <see cref="UnmanagedValueQueue{T}" /> struct when its items wrap around the end of the backing array.</summary>
+    [Test]
+    public static void WrappedQueueTest()
+    {
+        var expected = new int[] { 5, 6, 7, 100, 101 };
+
+        using (var valueQueue = CreateWrappedQueue())
+        {
+            Assert.That(valueQueue.Count, Is.EqualTo((nuint)expected.Length));
+
+            for (nuint index = 0; index < (nuint)expected.Length; index++)
+            {
+                Assert.That(valueQueue.Peek(index), Is.EqualTo(expected[index]));
+            }
+
+            foreach (var item in expected)
+            {
+                Assert.That(valueQueue.Contains(item), Is.True);
+            }
+
+            Assert.That(valueQueue.Contains(4), Is.False);
+        }
+
+        AssertRemove(6, [5, 7, 100, 101]);
+        AssertRemove(100, [5, 6, 7, 101]);
+        AssertRemove(4, expected, expectedResult: false);
+
+        static void AssertRemove(int item, int[] expected, bool expectedResult = true)
+        {
+            var valueQueue = CreateWrappedQueue();
+
+            try
+            {
+                Assert.That(valueQueue.Remove(item), Is.EqualTo(expectedResult));
+                Assert.That(Drain(in valueQueue), Is.EqualTo(expected));
+            }
+            finally
+            {
+                valueQueue.Dispose();
+            }
+        }
+
+        // Builds a queue whose items wrap, leaving head (5) greater than tail (2)
+
+        static UnmanagedValueQueue<int> CreateWrappedQueue()
+        {
+            var valueQueue = new UnmanagedValueQueue<int>(capacity: 8);
+
+            for (var index = 0; index < 8; index++)
+            {
+                valueQueue.Enqueue(index);
+            }
+
+            for (var index = 0; index < 5; index++)
+            {
+                _ = valueQueue.Dequeue();
+            }
+
+            valueQueue.Enqueue(100);
+            valueQueue.Enqueue(101);
+
+            return valueQueue;
+        }
+
+        static int[] Drain(ref readonly UnmanagedValueQueue<int> valueQueue)
+        {
+            var items = new int[valueQueue.Count];
+
+            for (nuint index = 0; index < (nuint)items.Length; index++)
+            {
+                items[index] = valueQueue.Peek(index);
+            }
+
+            return items;
+        }
+    }
 }

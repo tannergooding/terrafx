@@ -34,7 +34,7 @@ public static class ValueQueue
             {
                 var items = queue._items;
 
-                Array.Clear(items, head, queue._count - head);
+                Array.Clear(items, head, items.Length - head);
                 Array.Clear(items, 0, tail);
             }
         }
@@ -63,7 +63,7 @@ public static class ValueQueue
             }
             else
             {
-                return (Array.IndexOf(items, item, head, queue._count - head) >= 0)
+                return (Array.IndexOf(items, item, head, items.Length - head) >= 0)
                     || (Array.IndexOf(items, item, 0, tail) >= 0);
             }
         }
@@ -91,7 +91,7 @@ public static class ValueQueue
         }
         else
         {
-            var headLength = count - head;
+            var headLength = items.Length - head;
             items.AsSpan(head, headLength).CopyTo(destination);
             items.AsSpan(0, tail).CopyTo(destination[headLength..]);
         }
@@ -158,12 +158,10 @@ public static class ValueQueue
     /// </remarks>
     public static ref T GetReferenceUnsafe<T>(this scoped ref readonly ValueQueue<T> queue, int index)
     {
-        var count = queue._count;
-
         if (unchecked((uint)index < (uint)queue._count))
         {
             var head = queue._head;
-            var headLength = count - head;
+            var headLength = queue._items.Length - head;
 
             var actualIndex = ((head < queue._tail) || (index < headLength)) ? (head + index) : (index - headLength);
             return ref queue._items.GetReferenceUnsafe(actualIndex);
@@ -215,33 +213,33 @@ public static class ValueQueue
             var head = queue._head;
             var tail = queue._tail;
 
-            var index = Array.IndexOf(items, item, head, count - head);
+            var capacity = items.Length;
+            int index;
 
-            if (index < 0)
+            if ((head < tail) || (tail == 0))
             {
-                index = Array.IndexOf(items, item, 0, tail);
+                index = Array.IndexOf(items, item, head, count);
+            }
+            else
+            {
+                index = Array.IndexOf(items, item, head, capacity - head);
+
+                if (index < 0)
+                {
+                    index = Array.IndexOf(items, item, 0, tail);
+                }
             }
 
             if (index >= 0)
             {
-                var newTail = tail - 1;
-                var newCount = count - 1;
+                var newTail = ((tail != 0) ? tail : capacity) - 1;
 
-                Array.Copy(items, index + 1, items, index, newCount - index);
-
-                if (tail == 0)
+                for (var current = index; current != newTail;)
                 {
-                    newTail = newCount;
-                }
-                else if (head >= tail)
-                {
-                    items[newCount] = items[0];
-                    Array.Copy(items, 1, items, 0, newTail);
+                    var next = ((current + 1) != capacity) ? (current + 1) : 0;
 
-                    if (RuntimeHelpers.IsReferenceOrContainsReferences<T>())
-                    {
-                        items[newTail] = default!;
-                    }
+                    items[current] = items[next];
+                    current = next;
                 }
 
                 if (RuntimeHelpers.IsReferenceOrContainsReferences<T>())
@@ -250,7 +248,7 @@ public static class ValueQueue
                 }
 
                 queue._tail = newTail;
-                queue._count = newCount;
+                queue._count = count - 1;
 
                 return true;
             }
@@ -347,7 +345,9 @@ public static class ValueQueue
         {
             var head = queue._head;
 
-            var actualIndex = ((head < queue._tail) || (index < (count - head))) ? (head + index) : index;
+            var headLength = queue._items.Length - head;
+
+            var actualIndex = ((head < queue._tail) || (index < headLength)) ? (head + index) : (index - headLength);
             item = queue._items[actualIndex];
 
             return true;
