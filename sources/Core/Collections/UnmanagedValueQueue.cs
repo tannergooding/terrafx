@@ -44,7 +44,9 @@ public static unsafe class UnmanagedValueQueue
             var head = queue._head;
             var tail = queue._tail;
 
-            if ((head < tail) || (tail == 0))
+            // `head == tail` means empty or full, so `count` is what disambiguates them
+
+            if ((queue._count == 0) || (head < tail) || (tail == 0))
             {
                 return TryGetIndexOfUnsafe(items.GetPointerUnsafe(head), queue._count, item, out _);
             }
@@ -230,7 +232,7 @@ public static unsafe class UnmanagedValueQueue
             nuint index;
             bool found;
 
-            if ((head < tail) || (tail == 0))
+            if ((count == 0) || (head < tail) || (tail == 0))
             {
                 found = TryGetIndexOfUnsafe(items.GetPointerUnsafe(head), count, item, out index);
                 index += head;

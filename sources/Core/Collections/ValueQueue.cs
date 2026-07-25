@@ -26,7 +26,9 @@ public static class ValueQueue
             var head = queue._head;
             var tail = queue._tail;
 
-            if ((head < tail) || (tail == 0))
+            // `head == tail` means empty or full, so `count` is what disambiguates them
+
+            if ((queue._count == 0) || (head < tail) || (tail == 0))
             {
                 Array.Clear(queue._items, head, queue._count);
             }
@@ -57,7 +59,7 @@ public static class ValueQueue
             var head = queue._head;
             var tail = queue._tail;
 
-            if ((head < tail) || (tail == 0))
+            if ((queue._count == 0) || (head < tail) || (tail == 0))
             {
                 return Array.IndexOf(items, item, head, queue._count) >= 0;
             }
@@ -85,7 +87,7 @@ public static class ValueQueue
         var head = queue._head;
         var tail = queue._tail;
 
-        if ((head < tail) || (tail == 0))
+        if ((count == 0) || (head < tail) || (tail == 0))
         {
             items.AsSpan(head, count).CopyTo(destination);
         }
@@ -216,7 +218,7 @@ public static class ValueQueue
             var capacity = items.Length;
             int index;
 
-            if ((head < tail) || (tail == 0))
+            if ((count == 0) || (head < tail) || (tail == 0))
             {
                 index = Array.IndexOf(items, item, head, count);
             }
