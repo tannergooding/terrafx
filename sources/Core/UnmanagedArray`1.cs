@@ -41,6 +41,7 @@ public readonly unsafe partial struct UnmanagedArray<T>
     /// <param name="alignment">The alignment, in bytes, of the items in the array or <c>zero</c> to use the system default.</param>
     /// <param name="zero"><c>true</c> if the items in the array should be zeroed; otherwise, <c>false</c>.</param>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="alignment" /> is not zero or a <c>power of two</c>.</exception>
+    /// <exception cref="OverflowException">The size, in bytes, of the array exceeds <see cref="nuint.MaxValue" />.</exception>
     public UnmanagedArray(nuint length, nuint alignment = 0, bool zero = false)
     {
         if (alignment == 0)
@@ -57,7 +58,7 @@ public readonly unsafe partial struct UnmanagedArray<T>
             // overruns and ensures that get a ref to an empty array isn't "undefined behavior"
 
             metadata = (Metadata*)Allocate(
-                SizeOf<Metadata>() + (length * SizeOf<T>()),
+                checked(SizeOf<Metadata>() + (length * SizeOf<T>())),
                 alignment,
                 offset: Metadata.OffsetOf_Item,
                 zero
