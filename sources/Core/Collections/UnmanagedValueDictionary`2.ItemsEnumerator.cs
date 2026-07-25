@@ -34,36 +34,27 @@ public partial struct UnmanagedValueDictionary<TKey, TValue>
         /// <inheritdoc />
         public bool MoveNext()
         {
-            var succeeded = true;
-
             var index = unchecked(_index + 1);
             var count = _dictionary._count;
+            var entries = _dictionary._entries;
 
-            if (index == count)
+            while (index < count)
             {
-                index--;
-                succeeded = false;
-            }
-            else
-            {
-                var entries = _dictionary._entries;
+                ref var entry = ref entries.GetReferenceUnsafe((uint)index);
 
-                while (index < count)
+                if (entry.Next >= -1)
                 {
-                    ref var entry = ref entries.GetReferenceUnsafe((uint)index);
+                    _current = new KeyValuePair<TKey, TValue>(entry.Key, entry.Value);
+                    _index = index;
 
-                    if (entry.Next >= -1)
-                    {
-                        _current = new KeyValuePair<TKey, TValue>(entry.Key, entry.Value);
-                        break;
-                    }
-
-                    index++;
+                    return true;
                 }
+
+                index++;
             }
 
-            _index = index;
-            return succeeded;
+            _index = count - 1;
+            return false;
         }
 
         /// <inheritdoc />

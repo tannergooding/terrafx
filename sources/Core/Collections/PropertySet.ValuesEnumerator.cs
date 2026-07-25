@@ -31,36 +31,27 @@ public partial class PropertySet
         /// <inheritdoc />
         public bool MoveNext()
         {
-            var succeeded = true;
-
             var index = unchecked(_index + 1);
             var count = _propertySet._items._count;
+            var entries = _propertySet._items._entries;
 
-            if (index == count)
+            while (index < count)
             {
-                index--;
-                succeeded = false;
-            }
-            else
-            {
-                var entries = _propertySet._items._entries;
+                ref var entry = ref entries.GetReferenceUnsafe(index);
 
-                while (index < count)
+                if (entry.Next >= -1)
                 {
-                    ref var entry = ref entries.GetReferenceUnsafe(index);
+                    _current = entry.Value;
+                    _index = index;
 
-                    if (entry.Next >= -1)
-                    {
-                        _current = entry.Value;
-                        break;
-                    }
-
-                    index++;
+                    return true;
                 }
+
+                index++;
             }
 
-            _index = index;
-            return succeeded;
+            _index = count - 1;
+            return false;
         }
 
         /// <inheritdoc />
