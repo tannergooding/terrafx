@@ -138,7 +138,7 @@ public static class ValueList
 
         var items = list._items;
 
-        if (index != newCount)
+        if (index != count)
         {
             Array.Copy(items, index, items, index + 1, count - index);
         }

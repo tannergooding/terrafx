@@ -170,9 +170,9 @@ public static unsafe class UnmanagedValueList
 
         var items = list._items;
 
-        if (index != newCount)
+        if (index != count)
         {
-            CopyArrayUnsafe(items.GetPointerUnsafe(index), items.GetPointerUnsafe(index + 1), count - index);
+            CopyArrayUnsafe(items.GetPointerUnsafe(index + 1), items.GetPointerUnsafe(index), count - index);
         }
 
         list._count = newCount;
