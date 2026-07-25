@@ -2732,9 +2732,9 @@ public static class VectorUtilities
         static (Vector128<float>, Vector128<float>) SoftwareFallback(Vector128<float> value)
         {
             var (sinX, cosX) = MathUtilities.SinCos(value.GetX());
-            var (sinY, cosY) = MathUtilities.SinCos(value.GetX());
-            var (sinZ, cosZ) = MathUtilities.SinCos(value.GetX());
-            var (sinW, cosW) = MathUtilities.SinCos(value.GetX());
+            var (sinY, cosY) = MathUtilities.SinCos(value.GetY());
+            var (sinZ, cosZ) = MathUtilities.SinCos(value.GetZ());
+            var (sinW, cosW) = MathUtilities.SinCos(value.GetW());
             return (Vector128.Create(sinX, sinY, sinZ, sinW), Vector128.Create(cosX, cosY, cosZ, cosW));
         }
     }

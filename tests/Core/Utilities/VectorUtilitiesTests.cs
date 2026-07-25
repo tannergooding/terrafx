@@ -1,5 +1,6 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See License.md in the repository root for more information.
 
+using System;
 using System.Runtime.Intrinsics;
 using NUnit.Framework;
 using TerraFX.Utilities;
@@ -716,5 +717,20 @@ internal static class VectorUtilitiesTests
         Assert.That(() => VectorUtilities.QuaternionConjugate(Vector128.Create(1.0f, 2.0f, 3.0f, 4.0f)),
             Is.EqualTo(Vector128.Create(-1.0f, -2.0f, -3.0f, 4.0f))
         );
+    }
+
+    /// <summary>Provides validation of the <see cref="VectorUtilities.SinCos(Vector128{float})" /> method.</summary>
+    [Test]
+    public static void SinCosTest()
+    {
+        var (sin, cos) = VectorUtilities.SinCos(Vector128.Create(0.0f, 1.0f, 2.0f, 3.0f));
+
+        Assert.That(sin, Is.EqualTo(Vector128.Create(
+            MathF.Sin(0.0f), MathF.Sin(1.0f), MathF.Sin(2.0f), MathF.Sin(3.0f)
+        )));
+
+        Assert.That(cos, Is.EqualTo(Vector128.Create(
+            MathF.Cos(0.0f), MathF.Cos(1.0f), MathF.Cos(2.0f), MathF.Cos(3.0f)
+        )));
     }
 }
