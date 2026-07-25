@@ -1,5 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See License.md in the repository root for more information.
 
+using System;
+using System.Text;
 using NUnit.Framework;
 using TerraFX.Utilities;
 
@@ -68,5 +70,56 @@ internal static unsafe class MemoryUtilitiesTests
         {
             Assert.That(destination[i], Is.EqualTo((byte)0), $"byte {i} was written past the requested length");
         }
+    }
+
+    /// <summary>Provides validation of the <see cref="MemoryUtilities.CopyUnsafe(void*, void*, nuint)" /> method when the source and destination overlap.</summary>
+    /// <remarks>
+    ///     Shifting left has to copy front to back and shifting right has to copy back to front, otherwise
+    ///     a block is overwritten before it has been read. The shift range spans the 32-byte block size so
+    ///     that both the block loop and the trailing remainder see an overlap.
+    /// </remarks>
+    [TestCase(false)]
+    [TestCase(true)]
+    public static void CopyUnsafeOverlappingTest(bool shiftRight)
+    {
+        const int MaxLength = 400;
+        const int MaxShift = 48;
+
+        var expected = stackalloc byte[MaxLength + MaxShift];
+        var actual = stackalloc byte[MaxLength + MaxShift];
+
+        var failures = new StringBuilder();
+
+        for (var length = 1; length <= MaxLength; length++)
+        {
+            for (var shift = 1; shift <= MaxShift; shift++)
+            {
+                var total = length + shift;
+
+                for (var i = 0; i < total; i++)
+                {
+                    expected[i] = unchecked((byte)(i + 1));
+                    actual[i] = unchecked((byte)(i + 1));
+                }
+
+                if (shiftRight)
+                {
+                    Buffer.MemoryCopy(expected, expected + shift, total, length);
+                    MemoryUtilities.CopyUnsafe(actual + shift, actual, (nuint)length);
+                }
+                else
+                {
+                    Buffer.MemoryCopy(expected + shift, expected, total, length);
+                    MemoryUtilities.CopyUnsafe(actual, actual + shift, (nuint)length);
+                }
+
+                if (!new ReadOnlySpan<byte>(expected, total).SequenceEqual(new ReadOnlySpan<byte>(actual, total)))
+                {
+                    _ = failures.Append(length).Append(':').Append(shift).Append(' ');
+                }
+            }
+        }
+
+        Assert.That(failures.ToString(), Is.Empty, "the listed length:shift pairs did not match a memmove");
     }
 }

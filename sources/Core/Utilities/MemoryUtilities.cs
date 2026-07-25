@@ -579,6 +579,16 @@ public static unsafe class MemoryUtilities
             OverlappingCopy(destination, source, length);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static void BlockCopy(void* destination, void* source, nuint offset)
+        {
+            var lower = ReadUnaligned<Vector128<byte>>(source, offset);
+            var upper = ReadUnaligned<Vector128<byte>>(source, offset + 16);
+
+            WriteUnaligned(destination, offset, lower);
+            WriteUnaligned(destination, offset + 16, upper);
+        }
+
         static void NonOverlappingCopy(void* destination, void* source, nuint length)
         {
             Assert(length > 32);
@@ -587,39 +597,15 @@ public static unsafe class MemoryUtilities
             length -= blocks * 128;
             Assert(length < 128);
 
+            // Copy front to back so that an overlapping copy which shifts left only
+            // ever overwrites bytes that have already been read.
+
             for (nuint block = 0; block < blocks; block++)
             {
-                // Bytes 0-31
-
-                var lower = ReadUnaligned<Vector128<byte>>(source);
-                var upper = ReadUnaligned<Vector128<byte>>(source, 16);
-
-                WriteUnaligned(destination, lower);
-                WriteUnaligned(destination, 16, upper);
-
-                // Bytes 32-63
-
-                lower = ReadUnaligned<Vector128<byte>>(source, 32);
-                upper = ReadUnaligned<Vector128<byte>>(source, 48);
-
-                WriteUnaligned(destination, 32, lower);
-                WriteUnaligned(destination, 48, upper);
-
-                // Bytes 64-95
-
-                lower = ReadUnaligned<Vector128<byte>>(source, 64);
-                upper = ReadUnaligned<Vector128<byte>>(source, 80);
-
-                WriteUnaligned(destination, 64, lower);
-                WriteUnaligned(destination, 80, upper);
-
-                // Bytes 96-127
-
-                lower = ReadUnaligned<Vector128<byte>>(source, 96);
-                upper = ReadUnaligned<Vector128<byte>>(source, 112);
-
-                WriteUnaligned(destination, 96, lower);
-                WriteUnaligned(destination, 112, upper);
+                BlockCopy(destination, source, 0);
+                BlockCopy(destination, source, 32);
+                BlockCopy(destination, source, 64);
+                BlockCopy(destination, source, 96);
 
                 source = (void*)((nuint)source + 128);
                 destination = (void*)((nuint)destination + 128);
@@ -633,59 +619,33 @@ public static unsafe class MemoryUtilities
             Assert(source < destination);
             Assert(((nuint)source + length) > (nuint)destination);
 
-            source = (void*)((nuint)source + length);
-            destination = (void*)((nuint)destination + length);
-
-            // This is basically the same as the non-overlapping copy but does
-            // everything in reverse, from back to front. Since we know source
-            // is less than destination and that there is some overlap this ensures
-            // we are only overwriting bytes that have already been read.
-
             Assert(length > 32);
             var blocks = length / 128;
 
             length -= blocks * 128;
             Assert(length < 128);
 
+            // This is basically the same as the non-overlapping copy but does
+            // everything in reverse, from back to front. Since we know source
+            // is less than destination and that there is some overlap this ensures
+            // we are only overwriting bytes that have already been read. The
+            // trailing bytes are the lowest, so they are copied last.
+
+            source = (void*)((nuint)source + length + (blocks * 128));
+            destination = (void*)((nuint)destination + length + (blocks * 128));
+
             for (nuint block = 0; block < blocks; block++)
             {
-                // Bytes 127-96
-
-                var upper = ReadUnaligned<Vector128<byte>>(source, 112);
-                var lower = ReadUnaligned<Vector128<byte>>(source, 96);
-
-                WriteUnaligned(destination, 112, upper);
-                WriteUnaligned(destination, 96, lower);
-
-                // Bytes 95-64
-
-                upper = ReadUnaligned<Vector128<byte>>(source, 80);
-                lower = ReadUnaligned<Vector128<byte>>(source, 64);
-
-                WriteUnaligned(destination, 80, upper);
-                WriteUnaligned(destination, 64, lower);
-
-                // Bytes 63-32
-
-                upper = ReadUnaligned<Vector128<byte>>(source, 48);
-                lower = ReadUnaligned<Vector128<byte>>(source, 32);
-
-                WriteUnaligned(destination, 48, upper);
-                WriteUnaligned(destination, 32, lower);
-
-                // Bytes 31-0
-
-                upper = ReadUnaligned<Vector128<byte>>(source, 16);
-                lower = ReadUnaligned<Vector128<byte>>(source);
-
-                WriteUnaligned(destination, 16, upper);
-                WriteUnaligned(destination, lower);
-
                 source = (void*)((nuint)source - 128);
                 destination = (void*)((nuint)destination - 128);
+
+                BlockCopy(destination, source, 96);
+                BlockCopy(destination, source, 64);
+                BlockCopy(destination, source, 32);
+                BlockCopy(destination, source, 0);
             }
 
-            TrailingCopy(destination, source, length);
+            ReverseTrailingCopy((void*)((nuint)destination - length), (void*)((nuint)source - length), length);
         }
 
         static void SmallCopy(void* destination, void* source, nuint length)
@@ -811,48 +771,80 @@ public static unsafe class MemoryUtilities
             var blocks = length / 32;
             Assert(blocks <= 3);
 
-            length -= blocks * 32;
-            Assert(length < 32);
+            var offset = blocks * 32;
 
             switch (blocks)
             {
                 case 3:
                 {
-                    var lower = ReadUnaligned<Vector128<byte>>(source, 64);
-                    var upper = ReadUnaligned<Vector128<byte>>(source, 80);
-
-                    WriteUnaligned(destination, 64, lower);
-                    WriteUnaligned(destination, 80, upper);
-
-                    goto case 2;
+                    BlockCopy(destination, source, 0);
+                    BlockCopy(destination, source, 32);
+                    BlockCopy(destination, source, 64);
+                    break;
                 }
 
                 case 2:
                 {
-                    var lower = ReadUnaligned<Vector128<byte>>(source, 32);
-                    var upper = ReadUnaligned<Vector128<byte>>(source, 48);
-
-                    WriteUnaligned(destination, 32, lower);
-                    WriteUnaligned(destination, 48, upper);
-
-                    goto case 1;
+                    BlockCopy(destination, source, 0);
+                    BlockCopy(destination, source, 32);
+                    break;
                 }
 
                 case 1:
                 {
-                    var lower = ReadUnaligned<Vector128<byte>>(source);
-                    var upper = ReadUnaligned<Vector128<byte>>(source, 16);
-
-                    WriteUnaligned(destination, lower);
-                    WriteUnaligned(destination, 16, upper);
-
-                    goto case 0;
+                    BlockCopy(destination, source, 0);
+                    break;
                 }
 
                 case 0:
                 {
-                    var offset = blocks * 32;
-                    SmallCopy((void*)((nuint)destination + offset), (void*)((nuint)source + offset), length);
+                    break;
+                }
+
+                default:
+                {
+                    ThrowUnreachableException();
+                    break;
+                }
+            }
+
+            SmallCopy((void*)((nuint)destination + offset), (void*)((nuint)source + offset), length - offset);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static void ReverseTrailingCopy(void* destination, void* source, nuint length)
+        {
+            var blocks = length / 32;
+            Assert(blocks <= 3);
+
+            var offset = blocks * 32;
+            SmallCopy((void*)((nuint)destination + offset), (void*)((nuint)source + offset), length - offset);
+
+            switch (blocks)
+            {
+                case 3:
+                {
+                    BlockCopy(destination, source, 64);
+                    BlockCopy(destination, source, 32);
+                    BlockCopy(destination, source, 0);
+                    break;
+                }
+
+                case 2:
+                {
+                    BlockCopy(destination, source, 32);
+                    BlockCopy(destination, source, 0);
+                    break;
+                }
+
+                case 1:
+                {
+                    BlockCopy(destination, source, 0);
+                    break;
+                }
+
+                case 0:
+                {
                     break;
                 }
 
