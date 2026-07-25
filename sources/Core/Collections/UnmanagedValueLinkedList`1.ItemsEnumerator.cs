@@ -66,7 +66,7 @@ public partial struct UnmanagedValueLinkedList<T>
         /// <inheritdoc />
         public void Reset()
         {
-            _current = null;
+            _current = _linkedList.Last;
             _index = nuint.MaxValue;
         }
 

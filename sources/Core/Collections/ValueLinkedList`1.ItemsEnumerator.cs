@@ -49,7 +49,9 @@ public partial struct ValueLinkedList<T>
             else
             {
                 AssertNotNull(_current);
-                _current = _current.Next;
+
+                // The nodes are circularly linked, so this is the public `Next` without its end-of-list guard
+                _current = _current._next;
             }
 
             _index = index;
@@ -59,7 +61,7 @@ public partial struct ValueLinkedList<T>
         /// <inheritdoc />
         public void Reset()
         {
-            _current = null;
+            _current = _linkedList.Last;
             _index = -1;
         }
 
