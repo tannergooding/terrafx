@@ -593,6 +593,7 @@ public static class UnmanagedValueDictionary
             var freeList = StartOfFreeList - entry.Next;
             Assert(freeList >= -1);
 
+            dictionary._freeList = freeList;
             dictionary._freeCount--;
         }
         else

@@ -609,6 +609,7 @@ public static class ValueDictionary
             var freeList = StartOfFreeList - entry.Next;
             Assert(freeList >= -1);
 
+            dictionary._freeList = freeList;
             dictionary._freeCount--;
         }
         else
@@ -644,7 +645,7 @@ public static class ValueDictionary
     {
         var size = HashUtilities.GetPrime(capacity);
 
-        var buckets = GC.AllocateUninitializedArray<int>(size);
+        var buckets = new int[size];
         var entries = GC.AllocateUninitializedArray<ValueDictionary<TKey, TValue>.Entry>(size);
 
         dictionary._freeList = -1;
@@ -666,7 +667,7 @@ public static class ValueDictionary
         Assert(newCapacity >= entries.Length);
 
         var newEntries = GC.AllocateUninitializedArray<ValueDictionary<TKey, TValue>.Entry>(newCapacity);
-        var newBuckets = GC.AllocateUninitializedArray<int>(newCapacity);
+        var newBuckets = new int[newCapacity];
 
         if (Environment.Is64BitProcess)
         {
