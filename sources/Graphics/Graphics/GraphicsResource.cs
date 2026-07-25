@@ -281,13 +281,14 @@ public abstract unsafe class GraphicsResource : IDisposable, INameable
     /// <param name="start">The index of the first element at which which the mapping should start.</param>
     /// <returns>An unmanaged span that represents the mapped buffer.</returns>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="start" /> * sizeof(<typeparamref name="T" />) is greater than <see cref="GraphicsResource.ByteLength" />.</exception>
+    /// <exception cref="OverflowException">The size, in bytes, of the mapped range exceeds <see cref="nuint.MaxValue" />.</exception>
     /// <exception cref="ObjectDisposedException">The buffer has been disposed.</exception>
     public UnmanagedSpan<T> Map<T>(nuint start)
         where T : unmanaged
     {
         ThrowIfDisposedOrDisposing(_state, _name);
 
-        var byteStart = SizeOf<T>() * start;
+        var byteStart = checked(SizeOf<T>() * start);
         ThrowIfNotInBounds(byteStart, ByteLength);
 
         var byteLength = ByteLength - byteStart;
@@ -303,16 +304,17 @@ public abstract unsafe class GraphicsResource : IDisposable, INameable
     /// <returns>An unmanaged span that represents the mapped buffer.</returns>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="start" /> * sizeof(<typeparamref name="T" />) is greater than <see cref="GraphicsResource.ByteLength" />.</exception>
     /// <exception cref="ArgumentOutOfRangeException">(<paramref name="length" /> + <paramref name="start" />) * sizeof(<typeparamref name="T" />) is greater than <see cref="GraphicsResource.ByteLength" />.</exception>
+    /// <exception cref="OverflowException">The size, in bytes, of the mapped range exceeds <see cref="nuint.MaxValue" />.</exception>
     /// <exception cref="ObjectDisposedException">The buffer has been disposed.</exception>
     public UnmanagedSpan<T> Map<T>(nuint start, nuint length)
         where T : unmanaged
     {
         ThrowIfDisposedOrDisposing(_state, _name);
 
-        var byteStart = SizeOf<T>() * start;
+        var byteStart = checked(SizeOf<T>() * start);
         ThrowIfNotInBounds(byteStart, ByteLength);
 
-        var byteLength = SizeOf<T>() * length;
+        var byteLength = checked(SizeOf<T>() * length);
         ThrowIfNotInInsertBounds(byteLength, ByteLength - byteStart);
 
         var mappedAddress = MapUnsafe(subresource: 0);
@@ -337,13 +339,14 @@ public abstract unsafe class GraphicsResource : IDisposable, INameable
     /// <param name="start">The index of the first element at which which the mapping should start.</param>
     /// <returns>An unmanaged span that represents the mapped buffer.</returns>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="start" /> * sizeof(<typeparamref name="T" />) is greater than <see cref="GraphicsResource.ByteLength" />.</exception>
+    /// <exception cref="OverflowException">The size, in bytes, of the mapped range exceeds <see cref="nuint.MaxValue" />.</exception>
     /// <exception cref="ObjectDisposedException">The buffer has been disposed.</exception>
     public UnmanagedSpan<T> MapForRead<T>(nuint start)
         where T : unmanaged
     {
         ThrowIfDisposedOrDisposing(_state, _name);
 
-        var byteStart = SizeOf<T>() * start;
+        var byteStart = checked(SizeOf<T>() * start);
         ThrowIfNotInBounds(byteStart, ByteLength);
 
         var byteLength = ByteLength - byteStart;
@@ -359,16 +362,17 @@ public abstract unsafe class GraphicsResource : IDisposable, INameable
     /// <returns>An unmanaged span that represents the mapped buffer.</returns>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="start" /> * sizeof(<typeparamref name="T" />) is greater than <see cref="GraphicsResource.ByteLength" />.</exception>
     /// <exception cref="ArgumentOutOfRangeException">(<paramref name="length" /> + <paramref name="start" />) * sizeof(<typeparamref name="T" />) is greater than <see cref="GraphicsResource.ByteLength" />.</exception>
+    /// <exception cref="OverflowException">The size, in bytes, of the mapped range exceeds <see cref="nuint.MaxValue" />.</exception>
     /// <exception cref="ObjectDisposedException">The buffer has been disposed.</exception>
     public UnmanagedSpan<T> MapForRead<T>(nuint start, nuint length)
         where T : unmanaged
     {
         ThrowIfDisposedOrDisposing(_state, _name);
 
-        var byteStart = SizeOf<T>() * start;
+        var byteStart = checked(SizeOf<T>() * start);
         ThrowIfNotInBounds(byteStart, ByteLength);
 
-        var byteLength = SizeOf<T>() * length;
+        var byteLength = checked(SizeOf<T>() * length);
         ThrowIfNotInInsertBounds(byteLength, ByteLength - byteStart);
 
         var mappedAddress = MapForReadUnsafe(subresource: 0);
@@ -403,13 +407,14 @@ public abstract unsafe class GraphicsResource : IDisposable, INameable
     /// <param name="start">The index of the first element at which which the mapping should start.</param>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="start" /> * sizeof(<typeparamref name="T" />) is greater than <see cref="GraphicsResource.ByteLength" />.</exception>
     /// <exception cref="InvalidOperationException">The buffer is not already mapped.</exception>
+    /// <exception cref="OverflowException">The size, in bytes, of the mapped range exceeds <see cref="nuint.MaxValue" />.</exception>
     /// <exception cref="ObjectDisposedException">The buffer has been disposed.</exception>
     public void UnmapAndWrite<T>(nuint start)
         where T : unmanaged
     {
         ThrowIfDisposedOrDisposing(_state, _name);
 
-        var byteStart = SizeOf<T>() * start;
+        var byteStart = checked(SizeOf<T>() * start);
         ThrowIfNotInBounds(byteStart, ByteLength);
 
         var byteLength = ByteLength - byteStart;
@@ -424,16 +429,17 @@ public abstract unsafe class GraphicsResource : IDisposable, INameable
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="start" /> * sizeof(<typeparamref name="T" />) is greater than <see cref="GraphicsResource.ByteLength" />.</exception>
     /// <exception cref="ArgumentOutOfRangeException">(<paramref name="length" /> + <paramref name="start" />) * sizeof(<typeparamref name="T" />) is greater than <see cref="GraphicsResource.ByteLength" />.</exception>
     /// <exception cref="InvalidOperationException">The buffer is not already mapped.</exception>
+    /// <exception cref="OverflowException">The size, in bytes, of the mapped range exceeds <see cref="nuint.MaxValue" />.</exception>
     /// <exception cref="ObjectDisposedException">The buffer has been disposed.</exception>
     public void UnmapAndWrite<T>(nuint start, nuint length)
         where T : unmanaged
     {
         ThrowIfDisposedOrDisposing(_state, _name);
 
-        var byteStart = SizeOf<T>() * start;
+        var byteStart = checked(SizeOf<T>() * start);
         ThrowIfNotInBounds(byteStart, ByteLength);
 
-        var byteLength = SizeOf<T>() * length;
+        var byteLength = checked(SizeOf<T>() * length);
         ThrowIfNotInInsertBounds(byteLength, ByteLength - byteStart);
 
         UnmapAndWriteUnsafe(subresource: 0);
