@@ -33,7 +33,7 @@ public partial struct UnmanagedValueStack<T>
 
             if (index == _stack._count)
             {
-                index--;
+                index = unchecked(index - 1);
                 succeeded = false;
             }
 

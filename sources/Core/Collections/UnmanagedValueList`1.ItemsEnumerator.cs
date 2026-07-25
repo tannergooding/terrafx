@@ -33,7 +33,7 @@ public partial struct UnmanagedValueList<T>
 
             if (index == _list._count)
             {
-                index--;
+                index = unchecked(index - 1);
                 succeeded = false;
             }
 

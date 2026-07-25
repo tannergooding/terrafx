@@ -50,7 +50,7 @@ public partial struct UnmanagedValueLinkedList<T>
 
             if (index == _linkedList._count)
             {
-                index--;
+                index = unchecked(index - 1);
                 succeeded = false;
             }
             else

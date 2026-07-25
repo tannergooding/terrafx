@@ -33,7 +33,7 @@ public partial struct UnmanagedValueQueue<T>
 
             if (index == _queue._count)
             {
-                index--;
+                index = unchecked(index - 1);
                 succeeded = false;
             }
 
