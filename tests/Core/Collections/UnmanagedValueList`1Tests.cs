@@ -425,7 +425,7 @@ internal static class UnmanagedValueListTests
                 );
             }
 
-            using (var destination = new UnmanagedArray<int>(6))
+            using (var destination = new UnmanagedArray<int>(6, zero: true))
             {
                 valueList.CopyTo(destination);
 

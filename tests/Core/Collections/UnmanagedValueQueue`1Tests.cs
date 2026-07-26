@@ -377,7 +377,7 @@ internal static class UnmanagedValueQueueTests
                 );
             }
 
-            using (var destination = new UnmanagedArray<int>(6))
+            using (var destination = new UnmanagedArray<int>(6, zero: true))
             {
                 valueQueue.CopyTo(destination);
 
