@@ -16,7 +16,7 @@ internal static unsafe class ValuePoolTests
         Assert.That(() => new ValuePool<Item>(),
             Has.Property("Capacity").EqualTo(0)
                .And.Count.EqualTo(0)
-               .And.Property("AvailableItemCount").EqualTo(0)
+               .And.Property("AvailableCount").EqualTo(0)
         );
     }
 
@@ -45,7 +45,7 @@ internal static unsafe class ValuePoolTests
 
         Assert.That(item, Is.Not.Null);
         Assert.That(pool.Count, Is.EqualTo(1));
-        Assert.That(pool.AvailableItemCount, Is.EqualTo(0));
+        Assert.That(pool.AvailableCount, Is.EqualTo(0));
     }
 
     /// <summary>Provides validation that a returned item is reused by a subsequent rent.</summary>
@@ -57,13 +57,13 @@ internal static unsafe class ValuePoolTests
         var first = pool.Rent(&CreateItem);
         pool.Return(first);
 
-        Assert.That(pool.AvailableItemCount, Is.EqualTo(1));
+        Assert.That(pool.AvailableCount, Is.EqualTo(1));
 
         var second = pool.Rent(&CreateItem);
 
         Assert.That(second, Is.SameAs(first));
         Assert.That(pool.Count, Is.EqualTo(1));
-        Assert.That(pool.AvailableItemCount, Is.EqualTo(0));
+        Assert.That(pool.AvailableCount, Is.EqualTo(0));
     }
 
     /// <summary>Provides validation that renting with an argument forwards it to the create function.</summary>
@@ -97,7 +97,7 @@ internal static unsafe class ValuePoolTests
         ValuePool<Item> pool = [];
 
         pool.Return(new());
-        Assert.That(pool.AvailableItemCount, Is.EqualTo(1));
+        Assert.That(pool.AvailableCount, Is.EqualTo(1));
 
         Assert.That(() => pool.Return(null!),
             Throws.ArgumentNullException
@@ -127,11 +127,11 @@ internal static unsafe class ValuePoolTests
         var item = pool.Rent(&CreateItem);
         pool.Return(item);
 
-        Assert.That(pool.AvailableItemCount, Is.EqualTo(1));
+        Assert.That(pool.AvailableCount, Is.EqualTo(1));
         Assert.That(pool.Remove(item), Is.True);
 
         Assert.That(pool.Count, Is.EqualTo(0));
-        Assert.That(pool.AvailableItemCount, Is.EqualTo(0));
+        Assert.That(pool.AvailableCount, Is.EqualTo(0));
     }
 
     /// <summary>Provides validation of the <see cref="ValuePool.Clear{T}(ref ValuePool{T})" /> method.</summary>
@@ -146,7 +146,7 @@ internal static unsafe class ValuePoolTests
         pool.Clear();
 
         Assert.That(pool.Count, Is.EqualTo(0));
-        Assert.That(pool.AvailableItemCount, Is.EqualTo(0));
+        Assert.That(pool.AvailableCount, Is.EqualTo(0));
         Assert.That(pool.IsEmpty, Is.True);
     }
 

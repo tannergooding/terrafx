@@ -37,7 +37,7 @@ public partial struct ValuePool<T>
     }
 
     /// <summary>Gets the number of items available in the pool.</summary>
-    public readonly int AvailableItemCount => _availableItems.Count;
+    public readonly int AvailableCount => _availableItems.Count;
 
     /// <summary>Gets an enumerator that can iterate through the available items in the pool.</summary>
     public readonly AvailableItemsEnumerator AvailableItems => new AvailableItemsEnumerator(this);
