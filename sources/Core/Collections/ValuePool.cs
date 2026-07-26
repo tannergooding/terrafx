@@ -131,7 +131,4 @@ public static unsafe class ValuePool
         using var disposableMutex = new DisposableMutex(mutex, isExternallySynchronized: false);
         pool.Return(item);
     }
-
-    internal static ref T GetReferenceUnsafe<T>(this scoped ref readonly ValuePool<T> pool, nuint index)
-        where T : unmanaged => ref pool.GetReferenceUnsafe(index);
 }
