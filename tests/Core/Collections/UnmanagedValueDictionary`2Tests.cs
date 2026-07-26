@@ -2,6 +2,7 @@
 
 using NUnit.Framework;
 using TerraFX.Collections;
+using static TerraFX.Interop.Mimalloc.Mimalloc;
 
 namespace TerraFX.UnitTests.Collections;
 
@@ -252,5 +253,65 @@ internal static class UnmanagedValueDictionaryTests
 
         left.Dispose();
         other.Dispose();
+    }
+
+    /// <summary>Provides validation of the <see cref="UnmanagedValueDictionary.TrimExcess{TKey, TValue}(ref UnmanagedValueDictionary{TKey, TValue}, float)" /> method.</summary>
+    [Test]
+    public static void TrimExcessTest()
+    {
+        var dictionary = new UnmanagedValueDictionary<int, int>(capacity: 32);
+
+        for (var i = 0; i < 4; i++)
+        {
+            _ = dictionary.TryAdd(i, i);
+        }
+
+        var capacity = dictionary.Capacity;
+        dictionary.TrimExcess();
+
+        Assert.That(dictionary.Capacity, Is.LessThan(capacity));
+        Assert.That(dictionary.Count, Is.EqualTo((nuint)4));
+
+        for (var i = 0; i < 4; i++)
+        {
+            Assert.That(dictionary.ContainsKey(i), Is.True);
+        }
+
+        dictionary.Dispose();
+    }
+
+    /// <summary>Provides validation that growing the dictionary frees the backing arrays it replaces.</summary>
+    [Test]
+    public static void ResizeFreesPriorArraysTest()
+    {
+        // A leaking resize commits roughly 3 MB per iteration; a correct one stays flat
+        Grow();
+        var before = CurrentCommit();
+
+        for (var i = 0; i < 16; i++)
+        {
+            Grow();
+        }
+
+        Assert.That(CurrentCommit() - before, Is.LessThan((nuint)(8 * 1024 * 1024)));
+
+        static void Grow()
+        {
+            var dictionary = new UnmanagedValueDictionary<int, int>();
+
+            for (var i = 0; i < 100_000; i++)
+            {
+                _ = dictionary.TryAdd(i, i);
+            }
+
+            dictionary.Dispose();
+        }
+
+        static unsafe nuint CurrentCommit()
+        {
+            nuint elapsed, userMsecs, systemMsecs, currentRss, peakRss, currentCommit, peakCommit, pageFaults;
+            mi_process_info(&elapsed, &userMsecs, &systemMsecs, &currentRss, &peakRss, &currentCommit, &peakCommit, &pageFaults);
+            return currentCommit;
+        }
     }
 }

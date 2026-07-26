@@ -211,7 +211,10 @@ public static class ValueDictionary
             {
                 dictionary.Initialize(capacity);
             }
-            dictionary.Resize(HashUtilities.GetPrime(capacity));
+            else
+            {
+                dictionary.Resize(HashUtilities.GetPrime(capacity));
+            }
         }
     }
 
@@ -664,7 +667,9 @@ public static class ValueDictionary
         where TKey : notnull
     {
         var entries = dictionary._entries;
-        Assert(newCapacity >= entries.Length);
+
+        // Resize also shrinks, for TrimExcess, so it is the live entries rather than the capacity that must fit
+        Assert(newCapacity >= dictionary._count);
 
         var newEntries = GC.AllocateUninitializedArray<ValueDictionary<TKey, TValue>.Entry>(newCapacity);
         var newBuckets = new int[newCapacity];

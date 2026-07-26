@@ -257,4 +257,27 @@ internal static class ValueDictionaryTests
         Assert.That(left == other, Is.False);
         Assert.That(left != other, Is.True);
     }
+
+    /// <summary>Provides validation of the <see cref="ValueDictionary.TrimExcess{TKey, TValue}(ref ValueDictionary{TKey, TValue}, float)" /> method.</summary>
+    [Test]
+    public static void TrimExcessTest()
+    {
+        var dictionary = new ValueDictionary<int, int>(capacity: 32);
+
+        for (var i = 0; i < 4; i++)
+        {
+            _ = dictionary.TryAdd(i, i);
+        }
+
+        var capacity = dictionary.Capacity;
+        dictionary.TrimExcess();
+
+        Assert.That(dictionary.Capacity, Is.LessThan(capacity));
+        Assert.That(dictionary.Count, Is.EqualTo(4));
+
+        for (var i = 0; i < 4; i++)
+        {
+            Assert.That(dictionary.ContainsKey(i), Is.True);
+        }
+    }
 }

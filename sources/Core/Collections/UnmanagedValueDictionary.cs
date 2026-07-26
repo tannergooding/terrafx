@@ -195,7 +195,10 @@ public static class UnmanagedValueDictionary
             {
                 dictionary.Initialize(newCapacity);
             }
-            dictionary.Resize(HashUtilities.GetPrime(newCapacity));
+            else
+            {
+                dictionary.Resize(HashUtilities.GetPrime(newCapacity));
+            }
         }
     }
 
@@ -649,8 +652,11 @@ public static class UnmanagedValueDictionary
         where TKey : unmanaged
         where TValue : unmanaged
     {
+        var buckets = dictionary._buckets;
         var entries = dictionary._entries;
-        Assert((uint)newCapacity >= entries.Length);
+
+        // Resize also shrinks, for TrimExcess, so it is the live entries rather than the capacity that must fit
+        Assert(newCapacity >= dictionary._count);
 
         var newEntries = new UnmanagedArray<UnmanagedValueDictionary<TKey, TValue>.Entry>((uint)newCapacity);
         var newBuckets = new UnmanagedArray<int>((uint)newCapacity, zero: true);
@@ -678,6 +684,9 @@ public static class UnmanagedValueDictionary
                 bucket = i + 1;
             }
         }
+
+        buckets.Dispose();
+        entries.Dispose();
 
         dictionary._buckets = newBuckets;
         dictionary._entries = newEntries;
