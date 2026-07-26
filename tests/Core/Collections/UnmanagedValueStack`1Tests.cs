@@ -348,7 +348,7 @@ internal static class UnmanagedValueStackTests
                 valueStack.CopyTo(destination);
 
                 Assert.That(() => destination[0],
-                    Is.EqualTo(1)
+                    Is.EqualTo(3)
                 );
 
                 Assert.That(() => destination[1],
@@ -356,7 +356,7 @@ internal static class UnmanagedValueStackTests
                 );
 
                 Assert.That(() => destination[2],
-                    Is.EqualTo(3)
+                    Is.EqualTo(1)
                 );
 
                 _ = valueStack.Pop();
@@ -365,7 +365,7 @@ internal static class UnmanagedValueStackTests
                 valueStack.CopyTo(destination);
 
                 Assert.That(() => destination[0],
-                    Is.EqualTo(1)
+                    Is.EqualTo(4)
                 );
 
                 Assert.That(() => destination[1],
@@ -373,7 +373,7 @@ internal static class UnmanagedValueStackTests
                 );
 
                 Assert.That(() => destination[2],
-                    Is.EqualTo(4)
+                    Is.EqualTo(1)
                 );
             }
 
@@ -382,7 +382,7 @@ internal static class UnmanagedValueStackTests
                 valueStack.CopyTo(destination);
 
                 Assert.That(() => destination[0],
-                    Is.EqualTo(1)
+                    Is.EqualTo(4)
                 );
 
                 Assert.That(() => destination[1],
@@ -390,7 +390,7 @@ internal static class UnmanagedValueStackTests
                 );
 
                 Assert.That(() => destination[2],
-                    Is.EqualTo(4)
+                    Is.EqualTo(1)
                 );
 
                 Assert.That(() => destination[3],
@@ -412,19 +412,19 @@ internal static class UnmanagedValueStackTests
                 valueStack.CopyTo(destination);
 
                 Assert.That(() => destination[0],
-                    Is.EqualTo(1)
+                    Is.EqualTo(6)
                 );
 
                 Assert.That(() => destination[1],
-                    Is.EqualTo(2)
-                );
-
-                Assert.That(() => destination[2],
                     Is.EqualTo(5)
                 );
 
+                Assert.That(() => destination[2],
+                    Is.EqualTo(2)
+                );
+
                 Assert.That(() => destination[3],
-                    Is.EqualTo(6)
+                    Is.EqualTo(1)
                 );
 
                 Assert.That(() => destination[4],

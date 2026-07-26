@@ -48,11 +48,17 @@ public static class ValueStack
         }
     }
 
-    /// <summary>Copies the items of the stack to a span.</summary>
+    /// <summary>Copies the items of the stack to a span, in the order they would be popped.</summary>
     /// <param name="stack">The stack which should be copied.</param>
     /// <param name="destination">The span to which the items will be copied.</param>
     /// <exception cref="ArgumentException"><see cref="ValueStack{T}.Count" /> is greater than the length of <paramref name="destination" />.</exception>
-    public static void CopyTo<T>(this ref readonly ValueStack<T> stack, Span<T> destination) => stack._items.AsSpan(0, stack._count).CopyTo(destination);
+    public static void CopyTo<T>(this ref readonly ValueStack<T> stack, Span<T> destination)
+    {
+        var count = stack._count;
+
+        stack._items.AsSpan(0, count).CopyTo(destination);
+        destination[..count].Reverse();
+    }
 
     /// <summary>Ensures the capacity of the stack is at least the specified value.</summary>
     /// <param name="stack">The stack whose capacity should be ensured.</param>
@@ -149,7 +155,7 @@ public static class ValueStack
         if (count < minCount)
         {
             var newItems = GC.AllocateUninitializedArray<T>(count);
-            stack.CopyTo(newItems);
+            stack._items.AsSpan(0, count).CopyTo(newItems);
             stack._items = newItems;
         }
     }
@@ -228,7 +234,7 @@ public static class ValueStack
         var newCapacity = int.Max(capacity, currentCapacity * 2);
         var newItems = GC.AllocateUninitializedArray<T>(newCapacity);
 
-        stack.CopyTo(newItems);
+        stack._items.AsSpan(0, stack._count).CopyTo(newItems);
         stack._items = newItems;
     }
 }

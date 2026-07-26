@@ -219,7 +219,7 @@ internal static class ValueStackTests
         valueStack.CopyTo(destination);
 
         Assert.That(() => destination,
-            Is.EqualTo([1, 2, 3])
+            Is.EqualTo([3, 2, 1])
         );
 
         _ = valueStack.Pop();
@@ -228,14 +228,14 @@ internal static class ValueStackTests
         valueStack.CopyTo(destination);
 
         Assert.That(() => destination,
-            Is.EqualTo([1, 2, 4])
+            Is.EqualTo([4, 2, 1])
         );
 
         destination = new int[6];
         valueStack.CopyTo(destination);
 
         Assert.That(() => destination,
-            Is.EqualTo([1, 2, 4, 0, 0, 0])
+            Is.EqualTo([4, 2, 1, 0, 0, 0])
         );
 
         _ = valueStack.Pop();
@@ -245,7 +245,7 @@ internal static class ValueStackTests
         valueStack.CopyTo(destination);
 
         Assert.That(() => destination,
-            Is.EqualTo([1, 2, 5, 6, 0, 0])
+            Is.EqualTo([6, 5, 2, 1, 0, 0])
         );
 
         Assert.That(() => valueStack.CopyTo([]),

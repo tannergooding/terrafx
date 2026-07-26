@@ -35,7 +35,7 @@ public static unsafe class UnmanagedValueStack
         return !items.IsNull && TryGetLastIndexOfUnsafe(items.GetPointerUnsafe(0), stack._count, item, out _);
     }
 
-    /// <summary>Copies the items of the stack to a span.</summary>
+    /// <summary>Copies the items of the stack to a span, in the order they would be popped.</summary>
     /// <param name="stack">The stack which should be copied.</param>
     /// <param name="destination">The span to which the items will be copied.</param>
     /// <exception cref="ArgumentOutOfRangeException"><see cref="UnmanagedValueStack{T}.Count" /> is greater than the length of <paramref name="destination" />.</exception>
@@ -47,7 +47,12 @@ public static unsafe class UnmanagedValueStack
         if (count != 0)
         {
             ThrowIfNotInInsertBounds(count, destination.Length);
-            CopyArrayUnsafe(destination.GetPointerUnsafe(0), stack._items.GetPointerUnsafe(0), count);
+            var items = stack._items;
+
+            for (nuint index = 0; index < count; index++)
+            {
+                destination[index] = items[count - (index + 1)];
+            }
         }
     }
 
@@ -167,7 +172,7 @@ public static unsafe class UnmanagedValueStack
             var alignment = !items.IsNull ? items.Alignment : 0;
             var newItems = new UnmanagedArray<T>(count, alignment);
 
-            stack.CopyTo(newItems);
+            CopyArrayUnsafe(newItems.GetPointerUnsafe(0), items.GetPointerUnsafe(0), count);
             items.Dispose();
 
             stack._items = newItems;
@@ -250,8 +255,12 @@ public static unsafe class UnmanagedValueStack
         var alignment = !items.IsNull ? items.Alignment : 0;
 
         var newItems = new UnmanagedArray<T>(newCapacity, alignment);
+        var count = stack._count;
 
-        stack.CopyTo(newItems);
+        if (count != 0)
+        {
+            CopyArrayUnsafe(newItems.GetPointerUnsafe(0), items.GetPointerUnsafe(0), count);
+        }
         items.Dispose();
 
         stack._items = newItems;
