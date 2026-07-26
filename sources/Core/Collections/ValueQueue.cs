@@ -275,7 +275,9 @@ public static class ValueQueue
 
             queue._items = newItems;
             queue._head = 0;
-            queue._tail = count;
+
+            // The trimmed array is exactly Count long, so the tail wraps back to the start
+            queue._tail = 0;
         }
     }
 
