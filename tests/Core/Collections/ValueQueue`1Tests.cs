@@ -219,7 +219,7 @@ internal static class ValueQueueTests
         valueQueue.CopyTo(destination);
 
         Assert.That(() => destination,
-            Is.EquivalentTo([1, 2, 3])
+            Is.EqualTo([1, 2, 3])
         );
 
         _ = valueQueue.Dequeue();
@@ -228,14 +228,14 @@ internal static class ValueQueueTests
         valueQueue.CopyTo(destination);
 
         Assert.That(() => destination,
-            Is.EquivalentTo([2, 3, 4])
+            Is.EqualTo([2, 3, 4])
         );
 
         destination = new int[6];
         valueQueue.CopyTo(destination);
 
         Assert.That(() => destination,
-            Is.EquivalentTo([2, 3, 4, 0, 0, 0])
+            Is.EqualTo([2, 3, 4, 0, 0, 0])
         );
 
         _ = valueQueue.Dequeue();
@@ -245,7 +245,7 @@ internal static class ValueQueueTests
         valueQueue.CopyTo(destination);
 
         Assert.That(() => destination,
-            Is.EquivalentTo([3, 4, 5, 6, 0, 0])
+            Is.EqualTo([3, 4, 5, 6, 0, 0])
         );
 
         Assert.That(() => valueQueue.CopyTo([]),
@@ -509,13 +509,13 @@ internal static class ValueQueueTests
         );
 
         Assert.That(() => valueQueue,
-            Is.EquivalentTo([2, 3, 4])
+            Is.EqualTo([2, 3, 4])
         );
 
         valueQueue.Enqueue(1);
 
         Assert.That(() => valueQueue,
-            Is.EquivalentTo([2, 3, 4, 1])
+            Is.EqualTo([2, 3, 4, 1])
         );
 
         Assert.That(() => valueQueue.Remove(2),
@@ -523,13 +523,13 @@ internal static class ValueQueueTests
         );
 
         Assert.That(() => valueQueue,
-            Is.EquivalentTo([3, 4, 1])
+            Is.EqualTo([3, 4, 1])
         );
 
         valueQueue.Enqueue(2);
 
         Assert.That(() => valueQueue,
-            Is.EquivalentTo([3, 4, 1, 2])
+            Is.EqualTo([3, 4, 1, 2])
         );
 
         Assert.That(() => valueQueue.Remove(1),
@@ -537,7 +537,7 @@ internal static class ValueQueueTests
         );
 
         Assert.That(() => valueQueue,
-            Is.EquivalentTo([3, 4, 2])
+            Is.EqualTo([3, 4, 2])
         );
     }
 
@@ -591,6 +591,24 @@ internal static class ValueQueueTests
         Assert.That(() => valueQueue,
             Has.Property("Capacity").EqualTo(0)
                .And.Count.EqualTo(0)
+        );
+    }
+
+    /// <summary>Provides validation that a trimmed queue keeps enqueuing correctly once it is no longer full.</summary>
+    [Test]
+    public static void EnqueueAfterTrimExcessTest()
+    {
+        var valueQueue = new ValueQueue<int>(new int[] { 1, 2, 3, 4, 5 });
+        valueQueue.EnsureCapacity(8);
+
+        // Trimming leaves the queue exactly full, so the tail has to wrap rather than sit one past the end
+        valueQueue.TrimExcess();
+
+        _ = valueQueue.Dequeue();
+        valueQueue.Enqueue(6);
+
+        Assert.That(() => valueQueue.ToArray(),
+            Is.EqualTo([2, 3, 4, 5, 6])
         );
     }
 

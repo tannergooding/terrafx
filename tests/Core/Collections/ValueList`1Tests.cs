@@ -266,14 +266,14 @@ internal static class ValueListTests
         valueList.CopyTo(destination);
 
         Assert.That(() => destination,
-            Is.EquivalentTo([1, 2, 3])
+            Is.EqualTo([1, 2, 3])
         );
 
         destination = new int[6];
         valueList.CopyTo(destination);
 
         Assert.That(() => destination,
-            Is.EquivalentTo([1, 2, 3, 0, 0, 0])
+            Is.EqualTo([1, 2, 3, 0, 0, 0])
         );
 
         Assert.That(() => valueList.CopyTo([]),

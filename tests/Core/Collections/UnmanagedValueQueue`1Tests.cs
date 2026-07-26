@@ -762,13 +762,13 @@ internal static class UnmanagedValueQueueTests
             );
 
             Assert.That(() => valueQueue,
-                Is.EquivalentTo([2, 3, 4])
+                Is.EqualTo([2, 3, 4])
             );
 
             valueQueue.Enqueue(1);
 
             Assert.That(() => valueQueue,
-                Is.EquivalentTo([2, 3, 4, 1])
+                Is.EqualTo([2, 3, 4, 1])
             );
 
             Assert.That(() => valueQueue.Remove(2),
@@ -776,13 +776,13 @@ internal static class UnmanagedValueQueueTests
             );
 
             Assert.That(() => valueQueue,
-                Is.EquivalentTo([3, 4, 1])
+                Is.EqualTo([3, 4, 1])
             );
 
             valueQueue.Enqueue(2);
 
             Assert.That(() => valueQueue,
-                Is.EquivalentTo([3, 4, 1, 2])
+                Is.EqualTo([3, 4, 1, 2])
             );
 
             Assert.That(() => valueQueue.Remove(1),
@@ -790,7 +790,7 @@ internal static class UnmanagedValueQueueTests
             );
 
             Assert.That(() => valueQueue,
-                Is.EquivalentTo([3, 4, 2])
+                Is.EqualTo([3, 4, 2])
             );
         }
         valueQueue.Dispose();
@@ -870,6 +870,33 @@ internal static class UnmanagedValueQueueTests
                    .And.Count.EqualTo((nuint)0)
             );
         }
+        valueQueue.Dispose();
+    }
+
+    /// <summary>Provides validation that a trimmed queue keeps enqueuing correctly once it is no longer full.</summary>
+    [Test]
+    public static void EnqueueAfterTrimExcessTest()
+    {
+        var array = new UnmanagedArray<int>(5);
+
+        for (nuint i = 0; i < 5; i++)
+        {
+            array[i] = (int)i + 1;
+        }
+
+        var valueQueue = new UnmanagedValueQueue<int>(array);
+        valueQueue.EnsureCapacity(8);
+
+        // Trimming leaves the queue exactly full, so the tail has to wrap rather than sit one past the end
+        valueQueue.TrimExcess();
+
+        _ = valueQueue.Dequeue();
+        valueQueue.Enqueue(6);
+
+        Assert.That(() => valueQueue,
+            Is.EqualTo([2, 3, 4, 5, 6])
+        );
+
         valueQueue.Dispose();
     }
 
