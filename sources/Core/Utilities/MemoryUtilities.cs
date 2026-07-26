@@ -299,25 +299,10 @@ public static unsafe class MemoryUtilities
 
             for (nuint block = 0; block < blocks; block++)
             {
-                // Bytes 0-31
-
-                WriteUnaligned<Vector128<byte>>(destination, default);
-                WriteUnaligned<Vector128<byte>>(destination, 16, default);
-
-                // Bytes 32-63
-
-                WriteUnaligned<Vector128<byte>>(destination, 32, default);
-                WriteUnaligned<Vector128<byte>>(destination, 48, default);
-
-                // Bytes 64-95
-
-                WriteUnaligned<Vector128<byte>>(destination, 64, default);
-                WriteUnaligned<Vector128<byte>>(destination, 80, default);
-
-                // Bytes 96-127
-
-                WriteUnaligned<Vector128<byte>>(destination, 96, default);
-                WriteUnaligned<Vector128<byte>>(destination, 112, default);
+                BlockClear(destination, 0);
+                BlockClear(destination, 32);
+                BlockClear(destination, 64);
+                BlockClear(destination, 96);
 
                 destination = (void*)((nuint)destination + 128);
             }
@@ -325,38 +310,33 @@ public static unsafe class MemoryUtilities
             blocks = length / 32;
             Assert(blocks <= 3);
 
-            length -= blocks * 32;
-            Assert(length < 32);
+            var offset = blocks * 32;
 
             switch (blocks)
             {
                 case 3:
                 {
-                    WriteUnaligned<Vector128<byte>>(destination, 64, default);
-                    WriteUnaligned<Vector128<byte>>(destination, 80, default);
-
-                    goto case 2;
+                    BlockClear(destination, 0);
+                    BlockClear(destination, 32);
+                    BlockClear(destination, 64);
+                    break;
                 }
 
                 case 2:
                 {
-                    WriteUnaligned<Vector128<byte>>(destination, 32, default);
-                    WriteUnaligned<Vector128<byte>>(destination, 48, default);
-
-                    goto case 1;
+                    BlockClear(destination, 0);
+                    BlockClear(destination, 32);
+                    break;
                 }
 
                 case 1:
                 {
-                    WriteUnaligned<Vector128<byte>>(destination, default);
-                    WriteUnaligned<Vector128<byte>>(destination, 16, default);
-
-                    goto case 0;
+                    BlockClear(destination, 0);
+                    break;
                 }
 
                 case 0:
                 {
-                    SmallClear(destination, length);
                     break;
                 }
 
@@ -366,6 +346,15 @@ public static unsafe class MemoryUtilities
                     break;
                 }
             }
+
+            SmallClear((void*)((nuint)destination + offset), length - offset);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static void BlockClear(void* destination, nuint offset)
+        {
+            WriteUnaligned<Vector128<byte>>(destination, offset, default);
+            WriteUnaligned<Vector128<byte>>(destination, offset + 16, default);
         }
 
         static void SmallClear(void* destination, nuint length)

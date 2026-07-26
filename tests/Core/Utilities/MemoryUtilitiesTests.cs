@@ -122,4 +122,33 @@ internal static unsafe class MemoryUtilitiesTests
 
         Assert.That(failures.ToString(), Is.Empty, "the listed length:shift pairs did not match a memmove");
     }
+
+    /// <summary>Provides validation of the <see cref="MemoryUtilities.ClearUnsafe(void*, nuint)" /> method.</summary>
+    /// <remarks>The length range spans several 128-byte blocks so that both block loops and the trailing remainder are covered.</remarks>
+    [Test]
+    public static void ClearUnsafeTest()
+    {
+        const int MaxLength = 400;
+        const int Guard = 8;
+
+        var buffer = stackalloc byte[MaxLength + Guard];
+        var failures = new StringBuilder();
+
+        for (var length = 1; length <= MaxLength; length++)
+        {
+            new Span<byte>(buffer, length + Guard).Fill(0xFF);
+            MemoryUtilities.ClearUnsafe(buffer, (nuint)length);
+
+            if (new ReadOnlySpan<byte>(buffer, length).IndexOfAnyExcept((byte)0x00) >= 0)
+            {
+                _ = failures.Append(length).Append(" not cleared; ");
+            }
+            else if (new ReadOnlySpan<byte>(buffer + length, Guard).IndexOfAnyExcept((byte)0xFF) >= 0)
+            {
+                _ = failures.Append(length).Append(" overran; ");
+            }
+        }
+
+        Assert.That(failures.ToString(), Is.Empty, "the listed lengths were not cleared exactly");
+    }
 }
