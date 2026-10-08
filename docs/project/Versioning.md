@@ -9,7 +9,9 @@ This means that a given version number is `MAJOR.MINOR.PATCH` where:
 
 Preview and nightly builds may contain a `-SUFFIX` following the `PATCH`. `SUFFIX` denotes the development stage for a given package and is currently either `alpha`, `beta`, or `rc`.
 
-Nightly builds may also contain a `.BUILD` following the `-SUFFIX`. `BUILD` denotes the date the build was produced and the build number of the day. The date is UTC based and follows the form `yyyymmdd` to ensure it is monotonically increasing.
+Nightly builds may also contain a `.BUILD` following the `-SUFFIX`. `BUILD` identifies the CI run that produced the package.
+
+Date-based build identifiers use UTC dates in `yyyymmdd` form followed by the build number of the day to preserve chronological, monotonically increasing ordering.
 
 ## Current Version
 

@@ -16,7 +16,7 @@ Packages are available at: https://github.com/orgs/terrafx/packages or via the N
 
 ### Code of Conduct
 
-ClangSharp and everyone contributing (this includes issues, pull requests, the
+TerraFX and everyone contributing (this includes issues, pull requests, the
 wiki, etc) must abide by the .NET Foundation Code of Conduct:
 https://dotnetfoundation.org/about/code-of-conduct.
 
@@ -36,8 +36,7 @@ If you are looking to contribute you should read our
 ### Documentation
 
 Design
-  * [Overview](design/Overview.md)
-  * [Audio](design/Audio.md)
+  * [Overview](design/00-overview-and-scope.md)
 
 Project
   * [Building](project/Building.md)

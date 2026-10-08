@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>TerraFX</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TerraFX.Platform\TerraFX.Platform.csproj" />
+    <ProjectReference Include="..\TerraFX.Graphics\TerraFX.Graphics.csproj" />
+    <ProjectReference Include="..\TerraFX.Physics\TerraFX.Physics.csproj" />
+    <ProjectReference Include="..\TerraFX.Audio\TerraFX.Audio.csproj" />
+  </ItemGroup>
+
+</Project>

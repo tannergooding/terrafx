@@ -3,20 +3,19 @@
 
   <!--
     Directory.Packages.props is automatically picked up and imported by
-    Microsoft.Common.targets. This file needs to exist, even if empty so that
-    files in the parent directory tree, with the same name, are not imported
-    instead. The import fairly late and most other props/targets will have been
-    imported beforehand. We also don't need to add ourselves to
-    MSBuildAllProjects, as that is done by the file that imports us.
+    NuGet.props. This file needs to exist, even if empty so that files in the
+    parent directory tree, with the same name, are not imported instead.
+    It is imported after Directory.Build.props.
   -->
 
   <!-- Package versions for package references across all projects -->
   <ItemGroup>
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.0.0" />
     <PackageVersion Include="NUnit" Version="4.4.0" />
     <PackageVersion Include="NUnit3TestAdapter" Version="5.2.0" />
-    <PackageVersion Include="TerraFX.Interop.Mimalloc" Version="1.6.7.2" />
-    <PackageVersion Include="TerraFX.Interop.Windows" Version="10.0.26100.3" />
+    <PackageVersion Include="TerraFX.Interop.Windows" Version="10.0.26100.6" />
+    <PackageVersion Include="TerraFX.Interop.Vulkan" Version="1.4.328.1" />
   </ItemGroup>
 
 </Project>

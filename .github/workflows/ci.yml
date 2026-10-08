@@ -7,6 +7,9 @@ on:
     branches: [ main, v* ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   windows-x64:
     runs-on: ${{ matrix.os }}-latest
@@ -21,6 +24,7 @@ jobs:
     - run: ./scripts/cibuild.cmd -configuration ${{ matrix.configuration }} -architecture ${{ matrix.architecture }}
       shell: cmd
     - uses: actions/upload-artifact@v7
+      if: always()
       with:
         name: ${{ matrix.os }}_${{ matrix.configuration }}_${{ matrix.architecture }}
         path: |
@@ -47,6 +51,49 @@ jobs:
     - run: ./scripts/cibuild.cmd -configuration ${{ matrix.configuration }} -architecture ${{ matrix.architecture }}
       shell: cmd
     - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: ${{ matrix.os }}_${{ matrix.configuration }}_${{ matrix.architecture }}
+        path: |
+          ./artifacts/bin/**/*
+          ./artifacts/log/**/*
+          ./artifacts/tst/**/*
+        if-no-files-found: error
+  linux-x64:
+    runs-on: ${{ matrix.os }}-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [ x64 ]
+        configuration: [ debug, release ]
+        os: [ ubuntu ]
+    steps:
+    - uses: actions/checkout@v7
+    - run: ./scripts/cibuild.sh --configuration ${{ matrix.configuration }} --architecture ${{ matrix.architecture }}
+      shell: bash
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: ${{ matrix.os }}_${{ matrix.configuration }}_${{ matrix.architecture }}
+        path: |
+          ./artifacts/bin/**/*
+          ./artifacts/log/**/*
+          ./artifacts/tst/**/*
+        if-no-files-found: error
+  linux-arm64:
+    runs-on: ${{ matrix.os }}-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [ arm64 ]
+        configuration: [ debug, release ]
+        os: [ ubuntu ]
+    steps:
+    - uses: actions/checkout@v7
+    - run: ./scripts/cibuild.sh --configuration ${{ matrix.configuration }} --architecture ${{ matrix.architecture }}
+      shell: bash
+    - uses: actions/upload-artifact@v7
+      if: always()
       with:
         name: ${{ matrix.os }}_${{ matrix.configuration }}_${{ matrix.architecture }}
         path: |
@@ -56,9 +103,10 @@ jobs:
         if-no-files-found: error
   sign-nuget:
     runs-on: windows-latest
-    if: ${{ github.event_name == 'push' }}
-    needs: [ windows-x64, windows-arm64 ]
+    if: ${{ github.event_name != 'pull_request' }}
+    needs: [ windows-x64, windows-arm64, linux-x64, linux-arm64 ]
     permissions:
+      contents: read
       id-token: write
     steps:
     - uses: actions/checkout@v7
@@ -81,14 +129,14 @@ jobs:
     - uses: actions/upload-artifact@v7
       with:
         name: sign_nuget
-        path: |
-          ./artifacts/pkg/**/*
+        path: ./artifacts/pkg/**/*
         if-no-files-found: error
   publish-nightlies-azure:
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'push' }}
     needs: [ sign-nuget ]
     steps:
+    - uses: actions/checkout@v7
     - uses: actions/download-artifact@v8
       with:
         name: sign_nuget
@@ -104,7 +152,11 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'push' }}
     needs: [ sign-nuget ]
+    permissions:
+      contents: read
+      packages: write
     steps:
+    - uses: actions/checkout@v7
     - uses: actions/download-artifact@v8
       with:
         name: sign_nuget

@@ -12,6 +12,16 @@
 
   <Import Project="$(MSBuildThisFileDirectory)..\Directory.Build.targets" />
 
+  <PropertyGroup Condition="'$(OutputType)' != 'Library'">
+    <IsPackable>false</IsPackable>
+    <PublishAot>true</PublishAot>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(IsRoslynComponent)' != 'true'">
+    <ProjectReference Include="$(MSBuildThisFileDirectory)TerraFX.Generators\TerraFX.Generators.csproj"
+                      OutputItemType="Analyzer" ReferenceOutputAssembly="false" PrivateAssets="all" />
+  </ItemGroup>
+
   <PropertyGroup>
     <GeneratedSkipLocalsInitFile Condition="'$(GeneratedSkipLocalsInitFile)' == ''">$(IntermediateOutputPath)$(MSBuildProjectName).SkipLocalsInit$(DefaultLanguageSourceExtension)</GeneratedSkipLocalsInitFile>
     <GeneratedSkipLocalsInitFileLines>
@@ -33,7 +43,7 @@
   <Target Name="GenerateSkipLocalsInit"
           BeforeTargets="BeforeCompile;CoreCompile"
           DependsOnTargets="PrepareForBuild"
-          Condition="'$(Language)' == 'C#'"
+          Condition="'$(Language)' == 'C#' AND '$(SkipLocalsInit)' == 'true'"
           Inputs="$(MSBuildAllProjects)"
           Outputs="$(GeneratedSkipLocalsInitFile)">
     <WriteLinesToFile Lines="$(GeneratedSkipLocalsInitFileLines)" Overwrite="true" WriteOnlyWhenDifferent="true" File="$(GeneratedSkipLocalsInitFile)" />

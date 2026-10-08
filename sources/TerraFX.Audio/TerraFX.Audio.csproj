@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\TerraFX.Assets\TerraFX.Assets.csproj" />
+    <PackageReference Include="TerraFX.Interop.Windows" />
+  </ItemGroup>
+
+</Project>

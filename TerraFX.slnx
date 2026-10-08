@@ -1,5 +1,4 @@
 <Solution>
-  <Folder Name="/.github/" />
   <Folder Name="/.github/ISSUE_TEMPLATE/">
     <File Path=".github/ISSUE_TEMPLATE/bug.md" />
     <File Path=".github/ISSUE_TEMPLATE/proposal.md" />
@@ -12,7 +11,6 @@
     <File Path=".editorconfig" />
     <File Path=".gitattributes" />
     <File Path=".gitignore" />
-    <File Path="build.cmd" />
     <File Path="Directory.Build.props" />
     <File Path="Directory.Build.targets" />
     <File Path="Directory.Packages.props" />
@@ -20,10 +18,7 @@
     <File Path="global.json" />
     <File Path="LICENSE.md" />
     <File Path="NuGet.config" />
-    <File Path="pack.cmd" />
-    <File Path="restore.cmd" />
     <File Path="TerraFX.snk" />
-    <File Path="test.cmd" />
   </Folder>
   <Folder Name="/docs/">
     <File Path="docs/CODEOWNERS" />
@@ -80,46 +75,46 @@
   <Folder Name="/docs/samples/">
     <File Path="docs/samples/Samples.md" />
   </Folder>
-  <Folder Name="/samples/">
-    <File Path="samples/.editorconfig" />
-    <File Path="samples/Directory.Build.props" />
-    <File Path="samples/Directory.Build.targets" />
-  </Folder>
-  <Folder Name="/samples/TerraFX/">
-    <Project Path="samples/TerraFX/TerraFX.Samples.csproj" />
-  </Folder>
   <Folder Name="/scripts/">
     <File Path="scripts/build.ps1" />
+    <File Path="scripts/build.sh" />
     <File Path="scripts/cibuild.cmd" />
+    <File Path="scripts/cibuild.sh" />
+    <File Path="scripts/SignClientFileList.txt" />
   </Folder>
   <Folder Name="/sources/">
     <File Path="sources/Directory.Build.props" />
     <File Path="sources/Directory.Build.targets" />
-  </Folder>
-  <Folder Name="/sources/ApplicationModel/">
-    <Project Path="sources/ApplicationModel/TerraFX.ApplicationModel.csproj" />
-  </Folder>
-  <Folder Name="/sources/Core/">
-    <Project Path="sources/Core/TerraFX.csproj" />
-  </Folder>
-  <Folder Name="/sources/Graphics/">
-    <Project Path="sources/Graphics/TerraFX.Graphics.csproj" />
-  </Folder>
-  <Folder Name="/sources/UI/">
-    <Project Path="sources/UI/TerraFX.UI.csproj" />
-  </Folder>
-  <Folder Name="/sources/WinForms/">
-    <Project Path="sources/WinForms/TerraFX.WinForms.csproj" />
+    <Project Path="sources/TerraFX.Assets/TerraFX.Assets.csproj" />
+    <Project Path="sources/TerraFX.Audio/TerraFX.Audio.csproj" />
+    <Project Path="sources/TerraFX.Content.Tools/TerraFX.Content.Tools.csproj" />
+    <Project Path="sources/TerraFX.Core/TerraFX.Core.csproj" />
+    <Project Path="sources/TerraFX.Editor/TerraFX.Editor.csproj" />
+    <Project Path="sources/TerraFX.Generators/TerraFX.Generators.csproj" />
+    <Project Path="sources/TerraFX.Graphics.D3D12/TerraFX.Graphics.D3D12.csproj" />
+    <Project Path="sources/TerraFX.Graphics.Vulkan/TerraFX.Graphics.Vulkan.csproj" />
+    <Project Path="sources/TerraFX.Graphics/TerraFX.Graphics.csproj" />
+    <Project Path="sources/TerraFX.Input/TerraFX.Input.csproj" />
+    <Project Path="sources/TerraFX.Physics/TerraFX.Physics.csproj" />
+    <Project Path="sources/TerraFX.Platform/TerraFX.Platform.csproj" />
+    <Project Path="sources/TerraFX.Runtime/TerraFX.Runtime.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <File Path="tests/.editorconfig" />
     <File Path="tests/Directory.Build.props" />
     <File Path="tests/Directory.Build.targets" />
-  </Folder>
-  <Folder Name="/tests/Core/">
-    <Project Path="tests/Core/TerraFX.UnitTests.csproj" />
-  </Folder>
-  <Folder Name="/tests/Graphics/">
-    <Project Path="tests/Graphics/TerraFX.Graphics.UnitTests.csproj" />
+    <Project Path="tests/TerraFX.Assets.Tests/TerraFX.Assets.Tests.csproj" />
+    <Project Path="tests/TerraFX.Audio.Tests/TerraFX.Audio.Tests.csproj" />
+    <Project Path="tests/TerraFX.Content.Tools.Tests/TerraFX.Content.Tools.Tests.csproj" />
+    <Project Path="tests/TerraFX.Core.Tests/TerraFX.Core.Tests.csproj" />
+    <Project Path="tests/TerraFX.Editor.Tests/TerraFX.Editor.Tests.csproj" />
+    <Project Path="tests/TerraFX.Generators.Tests/TerraFX.Generators.Tests.csproj" />
+    <Project Path="tests/TerraFX.Graphics.D3D12.Tests/TerraFX.Graphics.D3D12.Tests.csproj" />
+    <Project Path="tests/TerraFX.Graphics.Tests/TerraFX.Graphics.Tests.csproj" />
+    <Project Path="tests/TerraFX.Graphics.Vulkan.Tests/TerraFX.Graphics.Vulkan.Tests.csproj" />
+    <Project Path="tests/TerraFX.Input.Tests/TerraFX.Input.Tests.csproj" />
+    <Project Path="tests/TerraFX.Physics.Tests/TerraFX.Physics.Tests.csproj" />
+    <Project Path="tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" />
+    <Project Path="tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" />
   </Folder>
 </Solution>

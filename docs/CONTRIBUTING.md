@@ -40,8 +40,8 @@ before being accepted.
 
 ### Issues
 
-All issues should follow our [ISSUE_TEMPLATE](ISSUE_TEMPLATE.md). It is
-additionaly recommended to prefix your issue with an appriopriate "tag" such as
+All issues should follow the [issue templates](../.github/ISSUE_TEMPLATE). It is
+additionally recommended to prefix your issue with an appropriate "tag" such as
 `[QUESTION]`, `[BUG]`, `[REGRESSION]`, `[IDEA]`, or `[PROPOSAL]`.
 
 ### Questions

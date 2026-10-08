@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\TerraFX.Graphics\TerraFX.Graphics.csproj" />
+    <PackageReference Include="TerraFX.Interop.Windows" />
+    <AssemblyAttribute Include="System.Runtime.Versioning.SupportedOSPlatformAttribute">
+      <_Parameter1>windows10.0.22000.0</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+</Project>

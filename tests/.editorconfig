@@ -4,7 +4,7 @@
 
 ###############################################################################
 # Set dotnet diagnostic rules to:
-#    ignore CA18161: Avoid constant arrays as arguments
+#    ignore CA1861: Avoid constant arrays as arguments
 ###############################################################################
 [*.cs]
 dotnet_diagnostic.CA1861.severity = none

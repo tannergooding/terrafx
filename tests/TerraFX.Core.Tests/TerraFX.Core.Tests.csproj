@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\sources\TerraFX.Core\TerraFX.Core.csproj" />
+    <ProjectReference Include="..\TerraFX.Core.SpatialConsumer\TerraFX.Core.SpatialConsumer.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>

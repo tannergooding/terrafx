@@ -1,0 +1,15 @@
+// Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
+
+using System;
+
+namespace TerraFX.Content.Tools;
+
+internal static class Program
+{
+    private static int Main()
+    {
+        Console.Error.WriteLine("Content cooking and deployment packaging are not implemented. Follow docs/design/35-implementation-roadmap.md.");
+
+        return 1;
+    }
+}
