@@ -45,18 +45,7 @@ charset = utf-16le
 # Set file header template to the specified text
 ###############################################################################
 [*.cs]
-file_header_template = Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See License.md in the repository root for more information.
-
-###############################################################################
-# Set dotnet diagnostic rules to:
-#    ignore use integral or string argument for indexers
-#    ignore operator overloads have named alternates
-#    ignore do not use insecure randomness
-###############################################################################
-[*.cs]
-dotnet_diagnostic.CA1043.severity = none
-dotnet_diagnostic.CA2225.severity = none
-dotnet_diagnostic.CA5394.severity = none
+file_header_template = Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 ###############################################################################
 # Set dotnet naming rules to:
@@ -274,11 +263,9 @@ dotnet_style_require_accessibility_modifiers = for_non_interface_members:error
 
 ###############################################################################
 # Set dotnet style options to:
-#   suggest removing all unused parameters, and
-#   remove unnecessary supression exclusions
+#   remove unnecessary suppression exclusions
 ###############################################################################
 [*.{cs,vb}]
-dotnet_code_quality_unused_parameters = all:suggestion
 dotnet_remove_unnecessary_suppression_exclusions = none
 
 ###############################################################################
@@ -305,7 +292,7 @@ csharp_indent_switch_labels = true
 #   insert a new-line before "finally",
 #   insert a new-line before members in anonymous-types,
 #   insert a new-line before members in object-initializers,
-#   insert a new-line before all open braces except anonymous methods, anonymous types, lambdas, and object collections and
+#   insert a new-line before control-flow and member bodies, including properties, and
 #   insert a new-line within query expression clauses
 ###############################################################################
 [*.cs]
@@ -514,3 +501,50 @@ csharp_style_var_when_type_is_apparent = true:error
 ###############################################################################
 [*.cs]
 csharp_using_directive_placement = outside_namespace:error
+
+###############################################################################
+# Set dotnet diagnostic severities to:
+#   CA1043: Use integral or string argument for indexers
+#   CA1051: Do not declare visible instance fields
+#   CA1507: Use nameof in place of string when name is known
+#   CA1852: Seal internal types
+#   CA2211: Non-constant fields should not be visible
+#   CA2225: Operator overloads have named alternates
+#   CA5394: Do not use insecure randomness
+###############################################################################
+[*.cs]
+dotnet_diagnostic.CA1043.severity = none
+dotnet_diagnostic.CA1051.severity = error
+dotnet_diagnostic.CA1507.severity = error
+dotnet_diagnostic.CA1852.severity = error
+dotnet_diagnostic.CA2211.severity = error
+dotnet_diagnostic.CA2225.severity = none
+dotnet_diagnostic.CA5394.severity = none
+
+###############################################################################
+# Set IDE diagnostic severities to:
+#   IDE0055: require formatting to comply with configured style options
+###############################################################################
+[*.cs]
+dotnet_diagnostic.IDE0055.severity = error
+
+###############################################################################
+# Set TerraFX analyzer diagnostic severities to:
+#   TFX0001: Require braces around every nonempty switch section
+#   TFX0002: Order type members by category, staticness, accessibility, and ordinal name
+#   TFX0003: Enforce blank-line spacing after type openings and between related siblings
+#   TFX0004: Require exactly one top-level type declaration per C# source file; nested types do not count
+#   TFX0005: Require auto-implemented properties, including accessors, to fit on one line
+#   TFX0006: Keep single-paragraph XML documentation elements on one line and align multiline comment markers
+###############################################################################
+[*.cs]
+dotnet_diagnostic.TFX0001.severity = error
+dotnet_diagnostic.TFX0002.severity = error
+dotnet_diagnostic.TFX0003.severity = error
+dotnet_diagnostic.TFX0004.severity = error
+dotnet_diagnostic.TFX0005.severity = error
+dotnet_diagnostic.TFX0006.severity = error
+
+# Follow these C# source conventions, which are not enforced by syntax-only diagnostics:
+#   - Separate local declarations and operations into logical groups with blank lines.
+#   - Generally document internal methods with XML summaries; private helpers usually need no documentation.

@@ -11,13 +11,16 @@
   -->
 
   <PropertyGroup>
-    <RootNamespace>TerraFX.UnitTests</RootNamespace>
+    <RootNamespace>TerraFX.Tests</RootNamespace>
     <TerraFXProjectCategory>tests</TerraFXProjectCategory>
   </PropertyGroup>
 
   <Import Project="$(MSBuildThisFileDirectory)..\Directory.Build.props" />
 
   <PropertyGroup>
+    <IsAotCompatible>false</IsAotCompatible>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
     <VSTestLogger>trx</VSTestLogger>
     <VSTestResultsDirectory>$(BaseArtifactsPath)tst/$(Configuration)/</VSTestResultsDirectory>
   </PropertyGroup>

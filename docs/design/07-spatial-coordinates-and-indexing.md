@@ -1,0 +1,133 @@
+# Spatial coordinates, precision, and indexing
+
+[Terminology and reading conventions](01-terminology-and-reading-guide.md).
+
+This chapter owns the engine's spatial foundation. Chunking is part of ordinary scene, physics, rendering, audio, and streaming contracts, not an optional repair for a large floating-point world. [03](03-shared-conventions-and-clocks.md) retains left-handed axes, row-vector matrices, and reversed depth. There is no required global `double` coordinate or hardware binary64 path.
+
+## 1. Physical units and coordinate values
+
+`SpatialSettings` is immutable and frozen before world admission. `MetersPerUnitExponent` is an `int`, default `0`, admitted closed range `[-30, 30]`; one engine unit is exactly `10^MetersPerUnitExponent` meters. Exponents `-3`, `0` and `3` mean millimeters, meters and kilometers, not rounded binary32 scale factors. Every integer in the admitted range is valid metadata, including unnamed decimal scales. The bounds cover current SI prefixes from quecto to quetta and bound conversion arithmetic; a subsystem still rejects nonrepresentable converted defaults, overflowing dimensional products and incompatible precision/frame options. Supporting a declared unit does not certify its physics workload. Invalid constructor exponents throw `ArgumentOutOfRangeException`.
+
+`ChunkSizeExponent` remains an integer, default `12`, admitted closed range `[8, 16]`. Chunk width is exact binary32 `C = 2^ChunkSizeExponent`, for example 1024, 4096 or 8192 units. `SpatialSettings.Default` is `(0, 12)`; the zero-initialized struct is invalid because chunk exponent zero is outside the range. There is no authoritative floating `MetersPerUnit` property, arbitrary float unit-scale constructor or parallel runtime unit enum. [25](25-ui-text-and-editor-tools.md#spatial-unit-controls) supplies named SI presets without duplicating the raw representation.
+
+Unit conversion evaluates the exact source-to-target decimal ratio `10^(sourceExponent - targetExponent)`, applying the corresponding length dimension power before one nearest-even binary32 destination rounding. For a quantity with length dimension `d`, the multiplier is `10^(d * (sourceExponent - targetExponent))`: length/velocity/force have `d = 1`, inertia/torque `d = 2`, area/volume density `d = -2`/`-3`. Scalar mass/time/angles remain unchanged. Use bounded integer/rational scaling and exact dyadic source values; evaluating `MathF.Pow` first, dividing by rounded `0.001f`, or repeatedly applying rounded length factors does not establish this contract. Meter-to-millimeter conversion uses exact integer factor 1000. Overflow/domain-invalid underflow follows the owning rejection rules, not a zero/infinity fallback or clamp. Prescribed nearest-even rounding to zero is permitted only where the field's zero/range/error budget admits it, not for a required positive physical default; zero signs follow that field's existing rule. Existing input quantization is not recovered and ordinary simulation arithmetic remains binary32.
+
+For cold built-in conversions, `abs(d) <= 3` and the exponent bounds limit decimal powers to 180; `10^180` needs at most 598 bits. A finite binary32 dyadic numerator/denominator plus that power fits a 1024-bit rational workspace; spatial cell/offset plus target chunk carries also fits. Registered typed converters needing other dimensions declare and validate their own fixed budget before admission, not an unbounded public unit framework. Common equal-unit conversion skips decimal scaling. Source/adaptor literal and non-SI unit definitions retain their declared exact rational/dyadic meaning, including feet as `381/1250` meters, rather than changing world settings to an approximate custom scale.
+
+Public positions, geometry, lengths, linear velocities, and accelerations use the selected distance unit. Mass remains kilograms, time seconds or `TimeSpan`, and angles radians. Thus velocity is units/second, force is kilogram-units/second squared, inertia is kilogram-units squared, and dimensional densities use kilograms/unit squared or cubed. SI-based default descriptions are converted once when constructing world-specific options. GPU vertices, physics, audio, cameras, and imported assets share the same frozen unit profile; a subsystem must not secretly reinterpret a unit as one meter.
+
+Changing units or chunk width is an explicit world/schema conversion, not an origin rebase. A conversion validates every position, dimensional option, velocity, force, inertia, shape, camera, attenuation distance, spatial index, and asset recipe before publishing a replacement. Its digest and rounded outputs are versioned. No live setter changes the meaning of existing numbers.
+
+The `TerraFX.Core` assembly owns these ordinary named readonly values in the root `TerraFX` namespace:
+
+| Value | Components / meaning |
+|---|---|
+| `ChunkIndex2` / `ChunkIndex3` | Two / three signed `int` components; integer chunk identity, not a float vector |
+| `SpatialPosition2` / `SpatialPosition3` | Chunk index plus owned `Vector2` / `Vector3` local offset |
+| `SpatialFrame2` / `SpatialFrame3` | Canonical spatial origin, owner/profile identity, frame revision, and bounded relative extent |
+| `SpatialBounds2` / `SpatialBounds3` | Componentwise ordered spatial endpoints; conservative closed bounds |
+| `RelativePose2` / `RelativePose3` | A local float pose plus the frame identity needed to interpret it |
+
+`SpatialProfileId` is a named readonly value containing a nonempty `Guid Value`; zero-initialized default is invalid. Its named static `Default` is `c2ddc5d8-9ee6-8676-bdef-dffd36a56d89`, generated from [10](10-binary-data-and-authoring-formats.md#versioned-name-uuid-recipe)'s frozen UUIDv8 recipe and key `spatial/default/FloatChunk32V2`. It registers `SpatialSettings.Default` and the fixed `LeftHandedYUpForwardZ1`/`EngineGeometryBinary32Rows2`/`FloatChunk32V2` kernel semantic manifest. The old `FloatChunk32V1`/`2ed8b750-e1a0-4b46-9000-000000000002` manifest defined a binary32 unit factor and cannot be rebound to exponent semantics. It identifies one locked coordinate/geometry/spatial/unit/kernel manifest, supplied by a frame/snapshot/conversion rather than hidden inside each position.
+
+Core's process-wide `SpatialProfiles.Register(SpatialProfileId id, SpatialSettings settings)` is thread-safe and append-only, selecting that same fixed baseline semantic manifest with the supplied settings. Identical registration is idempotent; reusing a GUID with different fields throws `ArgumentException`. Invalid ID/settings reject before insertion. The registry admits at most 4096 identities including Default; exhaustion throws contextual `InvalidOperationException` before mutation. `TryGetSettings(id, out settings)` is false only for an unregistered valid identity, with default/unusable output. Core registers Default before lookup; no host/editor or live world is required. Named service options default their profile ID to Default; custom settings need an explicit matching registered identity. Saved profile fields/digests are validated against the locked manifest, not used to replace it. A new kernel semantic profile requires a new identity rather than rebinding an old GUID.
+
+`SpatialFrame2/3` has the explicit constructor inputs and read-only members `OwnerId: uint`, `ProfileId: SpatialProfileId`, `Settings: SpatialSettings`, `Origin: SpatialPosition2/3`, `Revision: long`, and `Minimum`/`Maximum: Vector2/3`. Owner/revision are nonzero, origin is canonical, extents are finite/ordered and subsystem-admitted. Defaults are not configured frames. `SpatialBounds2/3(minimum, maximum, settings)` validates exact per-axis spatial ordering under its settings and retains closed endpoints; it does not flatten cells. `RelativePose2/3` contains a local vector position, angle/quaternion and its dimensional frame, with explicit constructor inputs for all three.
+
+`SpatialMath.ConvertPosition(position, sourceProfileId, sourceSettings, targetProfileId, targetSettings)` has dimensional overloads returning `SpatialPosition2`/`SpatialPosition3`. It evaluates the source integer-cell/dyadic position times the exact decimal ratio defined above, chooses checked target cell carries, then rounds each target offset once and checks rounded carry. This cold operation uses bounded integer/rational machinery, not required FP64 or a giant float intermediate. It converts units within the declared common coordinate basis, not arbitrary basis/world transforms; incompatible basis profiles require a separately registered migration. Standalone profile identities are explicit declarations; a registry-bound world validates their manifests, while a raw value cannot establish its provenance.
+
+Raw geometry interchange does not attach these meanings to a `Vector3`. A world position is not interchangeable with a displacement, a child-local translation, or a frame-relative point. APIs accept the appropriate named value. Invalid finite-domain inputs throw conventionally; expected absence of an admitted nearby frame uses `Try`/out, with false output unusable.
+
+### Closed geometry and unique ownership
+
+Chunk geometry uses the closed box `[0, C]` on each local axis. Neighboring chunks share their boundary plane. Closed query bounds, vertex coordinates, contact witnesses, and cell-local calculations may contain either endpoint. A shared face does not by itself require general cross-chunk arithmetic.
+
+Persistent point identity uses a unique canonical encoding: each offset is in `[0, C)`, with positive zero. An input offset exactly `C` is accepted as an alias of zero in the next chunk, with a checked carry. This ownership rule is not a claim that precision becomes worse at the closed endpoint. Conservative spatial indices may reference a boundary in both neighboring cells, but stable proxy identity removes duplicate results and contacts.
+
+Normalization computes the mathematical floor carry per axis, including negative offsets: `q = floor(offset / C)`, `newChunk = chunk + q`, and `newOffset = offset - q * C`. Use exact binary32 dyadic integer decomposition for the cold normalization reference, not a lossy large-float multiplication/subtraction. The common already-canonical case checks the local range and returns without allocation; exact endpoint carries are checked integer additions. Refuse nonfinite inputs and any `int` chunk overflow before mutation. Signed zero canonicalization belongs to this spatial operation, not raw `Vector` constructors.
+
+The finite addressable domain cannot grow past `int.MinValue`/`int.MaxValue`. Shapes, targets, sweeps, and normalization that require a cell beyond it reject explicitly. An outermost geometric face may be evaluated in its existing local frame, but it does not create another addressable chunk or permit an overflowing canonical point. No wrapping world or success-shaped clamp is implied.
+
+## 2. Precision statements and nearby arithmetic
+
+For a normal power-of-two width `C`, the largest adjacent binary32 gap wholly inside `[0, C]`, or `[-C, +C]`, is `C * 2^(-24)`. At the positive endpoint, `C - BitDecrement(C)` has that smaller spacing; `BitIncrement(C) - C` is twice as large but lies outside the interval. The negative endpoint has the corresponding inward/outward distinction.
+
+For `C = 4096` and `MetersPerUnitExponent = 0`, these gaps are exactly `0.000244140625` m (244.140625 microns) inside the closed interval and `0.00048828125` m for the step outward. Rounding an exact point contributes at most half the applicable gap. Preflight publication also checks any rounded endpoint carry; an overflowing outermost-cell encoding refuses before commit rather than silently clamping. At exponent `3`, the same chunk spans 4096 kilometers and has a 0.244140625-meter interior gap. At exponent `-3`, one stored unit is exactly 1/1000 meter; converting a dyadic offset to meters may still require rounding. Unit exponent and chunk width must both appear in precision diagnostics.
+
+These are representation bounds, not universal collision accuracy, accumulated integration error, or solver convergence guarantees. Qualification separately measures input quantization, arithmetic error, time integration drift, contact/constraint residuals, and visible output quantization. Rebasing cannot recover detail already discarded by an earlier large float.
+
+Nearby displacement uses integer cell comparison before float arithmetic. For each axis, with canonical endpoints `a` and `b`, let `d` be the exact signed difference of their chunk indices. Widen subtraction to `long` or use an equivalent checked magnitude/sign calculation; two valid `int` endpoints can differ by more than `int.MaxValue`.
+
+| Case | Evaluation / interpretation |
+|---|---|
+| `d = 0` | `b.Offset - a.Offset` in float |
+| `d = 1` | `(C - a.Offset) + b.Offset`; shared-boundary gaps are formed before combining large coordinates |
+| `d = -1` | `-((C - b.Offset) + a.Offset)` |
+| Wider admitted neighborhood | Select a bounded shared frame; retain the integer coarse displacement until converting its small admitted cell delta |
+| Outside the neighborhood | Keep coarse integer bounds/ordering or request another frame; do not collapse the whole world into a float |
+
+The adjacent-cell expressions have the same mathematical displacement as `d * C + b.Offset - a.Offset` but avoid losing a tiny seam gap by first adding `C` to the endpoint on the other side. For close endpoints near `C`, the inward subtraction benefits from exact floating-point subtraction; the final sum still has its ordinary binary32 rounding. Do not promise an exact result for every arbitrary pair.
+
+`SpatialMath.TryGetDisplacement` takes positions plus explicit settings and a maximum admitted displacement/frame bound. False means only that the pair has no admitted nearby evaluation under that bound. Bad arguments, incompatible explicit frame/profile, stale frame, or overflow throw. Raw SpatialPosition values store only cells/offsets, not owner/unit metadata; they are interpreted under the supplied settings. Snapshots/frames carry owner/profile identity. Cross-profile transfer requires explicit source/target settings and a validated conversion, not automatic detection of a raw value's origin. A wide-area distance request is a separate bounded query, not a hidden slow path in ordinary point subtraction. There is no `SpatialPosition - SpatialPosition` operator that silently chooses a global float or an allocating arbitrary-precision result.
+
+Manhattan distance and per-axis integer bounds are valid coarse rejection and scheduling tools. Euclidean lengths, normalized directions, collision witnesses, angular lever arms, and physical attenuation use admitted nearby displacements. A coarse metric must not replace their physical metric.
+
+## 3. Scene hierarchy and frame identity
+
+A root stores a `SpatialPosition3`; descendants store ordinary float `LocalTransform` translations and SRT poses. Root location is not a single global `Matrix4x4` translation. Hierarchy resolution produces a spatial translation and a local linear transform; it normalizes checked cell carries before indexing or publication. Rendering, picking, and animation obtain a frame-relative model matrix for their admitted frame.
+
+Within that frame, `world = local * parentWorld` and `clip = position * M * V * P` retain their existing meaning. `M` is model-to-the-selected-frame, and `V` maps that same frame to camera space. Parent matrices and child positions cannot come from different frame revisions. Bounds that exceed one frame remain spatial bounds and are partitioned or rejected by the requested bounded operation, not rounded into a very large matrix translation.
+
+`KeepWorld` reparenting captures the old canonical spatial location and linear geometry, then validates the new parent-relative displacement, representable SRT and [16](16-scenes-transforms-and-cameras.md)'s finite recomposition/representation budgets before committing. It does not promise identical output bits after a newly rounded local representation. Cross-cell reparenting is not a teleport. Dynamic physics roots retain their ownership restrictions. The 2D integration adapter maps XY spatial coordinates and preserves the scene root's independent Z cell/offset.
+
+A rebase selects another integer/local `SpatialFrame` origin at a structural boundary. Persistent spatial positions, velocities, forces, body identities, and chunk ownership do not change. Only frame-relative caches and derived matrices change. The transaction preflights dependent frames, then publishes one new `FrameRevision`; it cannot partially rebase physics, rendering, audio, or query histories.
+
+Submitted snapshots retain their own frame descriptor and leases. Asynchronous picks, readbacks, queries, and jobs carry world/profile/frame/structural revision. A result is either transformed through its retained spatial origin with a validated nearby operation or refused as stale. A frame change is not automatically a visual history break: previous/current spatial poses can be evaluated in the new frame before interpolation. A teleport, lost history, or inadmissible conversion remains an explicit discontinuity.
+
+## 4. Sparse indices and bounded ownership
+
+The baseline spatial index is a sparse hierarchy over integer cells with per-cell bounding-volume hierarchies (BVHs) for local float bounds. A sparse octree is the default global directory; another qualified implementation must provide the same ownership, conservative-query, stable-order, budget, and revision contracts. Sparse allocation follows occupied nodes, not the entire theoretical cell domain.
+
+Signed cell coordinates are biased into unsigned order by XOR with `0x80000000`. A full 3D Morton key for three 32-bit coordinates needs 96 bits, not an overflowing 64-bit key; use `UInt128` or an explicitly ordered three-word key. The octree has at most 32 subdivision levels over the cell domain. No implicit recursive unbounded traversal or allocation occurs inside a query.
+
+Each proxy has one stable owner ID, revision, spatial bounds, and resource leases. Ordinary proxies are referenced by every touched cell, including shared faces needed for conservative collision/query handling. Proxies spanning more than the configured `MaxCellReferencesPerProxy` use one wide-proxy tier with integer/spatial bounds instead of exploding duplicate references. That tier is queried alongside cells and deduplicated by proxy identity; wide objects are not omitted because they are inconvenient.
+
+Per-cell BVHs use outward-rounded local float bounds. Dynamic broad-phase tree balancing, static mesh BVHs, and narrow-phase geometry remain their owning subsystem's algorithms. Quantization, motion/correction envelopes, and shared-boundary contact margins expand bounds conservatively. Changing a calculation frame cannot change candidate membership or create duplicate `Begin`/`End` episodes.
+
+Queries declare maximum visited nodes, candidates, output capacity, and admitted calculation extent. Exhaustion has the existing domain budget/indeterminate response, not `Miss` or a silently truncated result. Results sort by stable cell/proxy/feature keys, not hash iteration, allocation order, worker arrival, or tree rotations. Indices update transactionally with scene/physics structural revisions.
+
+Chunk residency owns scene registrations and asset/version leases. Eviction cannot destroy an active physics proxy, current snapshot, retained audio source, or submitted GPU resource. Required neighboring collision data is pinned before admitting a motion sweep. Missing required residency is an explicit admission refusal; the body must not advance through an unloaded cell.
+
+## 5. Physics, rendering, audio, and budgets
+
+Physics stores float local state and integer cell identity. Pair geometry uses a body-centered nearby frame; an island uses a bounded shared frame for constraints, with validated transforms between frames. Body-local shape dimensions and physical tolerances are independent of chunk width. A large compound or connected island that exceeds its admitted frame/budget needs explicit subdivision, another configured profile, or a refusal; it is not solved in a giant float world.
+
+The default meter profile admits 4096- and 8192-unit cells against the existing millimeter-scale contact slops. Configuration validates the largest local physical spacing against `LinearSlop / 8`, plus shape-width, motion, and frame-operation bounds. A kilometer-per-unit profile with 4096-unit cells cannot claim the same 5-mm physics tolerance; admission requires a compatible unit/chunk/physical profile or refuses physics. The version-one fixed SI tolerances are not silently enlarged to make an otherwise incompatible setting pass. Other subsystems may still use the world with their own precision contracts.
+
+Repeatedly adding tiny motion to a large local float is not an acceptable integration algorithm merely because the stored coordinate is bounded. The baseline solver retains a private compensated float displacement per axis, with exact-sum `TwoSum` accumulation and checked cell carries. Public poses remain one float per local component; extracted poses never feed back into simulation. Both compensation and normalization/carry state are checkpointed and strict-hashed. Pair calculations use the internal compensated position; published observation tolerance separately includes local pose rounding. [22](22-custom-physics-world-and-solver.md) owns the complete update/error contracts.
+
+Camera extraction, culling, lights/shadows, skinning instances, and picking share an admitted camera-relative frame. GPU buffers contain bounded float-relative values and frame identity, never a required GPU FP64 world position. Very distant geometry uses an explicitly authored partition/LOD representation; it is not silently flattened into ordinary detailed draws. Render bounds and lights spanning multiple cells retain global spatial bounds until neighborhood selection.
+
+Audio listener/emitter snapshots carry spatial positions and settings. Coarse cell/range checks discard only sources proven beyond their authored maximum distance; nearby direction/distance calculations use the same bounded displacement rules. A frame rebase does not restart a voice or discard its source cursor.
+
+Spatial policies may assign streaming priority, render level of detail (LOD), animation evaluation budgets, physics activation/fidelity, and compute work by cell/neighborhood. Render LOD does not alter collision topology. The default authoritative physics profile has no distance-based reduction of tick rate, solver iterations, or required collision residency. An authored simulation-LOD policy is a different, recorded execution profile with explicit transition rules, promotion before interaction, approximation/error budgets, and observable states. Budget pressure must not silently change canonical gameplay.
+
+The editor displays unit scale, chunk width, physical ULP bounds, occupied cells, shared faces, frame extents, residency, index/candidate costs, and work-policy transitions. Ordinary local APIs should be easy; wide-area requests must expose their scope and cost. These are design obligations, not measured performance claims.
+
+## 6. Acceptance obligations
+
+| ID | Required observation |
+|---|---|
+| SP01 | Exact inside/outside neighbor gaps at 4096 and 8192, both signs; closed endpoint included; meter/millimeter/kilometer scales distinguished. Default registry identity is usable without a host; repeated matching registration is idempotent, mismatched/unregistered identities and the 4097th unique registration refuse without mutation |
+| SP02 | Negative carries, exact shared-face aliases, signed zero, multi-cell normalization, and checked `int` overflow; no partial mutation |
+| SP03 | Adjacent-cell seam displacements agree with an exact dyadic oracle within their rounding bound; no large-global-float intermediate |
+| SP04 | Extreme cell differences use exact integer comparison; nearby conversion refuses outside its declared bound |
+| SP05 | Root/child hierarchy, reparenting, rendering, picking, and animation remain consistent across cells and frame changes |
+| SP06 | Shared-face proxies and wide-proxy tier return conservative deduplicated candidates and one contact episode |
+| SP07 | Sparse directory does not allocate empty world space; 96-bit Morton identity has no high-coordinate collision |
+| SP08 | Long slow motion, repeated seam carries, static/dynamic stacks, joints, CCD sweeps, and query witnesses satisfy separate representation/solver error bounds |
+| SP09 | Rebase changes derived frames, not global position, velocity, identity, residency, or retained snapshot meaning |
+| SP10 | Unloaded required neighbors, budget exhaustion, stale async frame/profile, and incompatible precision options refuse observably |
+| SP11 | Render/audio/streaming consume the same units/spatial positions; no required binary64 or GPU FP64 execution |
+| SP12 | LOD/work policies, editor overlays, canonical save/load, and strict replay retain exact configuration, compensation, frame, and residency identities |
+| SP13 | Exponents at `-30`/`30` admit as metadata, nearest integers outside refuse, `(0,12)` defaults correctly and default struct refuses. Exact decimal/rational conversion covers every admitted exponent pair and length degree `[-3,3]`, spatial seam/negative carry/rounded overflow, millimeters/meters/kilometers, exact feet, dimensional density/inertia and nonrepresentable defaults. SI presets and explicit profile migration preserve canonical settings | One final nearest-even binary32 rounding without an approximate unit factor; the bounded workspace and ordinary equal-unit path satisfy the same result contract. Settings/profile identity records the exponent and `FloatChunk32V2`; old binary32 factor/tag/profile bytes refuse or use an explicit migration with a new lineage, never exponent inference from a rounded factor. Unsupported physics precision/defaults remain observable failures; named editor choices are UX over the raw exponent, not a runtime enum or presentation-driven world conversion |

@@ -10,27 +10,29 @@
     MSBuildAllProjects, as that is done by the file that imports us.
   -->
 
+  <ItemGroup Condition="'$(TerraFXUseRepositoryAnalyzers)' != 'false'">
+    <ProjectReference Include="$(MSBuildThisFileDirectory)tools\TerraFX.Diagnostics.Analyzers\TerraFX.Diagnostics.Analyzers.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+    <ProjectReference Include="$(MSBuildThisFileDirectory)tools\TerraFX.Diagnostics.Fixers\TerraFX.Diagnostics.Fixers.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
   <!-- Settings that are only set for CI builds -->
   <PropertyGroup Condition="'$(GITHUB_RUN_ID)' != ''">
     <PackageVersion Condition="'$(PACKAGE_PUBLISH_MODE)' == ''">$(Version).$(GITHUB_RUN_ID)</PackageVersion>
   </PropertyGroup>
 
   <!-- Settings that are only set for executables -->
-  <PropertyGroup Condition="'$(OutputType)' != 'Library' AND '$(UseWindowsForms)' != 'true'">
+  <PropertyGroup Condition="'$(OutputType)' != 'Library' AND '$(UseWindowsForms)' != 'true' AND '$(IsTestProject)' != 'true'">
     <PublishTrimmed>true</PublishTrimmed>
   </PropertyGroup>
 
   <!-- Settings that are only set for libraries -->
-  <PropertyGroup Condition="'$(OutputType)' == 'Library'">
+  <PropertyGroup Condition="'$(OutputType)' == 'Library' AND '$(IsTestProject)' != 'true' AND $([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))">
     <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
     <IsTrimmable>true</IsTrimmable>
   </PropertyGroup>
-
-  <!-- Assembly attributes to include for every project -->
-  <ItemGroup>
-    <AssemblyAttribute Include="System.Runtime.Versioning.SupportedOSPlatformAttribute">
-      <_Parameter1>windows10.0.17763.0</_Parameter1>
-    </AssemblyAttribute>
-  </ItemGroup>
 
 </Project>

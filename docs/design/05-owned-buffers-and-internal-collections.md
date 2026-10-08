@@ -1,0 +1,128 @@
+# Owned buffers and internal collections
+
+[Terminology and reading conventions](01-terminology-and-reading-guide.md).
+
+[02](02-dotnet-api-memory-and-ownership.md) owns general lifetime/failure rules. This chapter owns large buffer APIs and internal collection invariants.
+
+## 1. Storage categories
+
+Managed reference-bearing storage and unmanaged element storage have different contracts. The garbage collector (GC) must see and update managed references. Such elements stay in ordinary managed arrays/collections or typed pools; they are never hidden in native bytes, bitcast across reference-containing layouts, or copied with raw native memory operations.
+
+Unmanaged storage admits `T : unmanaged`, checked count/stride/byte arithmetic, explicit allocation ownership, and no GC references. This does not make every bit pattern a valid `T`, establish native ABI compatibility, or prove a pointer's lifetime. Native resources/handles embedded in `T` still have their own semantic ownership; bulk storage disposal does not automatically dispose arbitrary elements.
+
+Storage follows [02](02-dotnet-api-memory-and-ownership.md#2-reuse-ledger)'s memory-type exclusion, including private implementation and tools. A framework call accepting a prohibited type is not an exception to that policy; choose a span/typed-storage/native-I/O path with the ownership rules below.
+
+Ordinary synchronous callers use `Span<T>`/`ReadOnlySpan<T>` in scoped methods. Retained native/GPU/I/O work takes an explicit owned buffer lease and range. Contiguous CPU storage uses `nint` lengths/offsets; aggregate logical chains use `long`. A span window still has an `int` length and is never a view of more than `int.MaxValue` elements. [02's integer policy](02-dotnet-api-memory-and-ownership.md#integer-types-and-boundaries) owns the signed default and representation exceptions.
+
+## 2. Safe large unmanaged ownership
+
+`TerraFX.Buffers.UnmanagedBuffer<T>` is a sealed `IDisposable` owner. It has no public pointer, escaping span, implicit conversion, copyable value-owner struct, or `MemoryManager<T>` inheritance. `Length` is an element count; `ByteLength` is the checked product, not interchangeable with it.
+
+Allocation validates nonnegative element count, positive power-of-two alignment, type alignment/stride, configured byte budget, and native-address representability before reserving/allocating. `BufferAllocationOptions.MaximumAllocationBytes` and `Alignment` are `nint`; the budget is nonnegative and zero permits only an empty allocation. The checked count-times-stride and any allocator/alignment-rounded extent must fit `nint.MaxValue`, not just the element count. Native `nuint` allocator arguments are checked conversions of those admitted values. This deliberately rejects a contiguous byte extent above the signed native maximum, including above 2 GiB minus one on a 32-bit process; it is an API bound, not a claim that every OS allocation API has that limit. Actual address bits may have their high bit set. Zero length is legal, has no native allocation, and still has an ordinary disposable owner. Invalid arguments throw `ArgumentOutOfRangeException`/`ArgumentException`; extent arithmetic overflow throws `OverflowException`. Allocation failure throws after releasing reservations; there is no zero/default-success owner. Release uses the matching allocator and occurs exactly once.
+
+| Member shape | Contract |
+|---|---|
+| `static UnmanagedBuffer<T> Allocate(nint length, BufferAllocationOptions options)` | Owns zero-initialized native storage; allocation/accounting completed before return |
+| `nint Length`, `nint ByteLength` | Immutable validated extents |
+| `BufferReadLease<T> AcquireRead(nint offset, nint length)` | Pins the named range and forbids conflicting write admissions |
+| `BufferWriteLease<T> AcquireWrite(nint offset, nint length)` | Exclusive mutation of the named range under the selected overlap policy |
+| `void CopyTo(nint sourceOffset, Span<T> destination)` | Synchronous copied read; no escaping native view |
+| `void CopyFrom(ReadOnlySpan<T> source, nint destinationOffset)` | Synchronous copied write with conflict validation |
+| `void Dispose()` | Closes new admissions, releases the owner's credit, and defers actual free until active uses/leases complete |
+
+Both lease types are sealed disposable reference owners, not freely copied owning structs. A lease records allocation identity/generation, offset/count, access mode, and its independent lifetime credit. Calls through a disposed lease throw. `Dispose` is idempotent; disposing the buffer does not invalidate an already admitted operation's memory beneath it. A new lease after close throws `ObjectDisposedException`.
+
+A read lease supplies `UseWindow<TAction>(nint relativeOffset, int length, scoped ref TAction action)` with `TAction : struct, IAction<ReadOnlySpan<T>>, allows ref struct`; a write lease uses `IAction<Span<T>>`. Their `Invoke` members receive `scoped ReadOnlySpan<T>`/`Span<T>`. Negative offsets/counts reject; after validating the offset, require the requested count to fit the remaining extent without overflowing an addition. The empty range at the end remains valid. Bounds/conflicts validate before invocation. The callable is borrowed by reference, invoked synchronously through its concrete generic type, and never copied, boxed, retained or wrapped in a delegate. Caller state changes remain observable; a scoped span cannot be retained or awaited through safe C#.
+
+Each `UseWindow` takes a short-lived operation credit before inspecting the lease and releases it in `finally`. Concurrent or reentrant lease disposal cannot free memory while an admitted callback is running. Callback exceptions propagate after credit cleanup. A disposed owner cannot make a valid active lease refer to a new allocation. Unsafe caller code that deliberately exports an address is outside the safe facade, not something the API claims to sandbox.
+
+Range conflicts are explicit: simultaneous reads may overlap; a write conflicts with overlapping reads/writes. A write lease also admits at most one active window/native operation, refusing concurrent or reentrant use even through copied references to that same lease. A sublease inherits its parent access reservation rather than conflicting with itself, but acquires that exclusive active-operation admission; the parent cannot mutate while its async consumer runs. Independent disjoint write leases may run concurrently. Conflicting synchronous admission throws `InvalidOperationException`, never blocks a callback. Ordinary async requests may queue outside that boundary. Empty ranges retain identity/lifetime but have no byte conflict.
+
+## 3. Asynchronous and native consumption
+
+`TerraFX.Buffers.OwnedBuffer<T>` is the sealed read-only owner for finalized results such as CPU readback, not another allocator or collection family. Its constructor is internal; public members are immutable `nint Length`/`ByteLength`, `AcquireReadLease(nint offset, nint length)` and `Dispose`. It shares `UnmanagedBuffer<T>`'s checked allocation, accounting, lease and scoped-window machinery.
+
+Finalization joins all writes, transfers the private storage/accounting credit exactly once, and leaves no caller-accessible mutable owner or write lease. The engine performs no further writes after publication. Merely wrapping an arbitrary aliased writable owner does not establish this invariant. Independent read leases can overlap and remain valid after owner disposal; disposal closes new acquisitions and drops the owner credit, but callbacks/native consumers still delay actual reclamation. No public pointer, writable window, `Memory<T>`, or underlying storage property is added.
+
+An asynchronous operation takes its own sublease before acceptance; the caller may then dispose its lease without revoking the operation. The operation task becomes terminal only after the underlying consumer has actually stopped accessing storage and the sublease is reclaimed. Canceling an observation or requesting OS cancellation is not completion.
+
+Native bindings obtain an address only through an internal checked operation token. It includes exact byte extent, access mode, allocation identity, active-use credit, and required alignment. It cannot be cached beyond the operation or used after actual native completion. GPU upload staging, readbacks, file reads, decoder output, and interop calls retain their own resource/version/fence protocol in addition to this storage lease.
+
+Shutdown closes admissions and awaits owned consumers under [02](02-dotnet-api-memory-and-ownership.md)'s timeout rules. A stuck native consumer leaves its memory allocated and reports an ownership-retaining shutdown fault; it must not be freed to make disposal appear successful. Diagnostic leaked/stuck bytes remain counted.
+
+Safe public members establish these invariants internally. Small audited allocation/span/native-call blocks may use `unsafe` without propagating a caller obligation. `TerraFX.Core` is safe-facing, not unsafe-free. Raw geometry bitcasts follow [06](06-owned-geometry-and-numerics-interchange.md)'s scoped implementation unsafe-block policy while retaining safe public calls. Audio/native real-time callbacks do not call public allocation/acquisition/window/disposal methods: control setup admits and retains internal bounded access tokens for the full processing epoch. Last-credit disposal/free/accounting occurs on a non-real-time owner after quiescence, never at a sample callback's decrement. Retirement capacity is reserved before accepting consumers.
+
+## 4. Noncontiguous data and managed overlap
+
+A large contiguous owner is not required to represent every stream. `BufferChain<T>` is a sealed immutable descriptor over ordered retained read leases, with checked total `long` length, bounded segment count, and no gaps/overlap ambiguity in its logical sequence. Its `CopyTo` takes a `long sourceOffset`; logical chain offsets are not native addresses. Locate the segment in the checked logical domain before converting its segment-relative offset to `nint`. Construction owns independent lease credits; disposing a caller's original leases cannot invalidate the chain.
+
+`BufferChain<T>.CopyTo` and `VisitWindows<TVisitor>(scoped ref TVisitor visitor)` expose windows in logical order. `TVisitor : struct, IFunc<ReadOnlySpan<T>, bool>, allows ref struct`; `bool Invoke(scoped ReadOnlySpan<T> window)` returns true to continue and false to stop. `VisitWindows` returns true only when traversal completes, including an empty chain; an explicit stop returns false even on the last window. Split each nonempty segment into maximal windows of at most `int.MaxValue` elements without crossing segment boundaries. Validate all descriptor extents before the first invocation and retain a chain operation credit protecting every private segment through traversal, including concurrent/reentrant chain disposal. Stop or exception releases that credit in `finally`; exceptions propagate and earlier caller-state changes are not rolled back. The visitor cannot evade validation or change chain ownership. Asynchronous consumers retain the chain or their own range subleases. Zero-length segments are omitted canonically. No public segmented cursor exposes BCL sequence positions or silently flattens an arbitrary chain into an array.
+
+Managed-reference collections do not implement these unmanaged leases. Where a subsystem really needs retained managed `T` data, it uses an explicit immutable copied snapshot or a separately documented managed owner; it does not pretend that a native buffer can own object references.
+
+## 5. Internal collections
+
+Public engine service fields/properties do not expose mutable internal storage/view containers. Public observations use copied values, immutable snapshots, typed handles, and the lease/window operations above.
+
+Internals may use specialized contiguous lists, sparse maps, bit sets, heaps, ring buffers, and structure-of-arrays (SoA) stores. Storage selection is driven by workload, reference content, alignment, lifetime, and measured generated code:
+
+| Internal category | Required invariant |
+|---|---|
+| Managed value view | Typed array/span backing keeps references visible to the GC; bounded synchronous view cannot escape mutation/structural epoch |
+| Unmanaged value view | Checked native extent/alignment plus a live allocation/access token; no hidden ownership transfer on ordinary struct copy |
+| Owning collection storage | One reference owner controls allocation/pool return; copied value views are not disposable owners |
+| Sparse handle store | Checked owner/index/generation; slots retire before generation wrap |
+| Ring/heap/bit set | Frozen or explicitly reserved capacity; growth outside critical callbacks; overflow is observable refusal |
+| Pooled scratch | One borrower/return protocol, clearing where needed, no return before jobs/native use ends |
+
+A value container that mutates a length/cursor by copy must have explicitly local, nonshared use. Ref-struct/scoped views and private owner tokens prevent accidental persistence; code review/analyzers cover prohibited copying or mutation across structural epochs. No collection claims thread safety from being a struct, and no unchecked pointer container becomes a public convenience property.
+
+The first implementation uses BCL collections privately where they meet these contracts. A custom internal container is justified by measured allocation, indirection, cache locality, size, or latency behavior. Public type identity is a separate compatibility decision under [02's boundary policy](02-dotnet-api-memory-and-ownership.md#public-type-boundary), not conditional on proving a custom container faster: an engine-owned public contract may initially use BCL backing. No internal container is exposed merely to avoid designing that contract. Tests cover empty/full/growth, bounds/overflow, copy semantics, pool ownership, cancellation/disposal, concurrency where admitted, and strict-order iteration.
+
+## 6. Shared callable protocols
+
+`TerraFX.Core` defines root-namespace `IAction<TArgument>`, `IFunc<TArgument,TResult>` and `IReadOnlyRefFunc<TArgument,TResult>` as declared in [30](30-public-api-review-surface.md#3-core-geometry-spatial-values-and-buffers). Arguments admit `allows ref struct`; result types do not. The first two receive `scoped` by-value arguments; the third receives `scoped in` and preserves the physics readonly-reference calling convention. No unused writable-ref/zero-argument interface family is required. Buffer windows, chains, ECS chunks and physics hit visitors select the actual argument/result convention, not subsystem-specific interface names.
+
+Every hot-path invocation retains the caller's concrete struct/ref-struct type and `scoped ref` state through constrained generic dispatch. Generated adapters register the actual closed callable/argument/result instantiations for NativeAOT, never erase them into an interface field or synthesize a closure. Bounds, owner and admission checks remain with the invoking subsystem; an interface does not establish lifetime or authorize reentrancy. Exception cleanup, partial state and stop semantics are unchanged. `scoped` does not revoke an ordinary managed reference captured from an argument. BF12's code-generation/allocation qualification still applies; generic spelling alone is not a performance result.
+
+The generic interface argument carries scoped with its anti-constraint. A concrete implementation for an ordinary class/value argument spells `Invoke(T argument)` without a by-value scoped modifier, which C# permits only for ref-struct values; a span implementation spells `Invoke(scoped Span<T> argument)`. Readonly-reference implementations retain `scoped in` for either kind. This closed-argument syntax difference does not change constrained dispatch or create managed-reference revocation.
+
+## 7. First-class bounded object pools
+
+`TerraFX.Pooling.ObjectPool<T>` in `TerraFX.Core` is a sealed reference owner for managed reusable `T : class`, not a native allocator, global singleton or concurrent collection. One owner thread is captured at construction. Every operation/property, including cleanup and observations, checks that thread; a wrong-thread call throws `InvalidOperationException` before mutation or policy invocation. Marshal delayed-job returns to that owner; no reset/destruction occurs on audio callbacks.
+
+Construction takes positive `int maximumCapacity` and nonnull `IPoolPolicy<T>`, allocates fixed managed bookkeeping, and creates no payloads. Policy `Create` returns a distinct nonnull fully initialized object and retains responsibility for cleanup of failed creation; `Reset` restores the documented reusable state, clearing references/events as required; `Destroy` releases terminal resources. Destroy must be retry-safe after partial failure. Resource-free policies may intentionally do nothing in Destroy. Managed references remain GC-visible.
+
+`Prewarm(int availableCount)` grows the available set to the requested nonnegative target, outside critical paths; it never trims. Validate the target against capacity remaining after rented/returning/quarantined/retired slots before calling policy. Successful prior creations remain available if a later Create fails; this is explicitly incremental, not atomic rollback. A null/duplicate currently owned object is a policy invariant failure, never another slot alias or permission to destroy an existing rental. `Rent` never calls Create: empty availability throws `InvalidOperationException`; `TryRent` returns false and a default unusable token only for that expected condition. Closed pools throw `ObjectDisposedException`, even for TryRent. A saturating nonnegative `long` miss counter records both exhaustion paths.
+
+`PoolRental<T>` is a copyable, non-disposable readonly token with a private strong reference to its exact pool, signed slot index and opaque `uint` generation starting at 1. Copying creates no ownership credit. It has no public payload, pointer, generation arithmetic or raw native ownership. Pool.Use(rental, scoped ref action) invokes `IAction<T>` synchronously and preserves caller state. Default/wrong-owner/stale/double-return tokens throw before invocation/mutation. A slot already in Use refuses another Use. Generation advances on each new rental; after the maximum generation's return the slot is destroyed and permanently retired rather than wrapping. Retired slots reduce usable capacity and remain observable.
+
+Slot states are Empty, Available, Rented, Returning, Quarantined and Retired. Return changes Rented to Returning immediately, invalidating every token copy for later operations. Reentrant Return during that slot's active Use defers Reset/Destroy until the callback exits; it does not free/reuse the payload beneath the callback. Use's finally releases the active credit and performs pending cleanup. An ordinary callback exception leaves an unreturned rental Rented; it does not secretly return it. If callback and deferred cleanup both fail, throw an AggregateException preserving both; a single failure propagates with its original stack.
+
+Reset succeeds before Returning becomes Available. Failure quarantines the object and attempts terminal destruction, never republishes it; the reset exception remains observable. Successful destruction empties the slot; failed destruction retains ownership in Quarantined and reports both failures. `RetryCleanup` attempts destruction of all quarantined objects, not another Reset; it retains failed objects and aggregates failures after attempting the selected set. No policy may reenter pool operations, including reads, during Create/Reset/Destroy; reject before changing state. Return/Trim/Close attempts all selected independent cleanup work and aggregates failures without losing the per-slot ownership state.
+
+`Trim(int availableCount)` retains at most that nonnegative number of available objects, destroying only the excess; rented/returning objects are unaffected. Close is permanent, refuses Rent/Use/Prewarm/Trim, and destroys available objects. Existing rentals still require Return; an active callback and its pending Return finish safely. Dispose aliases Close, not forced return or blocking drain. Repeated Close does not silently retry failed destruction; RetryCleanup does. `IsDrained` is true only after close, no owned payload/active callback remains, and all destruction succeeded. The caller/host retains and services a non-drained pool; there is no finalizer running arbitrary user policy or success-shaped timeout reclamation.
+
+`PoolSnapshot` reports maximum capacity, Available/Rented/Returning/Quarantined/Retired counts, created payload count, rental high-water, misses and close/drain state as copied signed observations. Returning includes a callback-deferred return; quarantined objects remain CreatedCount until destruction succeeds. Every slot contributes exactly once to its state; CreatedCount = Available + Rented + Returning + Quarantined. Rental high-water measures Rented + Returning and is bounded by maximum capacity.
+
+The pool machinery performs no managed allocation in warmed successful Rent/Use/Return cycles; policies and exceptional diagnostics are separately measured. This is bounded reuse, not Unity-style create-on-empty or an idle-retention maximum disguised as a total cap. Escaped managed references cannot be revoked: consumers must not use/retain payload aliases beyond their rental, and Return requires actual job/native completion. The token alone cannot infer that completion. Do not recycle publicly retained immutable snapshots, terminally disposed native owner facades or aliased completion objects; pool private builders/scratch and publish copied/independently retained results.
+
+## 8. Acceptance obligations
+
+| ID | Required observation |
+|---|---|
+| BF01 | Zero, ordinary, beyond-managed-array, overflowed, misaligned, and over-budget allocations have exact extents/accounting and conventional failures |
+| BF02 | Buffer close/dispose, copied lease references, concurrent/reentrant callback disposal, and double disposal never free beneath active use |
+| BF03 | Scoped windows and ordinary/ref-struct callables compile in separate consumers; retaining a borrowed span is rejected. `ref` state updates survive invocation/exception without copying, boxing or delegate adaptation; invalid bounds/conflicts reject before invocation. Finalized `OwnedBuffer<T>` publication leaves no mutable alias/write lease, and independent read leases survive owner close |
+| BF04 | Async cancellation, observer cancellation, native completion, GPU fences, and stuck shutdown preserve memory until real consumption ends |
+| BF05 | Allocation generation cannot alias a recycled region; diagnostic outstanding credits/bytes remain accurate |
+| BF06 | Empty, multi-segment and beyond-`int.MaxValue` chained data validates before invocation, visits the specified windows in order, reports completion/explicit stop, preserves partial caller state on exception and protects all segments during reentrant/concurrent chain disposal; no implicit flattening allocation |
+| BF07 | Managed references stay GC-visible; unmanaged raw copies do not fabricate element/resource ownership |
+| BF08 | Internal value/native containers remain absent from public fields/properties; copy/growth/pool/epoch invariants are qualified |
+| BF09 | Runtime/tooling source and generated output contain no use of the prohibited memory/sequence types; span/typed-storage/native I/O preserves checked extents, retained credits and actual completion without a private bridge exception |
+| BF10 | Core safe-facing wrappers establish all unsafe allocation/view invariants; no caller pointer or global unsafe API is required |
+| BF11 | Real-time paths use preallocated storage and admitted access; no blocking/growth/refcount reclamation callback occurs there |
+| BF12 | AOT layout/allocation/cache and constrained-callable generated-code measurements use matched delegate/interface/value-callable workloads; steady callback dispatch adds no managed allocation, and inlining, copies, code size and actual gains/regressions are reported rather than assumed |
+| BF13 | Signed 32/64-bit extent witnesses cover negative counts/offsets/window lengths/budgets/alignment, zero/end-empty ranges, count-times-stride and alignment-rounding overflow at `nint.MaxValue`, and `long` chain-total overflow. Reject before reservation/allocation/callback with unchanged state; high-bit native addresses are not rejected merely by signed count policy. Ordinary/ref-struct external consumers pass `int` span lengths to `nint` APIs without unsigned casts; windows remain `int`-bounded and narrowing is checked |
+| BF14 | A separate safe consumer uses all three shared protocols with ordinary/ref-struct mutable state; buffers/chains/ECS/physics retain actual by-value/readonly-ref signatures, validation, partial exception state and last-hit stop behavior. Borrowed-span escape fails compilation; no obsolete subsystem-specific callable interface remains |
+| BF15 | Bounded pool state and CLR witnesses cover prewarm/partial creation, no create-on-rent, exact counts, zero warm capacity, wrong thread/owner/default/stale/copied/double returns, reentrant/deferred return and close, callback/reset/destruction failures, retained quarantine/retry, trim, generation retirement and escaped-alias limitations. Warm machinery has no rental-wrapper churn; actual implementation measures allocations/retention/latency against unpooled work and qualifies AOT roots |

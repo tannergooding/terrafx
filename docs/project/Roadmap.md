@@ -1,26 +1,32 @@
-# Roadmap
+# Implementation roadmap
 
-The roadmap attempts to list the current goals, important dates, and other core information about the project.
+The [design roadmap](../design/35-implementation-roadmap.md) defines milestone
+scope, dependencies, and acceptance gates. This page tracks the current
+implementation state and remaining qualification.
 
-TerraFX is still in the early stages of development. For v1.0 to ship, the current minimum goals are to provide Audio, Graphics, Input, and Windowing layers on both systems. Additional components that are desired include a scene graph, transformations pipeline, and basic physics support.
+## Milestone status
 
-There was previous considerations for supporting Linux and/or MacOS as well, but due to limited time and contributors this was scoped back to Windows only.
+| Milestone | Status | Progress / remaining work |
+|---|---|---|
+| M01 - Repository and implementation readiness | Complete | Repository, build, test foundation, and first-unit prerequisites are established. This is readiness, not engine qualification. |
+| M02 - Core ownership, numerics, and spatial data | Ready to start | Angle/AngleUnit contracts are reviewed; no Core behavior is implemented yet. Foundation ownership, numerics, spatial data and codec qualification remain. |
+| M03 - Worlds and native semantic content | Not started | Planned scope and prerequisites are defined in the design roadmap; no M03 implementation or qualification has started. |
+| M04 - Native host, input, and presentation resources | Not started | Requires the applicable M02/M03 capabilities and observations. |
+| M05 - Renderer, animation, and source adapters | Not started | Schedule by the capability and observation gates in design chapter 35. |
+| M06 - Standalone custom physics | Not started | Requires M02; dimensional cooking, solver, queries, CCD, and checkpoint qualification remain. |
+| M07 - Custom audio and subsystem integration | Not started | Requires the applicable M02-M06 units. |
+| M08 - Editor, extensibility, and release qualification | Not started | Requires M03-M07. |
 
-## Current Status
+`Ready to start` means prerequisites are accepted, not that a whole milestone is
+implemented. `Qualification pending` means implementation is present but
+required observations remain. `Complete` requires the entire design milestone
+exit boundary; a managed build or reference helper is not engine/native/AOT
+qualification.
 
-The current status for each "component" is listed below. More details about the overal design can be found in the [design](../design) folder.
+## Maintaining status
 
-### General
-Each component provides access to a different multimedia "subsystem". These components are brought together in the `Application` which exposes the various components and provides access to the "main loop".
-
-### Audio
-The audio subsystem has not started development but will likely use [XAudio2](https://docs.microsoft.com/en-us/windows/win32/xaudio2/xaudio2-introduction) or the Windows Audio Session API ([WASAPI](https://docs.microsoft.com/en-us/windows/win32/coreaudio/wasapi)).
-
-### Graphics
-The graphics subsystem is being actively developed using [Direct3D 12](https://docs.microsoft.com/en-us/windows/win32/direct3d12/what-is-directx-12-) as the primary backend. Currently users can render a clear screen of any specified color. Adding support for rendering a set of primitives and meshes are next on the list.
-
-### Input
-The input subsystem has not started development but will provide support for both Keyboard and Mouse input at a minimum. This will likely utilize the underlying window messaging model for retrieving the input events.
-
-### Windowing
-A minimal windowing subsystem already exists and utilizes the [Win32 "WinMsg"](https://docs.microsoft.com/en-us/windows/win32/api/_winmsg/) APIs. Currently this allows users to create barebones windows, perform basic operations such as resizing or moving, and manage their lifetimes. This subsystem includes an abstraction over the "message pump".
+Update this page when a coherent unit starts, completes, or encounters a
+material blocker. Reference checked-in contracts or durable published records,
+not checkout-local artifacts. Use Git history rather than repeating
+implementation history here. Do not change design contracts to describe
+implementation progress.
