@@ -1,9 +1,0 @@
-{
-  "profiles": {
-    "TerraFX.Samples": {
-      "commandName": "Project",
-      "commandLineArgs": "all",
-      "nativeDebugging": true
-    }
-  }
-}
