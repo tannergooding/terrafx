@@ -62,3 +62,30 @@ That is, all of the existing well known commands "just work". This includes, but
 With a compatible SDK installed, `dotnet build` also restores dependencies automatically; no script or SDK acquisition step is required.
 
 Test filtering uses the runner's existing support, for example `dotnet test --filter TestCategory=Unit`.
+
+### Core-private foundation codecs
+
+The EBIN1 structural layer and M02 foundation admission layer live in `sources\TerraFX.Core`.
+They are internal, BCL-only implementation details, not a public codec API or an Assets dependency.
+The literal eight-schema catalogue fixes canonical registry/kernel bytes, rooted rules and digests;
+incoming manifests cannot replace that catalogue. Profile admission uses an explicit selection of
+already registered identities/settings. Frame I/O additionally requires a private persistence binding
+containing the stable world GUID, profile, runtime owner and binding revision.
+
+Reads validate bounded spans before copying an owned staged wire value. They neither allocate a
+runtime owner nor register profiles or activate worlds. Projection and capture are explicit operations
+against an owner binding; retained optional fields remain inert and survive recapture. Writers validate
+input and checked extent before destination capacity, leave the entire destination unchanged on failure,
+and report zero written. Structural payload I/O does not substitute for schema/context admission.
+
+Run the foundation regressions and the accepted binary-free fixture verifier together:
+
+```powershell
+dotnet test .\tests\TerraFX.Core.Tests\TerraFX.Core.Tests.csproj --configuration Debug --filter FullyQualifiedName~M02Foundation --no-restore
+dotnet test .\tests\TerraFX.Core.Tests\TerraFX.Core.Tests.csproj --configuration Release --filter FullyQualifiedName~M02Foundation --no-restore
+```
+
+Restore first if dependencies are absent. The tests interpret the accepted fixture package's literal
+sources and static hashes independently of production code, including all 21,168 valid prefixes;
+expected binary files are not checked in. Keep the package source pins and independent acceptance
+intact. The test project also builds the separate unsafe-disabled public spatial consumer.
