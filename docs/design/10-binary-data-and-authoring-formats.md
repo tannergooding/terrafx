@@ -127,59 +127,192 @@ Input action kinds are Digital=1, Axis1=2, Axis2=3. Binding kinds are Button=1, 
 
 The registry is extensible for application components and subsystem payloads, with assigned GUIDs/tags and reviewed version transitions. It is not permission for an implementation to invent a new tag order for these built-ins or ship a payload codec without its milestone's locked descriptor manifest/golden bytes.
 
-## 3. EPKG2 binary index
+## 2.1 M02 foundation-codec contract
 
-`EPKG2` replaces the old JSON-index container; `EPKG1` is an import/migration source, not silently reinterpreted. None and Brotli remain the required codecs. Future codecs need a declared capability/format revision, verified implementation, bounded consumed-length behavior, and new conformance cases.
+> **Status:** This section is the accepted normative M02 foundation-codec contract. The descriptor, validator, kernel, digest-scope and persistence-binding decisions below are fixed. Candidate vectors in P7 remain candidates until their literal bytes and semantic facts are independently derived and reviewed; that review accepts fixture facts, not a separate implementation. This contract does not establish M02 completion. The existing EBIN1 layout/wire kinds, built-in keys/UUID recipe, foundation profile major 2/tags, frame tags and default profile assignment remain unchanged.
 
-The package header is 128 bytes:
+Fixed fields use EBIN's 32-bit tags. Optional components use the reserved extension set and signed 64-bit IDs: positive IDs are reserved for built-ins, negative IDs for user-defined extensions, and zero is invalid. The owning schema version fixes semantics and any required-ID set; optional instances carry no requiredness bit, and a later version may promote an ID to required. Unknown optional payloads remain inert and preservable. This is not permission for an implementation to invent a new tag order for fixed built-ins or ship a payload codec without its milestone's locked schema contract.
 
-| Offset / bytes | Field |
+### P1. Selected unit and boundaries
+
+The M02 unit is the EBIN1 bounded scalar/geometry packers and record/table/array machinery, together with the eight-schema foundation closure below. It includes canonical registry/kernel manifest construction, major-2 profile records, dimensional frame records, profile admission and private persistence-binding checks. Primitive support covers all permanent kinds 1 through 24; schema admission remains separate from structural packing. In particular, raw Binary32/geometry packing preserves component bits, including NaN payloads and signed zero, where the schema version admits them. Frame positions/extents are finite-domain fields, not that raw interchange exemption.
+
+Excluded are native asset/envelope and input payload codecs; application/component schemas; EPKG2 readers and package activation; text/source adapters and Angle definition envelopes; scenes, physics/audio state and strict-checkpoint codecs; and live-world save/restore/rebase transactions. Primitive GUID and geometry coverage does not qualify those consumers. Angle's CLR representation, owner IDs, clocks, buffer leases, pool state, callables, spatial bounds/poses/rays and arbitrary managed structures acquire no new schema or implicit byte encoding. Package compatibility remains an M03 integration obligation, not evidence that M02 implements packages.
+
+The M02 admission profile limits one outer record, including all contained headers/tables/payload/padding, to 65536 bytes and each record to 64 field entries. [27](27-state-serialization-replay-and-recovery.md#5-savereplay-admission-limits)'s nesting limit 64, array-count limit 1048576 and UTF-8 length limit 1 MiB remain upper bounds; the smaller outer-record budget also applies. Copies and retained storage charge the caller's frozen storage budget under [05](05-owned-buffers-and-internal-collections.md). These are explicit selected-unit limits, not replacements for general asset/package budgets or promises to admit every structurally representable EBIN record. Reject an over-budget declared extent before waiting for its payload or allocating from its counts. Check unsigned products, sums, alignment and ranges first, then signed/native representability before conversion or views.
+
+This contract adds no public API. Private wire records and frozen codec context carry fields that Core values do not contain. Any use of [30](30-public-api-review-surface.md#6-assets-schema-codecs-and-cooking)'s existing `IBinarySchemaCodec<T>` follows its atomic output/status and scoped-span contract; this does not add a Core dependency on `TerraFX.Assets` or a context-free `IBinarySchemaCodec<SpatialFrame2/3>`. Internal packers supply the foundation without a new public facade.
+
+### P2. Static schema catalogue and extension representation
+
+The selected immutable descriptor catalogue is `M02FoundationDescriptors1`: eight schema rows and thirty-eight fixed-field rows. Schema records use minor zero; `foundation/profile` uses major 2, the other seven schemas use major 1. The schema GUIDs and the existing `TerraFXNameUuidSha256V1` assignments remain as shown. A schema version fixes its complete required fixed-field set and its semantics; the registry records only wire shape and cardinality, not validator identities, rule recipes or defaults.
+
+| Schema key | Schema GUID | Assignment status |
+|---|---|---|
+| `registry/manifest` | `a842b722-20a3-8e3e-9824-39b812becd31` | Frozen |
+| `registry/schema` | `07902135-1633-8b5e-86e4-436850ca1149` | Frozen assignment |
+| `registry/field` | `4ec03903-a0b1-8425-8f43-0e905f7f0764` | Frozen assignment |
+| `foundation/profile` | `3b9760ce-468a-8aab-bb89-f38db9e3bc00` | Frozen |
+| `foundation/frame2` | `ae928678-285e-82be-b250-cea4bb2cb7c3` | Frozen |
+| `foundation/frame3` | `42626aff-fc5c-864d-867c-43c666699777` | Frozen |
+| `kernel/manifest` | `b4bbf3fb-503c-8a6d-8687-878cbc3cc9d6` | Accepted assignment |
+| `kernel/recipe` | `f7a613f1-1c19-8c64-9448-31be7d694db2` | Accepted assignment |
+
+The fixed-field inventory is literal. Count intervals describe a present field's element count, not tag multiplicity. Each fixed tag occurs at most once; `Required` describes only that schema version's fixed field. Bytes counts are byte counts.
+
+| Schema | Tag / field | Wire kind / ID | Count |
+|---|---|---|---|
+| `registry/manifest` | 1 Schemas | RecordArray / 24 | [1, 1048576] |
+| `registry/schema` | 1 SchemaId | Guid / 11 | [1, 1] |
+| `registry/schema` | 2 Major | UInt32 / 3 | [1, 1] |
+| `registry/schema` | 3 Minor | UInt32 / 3 | [1, 1] |
+| `registry/schema` | 4 Fields | RecordArray / 24 | [1, 1048576] |
+| `registry/field` | 1 Tag | UInt32 / 3 | [1, 1] |
+| `registry/field` | 2 WireKind | UInt16 / 2 | [1, 1] |
+| `registry/field` | 3 Required | Boolean / 9 | [1, 1] |
+| `registry/field` | 4 MinimumCount | UInt64 / 4 | [1, 1] |
+| `registry/field` | 5 MaximumCount | UInt64 / 4 | [1, 1] |
+| `foundation/profile` | 1 CoordinateId | UInt32 / 3 | [1, 1] |
+| `foundation/profile` | 2 GeometryId | UInt32 / 3 | [1, 1] |
+| `foundation/profile` | 3 SpatialId | UInt32 / 3 | [1, 1] |
+| `foundation/profile` | 5 ChunkSizeExponent | UInt8 / 1 | [1, 1] |
+| `foundation/profile` | 6 SettingsDigest | Bytes / 13 | [32, 32] |
+| `foundation/profile` | 7 RegistryDigest | Bytes / 13 | [32, 32] |
+| `foundation/profile` | 8 KernelDigest | Bytes / 13 | [32, 32] |
+| `foundation/profile` | 9 ProfileId | Guid / 11 | [1, 1] |
+| `foundation/profile` | 10 MetersPerUnitExponent | Int32 / 7 | [1, 1] |
+| `foundation/frame2` | 1 WorldGuid | Guid / 11 | [1, 1] |
+| `foundation/frame2` | 2 Profile | Record / 22 | [1, 1] |
+| `foundation/frame2` | 3 Origin | SpatialPosition2 / 20 | [1, 1] |
+| `foundation/frame2` | 4 Revision | UInt64 / 4 | [1, 1] |
+| `foundation/frame2` | 5 Minimum | Vector2 / 14 | [1, 1] |
+| `foundation/frame2` | 6 Maximum | Vector2 / 14 | [1, 1] |
+| `foundation/frame3` | 1 WorldGuid | Guid / 11 | [1, 1] |
+| `foundation/frame3` | 2 Profile | Record / 22 | [1, 1] |
+| `foundation/frame3` | 3 Origin | SpatialPosition3 / 21 | [1, 1] |
+| `foundation/frame3` | 4 Revision | UInt64 / 4 | [1, 1] |
+| `foundation/frame3` | 5 Minimum | Vector3 / 15 | [1, 1] |
+| `foundation/frame3` | 6 Maximum | Vector3 / 15 | [1, 1] |
+| `kernel/manifest` | 1 CoordinateId | UInt32 / 3 | [1, 1] |
+| `kernel/manifest` | 2 GeometryId | UInt32 / 3 | [1, 1] |
+| `kernel/manifest` | 3 SpatialId | UInt32 / 3 | [1, 1] |
+| `kernel/manifest` | 4 Recipes | RecordArray / 24 | [1, 1048576] |
+| `kernel/recipe` | 1 RecipeId | Guid / 11 | [1, 1] |
+| `kernel/recipe` | 2 Version | UInt32 / 3 | [1, 1] |
+| `kernel/recipe` | 3 Parameters | Bytes / 13 | [0, 1024] |
+
+These foundation schemas are closed. Every admitted field is in the selected schema-version descriptor; unknown tags reject rather than entering a generic extension container. Profile tag 4 remains reserved and forbidden in major 2. Fixed scalar/geometry widths, array descriptors and field flags remain as defined by EBIN1. RecordArray element schemas are explicitly `registry/schema`, `registry/field` and `kernel/recipe` for their respective fields, never an inferred heterogeneous CLR collection.
+
+**Defaults:** this closure has no serialized defaults or `DefaultValue` descriptor. Required profile fields are written even when configuration used defaults: coordinate/geometry/spatial codes `(1,2,2)`, exponents `(0,12)` and the existing Default profile GUID. Digests are derived/verified, never empty/zero placeholders. Frames have no implicit world, origin, revision or extent defaults; a new owner's initial revision 1 is an owner operation, not a decoder repair.
+
+**Bootstrap:** seed the EBIN structural reader, all eight fixed schema descriptors and the P4 kernel recipe catalogue from trusted immutable inputs. No external registry can install schema behavior, authorize fixed schema IDs, or select the catalogue used to validate itself. Descriptors contain schema/field identities, versions and cardinalities, but no profile record, actual registry/kernel/settings digest, runtime owner or executable validator. Fixed schema semantics belong to the owning schema version.
+
+### P3. Schema-version admission and semantics
+
+First validate EBIN structure, bounded extents, field-table ordering, fixed field presence/flags/kinds/counts and record-array element structure. EBIN's structural reader enforces Boolean payloads as exactly 0 or 1. Then validate known nested records and local values in tag order. Finally perform cross-field/context checks only after their inputs are admitted. This ordering is a fixed behavior of the schema version, not a serialized validator graph.
+
+- `registry/manifest` and its nested `registry/schema` / `registry/field` records must be canonical, RFC-GUID/tag sorted, unique and an exact match for the seeded eight-schema/38-field catalogue. Fixed tags must be nonzero and cannot use the reserved extension tag. Field kinds are permanent EBIN IDs 1 through 24; count bounds are ordered and fixed-width scalar/geometry/Record fields have count one. Missing, added or reinterpreted catalogue fields are invalid.
+- `foundation/profile` admits only coordinate/geometry/spatial codes `(1,2,2)`, chunk exponent [8,16], unit exponent [-30,30], three 32-byte digests and a nonempty registered ProfileId. The full tuple must match the immutable binding and any enclosing package tuple. Unknown profile codes or identities are unsupported; malformed ranges, mismatched registered bindings and a use of reserved tag 4 are invalid. Decoding never registers or rebinds an identity.
+- `foundation/frame2` and `foundation/frame3` require a nonempty WorldGuid matching the explicit persistence binding, a complete nested profile matching that binding, a positive revision representable by `long`, finite ordered extents and dimension-correct canonical positions. Owner-specific extent policy is checked before projection. Reads do not normalize offsets, allocate an OwnerId, register profiles or activate a world.
+- `kernel/manifest` requires codes `(1,2,2)` and exactly the nine P4 recipes in RFC RecipeId order. A known recipe with an unsupported positive version is unsupported; zero/out-of-range versions and mismatched parameters are invalid. Recipe IDs and parameter bytes remain meaningful kernel semantics, distinct from field validators.
+
+An unknown schema/version, unknown fixed tag, unknown profile identity/code or unsupported kernel recipe/version is `UnsupportedSchema`; malformed known data is `InvalidRecord`. Diagnostics identify the schema, physical tag, category and relevant offset/range; they do not carry a per-field RuleId. Usage/ownership misuse throws under [02](02-dotnet-api-memory-and-ownership.md)/[03](03-shared-conventions-and-clocks.md), not a successful default. Writes validate ownership, the complete schema/context and checked output extent before destination capacity; an invalid value is not hidden by DestinationTooSmall. No output write or externally visible admission precedes those checks.
+### P4. Kernel semantic manifest
+
+The selected semantic kernel manifest is `M02FoundationKernel1`. Its canonical `kernel/manifest` 1.0 has required codes `(1,2,2)` and nine `kernel/recipe` 1.0 records. Each row defines an immutable semantic recipe, not a hash of a CLR method name. IDs use the same frozen name recipe/namespace; all listed IDs and parameter vectors are assigned by this contract. Parameter payloads are the exact hexadecimal byte strings shown, without an internal header, count, terminator or padding. Their EBIN Bytes fields and containing records still receive normal EBIN alignment padding.
+
+| Exact recipe key / RecipeId | Parameter bytes | Meaning and owner contract |
+|---|---|---|
+| `kernel/foundation/binary32/v1` / `93ec20f5-b161-8d79-aafb-8ec1438c794f` | `0000` | Two UInt8 codes: rounding 0 = nearest-even; subnormal mode 0 = gradual underflow. [08](08-binary32-kernels-and-predicates.md) requires the subnormal-preserving baseline, not flush-to-zero. |
+| `kernel/foundation/geometry-rows2/v1` / `36bf491c-f7b6-88fe-a931-31b03a8b40cf` | Empty | [03](03-shared-conventions-and-clocks.md#transform-notation-and-order)/[06](06-owned-geometry-and-numerics-interchange.md): X/Y/Z/W component and row order, LH algebra, row transforms, Hamilton Multiply/Compose order, explicit bit-preserving BCL interchange and raw IEEE/equality semantics. No transpose, basis reflection or quaternion-sign canonicalization. |
+| `kernel/foundation/normalize/v1` / `fe722d22-1099-8438-8531-eb330c3b3589` | `0100000020a10700` | UInt32 numerator 1, denominator 500000: exact unit-error ceiling 2e-6. [08 section 2](08-binary32-kernels-and-predicates.md#2-finite-normalization-and-inverses)'s max-component scaling, stable component-order Binary32 reduction/sqrt/division and signed-zero preservation; zero/nonfinite source refuses. |
+| `kernel/foundation/quaternion-inverse/v1` / `c8af393c-d701-8332-bee5-ab6cb228a60e` | `2c02aa010004` | UInt16 denominator/numerator magnitude-bit bounds 556/426 and workspace cap 1024 bits. [08 section 2](08-binary32-kernels-and-predicates.md#2-finite-normalization-and-inverses)'s certified candidate or exact rational inverse, final nearest-even representability and conjugated zero signs; a nonfinite candidate alone is not proof of failure. |
+| `kernel/foundation/matrix-inverse/v1` / `dab554c7-5762-8b00-9ba3-910a68157c96` | `a086010020a10700` | UInt32 exact residual multipliers 100000 and 500000. [08 section 2](08-binary32-kernels-and-predicates.md#2-finite-normalization-and-inverses): qualified finite BCL candidate; both exact-dyadic product checks; homogeneous 3x3 for Matrix3x2. An uncertain predicate needs bounded exact evaluation, not guessed success. |
+| `kernel/foundation/view-frame/v1` / `408ce437-ab29-85de-93b6-6ef24c8ea1e3` | `0100000020a10700` | UInt32 error ratio 1/500000. [08 section 3](08-binary32-kernels-and-predicates.md#3-proper-camera-frames)'s exact source D/cross degeneracy, Scaled32/normalization, row basis and once-rounded exact translation dot; no angular epsilon or required FP64. |
+| `kernel/foundation/spatial-canonical/v1` / `fbfbcfda-0497-8115-8e79-ed024525aa80` | `00000080ffffff7f01` | Int32 cell endpoints -2147483648/2147483647 and UInt8 positive-zero policy 1. [07](07-spatial-coordinates-and-indexing.md#closed-geometry-and-unique-ownership)'s exact dyadic floor/carry, [0,C) persistent offsets, checked rounded carry and refusal outside the cell domain; closed geometry remains [0,C]. |
+| `kernel/foundation/spatial-decimal/v1` / `aa5cd1e7-05a4-8630-b91b-bf83420da8f6` | `000403e2ffffff1e000000` | UInt16 workspace 1024 bits, UInt8 maximum absolute length degree 3, Int32 unit-exponent endpoints -30/30. [07](07-spatial-coordinates-and-indexing.md#1-physical-units-and-coordinate-values)'s exact rational decimal scaling (maximum power 180), one nearest-even destination rounding and checked position carries. No approximate floating unit factor. This records the shared semantic rule, not completed physics/density adapters. |
+| `kernel/foundation/nearby-displacement/v1` / `fbe9d96e-0119-8d57-b9ff-903e3b0fcc2c` | `4000` | UInt16 signed cell-difference width 64. [07 section 2](07-spatial-coordinates-and-indexing.md#2-precision-statements-and-nearby-arithmetic)'s integer comparison and prescribed same/adjacent-cell expression order, then an explicitly admitted nearby frame for wider neighborhoods; no world-wide float subtraction or inferred provenance. |
+
+The recipe/version identifies the full stated owner algorithm and refusal rules, not merely the parameters or a tolerance. Parameters make its important bounds exact digest inputs. A change to an assigned algorithm/order/zero rule cannot keep its recipe ID while updating prose. An implementation may use only the alternatives its locked owner recipe permits, and must separately qualify them.
+
+**Proposed digest scope:** KernelDigest commits this coordinate/geometry/spatial **semantic** manifest, including its recipe identities/versions/constants. Unit/chunk selections are separate SettingsDigest inputs. It contains no profile GUID, registry/settings/kernel digest, SDK/runtime/ISA string, binary image, physics solver/audio graph manifest or application recipe. [08](08-binary32-kernels-and-predicates.md#1-algebra-and-naming) records kernels separately from runtime identity; [06](06-owned-geometry-and-numerics-interchange.md#4-arithmetic-equality-and-formatting)/[27](27-state-serialization-replay-and-recovery.md#3-replay-profile) still require exact BCL/compiler/FMA/runtime/ISA/execution profiles for StrictLocal. Matching this semantic digest does not certify native execution or bit-identical cross-runtime replay. A different semantic recipe, unsupported FMA/reduction substitution, flush-to-zero or optional binary64 profile needs a different kernel manifest/digest and profile assignment, not a relabeled Default.
+
+The broader qualified profile identity described in [30](30-public-api-review-surface.md#6-assets-schema-codecs-and-cooking) still includes the separately recorded execution/runtime profile in its enclosing build/save/replay manifest. This contract defines only the component carried at foundation/profile tag 8; the spatial GUID/codes/settings/three-digest tuple alone is never a complete StrictLocal identity. It adds no runtime field or new interpretation to the frozen foundation tags.
+
+### P5. Exact canonical bytes, digests and profile binding
+
+Construct the registry operand mechanically from P2/P3, without runtime registration order:
+
+1. For each of the thirty-eight fixed-field rows, emit `registry/field` 1.0 with tags 1 through 5 holding the literal tag, wire-kind ID, required Boolean and count bounds. All five fields have field flag Required and count one.
+2. For each schema, sort those field records by numeric tag and encode its Fields RecordArray using EBIN's count/offset table. Emit `registry/schema` 1.0 with SchemaId, selected major, minor zero and that array. The profile **descriptor's** Major value is 2; its containing registry/schema record is still schema 1.0.
+3. Sort schema records by unsigned lexicographic comparison of the sixteen RFC SchemaId bytes, not `Guid.CompareTo`, Guid strings, dictionary insertion or CLR member order. Emit `registry/manifest` 1.0 with that Schemas RecordArray.
+4. Use the exact EBIN header/table/field flags/counts, tag-ordered payload cursor, minimum alignment and zero padding in section 2 at every level. All record lengths include final alignment. `RegistryDigest = SHA-256(canonical registry/manifest EBIN bytes)`, with **no** additional domain prefix, text conversion, omitted padding, digest slot or zeroed self-reference.
+
+For KernelDigest, encode each P4 `kernel/recipe` 1.0 with RecipeId RFC bytes, Version UInt32 1 and its exact required Parameters Bytes field (count equals payload length). Sort records by unsigned RFC RecipeId bytes. Emit `kernel/manifest` 1.0 with codes 1/2/2 and the resulting RecordArray, using the same canonical EBIN construction. `KernelDigest = SHA-256(canonical kernel/manifest EBIN bytes)`, again without an additional prefix or mutable/runtime inputs. The new schema GUID/version supplies the operand's format identity. Neither operand contains the other operand's digest.
+
+SettingsDigest retains the already frozen formula exactly: `SHA-256(ASCII("TerraFX.SpatialSettings.v2") || 0x00 || Int32LE(MetersPerUnitExponent) || UInt8(ChunkSizeExponent))`. Validate exponents first. Write each digest's full raw 32 bytes at profile tags 6/7/8; lowercase hex is only fixture/document display. ProfileId tag 9 is the independently assigned identity, **not** a truncation of any digest or a new UUID recipe. No digest uses the profile record itself as its operand.
+
+Profile records embed these digests, not the manifest records themselves. Full manifest operands come from trusted immutable build/registration inputs or separately staged data validated against those inputs; tag 7/8 Bytes never contain a nested manifest or authorize one merely by its advertised digest.
+
+The dependency order is the fixed schema contract and kernel recipe catalogue, then independent registry/kernel bytes and settings preimage, then digests, then the full profile binding, then frame bytes. Bootstrap validation may compare actual manifests to the seeded canonical operands, but may not manufacture trust by accepting a digest advertised by untrusted data.
+
+**Registry scope and profile extension policy:** the profile's RegistryDigest identifies its selected closed schema catalogue; M02 selects exactly P2, including the two kernel descriptor schemas. It is not a hash of Core's `SpatialProfiles` dictionary or an automatically growing process/application registry. Default is bound to this exact foundation closure and the P4 semantic manifest. Registering unrelated schemas must not silently change its digest or rebind its GUID. A later selected catalogue composition with additional native/input/application descriptors produces a different RegistryDigest and needs an explicitly assigned matching profile identity and compatibility review; it cannot overwrite Default. A different catalogue is not admitted merely because all currently decoded fields happen to match. This scoped closure/extension policy is the accepted interpretation of the general registry for M02.
+
+For other explicitly registered IDs, the codec-side immutable binding contains `(ProfileId, CoordinateId, GeometryId, SpatialId, MetersPerUnitExponent, ChunkSizeExponent, SettingsDigest, RegistryDigest, KernelDigest)`. The M02 selection admits the same baseline codes/catalogues with the registered settings; application GUID aliases are not deduplicated into Default. Before decode/projection, obtain that binding from trusted registration/build data, require Core `SpatialProfiles.TryGetSettings` to agree, and never call `Register` from the record. Core's existing ID/settings registration is necessary but does not itself prove that an external digest/catalogue was accepted. This adds no public member to `SpatialProfiles`.
+
+The EPKG2 version-2 profile-table projection, when implemented, is precisely the same codes, exponents and three digests; it omits ProfileId as already specified. Its semantic-manifest deduplication does not license GUID rebinding. Persisted profile/frame fields must agree with both the selected registered identity and any enclosing package tuple before activation.
+
+### P6. WorldGuid source and runtime-owner boundary
+
+The current `sources\TerraFX.Core\SpatialFrame2.cs`/`SpatialFrame3.cs` public values have OwnerId, ProfileId, Settings, Origin, positive `long` Revision and extents, but no WorldGuid. `SpatialPosition2/3` have no owner/profile metadata, and `SpatialProfiles` registers ID/settings only. These are evidence of a consumer gap, not authorization to add a public WorldGuid property or infer one from an OwnerId.
+
+The source is [27 section 1](27-state-serialization-replay-and-recovery.md#1-save-schema-and-committed-snapshots)'s enclosing **stable world GUID**. A private immutable persistence binding supplies that nonempty GUID and the accepted profile binding to frame reading/writing. World creation/persistence ownership assigns and retains it; subsequent captures of that world use the same value. M02 fixtures explicitly supply this binding without constructing a live World. A bare Core SpatialFrame is insufficient serialization input. No process-ID lookup guess, default GUID, per-write random GUID, host ID, profile GUID or document-name hash substitutes for the world identity.
+
+Capture pairs a Core frame with the owning world's committed persistence binding on the legal owner boundary. Check that its OwnerId equals that owner's current runtime ID and that profile/settings/revision/extents are admitted; only then copy its semantic fields and the binding's WorldGuid into the private wire record. The codec neither grants authority from a publicly fabricated frame nor retains a mutable World/borrow across I/O. A foreign/stale capture binding is ownership misuse, not a serialization fallback.
+
+Read requires the explicitly supplied enclosing world GUID, validates tag 1 against it, and retains that field in the staged wire value. It requires the entire nested profile, including ProfileId, to match the enclosing persistence binding, and validates canonical origin, UInt64-to-positive-long revision and ordered extents before successful output. It does not normalize source offsets, allocate an OwnerId, register a profile, create a World, publish caches, or replace a live frame. `Complete` at this boundary means a usable staged persistence value, not an activated Core frame/world.
+
+Frame records are closed under their selected schema version. Read-derived state retains the exact admitted frame value needed for capture; unknown tags are unsupported rather than opaque sidecar state. A newly authored frame contains exactly its declared fields. No public sidecar or borrowed package view is introduced.
+
+Restore's World-owned transaction validates staged data, then obtains exactly one fresh process OwnerId from [03](03-shared-conventions-and-clocks.md#3-identities-bounds-and-numeric-safety)'s internal issuer through the reviewed Core-to-Runtime assembly route. It binds that ID to the preserved stable world GUID and projects validated frame data through the existing dimensional SpatialFrame constructor; individual frames do not allocate owners. The candidate's new runtime owner does not enter serialized bytes, while positive revision and canonical component bits survive. The transaction also applies its subsystem's extent/precision policy before activation. Reusing an already active world or applying a rebase remains that owner's coordinated transaction, not the codec's authority. Matching a world GUID alone cannot validate a foreign runtime handle. No public persistence context or owner-ID fabrication API is added.
+
+For M02, acceptance covers the private wire codec and explicit-binding projection/capture checks with controlled issuer/binding fixtures. Actual committed capture, staged-world replacement and strict restore remain M03 and [27](27-state-serialization-replay-and-recovery.md) obligations. Failed byte/profile/registration admission before owner issuance leaves registries, owner allocation and live state untouched. Failure after a validated replacement candidate has received its owner cleans up candidate resources, burns the ID, and leaves the current World unchanged. Changing only the valid runtime OwnerId on two corresponding bound captures must produce identical frame bytes.
+
+### P7. Canonical vectors and focused tests
+
+The Core NUnit suite keeps five canonical SHA-256 values as compact wire-format regression checks. Tests construct the canonical records in C# and assert their exact lengths and hashes; additional tests exercise the reader, writer, profile/frame binding, UUID recipe, extension retention, malformed input, budgets and atomic-write behavior directly.
+
+| Vector | Contract | Byte count / SHA-256 |
+|---|---|---|
+| G01 Registry | P2/P3, eight schemas and thirty-eight fixed fields | 14112 / `f21833596ed8bedeaa7e366505a2ade8ad349ab35f7bf0554ad2d8ce5aeda43f` |
+| G02 Kernel | P4, nine version-1 recipes and exact parameters | 2192 / `494f69b9559de1c609b2c51a11454fcdc3a0be8b108fdc91f242d89b38d18105` |
+| G03 Default profile | Codes (1,2,2), exponents (0,12), P5 digests and Default GUID | 544 / `5fe3ae0fbae08e4a21b064b1449934a25911176e50def5c6f3bac8239595652f` |
+| G04 Frame2 | Bound world, default profile, signed-zero extent and subnormal offset | 880 / `ef8d0cf21410ebcd8926dfb52155f437a7324ff5f0dce507bb3fa565989551fe` |
+| G05 Frame3 | Bound world, default profile and signed-boundary coordinates | 896 / `b72d5e5735a6586a9774ef608426d443ebf135bf678a44f2d42ff2290d72f357` |
+
+These hashes detect canonical wire drift without pinning every generated mutation or the contents of test metadata. Prefix tests check representative incomplete inputs and their observable status/output directly; they do not hash a sequence of assertions they already perform. Add a case when it covers a distinct contract, not to preserve corpus counts or duplicate a behavior already tested end to end.
+
+### P8. Prerequisite handoff
+
+The M02 implementation uses ordinary .NET tests with C# test data. The five canonical hashes above guard byte-level drift; focused NUnit cases cover the behavior that hashes cannot express, including validation outcomes, binding rules, extension retention and destination atomicity. Future readers and writers add only the cases needed to exercise distinct contracts at their owning implementation boundary.
+
+## 2.2 M03 content-schema and package binding
+
+This section separates the M02 spatial/foundation profile from the M03 asset schema and package. `foundation/profile.RegistryDigest` and `SpatialProfileId` retain their identities; the M02 RegistryDigest and dependent profile/frame bytes reflect the fixed-field descriptor contract. M03 schema registrations are compiled into the selected application; packages do not carry or compose an executable schema catalogue and do not require a separate `ContentSchemaDigest`. The package SHA-256 covers the complete package bytes and is supplied by the application's deployment configuration. It detects a byte mismatch but does not authenticate the publisher. Adding a compiled application schema requires its statically rooted codec and a schema version; it does not change the foundation binding.
+
+The finite M03 contract below describes the selected native payload schemas and content-set package. Schema registrations are build inputs and trusted runtime registrations, not package-provided executable metadata. Adoption does not approve production bytes, implementation, capacity/provider qualification, NativeAOT/BF12 or runtime execution. M02 section 2.1 keeps its schema identities and kernel recipes; its RegistryDigest and dependent profile/frame bytes reflect the fixed-field contract. Native envelope 2.0 contains only its scoped AssetId and payload.
+
+M03-A registers only the compiled schema codecs needed by its selected features; there is no runtime schema-manifest import/composition or migration-chain admission. M03-A implements each real callable provider root required by its selected registrations; M03-B owns higher-owner native payload and persistence operations and their dependent observations. Tests distinguish schema metadata and package parsing from actual provider/persistence behavior; no receipt or catalogue-approval package is required.
+
+M03 clause numbers are retained across owner chapters so every byte-affecting operand has one authoritative location; they are not new acceptance IDs. Public member construction/binding contracts are in [30](30-public-api-review-surface.md). Existing owner semantics still apply; these clauses replace incomplete/stale projections, not matching reviewed contracts.
+
+| M03 clause | Normative owner |
 |---|---|
-| 0 / 4 | ASCII `EPKG` |
-| 4 / 2, 6 / 2 | Major `2`, minor `0` |
-| 8 / 8 | Total package bytes |
-| 16 / 8, 24 / 8 | Index offset, index bytes |
-| 32 / 4, 36 / 4 | Entry count, dependency count |
-| 40 / 4, 44 / 4 | Flags zero, native-profile-table version `2` |
-| 48 / 32 | SHA-256 of exact index bytes |
-| 80 / 16 | Package GUID |
-| 96 / 32 | Reserved zeros |
+| 2, 3, 4.1-4.2, 5-8 record inventories, 9, 10.1-10.5 | This chapter: reader boundary, functional C0/recipe/wire operands and focused C# conformance tests |
+| Package identity, deterministic build, bounds, and leases | [11](11-assets-import-streaming-and-packages.md): content-set AssetIds, EPKG2/EIDX1, package checksum, loading, and replacement |
+| Package and asset-loading capacities | [04](04-capacity-and-workload-profiles.md): checked file, directory, decode, and retained-backing bounds |
+| 5.1-5.2 | [16](16-scenes-transforms-and-cameras.md): final root poses and typed override/reference binding |
+| 7.1 / 7.2 / 7.3 | [18](18-shaders-and-material-pipeline.md) / [20](20-animation-and-deformation.md) / [21](21-2d-and-3d-rendering.md): material operands, ordered clip data and CPU extraction |
+| 8.1-8.5 | [27](27-state-serialization-replay-and-recovery.md): executable checkpoint/identity/control/layout/continuation invariants |
+| 10.6 | [34](34-engine-acceptance-cases.md): public lifetime/admission/resource/cleanup observations |
 
-The binary index starts with a 64-byte `EIDX` header: magic at 0, version `1`/alignment `16` as unsigned 16-bit fields at 4/6, entry/dependency/profile counts as unsigned 32-bit fields at 8/12/16, diagnostic-string bytes at 20, and unsigned 64-bit offsets for entry/dependency/profile/string tables at 24/32/40/48, with total index bytes at 56. Offsets are relative to index start, aligned to 16 where applicable, range-checked, and mutually disjoint.
-
-Each entry occupies 128 bytes and sorts by canonical asset GUID bytes: asset GUID at 0, schema GUID at 16, schema major/minor unsigned 32-bit values at 32/36, codec byte at 40 (`None = 0`, `Brotli = 1`), zero entry flags byte at 41, six reserved zeros at 42, payload offset/compressed/decoded lengths as unsigned 64-bit values at 48/56/64, dependency-first/count unsigned 32-bit values at 72/76, decoded SHA-256 at 80, profile-table index unsigned 32-bit value at 112, and twelve reserved zeros at 116. None requires equal compressed/decoded lengths. Profile index is strictly below profile count; nonempty packages therefore require at least one profile.
-
-Each dependency occupies 64 bytes: asset GUID at 0, required content digest at 16, required schema-major unsigned 32-bit value at 48, unsigned 32-bit flags zero at 52, and eight reserved zeros at 56. Each entry's dependency slice is sorted by GUID/digest, with no duplicates. The canonical table concatenates those slices in entry order; a dependency may recur in another entry's slice. External dependencies resolve by exact ID/digest/schema through the store, never by diagnostic names.
-
-Profile-table version 2 has 128-byte records: coordinate/geometry/spatial unsigned 32-bit IDs at 0/4/8, signed Int32 `MetersPerUnitExponent` at 12, chunk exponent byte at 16, three reserved zeros at 17, settings SHA-256 at 20, schema-registry SHA-256 at 52, numerical-kernel SHA-256 at 84, and twelve reserved zeros at 116. Built-in IDs are coordinate `LeftHandedYUpForwardZ1 = 1`, geometry `EngineGeometryBinary32Rows2 = 2` (1 remains reserved), spatial `FloatChunk32V2 = 2` (1 remains reserved for `FloatChunk32V1`). The container remains EPKG2/EIDX1; its explicit profile-table discriminator changes, not the byte extent of entries or profiles. Version 1's binary32 factor at 12 is legacy migration input, never an Int32 exponent under version 2. Records sort lexicographically by complete bytes and cannot duplicate. IDs/digests resolve through the locked manifest; unknown profiles reject rather than adopting matching storage layouts. The table deduplicates semantic manifests, not application GUID aliases. After decoding an entry, its major-2 EBIN `foundation/profile` including `ProfileId` must agree with the indexed manifest and registered identity before activation.
-
-Canonical index layout is header, entry table, dependency table, profile table, then diagnostic strings, aligned to 16 with zero padding and exact total length. A diagnostic name record is asset GUID (16 bytes), UTF-8 byte count (unsigned 32-bit), four zero reserved bytes, then bytes and zero alignment padding. Records sort by asset GUID, reference an existing entry at most once, and collectively occupy exactly the declared string-byte extent. Names are optional and never runtime paths. Empty tables have zero extent and the current aligned cursor as their offset.
-
-Payload ranges are positive, nonoverlapping, in bounds, and disjoint from header/index. A legal zero-length schema may have an empty payload. Index and decoded payload digests both verify before activation. Reserved bytes/unknown mandatory flags/duplicate IDs/dependency cycles/incompatible profiles reject.
-
-Default package limit remains 8 GiB; index limit is 64 MiB, with at most 131072 entries and 524288 dependency records. Byte budgets include every header/table/string/padding allocation, not just payload. Tighter untrusted-content limits in [11](11-assets-import-streaming-and-packages.md) remain mandatory and do not rise automatically with trusted package capacities.
-
-## 4. Streaming, compression, saves, and migration
-
-Large readers validate extents in integer arithmetic and consume owned bounded windows. A schema's fixed-stride arrays may be lazily mapped only after exact alignment/stride/lease/profile proof; otherwise readers copy/convert. Public consumers do not receive a byte pointer, BCL sequence position, or view into a disposed package.
-
-Brotli output cannot exceed declared decoded length or aggregate decode budget. Short output, excess output, truncated/trailing invalid frames, mismatched digest, or canceled incomplete output never becomes a ready asset. Independent blocks are used only by schemas that declare their block table/digests and random-access semantics; an implementer cannot split a whole-stream codec arbitrarily.
-
-Binary save/checkpoint/replay records reuse EBIN schemas and canonical field ordering, with [27](27-state-serialization-replay-and-recovery.md)'s generation, durable flush, atomic replacement, backup, and lineage rules. Text exports are tooling features, not the canonical strict-checkpoint hash. A JSON/XML save importer stages a new binary schema lineage and cannot promise StrictLocal continuation from unspecified textual float/order data.
-
-Migrations are registered pure bounded semantic conversions. Legacy EPKG1 JSON indices and old text input maps validate under their original schema first, then cook EPKG2/native EBIN outputs with fresh digests. Unsupported old layouts reject explicitly. Engine public types, source formats, native binary schema versions, and package-container versions are independent compatibility dimensions.
-
-## 5. Acceptance obligations
-
-| ID | Required observation |
-|---|---|
-| BN01 | Golden EBIN/header/table/geometry/GUID/UTF-8 byte fixtures round-trip under separate readers/writers; no CLR padding/native alias assumptions |
-| BN02 | Exact field tags/kinds/strides/defaults/schema versions are frozen before reader implementation; unknown required cases reject |
-| BN03 | JSON/XML/native authoring of equivalent semantics cooks equivalent canonical data without format-dependent runtime APIs |
-| BN04 | EPKG2 sorted binary tables, reserved bytes, range overlap/overflow, counts, digests, dependencies, and profile identity validate before allocation/activation |
-| BN05 | Compression bombs, truncation, trailing invalid data, cancellation, invalid UTF-8, duplicate fields, and malicious external XML resolution fail observably |
-| BN06 | Large windowed reads/mappings retain storage until actual completion and respect aggregate package/decode budgets |
-| BN07 | Text/EPKG1/schema migrations create validated new versions/lineages without silently relabeling strict replay |
-| BN08 | Representative content measures load latency, allocations, cooked/compressed bytes, and edit/cook round trips against the text baseline |
-| BN09 | Independent UUID recipe fixtures cover exact RFC namespace byte order, case/length/domain separation, all built-in keys, version 8/variant bits and the frozen defaults. Invalid names/colliding assignments/refused unknown recipes fail before publication. Encode signed exponent endpoints/tag 10/major 2 and profile-table version 2; inject old factor/tag/discriminator/identity bytes | SHA-256 UUIDv8 matches locked golden bytes across implementations/cultures; evolving a recipe never silently regenerates assigned IDs. UUIDs are not full content digests/authenticators. Legacy UUIDv5/profile manifests require explicit bounded registry/content migration and new lineage; no reused tag 4, inferred exponent, mixed profile interpretation or relabeled StrictLocal state |
-| BN10 | Degree/turn/radian scalar and Euler source envelopes survive JSON/XML edit/save/cook, signed zero and untouched-display/other-property edits. Reject duplicate/stale bindings, wrong unit/arity/version and changed canonical digest; migrate old source interpretation only explicitly. Runtime bytes contain existing canonical fields, never raw Angle/editor envelopes |

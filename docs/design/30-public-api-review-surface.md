@@ -40,7 +40,9 @@ Forward conversion names are `AsSystem` followed by the corresponding type name.
 
 ```csharp
 using System;
+using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Numerics;
 
 namespace TerraFX.Numerics;
 
@@ -51,11 +53,24 @@ public enum AngleUnit
     Radians = 2
 }
 
-public readonly struct Angle : IEquatable<Angle>, IFormattable, ISpanFormattable, IUtf8SpanFormattable, System.Numerics.IAdditionOperators<Angle, Angle, Angle>, System.Numerics.ISubtractionOperators<Angle, Angle, Angle>, System.Numerics.IUnaryNegationOperators<Angle, Angle>, System.Numerics.IMultiplyOperators<Angle, float, Angle>, System.Numerics.IDivisionOperators<Angle, float, Angle>, System.Numerics.IEqualityOperators<Angle, Angle, bool>
+public readonly struct Angle
+    : IComparable<Angle>,
+      IEquatable<Angle>,
+      IFormattable,
+      ISpanFormattable,
+      IUtf8SpanFormattable,
+      IAdditionOperators<Angle, Angle, Angle>,
+      ISubtractionOperators<Angle, Angle, Angle>,
+      IUnaryNegationOperators<Angle, Angle>,
+      IMultiplyOperators<Angle, float, Angle>,
+      IDivisionOperators<Angle, float, Angle>,
+      IEqualityOperators<Angle, Angle, bool>,
+      IComparisonOperators<Angle, Angle, bool>
 {
     public Angle(float value, AngleUnit unit);
     public float Value { get; }
     public AngleUnit Unit { get; }
+    public static IComparer<Angle> CreateComparer(AngleUnit unit);
     public static Angle FromDegrees(float value);
     public static Angle FromTurns(float value);
     public static Angle FromRadians(float value);
@@ -69,18 +84,37 @@ public readonly struct Angle : IEquatable<Angle>, IFormattable, ISpanFormattable
     public static Angle operator *(Angle value, float scalar);
     public static Angle operator *(float scalar, Angle value);
     public static Angle operator /(Angle value, float scalar);
+    public static bool operator <(Angle left, Angle right);
+    public static bool operator <=(Angle left, Angle right);
     public static bool operator ==(Angle left, Angle right);
     public static bool operator !=(Angle left, Angle right);
+    public static bool operator >(Angle left, Angle right);
+    public static bool operator >=(Angle left, Angle right);
+    public int CompareTo(Angle other);
     public bool Equals(Angle other);
     public override bool Equals(object? obj);
     public override int GetHashCode();
     public override string ToString();
-    public string ToString([StringSyntax("NumericFormat")] string? format, IFormatProvider? provider);
+    public string ToString([StringSyntax("NumericFormat")] string? format, IFormatProvider? formatProvider);
     public bool TryFormat(Span<char> destination, out int charsWritten, [StringSyntax("NumericFormat")] ReadOnlySpan<char> format, IFormatProvider? provider);
     public bool TryFormat(Span<byte> utf8Destination, out int bytesWritten, [StringSyntax("NumericFormat")] ReadOnlySpan<char> format, IFormatProvider? provider);
 }
 
-public readonly struct Vector2 : IEquatable<Vector2>, IFormattable, ISpanFormattable, IUtf8SpanFormattable, System.Numerics.IAdditionOperators<Vector2, Vector2, Vector2>, System.Numerics.ISubtractionOperators<Vector2, Vector2, Vector2>, System.Numerics.IUnaryNegationOperators<Vector2, Vector2>, System.Numerics.IMultiplyOperators<Vector2, float, Vector2>, System.Numerics.IDivisionOperators<Vector2, float, Vector2>, System.Numerics.IEqualityOperators<Vector2, Vector2, bool>, System.Numerics.IMultiplyOperators<Vector2, Vector2, Vector2>, System.Numerics.IDivisionOperators<Vector2, Vector2, Vector2>
+public readonly struct Vector2
+    : IComparable<Vector2>,
+      IEquatable<Vector2>,
+      IFormattable,
+      ISpanFormattable,
+      IUtf8SpanFormattable,
+      IAdditionOperators<Vector2, Vector2, Vector2>,
+      ISubtractionOperators<Vector2, Vector2, Vector2>,
+      IUnaryNegationOperators<Vector2, Vector2>,
+      IMultiplyOperators<Vector2, float, Vector2>,
+      IDivisionOperators<Vector2, float, Vector2>,
+      IEqualityOperators<Vector2, Vector2, bool>,
+      IComparisonOperators<Vector2, Vector2, bool>,
+      IMultiplyOperators<Vector2, Vector2, Vector2>,
+      IDivisionOperators<Vector2, Vector2, Vector2>
 {
     public Vector2(float x, float y);
     public Vector2(float value);
@@ -118,16 +152,35 @@ public readonly struct Vector2 : IEquatable<Vector2>, IFormattable, ISpanFormatt
     public static bool TryNormalize(Vector2 value, out Vector2 normalized);
     public static Vector2 TransformPoint(Vector2 point, Matrix3x2 matrix);
     public static Vector2 TransformDirection(Vector2 direction, Matrix3x2 matrix);
+    public static bool operator <(Vector2 left, Vector2 right);
+    public static bool operator <=(Vector2 left, Vector2 right);
+    public static bool operator >(Vector2 left, Vector2 right);
+    public static bool operator >=(Vector2 left, Vector2 right);
+    public int CompareTo(Vector2 other);
     public bool Equals(Vector2 other);
     public override bool Equals(object? obj);
     public override int GetHashCode();
     public override string ToString();
-    public string ToString([StringSyntax("NumericFormat")] string? format, IFormatProvider? provider);
+    public string ToString([StringSyntax("NumericFormat")] string? format, IFormatProvider? formatProvider);
     public bool TryFormat(Span<char> destination, out int charsWritten, [StringSyntax("NumericFormat")] ReadOnlySpan<char> format, IFormatProvider? provider);
     public bool TryFormat(Span<byte> utf8Destination, out int bytesWritten, [StringSyntax("NumericFormat")] ReadOnlySpan<char> format, IFormatProvider? provider);
 }
 
-public readonly struct Vector3 : IEquatable<Vector3>, IFormattable, ISpanFormattable, IUtf8SpanFormattable, System.Numerics.IAdditionOperators<Vector3, Vector3, Vector3>, System.Numerics.ISubtractionOperators<Vector3, Vector3, Vector3>, System.Numerics.IUnaryNegationOperators<Vector3, Vector3>, System.Numerics.IMultiplyOperators<Vector3, float, Vector3>, System.Numerics.IDivisionOperators<Vector3, float, Vector3>, System.Numerics.IEqualityOperators<Vector3, Vector3, bool>, System.Numerics.IMultiplyOperators<Vector3, Vector3, Vector3>, System.Numerics.IDivisionOperators<Vector3, Vector3, Vector3>
+public readonly struct Vector3
+    : IComparable<Vector3>,
+      IEquatable<Vector3>,
+      IFormattable,
+      ISpanFormattable,
+      IUtf8SpanFormattable,
+      IAdditionOperators<Vector3, Vector3, Vector3>,
+      ISubtractionOperators<Vector3, Vector3, Vector3>,
+      IUnaryNegationOperators<Vector3, Vector3>,
+      IMultiplyOperators<Vector3, float, Vector3>,
+      IDivisionOperators<Vector3, float, Vector3>,
+      IEqualityOperators<Vector3, Vector3, bool>,
+      IComparisonOperators<Vector3, Vector3, bool>,
+      IMultiplyOperators<Vector3, Vector3, Vector3>,
+      IDivisionOperators<Vector3, Vector3, Vector3>
 {
     public Vector3(float x, float y, float z);
     public Vector3(float value);
@@ -170,16 +223,35 @@ public readonly struct Vector3 : IEquatable<Vector3>, IFormattable, ISpanFormatt
     public static Vector3 TransformPoint(Vector3 point, Matrix4x4 matrix);
     public static Vector3 TransformDirection(Vector3 direction, Matrix4x4 matrix);
     public static Vector3 Rotate(Vector3 value, Quaternion rotation);
+    public static bool operator <(Vector3 left, Vector3 right);
+    public static bool operator <=(Vector3 left, Vector3 right);
+    public static bool operator >(Vector3 left, Vector3 right);
+    public static bool operator >=(Vector3 left, Vector3 right);
+    public int CompareTo(Vector3 other);
     public bool Equals(Vector3 other);
     public override bool Equals(object? obj);
     public override int GetHashCode();
     public override string ToString();
-    public string ToString([StringSyntax("NumericFormat")] string? format, IFormatProvider? provider);
+    public string ToString([StringSyntax("NumericFormat")] string? format, IFormatProvider? formatProvider);
     public bool TryFormat(Span<char> destination, out int charsWritten, [StringSyntax("NumericFormat")] ReadOnlySpan<char> format, IFormatProvider? provider);
     public bool TryFormat(Span<byte> utf8Destination, out int bytesWritten, [StringSyntax("NumericFormat")] ReadOnlySpan<char> format, IFormatProvider? provider);
 }
 
-public readonly struct Vector4 : IEquatable<Vector4>, IFormattable, ISpanFormattable, IUtf8SpanFormattable, System.Numerics.IAdditionOperators<Vector4, Vector4, Vector4>, System.Numerics.ISubtractionOperators<Vector4, Vector4, Vector4>, System.Numerics.IUnaryNegationOperators<Vector4, Vector4>, System.Numerics.IMultiplyOperators<Vector4, float, Vector4>, System.Numerics.IDivisionOperators<Vector4, float, Vector4>, System.Numerics.IEqualityOperators<Vector4, Vector4, bool>, System.Numerics.IMultiplyOperators<Vector4, Vector4, Vector4>, System.Numerics.IDivisionOperators<Vector4, Vector4, Vector4>
+public readonly struct Vector4
+    : IComparable<Vector4>,
+      IEquatable<Vector4>,
+      IFormattable,
+      ISpanFormattable,
+      IUtf8SpanFormattable,
+      IAdditionOperators<Vector4, Vector4, Vector4>,
+      ISubtractionOperators<Vector4, Vector4, Vector4>,
+      IUnaryNegationOperators<Vector4, Vector4>,
+      IMultiplyOperators<Vector4, float, Vector4>,
+      IDivisionOperators<Vector4, float, Vector4>,
+      IEqualityOperators<Vector4, Vector4, bool>,
+      IComparisonOperators<Vector4, Vector4, bool>,
+      IMultiplyOperators<Vector4, Vector4, Vector4>,
+      IDivisionOperators<Vector4, Vector4, Vector4>
 {
     public Vector4(float x, float y, float z, float w);
     public Vector4(float value);
@@ -221,16 +293,21 @@ public readonly struct Vector4 : IEquatable<Vector4>, IFormattable, ISpanFormatt
     public static Vector4 Normalize(Vector4 value);
     public static bool TryNormalize(Vector4 value, out Vector4 normalized);
     public static Vector4 Transform(Vector4 value, Matrix4x4 matrix);
+    public static bool operator <(Vector4 left, Vector4 right);
+    public static bool operator <=(Vector4 left, Vector4 right);
+    public static bool operator >(Vector4 left, Vector4 right);
+    public static bool operator >=(Vector4 left, Vector4 right);
+    public int CompareTo(Vector4 other);
     public bool Equals(Vector4 other);
     public override bool Equals(object? obj);
     public override int GetHashCode();
     public override string ToString();
-    public string ToString([StringSyntax("NumericFormat")] string? format, IFormatProvider? provider);
+    public string ToString([StringSyntax("NumericFormat")] string? format, IFormatProvider? formatProvider);
     public bool TryFormat(Span<char> destination, out int charsWritten, [StringSyntax("NumericFormat")] ReadOnlySpan<char> format, IFormatProvider? provider);
     public bool TryFormat(Span<byte> utf8Destination, out int bytesWritten, [StringSyntax("NumericFormat")] ReadOnlySpan<char> format, IFormatProvider? provider);
 }
 
-public readonly struct Quaternion : IEquatable<Quaternion>, IFormattable, ISpanFormattable, IUtf8SpanFormattable, System.Numerics.IAdditionOperators<Quaternion, Quaternion, Quaternion>, System.Numerics.ISubtractionOperators<Quaternion, Quaternion, Quaternion>, System.Numerics.IUnaryNegationOperators<Quaternion, Quaternion>, System.Numerics.IMultiplyOperators<Quaternion, float, Quaternion>, System.Numerics.IEqualityOperators<Quaternion, Quaternion, bool>, System.Numerics.IMultiplyOperators<Quaternion, Quaternion, Quaternion>
+public readonly struct Quaternion : IEquatable<Quaternion>, IFormattable, ISpanFormattable, IUtf8SpanFormattable, IAdditionOperators<Quaternion, Quaternion, Quaternion>, ISubtractionOperators<Quaternion, Quaternion, Quaternion>, IUnaryNegationOperators<Quaternion, Quaternion>, IMultiplyOperators<Quaternion, float, Quaternion>, IEqualityOperators<Quaternion, Quaternion, bool>, IMultiplyOperators<Quaternion, Quaternion, Quaternion>
 {
     public Quaternion(float x, float y, float z, float w);
     public Quaternion(Vector3 vector, float scalar);
@@ -265,12 +342,12 @@ public readonly struct Quaternion : IEquatable<Quaternion>, IFormattable, ISpanF
     public override bool Equals(object? obj);
     public override int GetHashCode();
     public override string ToString();
-    public string ToString([StringSyntax("NumericFormat")] string? format, IFormatProvider? provider);
+    public string ToString([StringSyntax("NumericFormat")] string? format, IFormatProvider? formatProvider);
     public bool TryFormat(Span<char> destination, out int charsWritten, [StringSyntax("NumericFormat")] ReadOnlySpan<char> format, IFormatProvider? provider);
     public bool TryFormat(Span<byte> utf8Destination, out int bytesWritten, [StringSyntax("NumericFormat")] ReadOnlySpan<char> format, IFormatProvider? provider);
 }
 
-public readonly struct Matrix3x2 : IEquatable<Matrix3x2>, IFormattable, ISpanFormattable, IUtf8SpanFormattable, System.Numerics.IMultiplyOperators<Matrix3x2, Matrix3x2, Matrix3x2>, System.Numerics.IEqualityOperators<Matrix3x2, Matrix3x2, bool>
+public readonly struct Matrix3x2 : IEquatable<Matrix3x2>, IFormattable, ISpanFormattable, IUtf8SpanFormattable, IMultiplyOperators<Matrix3x2, Matrix3x2, Matrix3x2>, IEqualityOperators<Matrix3x2, Matrix3x2, bool>
 {
     public Matrix3x2(Vector2 row1, Vector2 row2, Vector2 row3);
     public Vector2 Row1 { get; }
@@ -301,12 +378,12 @@ public readonly struct Matrix3x2 : IEquatable<Matrix3x2>, IFormattable, ISpanFor
     public override bool Equals(object? obj);
     public override int GetHashCode();
     public override string ToString();
-    public string ToString([StringSyntax("NumericFormat")] string? format, IFormatProvider? provider);
+    public string ToString([StringSyntax("NumericFormat")] string? format, IFormatProvider? formatProvider);
     public bool TryFormat(Span<char> destination, out int charsWritten, [StringSyntax("NumericFormat")] ReadOnlySpan<char> format, IFormatProvider? provider);
     public bool TryFormat(Span<byte> utf8Destination, out int bytesWritten, [StringSyntax("NumericFormat")] ReadOnlySpan<char> format, IFormatProvider? provider);
 }
 
-public readonly struct Matrix4x4 : IEquatable<Matrix4x4>, IFormattable, ISpanFormattable, IUtf8SpanFormattable, System.Numerics.IMultiplyOperators<Matrix4x4, Matrix4x4, Matrix4x4>, System.Numerics.IEqualityOperators<Matrix4x4, Matrix4x4, bool>
+public readonly struct Matrix4x4 : IEquatable<Matrix4x4>, IFormattable, ISpanFormattable, IUtf8SpanFormattable, IMultiplyOperators<Matrix4x4, Matrix4x4, Matrix4x4>, IEqualityOperators<Matrix4x4, Matrix4x4, bool>
 {
     public Matrix4x4(Vector4 row1, Vector4 row2, Vector4 row3, Vector4 row4);
     public Vector4 Row1 { get; }
@@ -354,7 +431,7 @@ public readonly struct Matrix4x4 : IEquatable<Matrix4x4>, IFormattable, ISpanFor
     public override bool Equals(object? obj);
     public override int GetHashCode();
     public override string ToString();
-    public string ToString([StringSyntax("NumericFormat")] string? format, IFormatProvider? provider);
+    public string ToString([StringSyntax("NumericFormat")] string? format, IFormatProvider? formatProvider);
     public bool TryFormat(Span<char> destination, out int charsWritten, [StringSyntax("NumericFormat")] ReadOnlySpan<char> format, IFormatProvider? provider);
     public bool TryFormat(Span<byte> utf8Destination, out int bytesWritten, [StringSyntax("NumericFormat")] ReadOnlySpan<char> format, IFormatProvider? provider);
 }
@@ -378,6 +455,7 @@ Spatial configuration and frame identity are explicit. There is no global double
 
 ```csharp
 using System;
+using System.Numerics;
 
 namespace TerraFX;
 
@@ -396,29 +474,45 @@ public interface IReadOnlyRefFunc<TArgument, TResult> where TArgument : allows r
     TResult Invoke(scoped in TArgument argument);
 }
 
-public readonly struct ChunkIndex2 : IEquatable<ChunkIndex2>
+public readonly struct ChunkIndex2
+    : IComparable<ChunkIndex2>,
+      IEquatable<ChunkIndex2>,
+      IComparisonOperators<ChunkIndex2, ChunkIndex2, bool>
 {
     public ChunkIndex2(int x, int y);
     public int X { get; }
     public int Y { get; }
+    public int CompareTo(ChunkIndex2 other);
     public bool Equals(ChunkIndex2 other);
     public override bool Equals(object? obj);
     public override int GetHashCode();
     public static bool operator ==(ChunkIndex2 left, ChunkIndex2 right);
     public static bool operator !=(ChunkIndex2 left, ChunkIndex2 right);
+    public static bool operator <(ChunkIndex2 left, ChunkIndex2 right);
+    public static bool operator <=(ChunkIndex2 left, ChunkIndex2 right);
+    public static bool operator >(ChunkIndex2 left, ChunkIndex2 right);
+    public static bool operator >=(ChunkIndex2 left, ChunkIndex2 right);
 }
 
-public readonly struct ChunkIndex3 : IEquatable<ChunkIndex3>
+public readonly struct ChunkIndex3
+    : IComparable<ChunkIndex3>,
+      IEquatable<ChunkIndex3>,
+      IComparisonOperators<ChunkIndex3, ChunkIndex3, bool>
 {
     public ChunkIndex3(int x, int y, int z);
     public int X { get; }
     public int Y { get; }
     public int Z { get; }
+    public int CompareTo(ChunkIndex3 other);
     public bool Equals(ChunkIndex3 other);
     public override bool Equals(object? obj);
     public override int GetHashCode();
     public static bool operator ==(ChunkIndex3 left, ChunkIndex3 right);
     public static bool operator !=(ChunkIndex3 left, ChunkIndex3 right);
+    public static bool operator <(ChunkIndex3 left, ChunkIndex3 right);
+    public static bool operator <=(ChunkIndex3 left, ChunkIndex3 right);
+    public static bool operator >(ChunkIndex3 left, ChunkIndex3 right);
+    public static bool operator >=(ChunkIndex3 left, ChunkIndex3 right);
 }
 
 public readonly struct SpatialSettings : IEquatable<SpatialSettings>
@@ -445,7 +539,7 @@ public readonly struct SpatialProfileId : IEquatable<SpatialProfileId>, IFormatt
     public override bool Equals(object? obj);
     public override int GetHashCode();
     public override string ToString();
-    public string ToString(string? format, IFormatProvider? provider);
+    public string ToString(string? format, IFormatProvider? formatProvider);
     public static bool operator ==(SpatialProfileId left, SpatialProfileId right);
     public static bool operator !=(SpatialProfileId left, SpatialProfileId right);
 }
@@ -1225,7 +1319,7 @@ public interface IBinarySchemaCodec<T>
 }
 ```
 
-Read's MaybeNull output is default/unusable for NeedMoreData/InvalidData; those statuses consume zero and cannot publish a partial object. Complete supplies the schema-admitted value and exact consumed prefix. An enum status cannot express nullable flow: consumers of a nonnullable reference schema must explicitly guard the successful output, whereas a nullable schema may legitimately admit null. Value-type consumers retain ordinary default/output semantics. This annotation changes metadata honesty, not record bytes or parser outcomes.
+Read's MaybeNull output is default/unusable for NeedMoreData and every error status; those results consume zero and cannot publish a partial object. Complete supplies the schema-admitted value and exact consumed prefix. An enum status cannot express nullable flow: consumers of a nonnullable reference schema must explicitly guard the successful output, whereas a nullable schema may legitimately admit null. Value-type consumers retain ordinary default/output semantics. This annotation changes metadata honesty, not record bytes or parser outcomes.
 
 ```csharp
 using System;

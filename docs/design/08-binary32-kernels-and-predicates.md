@@ -20,7 +20,7 @@ Quaternion inverse uses `conjugate(u) / s / m` as the ordinary binary32 candidat
 
 Using the integer `N` encoding below, let `S = sum(N(component)^2)`. Exact inverse components are `(-N(X), -N(Y), -N(Z), N(W)) * 2^149 / S`. For nonzero input, `S` is positive and has at most 556 magnitude bits; numerators have at most 426. Round these bounded rational components directly to nearest-even binary32 without an overflowing float intermediate. Conjugation flips the sign of zero X/Y/Z and preserves the sign of zero W. Input bits `[0x0010016b, 0x00100000, 0, 0]` must succeed with finite output bits `[0xff7fffff, 0xff7fe951, 0x80000000, 0]`, even though the ordinary candidate overflows. The filter/fallback is private machinery, not required hardware FP64 or a public arbitrary-precision API.
 
-Matrix inversion obtains the qualified binary32 BCL candidate and rejects kernel failure/nonfinite output. Validate both products against the existing absolute/product-scaled residual budget, but evaluate the predicate with exact bounded dyadics rather than requiring binary64 sums. `Matrix3x2` is checked in homogeneous 3x3 form.
+Matrix inversion obtains the qualified binary32 BCL candidate and rejects kernel failure/nonfinite output. Validate both products against the existing absolute/product-scaled residual budget. Binary32 products are exact in binary64; an outward-rounded interval filter may decide entries separated from either admission threshold, with uncertain entries decided by exact bounded dyadics rather than guessed. `Matrix3x2` is checked in homogeneous 3x3 form.
 
 The bounded exact reference uses a binary32 **dyadic representation**: an integer multiplied by a power of two. Let `E` be the stored exponent bits, `F` the fraction bits, and `s` be -1 for a set sign bit or +1 otherwise. For finite binary32 `x`, encode `N(x) = s * F` when `E = 0`; otherwise encode `N(x) = (s * ((1 << 23) + F)) << (E - 1)`. Then `x = N(x) * 2^(-149)`. Both signed zeros encode 0 for geometric predicates; operation-specific output zero signs remain explicit.
 
@@ -28,13 +28,13 @@ For one matrix product entry let `P` be the sum of integer products, `A` the abs
 
 `A * 100000 <= 2^298` **or** `A * 500000 <= T`.
 
-This is `abs(residual) <= max(1e-5, 2e-6 * sum(abs(productTerm)))` with exact decimal rational thresholds, not overflowing float products. Integer products/sums have fixed bounds from at most four binary32 terms. A certified filtered/expansion fast path may avoid integer fallback; an uncertain comparison must not be guessed. Inverse candidates remain binary32 and failure remains observable.
+This is `abs(residual) <= max(1e-5, 2e-6 * sum(abs(productTerm)))` with exact decimal rational thresholds, not overflowing float products. Integer products/sums have fixed bounds from at most four binary32 terms. Production geometry uses fixed-limb inline storage for exact predicates; it does not use `BigInteger`. A certified interval fast path may avoid the exact fallback; an uncertain comparison must not be guessed. Inverse candidates remain binary32 and failure remains observable.
 
 > **Informative rationale:** The absolute floor covers near-zero entries; the relative term accommodates binary32 rounding/cancellation at large translations or scales. The factor `2e-6` is approximately 32 binary32 unit roundoffs, a bounded-operation allowance rather than a condition-number estimate or universal inversion theorem. A zero candidate has diagonal residual 1 and no product magnitude, so it refuses.
 
 ## 3. Proper camera frames
 
-Test zero direction and parallel up against the original source dyadics. For `LookTo`, `D = N(direction)`; for `LookAt`, `D = N(target) - N(position)`; `C = cross(N(up), D)` exactly. Zero `D`/`C` refuses before normalized rounding, including antiparallel and scaled non-axis inputs. Each source `N` has at most 277 magnitude bits, `D` at most 278, and `C` at most 556. BCL `BigInteger` is therefore a bounded reference/fallback, not arbitrary user precision or a public numeric family.
+Test zero direction and parallel up against the original source dyadics. For `LookTo`, `D = N(direction)`; for `LookAt`, `D = N(target) - N(position)`; `C = cross(N(up), D)` exactly. Zero `D`/`C` refuses before normalized rounding, including antiparallel and scaled non-axis inputs. Each source `N` has at most 277 magnitude bits, `D` at most 278, and `C` at most 556. Production predicates use bounded fixed-limb inline storage; BCL `BigInteger` is reserved for independent test oracles, not arbitrary user precision or a public numeric family.
 
 `Cross(up, Normalize(direction))` is not a source-degeneracy test: rounding can invent a nonzero cross for `direction = up = (1, 2, 3)`. That `LookTo` input, and `LookAt` with zero position and `target = up = (1, 2, 3)`, refuse; exactly nonparallel nearby source values continue.
 
