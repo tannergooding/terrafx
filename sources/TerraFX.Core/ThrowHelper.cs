@@ -11,6 +11,11 @@ namespace TerraFX;
 
 internal static class ThrowHelper
 {
+    // Rounded lengths within 2e-6 span 1 - 33*2^-24 through 1 + 16*2^-23.
+    // Squaring their sqrt-rounding midpoints admits binary32 inputs 0x3F7FFFBE..0x3F800021,
+    // equivalently an absolute squared-length residual of at most 33*2^-23.
+    private const float UnitAxisSquaredLengthTolerance = 3.9339066e-6f;
+
     [DoesNotReturn]
     internal static void ThrowAggregateException(Exception innerException, Exception secondInnerException)
         => throw new AggregateException(innerException, secondInnerException);
@@ -111,6 +116,16 @@ internal static class ThrowHelper
         if (!float.IsFinite(value))
         {
             ThrowArgumentException("The value must be finite.", parameter);
+        }
+    }
+
+    /// <summary>Validates the approximate binary32 unit-length tolerance without rounding a square root.</summary>
+    internal static void ThrowIfNotUnitAxis(Vector3 value, [CallerArgumentExpression(nameof(value))] string? parameter = null)
+    {
+        if (!(float.Abs(Vector3.LengthSquared(value) - 1.0f) <= UnitAxisSquaredLengthTolerance))
+        {
+            ThrowIfNotFinite(value, parameter);
+            ThrowArgumentException("The axis must have unit length within 2e-6.", parameter);
         }
     }
 
