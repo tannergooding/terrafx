@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <OutputType>Exe</OutputType>
+    <IsTestProject>false</IsTestProject>
+    <RootNamespace>TerraFX.Core.SpatialConsumer</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Remove="Microsoft.NET.Test.Sdk;NUnit;NUnit3TestAdapter" />
+    <ProjectReference Include="..\..\sources\TerraFX.Core\TerraFX.Core.csproj" />
+  </ItemGroup>
+
+</Project>
