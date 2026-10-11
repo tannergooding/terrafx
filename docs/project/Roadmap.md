@@ -9,7 +9,7 @@ implementation state and remaining qualification.
 | Milestone | Status | Progress / remaining work |
 |---|---|---|
 | M01 - Repository and implementation readiness | Complete | Repository, build, test foundation, and first-unit prerequisites are established. This is readiness, not engine qualification. |
-| M02 - Core ownership, numerics, and spatial data | Ready to start | Angle/AngleUnit contracts are reviewed; no Core behavior is implemented yet. Foundation ownership, numerics, spatial data and codec qualification remain. |
+| M02 - Core ownership, numerics, and spatial data | Complete | Core-owned implementation and managed acceptance are complete. NativeAOT target-profile/workload qualification and later-owner observations remain with their owners. |
 | M03 - Worlds and native semantic content | Not started | Planned scope and prerequisites are defined in the design roadmap; no M03 implementation or qualification has started. |
 | M04 - Native host, input, and presentation resources | Not started | Requires the applicable M02/M03 capabilities and observations. |
 | M05 - Renderer, animation, and source adapters | Not started | Schedule by the capability and observation gates in design chapter 35. |
