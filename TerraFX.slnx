@@ -103,6 +103,7 @@
     <File Path="tests/.editorconfig" />
     <File Path="tests/Directory.Build.props" />
     <File Path="tests/Directory.Build.targets" />
+    <Project Path="tests/TerraFX.Diagnostics.Analyzers.Tests/TerraFX.Diagnostics.Analyzers.Tests.csproj" />
     <Project Path="tests/TerraFX.Assets.Tests/TerraFX.Assets.Tests.csproj" />
     <Project Path="tests/TerraFX.Audio.Tests/TerraFX.Audio.Tests.csproj" />
     <Project Path="tests/TerraFX.Content.Tools.Tests/TerraFX.Content.Tools.Tests.csproj" />
@@ -116,5 +117,9 @@
     <Project Path="tests/TerraFX.Physics.Tests/TerraFX.Physics.Tests.csproj" />
     <Project Path="tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" />
     <Project Path="tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/TerraFX.Diagnostics.Analyzers/TerraFX.Diagnostics.Analyzers.csproj" />
+    <Project Path="tools/TerraFX.Diagnostics.Fixers/TerraFX.Diagnostics.Fixers.csproj" />
   </Folder>
 </Solution>

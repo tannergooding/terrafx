@@ -1,8 +1,9 @@
-// Licensed to the .NET Foundation under one or more agreements.
-// The .NET Foundation licenses this file to you under the MIT license.
+// Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
+
+// This file includes code based on the SyntaxEditorBasedCodeFixProvider class from https://github.com/dotnet/sdk/.
+// The original code is Copyright © .NET Foundation and Contributors. All rights reserved. Licensed under the MIT License (MIT).
 
 using System;
-using System.Collections.Immutable;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
@@ -29,29 +30,17 @@ namespace TerraFX.CodeAnalysis;
 /// </remarks>
 public abstract class SyntaxEditorBasedCodeFixProvider : CodeFixProvider
 {
+    /// <inheritdoc/>
     public sealed override FixAllProvider GetFixAllProvider()
         => SyntaxEditorFixAllProvider.Create(ApplyFixAsync);
 
     /// <summary>
-    /// Registers an action applying <see cref="ApplyFixAsync"/> to every diagnostic in
-    /// <paramref name="context"/>, through the same editor a fix-all pass would use.
-    /// </summary>
-    protected void RegisterCodeFix(CodeFixContext context, string title, string equivalenceKey)
-    {
-        Document document = context.Document;
-        ImmutableArray<Diagnostic> diagnostics = context.Diagnostics;
-
-        CodeAction codeAction = CodeAction.Create(
-            title,
-            cancellationToken => SyntaxEditorFixAllProvider.ApplyFixesAsync(document, diagnostics, ApplyFixAsync, cancellationToken),
-            equivalenceKey
-        );
-        context.RegisterCodeFix(codeAction, diagnostics);
-    }
-
-    /// <summary>
     /// Applies the fix for a single diagnostic into <paramref name="editor"/>.
     /// </summary>
+    /// <param name="document">The document containing the diagnostic.</param>
+    /// <param name="diagnostic">The diagnostic being fixed.</param>
+    /// <param name="editor">The editor collecting the document's edits.</param>
+    /// <param name="cancellationToken">The cancellation token for the operation.</param>
     /// <remarks>
     /// Every diagnostic in the document is applied into one editor, which is not re-created between them,
     /// so <paramref name="diagnostic"/> locates against <see cref="SyntaxEditor.OriginalRoot"/> and
@@ -61,4 +50,26 @@ public abstract class SyntaxEditorBasedCodeFixProvider : CodeFixProvider
     /// overload - see the remarks on <see cref="SyntaxEditorFixAllProvider"/>.
     /// </remarks>
     protected abstract Task ApplyFixAsync(Document document, Diagnostic diagnostic, SyntaxEditor editor, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Registers an action applying <see cref="ApplyFixAsync"/> to every diagnostic in
+    /// <paramref name="context"/>, through the same editor a fix-all pass would use.
+    /// </summary>
+    /// <param name="context">The code-fix context containing the diagnostics to fix.</param>
+    /// <param name="title">The action title shown to the user.</param>
+    /// <param name="equivalenceKey">The stable key identifying this code action.</param>
+    protected void RegisterCodeFix(CodeFixContext context, string title, string equivalenceKey)
+    {
+        ThrowHelper.ThrowIfNull(title, nameof(title));
+        ThrowHelper.ThrowIfNull(equivalenceKey, nameof(equivalenceKey));
+
+        var document = context.Document;
+        var diagnostics = context.Diagnostics;
+
+        var codeAction = CodeAction.Create(
+            title,
+            cancellationToken => SyntaxEditorFixAllProvider.ApplyFixesAsync(document, diagnostics, ApplyFixAsync, cancellationToken),
+            equivalenceKey);
+        context.RegisterCodeFix(codeAction, diagnostics);
+    }
 }

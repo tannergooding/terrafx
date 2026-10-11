@@ -1,5 +1,7 @@
-// Licensed to the .NET Foundation under one or more agreements.
-// The .NET Foundation licenses this file to you under the MIT license.
+// Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
+
+// This file includes code based on the SyntaxEditorFixAllProvider class from https://github.com/dotnet/sdk/.
+// The original code is Copyright © .NET Foundation and Contributors. All rights reserved. Licensed under the MIT License (MIT).
 
 using System;
 using System.Collections.Generic;
@@ -10,7 +12,6 @@ using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CodeFixes;
 using Microsoft.CodeAnalysis.Editing;
-using Microsoft.CodeAnalysis.Text;
 
 namespace TerraFX.CodeAnalysis;
 
@@ -78,7 +79,7 @@ public static class SyntaxEditorFixAllProvider
     /// <see cref="FixAllScope.Solution"/>; the two span scopes have to be asked for through its
     /// constructor, because <see cref="FixAllProvider.GetSupportedFixAllScopes"/> is sealed there.
     /// </remarks>
-    private static readonly ImmutableArray<FixAllScope> SupportedFixAllScopes = ImmutableArray.Create(
+    private static readonly ImmutableArray<FixAllScope> s_supportedFixAllScopes = ImmutableArray.Create(
         FixAllScope.Document,
         FixAllScope.Project,
         FixAllScope.Solution,
@@ -86,15 +87,47 @@ public static class SyntaxEditorFixAllProvider
         FixAllScope.ContainingType);
 
     /// <summary>
+    /// Applies a fix to every one of a document's diagnostics through a single
+    /// <see cref="SyntaxEditor"/>, in the same order a fix-all pass would.
+    /// </summary>
+    /// <remarks>
+    /// Call this from <see cref="CodeFixProvider.RegisterCodeFixesAsync"/> when a fixer registers one action
+    /// covering all of <see cref="CodeFixContext.Diagnostics"/>, so that a single invocation and a fix-all
+    /// pass go through the same code.
+    /// </remarks>
+    /// <param name="document">The document containing the diagnostics.</param>
+    /// <param name="diagnostics">The diagnostics fixed by the action.</param>
+    /// <param name="applyFixAsync">Applies one diagnostic to the shared editor.</param>
+    /// <param name="cancellationToken">The cancellation token for the operation.</param>
+    public static Task<Document> ApplyFixesAsync(
+        Document document,
+        ImmutableArray<Diagnostic> diagnostics,
+        Func<Document, Diagnostic, SyntaxEditor, CancellationToken, Task> applyFixAsync,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowHelper.ThrowIfNull(document, nameof(document));
+        ThrowHelper.ThrowIfNull(applyFixAsync, nameof(applyFixAsync));
+
+        return ApplyFixesAsync<object?>(
+            document,
+            diagnostics,
+            state: null,
+            (doc, diagnostic, editor, _, token) => applyFixAsync(doc, diagnostic, editor, token),
+            getFixedDocument: null,
+            cancellationToken);
+    }
+
+    /// <summary>
     /// Creates a provider for a fix that needs nothing beyond the editor and the diagnostic.
     /// </summary>
     public static FixAllProvider Create(
         Action<Document, Diagnostic, SyntaxEditor> applyFix)
     {
+        ThrowHelper.ThrowIfNull(applyFix, nameof(applyFix));
+
         return new Provider<object?>(
             static _ => null,
-            (document, diagnostic, editor, _, _) =>
-            {
+            (document, diagnostic, editor, _, _) => {
                 applyFix(document, diagnostic, editor);
                 return Task.CompletedTask;
             },
@@ -107,6 +140,8 @@ public static class SyntaxEditorFixAllProvider
     public static FixAllProvider Create(
         Func<Document, Diagnostic, SyntaxEditor, CancellationToken, Task> applyFixAsync)
     {
+        ThrowHelper.ThrowIfNull(applyFixAsync, nameof(applyFixAsync));
+
         return new Provider<object?>(
             static _ => null,
             (document, diagnostic, editor, _, cancellationToken) => applyFixAsync(document, diagnostic, editor, cancellationToken),
@@ -122,6 +157,8 @@ public static class SyntaxEditorFixAllProvider
     /// <see cref="FixAllContext.CodeActionEquivalenceKey"/> - <see cref="DocumentBasedFixAllProvider"/> does
     /// not filter diagnostics by it, so a fixer that registers more than one action has to honor it here.
     /// </param>
+    /// <param name="applyFixAsync">Applies one diagnostic to the shared editor.</param>
+    /// <param name="fixAllTitle">Optional title for the fix-all action.</param>
     /// <param name="getFixedDocument">
     /// Optional. Produces the document from the editor once every fix has been applied. Use it for a step
     /// that has to happen once rather than per diagnostic, such as adding a namespace import. Defaults to
@@ -133,31 +170,10 @@ public static class SyntaxEditorFixAllProvider
         string? fixAllTitle = null,
         Func<Document, SyntaxEditor, TState, Document>? getFixedDocument = null)
     {
-        return new Provider<TState>(createDocumentState, applyFixAsync, fixAllTitle, getFixedDocument);
-    }
+        ThrowHelper.ThrowIfNull(createDocumentState, nameof(createDocumentState));
+        ThrowHelper.ThrowIfNull(applyFixAsync, nameof(applyFixAsync));
 
-    /// <summary>
-    /// Applies a fix to every one of a document's diagnostics through a single
-    /// <see cref="SyntaxEditor"/>, in the same order a fix-all pass would.
-    /// </summary>
-    /// <remarks>
-    /// Call this from <see cref="CodeFixProvider.RegisterCodeFixesAsync"/> when a fixer registers one action
-    /// covering all of <see cref="CodeFixContext.Diagnostics"/>, so that a single invocation and a fix-all
-    /// pass go through the same code.
-    /// </remarks>
-    public static Task<Document> ApplyFixesAsync(
-        Document document,
-        ImmutableArray<Diagnostic> diagnostics,
-        Func<Document, Diagnostic, SyntaxEditor, CancellationToken, Task> applyFixAsync,
-        CancellationToken cancellationToken = default)
-    {
-        return ApplyFixesAsync<object?>(
-            document,
-            diagnostics,
-            state: null,
-            (doc, diagnostic, editor, _, token) => applyFixAsync(doc, diagnostic, editor, token),
-            getFixedDocument: null,
-            cancellationToken);
+        return new Provider<TState>(createDocumentState, applyFixAsync, fixAllTitle, getFixedDocument);
     }
 
     internal static async Task<Document> ApplyFixesAsync<TState>(
@@ -170,13 +186,18 @@ public static class SyntaxEditorFixAllProvider
     {
         // The host can report the same diagnostic more than once (https://github.com/dotnet/roslyn/issues/31381),
         // and applying a fix twice to one node throws rather than producing a duplicate edit.
-        ImmutableArray<Diagnostic> distinctDiagnostics = diagnostics.Distinct().ToImmutableArray();
+        ImmutableArray<Diagnostic> distinctDiagnostics = [.. diagnostics.Distinct()];
 
-        SyntaxNode root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException("The document does not have a syntax root.");
-        SyntaxEditor editor = new SyntaxEditor(root, document.Project.Solution.Workspace.Services);
+        var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
 
-        foreach (Diagnostic diagnostic in Order(distinctDiagnostics))
+        if (root is null)
+        {
+            ThrowHelper.ThrowInvalidOperationException("The document does not have a syntax root.");
+        }
+
+        var editor = new SyntaxEditor(root, document.Project.Solution.Workspace.Services);
+
+        foreach (var diagnostic in Order(distinctDiagnostics))
         {
             await applyFixAsync(document, diagnostic, editor, state, cancellationToken).ConfigureAwait(false);
         }
@@ -184,46 +205,6 @@ public static class SyntaxEditorFixAllProvider
         return getFixedDocument is null
             ? document.WithSyntaxRoot(editor.GetChangedRoot())
             : getFixedDocument(document, editor, state);
-    }
-
-    private sealed class Provider<TState> : DocumentBasedFixAllProvider
-    {
-        private readonly Func<FixAllContext, TState> _createDocumentState;
-        private readonly Func<Document, Diagnostic, SyntaxEditor, TState, CancellationToken, Task> _applyFixAsync;
-        private readonly string? _fixAllTitle;
-        private readonly Func<Document, SyntaxEditor, TState, Document>? _getFixedDocument;
-
-        public Provider(
-            Func<FixAllContext, TState> createDocumentState,
-            Func<Document, Diagnostic, SyntaxEditor, TState, CancellationToken, Task> applyFixAsync,
-            string? fixAllTitle,
-            Func<Document, SyntaxEditor, TState, Document>? getFixedDocument = null)
-            : base(SupportedFixAllScopes)
-        {
-            _createDocumentState = createDocumentState;
-            _applyFixAsync = applyFixAsync;
-            _fixAllTitle = fixAllTitle;
-            _getFixedDocument = getFixedDocument;
-        }
-
-        protected override string GetFixAllTitle(FixAllContext fixAllContext)
-            => _fixAllTitle ?? base.GetFixAllTitle(fixAllContext);
-
-        protected override async Task<Document?> FixAllAsync(FixAllContext fixAllContext, Document document, ImmutableArray<Diagnostic> diagnostics)
-        {
-            if (diagnostics.IsEmpty)
-            {
-                return document;
-            }
-
-            return await ApplyFixesAsync(
-                document,
-                diagnostics,
-                _createDocumentState(fixAllContext),
-                _applyFixAsync,
-                _getFixedDocument,
-                fixAllContext.CancellationToken).ConfigureAwait(false);
-        }
     }
 
     /// <summary>
@@ -255,15 +236,15 @@ public static class SyntaxEditorFixAllProvider
         // Sweeping in source order, a span that ends before the furthest end seen so far begins at or
         // after - and ends before - a span already visited, so it is contained in it. Equal spans are
         // not nesting: several diagnostics reported at one node are fixed against one target.
-        TextSpan[] spans = diagnostics
+        var spans = diagnostics
             .Select(static diagnostic => diagnostic.Location.SourceSpan)
             .OrderBy(static span => span.Start)
             .ThenByDescending(static span => span.End)
             .ToArray();
 
-        int furthestEnd = spans[0].End;
+        var furthestEnd = spans[0].End;
 
-        for (int i = 1; i < spans.Length; i++)
+        for (var i = 1; i < spans.Length; i++)
         {
             if (spans[i].End < furthestEnd)
             {
@@ -274,5 +255,45 @@ public static class SyntaxEditorFixAllProvider
         }
 
         return false;
+    }
+
+    private sealed class Provider<TState> : DocumentBasedFixAllProvider
+    {
+        private readonly Func<Document, Diagnostic, SyntaxEditor, TState, CancellationToken, Task> _applyFixAsync;
+        private readonly Func<FixAllContext, TState> _createDocumentState;
+        private readonly string? _fixAllTitle;
+        private readonly Func<Document, SyntaxEditor, TState, Document>? _getFixedDocument;
+
+        public Provider(
+            Func<FixAllContext, TState> createDocumentState,
+            Func<Document, Diagnostic, SyntaxEditor, TState, CancellationToken, Task> applyFixAsync,
+            string? fixAllTitle,
+            Func<Document, SyntaxEditor, TState, Document>? getFixedDocument = null)
+            : base(s_supportedFixAllScopes)
+        {
+            _createDocumentState = createDocumentState;
+            _applyFixAsync = applyFixAsync;
+            _fixAllTitle = fixAllTitle;
+            _getFixedDocument = getFixedDocument;
+        }
+
+        protected override async Task<Document?> FixAllAsync(FixAllContext fixAllContext, Document document, ImmutableArray<Diagnostic> diagnostics)
+        {
+            if (diagnostics.IsEmpty)
+            {
+                return document;
+            }
+
+            return await ApplyFixesAsync(
+                document,
+                diagnostics,
+                _createDocumentState(fixAllContext),
+                _applyFixAsync,
+                _getFixedDocument,
+                fixAllContext.CancellationToken).ConfigureAwait(false);
+        }
+
+        protected override string GetFixAllTitle(FixAllContext fixAllContext)
+            => _fixAllTitle ?? base.GetFixAllTitle(fixAllContext);
     }
 }

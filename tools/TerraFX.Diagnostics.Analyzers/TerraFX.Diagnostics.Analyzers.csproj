@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <TerraFXProjectCategory>tools</TerraFXProjectCategory>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+    <IsAotCompatible>false</IsAotCompatible>
+    <IsPackable>false</IsPackable>
+    <IsRoslynComponent>true</IsRoslynComponent>
+    <SkipLocalsInit>false</SkipLocalsInit>
+    <TerraFXUseRepositoryAnalyzers>false</TerraFXUseRepositoryAnalyzers>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\CodeAnalysis\DoesNotReturnAttribute.cs" Link="CodeAnalysis\DoesNotReturnAttribute.cs" />
+    <Compile Include="..\Shared\CodeAnalysis\DocumentationCommentLayout.cs" Link="CodeAnalysis\DocumentationCommentLayout.cs" />
+    <Compile Include="..\Shared\CodeAnalysis\NotNullAttribute.cs" Link="CodeAnalysis\NotNullAttribute.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\CodeAnalysis\MemberOrdering.cs" Link="CodeAnalysis\MemberOrdering.cs" />
+    <Compile Include="..\Shared\CodeAnalysis\StatementSpacing.cs" Link="CodeAnalysis\StatementSpacing.cs" />
+    <Compile Include="..\Shared\CodeAnalysis\ThrowHelper.cs" Link="CodeAnalysis\ThrowHelper.cs" />
+  </ItemGroup>
+
+</Project>

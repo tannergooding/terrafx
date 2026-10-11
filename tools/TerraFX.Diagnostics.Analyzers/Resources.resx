@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <data name="Title" xml:space="preserve">
+    <value>Wrap switch section bodies in braces</value>
+  </data>
+  <data name="Message" xml:space="preserve">
+    <value>Wrap all statements in this switch section in a block</value>
+  </data>
+  <data name="Description" xml:space="preserve">
+    <value>Every nonempty switch section must contain a single block statement.</value>
+  </data>
+  <data name="MemberOrderingTitle" xml:space="preserve">
+    <value>Order type members</value>
+  </data>
+  <data name="MemberOrderingMessage" xml:space="preserve">
+    <value>Order type members by category, staticness, accessibility, and name using ordinal comparison</value>
+  </data>
+  <data name="MemberOrderingDescription" xml:space="preserve">
+    <value>Order constants, fields, constructors, finalizers, properties, indexers, conversion operators, operators, and methods, sorting static before instance, public before internal, protected, and private members, and names using ordinal comparison.</value>
+  </data>
+  <data name="StatementSpacingTitle" xml:space="preserve">
+    <value>Enforce blank-line spacing</value>
+  </data>
+  <data name="StatementSpacingMessage" xml:space="preserve">
+    <value>This item has incorrect blank-line spacing</value>
+  </data>
+  <data name="StatementSpacingDescription" xml:space="preserve">
+    <value>Do not leave a blank line after a type declaration's opening brace. Require blank lines between brace-terminated sibling statements or type members, between switch sections, and before compound control-flow statements.</value>
+  </data>
+  <data name="SingleTopLevelTypePerFileTitle" xml:space="preserve">
+    <value>Keep one top-level type per file</value>
+  </data>
+  <data name="SingleTopLevelTypePerFileMessage" xml:space="preserve">
+    <value>Each C# source file must contain exactly one top-level type declaration</value>
+  </data>
+  <data name="SingleTopLevelTypePerFileDescription" xml:space="preserve">
+    <value>Each C# source file must contain exactly one top-level class, struct, interface, record, enum, or delegate declaration. Nested types do not count separately.</value>
+  </data>
+  <data name="AutoImplementedPropertyLineTitle" xml:space="preserve">
+    <value>Keep auto-implemented properties on one line</value>
+  </data>
+  <data name="AutoImplementedPropertyLineMessage" xml:space="preserve">
+    <value>This auto-implemented property must fit on one line</value>
+  </data>
+  <data name="AutoImplementedPropertyLineDescription" xml:space="preserve">
+    <value>Auto-implemented property declarations, including their accessors, must be written on one line. Expression-bodied and custom-accessor properties are not affected.</value>
+  </data>
+  <data name="DocumentationCommentLayoutTitle" xml:space="preserve">
+    <value>Format XML documentation comments</value>
+  </data>
+  <data name="DocumentationCommentLayoutMessage" xml:space="preserve">
+    <value>This XML documentation comment has inconsistent line layout</value>
+  </data>
+  <data name="DocumentationCommentLayoutDescription" xml:space="preserve">
+    <value>Single-paragraph XML documentation elements should fit on one line. Elements containing block markup or paragraph breaks may remain multiline, and all continuation comment markers must align with the first marker.</value>
+  </data>
+</root>
