@@ -266,9 +266,9 @@ internal sealed class SpatialValueTests
         }
 
         var math = typeof(SpatialMath).GetMethods(BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly);
-        Assert.That(math.Length, Is.EqualTo(8));
+        Assert.That(math.Length, Is.EqualTo(10));
         Assert.That(math.GroupBy(method => method.Name).ToDictionary(group => group.Key, group => group.Count()),
-            Is.EquivalentTo(new Dictionary<string, int> { ["Normalize"] = 2, ["ConvertPosition"] = 2, ["TryGetDisplacement"] = 2, ["TryToFrameRelative"] = 2 }));
+            Is.EquivalentTo(new Dictionary<string, int> { ["Normalize"] = 2, ["ConvertPosition"] = 2, ["ConvertQuantity"] = 2, ["TryGetDisplacement"] = 2, ["TryToFrameRelative"] = 2 }));
         var profiles = typeof(SpatialProfiles).GetMethods(BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly);
         Assert.That(profiles.Select(method => method.Name), Is.EquivalentTo(new[] { "Register", "TryGetSettings" }));
     }

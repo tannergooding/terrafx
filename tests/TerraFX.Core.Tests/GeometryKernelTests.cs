@@ -681,27 +681,42 @@ internal sealed class GeometryKernelTests
     }
 
     [Test]
+    [Category("EN007")]
     public void ReversedPerspectiveInfiniteAndSignedOrthographicDepthMatchChapter03()
     {
-        var finite = Matrix4x4.CreatePerspectiveFieldOfView(1.0f, 1.5f, 0.1f, 100.0f);
+        var finite = Matrix4x4.CreatePerspectiveFieldOfView(1.0f, 1.5f, 0.1f, 1000.0f);
 
-        Assert.That(Depth(finite, 0.1f), Is.EqualTo(1).Within(2.0e-6f));
-        Assert.That(Depth(finite, 100), Is.EqualTo(0).Within(2.0e-6f));
+        Assert.That(Depth(finite, 0.1f), Is.EqualTo(1).Within(1.0e-6f));
+        Assert.That(Depth(finite, 1000), Is.EqualTo(0).Within(1.0e-6f));
         Assert.That(Vector4.Transform(new Vector4(0, 0, 3, 1), finite).W, Is.EqualTo(3));
+        Assert.That(Vector4.Transform(new Vector4(0, 0, -1, 1), finite).W, Is.EqualTo(-1));
+        Assert.That(Depth(finite, -1), Is.LessThan(0));
 
         var infinite = Matrix4x4.CreateInfinitePerspectiveFieldOfView(1.0f, 1.5f, 0.1f);
         Assert.That(infinite[2, 2], Is.Zero);
         Assert.That(infinite[3, 2], Is.EqualTo(0.1f));
-        Assert.That(Depth(infinite, 100), Is.EqualTo(0.001f).Within(2.0e-6f));
+        Assert.That(Depth(infinite, 1000), Is.EqualTo(0.0001f).Within(1.0e-6f));
 
         var ortho = Matrix4x4.CreateOrthographic(20, 10, -10, 30);
         Assert.That(Depth(ortho, -10), Is.EqualTo(1).Within(2.0e-6f));
         Assert.That(Depth(ortho, 30), Is.EqualTo(0).Within(2.0e-6f));
         Assert.That(Vector4.Transform(new Vector4(10, 5, 0, 1), ortho).X, Is.EqualTo(1));
 
-        Assert.That(Matrix4x4.TryInvert(finite, out _), Is.True);
+        var positiveDepthOrtho = Matrix4x4.CreateOrthographic(20, 10, 0.1f, 1000);
+        Assert.That(Depth(positiveDepthOrtho, 0.1f), Is.EqualTo(1).Within(1.0e-6f));
+        Assert.That(Depth(positiveDepthOrtho, 1000), Is.EqualTo(0).Within(1.0e-6f));
+
+        Assert.That(Matrix4x4.TryInvert(finite, out var inverse), Is.True);
         Assert.That(Matrix4x4.TryInvert(infinite, out _), Is.True);
         Assert.That(Matrix4x4.TryInvert(ortho, out _), Is.True);
+
+        var nearHomogeneous = Vector4.Transform(new Vector4(0, 0, 1, 1), inverse);
+        var farHomogeneous = Vector4.Transform(new Vector4(0, 0, 0, 1), inverse);
+        var nearZ = nearHomogeneous.Z / nearHomogeneous.W;
+        var farZ = farHomogeneous.Z / farHomogeneous.W;
+
+        Assert.That(nearZ, Is.GreaterThan(0));
+        Assert.That(farZ, Is.GreaterThan(nearZ));
     }
 
     [Test]

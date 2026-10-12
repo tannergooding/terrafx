@@ -379,7 +379,70 @@ internal sealed class SpatialMathTests
         }
     }
 
+    [Test]
+    [Category("M03Primitive2D")]
+    [Category("M03Primitive3D")]
+    public void PublicQuantityConversionUsesExactDyadicAndRationalInputs()
+    {
+        (uint InputBits, int SourceExponent, int TargetExponent, int LengthDimension, uint ExpectedBits)[] dyadicCases = [
+            (0x3F80_0000, 0, 0, 0, 0x3F80_0000),
+            (0x3F80_0000, 0, -3, 1, 0x447A_0000),
+            (0x3F80_0000, -3, 0, 1, 0x3A83_126F),
+            (0x3F80_0000, 0, 1, 2, 0x3C23_D70A),
+            (0x3F80_0000, 0, 1, -2, 0x42C8_0000),
+            (0x3F80_0000, 0, 1, -3, 0x447A_0000),
+            (0x0000_0001, -30, 30, 3, 0x0000_0000),
+            (0x8000_0001, -30, 30, 3, 0x8000_0000),
+        ];
 
+        foreach (var (inputBits, sourceExponent, targetExponent, lengthDimension, expectedBits) in dyadicCases)
+        {
+            var value = BitConverter.UInt32BitsToSingle(inputBits);
+            Assert.That(
+                BitConverter.SingleToUInt32Bits(SpatialMath.ConvertQuantity(value, sourceExponent, targetExponent, lengthDimension)),
+                Is.EqualTo(expectedBits),
+                $"source={sourceExponent}, target={targetExponent}, dimension={lengthDimension}, input=0x{inputBits:X8}");
+        }
+
+        (long Numerator, long Denominator, int SourceExponent, int TargetExponent, int LengthDimension, uint ExpectedBits)[] rationalCases = [
+            (long.MinValue, 1, 0, 0, 0, 0xDF00_0000),
+            (long.MaxValue, long.MaxValue, 0, 0, 0, 0x3F80_0000),
+            (-1, 3, 0, 0, 1, 0xBEAA_AAAB),
+            (1, 40, 0, 3, 1, 0x37D1_B717),
+            (-1, 40, 0, 3, 1, 0xB7D1_B717),
+            (-1, long.MaxValue, -30, 30, 3, 0x8000_0000),
+            (0, 7, 0, 0, 1, 0x0000_0000),
+        ];
+
+        foreach (var (numerator, denominator, sourceExponent, targetExponent, lengthDimension, expectedBits) in rationalCases)
+        {
+            Assert.That(
+                BitConverter.SingleToUInt32Bits(SpatialMath.ConvertQuantity(numerator, denominator, sourceExponent, targetExponent, lengthDimension)),
+                Is.EqualTo(expectedBits),
+                $"numerator={numerator}, denominator={denominator}, source={sourceExponent}, target={targetExponent}, dimension={lengthDimension}");
+        }
+
+        Assert.That(BitConverter.SingleToUInt32Bits(SpatialMath.ConvertQuantity(0.025f, 0, 3, 1)), Is.EqualTo(0x37D1_B718));
+        Assert.That(BitConverter.SingleToUInt32Bits(SpatialMath.ConvertQuantity(-0.0f, 0, 0, 1)), Is.EqualTo(0x8000_0000));
+    }
+
+    [Test]
+    [Category("M03Primitive2D")]
+    [Category("M03Primitive3D")]
+    public void PublicQuantityConversionValidatesAllDeclaredDomains()
+    {
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => SpatialMath.ConvertQuantity(1.0f, -31, 0, 1));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => SpatialMath.ConvertQuantity(1.0f, 0, 31, 1));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => SpatialMath.ConvertQuantity(1.0f, 0, 0, -4));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => SpatialMath.ConvertQuantity(1, 0, 0, 0, 1));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => SpatialMath.ConvertQuantity(1, -1, 0, 0, 1));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => SpatialMath.ConvertQuantity(1, 1, -31, 0, 1));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => SpatialMath.ConvertQuantity(1, 1, 0, 31, 1));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => SpatialMath.ConvertQuantity(1, 1, 0, 0, 4));
+        _ = Assert.Throws<ArgumentException>(() => SpatialMath.ConvertQuantity(float.NaN, 0, 0, 1));
+        _ = Assert.Throws<ArgumentException>(() => SpatialMath.ConvertQuantity(float.PositiveInfinity, 0, 0, 1));
+        _ = Assert.Throws<OverflowException>(() => SpatialMath.ConvertQuantity(long.MaxValue, 1, 30, -30, 3));
+    }
 
     [TestCase(12)]
     [TestCase(13)]

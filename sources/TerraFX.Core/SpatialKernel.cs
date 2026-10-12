@@ -138,6 +138,35 @@ internal static class SpatialKernel
         return ConvertScaled(value, numerator, denominator);
     }
 
+    /// <summary>Converts an exact rational quantity between decimal unit exponents.</summary>
+    internal static float ConvertQuantity(long numerator, long denominator, int sourceExponent, int targetExponent, int lengthDimension)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(denominator);
+
+        Unsafe.SkipInit(out InlineArray16<ulong> quantityNumeratorStorage);
+        Unsafe.SkipInit(out InlineArray16<ulong> quantityDenominatorStorage);
+        Unsafe.SkipInit(out InlineArray16<ulong> scaleNumeratorStorage);
+        Unsafe.SkipInit(out InlineArray16<ulong> scaleDenominatorStorage);
+        Unsafe.SkipInit(out InlineArray16<ulong> productScratchStorage);
+        Unsafe.SkipInit(out InlineArray16<ulong> exactNumeratorStorage);
+        Unsafe.SkipInit(out InlineArray16<ulong> exactDenominatorStorage);
+
+        var quantityNumerator = new BoundedInteger(quantityNumeratorStorage);
+        var quantityDenominator = new BoundedInteger(quantityDenominatorStorage);
+        var scaleNumerator = new BoundedInteger(scaleNumeratorStorage);
+        var scaleDenominator = new BoundedInteger(scaleDenominatorStorage);
+        Span<ulong> productScratch = productScratchStorage;
+        var exactNumerator = new BoundedInteger(exactNumeratorStorage);
+        var exactDenominator = new BoundedInteger(exactDenominatorStorage);
+
+        quantityNumerator.SetInt64(numerator);
+        quantityDenominator.SetInt64(denominator);
+        GetUnitScale(sourceExponent, targetExponent, lengthDimension, ref scaleNumerator, ref scaleDenominator);
+        exactNumerator.Multiply(quantityNumerator, scaleNumerator, productScratch);
+        exactDenominator.Multiply(quantityDenominator, scaleDenominator, productScratch);
+        return RoundFraction(exactNumeratorStorage, exactDenominatorStorage, exactNumerator.IsNegative);
+    }
+
     /// <summary>Computes the exact difference between two chunked coordinates along one axis.</summary>
     internal static void Difference(int fromChunk, float fromOffset, int toChunk, float toOffset, int exponent, scoped ref BoundedInteger difference)
     {

@@ -60,6 +60,34 @@ public static class SpatialMath
         return new SpatialPosition3(new ChunkIndex3(x, y, z), new Vector3(ox, oy, oz));
     }
 
+    /// <summary>Converts a finite binary32 quantity between exact decimal unit scales.</summary>
+    /// <param name="value">The exact dyadic value represented by the finite binary32 input.</param>
+    /// <param name="sourceExponent">The source unit's meters-per-unit exponent.</param>
+    /// <param name="targetExponent">The target unit's meters-per-unit exponent.</param>
+    /// <param name="lengthDimension">The quantity's length dimension, in the range [-3, 3].</param>
+    /// <returns>The converted quantity rounded once to binary32 using nearest-even.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">An exponent or length dimension is outside its admitted range.</exception>
+    /// <exception cref="ArgumentException"><paramref name="value"/> is not finite.</exception>
+    /// <exception cref="OverflowException">The converted value rounds to infinity.</exception>
+    public static float ConvertQuantity(float value, int sourceExponent, int targetExponent, int lengthDimension)
+    {
+        return SpatialKernel.ConvertQuantity(value, sourceExponent, targetExponent, lengthDimension);
+    }
+
+    /// <summary>Converts an exact rational quantity between decimal unit scales.</summary>
+    /// <param name="numerator">The signed numerator of the exact input quantity.</param>
+    /// <param name="denominator">The positive denominator of the exact input quantity.</param>
+    /// <param name="sourceExponent">The source unit's meters-per-unit exponent.</param>
+    /// <param name="targetExponent">The target unit's meters-per-unit exponent.</param>
+    /// <param name="lengthDimension">The quantity's length dimension, in the range [-3, 3].</param>
+    /// <returns>The converted quantity rounded once to binary32 using nearest-even.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">The denominator, an exponent, or the length dimension is invalid.</exception>
+    /// <exception cref="OverflowException">The converted value rounds to infinity.</exception>
+    public static float ConvertQuantity(long numerator, long denominator, int sourceExponent, int targetExponent, int lengthDimension)
+    {
+        return SpatialKernel.ConvertQuantity(numerator, denominator, sourceExponent, targetExponent, lengthDimension);
+    }
+
     /// <summary>Produces offsets in [0, C) with positive zero using exact dyadic carries and nearest-even remainder rounding.</summary>
     /// <param name="position">The raw finite position.</param>
     /// <param name="settings">The valid spatial declaration.</param>
