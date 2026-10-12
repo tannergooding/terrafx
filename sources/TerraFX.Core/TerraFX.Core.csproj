@@ -6,4 +6,8 @@
     <RootNamespace>TerraFX</RootNamespace>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="TerraFX.Runtime" Key="$(AssemblyOriginatorPublicKey)" />
+  </ItemGroup>
+
 </Project>

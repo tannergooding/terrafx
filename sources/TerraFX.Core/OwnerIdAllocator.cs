@@ -15,7 +15,9 @@ internal static class OwnerIdAllocator
             var lastAllocated = Volatile.Read(ref s_lastAllocated);
             var next = GetNext(lastAllocated);
 
-            if (Interlocked.CompareExchange(ref s_lastAllocated, next, lastAllocated) == lastAllocated)
+            var observed = Interlocked.CompareExchange(ref s_lastAllocated, next, lastAllocated);
+
+            if (observed == lastAllocated)
             {
                 return next;
             }
