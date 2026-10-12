@@ -51,6 +51,29 @@ internal sealed class EntitySlotTable
     private static long ArrayBytes(long count, int elementSize)
         => checked(64 + ((checked(count * elementSize) + 7) & ~7L));
 
+    internal void ClearLocation(uint index, uint generation, int archetypeIndex, long chunkOrdinal, int row)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(archetypeIndex);
+        ArgumentOutOfRangeException.ThrowIfNegative(chunkOrdinal);
+        ArgumentOutOfRangeException.ThrowIfNegative(row);
+
+        if (!IsLive(index, generation))
+        {
+            throw new InvalidOperationException("The entity slot is not live at the supplied generation.");
+        }
+
+        ref var slot = ref _slots[(int)index];
+
+        if ((slot._archetypeIndex != archetypeIndex) || (slot._chunkOrdinal != chunkOrdinal) || (slot._row != row))
+        {
+            throw new InvalidOperationException("The entity slot does not have the expected storage location.");
+        }
+
+        slot._archetypeIndex = -1;
+        slot._chunkOrdinal = -1;
+        slot._row = -1;
+    }
+
     // The free-list requirement is its peak depth during the next commit, not its final depth.
     internal long GetCapacityPreparationBytes(int requiredAllocatedSlots, int requiredFreeSlotCount)
     {
