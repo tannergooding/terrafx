@@ -94,7 +94,9 @@ The editor shows requested/admitted/used/pinned/staged/in-flight counts and byte
 
 The domain-local `LineageMembershipAccounting1` metadata candidate is a sub-budget of the existing 8-GiB World/persistence envelope, not an added entitlement. Per domain, inclusive ceilings are 4096 registered/prospective roots (M), 262144 distinct live/reserved keys (K), 1048576 root-to-key edges (E), 65536 independent root/operation interests (I), 4096 pending start-new reservations (R), and 66561 raw lineage references per root; total charged registry metadata B is `min(134217728, domain.MaximumBytes)`. Root, source/snapshot, candidate, retiring, quarantined and prospective state counts before allocation. No public option raises these ceilings, and count maxima do not imply joint byte fit.
 
-Reserve 256 bytes per root cell (including its cleanup/quarantine control), 128 per interest/operation cell, 256 per reservation cell, 64 per shared full-GUID index slot, and 16 bytes per root-vector capacity entry. The power-of-two index capacity is at least 16, at most 524288, and at most half occupied. Every separately allocated array/buffer is charged `ArrayCharge(capacity, elementBytes) = 64 + RoundUp16(checked(capacity * elementBytes))`, where `RoundUp16(n)` is the checked least multiple of 16 greater than or equal to nonnegative `n` (and zero for zero). Per-cell reservations include each cell's own header/fields; they are not added a second time within the cell. Charge whole array pages, spare capacities and separately owned controls/wrappers/Tasks/backing arrays/sort buffers when not covered by a named cell. Each domain first reserves its fixed 4096-byte registrar control. A default-domain handoff additionally reserves its fixed 256-byte ticket in the existing control charge and one already-counted independent interest; it creates no second owner credit.
+Reserve 256 bytes per root cell (including its cleanup/quarantine control), 128 per interest/operation cell, 256 per reservation cell, 64 per shared full-GUID index slot, and 16 bytes per root-vector capacity entry. The power-of-two index capacity is at least 16, at most 524288, and at most half occupied. Every separately allocated array/buffer is charged `ArrayCharge(capacity, elementBytes) = 64 + RoundUp16(checked(capacity * elementBytes))`, where `RoundUp16(n)` is the checked least multiple of 16 greater than or equal to nonnegative `n` (and zero for zero). Per-cell reservations include each cell's own header/fields; they are not added a second time within the cell. Charge whole array pages, spare capacities and separately owned controls/wrappers/Tasks/backing arrays/sort buffers when not covered by a named cell. Each domain first reserves its fixed 4096-byte registrar control. A default-domain handoff additionally reserves its fixed 256-byte ticket in the domain control accounting and one separate H interest cell; it creates no second owner credit.
+
+Each named domain interest occupies one distinct 128-byte interest/operation cell. Every default-domain handoff also charges its fixed 256-byte ticket to that domain's control accounting; the ticket is not free merely because it is covered by the registrar's fixed 4096-byte control, and it creates no second close-owner credit. Carrier fields and retention nodes reside in prepaid, qualified controls/cells. Separately allocated controls, wrappers, Tasks and backing are charged before allocation under the existing domain formula; a process cell's reference to a domain-owned control does not make that control free. These additions change neither domain M/K/E/I/R/B ceilings nor process K/O/P/U/B ceilings.
 
 For each domain, the simultaneous accounting is:
 
@@ -121,6 +123,44 @@ RegistryCharge + DataCharge + all other domain-owned credits <= domain.MaximumBy
 ```
 
 Growth reserves complete old-plus-new peak, candidate vectors and scratch before allocation; old storage remains charged until actual release. Spending converts a grant to allocated charge rather than double-counting the same allocation. Failure preserves old membership and ownership, and quarantine keeps the existing charged credit; no capacity is recovered by dropping a lineage key.
+
+### M03-A process-wide WorldGuid registry accounting
+
+`WorldGuidRegistryAccounting1` is a separate, fixed process-wide bound for active/reserved WorldGuid keys and their operational binding, preparation and use controls. It is not part of any `WorldAdmissionDomain.MaximumBytes`, the domain-local `LineageMembershipAccounting1` M/K/E/I/R/B envelope, Core OwnerId issuance, canonical state, or caller-configurable profile. Count and byte limits are inclusive; checked admission occurs before any associated allocation or identity issuance.
+
+| Process resource | Fixed ceiling |
+|---|---:|
+| K: distinct retained/prospective WorldGuid keys | 16,384 |
+| O: binding-generation cells | 65,536 |
+| P: construction/preparation/claim cells | 32,768 |
+| U: independent/prospective operational-use cells | 131,072 |
+| Claims touching one key / one exact target binding | 16 / 16 |
+| G: concurrent pending slab-allocation tickets | 16 |
+| B: charged registry metadata | 67,108,864 bytes |
+| Separately allocated algorithm scratch | 0 |
+
+The index is fixed at 32,768 32-byte buckets, at most half occupied, with full-GUID equality, stable key-record slots, backward-shift deletion, and no resizing or rehash scratch. K/O/P/U backing uses fixed 256-cell slabs and fixed directories; generations never wrap and exhausted cells retire. Every separately allocated array uses the existing checked `ArrayCharge(capacity, stride) = 64 + RoundUp16(checked(capacity * stride))` rule. The complete declared backing/control charge is 36,773,696 bytes; the cold reservation is 1,060,672 bytes, leaving 30,335,168 bytes below B that does not authorize undeclared allocation. The control charge includes bootstrap state and the 16 embedded growth tickets. Sixteen largest pending slab grants total 1,049,600 bytes but occupy already reserved page ordinals and do not add pages beyond the complete-layout charge. Installed empty slabs remain charged at high water; quarantine reuses preowned cells.
+
+| Declared backing/control | Capacity and stride | Charged bytes |
+|---|---:|---:|
+| Control, bootstrap and 16 embedded growth tickets | Fixed | 4,096 |
+| Full-GUID index | 32,768 x 32 | 1,048,640 |
+| Four fixed directories | Fixed | 7,936 |
+| K slabs | 64 slabs x 256 cells x 128 bytes | 2,101,248 |
+| O slabs | 256 slabs x 256 cells x 128 bytes | 8,404,992 |
+| P slabs | 128 slabs x 256 cells x 256 bytes | 8,396,800 |
+| U slabs | 512 slabs x 256 cells x 128 bytes | 16,809,984 |
+| **Full declared layout** |  | **36,773,696** |
+| **Cold control/index/directories** |  | **1,060,672** |
+
+| Fixed route | Process K/O/P/U | Newly prepaid domain interests |
+|---|---:|---|
+| Fresh World construction | 1/1/1/2 | Candidate history owner and domain operation: 2 |
+| Replacement preparation, external domain | 1/1/1/3 | Source/target data owners, candidate owner, preparation source/target/domain consumers, commit source/target/domain consumers: 9 |
+| Replacement preparation, default domain | 1/1/1/3 | The preceding interests plus the distinct default-domain handoff interest H: 10 |
+| Independent active-binding use | 0/0/0/1 | World-history consumer and domain operation: 2 |
+
+The `U = O + 2P` value is the maximum baseline only while each binding owner retains O and each coordinator/commit role retains its associated P and U. It does not include additional independent consumers: each consumes remaining U and may be refused at baseline saturation. A 4,096-World sizing example requires four distinct keys per target (current, one changed destination, and two retiring keys) distributed across enough domains; it is not a single-domain capacity promise. Two changed destinations plus both retirees require 20,480 keys and are not promised. A changed or unknown replacement destination consumes prospective K before inspection, so full K may refuse a replacement later shown to have the same GUID. Multiple plans are subject to aggregate admission, not guaranteed; invalidated-but-retained claims continue to count. These examples do not qualify a workload or imply simultaneous fit.
 
 ## 4. Asset and cooker retention admission
 
