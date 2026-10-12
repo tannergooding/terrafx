@@ -14,6 +14,8 @@ Start the selected profile with `EngineHost.StartAsync`. Use `InvokeAsync` for a
 
 At an idle owner boundary, direct entity creation/destruction is available; during a tick, use the admitted `CommandWriter`. Chunk traversal passes a local ordinary/ref-struct callable by `ref`, preserving its state while borrowing scoped views; copied entity/component values can outlive an invocation. Generated query/column registrations make the same flow available in NativeAOT without reflection-only activation. `TryGet<T>` distinguishes a missing component from invalid ownership. [Chapter 12](12-entities-components-and-queries.md) defines storage/mutation and [Chapter 13](13-jobs-and-frame-pipeline.md) defines ordering/publication.
 
+Every immediate, deferred live-entity, deferred token and scene-unload destruction call supplies `HierarchyDestroyMode` explicitly. Pass `DetachChildrenKeepWorld` to destroy one entity and preserve its direct children's world poses, or `DestroySubtree` to destroy the current subtree. Read successful deferred destruction order from the copied `CommandReceipt.DestroyedEntityIdentities`; it is receipt-local observation data, not live membership or cleanup-dispatch authority.
+
 Select options from their owning contracts rather than copying another scenario's defaults: [04](04-capacity-and-workload-profiles.md) for shared capacities, [07](07-spatial-coordinates-and-indexing.md) for registered spatial settings, and [15](15-platform-host-and-devices.md) for host profiles/lifecycle. Observe `Completion` for host termination and use the declared shutdown operations rather than running or joining its pump on the caller thread.
 
 Clock use follows [03](03-shared-conventions-and-clocks.md#2-four-clocks), without a caller-owned `Stopwatch`/`TimeProvider`. [02's boundary policy](02-dotnet-api-memory-and-ownership.md#public-type-boundary) distinguishes reusable foundational values/protocols, including `ImmutableArray<T>`, from private backing objects. Physics restore maps support read-only lookup without promising a particular dictionary implementation.
@@ -230,19 +232,53 @@ Factory cancellation is separate from eventual owner cleanup. DisposeAsync recei
 
 ```csharp
 using System;
+using System.Collections.Immutable;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX.Assets;
 
+public static class AssetRegistrationConsumer
+{
+    public static AssetStoreRegistration BuildStoreRegistration(
+        ContentSchemaCatalogue catalogue,
+        AssetRetentionChargeProfile chargeProfile,
+        ImmutableArray<AssetRetentionTypeEntry> extensionEntries)
+    {
+        AssetRetentionParticipantRegistration participants =
+            AssetRetentionParticipantRegistration.CreateForStore(chargeProfile, extensionEntries);
+        return new AssetStoreRegistrationBuilder(catalogue, participants).Build();
+    }
+}
+
 public static class AssetOwnerConsumer
 {
-    public static async Task RunAsync(string absoluteCacheDirectory,
+    public static async Task RunAsync(string absoluteCacheDirectory, AssetStoreRegistration registration,
         Func<AssetStore, CancellationToken, Task> operation, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(operation);
         await using AssetStore store = await AssetStore.CreateAsync(
-            new AssetStoreOptions(absoluteCacheDirectory), cancellationToken).ConfigureAwait(false);
+            new AssetStoreOptions(absoluteCacheDirectory, registration), cancellationToken).ConfigureAwait(false);
         await operation(store, cancellationToken).ConfigureAwait(false);
     }
 }
 ```
+
+The separate Content.Tools registration helper has a Tools-only compile surface:
+
+```csharp
+using System.Collections.Immutable;
+using TerraFX.Assets;
+using TerraFX.Content.Tools;
+
+public static class CookerRegistrationConsumer
+{
+    public static AssetRetentionParticipantRegistration Build(
+        AssetRetentionChargeProfile chargeProfile,
+        ImmutableArray<AssetRetentionTypeEntry> extensionEntries)
+    {
+        return AssetCookerAdmissionDomain.CreateParticipantRegistration(chargeProfile, extensionEntries);
+    }
+}
+```
+
+The store factory binds the exact frozen participant registration to its own new retention domain before starting workers. A Runtime-only executable uses the Assets-only helper with just its qualified inspectors/materializers and has no producer/Tools reference; a separate Content.Tools executable uses its own helper and the actual cooker/store factories. The helpers create declarations only. Neither receipt construction nor the read-only `RetentionDomain` observations install or qualify participants, and no registration can be reused as a domain-bound wrapper across factory domains.

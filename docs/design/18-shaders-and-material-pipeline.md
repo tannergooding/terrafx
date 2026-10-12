@@ -24,6 +24,57 @@ Source generator emits explicit packers/field offsets, not unsafe cast of arbitr
 
 Material parameter defaults are typed schema values; a missing required field fails import, optional field takes documented default with schema version. A `float3` material parameter occupies a declared `float4` slot; edits create immutable material version at boundary, not overwrite submitted uniform data.
 
+#### M03 7.1 Complete material profile operands
+
+Profile keys and slot assignments (all semantic version 1):
+
+```text
+Sprite profile: material/profile/sprite-premul/v1
+  Shader: material/shader/sprite-unlit/v1
+  Pass: material/pass/sprite/v1
+  Layout: material/layout/sprite/v1
+  Parameters: native/material-sprite-parameters
+PBR profile: material/profile/pbr-metallic-roughness/v1
+  Shader: material/shader/pbr-metallic-roughness/v1
+  Pass: material/pass/pbr/v1
+  Layout: material/layout/pbr/v1
+  Parameters: native/material-pbr-parameters
+```
+
+Every assignment uses S(key)/NameRecipe with namespace/key/code present and LiteralAssignmentDigest absent. Bindings are slots 1/2/3 ascending. Unknown/mixed profile/shader/pass/layout tuples refuse even if values look equivalent.
+
+```text
+Vertex attributes: Position=1 Normal=2 Tangent=4 UV0=8 UV1=16
+                   Color=32 Joints=64 Weights=128
+Capabilities: Texture2D=1 VertexColor=2 AlphaMask=4 PremultipliedBlend=8
+              ReversedZDepth=16 FourWeightSkin=32 NormalMap=64
+              MetallicRoughness=128 ForwardLights=256
+Alpha mode: Opaque=0 Mask=1 Blend=2; AlphaBit(mode)=1<<mode
+Cull: None=0 Back=1
+OutputAlpha: Straight=0 Premultiplied=1
+```
+
+Profile rows:
+
+| Profile | Base capabilities | Default alpha | Depth test | Depth-write alpha mask | Cull | Required attributes | Allowed alpha mask |
+|---|---:|---:|---|---:|---:|---:|---:|
+| Sprite | 0x001 | 2 | false | 0 | 0 | 0x009 | 7 |
+| PBR | 0x191 | 0 | true | 3 | 1 | 0x003 | 7 |
+
+Actual material RequiredCapabilities equals base OR AlphaMask for Mask OR PremultipliedBlend for Blend OR NormalMap when the PBR normal texture is present OR ReversedZDepth when explicit DepthTest/DepthWrite is true. Mesh pairing additionally checks selected UV sets, tangent for normal texture, and both skin attributes for skin. Its derived pipeline requirement also ORs VertexColor when the color stream is present and FourWeightSkin when skinned; these do not rewrite the stored material mask. PBR admits all those combinations; Sprite admits capabilities 0x01F and no skin/normal-map/PBR-light features. These are data/ABI capability bits, not a GPU/shader implementation claim.
+
+Default depth write is profile mask membership; Blend always forbids depth write and any DepthWrite requires DepthTest. DoubleSided forces Cull None. Blend uses Premultiplied output, other modes Straight. Explicit supported depth-test/cull choices are retained, not reset, subject to those relationships; DP Capabilities evaluates after the admitted explicit/default depth state. AlphaCutoff is always encoded/range-admitted even when inactive.
+
+Texture format RGBA8=0; ColorSpace Linear=0/sRGB=1; Alpha Straight=0/Premultiplied=1; Semantic Color=0/Normal=1/Data=2; MipPolicy BaseOnly=0/FullChain=1. Pixels are tightly packed top-left row-major RGBA8. BaseOnly has level0; FullChain levels 0..floor(log2(max(W,H))), floor-halved each dimension clamped to1, last 1x1. Every Pixels count=4*W*H. Normal/Data is Linear/Straight. Color texture slots use owner-required color spaces; base/emissive sRGB, packed/normal Linear. Validate supplied native bytes; no M03 decoder/mip-generator claim.
+
+Sampler Min/Mag Nearest0/Linear1, Mip None0/Nearest1/Linear2, Address Clamp0/Repeat1. Atlas pages are square <=4096, premultiplied BaseOnly; frames have exact two-texel clamped-edge border, disjoint padded rectangles and actual page bounds. Atlas page order is semantic; frame map is RFC-sorted. Mip sampling cannot request missing levels.
+
+Texture references select `native/texture` 1.0, atlas references `native/atlas` 1.0, mesh/skeleton/clip/material references their corresponding roots, and collision references the selected primitive dimension. PBR texture slots require Semantic=Color/Normal/Data/Color respectively, their stated color space and Straight alpha; Sprite texture is Color/Premultiplied with explicitly retained Linear or sRGB. Premultiplication is in linear space before storage encoding, as chapter 11 requires. A sprite material's optional texture, when paired with an atlas frame, must be that frame's exact page version; omission means the declared per-draw atlas page, not a failed-load substitute. An absent sprite Material selects the fixed C0 Sprite profile with explicit white parameters/default state; missing or invalid *present* material never selects that default. Native supplied mips/borders are validated but not secretly generated or recomputed.
+
+The fixed Sprite layout exposes UV0 only, so a Sprite texture binding requires UVSet0. PBR UVSet0/1 requires the corresponding supplied mesh stream at pairing. This is a known layout/binding predicate, not an unsupported-enum fallback or a guessed duplicate UV stream.
+
+RR29 additionally requires each spot's `0 < InnerHalfAngle <= OuterHalfAngle < pi32/2`; equality is the admitted hard-cutoff branch. Colors/intensity/flux/range/direction retain their exact finite/nonnegative/positive/unit predicates above, never inferred clamps. Shadow request/priority is copied inert extraction data at M03, not an implemented shadow-pass certificate.
+
 ## 3. Reflection and binding validation
 
 The low-level public inputs are `ShaderBytecodeInput` and `ShaderReflection` in `TerraFX.Graphics`, consumed by `GraphicsDevice.CreatePipelineAsync`. Offline tools/cooked-asset adapters construct those inputs from leased bytes and copied metadata; `Graphics` depends on the Core assembly's `TerraFX.Buffers` APIs, not `Assets`. The typed graphics/compute pipeline descriptions select stages, layouts and fixed render state; success returns the owned `GpuPipeline` used by `CommandRecorder.SetPipeline`. Native validation must check actual DXIL/SPIR-V against the supplied reflection, and independent bytecode credits last through actual backend creation even when caller leases close. A digest/cache hit or caller-supplied reflection is not proof of usable pipeline state.

@@ -26,7 +26,7 @@ Remaining unsigned members deliberately retain frozen identity/epoch/slot domain
 
 `SpatialSettings`, `ChunkIndex2/3`, `SpatialPosition2/3`, `SpatialFrame2/3`, `SpatialBounds2/3`, `RelativePose2/3`, `WindowHandle` and the three shared callable interfaces live in the root `TerraFX` namespace. Geometry/Angle lives in `TerraFX.Numerics`, buffers in `TerraFX.Buffers`, bounded object pools in `TerraFX.Pooling`, and diagnostics in `TerraFX.Diagnostics`; all are owned by the `TerraFX.Core` assembly/package, not a matching `.Core` namespace or additional projects. The `TerraFX.UI` namespace can name a window without a logical dependency on `TerraFX.Platform`; Runtime's physical Platform reference is for hosting. `EngineHost` creates the `World`; scene activation takes `World`, never `EngineContext`.
 
-Engine-issued `WindowHandle`/`MonitorHandle` values have internal constructors accessible only to the platform issuer. `AssetStore` has a private constructor and the public `CreateAsync` factory; the host calls that same factory for its independently owned instance, while standalone callers own stores they create. `DiagnosticsService` remains host-owned and internally constructed. These issuer paths add no forbidden physical or logical dependency and do not expose a public handle/owner fabrication API.
+Engine-issued `WindowHandle`/`MonitorHandle` values have internal constructors; issuance is authorized only to the platform owner, but internal accessibility itself is not a per-caller restriction. `Entity` likewise has an internal constructor, with semantic construction authority only on `World.IssueEntity`. `AssetStore` has a private constructor and the public `CreateAsync` factory; the host calls that same factory for its independently owned instance, while standalone callers own stores they create. `DiagnosticsService` remains host-owned and internally constructed. These issuer paths add no forbidden physical or logical dependency and do not expose a public handle/owner fabrication API.
 
 ## 3. Core geometry, spatial values, and buffers
 
@@ -658,6 +658,8 @@ public readonly struct SpatialRay2 : IEquatable<SpatialRay2>
 
 public static class SpatialMath
 {
+    public static float ConvertQuantity(float value, int sourceExponent, int targetExponent, int lengthDimension);
+    public static float ConvertQuantity(long numerator, long denominator, int sourceExponent, int targetExponent, int lengthDimension);
     public static SpatialPosition2 Normalize(SpatialPosition2 position, SpatialSettings settings);
     public static SpatialPosition3 Normalize(SpatialPosition3 position, SpatialSettings settings);
     public static SpatialPosition2 ConvertPosition(SpatialPosition2 position, SpatialProfileId sourceProfileId, SpatialSettings sourceSettings, SpatialProfileId targetProfileId, SpatialSettings targetSettings);
@@ -668,6 +670,8 @@ public static class SpatialMath
     public static bool TryToFrameRelative(SpatialPosition3 position, SpatialFrame3 frame, out TerraFX.Numerics.Vector3 relativePosition);
 }
 ```
+
+`SpatialMath.ConvertQuantity` follows [07's bounded exact scalar conversion](07-spatial-coordinates-and-indexing.md): the float overload consumes the exact finite binary32 dyadic, while the `long` numerator/positive denominator overload consumes the exact rational literal. Both apply the complete dimensional decimal ratio before one nearest-even binary32 rounding, admit source/target exponents `[-30, 30]` and length dimension `[-3, 3]`, and throw `ArgumentOutOfRangeException` for invalid parameters or `OverflowException` for a result rounded to infinity. Nonfinite float input throws `ArgumentException`. Successful subnormals and correctly signed underflow zero are allowed by the converter; the consuming field retains its own domain admission. Float signed zero is preserved; exact zero numerator returns positive zero. Core owns the bounded private arithmetic; consumers need no internal/test friendship or public arbitrary-precision type.
 
 `SpatialProfileId(Guid value)` rejects `Guid.Empty`; zero initialization is invalid. [07](07-spatial-coordinates-and-indexing.md) owns the fixed Default GUID, registration/freeze rules, capacity and settings. `Register` is idempotent for identical declarations; conflicts throw `ArgumentException` and exhaustion throws `InvalidOperationException` before mutation. `TryGetSettings` returns false only for an unregistered valid ID, with an unusable default out value. IDs supplied with raw positions are caller declarations, not provenance.
 
@@ -724,6 +728,9 @@ public sealed class BufferReadLease<T> : IDisposable where T : unmanaged
 {
     internal BufferReadLease(UnmanagedBuffer<T> owner, nint offset, nint length);
     public nint Length { get; }
+    public BufferReadLease<T> Retain();
+    public BufferRetentionInfo GetRetentionInfo();
+    public BufferReadLease<T> Retain(BufferRetentionReservation reservation, int inputIndex);
     public void UseWindow<TAction>(nint relativeOffset, int length, scoped ref TAction action)
         where TAction : struct, IAction<ReadOnlySpan<T>>, allows ref struct;
     public void Dispose();
@@ -742,6 +749,11 @@ public sealed class BufferChain<T> : IDisposable where T : unmanaged
 {
     public BufferChain(ImmutableArray<BufferReadLease<T>> segments);
     public long Length { get; }
+    public int SegmentCount { get; }
+    public BufferChain<T> Retain();
+    public BufferChain<T> Retain(BufferRetentionReservation reservation, int firstInputIndex);
+    public bool VisitRetentionInfo<TVisitor>(scoped ref TVisitor visitor)
+        where TVisitor : struct, IFunc<BufferRetentionInfo, bool>, allows ref struct;
     public void CopyTo(long sourceOffset, Span<T> destination);
     public bool VisitWindows<TVisitor>(scoped ref TVisitor visitor)
         where TVisitor : struct, IFunc<ReadOnlySpan<T>, bool>, allows ref struct;
@@ -808,6 +820,255 @@ public sealed class ObjectPool<T> : IDisposable where T : class
 
 All members use [05](05-owned-buffers-and-internal-collections.md)'s checked admission, independent credits, write exclusivity, callback exception and disposal rules. Generic callable state is borrowed by reference and remains concrete through internal dispatch; no copying, boxing, retained reference or delegate adaptation occurs. `VisitWindows` reports complete traversal versus explicit visitor stop using the owner's exact window splitting, count and disposal semantics. `Allocate` accepts zero length without native allocation. `BufferChain` retains its ordered read segments independently of the supplied leases. `OwnedBuffer<T>` publishes finalized private storage through the chapter's one-time read-only transfer; it is not a mutable alias wrapper. Actual consumer completion, not cancellation of an observation, determines async credit release. Public lease/window/disposal calls are forbidden on real-time callbacks.
 
+### M03 Core schema and diagnostic construction
+
+| Owner / public surface | Exact amendment contract |
+|---|---|
+| Core: `ContentSchemaReference(Guid schemaId, int major, int minor, ContentSchemaScope scope)` | Readonly immutable value exposing Guid SchemaId, int Major, int Minor and ContentSchemaScope Scope; constructor requires nonempty ID, positive major/nonnegative minor, scope Content0/Foundation1. Default is intrinsically invalid; equality compares the full tuple. AssetVersion uses these exact properties, not a guessed CLR schema/version. Metadata descriptors (`DataSchema`, `ContentFieldDescriptor`, tag/rule/use/assignment/default/profile descriptions) expose exactly the [M03 3](10-binary-data-and-authoring-formats.md#m03-3-complete-descriptor-notation-and-expansion) fields/enums/ordered immutable collections, not CLR member discovery. |
+| Core: `ContentSchemaCatalogue.Create(BufferReadLease<byte> canonicalManifest, ImmutableArray<ContentSchemaCatalogue> imports, ContentSchemaApprovalRegistry approvals)` | Uses trusted rooted metadata bootstrap and [M03 2](10-binary-data-and-authoring-formats.md#m03-2-preserved-foundation-and-reader-boundary) descriptor budget; validates complete canonical bytes/import hashes/selection/recipes, copies bounded immutable descriptors/value bytes and computes ContentSchemaDigest. Approvals is an explicit immutable table of permitted schema/rule recipe digests/name or literal assignment receipts/material-profile operands; it supplies no executable factories/codecs. Two-phase bootstrap/descriptor admission resolves metadata without a self-digest lookup. Imports are initialized immutable objects; no I/O/unknown code execution. Caller disposal cannot invalidate catalogue ownership. Executable registration remains separate. |
+| Core: read-only retention/prospective allocation | Add4.6.4/7/8's ordinary/budgeted Retain, opaque retention/allocation info, combined existing/prospective/extra-slot reserve, allocation/root retirement, exact charged snapshots/SegmentCount and bool-returning outside-gate metadata visitation. Atomic range/child/use/bind/block interests inherit quota; no payload-length substitution, pointer/allocator/friendship/M02 change. Every signature/supporting shape is normative, not implementation-qualified. |
+| Core/owner generated semantic values | Each selected row is an immutable typed model exposing exactly that table's fields/optional presence/ordered immutable collections; constructor signatures take those operands, never CLR discovery or serialized padding. Foundation-valued fields use the [M03 2](10-binary-data-and-authoring-formats.md#m03-2-preserved-foundation-and-reader-boundary) owned canonical-record/parsed-value wrapper so inert optional bytes survive. Explicit descriptor/attribute generation emits public symbolic author values/codecs and distinct World-bound component bindings. An Entity-valued author field uses stable Guid/selector input, not a fabricated live Entity. Each selected codec root is present in the application's closed compiled registration graph. |
+| Core: `BinarySchemaDiagnostic` | Immutable SchemaId, uint Tag, RuleId/int version/use index, physical path of uint tags plus optional int array indices, category and optional exact claim/limit. A primary field-contract rule uses `UseIndex = -1`; extra field, element and record rules use zero-based indices in their own serialized sequences. Preserve the invocation site/path; structural scanner failures retain their actual structural diagnostic and receive no fabricated semantic rule/use index. Adds no serialized bytes or new M02 error rules. Native/contextual and state codecs can return owned diagnostics without mutable last-error state or an Assets dependency in Entities. |
+
+### EBIN structural reader
+
+The public Core reader exposes schema-agnostic bounded EBIN structure without making M02's private `FoundationCodec`, `EbinRecord`, or persistence bindings public. `TerraFX.Assets` and `TerraFX.Entities` use this shared implementation rather than duplicating parsers or obtaining blanket friend access.
+
+```csharp
+namespace TerraFX;
+
+public sealed class EbinReadLimits
+{
+    public EbinReadLimits(int maximumRecordBytes, int maximumFieldsPerRecord, int maximumDepth,
+        int maximumArrayElements, int maximumUtf8Bytes, long maximumAggregateRecords,
+        long maximumAggregateFields, long maximumAggregateArrayElements);
+    public static EbinReadLimits Foundation { get; }
+    public long MaximumAggregateArrayElements { get; }
+    public long MaximumAggregateFields { get; }
+    public long MaximumAggregateRecords { get; }
+    public int MaximumArrayElements { get; }
+    public int MaximumDepth { get; }
+    public int MaximumFieldsPerRecord { get; }
+    public int MaximumRecordBytes { get; }
+    public int MaximumUtf8Bytes { get; }
+}
+
+public enum EbinReadPolicy
+{
+    Structural,
+    Canonical
+}
+
+public enum EbinReadStatus
+{
+    Complete,
+    NeedMoreData,
+    InvalidRecord,
+    UnsupportedSchema
+}
+
+public readonly record struct EbinReadDiagnostic
+{
+    internal EbinReadDiagnostic(Guid schemaId, uint tag, string category, ulong offset, ulong claim, ulong limit);
+    public ulong Claim { get; }
+    public string Category { get; }
+    public ulong Limit { get; }
+    public ulong Offset { get; }
+    public Guid SchemaId { get; }
+    public uint Tag { get; }
+}
+
+public readonly record struct EbinRecordHeader
+{
+    internal EbinRecordHeader(Guid schemaId, int major, int minor, int fieldCount, int recordByteLength);
+    public int FieldCount { get; }
+    public int Major { get; }
+    public int Minor { get; }
+    public int RecordByteLength { get; }
+    public Guid SchemaId { get; }
+}
+
+public readonly ref struct EbinFieldReadView
+{
+    internal EbinFieldReadView(uint tag, ushort kind, ushort flags, ulong count, ReadOnlySpan<byte> payload);
+    public ulong Count { get; }
+    public bool IsRequired { get; }
+    public ushort Kind { get; }
+    public ReadOnlySpan<byte> Payload { get; }
+    public uint Tag { get; }
+}
+
+public readonly ref struct EbinRecordReadView
+{
+    internal EbinRecordReadView(ReadOnlySpan<byte> encodedBytes);
+    public ReadOnlySpan<byte> EncodedBytes { get; }
+    public int FieldCount { get; }
+    public EbinRecordHeader Header { get; }
+    public EbinFieldReadView GetField(int index);
+    public EbinRecordReadView GetRecord(uint fieldTag);
+    public EbinRecordReadView GetRecordArrayElement(uint fieldTag, int elementIndex);
+    public bool TryGetField(uint tag, out EbinFieldReadView field);
+}
+
+public static class EbinStructuralReader
+{
+    public static EbinReadStatus Read<TAction>(scoped ReadOnlySpan<byte> source, EbinReadLimits limits,
+        EbinReadPolicy policy, scoped ref TAction action, out int bytesConsumed,
+        out EbinReadDiagnostic? diagnostic)
+        where TAction : struct, IAction<EbinRecordReadView>, allows ref struct;
+    public static EbinReadStatus ReadHeader(scoped ReadOnlySpan<byte> source, EbinReadLimits limits,
+        out EbinRecordHeader header, out int bytesConsumed, out EbinReadDiagnostic? diagnostic);
+    public static EbinReadStatus Validate(scoped ReadOnlySpan<byte> source, EbinReadLimits limits,
+        EbinReadPolicy policy, out int bytesConsumed, out EbinReadDiagnostic? diagnostic);
+}
+```
+
+Public schema versions are validated signed `int` under section 1; EBIN's wire UInt32 major/minor values above `int.MaxValue` reject before projection. `Foundation` preserves the original M02 parser's 65,536-byte, 64-field, depth-64 and 1,048,576-element limits. The separately supplied retained-storage budget remains additional and cannot widen them. M03 callers choose explicit owner limits; every recursive record/payload/array scan shares one checked depth and aggregate-counter state, including prefix validation. A child scan cannot restart counters or use Foundation defaults.
+
+`EbinReadLimits` requires `MaximumRecordBytes >= 64`, `MaximumDepth` in `[1, 64]` (the EBIN nesting ceiling in [27](27-state-serialization-replay-and-recovery.md#5-savereplay-admission-limits)), and positive aggregate-record capacity because the root counts. Field, element, UTF-8, aggregate-field and aggregate-element maxima may be zero; that permits only zero-field records, empty arrays/UTF-8 payloads and scans without counted children as applicable. Invalid/null limits are rejected before reading.
+
+Root depth is one; a nested record (including each record-array element) increments depth once, while an array container does not. Count each physical record, field-table entry and fixed-/record-array element once. Encoded root byte length already includes nested bytes. Validate UInt64 claims/products/alignment before signed projection, slicing or allocation; enforce header/table/range/overlap/padding/tag/flag/scalar/Boolean/UTF-8/array-offset/child-extent rules before any callback. Empty RecordArray payloads are exactly 16 bytes and zero-field records exactly 64 bytes.
+
+`ReadHeader.Complete` consumes the 64-byte header and returns only a bounded claim. `Validate` and `Read.Complete` consume exactly one complete record prefix; every other status consumes zero and exposes no usable header/view. `Read` invokes the synchronous scoped action only after complete recursive validation; exceptions propagate after cleanup. `GetRecord` throws `KeyNotFoundException` for an absent tag and `InvalidOperationException` for a field of another kind; `GetRecordArrayElement` has the same tag/kind behavior and throws `ArgumentOutOfRangeException` for an invalid index. Returned child views remain within the already validated bytes and cannot restart limits. `Canonical` additionally requires contiguous canonical record-array elements and the exact canonical field layout throughout nested records and arrays; `Structural` validates admissible structure but does not imply canonical packing or semantic schema admission. The reader allocates no per-field/per-child object graph, retains no span, installs no schema/validator/codec and executes no arbitrary constructor. File/chain callers retain and account input/decompression/staging credits; this API never flattens an unbounded package.
+
+### EBIN structural writer and payload helpers
+
+The structural writer packs generic borrowed field descriptions into caller scratch, validates the exact canonical candidate, and commits a complete record prefix. Payload helpers construct supported payload representations without exposing a generic marshaller or retaining/accounting caller storage.
+
+```csharp
+using TerraFX.Numerics;
+
+namespace TerraFX;
+
+public readonly record struct EbinPayloadSlice
+{
+    public EbinPayloadSlice(int offset, int byteLength);
+    public int ByteLength { get; }
+    public int Offset { get; }
+}
+
+public readonly record struct EbinFieldSource
+{
+    public EbinFieldSource(uint tag, ushort kind, ushort flags, ulong count, EbinPayloadSlice payload);
+    public ulong Count { get; }
+    public ushort Flags { get; }
+    public ushort Kind { get; }
+    public EbinPayloadSlice Payload { get; }
+    public uint Tag { get; }
+}
+
+public readonly ref struct EbinRecordWriteView
+{
+    public EbinRecordWriteView(Guid schemaId, int major, int minor,
+        ReadOnlySpan<EbinFieldSource> fields, ReadOnlySpan<byte> payloadStorage);
+    public ReadOnlySpan<EbinFieldSource> Fields { get; }
+    public int Major { get; }
+    public int Minor { get; }
+    public ReadOnlySpan<byte> PayloadStorage { get; }
+    public Guid SchemaId { get; }
+}
+
+public enum EbinWriteStatus
+{
+    Complete,
+    InvalidRecord,
+    UnsupportedSchema,
+    WorkspaceTooSmall,
+    DestinationTooSmall
+}
+
+public enum EbinStructuralDiagnosticSource
+{
+    Construction,
+    EncodedInput,
+    Candidate
+}
+
+public readonly record struct EbinStructuralDiagnostic
+{
+    public ulong Claim { get; }
+    public string Category { get; }
+    public ulong Limit { get; }
+    public ulong? Offset { get; }
+    public Guid SchemaId { get; }
+    public EbinStructuralDiagnosticSource Source { get; }
+    public uint Tag { get; }
+    public static EbinStructuralDiagnostic FromRead(EbinReadDiagnostic diagnostic);
+}
+
+public static class EbinStructuralWriter
+{
+    public static EbinWriteStatus Commit(scoped ReadOnlySpan<byte> canonicalCandidate,
+        EbinReadLimits limits, scoped Span<byte> destination, out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Measure(scoped in EbinRecordWriteView source, EbinReadLimits limits,
+        out int recordBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Prepare(scoped in EbinRecordWriteView source, EbinReadLimits limits,
+        scoped Span<byte> candidateStorage, out int candidateBytes,
+        out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(scoped in EbinRecordWriteView source, EbinReadLimits limits,
+        scoped Span<byte> candidateStorage, scoped Span<byte> destination, out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic);
+}
+
+public static class EbinPayloadWriter
+{
+    public static EbinWriteStatus Write(byte value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(ushort value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(uint value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(ulong value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(sbyte value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(short value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(int value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(long value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(bool value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(float value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(Guid value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(Vector2 value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(Vector3 value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(Vector4 value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(Quaternion value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(Matrix3x2 value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(Matrix4x4 value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(SpatialPosition2 value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus Write(SpatialPosition3 value, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<byte> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<ushort> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<uint> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<ulong> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<sbyte> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<short> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<int> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<long> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<bool> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<float> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<Guid> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<Vector2> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<Vector3> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<Vector4> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<Quaternion> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<Matrix3x2> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<Matrix4x4> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<SpatialPosition2> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteFixedArray(scoped ReadOnlySpan<SpatialPosition3> values, EbinReadLimits limits, scoped Span<byte> payloadDestination, out int payloadBytes, out EbinStructuralDiagnostic? diagnostic);
+
+    public static EbinWriteStatus WriteFixedArray(ushort elementKind, ulong count,
+        scoped ReadOnlySpan<byte> canonicalElements, EbinReadLimits limits,
+        scoped Span<byte> payloadDestination, out int payloadBytes,
+        out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus MeasureRecordArray(scoped ReadOnlySpan<EbinPayloadSlice> children,
+        scoped ReadOnlySpan<byte> childStorage, EbinReadLimits limits, out int payloadBytes,
+        out EbinStructuralDiagnostic? diagnostic);
+    public static EbinWriteStatus WriteRecordArray(scoped ReadOnlySpan<EbinPayloadSlice> children,
+        scoped ReadOnlySpan<byte> childStorage, EbinReadLimits limits,
+        scoped Span<byte> payloadDestination, out int payloadBytes,
+        out EbinStructuralDiagnostic? diagnostic);
+}
+```
+
+Scalar helpers use fixed widths at most 64 bytes and therefore need no `EbinReadLimits`. Array helpers validate count, checked wire extent, aggregate element/byte budgets and complete encoded inputs before whole-destination overlap or workspace checks. Record-array children share one fresh scanner state, count at depth one, and must consume their full slices. Successful helpers alter only the exact payload prefix; any returned refusal leaves the entire destination unchanged and reports zero bytes. Inputs remain unchanged and output backing remains live/exclusively borrowed through the call. See [10 M03 structural and payload writing](10-binary-data-and-authoring-formats.md#m03-structural-and-payload-writing) for accounting, encoded-byte diagnostics, failure precedence and the strict distinction between payload construction and complete-root admission.
+
 ## 4. Hosting, worlds, and jobs
 
 ```csharp
@@ -835,6 +1096,7 @@ public sealed class EngineHostOptions
     public PlatformBackend Platform { get; }
     public GraphicsBackend? GraphicsBackend { get; }
     public AssetStoreOptions AssetStoreOptions { get; }
+    public int CpuWorkerCount { get; init; } = Math.Min(64, Math.Max(1, Environment.ProcessorCount - 2));
     public SimulationOverrunPolicy OverrunPolicy { get; init; } = SimulationOverrunPolicy.Pause;
     public GraphicsFailurePolicy GraphicsFailurePolicy { get; init; } = GraphicsFailurePolicy.StopHost;
     public ClipboardServicePolicy ClipboardServicePolicy { get; init; } = ClipboardServicePolicy.NotRequested;
@@ -846,6 +1108,7 @@ public sealed class EngineHost : IAsyncDisposable
     private EngineHost();
     public static Task<EngineHost> StartAsync(EngineHostOptions options, CancellationToken cancellationToken = default);
     public Task Completion { get; }
+    public int CpuWorkerCount { get; }
     public AssetStore Assets { get; }
     public DiagnosticsService Diagnostics { get; }
     public WorldPersistence Persistence { get; }
@@ -859,21 +1122,23 @@ public sealed class EngineHost : IAsyncDisposable
     public Task<WindowCreationReceipt> CreateWindowAsync(WindowOptions options, CancellationToken cancellationToken = default);
     public Surface GetSurface(WindowHandle window);
     public Task<FrameChangeReceipt> ChangeFrameAsync(World world, SpatialFrame3 frame, CancellationToken cancellationToken = default);
+    public Task<FrameChangeReceipt> ChangeFrameAsync(World world, SpatialFrame2 frame, CancellationToken cancellationToken = default);
+    public Task<TimeScaleReceipt> ChangeTimeScaleAsync(World world, float timeScale, CancellationToken cancellationToken = default);
     public Task StopAsync(CancellationToken cancellationToken = default);
     public ValueTask DisposeAsync();
 }
 
-public enum FrameChangeStatus
+public enum TimeScaleChangeStatus
 {
     Applied,
     Rejected
 }
 
-public sealed class FrameChangeReceipt
+public sealed class TimeScaleReceipt
 {
-    internal FrameChangeReceipt(FrameChangeStatus status, long? committedFrameRevision, ImmutableArray<Diagnostic> diagnostics);
-    public FrameChangeStatus Status { get; }
-    public long? CommittedFrameRevision { get; }
+    internal TimeScaleReceipt(TimeScaleChangeStatus status, float? appliedTimeScale, ImmutableArray<Diagnostic> diagnostics);
+    public TimeScaleChangeStatus Status { get; }
+    public float? AppliedTimeScale { get; }
     public ImmutableArray<Diagnostic> Diagnostics { get; }
 }
 
@@ -902,30 +1167,53 @@ public sealed class InputBindingReceipt
 }
 ```
 
-`EngineHost` has no public constructor; `StartAsync` owns startup and returns only a running host or a faulted task with startup context. `Headless` requires an explicit headless platform and no graphics backend; `OffscreenNative` requires an explicit real D3D12 or Vulkan backend. No backend, display, endpoint, or physical-input fallback is inferred. The host owns its dedicated owner thread and keeps pumping native readiness while paused, minimized, or stopping. `EngineContext.CreateInputRouter` is owner-bound and creates one router for exactly one `HostLiveUI` or `SimulationTimeline` recipient. `BindGameplayInput` establishes [14](14-custom-input-actions-and-text.md)'s window/world/timeline route and returns `Bound` with a router only on success; `Rejected` returns a diagnostic and no router.
+`EngineHost` has no public constructor; `StartAsync` owns startup and returns only a running host or a faulted task with startup context. `CpuWorkerCount` admits `[0, 64]`; zero runs stable parallel partitions inline. The host owns one Entities CPU worker pool shared by its Worlds and disposes it only after every World has joined. A host-created `WorldOptions.CpuWorkerCount` must be `null` (inherit the host pool) or equal the host's configured count; a mismatched explicit count rejects before World allocation. A standalone World's null count resolves to the documented default and it owns its pool. `Headless` requires an explicit headless platform and no graphics backend; `OffscreenNative` requires an explicit real D3D12 or Vulkan backend. No backend, display, endpoint, or physical-input fallback is inferred. The host owns its dedicated owner thread and keeps pumping native readiness and accepted owner-control operations while paused, minimized, or stopping. `EngineContext.CreateInputRouter` is owner-bound and creates one router for exactly one `HostLiveUI` or `SimulationTimeline` recipient. `BindGameplayInput` establishes [14](14-custom-input-actions-and-text.md)'s window/world/timeline route and returns `Bound` with a router only on success; `Rejected` returns a diagnostic and no router.
 
-`Assets`, `Diagnostics`, `Persistence`, `Platform`, and `Renderer` are initialized host-owned services available after `StartAsync` succeeds. `EngineHost` creates its `Assets` service through `AssetStore.CreateAsync` using the required `EngineHostOptions.AssetStoreOptions`, then owns and disposes that instance during shutdown; standalone stores use the same factory and are owned/disposed by their callers. `Renderer` is a CPU-capable extraction service in every host profile. `GraphicsDevice` and `GpuResidency` are both available when a graphics backend is selected and both `null` for `Headless`; no placeholder device is constructed. In `Headless`, `Renderer.Extract` validates and copies logical scene data only, while `BuildGraph` and `SubmitAsync` throw `InvalidOperationException` because no real graphics device exists; no GPU output is synthesized. `OffscreenNative` has a real device and no interactive surface. `CreateAudioMixerAsync` creates an independently owned mixer from explicit `AudioMixerOptions`; the selected physical or offline endpoint is required by those options and is never inferred. A pre-canceled token prevents creation; after admission the task completes with the created mixer or faults with initialization context, and the caller owns/disposes the returned mixer.
+`Assets`, `Diagnostics`, `Persistence`, `Platform`, and `Renderer` are initialized host-owned services available after `StartAsync` succeeds. `EngineHost` creates its `Assets` service through `AssetStore.CreateAsync` using the required immutable `EngineHostOptions.AssetStoreOptions`, then owns and disposes that instance during shutdown; standalone stores use the same factory and are owned/disposed by their callers. Host construction validates the Assets registration independently of each future `WorldRegistration`; `CreateWorld` checks their exact permitted catalogue/import composition before allocating a World. `Renderer` is a CPU-capable extraction service in every host profile. `GraphicsDevice` and `GpuResidency` are both available when a graphics backend is selected and both `null` for `Headless`; no placeholder device is constructed. In `Headless`, `Renderer.Extract` validates and copies logical scene data only, while `BuildGraph` and `SubmitAsync` throw `InvalidOperationException` because no real graphics device exists; no GPU output is synthesized. Capture/extraction requires the World owner's current canonical mutation revision to match a committed/restored marker. `OffscreenNative` has a real device and no interactive surface. `CreateAudioMixerAsync` creates an independently owned mixer from explicit `AudioMixerOptions`; the selected physical or offline endpoint is required by those options and is never inferred. A pre-canceled token prevents creation; after admission the task completes with the created mixer or faults with initialization context, and the caller owns/disposes the returned mixer.
 
 `GetSurface` is synchronous and owner-thread-only. It returns the same host-owned logical `Surface` for a live interactive `WindowHandle`; a default/foreign handle throws `ArgumentException`, while off-owner-thread access, a stale/closed handle, or a live window without an interactive surface throws `InvalidOperationException`. Successful interactive window creation establishes this mapping before returning its `Created` receipt. Applying `CloseWindowAsync` invalidates the mapping and the logical surface immediately; native surface/swapchain storage remains fence-retained until GPU use and queued presentation have actually retired. `EngineHost.GetSurface` does not add a `Platform` dependency to `TerraFX.Graphics`.
 
 `EngineHostOptions` requires host profile, platform, nullable graphics backend, and `AssetStoreOptions` in its constructor; that constructor has no optional parameters or fallback cache path. `OverrunPolicy` defaults to the chapter [03](03-shared-conventions-and-clocks.md) pause-on-overrun policy, `GraphicsFailurePolicy` defaults to `StopHost`, and `ShutdownTimeout` defaults to five seconds. A null graphics backend is valid only when the selected host profile does not require one. All option values are validated before host construction. `AssetStoreOptions.AbsoluteCacheDirectory` must be an explicit absolute trusted cache root, not an asset-controlled path; the host passes those frozen options to `AssetStore.CreateAsync` and does not report startup complete until the store is ready.
 
-`InvokeAsync` and `TryInvoke` invoke a bounded synchronous callback on the host owner between ticks. The `EngineContext` is valid only during that callback; retaining it does not retain authority, and later use throws. The callback cannot await, recursively pump, or synchronously wait for its own completion. `TryInvoke` returns false only for a full bounded mailbox, with `completion = null`; true supplies the same asynchronously completed or faulted task as `InvokeAsync`. A pre-canceled `InvokeAsync` returns a canceled task; a pre-canceled `TryInvoke` throws `OperationCanceledException` before admission. `StopAsync` is idempotent; cancellation of its wait cannot undo accepted shutdown. `ChangeFrameAsync` admits one coordinated frame-cache replacement at the world structural boundary; `Applied` supplies the committed frame revision and no diagnostics, while `Rejected` supplies diagnostics and no committed revision. A pre-canceled token causes no admission; cancellation after admission cancels only the wait and cannot roll back a committed frame.
+`InvokeAsync` and `TryInvoke` invoke a bounded synchronous callback on the host owner between ticks. The `EngineContext` is valid only during that callback; retaining it does not retain authority, and later use throws. The callback cannot await, recursively pump, or synchronously wait for its own completion. `TryInvoke` returns false only for a full bounded mailbox, with `completion = null`; true supplies the same asynchronously completed or faulted task as `InvokeAsync`. A pre-canceled `InvokeAsync` returns a canceled task; a pre-canceled `TryInvoke` throws `OperationCanceledException` before admission. `StopAsync` is idempotent; cancellation of its wait cannot undo accepted shutdown. `EngineContext` has no frame-change method: it is a borrowed synchronous callback capability, not the ordinary-thread queue service or standalone World control route. `World.SetFrame` is the owner-idle standalone route; either `EngineHost.ChangeFrameAsync` overload targets the exact hosted World binding and does not require the caller to be the World owner.
+
+After valid target, authority and immutable-frame usage checks, a pre-canceled frame token yields a canceled Task with no admission. A valid non-Try request refused solely because the pending owner queue is full yields a Task faulted with the contextual Entities-owned `WorldOwnerQueueFullException`; queue-full is not a synchronous exception, successful `Rejected` receipt or Try result. It consumes no owner-request/control/canonical-mutation sequence, does not invalidate the marker, and leaves the candidate reusable. The fault/receipt selection is linearized with target/authority revalidation and token observation; later cancellation cannot replace a selected admission refusal. Accepted work permanently consumes its owner-request cursor and invalidates capture eligibility. Its original Task reports actual application (`Applied`/expected `Rejected`) or faults on unexpected precommit preparation/cleanup failure after actual uses end. The token cannot withdraw accepted work; only an independent `operation.WaitAsync(waitToken)` observation is cancelable. Applied is irrevocable even if later `Retirement` faults. Other owner-control operations retain their own cancellation and capacity channels. All queues remain bounded by `WorldOptions.MaximumPendingOwnerRequests`.
 
 ```csharp
 using System;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
+using System.Threading.Tasks;
 using TerraFX;
 using TerraFX.Diagnostics;
 
 namespace TerraFX.Entities;
 
+public enum WorldRestoreIntent
+{
+    None = 0,
+    RecordedContinuation = 1,
+    Branch = 2,
+    IndependentFork = 3,
+}
+
 public sealed class WorldOptions
 {
-    public WorldOptions();
+    public WorldOptions(WorldRegistration registration);
+    public WorldRegistration Registration { get; }
+    public Guid? WorldGuid { get; init; }
+    public Guid? InitialReplayLineageId { get; init; }
+    public WorldAdmissionDomain? AdmissionDomain { get; init; }
+    public int? CpuWorkerCount { get; init; }
     public int TickRate { get; init; } = 60;
     public int MaximumLiveEntities { get; init; } = 1_048_576;
+    public int MaximumEntitySlots { get; init; } = 2_097_152;
+    public int MaximumIdentityAssignments { get; init; } = 33_554_432;
+    public int MaximumIdentityBranches { get; init; } = 1024;
+    public int MaximumEntityReferencePositions { get; init; } = 4_194_304;
+    public int MaximumActiveSceneInstances { get; init; } = 65_536;
+    public int MaximumSceneOccurrences { get; init; } = 1_048_576;
+    public int MaximumRecordedControls { get; init; } = 65_536;
     public int MaximumArchetypes { get; init; } = 4096;
     public int MaximumDeferredCommands { get; init; } = 65_536;
     public int MaximumComponentTypes { get; init; } = 256;
@@ -933,11 +1221,464 @@ public sealed class WorldOptions
     public float InitialTimeScale { get; init; } = 1;
     public SpatialSettings SpatialSettings { get; init; } = SpatialSettings.Default;
     public SpatialProfileId SpatialProfileId { get; init; } = SpatialProfileId.Default;
+    public bool Enable2DFrame { get; init; } = true;
+    public int MaximumPendingOwnerRequests { get; init; } = 128;
+    public WorldSchedulingLimits SchedulingLimits { get; init; } = WorldSchedulingLimits.Default;
+}
+
+public sealed class WorldAdmissionDomain : IDisposable
+{
+    public WorldAdmissionDomain(long maximumBytes);
+    public long MaximumBytes { get; }
+    public Task Retirement { get; }
+    public void Dispose();
+}
+
+public sealed class WorldSchedulingLimits
+{
+    public WorldSchedulingLimits(
+        long maximumRegistrationBytes,
+        long maximumGraphBytes,
+        long maximumWorkPlanBytes,
+        long maximumCommandStagingBytes,
+        long maximumOwnedStateBytes,
+        long maximumDiagnosticBytes,
+        int maximumConflictComparisons);
+    public static WorldSchedulingLimits Default { get; }
+    public long MaximumRegistrationBytes { get; }
+    public long MaximumGraphBytes { get; }
+    public long MaximumWorkPlanBytes { get; }
+    public long MaximumCommandStagingBytes { get; }
+    public long MaximumOwnedStateBytes { get; }
+    public long MaximumDiagnosticBytes { get; }
+    public long MaximumResourceAndSystemStateBytes { get; }
+    public int MaximumConflictComparisons { get; }
+    }
+
+public enum SystemResourceKind
+{
+    None = 0,
+    Component = 1,
+    Resource = 2,
+    Tag = 3,
+    EntityMembership = 4,
+}
+
+public enum SystemAccessMode
+{
+    None = 0,
+    Read = 1,
+    Write = 2,
+}
+
+public enum SystemThreadMode
+{
+    None = 0,
+    OwnerThread = 1,
+    Parallel = 2,
+}
+
+public readonly struct SystemPartitionRange : IEquatable<SystemPartitionRange>
+{
+    public SystemPartitionRange(int start, int length);
+    public int Start { get; }
+    public int Length { get; }
+    public int EndExclusive { get; }
+    public bool IsValid { get; }
+    public bool Equals(SystemPartitionRange other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
+    public static bool operator ==(SystemPartitionRange left, SystemPartitionRange right);
+    public static bool operator !=(SystemPartitionRange left, SystemPartitionRange right);
+}
+
+public readonly struct SystemResourceAccess : IEquatable<SystemResourceAccess>
+{
+    public SystemResourceAccess(SystemResourceKind kind, Guid resourceId, SystemAccessMode mode);
+    public SystemResourceAccess(SystemResourceKind kind, Guid resourceId, SystemAccessMode mode, SystemPartitionRange range);
+    public SystemResourceKind Kind { get; }
+    public Guid ResourceId { get; }
+    public SystemAccessMode Mode { get; }
+    public SystemPartitionRange? Range { get; }
+    public bool IsValid { get; }
+    public bool Equals(SystemResourceAccess other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
+    public static bool operator ==(SystemResourceAccess left, SystemResourceAccess right);
+    public static bool operator !=(SystemResourceAccess left, SystemResourceAccess right);
+}
+
+public sealed class SystemResourceDescription
+{
+    public SystemResourceDescription(Guid resourceId, int partitionCount, bool allowParallelAccess);
+    public Guid ResourceId { get; }
+    public int PartitionCount { get; }
+    public bool AllowParallelAccess { get; }
+}
+
+public sealed class WorldRegistrationBuilder
+{
+    public WorldRegistrationBuilder(ContentSchemaCatalogue catalogue);
+    public WorldRegistrationBuilder RegisterComponent<T>(ComponentSchema<T> schema, IComponentFactory<T> factory) where T : unmanaged;
+    public WorldRegistrationBuilder RegisterTag(EntityTagSchema schema);
+    public WorldRegistrationBuilder RegisterSystem(SystemDescription description, IWorldSystemFactory factory);
+    public WorldRegistrationBuilder RegisterSceneSupport(SceneSupportRegistration support);
+    public WorldRegistrationBuilder RegisterCpuExtractionSupport(CpuExtractionSupportRegistration support);
+    public WorldRegistration Build();
+}
+
+public sealed class WorldRegistration
+{
+    internal WorldRegistration(ContentSchemaCatalogue catalogue, ImmutableArray<ComponentRegistration> components,
+        ImmutableArray<EntityTagSchema> tags, ImmutableArray<SystemRegistration> systems);
+    public ContentSchemaCatalogue Catalogue { get; }
+    public ComponentLayout GetComponentLayout(ContentSchemaReference schema);
+    public ComponentFactoryDescriptor GetComponentBinding(ContentSchemaReference schema);
+}
+
+public readonly struct ComponentLayout
+{
+    public ComponentLayout(Guid layoutId, int logicalBytes);
+    public Guid LayoutId { get; }
+    public int LogicalBytes { get; }
 }
 
 public sealed class ComponentSchema<T> where T : unmanaged
 {
-    public ComponentSchema(Guid schemaId, int schemaVersion, ImmutableArray<ComponentFieldDescriptor> fields, ComponentStorageFlags flags);
+    public ComponentSchema(ContentSchemaReference schema, ComponentLayout layout,
+        ImmutableArray<ComponentFieldDescriptor> fields, ComponentStorageFlags flags);
+    public ContentSchemaReference Schema { get; }
+    public ComponentLayout Layout { get; }
+    public ImmutableArray<ComponentFieldDescriptor> Fields { get; }
+    public ComponentStorageFlags Flags { get; }
+    public static ComponentSchema<T> FromCatalogue(ContentSchemaCatalogue catalogue,
+        ContentSchemaReference schema, ComponentLayout layout);
+    public ComponentFieldDescriptor GetField(ComponentFieldPath path);
+}
+
+public enum ComponentPropertySegmentKind
+{
+    FieldTag = 1,
+    FixedArrayIndex = 2
+}
+
+public readonly struct ComponentPropertySegment
+{
+    private ComponentPropertySegment(ComponentPropertySegmentKind kind, uint value);
+    public static ComponentPropertySegment FieldTag(uint tag);
+    public static ComponentPropertySegment FixedArrayIndex(int index);
+    public ComponentPropertySegmentKind Kind { get; }
+    public uint Value { get; }
+}
+
+public sealed class ComponentFieldPath
+{
+    public ComponentFieldPath(ImmutableArray<ComponentPropertySegment> segments);
+    public ImmutableArray<ComponentPropertySegment> Segments { get; }
+}
+
+public sealed class ComponentFieldDescriptor
+{
+    internal ComponentFieldDescriptor();
+    public ContentSchemaReference ComponentSchema { get; }
+    public ComponentFieldPath Path { get; }
+    public ContentFieldDescriptor Field { get; }
+}
+
+public enum ComponentStorageSegmentKind
+{
+    Member = 1,
+    InlineIndex = 2
+}
+
+public readonly struct ComponentStorageSegment
+{
+    private ComponentStorageSegment(ComponentStorageSegmentKind kind, string? memberName, int? inlineIndex);
+    public static ComponentStorageSegment Member(string memberName);
+    public static ComponentStorageSegment InlineIndex(int index);
+    public ComponentStorageSegmentKind Kind { get; }
+    public string? MemberName { get; }
+    public int? Index { get; }
+}
+
+public sealed class ComponentStoragePath
+{
+    public ComponentStoragePath(ImmutableArray<ComponentStorageSegment> segments);
+    public ImmutableArray<ComponentStorageSegment> Segments { get; }
+}
+
+public enum ComponentStorageKind
+{
+    Value = 1,
+    OptionalValue = 2,
+    EntityHandle = 3,
+    OptionalEntityHandle = 4,
+    InlineArray = 5,
+    Composite = 6,
+    TransientNativeValue = 7
+}
+
+public enum ComponentStoragePurpose
+{
+    SchemaValue = 1,
+    DeclaredRuntimeOnly = 2
+}
+
+public sealed class ComponentStorageLeaf
+{
+    public ComponentStorageLeaf(ComponentStoragePath path, ComponentStorageKind kind,
+        int byteOffset, int byteExtent, int inlineCount, int inlineStride,
+        ComponentStoragePurpose purpose);
+    public ComponentStoragePath Path { get; }
+    public ComponentStorageKind Kind { get; }
+    public int ByteOffset { get; }
+    public int ByteExtent { get; }
+    public int InlineCount { get; }
+    public int InlineStride { get; }
+    public ComponentStoragePurpose Purpose { get; }
+}
+
+public readonly struct ComponentPaddingInterval
+{
+    public ComponentPaddingInterval(int byteOffset, int byteExtent);
+    public int ByteOffset { get; }
+    public int ByteExtent { get; }
+}
+
+public sealed class ComponentStorageDeclaration
+{
+    public ComponentStorageDeclaration(int logicalBytes,
+        ImmutableArray<ComponentStorageLeaf> leaves,
+        ImmutableArray<ComponentPaddingInterval> padding);
+    public int LogicalBytes { get; }
+    public ImmutableArray<ComponentStorageLeaf> Leaves { get; }
+    public ImmutableArray<ComponentPaddingInterval> Padding { get; }
+}
+
+public sealed class ComponentFactoryDescriptor
+{
+    internal ComponentFactoryDescriptor();
+    public ContentSchemaReference Schema { get; }
+    public ComponentLayout Layout { get; }
+    public ComponentStorageDeclaration Storage { get; }
+    public ComponentTransientRestore Restore { get; }
+    public ComponentStorageFlags Flags { get; }
+    public Guid FactoryId { get; }
+    public int FactoryVersion { get; }
+    public ImmutableArray<ComponentFieldDescriptor> Fields { get; }
+}
+
+public interface IComponentValueReader<TValueOwner, TValue>
+{
+    TValue Get(in TValueOwner value);
+}
+
+public interface IComponentValueAccessor<T, TValue> :
+    IComponentValueReader<T, TValue> where T : unmanaged
+{
+    void Set(ref T value, in TValue fieldValue);
+}
+
+public interface IComponentOptionalReader<TValueOwner, TValue>
+{
+    bool IsPresent(in TValueOwner value);
+    TValue GetPresent(in TValueOwner value);
+}
+
+public interface IComponentOptionalAccessor<T, TValue> :
+    IComponentOptionalReader<T, TValue> where T : unmanaged
+{
+    void SetPresent(ref T value, in TValue fieldValue);
+    void Clear(ref T value);
+}
+
+public interface IComponentArrayReader<TValueOwner, TElement>
+{
+    int GetCount(in TValueOwner value);
+    TElement GetElement(in TValueOwner value, int index);
+}
+
+public interface IComponentArrayAccessor<T, TElement> :
+    IComponentArrayReader<T, TElement> where T : unmanaged
+{
+    void SetElement(ref T value, int index, in TElement element);
+}
+
+public sealed class ComponentFieldBinding<T, TAuthor> where T : unmanaged
+{
+    private ComponentFieldBinding();
+    public ComponentFieldDescriptor Descriptor { get; }
+    public ImmutableArray<ComponentStoragePath> StoragePaths { get; }
+
+    public static ComponentFieldBinding<T, TAuthor> Scalar<TValue, TRuntime, TAuthorReader>(
+        ComponentFieldDescriptor field, ImmutableArray<ComponentStoragePath> storagePaths,
+        TRuntime runtime, TAuthorReader author)
+        where TValue : unmanaged
+        where TRuntime : struct, IComponentValueAccessor<T, TValue>
+        where TAuthorReader : struct, IComponentValueReader<TAuthor, TValue>;
+
+    public static ComponentFieldBinding<T, TAuthor> Optional<TValue, TRuntime, TAuthorReader>(
+        ComponentFieldDescriptor field, ImmutableArray<ComponentStoragePath> storagePaths,
+        TRuntime runtime, TAuthorReader author)
+        where TValue : unmanaged
+        where TRuntime : struct, IComponentOptionalAccessor<T, TValue>
+        where TAuthorReader : struct, IComponentOptionalReader<TAuthor, TValue>;
+
+    public static ComponentFieldBinding<T, TAuthor> EntityReference<TRuntime, TAuthorReader>(
+        ComponentFieldDescriptor field, ImmutableArray<ComponentStoragePath> storagePaths,
+        TRuntime runtime, TAuthorReader author)
+        where TRuntime : struct, IComponentValueAccessor<T, Entity>
+        where TAuthorReader : struct, IComponentValueReader<TAuthor, Guid>;
+
+    public static ComponentFieldBinding<T, TAuthor> OptionalEntityReference<TRuntime, TAuthorReader>(
+        ComponentFieldDescriptor field, ImmutableArray<ComponentStoragePath> storagePaths,
+        TRuntime runtime, TAuthorReader author)
+        where TRuntime : struct, IComponentOptionalAccessor<T, Entity>
+        where TAuthorReader : struct, IComponentOptionalReader<TAuthor, Guid>;
+
+    public static ComponentFieldBinding<T, TAuthor> StableGuidReference<TRuntime, TAuthorReader>(
+        ComponentFieldDescriptor field, ImmutableArray<ComponentStoragePath> storagePaths,
+        TRuntime runtime, TAuthorReader author)
+        where TRuntime : struct, IComponentValueAccessor<T, Guid>
+        where TAuthorReader : struct, IComponentValueReader<TAuthor, Guid>;
+
+    public static ComponentFieldBinding<T, TAuthor> OptionalStableGuidReference<TRuntime, TAuthorReader>(
+        ComponentFieldDescriptor field, ImmutableArray<ComponentStoragePath> storagePaths,
+        TRuntime runtime, TAuthorReader author)
+        where TRuntime : struct, IComponentOptionalAccessor<T, Guid>
+        where TAuthorReader : struct, IComponentOptionalReader<TAuthor, Guid>;
+
+    public static ComponentFieldBinding<T, TAuthor> FixedArray<TElement, TRuntime, TAuthorReader>(
+        ComponentFieldDescriptor field, ImmutableArray<ComponentStoragePath> storagePaths,
+        TRuntime runtime, TAuthorReader author)
+        where TElement : unmanaged
+        where TRuntime : struct, IComponentArrayAccessor<T, TElement>
+        where TAuthorReader : struct, IComponentArrayReader<TAuthor, TElement>;
+
+    public static ComponentFieldBinding<T, TAuthor> Aggregate<TStored, TSymbolic, TRuntime, TAuthorReader>(
+        ComponentFieldDescriptor field, ImmutableArray<ComponentStoragePath> storagePaths,
+        TRuntime runtime, TAuthorReader author,
+        ImmutableArray<ComponentFieldBinding<T, TAuthor>> children)
+        where TStored : unmanaged
+        where TRuntime : struct, IComponentValueAccessor<T, TStored>
+        where TAuthorReader : struct, IComponentValueReader<TAuthor, TSymbolic>;
+
+    public static ComponentFieldBinding<T, TAuthor> OptionalAggregate<TStored, TSymbolic, TRuntime, TAuthorReader>(
+        ComponentFieldDescriptor field, ImmutableArray<ComponentStoragePath> storagePaths,
+        TRuntime runtime, TAuthorReader author,
+        ImmutableArray<ComponentFieldBinding<T, TAuthor>> children)
+        where TStored : unmanaged
+        where TRuntime : struct, IComponentOptionalAccessor<T, TStored>
+        where TAuthorReader : struct, IComponentOptionalReader<TAuthor, TSymbolic>;
+}
+
+public interface IComponentFactory<T> where T : unmanaged
+{
+    ComponentFactoryBinding<T> Binding { get; }
+}
+
+public enum ComponentTransientRestore
+{
+    None = 0,
+    Reset = 1,
+    Derived = 2
+}
+
+public sealed class ComponentFactoryBinding<T> where T : unmanaged
+{
+    private ComponentFactoryBinding();
+    public static ComponentFactoryBinding<T> Create<TAuthor>(
+        Guid factoryId, int factoryVersion, ComponentSchema<T> schema,
+        ComponentStorageDeclaration storage, ComponentTransientRestore restore,
+        ImmutableArray<ComponentFieldBinding<T, TAuthor>> fields,
+        IComponentDefaultProvider<T> defaults,
+        IComponentRestoreProvider<T, TAuthor> restorer,
+        IComponentStateCodec<T, TAuthor> codec);
+    public ComponentFactoryDescriptor Descriptor { get; }
+}
+
+public sealed class ComponentDefaultBinding
+{
+    internal ComponentDefaultBinding();
+}
+
+public interface IComponentDefaultProvider<T> where T : unmanaged
+{
+    T Create(ComponentDefaultBinding binding);
+}
+
+public interface IComponentRestoreProvider<T, TAuthor> where T : unmanaged
+{
+    T Restore(in TAuthor author, WorldStateRestoreBinding binding,
+        CancellationToken cancellationToken);
+    T RebuildDerived(WorldStateRestoreBinding binding,
+        CancellationToken cancellationToken);
+}
+
+public enum ComponentReadStatus
+{
+    Read = 1,
+    Rejected = 2
+}
+
+public enum ComponentReadFailureKind
+{
+    MalformedRecord = 1,
+    SchemaMismatch = 2,
+    InvalidField = 3,
+    InvalidValue = 4,
+    ConsumptionMismatch = 5
+}
+
+public sealed class ComponentReadBinding<TAuthor>
+{
+    internal ComponentReadBinding();
+    public ContentSchemaReference Schema { get; }
+    public nint SourceByteLength { get; }
+    public ComponentReadResult<TAuthor> Complete([DisallowNull] in TAuthor author, nint consumedBytes);
+    public ComponentReadResult<TAuthor> Reject(ComponentReadFailureKind kind,
+        nint sourceOffset, ComponentFieldPath? path, string message);
+    public ComponentReadResult<TAuthor> Reject(EbinReadStatus status,
+        EbinReadDiagnostic? diagnostic);
+}
+
+public sealed class ComponentReadResult<TAuthor>
+{
+    internal ComponentReadResult();
+    public ComponentReadStatus Status { get; }
+    public nint ConsumedBytes { get; }
+    public ImmutableArray<Diagnostic> Diagnostics { get; }
+    public bool TryGetAuthorValue([MaybeNullWhen(false), NotNullWhen(true)] out TAuthor value);
+}
+
+public interface IComponentStateCodec<T, TAuthor> where T : unmanaged
+{
+    ComponentReadResult<TAuthor> Read(scoped ReadOnlySpan<byte> source,
+        ComponentReadBinding<TAuthor> binding, CancellationToken cancellationToken);
+    ImmutableArray<Diagnostic> Validate(in T value,
+        ComponentValidationBinding binding, CancellationToken cancellationToken);
+    nint Count(in T value, ComponentCaptureBinding binding,
+        CancellationToken cancellationToken);
+    nint Write(in T value, scoped Span<byte> destination,
+        ComponentCaptureBinding binding, CancellationToken cancellationToken);
+}
+
+public sealed class WorldStateRestoreBinding
+{
+    internal WorldStateRestoreBinding();
+    public Entity ResolveEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId);
+}
+
+public sealed class ComponentCaptureBinding
+{
+    internal ComponentCaptureBinding();
+    public Guid GetEntityId(ComponentFieldDescriptor referenceField, Entity entity);
+}
+
+public sealed class ComponentValidationBinding
+{
+    internal ComponentValidationBinding();
+    public ImmutableArray<Diagnostic> ValidateFields<T>(in T value) where T : unmanaged;
 }
 
 public sealed class SystemDescription
@@ -948,6 +1689,11 @@ public sealed class SystemDescription
 public sealed class EntityQueryDescription
 {
     public EntityQueryDescription(ImmutableArray<Guid> requiredSchemaIds, ImmutableArray<Guid> excludedSchemaIds, ImmutableArray<SystemResourceAccess> access);
+    public EntityQueryDescription(ImmutableArray<Guid> requiredSchemaIds, ImmutableArray<Guid> excludedSchemaIds, ImmutableArray<SystemResourceAccess> access, SystemPartitionRange range);
+    public ImmutableArray<Guid> RequiredSchemaIds { get; }
+    public ImmutableArray<Guid> ExcludedSchemaIds { get; }
+    public ImmutableArray<SystemResourceAccess> Access { get; }
+    public SystemPartitionRange? Range { get; }
 }
 
 public sealed class EntityTagSchema
@@ -971,8 +1717,22 @@ public sealed class WorldStepException : InvalidOperationException
 
 public enum HierarchyDestroyMode
 {
-    DetachChildrenKeepWorld,
-    DestroySubtree
+    DetachChildrenKeepWorld = 0,
+    DestroySubtree = 1
+}
+
+public readonly struct Entity : IEquatable<Entity>
+{
+    internal Entity(uint ownerId, uint index, uint generation);
+    public uint OwnerId { get; }
+    public uint Index { get; }
+    public uint Generation { get; }
+    public bool IsValid { get; }
+    public bool Equals(Entity other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
+    public static bool operator ==(Entity left, Entity right);
+    public static bool operator !=(Entity left, Entity right);
 }
 
 public ref struct EntityChunkView
@@ -985,11 +1745,25 @@ public ref struct EntityChunkView
 
 public sealed class World : IDisposable
 {
-    internal World(WorldOptions options);
+    private World(WorldConstructionPlan constructionPlan);
+    public static World Create(WorldOptions options);
+    public Guid WorldGuid { get; }
+    public Guid ReplayLineageId { get; }
+    public Guid IdentityBranchId { get; }
+    public Guid ExecutionSessionId { get; }
+    public SpatialFrame3 CurrentFrame3 { get; }
+    public SpatialFrame2? CurrentFrame2 { get; }
+    public SpatialFrame3 CreateNextFrame3(SpatialPosition3 origin, Vector3 minimum, Vector3 maximum);
+    public SpatialFrame2 CreateNextFrame2(SpatialPosition2 origin, Vector2 minimum, Vector2 maximum);
+    public FrameChangeReceipt SetFrame(SpatialFrame3 frame);
+    public FrameChangeReceipt SetFrame(SpatialFrame2 frame);
     public Diagnostic? LastFault { get; }
-    public void RegisterComponent<T>(ComponentSchema<T> schema) where T : unmanaged;
-    public void RegisterTag(EntityTagSchema schema);
-    public void RegisterSystem(SystemDescription description, IWorldSystem system);
+    public int CpuWorkerCount { get; }
+    public Guid GetEntityId(Entity entity);
+    public WorldEntityIdentity GetEntityIdentity(Entity entity);
+    public bool TryGetEntity(Guid stableEntityId, out Entity entity);
+    public bool TryGetEntity(WorldEntityIdentity identity, out Entity entity);
+    public void BeginIdentityBranch(Guid identityBranchId);
     public Entity CreateEntity(EntityDescription description);
     public void DestroyEntity(Entity entity, HierarchyDestroyMode mode);
     public bool Has<T>(Entity entity) where T : unmanaged;
@@ -998,10 +1772,104 @@ public sealed class World : IDisposable
     public void RemoveTag(Entity entity, Guid schemaId);
     public bool TryGet<T>(Entity entity, out T value) where T : unmanaged;
     public void Set<T>(Entity entity, in T value) where T : unmanaged;
+    public void Add<T>(Entity entity, in T value) where T : unmanaged;
+    public void Add<T>(Entity entity) where T : unmanaged;
+    public void Remove<T>(Entity entity) where T : unmanaged;
+    public void SetTimeScale(float timeScale);
+    public void PumpControlBoundary();
     public void ForEachChunk<TAction>(EntityQueryDescription query, scoped ref TAction action)
         where TAction : struct, IAction<EntityChunkView>, allows ref struct;
-    public WorldStepReceipt Step(SimulationStepContext context);
+    public WorldStepReceipt Step();
     public bool TrySubscribe(Action<CommittedWorldPublication> callback, [NotNullWhen(true)] out WorldSubscription? subscription);
+    public void Dispose();
+}
+
+public enum FrameChangeStatus
+{
+    Applied,
+    Rejected
+}
+
+public sealed class FrameChangeReceipt
+{
+    internal FrameChangeReceipt();
+    public FrameChangeStatus Status { get; }
+    public Guid WorldGuid { get; }
+    public SpatialFrame3? CommittedFrame3 { get; }
+    public SpatialFrame2? CommittedFrame2 { get; }
+    public long? CommittedFrameRevision { get; }
+    public long? ControlSequence { get; }
+    public long? AppliedAtNextTick { get; }
+    public ImmutableArray<Diagnostic> Diagnostics { get; }
+    public Task Retirement { get; }
+}
+
+public sealed class WorldFrameTransactionException : Exception
+{
+    internal WorldFrameTransactionException(Exception? innerException,
+        Diagnostic? primaryDiagnostic, Guid worldGuid, int dimension,
+        ImmutableArray<Exception> cleanupExceptions);
+    public Diagnostic? PrimaryDiagnostic { get; }
+    public Guid WorldGuid { get; }
+    public int Dimension { get; }
+    public ImmutableArray<Exception> CleanupExceptions { get; }
+}
+
+public sealed class WorldFrameRetirementException : Exception
+{
+    internal WorldFrameRetirementException(Guid worldGuid, int dimension,
+        SpatialFrame3? committedFrame3, SpatialFrame2? committedFrame2,
+        long committedFrameRevision, long controlSequence, long appliedAtNextTick,
+        ImmutableArray<Exception> cleanupExceptions);
+    public Guid WorldGuid { get; }
+    public int Dimension { get; }
+    public SpatialFrame3? CommittedFrame3 { get; }
+    public SpatialFrame2? CommittedFrame2 { get; }
+    public long CommittedFrameRevision { get; }
+    public long ControlSequence { get; }
+    public long AppliedAtNextTick { get; }
+    public ImmutableArray<Exception> CleanupExceptions { get; }
+}
+
+public sealed class WorldOwnerQueueFullException : InvalidOperationException
+{
+    internal WorldOwnerQueueFullException();
+    public Diagnostic Diagnostic { get; }
+    public Guid WorldGuid { get; }
+    public int Dimension { get; }
+    public int PendingCount { get; }
+    public int PendingLimit { get; }
+    public long NextOwnerRequestSequence { get; }
+    public long AcceptedOwnerRequests { get; }
+    public long NextControlSequence { get; }
+}
+
+public readonly struct WorldEntityIdentity : IEquatable<WorldEntityIdentity>
+{
+    internal WorldEntityIdentity(Guid worldGuid, Guid creationLineageId, Guid creationBranchId, Guid entityId);
+    public Guid WorldGuid { get; }
+    public Guid CreationLineageId { get; }
+    public Guid CreationBranchId { get; }
+    public Guid EntityId { get; }
+    public bool IsValid { get; }
+    public bool Equals(WorldEntityIdentity other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
+}
+
+public sealed class WorldIdentityRemap : IDisposable
+{
+    internal WorldIdentityRemap();
+    public ReadOnlySpan<byte> SourceCheckpointDigest { get; }
+    public ReadOnlySpan<byte> SourcePayloadDigest { get; }
+    public Guid SourceWorldGuid { get; }
+    public Guid SourceReplayLineageId { get; }
+    public Guid SourceIdentityBranchId { get; }
+    public Guid TargetWorldGuid { get; }
+    public Guid TargetReplayLineageId { get; }
+    public Guid TargetIdentityBranchId { get; }
+    public bool TryMapEntity(Guid sourceEntityId, out Guid targetEntityId);
+    public bool TryMapSceneInstance(Guid sourceSceneInstanceId, out Guid targetSceneInstanceId);
     public void Dispose();
 }
 
@@ -1010,8 +1878,17 @@ public sealed class WorldSystemContext
     internal WorldSystemContext(SimulationStepContext step, CommandWriter commands);
     public SimulationStepContext Step { get; }
     public CommandWriter Commands { get; }
+    public Guid GetEntityId(Entity entity);
+    public WorldEntityIdentity GetEntityIdentity(Entity entity);
+    public bool TryGetEntity(Guid stableEntityId, out Entity entity);
+    public bool TryGetEntity(WorldEntityIdentity identity, out Entity entity);
     public void ForEachChunk<TAction>(EntityQueryDescription query, scoped ref TAction action)
         where TAction : struct, IAction<EntityChunkView>, allows ref struct;
+}
+
+public static class WorldSystemResources
+{
+    public static Guid EntityMembershipId { get; }
 }
 
 public sealed class CommandWriter
@@ -1020,24 +1897,74 @@ public sealed class CommandWriter
     public EntityToken Create(EntityDescription description);
     public void Set<T>(Entity entity, in T value) where T : unmanaged;
     public void Set<T>(EntityToken entity, in T value) where T : unmanaged;
+    public void Add<T>(Entity entity, in T value) where T : unmanaged;
+    public void Add<T>(EntityToken entity, in T value) where T : unmanaged;
+    public void Remove<T>(Entity entity) where T : unmanaged;
+    public void Remove<T>(EntityToken entity) where T : unmanaged;
     public void AddTag(Entity entity, Guid schemaId);
     public void AddTag(EntityToken entity, Guid schemaId);
     public void RemoveTag(Entity entity, Guid schemaId);
     public void RemoveTag(EntityToken entity, Guid schemaId);
-    public void Destroy(Entity entity);
-    public void Destroy(EntityToken entity);
+    public void Destroy(Entity entity, HierarchyDestroyMode mode);
+    public void Destroy(EntityToken entity, HierarchyDestroyMode mode);
 }
 ```
 
-`WorldOptions` defaults are `TickRate = 60`, `MaximumLiveEntities = 1,048,576`, `MaximumArchetypes = 4096`, `MaximumDeferredCommands = 65,536`, `MaximumComponentTypes = 256`, `Profile = Standard`, `InitialTimeScale = 1`, `SpatialSettings = SpatialSettings.Default`, and `SpatialProfileId = SpatialProfileId.Default`. World creation resolves the ID through `SpatialProfiles` and requires its registered settings to equal `WorldOptions.SpatialSettings` before allocation. Custom spatial settings therefore require an explicitly registered matching profile ID; the zero-initialized ID remains invalid. Raw positions cannot prove their source profile. Admitted tick rates are `[1, 1000]`; every override is validated before allocation. The options type is a sealed class, not a zero-defaultable value type.
+The engine-produced successful `CommandReceipt` adds the get-only member `ImmutableArray<WorldEntityIdentity> DestroyedEntityIdentities { get; }`. It contains the copied receipt-local subsequence of qualified identities actually destroyed in effective structural order, including generated descendants attributed to their original command. It has no public setter or caller construction path; failure produces no successful receipt. The vector grants no membership authority and proves neither cleanup-dispatch order nor a global order across receipts. Its preapplication and retained backing are included in the existing `CMD+D` and `O+W+D` charge ledgers in [04](04-capacity-and-workload-profiles.md).
+
+`WorldSystemResources.EntityMembershipId` is the fixed M03 identity-membership resource `5ae0d511-7e5f-81df-bb07-e2b259892443`. It is a World-wide read-only permission with no range; it permits stable identity lookup only, not component/resource access, writes, enumeration or partition bypass. `WorldIdentityRemap` owns an independently budgeted immutable mapping from the pinned source checkpoint's live Entity/scene-instance GUIDs to target stable GUIDs. It retains neither World nor checkpoint bytes, exposes no live handles, and is present only on a successful load receipt.
+
+The existing engine-produced `CommittedWorldPublication` and `PublicationDeliveryReport` expose `ExecutionSessionId`, `WorldOwnerId` and `PublicationSequence`; `WorldSubscription` exposes its positive monotonic `SubscriptionId`. These are copied into delivery observations before publication. None has a public constructor or setter for operational identity metadata.
+
+The internal issuer support is not a public API: `TerraFX.Core` exposes its
+`TerraFX.OwnerIdAllocator.Allocate(): uint` member to the reviewed Runtime friend
+assembly. `World..ctor(WorldConstructionPlan)` is the only Runtime caller and issues
+one owner after final plan/domain/identity validation;
+`World.IssueEntity(uint,uint)` is the only caller of the internal
+`Entity(uint,uint,uint)` constructor. Replacement reconstruction issues entity
+values on the candidate World. Producers and generated helpers receive no
+construction authority, and no public allocator, owner-ID constructor or
+`World.OwnerId` property is added.
+
+`WorldOptions` defaults are `WorldGuid = null`, `TickRate = 60`, `MaximumLiveEntities = 1,048,576`, `MaximumArchetypes = 4096`, `MaximumDeferredCommands = 65,536`, `MaximumComponentTypes = 256`, `MaximumPendingOwnerRequests = 128`, `Profile = Standard`, `InitialTimeScale = 1`, `SpatialSettings = SpatialSettings.Default`, `SpatialProfileId = SpatialProfileId.Default`, and `SchedulingLimits = WorldSchedulingLimits.Default`. `WorldRegistration` is required and immutable before allocation. A null `CpuWorkerCount` resolves to the documented default for standalone `World.Create`; host-created Worlds inherit the host pool when null. Explicit values admit `[0, 64]`; hosted explicit values must match the host. World creation resolves the spatial ID through `SpatialProfiles`, requires matching registered settings, validates catalogue closure and exact component/tag/system factories before allocating owner/live storage. Custom spatial settings therefore require an explicitly registered matching profile ID; the zero-initialized ID remains invalid. Raw positions cannot prove their source profile. Admitted tick rates are `[1, 1000]`; every override is validated before allocation. The options type is a sealed class, not a zero-defaultable value type.
+
+`WorldSchedulingLimits.Default` has byte limits of 16 MiB registration, 8 MiB graph, 64 MiB work plans, 32 MiB command staging, 2 GiB shared owned state and 8 MiB diagnostics; resource/system state is additionally bounded by min(128 MiB, configured shared owned state), plus 16,777,216 conflict comparisons. Each byte limit can be lowered exactly to 4096 bytes; the comparison limit can be lowered to zero. The scheduler charges actual owned memory and in-flight reservations, not only logical payload. `SystemPartitionRange` is a nonempty checked half-open range; its default is invalid. `SystemResourceAccess.IsValid` and `SystemPartitionRange.IsValid` validate only intrinsic representation, not registration correspondence, ownership, execution phase or contextual domain bounds. Access equality preserves absent versus present range; `Tag` access is read-only.
 
 `Entity`, `EntityDescription`, `EntityToken`, `CommandReceipt`, `SimulationStepContext`, `ComponentSchema<T>` field descriptors, `SystemResourceAccess`, `EntityQueryDescription`, `WorldStepReceipt`, `CommittedWorldPublication`, `PublicationDeliveryReport`, and `WorldSubscription` use [12](12-entities-components-and-queries.md) and [13](13-jobs-and-frame-pipeline.md)'s contracts. `Entity` carries `OwnerId`, `Index`, and `Generation`; its default is invalid. Component registration is `T : unmanaged`, with no marker interface. `TryGet<T>` returns false only when the live entity lacks that registered component; stale or foreign entities throw.
 
 `EntityChunkView` is a stack-only borrowed view. `Read<T>`/`Write<T>` return only the declared component spans for the current chunk, and access outside the registered query/system read-write set is refused. `ForEachChunk` borrows ordinary/ref-struct callable state by reference and invokes it synchronously through constrained generic dispatch in stable archetype/chunk/row order. State is neither copied nor erased to an interface object/delegate; mutations remain visible on return or exception. A callback cannot await, retain a span/ref, mutate structure, recurse into a structural barrier, or call a forbidden native service. The scheduler joins admitted jobs before structural work; worker identity never replaces the stable system/partition/sequence command key.
 
-`World.Step` succeeds only with a committed `WorldStepReceipt` for one admitted fixed tick. A precommit tick fault suppresses that tick's publication, faults the world, updates `LastFault`, and throws `WorldStepException` with the failed tick, diagnostic, and original exception. The committed receipt and current report distinguish canonical publication from each subscriber's `Delivered`/`Failed` result. `TrySubscribe` returns false only at the chapter [13](13-jobs-and-frame-pipeline.md) per-world bound of 64 subscriptions; false leaves the subscription null and changes no registration state. A subscriber fault cannot undo the stage-9 marker or block later subscribers.
+`World.Create(options)` called by a standalone owner creates a World on that calling thread and owns its worker pool; a host-created World is owned and stepped only by the Host scheduler. `World.Step()` is owner-thread-only for a standalone World and issues exactly one fixed tick; its immutable context is engine-issued, not caller-constructed. It may explicitly single-step a paused standalone World and does not consume paused gameplay input. Calling `Step` directly on a host-managed World is refused. `PumpControlBoundary()` drains accepted owner-control operations while a standalone World is idle without advancing time; Host invokes the same boundary between catch-up ticks and while no tick is admitted. `SetTimeScale` is owner-only and invalidates the committed marker before changing canonical control state; the Hosting async counterpart queues and completes with an applied/rejected receipt. `World.Step` succeeds only with a committed `WorldStepReceipt` for one admitted fixed tick. A precommit tick fault suppresses that tick's publication, faults the world, updates `LastFault`, and throws `WorldStepException` with the failed tick, diagnostic, and original exception. The committed receipt and current report distinguish canonical publication from each subscriber's `Delivered`/`Failed` result. `TrySubscribe` returns false only at the chapter [13](13-jobs-and-frame-pipeline.md) per-world bound of 64 subscriptions; false leaves the subscription null and changes no registration state. A subscriber fault cannot undo the stage-9 marker or block later subscribers.
 
-`World.CreateEntity` and `DestroyEntity` are idle owner-boundary operations. During a tick, use the `CommandWriter` from `WorldSystemContext`; structural effects appear only after whole-batch preflight/commit and resolve temporary `EntityToken` values through the resulting `CommandReceipt`. `DestroyEntity` always names `HierarchyDestroyMode`; its mode is never inferred from a constructor or nullable parent.
+`World.CreateEntity` and `DestroyEntity` are idle owner-boundary operations. During a tick, use the `CommandWriter` from `WorldSystemContext`; structural effects appear only after whole-batch preflight/commit and resolve temporary `EntityToken` values through the resulting `CommandReceipt`. Immediate destruction, both deferred target forms and scene unload always name `HierarchyDestroyMode`; the detach policy is not a mode-less call default, and mode is never inferred from a constructor, target kind or nullable parent. Unknown modes reject before append/reservation/sequence allocation; the writer validates invocation and authority before mode, then target. Successful deferred receipts expose copied destruction identities in receipt-local structural order.
+
+`ComponentLayout` rejects an empty LayoutId or logical size outside `[1, 32756]`; `ComponentSchema<T>` additionally requires its selected size to equal `Unsafe.SizeOf<T>()`, initialized required arrays and valid intrinsic flags/tuple. `FromCatalogue` resolves only the exact active component tuple and derives selected fields/defaults/rules/storage/restore/flags from Core metadata. `GetField` follows an exact selected `ComponentFieldPath`; unresolved or ambiguous paths throw rather than returning null or a best match. Property paths are initialized, nonempty and at most 64 segments, begin with a positive FieldTag, and traverse only declared records or fixed arrays; they cannot name a RecordArray ordinal or CLR member. Storage member paths are ordinal source spellings, bounded in length/UTF-8 bytes; inline indices are nonnegative. A storage declaration has initialized unique paths and byte-offset-ordered leaves/padding that cover exactly `[0, LogicalBytes)` with no overlap or gap. Inline count/stride multiplication is checked; non-inline leaves cannot carry inline metadata. Runtime construction checks these declarations, but cannot discover undeclared fields or prove true CLR offsets.
+
+`ComponentFieldBinding` factories capture concrete accessor structs by value and reject incompatible selected field roles, required/optional shape, wire type, fixed extent, storage path, duplicate/foreign child or incomplete aggregate closure before provider invocation. Scalar Guid access is opaque; StableGuidReference and EntityReference have explicit separate constructors and reference roles. Optional getters check presence before value access; Clear is the absent transition. Entity getters/setters expose only copied live values, and World-bound mappings use the exact engine-issued complete map. `ComponentFactoryBinding<T>.Create<TAuthor>` validates and captures schema/storage/providers/field roots once, requires positive FactoryId/version and the exact managed stride, then exposes an immutable `ComponentFactoryDescriptor`; the descriptor and `WorldRegistration.GetComponentBinding` are copied facts, not executable authority. Default/restore/capture/validation bindings are engine-issued, operation/thread-scoped and revoked when their callback ends.
+
+For `ComponentReadBinding<TAuthor>`, `Complete` rejects null roots and any consumed extent other than the exact scoped record length; a valid value-type default remains legal if its selected schema admits it. `Reject` requires a defined failure kind, an in-range source offset, a structurally valid optional path and a nonempty bounded message, or a valid non-Complete Core EBIN status/diagnostic whose structural facts are preserved. Each live callback may issue exactly one result through Complete/Reject. A Read result has one complete author root, exact consumption and empty diagnostics; a Rejected result has no usable root, zero consumed bytes and nonempty diagnostics. `TryGetAuthorValue` annotates nullability by status. Null/foreign/duplicate results, a returned null, bad consumption or callback exceptions fault the actual operation; they are not converted to malformed-input receipts. A returned immutable result may outlive its binding but carries no later mutation or lookup authority.
+
+The frame API's `Applied` receipt has no diagnostics and exactly one complete dimensional frame, its nonwrapping revision, the newly appended signed control sequence and application NextTick. `Rejected` has nonempty diagnostics and no committed frame/revision/control/NextTick; a successful precommit abort makes its Retirement task already successful. A preparation/abort failure throws or faults the original operation with `WorldFrameTransactionException`, preserving its primary exception/diagnostic, exact target/dimension and bounded independent cleanup exceptions, with no commit facts. Postcommit cleanup failure faults only `Retirement` with `WorldFrameRetirementException`, which preserves WorldGuid/dimension/complete committed frame/revision/control/NextTick and original cleanup failures. Its fault remains in the World/domain cleanup ledger even if the receipt is dropped. These operational facts add no canonical record or C0 validation rule.
+
+### M03 World construction and participant bindings
+
+| Owner / public surface | Exact amendment contract |
+|---|---|
+| Entities: `EntityDescription` / initialization | Immutable explicit `Guid? PersistentId` plus typed component initialization/tag sets; null requests automatic issuance, present requires nonempty/non-v8. `ComponentInitialization.Value<T>(in T)`/`Defaults<T>()`, T:unmanaged, retain rooted typed value/factory dispatch without boxing columns/reflection. Registration resolves exact schema identity/defaults. Immediate/deferred creation assigns shared ordinal/history only in the successful whole commit; same-writer canceled tokens consume none. |
+| Entities: resources and participants | Add `RegisterResource<T>(SystemResourceDescription,IWorldResourceFactory<T>,IWorldResourceStateCodec<T>)` with the existing description's ResourceId/PartitionCount/AllowParallelAccess and explicit Core StateSchema/factory ID/version in the typed factory registration. Portable unmanaged partitions have fresh engine-owned backing, never caller arrays. `WorldSystemContext.ForEachResourcePartition<T,TAction>(resourceId,scoped ref action)` uses concrete scoped action/views, global resource partition indices, checked declared access/range, copied Read/write-scoped Write and no escaping mutable backing. Stateful system registration supplies exact StateSchema/State2 lifecycle/codec; stateless supplies none. |
+| Entities: authoritative attachments/state bindings | Explicit transferred immutable state or engine-owned edit scopes; register exact AttachmentState schema/factory/codec and whether ownership is World or Entity. Existing TryGet cannot expose mutable authoritative state for unsignaled edits. Typed participant Read/Restore/Validate/Count/Write uses the already recorded State2 scoped cancellation/consumption/lifetime contract; Core metadata/diagnostics and Entities bindings only, never Assets.IBinarySchemaCodec/AssetVersion or a higher-layer owner. |
+| Entities: World identity/frame/options | Retain WorldGuid/ReplayLineageId/IdentityBranchId/ExecutionSessionId and WorldOptions.WorldGuid. `InitialReplayLineageId` retains revised5's optional input: supplied nonempty value is exact fresh-history naming only; null selects one independent UUIDv4 after validated inputs, WorldGuid reservation and session acquisition but before owner issuance. It grants no continuation authority and is never resolved during restore. Add nullable exact-target `AdmissionDomain`; null fresh standalone construction creates the default 8-GiB engine domain, while hosted creation uses its host domain. The engine-private hosted factory consumes the exact host worker-pool lease/domain; a conflicting explicit World domain is rejected before construction rather than ignored. The restore-candidate factory consumes only its admitted `WorldConstructionPlan`. `WorldAdmissionDomain(maximumBytes)` is frozen `[4096, 8589934592]`, exposes `MaximumBytes`, `Retirement` and `Dispose`; external ownership stays external. Add CurrentFrame3/nullable CurrentFrame2 and copied publication/receipt frames; exact state/configuration limits, Enable2DFrame default true and finite ordered optional initial FrameExtent2/3. Null extent means physical +/-4096m converted once; disabled Frame2 forbids its extent. `CreateNextFrame3/2` makes owner-idle nonmutating inspected candidates; `SetFrame` admits only the exact standalone World capability and current+1 dimensional revision. Exact Host-targeted dimensional overloads use the same transaction without caller-owner affinity. Receipt retirement and transaction/retirement failures stay separate from Applied; no public OwnerId, host callback route or World-owner allocator is exposed. |
+| Entities: qualified membership | Retain the engine-produced WorldEntityIdentity/internal constructor, `GetEntityId`, `GetEntityIdentity` and both existing World/context TryGetEntity forms. Add the missing enum value EntityMembership=4 while retaining WorldSystemResources.EntityMembershipId. Context methods require its fixed Read/no-range grant and every invocation/owner/thread/phase/epoch check; no enumeration/data/range bypass. Qualified value equality is WorldGuid/CreationLineageId/CreationBranchId/EntityId, not authority or public Entity construction. |
+| Entities: admission domain / branching | Explicit frozen Entities-owned `WorldAdmissionDomain(maximumBytes)` charges active/candidate/retiring/quarantined state, source/transformed records/scratch/remaps until actual release; the lineage registrar has exact M/K/E/I/R/B ceilings and fixed prospective accounting in chapter 04. Root standalone creation owns a default domain; host/caller may explicitly share its domain; replacement/load plans retain the exact target domain. No process service locator or Entities->Hosting dependency. Owner-boundary `BeginIdentityBranch(Guid branchId)` retains compatible lineage, reserves branch/control state before visibility and never resets assignments. Fresh lineage is confined to fresh admission or the explicitly admitted migration/fork load contract, not an arbitrary branch argument. Default-domain close ownership transfers once, allocation/callback-free, at successful replacement publication; pre-swap failure preserves the old owner, and old retirement never closes or waits for the surviving domain. |
+| Entities/Hosting: recorded command adapter | Explicit/generated typed `CommandWriter.SetEntityReference<T>` forms select a descriptor-approved property path and live/token target, resolving only at complete shadow preflight. No arbitrary reflective property setter or token-in-Entity field. Prepared standalone continuation owns exact finite state/continuation bytes and source pins; engine actor admits recorded controls/ticks, compares actual preassignment trace/before-commit hash and stops at exhaustion. It grants no host Input or arbitrary code registration. |
+
+### Initial ReplayLineageId and domain admission
+
+Fresh standalone and hosted construction retains the accepted optional initial-lineage input. A supplied nonempty value is used exactly for naming a fresh history; null selects one independent UUIDv4 after frozen input validation, WorldGuid admission and shared execution-session acquisition. Generation failure or contextual collision refuses before owner issuance, without redraw, WorldGuid fallback or continuation fallback. Restored candidates use only source/transformation identity in their admitted `WorldConstructionPlan`; compatible continuation/branch retains source lineage, and an admitted lineage-changing migration/fork uses its explicit target lineage. Stored and supplied nonempty values may be non-v4 or equal WorldGuid.
+
+The domain-local registrar indexes only the validated replay lineage, branch creation lineages and recursively retained fork-source lineages. Root, key, edge, independent-interest, pending-reservation, byte, growth and quarantine charges are bounded by chapter 04. Each real root/consumer owns an independently charged interest through actual release; metadata getters/remaps, wrapper reachability or cancellation do not retain membership. Fresh registration is atomically reserved in the exact target domain before visibility/OwnerId; restore registers its validated retained history without a start-new reservation. The sole private constructor consumes a complete non-fabricable `WorldConstructionPlan` and remains the only Core World-owner issuer.
+
+`WorldAdmissionDomain(maximumBytes)` accepts an inclusive `[4096, 8589934592]` budget, freezes it at construction and issues no World or OwnerId. `Dispose` is idempotent for the actual current close owner and closes new external admissions without synchronously waiting for participating Worlds, workers or consumers. Its `Retirement` task completes only after all actual domain interests, allocations and registry storage retire; cleanup/quarantine failure faults rather than reporting successful release. Caller/host-created domains stay externally owned by their creator; an engine-default domain's close authority follows the current World through successful replacement. Disposing a replaced World releases only its own interests and never disposes or waits for the shared domain.
 
 ## 5. Scenes, cameras, and animation
 
@@ -1068,7 +1995,7 @@ public sealed class SceneLoader
 {
     public SceneLoader(World world, AssetStore assets);
     public Task<PreparedScene> PrepareAsync(AssetId sceneId, SceneLoadOptions options, CancellationToken cancellationToken = default);
-    public SceneActivationReceipt Activate(PreparedScene preparedScene);
+    public Task<SceneActivationReceipt> ActivateAsync(PreparedScene preparedScene, CancellationToken cancellationToken = default);
 }
 
 public enum ReparentMode
@@ -1103,6 +2030,7 @@ public sealed class SceneInstance
 {
     internal SceneInstance(Guid sceneInstanceId);
     public Guid SceneInstanceId { get; }
+    public bool TryGetEntity(Guid stableEntityId, out Entity entity);
     public SceneTransaction BeginTransaction();
     public Task<SceneUnloadReceipt> UnloadAsync(HierarchyDestroyMode mode, CancellationToken cancellationToken = default);
 }
@@ -1113,7 +2041,7 @@ public sealed class SceneTransaction : IDisposable
     public void Reparent(Entity child, Entity? parent, ReparentMode mode);
     public void SetRootPosition(Entity root, SpatialPosition3 position);
     public SceneValidationResponse Validate();
-    public SceneTransactionReceipt Commit();
+    public Task<SceneTransactionReceipt> CommitAsync(CancellationToken cancellationToken = default);
     public void Dispose();
 }
 
@@ -1178,7 +2106,7 @@ public static class CameraMath
 }
 ```
 
-`SceneLoader` belongs to `TerraFX.Scenes`, binds to its target `World` and `AssetStore` at construction, and depends on neither `EngineContext` nor `TerraFX.Hosting`; this keeps the dependency graph acyclic. Preparation is asynchronous and owns validated asset/version/spatial reservations. `Activate` is synchronous on the bound world owner at `Begin`, consumes the prepared transaction once, and returns `SceneActivationReceipt`. `Activated` has a non-null instance, committed structural revision, and empty diagnostics; `Rejected` has no instance or committed revision and a nonempty diagnostic array. It never exposes a partially active scene. `SceneValidationResponse` uses `Valid` with no diagnostics or `Rejected` with diagnostics and always reports its base structural revision. `SceneTransactionReceipt` uses `Committed` with a committed revision and no diagnostics or `Rejected` with no committed revision and diagnostics. `SceneUnloadReceipt` includes a revision only for `Unloaded` or `AlreadyUnloaded`; `Rejected` includes diagnostics. Unload is a structural request: its task completes when the world transaction and the instance's own leases retire; render/audio snapshots retain their independent version pins until their actual completion.
+`SceneLoader` belongs to `TerraFX.Scenes`, binds to its target `World` and `AssetStore` at construction, and depends on neither `EngineContext` nor `TerraFX.Hosting`; this keeps the dependency graph acyclic. Preparation is asynchronous and owns validated asset/version/spatial reservations. `PreparedScene` is bound to that exact target World and one successful activation attempt. `ActivateAsync` queues one owner-control structural intent and completes only after the atomic boundary accepts or rejects it. `Activated` has a non-null instance, committed structural revision, and empty diagnostics; `Rejected` has no instance or committed revision and a nonempty diagnostic array. It never exposes a partially active scene. Disposal before admission prevents activation; after admission the operation owns independent credits and disposal cannot revoke it. `SceneValidationResponse` uses `Valid` with no diagnostics or `Rejected` with diagnostics and always reports its base structural revision, but is only a preview, not a reservation. `CommitAsync` queues the retained intent, revalidates it against state at the boundary, and completes with `Committed` and a committed revision/no diagnostics or `Rejected` with no committed revision and diagnostics. Intents are applied sequentially against current state; `KeepWorld` recomputes the child's current world pose immediately before that operation, including earlier accepted operations in the transaction. Cycles, stale/foreign entities, invalid parent chains, overflow, depth exhaustion, or any partial-capacity failure reject the complete transaction with no observable mutation. `SceneInstance.TryGetEntity` resolves stable authored IDs only while those entities remain live. `SceneUnloadReceipt` includes a revision only for `Unloaded` or `AlreadyUnloaded`; `Rejected` includes diagnostics. Unload is a queued structural request: its task completes when the world transaction and the instance's own leases retire; render/audio snapshots retain their independent version pins until their actual completion.
 
 `SceneTransaction` stages typed hierarchy/root edits, validates and preflights them as one unit, and commits at the structural boundary. `Reparent` always names `KeepLocal` or `KeepWorld`. `SetRootPosition` accepts a `SpatialPosition3`; each root stores that spatial position separately and its `LocalTransform.Position` is `Vector3.Zero`. Descendant translations remain parent-local `Vector3` values. A frame change replaces derived transform/camera/render/physics/audio caches only; it does not shift root positions or child-local transforms. The default entity destroy mode is `DetachChildrenKeepWorld`, but every public call passes its selected `HierarchyDestroyMode`. Camera records and `CameraSnapshot` are chapter [16](16-scenes-transforms-and-cameras.md) contracts. `TryWorldToScreen` returns false only when a perspective point lies on the camera plane (`clip.W = 0`); its output is unusable on false. Behind/near/far/outside flags otherwise remain meaningful. `ScreenToRay` validates the physical pixel and camera snapshot and returns a normalized `SpatialRay3`.
 
@@ -1234,6 +2162,33 @@ public sealed class AnimationCommandReceipt
 
 `AnimationPlaybackOptions.Default.Speed` is exactly `1`; the constructor has no optional speed. Finite admitted speed is `[-4, +4]`. `SeekClipAsync` always names `PoseOnly` or `EmitCrossedEvents`; it does not hide the event policy in an overload default. `Applied` receipts have an applied tick and no rejection diagnostic; `Rejected` receipts have no applied tick and a diagnostic. Each command task completes with an animation-specific applied/rejected receipt at the animation stage, not when a renderer displays a pose. Before returning the task, `PlayClipAsync` takes its own version pin; active playback retains a separate pin until stop/completion. Cancellation after command acceptance does not undo stage application or release playback ownership. `AnimationClipAsset`, `SkeletonAsset`, `RootMotionRequest`, `MotionFeedback`, key/event timing, interpolation and layer limits are owned by [20](20-animation-and-deformation.md) and [09](09-native-assets-and-source-adapters.md). Root motion is copied tick data consumed by an application movement system; there is no implicit character controller.
 
+### M03 scene addressing and registry bindings
+
+| Owner / public surface | Exact amendment contract |
+|---|---|
+| Scenes: options, addresses and slots | Add optional non-v8 `SceneLoadOptions.SceneInstanceId` (null requests automatic shared issuance), MaximumExpandedOccurrences default1048576 and immutable `SceneExternalBinding(Guid slotId,Entity? target)` input. `SceneEntityAddress` copies a bounded root-relative placement path/authored ID; `TryGetEntity(SceneEntityAddress,out Entity)` preserves root-only existing shorthand. `TryGetProvenance(Entity,out SceneEntityProvenance)` returns immutable source occurrence/path/version/expanded key/qualified identity only for exact live instance membership. No caller occurrence namespace or ambient Guid lookup. |
+| Scenes: registry enlistment | `WorldRegistrationBuilder.RegisterSceneSupport(SceneSupportRegistration)` enlists one closed Scenes factory before freeze through the lower Entities-owned participant/retirement interface. `SceneSupport.CreateRegistration()` is the sole producer of the sealed immutable opaque registration, whose constructor is internal. SceneLoader obtains only that exact registry; none can register late or construct a second registry for the same World binding. Candidate restore fills its new registry before publication; old loaders/instances revoke and retained source/provenance pins retire under their owners. |
+
+```csharp
+namespace TerraFX.Entities;
+
+public sealed class SceneSupportRegistration
+{
+    internal SceneSupportRegistration();
+}
+```
+
+```csharp
+using TerraFX.Entities;
+
+namespace TerraFX.Scenes;
+
+public static class SceneSupport
+{
+    public static SceneSupportRegistration CreateRegistration();
+}
+```
+
 ## 6. Assets, schema codecs, and cooking
 
 ```csharp
@@ -1242,20 +2197,62 @@ using System.Diagnostics.CodeAnalysis;
 using System.Collections.Immutable;
 using System.Threading;
 using System.Threading.Tasks;
+using TerraFX;
 using TerraFX.Buffers;
 
 namespace TerraFX.Assets;
 
+public sealed class AssetStoreRegistrationBuilder
+{
+    public AssetStoreRegistrationBuilder(ContentSchemaCatalogue catalogue);
+    public AssetStoreRegistrationBuilder(
+        ContentSchemaCatalogue catalogue,
+        AssetRetentionParticipantRegistration participantRegistration);
+    public AssetStoreRegistrationBuilder RegisterCodec<T>(IBinarySchemaCodec<T> codec);
+    public AssetStoreRegistrationBuilder RegisterCodec<T>(IContextualBinarySchemaCodec<T> codec);
+    public AssetStoreRegistrationBuilder RegisterSource(AssetSourceRegistration source, bool makeCurrent);
+    public AssetStoreRegistration Build();
+}
+
+public sealed class AssetStoreRegistration
+{
+    internal AssetStoreRegistration(ContentSchemaCatalogue catalogue);
+    public ContentSchemaCatalogue Catalogue { get; }
+    public AssetRetentionParticipantRegistration ParticipantRegistration { get; }
+    public ImmutableArray<AssetSourceRegistration> Sources { get; }
+}
+
 public sealed class AssetStoreOptions
 {
-    public AssetStoreOptions(string absoluteCacheDirectory);
+    public AssetStoreOptions(string absoluteCacheDirectory, AssetStoreRegistration registration);
     public string AbsoluteCacheDirectory { get; }
+    public AssetStoreRegistration Registration { get; }
     public int ImportQueueCapacity { get; init; } = 128;
     public int IoWorkerCount { get; init; } = 4;
     public int CookWorkerCount { get; init; } = 2;
     public long CpuAssetBudgetBytes { get; init; } = 512L * 1024 * 1024;
     public long MaximumDecodedAssetBytes { get; init; } = 256L * 1024 * 1024;
     public long MaximumConcurrentDecodeBytes { get; init; } = 256L * 1024 * 1024;
+    public AssetRetentionLimits RetentionLimits { get; init; } = AssetRetentionLimits.Default;
+}
+
+public sealed class AssetRetentionParticipantRegistration
+{
+    public static AssetRetentionParticipantRegistration CreateForStore(
+        AssetRetentionChargeProfile chargeProfile,
+        ImmutableArray<AssetRetentionTypeEntry> extensionEntries);
+}
+
+public sealed class AssetRetentionDomain
+{
+    public static Task<AssetRetentionDomain> CreateAsync(
+        AssetRetentionLimits limits,
+        long maximumRetainedBackingBytes,
+        AssetStoreRegistration registration,
+        AssetRetentionExecutionOptions? executionOptions,
+        CancellationToken cancellationToken = default);
+    public AssetRetentionParticipantRegistration ParticipantRegistration { get; }
+    public AssetStoreRegistration? FactoryRegistration { get; }
 }
 
 public sealed class AssetLoadOptions
@@ -1272,6 +2269,7 @@ public sealed class AssetStore : IAsyncDisposable
 {
     private AssetStore();
     public static Task<AssetStore> CreateAsync(AssetStoreOptions options, CancellationToken cancellationToken = default);
+    public AssetRetentionDomain RetentionDomain { get; }
     public Task<AssetLease<T>> LoadAsync<T>(AssetId id, AssetLoadOptions options, CancellationToken cancellationToken = default);
     public ValueTask DisposeAsync();
 }
@@ -1334,14 +2332,18 @@ namespace TerraFX.Content.Tools;
 
 public sealed class AssetCookRequest : IDisposable
 {
-    public AssetCookRequest(AssetId assetId, BufferChain<byte> sourceBytes, ImportRecipe recipe, SourceConvention sourceConvention, ImmutableArray<BufferChain<byte>> dependencyBytes, string outputDirectory);
-    public AssetCookRequest(AssetId assetId, BufferReadLease<byte> sourceBytes, ImportRecipe recipe, SourceConvention sourceConvention, ImmutableArray<BufferReadLease<byte>> dependencyBytes, string outputDirectory);
+    public AssetCookRequest(AssetId assetId, StagedAssetGraph graph, NativeCookSpecification nativeSpecification, NativePackageSpecification packageSpecification, AssetResourceScope resourceScope);
+    public AssetCookRequest(AssetId assetId, BufferChain<byte> sourceBytes, ImportRecipe recipe, SourceConvention sourceConvention, ImmutableArray<BufferChain<byte>> dependencyBytes, AssetResourceScope resourceScope);
+    public AssetCookRequest(AssetId assetId, BufferReadLease<byte> sourceBytes, ImportRecipe recipe, SourceConvention sourceConvention, ImmutableArray<BufferReadLease<byte>> dependencyBytes, AssetResourceScope resourceScope);
     public AssetId AssetId { get; }
     public BufferChain<byte> SourceBytes { get; }
     public ImportRecipe Recipe { get; }
     public SourceConvention SourceConvention { get; }
     public ImmutableArray<BufferChain<byte>> DependencyBytes { get; }
+    public AssetResourceScope ResourceScope { get; }
     public string OutputDirectory { get; }
+    public AssetCookRequest Retain();
+    public AssetCookRequest Retain(AssetRetentionDomain domain);
     public void Dispose();
 }
 
@@ -1361,19 +2363,126 @@ public sealed class AssetCookReceipt
     public ImmutableArray<Diagnostic> Diagnostics { get; }
 }
 
+public sealed class AssetCookerOptions
+{
+    public AssetCookerOptions(AssetRetentionLimits limits);
+    public AssetCookerOptions(
+        AssetRetentionLimits limits,
+        AssetStoreRegistration verificationRegistration);
+    public AssetRetentionLimits Limits { get; }
+    public AssetStoreRegistration? VerificationRegistration { get; }
+    public int ImportQueueCapacity { get; init; } = 128;
+    public int CookWorkerCount { get; init; } = 2;
+    public long RetainedBackingBudgetBytes { get; init; } = 1_073_741_824;
+    public long MaximumDecodedAssetBytes { get; init; } = 268_435_456;
+    public long MaximumConcurrentDecodeBytes { get; init; } = 268_435_456;
+}
+
+public sealed class AssetCookerAdmissionDomain : IAsyncDisposable
+{
+    private AssetCookerAdmissionDomain();
+    public static AssetRetentionParticipantRegistration CreateParticipantRegistration(
+        AssetRetentionChargeProfile chargeProfile,
+        ImmutableArray<AssetRetentionTypeEntry> extensionEntries);
+    public static Task<AssetCookerAdmissionDomain> CreateAsync(AssetCookerOptions options,
+        CancellationToken cancellationToken = default);
+    public AssetCookerOptions Options { get; }
+    public AssetRetentionDomain RetentionDomain { get; }
+    public Task RetryCleanupAsync(CancellationToken cancellationToken = default);
+    public ValueTask DisposeAsync();
+}
+
 public static class AssetCooker
 {
-    public static Task<AssetCookReceipt> CookAsync(AssetCookRequest request, CancellationToken cancellationToken = default);
+    public static Task<AssetCookReceipt> CookAsync(AssetCookerAdmissionDomain domain, AssetCookRequest request, CancellationToken cancellationToken = default);
 }
 ```
 
 `AssetLoadOptions.Default` selects no required version or digest, priority zero, and no editor substitute. A required SHA-256 digest is empty or exactly 32 bytes; if both it and `RequiredVersion` are supplied, they must agree. The constructor copies the digest. `AssetId`, `AssetVersion`, `ImportRecipe`, `SourceConvention`, `StagedAssetGraph`, and native asset records are the named immutable contracts in [11](11-assets-import-streaming-and-packages.md), [09](09-native-assets-and-source-adapters.md), and [10](10-binary-data-and-authoring-formats.md). `LoadAsync<T>` returns a CPU asset lease, not GPU readiness. It faults for unexpected I/O/digest/decode errors and cancels only under the documented consumption-lifetime rule. `AssetLease<T>` pins one immutable version and its dependencies; disposing a lease does not mutate any other pin. `T` has no language-level constraint; the registry binds it to the immutable CLR type registered for the requested native schema.
 
-The importer interface is in `TerraFX.Assets`; concrete JSON/XML/glTF/WAVE/Ogg/font/texture/scene adapters and the cook orchestration are in `TerraFX.Content.Tools`, not in the runtime API. `AssetStore` has no public constructor. `CreateAsync` validates the options and returns only a fully initialized independently owned store; it faults with initialization context and does not invent a cache path. `EngineHost` invokes that same factory with its required `AssetStoreOptions` and owns the resulting instance. `DisposeAsync` closes admissions, joins consumers, and completes only after leased backing data can be safely released. Store queue/worker/memory defaults are the chapter [11](11-assets-import-streaming-and-packages.md) capacities above. `IAssetImporter.ImportAsync` consumes bounded owned source bytes until its task is terminal; it never receives public `Memory<T>`, `ReadOnlyMemory<T>`, or `ReadOnlySequence<T>`, and does not create live entities/devices/voices. The cooker validates the native semantic graph and publishes only complete versioned output. `AssetCookRequest` accepts retained chains or individual read leases; the lease overload owns a one-segment chain per source/dependency. `CookAsync` acquires independent operation credits before admission, so disposing the request after return cannot revoke accepted work. The request requires an absolute trusted output directory. `Cooked` has a published version, a 32-byte manifest SHA-256 digest and no diagnostics; `Rejected` has no published version, an empty manifest digest and at least one source/content diagnostic. No partially published output is represented as success. Unexpected I/O, allocation, or invariant failures fault the task; cancellation becomes terminal only after every consumer stops and staging is reclaimed. Runtime assemblies have no reference to `TerraFX.Content.Tools`.
+The existing one-argument store-registration builder and one-argument cooker-options constructor select their respective compiled built-in participant closures. The added overloads freeze explicit registrations before either factory runs. `AssetStore.CreateAsync` forwards the exact store registration to the Assets-owned `AssetRetentionDomain.CreateAsync` initializer; the returned `FactoryRegistration` is a read-only observation of that exact installation, not a domain setter or transferable authority. `AssetCookerOptions.VerificationRegistration` carries the same complete frozen verification registration used by the actual cooker domain. `AssetRetentionParticipantRegistration.CreateForStore` and the Content.Tools composition helper only construct bounded declarations; they do not query participant getters, create domains, or approve deployment receipts. Each factory validates its entire registration and qualification closure before any participant callback, then binds fresh templates to its own actual domain. Runtime-only registrations do not reference or deploy Content.Tools; the Tools and Runtime public-consumer observations remain distinct.
+
+The importer interface is in `TerraFX.Assets`; concrete JSON/XML/glTF/WAVE/Ogg/font/texture/scene adapters and the cook orchestration are in `TerraFX.Content.Tools`, not in the runtime API. `AssetStore` has no public constructor. `AssetStoreRegistrationBuilder` constructs an immutable typed codec set for one selected `ContentSchemaCatalogue`; codec binding is explicit and AOT-visible, never reflection-discovered or supplied by package data. `AssetStoreOptions` requires that registration and a trusted absolute cache root. `CreateAsync` validates the options/closure and returns only a fully initialized independently owned store; it faults with initialization context and does not invent a cache path. `EngineHost` invokes that same factory with its required options and owns the resulting instance. `DisposeAsync` closes admissions, joins consumers, and completes only after leased backing data can be safely released. Store queue/worker/memory defaults are the chapter [11](11-assets-import-streaming-and-packages.md) capacities above. `IAssetImporter.ImportAsync` consumes bounded owned source bytes until its task is terminal; it never receives public `Memory<T>`, `ReadOnlyMemory<T>`, or `ReadOnlySequence<T>`, and does not create live entities/devices/voices. The cooker validates the native semantic graph and publishes only complete versioned output. `AssetCookRequest` accepts retained chains or individual read leases; the lease overload owns a one-segment chain per source/dependency. `CookAsync` acquires independent operation credits before admission, so disposing the request after return cannot revoke accepted work. The request requires an Assets-owned Cook resource scope with an absolute trusted destination, exact requested root, frozen verification registration and source pins. `Cooked` has a published version, a 32-byte manifest SHA-256 digest and no diagnostics; `Rejected` has no published version, an empty manifest digest and at least one source/content diagnostic. No partially published output is represented as success. Unexpected I/O, allocation, or invariant failures fault the task; original-operation cancellation becomes terminal only after every consumer/worker stops and staging is reclaimed, or faults with retained cleanup ownership. Helper phase cancellation/fault follows its own actual-use quiescence and never awaits the worker that awaits it. Runtime assemblies have no reference to `TerraFX.Content.Tools`.
 
 The codec methods are synchronous scoped-span operations. On `Read`, `Complete` returns one usable value and the exact byte count of one EBIN1 record; `NeedMoreData` and all error statuses return a default value and `bytesConsumed = 0`. On `Write`, `Complete` returns the exact byte count, while `DestinationTooSmall` and all error statuses return `bytesWritten = 0` and leave the destination unchanged. Invalid tags, profile/schema mismatch, overflow, budget failure, and unsupported required fields remain distinct diagnostics. Writers emit canonical field tags/order and validate the full destination before writing. Neither method retains a span or returns a view into package storage.
 
 Native schema records are authoritative. JSON, XML, and glTF are adapters; they are not runtime asset models or dependencies. Runtime records use EBIN1 and packages use EPKG2 with explicit profile-table version 2. EPKG1 and legacy profile-table version 1 are migration input only. Profile identity includes `LeftHandedYUpForwardZ1`, `EngineGeometryBinary32Rows2`, `FloatChunk32V2`, exact unit exponent/chunk settings, locked UUIDv8 schema assignments/recipe, and the qualified numerical/runtime profile. There is no runtime source-format fallback, relabeling of old bytes, or executable content in an inert package.
+
+### M03 asset identities and contextual codecs
+
+```csharp
+using System;
+using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
+using TerraFX;
+
+namespace TerraFX.Assets;
+
+public readonly struct AssetId : IEquatable<AssetId>, IFormattable
+{
+    public AssetId(Guid value);
+    public Guid Value { get; }
+    public bool IsValid { get; }
+    public static bool operator ==(AssetId left, AssetId right);
+    public static bool operator !=(AssetId left, AssetId right);
+    public bool Equals(AssetId other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
+    public override string ToString();
+    public string ToString(string? format, IFormatProvider? formatProvider);
+}
+
+public sealed class AssetVersion : IEquatable<AssetVersion>
+{
+    public AssetVersion(AssetId assetId, scoped ReadOnlySpan<byte> contentSha256Digest,
+        ContentSchemaReference rootSchema, ContentSchemaReference payloadSchema,
+        scoped ReadOnlySpan<byte> contentSchemaDigest, SpatialProfileId profileId,
+        scoped ReadOnlySpan<byte> nativeKeyDigest, Guid importRecipeId, int importRecipeVersion);
+    public AssetId AssetId { get; }
+    public ImmutableArray<byte> ContentSha256Digest { get; }
+    public ContentSchemaReference RootSchema { get; }
+    public ContentSchemaReference PayloadSchema { get; }
+    public ImmutableArray<byte> ContentSchemaDigest { get; }
+    public SpatialProfileId ProfileId { get; }
+    public ImmutableArray<byte> NativeKeyDigest { get; }
+    public Guid ImportRecipeId { get; }
+    public int ImportRecipeVersion { get; }
+    public static bool operator ==(AssetVersion? left, AssetVersion? right);
+    public static bool operator !=(AssetVersion? left, AssetVersion? right);
+    public bool Equals(AssetVersion? other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
+}
+
+public interface IContextualBinarySchemaCodec<T>
+{
+    Guid SchemaId { get; }
+    int SchemaMajor { get; }
+    int SchemaMinor { get; }
+    BinaryRecordStatus Read(scoped ReadOnlySpan<byte> source, AssetCodecContext context,
+        [MaybeNull] out T value, out int bytesConsumed, out BinarySchemaDiagnostic? diagnostic);
+    BinaryRecordStatus Write(in T value, AssetCodecContext context, scoped Span<byte> destination,
+        out int bytesWritten, out BinarySchemaDiagnostic? diagnostic);
+}
+```
+
+### M03 public construction and binding contracts
+
+These clauses complete this baseline's missing public surfaces without replacing already matching declarations. The public Assets ticket/resource/source/verification declarations in [11](11-assets-import-streaming-and-packages.md) and the Core quota/allocation/visitation declarations in [05](05-owned-buffers-and-internal-collections.md) are part of this same public baseline, not private implementation hooks. Limits and the explicit cooker-domain options/factory are in [04](04-capacity-and-workload-profiles.md). Tools uses only these lower-owned public boundaries; no friendship, reverse dependency, callback under a gate or opaque-payload authority is permitted.
+
+| Owner / public surface | Exact amendment contract |
+|---|---|
+| Assets: `AssetId` / `AssetVersion` | Exact complete public declarations, constructor/default/copy/equality semantics and nine-member wire mappings are [M03 4.3.1](11-assets-import-streaming-and-packages.md#m03-431-complete-public-member-shapes)-2. AssetId is a readonly Guid value; AssetVersion is a sealed immutable full binding with ContentSha256Digest of the canonical envelope, separate RootSchema/PayloadSchema/ContentSchemaDigest/ProfileId/NativeKeyDigest/ImportRecipeId/version. Nominal construction is not registration, verification or readiness. |
+| Assets: `AssetCodecContext` and `IContextualBinarySchemaCodec<T>` | Context exposes frozen catalogue, root AssetId, selected registered profile/settings, declared nominal or exact dependency bindings and phase; no World/EngineContext/native service. `Read(source,context,out value,out bytesConsumed,out diagnostic)` and `Write(in value,context,destination,out bytesWritten,out diagnostic)` use scoped spans and existing BinaryRecordStatus. No retained span. `AssetStoreRegistrationBuilder.RegisterCodec<T>(IContextualBinarySchemaCodec<T>)` is an explicit overload alongside the existing context-free interface. A descriptor needing external binding must use the contextual overload, not shared mutable codec state. |
+| Assets: author versus load contexts | `AssetCodecContext.CreateAuthoring(catalogue,profileId,ImmutableArray<AssetSchemaBinding>)` accepts only exact nominal schema/input facts and any explicitly supplied versions. It cannot create a Load/Restore context or a lease/publication. AssetStore/cooker create exact operation contexts only after bounded envelope/graph/source/dependency admission. `AssetSchemaBinding` is AssetId + exact Core payload tuple + optional full supplied version; disagreement rejects. Context dependencies are immutable and operation-pinned; codecs cannot perform I/O or acquire a live World. |
+| Assets: common provenance models/kernel/public invocation | All20 model/rule17/18/19/49 Owner1/schema/hash operands unchanged. [M03 4.6.9](11-assets-import-streaming-and-packages.md#m03-469-destination-sealed-resources-and-verified-publication-handoff) declares exact public scope-bound BindNativeCookInputAsync, sealed-resource VerifyPublicationAsync/result attachment and verified-only transfer. Kernel/data models remain pure/Core-only, outside-gate orchestration applies explicit frozen owner codecs/source pins. Tools separately verifies originals/producers; runtime needs neither Tools nor original sources/package executables. |
+| Assets: `NativeAssetNode(AssetId,BufferReadLease<byte> canonicalPayload,ImmutableArray<AssetId> dependencyIds,NativeMetadata? metadata)` | Sealed IDisposable with [M03 4.5.2](11-assets-import-streaming-and-packages.md#m03-452-exact-node-surface-and-failure-behavior)'s full constructor/properties/AcquirePayloadReadLease/Dispose declarations. Takes its own retained credit, computes exact structural header/length/hash, freezes metadata and unwinds every acquisition on failure. Dispose closes admission/releases only node credit; graph/operation children survive. Frozen metadata remains readable, but disposed-node payload acquisition/new graph admission rejects. |
+| Assets: `StagedAssetGraph(rootId,nodes,suppliedDependencies,sources,profileId,catalogue,convention)` | Sealed IDisposable; [M03 4.5.3](11-assets-import-streaming-and-packages.md#m03-453-graphrequest-acquisition-and-disposal-linearization) defines public Retain and fresh-credit payload/source/dependency acquisitions, immutable observations and transactional constructor/clone cleanup. Constructor takes independent snapshots, not ownership of supplied NativeAssetNode wrappers. Input source/dependency descriptors borrow caller credits only until capture; graph owns its retained credits afterward. Same open node can serve multiple graphs; disposed-node/duplicate/root/failure cases never leak provisional credits. Metadata/profile/catalogue/convention and source/dependency model operands remain exactly [M03 4.2](10-binary-data-and-authoring-formats.md#m03-42-transportprovenance-records). |
+| Content.Tools: all scoped cook request overloads | [M03 4.6.9.6](11-assets-import-streaming-and-packages.md#m03-4696-complete-public-only-route-and-api-replacement-consequences)'s three exact constructors replace the unscoped final string directory with required AssetResourceScope; ResourceScope/normalized OutputDirectory expose the explicit choice. Native root/id/catalogue/scope/mode mismatch before admission; source graph binds after import and ticketed growth capture. Immutable specifications/source/node/graph/request/operation credits/cancellation semantics remain. No implicit registry/path or transferred caller owner. |
+| Assets/Content.Tools: full callable resource/publication closure | Keep all4.6.6 commands/4.6.9 public Scope/source/location/access/disposition/acquisition/seal/verifier/transfer shapes unchanged. Add4.6.10's precise phase Task versus original Completion, body-result/EndExecution ordering, eligible shared cleanup dispatch and per-resource close generation/late-selection behavior. No helper awaits its own whole worker cleanup and no shared-pass result substitutes for own resource release. Root/source/result/target/cleanup authority remains public lower-owned, not private payload fields; no new method/status/reverse/friend dependency/current implementation. |
+| Assets: `AssetSourceRegistration`/builder/Sources | [M03 4.6.9.1](11-assets-import-streaming-and-packages.md#m03-4691-caller-declaration-bounded-copy-and-operation-binding) declares exact full-Version/absolute-package/publication path/two copied SHA256 constructor and immutable properties plus registration.Sources. Existing RegisterSource(makeCurrent)/one explicit current per ID/frozen full-version conflict policy stays. Scoped loader chooses those pins/locations and invokes the common verifier; no trust from filename/hash/producer execution/code. Returned committed target provides all public registration operands. No implicit latest pointer/mutable editor watch; existing pins survive owner disposal. |
+
+AssetCodecContext does not remap Entity fields. Native symbolic bindings decode authored IDs/selectors/slots; the typed *World-bound* component/state binding resolves declared Entity leaves through the complete candidate map and newly issued receiver values. A context-free codec cannot turn an author Guid into a live Entity or silently use Guid.Empty. Source occurrence/template keys remain distinct from assigned identity/history and from remap authority. Generated symbol locations respect logical owners, including the Integration Physics bridge.
 
 ## 7. Graphics and rendering
 
@@ -2182,6 +3291,7 @@ public sealed class RenderSnapshot3D : RenderSnapshot
 
 public sealed class Renderer
 {
+    public static Renderer CreateHeadless();
     internal Renderer(GraphicsDevice? graphicsDevice);
     public RenderExtractionResponse Extract(World world, RenderExtractionOptions2D options);
     public RenderExtractionResponse Extract(World world, RenderExtractionOptions3D options);
@@ -2223,6 +3333,32 @@ The `ReadOnlySpan<byte>` buffer upload copies its bytes synchronously before ret
 
 `SubmitAsync` checks cancellation before admission and ignores that token after acceptance; it returns a `RenderSubmissionReceipt` only after actual GPU completion and release of submission pins. An interactive receipt has a non-null `PresentationSequence` and the active device/surface/swapchain epochs; the caller passes that sequence and a `CancellationToken` to `Surface.WaitForPresentationAsync(long presentationSequence, CancellationToken cancellationToken)` for an independent observation. Canceling that wait does not cancel presentation, and the task completes only on actual presentation or an explicit terminal status. `Presented` alone confirms presentation. An offscreen receipt has `PresentationSequence = null`, `SurfaceEpoch = 0`, and `SwapchainEpoch = 0`; it makes no presentation claim and needs no surface wait. A synchronous recording callback failure faults the task with context and never submits a partial graph; uncertain native references follow chapter [19](19-render-graph-synchronization-and-presentation.md)'s retirement/quarantine rule. Neither GPU submission nor presentation observation substitutes for the other. Device, surface, swapchain, profile, and frame identities remain independent.
 
+### M03 renderer and integration bindings
+
+| Owner / public surface | Exact amendment contract |
+|---|---|
+| Rendering/Integration/Hosting | `WorldRegistrationBuilder.RegisterCpuExtractionSupport(CpuExtractionSupportRegistration)` enlists the closed CPU extraction adapters before World construction. `Renderer.CreateCpuExtractionSupportRegistration()` produces the separate sealed immutable opaque registration and declares its Scenes prerequisites; `Renderer.CreateHeadless` and receipt/frame access above use real CPU extraction. Physics-owned native codec bridges are emitted/registered in Integration (or permitted offline tools), not in Physics with an Assets reference. Hosting coordinates save/asset/source participants; Entities/Scenes/Assets codecs never call Hosting. Stage-9 publication and atomic swaps remain callback/allocation-free after preparation. |
+
+```csharp
+namespace TerraFX.Entities;
+
+public sealed class CpuExtractionSupportRegistration
+{
+    internal CpuExtractionSupportRegistration();
+}
+```
+
+```csharp
+using TerraFX.Entities;
+
+namespace TerraFX.Rendering;
+
+public sealed class Renderer
+{
+    public static CpuExtractionSupportRegistration CreateCpuExtractionSupportRegistration();
+}
+```
+
 ## 8. Standalone physics
 
 ```csharp
@@ -2233,6 +3369,194 @@ using TerraFX;
 using TerraFX.Numerics;
 
 namespace TerraFX.Physics;
+
+public abstract class ShapeDefinition2D
+{
+    private protected ShapeDefinition2D();
+}
+
+public sealed class CircleShapeDefinition2D : ShapeDefinition2D
+{
+    public CircleShapeDefinition2D(float radius);
+    public float Radius { get; }
+}
+
+public sealed class BoxShapeDefinition2D : ShapeDefinition2D
+{
+    public BoxShapeDefinition2D(Vector2 halfExtents);
+    public Vector2 HalfExtents { get; }
+}
+
+public abstract class ShapeDefinition3D
+{
+    private protected ShapeDefinition3D();
+}
+
+public sealed class SphereShapeDefinition3D : ShapeDefinition3D
+{
+    public SphereShapeDefinition3D(float radius);
+    public float Radius { get; }
+}
+
+public sealed class BoxShapeDefinition3D : ShapeDefinition3D
+{
+    public BoxShapeDefinition3D(Vector3 halfExtents);
+    public Vector3 HalfExtents { get; }
+}
+
+public readonly struct ShapeValidationIdentity : IEquatable<ShapeValidationIdentity>
+{
+    internal ShapeValidationIdentity(Guid validatorId, int validatorVersion, Guid statisticsFormulaId, int statisticsFormulaVersion);
+    public Guid ValidatorId { get; }
+    public int ValidatorVersion { get; }
+    public Guid StatisticsFormulaId { get; }
+    public int StatisticsFormulaVersion { get; }
+    public static bool operator !=(ShapeValidationIdentity left, ShapeValidationIdentity right);
+    public static bool operator ==(ShapeValidationIdentity left, ShapeValidationIdentity right);
+    public bool Equals(ShapeValidationIdentity other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
+}
+
+public sealed class PrimitiveShapeGeometryContext2D
+{
+    public PrimitiveShapeGeometryContext2D(SpatialSettings spatialSettings);
+    public static PrimitiveShapeGeometryContext2D Default { get; }
+    public SpatialSettings SpatialSettings { get; }
+    public ShapeValidationIdentity Identity { get; }
+    public float MinimumPrimitiveExtent { get; }
+    public float MaximumLocalExtent { get; }
+}
+
+public sealed class PrimitiveShapeGeometryContext3D
+{
+    public PrimitiveShapeGeometryContext3D(SpatialSettings spatialSettings);
+    public static PrimitiveShapeGeometryContext3D Default { get; }
+    public SpatialSettings SpatialSettings { get; }
+    public ShapeValidationIdentity Identity { get; }
+    public float MinimumPrimitiveExtent { get; }
+    public float MaximumLocalExtent { get; }
+}
+
+public readonly struct ShapeMeasure : IEquatable<ShapeMeasure>
+{
+    internal ShapeMeasure(float significand, int binaryExponent);
+    public float Significand { get; }
+    public int BinaryExponent { get; }
+    public static bool operator !=(ShapeMeasure left, ShapeMeasure right);
+    public static bool operator ==(ShapeMeasure left, ShapeMeasure right);
+    public bool Equals(ShapeMeasure other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
+    public bool TryGetSingle(out float value);
+}
+
+public enum ShapeValidationStatus
+{
+    None = 0,
+    Valid = 1,
+    Rejected = 2,
+}
+
+public enum ShapeValidationFaultCode
+{
+    None = 0,
+    PrimitiveExtentBelowMinimum = 1,
+    LocalExtentExceeded = 2,
+}
+
+public enum ShapeValidationField
+{
+    None = 0,
+    Radius = 1,
+    HalfExtentX = 2,
+    HalfExtentY = 3,
+    HalfExtentZ = 4,
+    EnclosingRadius = 5,
+}
+
+public sealed class ShapeValidationFault
+{
+    internal ShapeValidationFault(ShapeValidationFaultCode code, ShapeValidationField field, float observedValue, float limit);
+    public ShapeValidationFaultCode Code { get; }
+    public ShapeValidationField Field { get; }
+    public float ObservedValue { get; }
+    public float Limit { get; }
+}
+
+public sealed class ShapeStatistics2D
+{
+    internal ShapeStatistics2D(SpatialSettings spatialSettings, ShapeValidationIdentity identity,
+        int? vertexCount, int? edgeCount, int? faceCount, ShapeMeasure signedArea,
+        Vector2 localMinimum, Vector2 localMaximum, float enclosingRadius, int connectedComponentCount,
+        int? weldedVertexCount, int? patchCount, float? maximumSnapDisplacement);
+    public SpatialSettings SpatialSettings { get; }
+    public ShapeValidationIdentity Identity { get; }
+    public int? VertexCount { get; }
+    public int? EdgeCount { get; }
+    public int? FaceCount { get; }
+    public ShapeMeasure SignedArea { get; }
+    public Vector2 LocalMinimum { get; }
+    public Vector2 LocalMaximum { get; }
+    public float EnclosingRadius { get; }
+    public int ConnectedComponentCount { get; }
+    public int? WeldedVertexCount { get; }
+    public int? PatchCount { get; }
+    public float? MaximumSnapDisplacement { get; }
+}
+
+public sealed class ShapeStatistics3D
+{
+    internal ShapeStatistics3D(SpatialSettings spatialSettings, ShapeValidationIdentity identity,
+        int? vertexCount, int? edgeCount, int? faceCount, ShapeMeasure signedVolume,
+        Vector3 localMinimum, Vector3 localMaximum, float enclosingRadius, int connectedComponentCount,
+        int? weldedVertexCount, int? patchCount, float? maximumSnapDisplacement);
+    public SpatialSettings SpatialSettings { get; }
+    public ShapeValidationIdentity Identity { get; }
+    public int? VertexCount { get; }
+    public int? EdgeCount { get; }
+    public int? FaceCount { get; }
+    public ShapeMeasure SignedVolume { get; }
+    public Vector3 LocalMinimum { get; }
+    public Vector3 LocalMaximum { get; }
+    public float EnclosingRadius { get; }
+    public int ConnectedComponentCount { get; }
+    public int? WeldedVertexCount { get; }
+    public int? PatchCount { get; }
+    public float? MaximumSnapDisplacement { get; }
+}
+
+public sealed class ShapeValidationResponse2D
+{
+    internal ShapeValidationResponse2D(PrimitiveShapeGeometryContext2D geometryContext, ShapeStatistics2D statistics);
+    internal ShapeValidationResponse2D(PrimitiveShapeGeometryContext2D geometryContext, ShapeValidationFault fault);
+    public PrimitiveShapeGeometryContext2D GeometryContext { get; }
+    public ShapeValidationStatus Status { get; }
+    public ShapeStatistics2D? Statistics { get; }
+    public ShapeValidationFault? Fault { get; }
+}
+
+public sealed class ShapeValidationResponse3D
+{
+    internal ShapeValidationResponse3D(PrimitiveShapeGeometryContext3D geometryContext, ShapeStatistics3D statistics);
+    internal ShapeValidationResponse3D(PrimitiveShapeGeometryContext3D geometryContext, ShapeValidationFault fault);
+    public PrimitiveShapeGeometryContext3D GeometryContext { get; }
+    public ShapeValidationStatus Status { get; }
+    public ShapeStatistics3D? Statistics { get; }
+    public ShapeValidationFault? Fault { get; }
+}
+
+public static class PrimitiveShapeValidator2D
+{
+    public static ShapeValidationResponse2D Validate(CircleShapeDefinition2D definition, PrimitiveShapeGeometryContext2D geometryContext);
+    public static ShapeValidationResponse2D Validate(BoxShapeDefinition2D definition, PrimitiveShapeGeometryContext2D geometryContext);
+}
+
+public static class PrimitiveShapeValidator3D
+{
+    public static ShapeValidationResponse3D Validate(SphereShapeDefinition3D definition, PrimitiveShapeGeometryContext3D geometryContext);
+    public static ShapeValidationResponse3D Validate(BoxShapeDefinition3D definition, PrimitiveShapeGeometryContext3D geometryContext);
+}
 
 public readonly struct PhysicsOwnerContext
 {
@@ -2658,7 +3982,9 @@ public sealed class PhysicsWorld3D : IDisposable
 | `MassProperties.Inertia` | `float` | `Matrix4x4` |
 | Physical scalar members `Mass`, `Distance`, `Fraction`, `Separation`, `Impulse`, `NormalImpulse`, `Residual` | `float` | `float` |
 
-`PhysicsWorldOptions2D/3D()` delegates to the corresponding `(SpatialSettings.Default)` constructor. Constructors bind get-only `SpatialSettings`/`NumericalProfile`; `SpatialProfileId` defaults to the registered Default. Construction rejects unregistered IDs or settings mismatch before allocation. [22 section 1](22-custom-physics-world-and-solver.md#1-scope-coordinates-and-numerical-profile) owns every dimensional physical/numerical default, range, capacity and selected-unit conversion; the declared profile members expose those values with `float`, `TimeSpan` or count types. `Gravity` `init` overrides are already in selected engine units.
+The M03 primitive declaration closure above follows [23 section 1.2](23-custom-physics-shapes-queries-and-ccd.md#12-inert-primitive-validation-and-statistics). Finite-only constructors preserve input bits; null/nonfinite/default-settings misuse throws, while finite invalid geometry returns a named rejection. Contexts are geometry-only and use [10's exact dimension-specific version-1 ID pairs](10-binary-data-and-authoring-formats.md#m03-collision-validation-identity-inventory). `ShapeValidationIdentity` default is invalid; `ShapeMeasure` default is canonical zero. Positive measures have normalized 24-bit binary32 significand and exponent `[-512, 512]`; `TryGetSingle` rounds the stored pair nearest-even, succeeds for finite subnormals/zero, and returns false/default positive zero for nonzero underflow/overflow. Unit exponent 12's sphere `(radius 0x28E12FB1, measure 0x3FB67680/-134)` converts to `0x0000B676`, not direct-formula `0x0000B677`. Statistics/faults/responses have no public constructors; a response contains statistics or fault, never both. These types require no PhysicsWorld, process owner or handle.
+
+`PhysicsWorldOptions2D/3D()` delegates to the corresponding `(SpatialSettings.Default)` constructor. Constructors bind get-only `SpatialSettings`/`NumericalProfile`; `SpatialProfileId` defaults to the registered Default. Construction rejects unregistered IDs or settings mismatch before allocation. `PhysicsNumericalProfile2D/3D` retains its complete numerical/material meaning and internal constructor; the primitive contexts do not waive its spacing, density, inertia or other admission. [22 section 1](22-custom-physics-world-and-solver.md#1-scope-coordinates-and-numerical-profile) owns every dimensional physical/numerical default, range, capacity and selected-unit conversion; the declared profile members expose those values with `float`, `TimeSpan` or count types. `Gravity` `init` overrides are already in selected engine units.
 
 Nullable/omitted `ColliderAttachmentDefinition2D/3D.Material` resolves during structural preparation to that world's frozen `DefaultDensity`, `DefaultFriction` and `DefaultRestitution`. Explicit density is already in selected engine-unit density; the prepared graph copies the resolved material and frame changes cannot retune it. `DefaultDensity` follows the owner's physical 1 kg/m^2 or 1 kg/m^3 conversion, not necessarily numeric 1.
 
@@ -3600,6 +4926,49 @@ public sealed class SaveReceipt
     public Diagnostic? Diagnostic { get; }
 }
 
+public sealed class LoadOptions
+{
+    public LoadOptions(WorldRestoreIntent restoreIntent);
+    public WorldRestoreIntent RestoreIntent { get; }
+    public WorldRecordedContinuation? RecordedContinuation { get; init; }
+    public Guid? IdentityBranchId { get; init; }
+    public Guid? ForkWorldGuid { get; init; }
+    public Guid? NewReplayLineageId { get; init; }
+    public long MaximumSnapshotBytes { get; init; } = 2_147_483_584;
+}
+
+public enum WorldRecordedContinuationPreparationStatus
+{
+    Prepared,
+    Rejected
+}
+
+public sealed class WorldRecordedContinuationPreparation : IDisposable
+{
+    internal WorldRecordedContinuationPreparation(
+        WorldRecordedContinuationPreparationStatus status,
+        WorldRecordedContinuation? continuation,
+        ImmutableArray<Diagnostic> diagnostics);
+    public WorldRecordedContinuationPreparationStatus Status { get; }
+    public WorldRecordedContinuation? Continuation { get; }
+    public ImmutableArray<Diagnostic> Diagnostics { get; }
+    public void Dispose();
+}
+
+public sealed class WorldRecordedContinuation : IDisposable
+{
+    private WorldRecordedContinuation();
+    public Guid SourceWorldGuid { get; }
+    public Guid ReplayLineageId { get; }
+    public Guid IdentityBranchId { get; }
+    public long FirstTick { get; }
+    public long EndTickExclusive { get; }
+    public ReadOnlySpan<byte> SourceCheckpointDigest { get; }
+    public ReadOnlySpan<byte> SourcePayloadDigest { get; }
+    public ReadOnlySpan<byte> ReplayDigest { get; }
+    public void Dispose();
+}
+
 public enum WorldLoadPreparationStatus
 {
     Prepared,
@@ -3617,8 +4986,14 @@ public sealed class WorldLoadPreparation : IDisposable
 
 public sealed class WorldLoadPlan : IDisposable
 {
-    internal WorldLoadPlan(Guid worldGuid, long snapshotTick);
+    internal WorldLoadPlan(World targetWorld, Guid targetWorldGuid, Guid sourceWorldGuid, Guid targetRecordWorldGuid, long snapshotTick);
+    public Guid TargetWorldGuid { get; }
+    public Guid SourceWorldGuid { get; }
+    public Guid TargetRecordWorldGuid { get; }
     public Guid WorldGuid { get; }
+    public WorldRestoreIntent RestoreIntent { get; }
+    public ReadOnlySpan<byte> SourceCheckpointDigest { get; }
+    public ReadOnlySpan<byte> SourcePayloadDigest { get; }
     public long SnapshotTick { get; }
     public void Dispose();
 }
@@ -3631,19 +5006,33 @@ public enum WorldLoadStatus
 
 public sealed class WorldLoadReceipt
 {
-    internal WorldLoadReceipt(WorldLoadStatus status, Guid? worldGuid, long? loadedTick, Diagnostic? rejection);
+    internal WorldLoadReceipt(WorldLoadStatus status, World? replacementWorld, Task? oldWorldRetirement,
+        WorldIdentityRemap? identityRemap, Guid? sourceWorldGuid, Guid? targetRecordWorldGuid,
+        long? loadedTick, Diagnostic? rejection);
     public WorldLoadStatus Status { get; }
+    public World? ReplacementWorld { get; }
+    public Task? OldWorldRetirement { get; }
+    public WorldIdentityRemap? IdentityRemap { get; }
+    public Guid? SourceWorldGuid { get; }
+    public Guid? TargetRecordWorldGuid { get; }
     public Guid? WorldGuid { get; }
     public long? LoadedTick { get; }
     public Diagnostic? Rejection { get; }
 }
 
-public sealed class WorldPersistence
+public sealed class WorldPersistence : IAsyncDisposable
 {
-    internal WorldPersistence();
+    public WorldPersistence();
     public Task<SaveReceipt> SaveAsync(World world, SaveOptions options, CancellationToken cancellationToken = default);
-    public Task<WorldLoadPreparation> PrepareLoadAsync(string savePath, LoadOptions options, CancellationToken cancellationToken = default);
-    public WorldLoadReceipt CommitLoad(WorldLoadPlan plan);
+    public Task<WorldRecordedContinuationPreparation> PrepareRecordedContinuationAsync(
+        World targetWorld,
+        string checkpointPath,
+        string replayPath,
+        long endTickExclusive,
+        CancellationToken cancellationToken = default);
+    public Task<WorldLoadPreparation> PrepareLoadAsync(World targetWorld, string savePath, LoadOptions options, CancellationToken cancellationToken = default);
+    public Task<WorldLoadReceipt> CommitLoadAsync(WorldLoadPlan plan, CancellationToken cancellationToken = default);
+    public ValueTask DisposeAsync();
 }
 }
 
@@ -3725,9 +5114,18 @@ Clipboard requests carry the target window, a positive maximum UTF-8 byte limit 
 
 `IEngineModule.Register` is synchronous and limited to the bounded pre-start `ModuleRegistry`; `Start` occurs only after complete admission, and `Stop` occurs during ordered shutdown. Registry calls accept typed component schemas, systems, asset codecs/importers and declared services; registration freezes before a world runs. Modules are trusted, statically compiled members of a generated or explicitly typed closed registry in runtime, editor and tools; no dynamic managed loading or JIT-only registration/reload path exists. The registry is not a sandbox; untrusted packages remain inert bounded data.
 
-`WorldPersistence.SaveAsync` captures only a committed, nonfaulted snapshot and writes a new checked transaction generation. `DurableCommitted` and `BestEffortCommitted` carry the committed generation and no rejection diagnostic; `DurabilityUnsupported` and `Rejected` carry a diagnostic and no generation. Its task becomes terminal after durable replacement or an explicit non-durable/refused outcome; cancellation before replacement cancels only after its temporary file is safely removed, while cancellation after replacement returns the committed receipt. `PrepareLoadAsync` returns `Prepared` with one non-null disposable plan and no diagnostics, or `Rejected` with no plan and diagnostics. `CommitLoad` returns `Loaded` with world GUID/tick and no rejection diagnostic, or `Rejected` with no loaded identity and a diagnostic; it replaces the active world atomically at `Begin` and never mutates the current world while parsing. Save schemas, canonical fields, strict allocator/order state, crash-safe generation, recovery selection and replay profiles are chapters [27](27-state-serialization-replay-and-recovery.md) and [10](10-binary-data-and-authoring-formats.md).
+`WorldPersistence` is a CPU-only service that can be constructed by standalone callers; `EngineHost.Persistence` is an independently host-owned instance. `SaveAsync` must be called on the World owner and captures synchronously before its first asynchronous file operation. It captures only a committed, nonfaulted snapshot whose canonical mutation revision equals the committed/restored marker, then writes a new checked transaction generation. `DurableCommitted` and `BestEffortCommitted` carry the committed generation and no rejection diagnostic; `DurabilityUnsupported` and `Rejected` carry a diagnostic and no generation. Its task becomes terminal after durable replacement or an explicit non-durable/refused outcome; cancellation before replacement cancels only after its temporary file is safely removed, while cancellation after replacement returns the committed receipt. `PrepareLoadAsync` validates into a disposable plan bound to the exact target World's GUID, registration/catalogue, and owner generation; it returns `Prepared` with one non-null plan and no diagnostics, or `Rejected` with no plan and diagnostics. `CommitLoadAsync` queues one whole-world replacement at that target's owner boundary, rechecks that the target generation and registration still match, and returns `Loaded` with a non-null `ReplacementWorld`, saved world GUID/tick and an `OldWorldRetirement` task, or `Rejected` with no replacement/loaded identity and a diagnostic. A successful replacement is an atomic state restore and publishes the coherent restored marker without a hidden simulation tick; a host-owned scheduler atomically adopts the replacement, while a standalone caller must use the returned World for subsequent operations. Old state/resources remain alive until their actual consumers retire. A retirement fault after the swap is reported by `OldWorldRetirement` and cannot turn the committed load into a rejection. No current-world mutation occurs during parsing. Disposing before admission prevents commit; accepted work retains independent credits and cannot be revoked by disposal/cancellation. Save schemas, canonical fields, strict allocator/order state, crash-safe generation, recovery selection and replay profiles are chapters [27](27-state-serialization-replay-and-recovery.md) and [10](10-binary-data-and-authoring-formats.md).
+`WorldPersistence` is a CPU-only service that can be constructed by standalone callers; `EngineHost.Persistence` is an independently host-owned instance. `SaveAsync` must be called on the World owner and captures synchronously before its first asynchronous file operation. It captures only a committed, nonfaulted snapshot whose canonical mutation revision equals the committed/restored marker, then writes a new checked transaction generation. `DurableCommitted` and `BestEffortCommitted` carry the committed generation and no rejection diagnostic; `DurabilityUnsupported` and `Rejected` carry a diagnostic and no generation. Its task becomes terminal after durable replacement or an explicit non-durable/refused outcome; cancellation before replacement cancels only after its temporary file is safely removed, while cancellation after replacement returns the committed receipt. `PrepareLoadAsync` validates into a disposable plan bound to the exact target World's GUID, registration/catalogue, and owner generation; it returns `Prepared` with one non-null plan and no diagnostics, or `Rejected` with no plan and diagnostics. `CommitLoadAsync` queues one whole-world replacement at that target's owner boundary, rechecks that the target generation and registration still match, and returns `Loaded` with a non-null `ReplacementWorld`, saved world GUID/tick, independently owned `IdentityRemap` and an `OldWorldRetirement` task, or `Rejected` with no replacement, loaded identity or remap and a diagnostic. A successful replacement is an atomic state restore and publishes the coherent restored marker without a hidden simulation tick; a host-owned scheduler atomically adopts the replacement, while a standalone caller must use the returned World for subsequent operations. Old state/resources remain alive until their actual consumers retire. A retirement fault after the swap is reported by `OldWorldRetirement` and cannot turn the committed load into a rejection. No current-world mutation occurs during parsing. Disposing before admission prevents commit; accepted work retains independent credits and cannot be revoked by disposal/cancellation. Save schemas, canonical fields, strict allocator/order state, crash-safe generation, recovery selection and replay profiles are chapters [27](27-state-serialization-replay-and-recovery.md) and [10](10-binary-data-and-authoring-formats.md).
+
+`LoadOptions` requires an explicit `WorldRestoreIntent` and has no parameterless constructor or `Default` value. The synchronous API front end validates/fixes source-independent option and path shape before I/O or reservations: null required arguments throw `ArgumentNullException`; empty, whitespace or nonabsolute paths throw `ArgumentException`; negative tick endpoints throw `ArgumentOutOfRangeException`; invalid intent, empty GUIDs, conflicting fields and out-of-range snapshot limits throw argument exceptions. This entry phase does not inspect checkpoint compatibility, transformation-dependent lineage requirements or interval completeness. After bounded source inspection, incompatible checkpoint/profile, lineage/branch/fork provenance, endpoint at/before decoded `NextTick`, missing records/hashes or unavailable consumers return `Rejected` with nonempty diagnostics before candidate construction, Core owner issuance, factories/Restore or replacement. An unavailable, mismatched or revoked target binding is stale-target `Rejected`, not synchronous ownership misuse; disposed service/continuation/plan wrappers retain `ObjectDisposedException`. Unexpected I/O/allocation failures fault the task. Preparation results own their returned continuation; the continuation is opaque, engine-issued and disposable, with immutable digest metadata remaining readable after disposal. `WorldLoadPlan.TargetWorldGuid` names the exact old operational target, `SourceWorldGuid` names the checkpoint, and `TargetRecordWorldGuid` names the replacement's semantic records; `WorldGuid` equals `TargetRecordWorldGuid`. On a successful receipt, `WorldGuid` likewise equals `TargetRecordWorldGuid`, and `IdentityRemap` maps only live identities in the verified source checkpoint. Rejection has no remap. Once `CommitLoadAsync` is accepted, caller cancellation no longer cancels the replacement; accepted work uses `CancellationToken.None` and retains its sources until actual consumers unwind.
 
 `DiagnosticQuery` rejects `maximumRecords` outside `[1,8192]`. `GetSnapshot` is bounded, copied and nondestructive: it returns at most the newest matching records in stable insertion order, filtered by minimum severity and optional world/tick, together with the cumulative dropped/coalesced counters observed for that snapshot. Polling never drains or resets the global queue; an editor replaces its own copied view. There is no public diagnostic subscription API. `DiagnosticSnapshot` is immutable copied data; `TryGetLatestFault` returns false only when no fault is retained. Stable code/context/severity/native status and the actual operation result are not replaced by logs. The bounded diagnostic queue may coalesce/drop ordinary telemetry only with visible counters; critical last-fault and caller-visible failures have independent retention. [28](28-diagnostics-performance-and-validation.md) owns diagnostic record fields and metric names.
+
+### M03 persistence source and intent bindings
+
+| Owner / public surface | Exact amendment contract |
+|---|---|
+| Hosting: explicit load/record binding | Retain current WorldRestoreIntent, nondefault LoadOptions, WorldRecordedContinuation/Preparation, PrepareRecordedContinuationAsync, plan/receipt source/target/target-record fields and successful-only IdentityRemap. Apply [M03 8.5](27-state-serialization-replay-and-recovery.md#m03-85-explicit-restore-intent-and-finite-standalone-continuation)'s two-phase option/binding/lease semantics and exact finite source record. Add explicit SourcePayloadDigest metadata to prepared plan/continuation/remap alongside full SourceCheckpointDigest, and copied exact intent metadata where missing. Retain remap GUID methods as explicitly pinned-source queries, never live handles/global or discarded-future fallback. Frozen identity/digest metadata remains readable after wrapper disposal; disposed admission/lookup misuse still throws. |
 
 ### Resolved owner contracts
 
@@ -3754,18 +5152,20 @@ The following new prefix is reserved for this API/roadmap review. These are futu
 | ID | Required boundary observation |
 |---|---|
 | AR01 | Every public namespace obeys [29](29-project-setup-build-and-deployment.md#1-repository-and-assembly-dag)'s physical placement and logical dependency rules; separate consumer projects compile against public APIs with nullable analysis and no internal access, unsafe escape, platform-layer leak, or preview-only signature. EN152 additionally checks thirteen physical products, merged namespace owners/logical layering, one-assembly library packages and consumer dependency/root/publish closures; shared internal accessibility cannot bypass issuer/ownership boundaries. Native ownership preserves declared base types/interfaces and disposal authority: no public `SafeHandle` base/handle escape or new independent `GraphicsDevice.Dispose` contract follows from choosing direct native ownership. The transitive public type review distinguishes foundational interchange/protocols from replaceable implementation services/storage under [02](02-dotnet-api-memory-and-ownership.md#public-type-boundary). Core consumers need no `Stopwatch`/`TimeProvider` object; `ImmutableArray<T>` retains its accepted array interchange, and restore maps expose `IReadOnlyDictionary` with immutable snapshot contents, no writable aliases or concrete implementation/enumeration-order requirement. Timing values have specified domain/unit/frequency/conversion semantics independent of backing-source inference. BF13/EN150-EN151 prove signed integer defaults, concrete-width consumer compatibility, negative/overflow admission, unchanged unsigned representation exceptions and checked wire/native conversion without a blanket CLS or generated-code performance claim. |
-| AR02 | Public constructors match the declared consumer surface; no output/service type gains an accidental public parameterless constructor. Constructors/options reproduce the stated defaults and reject invalid values before mutation/allocation; zero-defaulted handles/poses/options never masquerade as valid owners, identity rotations, or configured profiles. |
+| AR02 | Public constructors match the declared consumer surface; no output/service type gains an accidental public parameterless constructor. Constructors/options reproduce the stated defaults and reject invalid values before mutation/allocation; zero-defaulted handles/poses/options never masquerade as valid owners, identity rotations, or configured profiles. Primitive geometry contexts and the four typed definitions are public without PhysicsWorld/handle dependencies; statistics/faults/responses remain engine-constructed. `ShapeMeasure` default is canonical zero, while `ShapeValidationIdentity` default is invalid. |
 | AR03 | Geometry tests distinguish Hamilton `Multiply` from application-order `Compose`; point/direction/rotation/normal paths and `EngineGeometryBinary32Rows2` interchange/profile identity match chapters 06/08. |
-| AR04 | Spatial tests cover exact metadata-free 16/24-byte raw positions, explicit-settings interpretation without raw-origin inference, the fixed UUIDv8 `SpatialProfileId.Default` GUID registered before use, thread-safe append-only registration (4096 IDs including Default), idempotent matching registration and conflicting-ID rejection, the registry's fixed basis/geometry/spatial/kernel semantics, one required profile/settings identity across world/physics options and audio frames, and converter resolution of both declarations. Cover negative carries, int32 overflow, both sides of shared closed borders, `[0,C)` persistent canonicalization, 4096-unit default meter cells, SP13's bounded integer unit exponent/exact decimal-rational conversion with one binary32 offset rounding, frame revisions, and bounded nearby conversion without global double coordinates. BN09 distinguishes legacy factor/UUID/profile bytes from the new manifest rather than rebinding their identities. |
+| AR04 | Spatial tests cover exact metadata-free 16/24-byte raw positions, explicit-settings interpretation without raw-origin inference, the fixed UUIDv8 `SpatialProfileId.Default` GUID registered before use, thread-safe append-only registration (4096 IDs including Default), idempotent matching registration and conflicting-ID rejection, the registry's fixed basis/geometry/spatial/kernel semantics, one required profile/settings identity across world/physics options and audio frames, and converter resolution of both declarations. Cover negative carries, int32 overflow, both sides of shared closed borders, `[0,C)` persistent canonicalization, 4096-unit default meter cells, SP13's bounded integer unit exponent/exact decimal-rational conversion with one binary32 offset rounding, frame revisions, and bounded nearby conversion without global double coordinates. Both public `ConvertQuantity` overloads additionally prove bounded literal/dyadic conversion, `long.MinValue`, positive-denominator admission, nearest-even subnormals/signed underflow, float signed-zero preservation, exact rational zero and overflow exceptions without internal access. BN09 distinguishes legacy factor/UUID/profile bytes from the new manifest rather than rebinding their identities. |
 | AR05 | Buffer tests prove scoped windows, read/write conflicts, one active write-lease window/native operation across copied references, sublease reservation inheritance and parent exclusion until actual completion, owner/lease disposal, reentrant callbacks, zero and large extents, and independent async sublease retention until actual consumer/fence completion; real-time callbacks perform no public acquisition/window/disposal or reclamation, and no prohibited memory/sequence type appears in runtime/tooling source or generated output. Buffer ownership APIs expose neither pointers nor disposable value owners. Ordinary/ref-struct callable consumers prove exact `ref` state, span-escape rejection, chain-stop results and lifetime cleanup without boxing/delegate adaptation. |
 | AR06 | Host/ECS/jobs tests prove generated AOT column/query registrations, ordinary/ref-struct chunk callables with caller-visible state and scoped borrow/fault cleanup, owner affinity, callback invalidation, deterministic partition/command ordering, complete job join, admission through 1,048,576 live entities and atomic refusal of the next entity without partial mutation, atomic structural preflight, stage-9 irrevocability, subscriber failure isolation, and no false completion on canceled waits. |
-| AR07 | Scene/animation/assets/codecs tests prove native schema authority, one-time adapter conversion, root `SpatialPosition3` storage with zero `LocalTransform.Position`, descendant-local `Vector3` translation, derived-cache-only frame changes, prepared-scene activation at `Begin`, typed playback/event policies, exact EBIN1 consumption, EPKG2 range/digest/profile checks, and source-format independence. Asset cooking retains independent input credits through actual completion, publishes only a complete typed receipt or an explicit refusal, and never leaves success-shaped partial output. Every subsystem reader/writer is gated on its reviewed descriptor manifest and independent golden bytes; no field tags are inferred from CLR/property order or reflection. |
+| AR07 | Scene/animation/assets/codecs tests prove native schema authority, one-time adapter conversion, root `SpatialPosition3` storage with zero `LocalTransform.Position`, descendant-local `Vector3` translation, derived-cache-only frame changes, prepared-scene activation at `Begin`, typed playback/event policies, exact EBIN1 consumption, EPKG2 range/digest/profile checks, and source-format independence. Asset cooking retains independent input credits through actual completion, publishes only a complete typed receipt or an explicit refusal, and never leaves success-shaped partial output. Collision content binds the exact version-1 validator/statistics pairs, canonical `ShapeMeasure` encoding and nullable applicability; changed settings require explicit migration/re-cook, not implicit revalidation/rebinding. Independent vectors distinguish stored-pair `0x0000B676` from direct-formula `0x0000B677`. Every subsystem reader/writer is gated on its reviewed descriptor manifest and independent golden bytes; no field tags are inferred from CLR/property order or reflection. |
 | AR08 | Public consumer tests create an interactive window, call `EngineHost.GetSurface` on the owner thread, call `Renderer.Extract` for both dimensions on a committed world with the exact matching frame/unique camera selection/physical extent, and pass each snapshot through `Renderer.BuildGraph`. Add custom work through typed imports/transients and `AddRasterPass`/`AddComputePass`; create a graphics/compute pipeline with `GraphicsDevice.CreatePipelineAsync`, bind `GpuPipeline.Handle` with `CommandRecorder.SetPipeline`, compile using `RenderGraph.Compile`, submit with `Renderer.SubmitAsync`, and independently await the non-null receipt sequence with `Surface.WaitForPresentationAsync`. Prove foreign/stale/no-surface rejection, close invalidation, profile/device/surface/swapchain/frame epoch agreement, exact requested/limit overflow diagnostics with no partial snapshot, graph hazards/capability rejection before submit, and no render-thread ECS access. In `Headless`, prove the non-null CPU `Renderer` extracts a logical snapshot while `GraphicsDevice`/`GpuResidency` remain null and graph build/submit refuse without fabricated GPU output. In `OffscreenNative`, create and use a real same-device/epoch color-attachment target without a surface, execute extraction -> graph/custom pass -> pipeline -> submit, and verify no WSI/presentation claim (`PresentationSequence` null and surface/swapchain epochs zero). Upload complete supported 2D/3D mip subresources from retained read leases with explicit row/slice pitches; read back supported buffer ranges and full texture subresources, verify immutable format/extent/subresource/pitches, zeroed exposed padding, and actual copy/fence/map/CPU-copy completion with no zero-filled success. Exercise offscreen target readback only with declared copy capability. Verify built-in HDR tone mapping and UI composition produce final linear SDR, interactive/offscreen terminals encode it once without double tone mapping, and a raw HDR custom graph must tone-map before selecting its final source. Prove pipeline bytecode credits last through actual backend creation, upload/readback credits through actual transfer completion, snapshot/resource/pipeline/target pins through actual GPU completion, and interactive presentation resources through their actual present fence. Separate request acceptance, upload readiness, GPU fence completion, readback completion and presentation fence completion; never substitute GPU-ready or fallback success. Draw extraction and the CPU particle pool admit their 131,072 limits and reject excess observably; particle saturation returns `RejectSpawn` and does not alter authoritative physics. |
-| AR09 | Standalone physics tests compile without ECS/Hosting and execute complete `QueryResult` status/payload/budget/ordering contracts, including ordinary/ref-struct generic visitors, explicit `VisitorStopped` counts and pre-delivery validation, spatial `BodyPose2D/3D` queries, spatial point/AABB arguments, local shape poses, `float` scalar/impulse members and `Matrix4x4` 3D inertia, selected-unit numerical profiles/default gravity, `DefaultDensity` equal to the physical 1 kg/m^2 or 1 kg/m^3 value converted by exact `10^(2*e)`/`10^(3*e)` under frozen `MetersPerUnitExponent` and one final binary32 rounding, nullable/omitted `PhysicsMaterial` resolution to the owning world's frozen dimensional defaults during structural preparation, selected-unit explicit density, copied prepared-graph material and no frame-change retuning, dimensional `PrepareStructural`/`CommitStructural` rebase requests/receipts, local rollback, checkpoint capture/restore, and independent owner/generation checks. |
+| AR09 | Standalone physics tests compile without ECS/Hosting and execute complete `QueryResult` status/payload/budget/ordering contracts, including ordinary/ref-struct generic visitors, explicit `VisitorStopped` counts and pre-delivery validation, spatial `BodyPose2D/3D` queries, spatial point/AABB arguments, local shape poses, `float` scalar/impulse members and `Matrix4x4` 3D inertia, selected-unit numerical profiles/default gravity, `DefaultDensity` equal to the physical 1 kg/m^2 or 1 kg/m^3 value converted by exact `10^(2*e)`/`10^(3*e)` under frozen `MetersPerUnitExponent` and one final binary32 rounding, nullable/omitted `PhysicsMaterial` resolution to the owning world's frozen dimensional defaults during structural preparation, selected-unit explicit density, copied prepared-graph material and no frame-change retuning, dimensional `PrepareStructural`/`CommitStructural` rebase requests/receipts, local rollback, checkpoint capture/restore, and independent owner/generation checks. M06 primitive cooking preserves the same geometry outcome and `ShapeStatistics2D/3D`; capacity refusal and full-profile admission remain distinct, and mass/inertia derives from robust geometry/density rather than rounded measures or `TryGetSingle`. |
 | AR10 | Audio/input/platform tests distinguish explicit `NotRequested`/`Native`/`Offline` mode, reject every `NotRequested` command admission with `InvalidOperationException` without retaining work, and prove `TrySubmit` returns false only for `QueueFull`; they also cover endpoint mismatch/unsupported failures without fallback, typed 2D/3D play defaults, generation-checked audio-world/bus handles, snapshot sequence/order/capacity/replacement and tracked/fixed-pose admission, attenuation and terminal world/voice completion, command admission/application/voice end, exact offline frame output from any ordinary caller thread, exclusive serialized offline-consumer admission with concurrent/reentrant rejection before output/clock mutation, concurrent disposal closing admissions and joining an active render, and continued multithreaded command production. Check every contiguous upward `MaximumGain` segment from each possible bus input through every ancestor including itself using exact frozen products <= 65536; include a case where downstream attenuation hides an overlarge intermediate product from a root-only check, and verify input/post-gain/filter/history bounds under chapter 08. Also cover recipient-specific tick assignment and overflow, clipboard permission/status from task cancellation, stable monitor enumeration and generation invalidation, and explicit headless behavior. Real-time audio access is retained from control setup through the complete callback epoch and reclaimed only after callback quiescence. |
 | AR11 | UI/editor/modules/persistence/diagnostics tests prove closed AOT registrations/generated editor metadata and managed-code rebuild/restart without in-process assembly replacement, copied immutable snapshots, admission through the 131,072-node/depth-256 UI ceiling and refusal beyond either bound without partial mutation, schema-validated all-or-nothing edits, play-world isolation, trusted-code admission, atomic save/load generation, bounded nondestructive diagnostic polling, drop/coalesce counters, and caller-visible errors despite telemetry pressure. EN145-EN149 additionally prove chapter 25's explicit rotation presentation/order, quantity/unit/frame/bearing mappings, nonunique-Euler handling and bit-preserving nonmutating display/commit isolation in the AOT editor and tools. |
 | AR12 | Public API/layout/schema baselines and complete consumer examples pass mandatory NativeAOT runtime/editor/tool profiles on both supported targets; optional JIT comparisons expose no extra features and cannot substitute for AOT execution; exact NUnit selected/executed test counts and actual native capability results attach to the accepted revision. |
 
 AR01/AR02 additionally require the transitive supporting-type catalogue and complete public-only programs. Build and compile them with their owning implementation units under [35](35-implementation-roadmap.md), completing the full set at M08 rather than requiring the future engine before M02 starts; selected declaration projections cannot replace them. Exercise typed/default/named float/Angle bindings, generic operator and char/UTF-8 protocols, nullable codec flow and rejected scoped-borrow escape. AR06/AR10 cover async-only host disposal, synchronous usage versus admission/execution failures, optional final tokens with required TryInvoke token, repeated disposal versus ValueTask consumption, continuation safety on standalone and host owners, nonnullable bus outputs and cached snapshot freshness/retention. AR07 covers complete/default codec outputs and explicit nullable-reference handling. AR02/AR06/AR07/AR10/AR11 also cover exact scene/UI/text option defaults, lower budget ceilings, Unicode/caret/revision validation, atomic tag edits and independently retained UI snapshots.
+
+AR01/AR02's M03 Runtime observations retain the distinct semantic cases: exact partial-member permission does not widen to a generated sibling or a different accessor, and alias-bearing value copies cannot erase protected storage. Exceptional finally-flow and selected foreach/await/async-disposal paths preserve those ownership guarantees; they add no public API or storage lifetime. Preserve consumer-authorized factories, ordinary handle defaults/copies, valid lower-interface inversion and unrelated geometry conversions. These cases do not replace public-only/AOT consumers or complete EN152's later package/publish matrix.
 
 Selected complete caller compilation units are provided in [31](31-public-api-consumer-guide.md#6-complete-selected-caller-compilation-units). Their bounded compilation is recorded in [37](37-completeness-and-audit.md). Complete engine consumers, API compatibility tooling, NUnit execution, native behavior, throughput and allocation measurements require implementation qualification.
