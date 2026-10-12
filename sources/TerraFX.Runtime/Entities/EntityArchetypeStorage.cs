@@ -13,11 +13,9 @@ internal sealed class EntityArchetypeStorage
     private readonly int _archetypeIndex;
     private ulong[] _availableChunkSummary;
     private ulong[] _availableChunkWords;
-    private bool _chunkOrdinalExhausted;
     private Chunk[] _chunks;
     private int _entityCount;
     private readonly int _maximumEntityCount;
-    private long _nextChunkOrdinal;
     private readonly uint _ownerId;
 
     internal EntityArchetypeStorage(uint ownerId, int archetypeIndex, int maximumEntityCount)
@@ -247,8 +245,9 @@ internal sealed class EntityArchetypeStorage
         return entity;
     }
 
-    internal bool TryAppend(Entity entity, EntitySlotTable slots)
+    internal bool TryAppend(Entity entity, EntitySlotTable slots, ref long nextChunkOrdinal)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(nextChunkOrdinal);
         ValidateOwner(entity);
 
         if (!slots.IsLive(entity.Index, entity.Generation))
@@ -277,19 +276,14 @@ internal sealed class EntityArchetypeStorage
 
         if (!chunk._hasOrdinal)
         {
-            if (_chunkOrdinalExhausted)
+            if (nextChunkOrdinal == long.MaxValue)
             {
                 return false;
             }
 
-            chunk._ordinal = _nextChunkOrdinal;
+            chunk._ordinal = nextChunkOrdinal;
             chunk._hasOrdinal = true;
-            _chunkOrdinalExhausted = _nextChunkOrdinal == long.MaxValue;
-
-            if (!_chunkOrdinalExhausted)
-            {
-                _nextChunkOrdinal++;
-            }
+            nextChunkOrdinal++;
         }
 
         var row = chunk._count;

@@ -21,6 +21,7 @@ internal sealed class EntityArchetypeStorageTests
         var storage = new EntityArchetypeStorage(ownerId: 7, archetypeIndex: 0, maximumEntityCount: MaximumEntityCount);
         Assert.That(storage.PrepareCapacity(MaximumEntityCount), Is.True);
         Entity lastEntity = default;
+        var nextChunkOrdinal = 0L;
 
         for (var index = 0; index < MaximumEntityCount; index++)
         {
@@ -31,7 +32,7 @@ internal sealed class EntityArchetypeStorageTests
 
             var entity = new Entity(7, slotIndex, generation);
 
-            if (!storage.TryAppend(entity, slots))
+            if (!storage.TryAppend(entity, slots, ref nextChunkOrdinal))
             {
                 Assert.Fail("The prepared archetype capacity was refused.");
             }
@@ -72,15 +73,59 @@ internal sealed class EntityArchetypeStorageTests
         var first = new Entity(7, firstIndex, firstGeneration);
         var second = new Entity(7, secondIndex, secondGeneration);
         var storage = new EntityArchetypeStorage(ownerId: 7, archetypeIndex: 0, maximumEntityCount: 1);
+        var nextChunkOrdinal = 0L;
 
         Assert.That(storage.PrepareCapacity(1), Is.True);
-        Assert.That(storage.TryAppend(first, slots), Is.True);
-        Assert.That(storage.TryAppend(second, slots), Is.False);
+        Assert.That(storage.TryAppend(first, slots, ref nextChunkOrdinal), Is.True);
+        Assert.That(storage.TryAppend(second, slots, ref nextChunkOrdinal), Is.False);
 
         Assert.That(storage.EntityCount, Is.EqualTo(1));
         Assert.That(storage.GetEntities(0).Length, Is.EqualTo(1));
         Assert.That(slots.TryGetLocation(second.Index, second.Generation, out _, out _, out _), Is.False);
         Assert.That(slots.IsLive(second.Index, second.Generation), Is.True);
+    }
+
+    [Test]
+    public void ChunkOrdinalExhaustionRefusesWithoutChangingTheSlotOrCursor()
+    {
+        var slots = new EntitySlotTable(1);
+        Assert.That(slots.PrepareCapacity(1, 0), Is.True);
+        Assert.That(slots.TryAllocate(out var index, out var generation), Is.True);
+        var entity = new Entity(7, index, generation);
+        var storage = new EntityArchetypeStorage(ownerId: 7, archetypeIndex: 0, maximumEntityCount: 1);
+        Assert.That(storage.PrepareCapacity(1), Is.True);
+        var nextChunkOrdinal = long.MaxValue;
+
+        Assert.That(storage.TryAppend(entity, slots, ref nextChunkOrdinal), Is.False);
+
+        Assert.That(nextChunkOrdinal, Is.EqualTo(long.MaxValue));
+        Assert.That(storage.EntityCount, Is.Zero);
+        Assert.That(storage.TryGetChunkOrdinal(0, out _), Is.False);
+        Assert.That(slots.IsLive(index, generation), Is.True);
+        Assert.That(slots.TryGetLocation(index, generation, out _, out _, out _), Is.False);
+    }
+
+    [Test]
+    public void ChunkOrdinalsUseTheSharedWorldCursorAcrossArchetypes()
+    {
+        var slots = new EntitySlotTable(2);
+        Assert.That(slots.PrepareCapacity(2, 0), Is.True);
+        Assert.That(slots.TryAllocate(out var firstIndex, out var firstGeneration), Is.True);
+        Assert.That(slots.TryAllocate(out var secondIndex, out var secondGeneration), Is.True);
+        var firstStorage = new EntityArchetypeStorage(ownerId: 7, archetypeIndex: 0, maximumEntityCount: 1);
+        var secondStorage = new EntityArchetypeStorage(ownerId: 7, archetypeIndex: 1, maximumEntityCount: 1);
+        Assert.That(firstStorage.PrepareCapacity(1), Is.True);
+        Assert.That(secondStorage.PrepareCapacity(1), Is.True);
+        var nextChunkOrdinal = 0L;
+
+        Assert.That(firstStorage.TryAppend(new Entity(7, firstIndex, firstGeneration), slots, ref nextChunkOrdinal), Is.True);
+        Assert.That(secondStorage.TryAppend(new Entity(7, secondIndex, secondGeneration), slots, ref nextChunkOrdinal), Is.True);
+
+        Assert.That(nextChunkOrdinal, Is.EqualTo(2));
+        Assert.That(firstStorage.TryGetChunkOrdinal(0, out var firstChunkOrdinal), Is.True);
+        Assert.That(secondStorage.TryGetChunkOrdinal(0, out var secondChunkOrdinal), Is.True);
+        Assert.That(firstChunkOrdinal, Is.Zero);
+        Assert.That(secondChunkOrdinal, Is.EqualTo(1));
     }
 
     [Test]
@@ -91,12 +136,13 @@ internal sealed class EntityArchetypeStorageTests
         var storage = new EntityArchetypeStorage(ownerId: 7, archetypeIndex: 0, maximumEntityCount: 258);
         Assert.That(storage.PrepareCapacity(258), Is.True);
         var entities = new Entity[257];
+        var nextChunkOrdinal = 0L;
 
         for (var index = 0; index < entities.Length; index++)
         {
             Assert.That(slots.TryAllocate(out var slotIndex, out var generation), Is.True);
             entities[index] = new Entity(7, slotIndex, generation);
-            Assert.That(storage.TryAppend(entities[index], slots), Is.True);
+            Assert.That(storage.TryAppend(entities[index], slots, ref nextChunkOrdinal), Is.True);
         }
 
         Assert.That(storage.ChunkCount, Is.EqualTo(2));
@@ -125,7 +171,7 @@ internal sealed class EntityArchetypeStorageTests
         slots.Release(entities[5].Index, entities[5].Generation);
         Assert.That(slots.TryAllocate(out var reusedIndex, out var reusedGeneration), Is.True);
         var reusedEntity = new Entity(7, reusedIndex, reusedGeneration);
-        Assert.That(storage.TryAppend(reusedEntity, slots), Is.True);
+        Assert.That(storage.TryAppend(reusedEntity, slots, ref nextChunkOrdinal), Is.True);
 
         firstChunk = storage.GetEntities(0);
         secondChunk = storage.GetEntities(1);
@@ -152,10 +198,11 @@ internal sealed class EntityArchetypeStorageTests
         var first = new Entity(7, firstIndex, firstGeneration);
         var second = new Entity(7, secondIndex, secondGeneration);
         var third = new Entity(7, thirdIndex, thirdGeneration);
+        var nextChunkOrdinal = 0L;
 
-        Assert.That(storage.TryAppend(first, slots), Is.True);
-        Assert.That(storage.TryAppend(second, slots), Is.True);
-        Assert.That(storage.TryAppend(third, slots), Is.True);
+        Assert.That(storage.TryAppend(first, slots, ref nextChunkOrdinal), Is.True);
+        Assert.That(storage.TryAppend(second, slots, ref nextChunkOrdinal), Is.True);
+        Assert.That(storage.TryAppend(third, slots, ref nextChunkOrdinal), Is.True);
         Assert.That(storage.Remove(second, slots), Is.EqualTo(second));
 
         var entities = storage.GetEntities(0);
@@ -168,7 +215,7 @@ internal sealed class EntityArchetypeStorageTests
         Assert.That(archetypeIndex, Is.EqualTo(2));
         Assert.That(row, Is.EqualTo(1));
 
-        Assert.That(storage.TryAppend(second, slots), Is.True);
+        Assert.That(storage.TryAppend(second, slots, ref nextChunkOrdinal), Is.True);
         Assert.That(slots.TryGetLocation(second.Index, second.Generation, out archetypeIndex, out _, out row), Is.True);
         Assert.That(archetypeIndex, Is.EqualTo(2));
         Assert.That(row, Is.EqualTo(2));
@@ -183,13 +230,14 @@ internal sealed class EntityArchetypeStorageTests
         var staleEntity = new Entity(7, index, generation);
         var storage = new EntityArchetypeStorage(ownerId: 7, archetypeIndex: 0, maximumEntityCount: 1);
         Assert.That(storage.PrepareCapacity(1), Is.True);
-        Assert.That(storage.TryAppend(staleEntity, slots), Is.True);
+        var nextChunkOrdinal = 0L;
+        Assert.That(storage.TryAppend(staleEntity, slots, ref nextChunkOrdinal), Is.True);
 
         _ = storage.Remove(staleEntity, slots);
         slots.Release(index, generation);
         Assert.That(slots.TryAllocate(out var reusedIndex, out var reusedGeneration), Is.True);
         var currentEntity = new Entity(7, reusedIndex, reusedGeneration);
-        Assert.That(storage.TryAppend(currentEntity, slots), Is.True);
+        Assert.That(storage.TryAppend(currentEntity, slots, ref nextChunkOrdinal), Is.True);
 
         _ = Assert.Throws<InvalidOperationException>(() => storage.Remove(staleEntity, slots));
 
@@ -209,11 +257,12 @@ internal sealed class EntityArchetypeStorageTests
         var entity = new Entity(7, index, generation);
         var storage = new EntityArchetypeStorage(ownerId: 7, archetypeIndex: 0, maximumEntityCount: 1);
         Assert.That(storage.PrepareCapacity(1), Is.True);
+        var nextChunkOrdinal = 0L;
 
-        _ = Assert.Throws<ArgumentException>(() => storage.TryAppend(new Entity(8, index, generation), slots));
-        _ = Assert.Throws<InvalidOperationException>(() => storage.TryAppend(new Entity(7, index, generation + 1), slots));
-        Assert.That(storage.TryAppend(entity, slots), Is.True);
-        _ = Assert.Throws<InvalidOperationException>(() => storage.TryAppend(entity, slots));
+        _ = Assert.Throws<ArgumentException>(() => storage.TryAppend(new Entity(8, index, generation), slots, ref nextChunkOrdinal));
+        _ = Assert.Throws<InvalidOperationException>(() => storage.TryAppend(new Entity(7, index, generation + 1), slots, ref nextChunkOrdinal));
+        Assert.That(storage.TryAppend(entity, slots, ref nextChunkOrdinal), Is.True);
+        _ = Assert.Throws<InvalidOperationException>(() => storage.TryAppend(entity, slots, ref nextChunkOrdinal));
 
         Assert.That(storage.EntityCount, Is.EqualTo(1));
         var entities = storage.GetEntities(0);
