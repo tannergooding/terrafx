@@ -2,6 +2,8 @@
 
 [Terminology and reading conventions](01-terminology-and-reading-guide.md).
 
+This chapter separates specification acceptance from implemented-engine qualification. [The project roadmap](../project/Roadmap.md) owns current implementation status; [36](36-primary-sources-and-rationale.md) owns published sources and design rationale.
+
 ## 1. Contract and qualification map
 
 Subsystem chapters define behavior, [30](30-public-api-review-surface.md) defines public signatures, and acceptance cases define required observations. [35](35-implementation-roadmap.md) assigns qualification to coherent implementation milestones.
@@ -15,13 +17,22 @@ Subsystem chapters define behavior, [30](30-public-api-review-surface.md) define
 | [23 physics queries](23-custom-physics-shapes-queries-and-ccd.md), [24 audio](24-custom-audio-mixing-and-spatialization.md) | M06/M07 qualify scoped hit delivery, dimensional physics, command/voice completion, endpoint behavior and cached snapshot publication. |
 | [26 generated modules](26-csharp-systems-plugins-and-hot-reload.md), [29 setup](29-project-setup-build-and-deployment.md), [32 integration](32-end-to-end-integration-scenarios.md) | Generated descriptors/roots, supported toolchain profiles, native retirement, integrated consumers and measured release workloads close at their roadmap milestones. |
 
-The specification contains 320 acceptance IDs. They are implementation obligations, not passes inferred from reference helpers.
+The specification defines 321 acceptance IDs, including the opt-in application-adapter case EN143. They are implementation obligations, not passes inferred from reference helpers. [28](28-diagnostics-performance-and-validation.md#4-release-gates) defines the mandatory release selection.
 
-## 2. Implementation qualification
+## 2. Specification acceptance
 
-The chapter-30 facade-only projection excludes 112 supporting declarations, many defined by owner constructor/field tables outside those blocks. This is a projection boundary, not evidence of 112 missing design contracts. Each implementation unit reviews its exact transitive declaration catalogue before implementation and compiles consumers against the implemented surface. Complete headless/first-sprite/model/editor/standalone physics/audio callers qualify at their owning milestones under [35](35-implementation-roadmap.md), not before Core exists. Supporting types come from their owning declarations or exact generation descriptors, not invented empty stubs. The four selected caller units are smaller checks, not substitutes.
+EN144 checks an exact repository revision: local file/heading links, unique acceptance IDs, declaration/owner consistency, and cross-chapter schema/default/ownership constraints. Reviewers derive these checks from the checked-in documents and cited public sources, not private attachments, session files, review caches or previous delivery archives. Revision and source hashes identify the checked inputs.
 
-Production formatting text/provider/destination/allocation behavior, Angle evaluation/trig, owner/channel/continuation behavior, generated roots and layout/codegen, NativeAOT/native/GPU/audio integration and measured workloads require implementation execution. Existing reference and compiler witnesses do not establish those results.
+Specification integrity, reference arithmetic and declaration compilation do not qualify implemented engine behavior.
+
+## 3. Implementation qualification
+
+A facade-only declaration projection is not a complete supporting-type catalogue. Each implementation unit reviews its transitive declarations against the owning constructor/field tables or exact generation descriptors, then compiles consumers against the implemented surface. Absence from a projection is not evidence that a contract is missing, and invented empty stubs do not establish it. Complete headless/first-sprite/model/editor/standalone physics/audio callers qualify at their owning milestones under [35](35-implementation-roadmap.md); selected caller units are smaller checks, not substitutes.
+
+Production formatting text/provider/destination/allocation behavior, Angle evaluation/trig, owner/channel/continuation behavior, generated roots and layout/codegen, NativeAOT/native/GPU/audio integration and measured workloads require implementation execution. Reference arithmetic and declaration-only compiler witnesses do not establish those results.
 
 The RC compiler pin is not a shipping pin beyond its support period; [29](29-project-setup-build-and-deployment.md) requires supported pins and GA requalification.
 
+## 4. Revision-bound evidence
+
+Qualification uses the actual outputs of the ordinary build/test/native/workload workflows for the observed revision and target profile. Cite their command results, nonempty selected/executed counts, result artifacts and unsupported capabilities when reporting a gate; do not create a qualification-record schema, receipt service, archive or ledger. The project roadmap owns current status. Revalidate affected checks when inputs change; results for unchanged relevant inputs remain usable.

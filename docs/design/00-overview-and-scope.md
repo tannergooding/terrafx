@@ -2,7 +2,7 @@
 
 [Terminology and reading conventions](01-terminology-and-reading-guide.md).
 
-Revision: 0.21. [37](37-completeness-and-audit.md) records specification evidence and implementation qualification.
+Revision: 0.21. [37](37-completeness-and-audit.md) describes specification acceptance and implementation qualification.
 
 This is a separate engine design, not the game design's technology appendix. It serves 2D games, 3D games, editors, visualization, and headless simulation. The existing tower game is one demanding adapter example; its elements, currencies, twelvefold laws, progression and content are not engine services.
 
@@ -94,7 +94,7 @@ Forward references connect a shared concept to a later consumer or acceptance fi
 | [34 acceptance](34-engine-acceptance-cases.md) | Required cross-system normal/boundary/failure observations |
 | [35 roadmap](35-implementation-roadmap.md) | Implementation prerequisites, coherent milestones and handoff gates |
 | [36 sources](36-primary-sources-and-rationale.md) | Informative primary references and decision rationale |
-| [37 audit](37-completeness-and-audit.md) | Informative exact-revision evidence and implementation limits |
+| [37 audit](37-completeness-and-audit.md) | Informative specification acceptance and implementation evidence boundaries |
 
 Requirements are normative by default; [01](01-terminology-and-reading-guide.md#1-reading-conventions) defines informative labeling and authority. Each owner above defines its contract; consumers refer to it rather than maintaining an alternative. API declarations own member shape, subsystem chapters own behavior, and acceptance cases own required observations. A contradiction is a defect to resolve before implementation, not permission to choose the preferred paragraph.
 

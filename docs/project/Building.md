@@ -61,7 +61,7 @@ That is, all of the existing well known commands "just work". This includes, but
 
 With a compatible SDK installed, `dotnet build` also restores dependencies automatically; no script or SDK acquisition step is required.
 
-Test filtering uses the runner's existing support, for example `dotnet test --filter TestCategory=Unit`.
+Test filtering uses the runner's existing `FullyQualifiedName` support, as in the foundation-codec commands below. For implemented cases, confirm nonzero selected and executed counts and inspect current-run TRX results under `artifacts\tst`. A successful command with no selected tests is not validation.
 
 ### Core-private foundation codecs
 

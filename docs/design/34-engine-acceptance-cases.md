@@ -2,7 +2,7 @@
 
 [Terminology and reading conventions](01-terminology-and-reading-guide.md).
 
-These 144 cross-system cases supplement the PH/PF/AU/IN subsystem cases and the 16 NM geometry cases in [Chapter 06](06-owned-geometry-and-numerics-interchange.md). They are implementation obligations, not claims of executed engine tests. Passing requires the exact observation, not merely compiling, creating a window, or inspecting an unrelated demo. Numeric tolerances are absolute unless explicitly relative. Record the profile and native/headless lane defined in [Chapter 28](28-diagnostics-performance-and-validation.md) and [Chapter 29](29-project-setup-build-and-deployment.md).
+These 157 cross-system cases, including the opt-in application-adapter case EN143, supplement the PH/PF/AU/IN subsystem cases and the 19 NM geometry cases in [Chapter 06](06-owned-geometry-and-numerics-interchange.md). They are implementation obligations, not claims of executed engine tests. Passing requires the exact observation, not merely compiling, creating a window, or inspecting an unrelated demo. Numeric tolerances are absolute unless explicitly relative. Record the profile and native/headless lane defined in [Chapter 28](28-diagnostics-performance-and-validation.md) and [Chapter 29](29-project-setup-build-and-deployment.md).
 
 ## 1. Units, clocks, and math
 

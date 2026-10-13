@@ -74,7 +74,7 @@ Runtime, editor and executable tools use closed AOT registrations. Data/shader r
 
 ## 6. Complete selected caller compilation units
 
-Each fence below is one complete source file. The revision evidence in [37](37-completeness-and-audit.md) compiles them independently against selected declarations extracted from [30](30-public-api-review-surface.md), with throwing bodies where engine implementation is absent. That checks syntax/binding/nullability, not working buffers, pools, formatting, asset loading or AOT. No support types are invented to compile these files. The complete headless/first-sprite/model/editor and standalone physics/audio programs remain mandatory AR01 consumers of their transitive supporting-type catalogues, built with their owning features under [35](35-implementation-roadmap.md); these smaller files do not substitute for those integration programs.
+Each fence below is one complete source file illustrating selected contracts from [30](30-public-api-review-surface.md). Compile these consumers against the implemented surface without invented support types or throwing-body projections standing in for implementation. The complete headless/first-sprite/model/editor and standalone physics/audio programs remain mandatory AR01 consumers of their transitive supporting-type catalogues, built with their owning features under [35](35-implementation-roadmap.md); these smaller files do not substitute for those integration programs or establish runtime/AOT behavior.
 
 ### Geometry and narrow generic operators
 

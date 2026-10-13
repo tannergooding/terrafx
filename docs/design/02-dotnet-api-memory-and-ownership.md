@@ -136,6 +136,6 @@ Native ahead-of-time compilation (`NativeAOT`) is the baseline for the runtime, 
 
 .NET 11 `Process` lifecycle/output and UTF-8/UTF-16 validation APIs are reused where appropriate. The buffer/I/O policy above applies equally to source adapters, codecs and executable tools. Native runtime data uses `EBIN1` and `EPKG2`; text serializers are authoring/migration tools. None/Brotli remain required codecs; BCL Zstandard availability does not silently add a wire codec.
 
-New scalar code uses `float.Sin`, `float.Sqrt`, `float.Clamp`, `int.Clamp`, and other type-specific/generic-math members, rather than preferring `Math`/`MathF`. The supplied future repository determines build infrastructure and NUnit setup, not engine architecture.
+New scalar code uses `float.Sin`, `float.Sqrt`, `float.Clamp`, `int.Clamp`, and other type-specific/generic-math members, rather than preferring `Math`/`MathF`. This repository's shared build settings and test projects define build infrastructure and NUnit setup, not engine architecture.
 
 Use allocation budgets and measurements rather than universal no-GC claims. Avoid per-entity boxing/LINQ/delegate allocation in steady-state hot loops; cached callbacks/pools are appropriate. Dedicated render/audio threads avoid `ThreadPool` blocking, but modern .NET is not a hard-real-time runtime. Intrinsics/single instruction, multiple data (SIMD) are optional measured internal accelerations with scalar reference behavior and explicit numerical profile; no public instruction set architecture (ISA)-shaped API.

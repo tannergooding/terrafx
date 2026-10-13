@@ -76,12 +76,12 @@ Application floor/circuit/puzzle records use registered pure-data validators/eva
 
 Invalid payload, unsupported major, decompression bomb or reference cycle fails before world activation. Circuit truth-table/composite proof and puzzle certificates remain game-owned; engine graph compilation describes GPU work, not game logic gates. Scene editor may host application property tools without changing general engine units.
 
-## 8. Existing game adapter (not an engine dependency)
+## 8. Optional game adapter (not an engine dependency)
 
-This is an opt-in application integration, not a core engine acceptance dependency. Its external specification authority is the separately delivered game specification revision 0.6, gameplay fingerprint `4f891c1acbf32d4d10e1619c5c25b5b6a47f5a588a7b211bae09a1662e93e931`; engine implementation does not require that game's content.
+This is an opt-in application integration, not a core engine acceptance dependency. Applications enabling this lane provide their versioned gameplay contract, reference inputs and expected outcomes through their repository or an accessible published record. Engine implementation does not require a separate game's specification or content.
 
-Game module owns twelvefold reservoirs, six elements, skills/familiars/floors/workshop/research and accepted numerical laws. Chronon 1/60 reference second is a domain unit, not imposed render FPS. Circuit service 0.1 s corresponds to six default simulation ticks; application scheduler retains fractional remainder for derived rates, validating integer phase indices 0 through 59 inclusive independently from all 256 byte words.
+The game module owns mechanics, progression, economies, circuits and procedural content; engine scenes, actions, physics, rendering, audio and assets present that state without redefining it. Game-specific domain units and service rates are not engine clock or presentation-rate defaults. Derived schedules retain their fractional remainder under the selected application's contract.
 
-Earned tutorial pulse/bond/Root Slime tint is game state; engine scene/actions/physics/sprites/audio/assets present it. Offline <= 4-hour workshop growth uses the game's sealed absence calculation, not millions of hidden physics ticks or UTC-based active pacing. Display calendar is not an engine clock.
+Offline progress uses the application's admitted absence calculation, not hidden physics catch-up or wall-clock-based active pacing. Display calendars remain application-owned rather than engine clocks.
 
-Downloaded creator floors use the inert profile and game-specific budgets/ports/finite certificates; editor supports them without uploaded C#. Random-floor seeds feed declared PCG or a game-owned certified stream per content version, not operating system (OS) randomness/time. Adapter acceptance preserves the game's existing reference outcomes; engine constraints must not silently rebalance spells/reservoirs.
+Untrusted creator content uses the inert profile and explicit application budgets and validation, without uploaded C#. Procedural seeds feed declared PCG or an application-owned versioned stream, not operating system (OS) randomness/time. EN143 compares the application's supplied reference outcomes; engine constraints must not silently alter gameplay semantics.

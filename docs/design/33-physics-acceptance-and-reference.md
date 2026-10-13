@@ -201,9 +201,13 @@ For workloads exceeding a version-one admission cap, partition/tile explicitly o
 
 For a Physics acceptance claim, report every PH ID as passed, failed, or not run, including required and executed dimension/variant counts and the tested revision, using ordinary NUnit/workload results; no separate acceptance runner or persistent qualification ledger is required. Running a reference formula helper is not running PH27, the contact solver, collision code, the C# API, or cross-platform tests. Acceptance covers the integrated revision and consequential contracts, not isolated worker summaries.
 
-## 4. Verified primary sources and departures (informative)
+## 4. Reference evidence limits (informative)
 
-URLs/title associations and availability were checked 2026-10-06. Catto's [official publications index](https://box2d.org/publications/) lists the titles/years below; linked PDF responses were checked to be PDF content. The HTML articles/documentation were read for the stated contracts. PDF availability/title verification is not a claim of exhaustive slide-by-slide validation or proof of this custom3D extension.
+Independent scalar checks can establish finite equation behavior for mass/moments, damping/fixed-time sums, impulse signs, friction projection, soft coefficients, interval/root arithmetic, quaternion composition and ULP/rebase behavior. They do not execute a contact solver, scene loop or stability workload and cannot establish PH acceptance. Qualify the implemented cases and their dimension/variant observations through the repository's NUnit workflow; no prior helper or private run record is a prerequisite.
+
+## 5. Primary sources and departures (informative)
+
+Catto's [official publications index](https://box2d.org/publications/) lists the titles/years below. These published references inform the stated algorithms and contracts; publication availability or equation review does not prove the custom 3D solver or its implemented acceptance cases.
 
 | ID / primary reference | Used for; not a borrowed implementation promise |
 |---|---|

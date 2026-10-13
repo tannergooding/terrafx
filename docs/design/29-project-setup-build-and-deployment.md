@@ -97,7 +97,7 @@ Runtime Async does not change the public `Task`/`ValueTask` signatures in [Chapt
 
 ## 3. Dependencies and provenance
 
-Runtime graphics processing unit (GPU) bindings reuse `TerraFX.Interop.Windows` 10.0.26100.6 and `TerraFX.Interop.Vulkan` 1.4.328.1 (versions verified on `NuGet`); binding header version does not require Vulkan 1.4 device. Engine backend validates actual 1.3 features/extension functions; missing entry point is explicit failed capability. Do not alter/share user's existing `TerraFX` repo.
+Runtime graphics processing unit (GPU) bindings reuse `TerraFX.Interop.Windows` 10.0.26100.6 and `TerraFX.Interop.Vulkan` 1.4.328.1 (versions verified on `NuGet`); binding header version does not require Vulkan 1.4 device. Engine backend validates actual 1.3 features/extension functions; missing entry point is explicit failed capability.
 
 Build DirectX Shader Compiler (DXC) release v1.8.2505.1/binaries 1.8.2505.32; Windows SDK 10.0.26100.0, native desktop tools only for private adapters/AOT; Vulkan headers/loader compatible 1.3 + and pinned validation SDK in developer manifest. Player ships native compiler only if explicitly enabled development feature, not needed core runtime.
 
