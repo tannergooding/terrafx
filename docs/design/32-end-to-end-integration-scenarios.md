@@ -66,7 +66,7 @@ Exercise direct native-owner cleanup with delayed calls/callbacks and submission
 
 ## 6. Editor/asset/plugin transaction
 
-`Create` a 2D/3D scene through hierarchy/inspector/gizmos; validate units/ranges/parents and make one gesture one undo transaction. Invalid parent/shear/overbudget multi-edit leaves the old scene unchanged; undo/redo references stable GUIDs/asset versions. `Failed` async import leaves the old version visibly active and a failed ticket.
+`Create` a 2D/3D scene through hierarchy/inspector/gizmos; validate units/ranges/parents and make one gesture one undo transaction. Invalid parent/shear/overbudget multi-edit leaves the old scene unchanged; undo/redo references stable entity GUIDs and AssetIds. `Failed` async import leaves the previous package active and returns a failed ticket.
 
 Exercise [25's authoring mapping](25-ui-text-and-editor-tools.md#authoring-presentation-and-conversion) and EN145-EN149 through the actual AOT editor/source-adapter path. Bind existing quaternions and scalar angles, display degrees and alternate length units, switch scene/UI/map views and precision without setters/dirty state/undo/recooking, then save an unrelated property and verify untouched canonical values survive. Commit one real XYZ rotation or unit-aware edit through the same typed converter/validator; undo/cancel returns the exact prior values. Repeat with a nondefault spatial scale, 150% window scale, a singular Euler orientation and a declared non-camera north reference; invalid/missing contexts reject before mutation.
 

@@ -67,9 +67,10 @@ Test filtering uses the runner's existing `FullyQualifiedName` support, as in th
 
 The EBIN1 structural layer and M02 foundation admission layer live in `sources\TerraFX.Core`.
 They are internal, BCL-only implementation details, not a public codec API or an Assets dependency.
-The literal eight-schema catalogue fixes canonical registry/kernel bytes, rooted rules and digests;
-incoming manifests cannot replace that catalogue. Profile admission uses an explicit selection of
-already registered identities/settings. Frame I/O additionally requires a private persistence binding
+The literal eight-schema catalogue fixes canonical registry/kernel bytes and digests; schema versions
+own their fixed behavior, and incoming manifests cannot replace that catalogue. Profile admission uses
+an explicit selection of already registered identities/settings. Optional extensions use the reserved
+EBIN extension set with signed 64-bit IDs and inert opaque payloads. Frame I/O additionally requires a private persistence binding
 containing the stable world GUID, profile, runtime owner and binding revision.
 
 Reads validate bounded spans before copying an owned staged wire value. They neither allocate a
@@ -78,14 +79,27 @@ against an owner binding; retained optional fields remain inert and survive reca
 input and checked extent before destination capacity, leave the entire destination unchanged on failure,
 and report zero written. Structural payload I/O does not substitute for schema/context admission.
 
-Run the foundation regressions and the accepted binary-free fixture verifier together:
+Run the focused foundation-codec regressions:
 
 ```powershell
-dotnet test .\tests\TerraFX.Core.Tests\TerraFX.Core.Tests.csproj --configuration Debug --filter FullyQualifiedName~M02Foundation --no-restore
-dotnet test .\tests\TerraFX.Core.Tests\TerraFX.Core.Tests.csproj --configuration Release --filter FullyQualifiedName~M02Foundation --no-restore
+dotnet test .\tests\TerraFX.Core.Tests\TerraFX.Core.Tests.csproj --configuration Debug --filter "FullyQualifiedName~M02FoundationCodecTests"
+dotnet test .\tests\TerraFX.Core.Tests\TerraFX.Core.Tests.csproj --configuration Release --filter "FullyQualifiedName~M02FoundationCodecTests"
 ```
 
-Restore first if dependencies are absent. The tests interpret the accepted fixture package's literal
-sources and static hashes independently of production code, including all 21,168 valid prefixes;
-expected binary files are not checked in. Keep the package source pins and independent acceptance
-intact. The test project also builds the separate unsafe-disabled public spatial consumer.
+The tests construct five canonical EBIN records in C# and check their exact lengths and SHA-256 values.
+Focused cases exercise distinct codec, validation, binding and ownership behavior; there is no separate
+M02 fixture manifest, materializer, prefix corpus or fixture-package pin to maintain. The test project
+also builds the separate unsafe-disabled public spatial consumer.
+
+### Focused production behavior tests
+
+The Core suite contains focused literal cases for bounded rounding, spatial conversion/normalization,
+Angle, and geometry behavior. Physics primitive tests exercise the production validators and measures;
+these selections do not imply unimplemented M03 package, World, native, or AOT behavior.
+
+```powershell
+dotnet test .\tests\TerraFX.Core.Tests\TerraFX.Core.Tests.csproj --configuration Debug --filter "FullyQualifiedName~M02FoundationCodecTests|FullyQualifiedName~BoundedRationalTests|FullyQualifiedName~SpatialMathTests|FullyQualifiedName~SpatialValueTests|FullyQualifiedName~AngleTests|FullyQualifiedName~GeometryKernelTests|FullyQualifiedName~GeometryComparisonTests|FullyQualifiedName~ContentSchemaReferenceTests"
+dotnet test .\tests\TerraFX.Physics.Tests\TerraFX.Physics.Tests.csproj --configuration Debug --filter "FullyQualifiedName~PrimitiveShapeValidationTests"
+```
+
+Repeat the applicable selections in Release after Debug succeeds. Confirm nonzero selected and executed counts in current-run TRX results under `artifacts\tst\<Configuration>`.

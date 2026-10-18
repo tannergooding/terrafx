@@ -42,6 +42,7 @@ The default 60-Hz simulation rate supports familiar frame pacing and exact ratio
 | World allocated entity slots, including retired / active scene instances | 2097152 / 65536 |
 | World authoritative Entity-reference positions | 4194304 |
 | World scheduling: shared World state / diagnostics | 2 GiB / 8 MiB |
+| Shared host `DiagnosticsService` retained storage | 8 MiB |
 | World resource and system state subceiling | 128 MiB, also constrained by remaining shared credits |
 | World snapshot bytes | 2147483584 |
 | Aggregate World/persistence admission domain | 8 GiB |
@@ -54,7 +55,11 @@ Other existing power-of-two hard limits remain in their owning chapters. In part
 
 `WorldSchedulingLimits.Default` sets the scheduler byte budgets above and a conflict-comparison ceiling of 16777216; the sum of the byte budgets is 2176 MiB, not a total host/process-memory limit. `MaximumOwnedStateBytes` is the shared World-state ceiling, including identity history and indexes, entity storage, scene provenance, resource/system state, control metadata and their admitted transition peaks. The existing seven-argument constructor remains; a World may lower each configured byte budget to an exact value from 4096 bytes through its ceiling and the comparison budget to any value from zero through its ceiling. `MaximumResourceAndSystemStateBytes` is derived as `min(128 MiB, MaximumOwnedStateBytes)`. Admission uses configured exact values without rounding them upward.
 
+`MaximumDiagnosticBytes` is an independently enforced per-World diagnostic sublimit, not an addition to `MaximumOwnedStateBytes`; it includes the actual retained diagnostic records attributable to that World. A standalone World owns its diagnostics service and charges its retained records to this sublimit. Hosted Worlds share `EngineHost.Diagnostics`: each World retains the same per-World sublimit for its records, while the service enforces one fixed 8-MiB host-wide ceiling across the host and all hosted Worlds. Shared-service bytes have one physical charge at the service owner; per-World limits are attribution quotas, not duplicate physical charges. The host-wide value is a ceiling, not a preallocation or configurable option. Returned immutable snapshots are caller-owned copied arrays bounded per call by `DiagnosticQuery.maximumRecords`; they are not retained service storage, and their later lifetime does not extend the service's charge.
+
 Deferred subtree destruction adds an ordered receipt vector to the existing command result. Each `WorldEntityIdentity` contains four GUIDs, or 64 bytes of logical identity payload. One million entries are 64,000,000 bytes (about 61.04 MiB); the 1,048,576 live-entity ceiling would produce exactly 64 MiB of identity payload, already twice the default 32-MiB command-staging budget before expansion metadata, headers or other reservations. Preapplication preparation charges the vector to command staging plus destruction metadata (`CMD+D`); the prepared/published receipt charges its actual retained copy to owned World state, work-plan and destruction metadata (`O+W+D`). Reserve the complete simultaneous transfer peak before installation and refuse the whole operation when it does not fit; neither one submitted command nor the entity-count ceiling promises a fixed subtree receipt size.
+
+For an M03 structural boundary trial, let `B` be the independently measured baseline charge at the request boundary, including existing owned backing and outstanding reservations without counting a grant twice, and let `D` be the request's complete additional simultaneous peak above that baseline. The exact-fit configured limit is `B + D`; the one-byte-short limit is `B + D - 1`. `D` includes all applicable old/new storage, headers, metadata, work, reservations, conversions and retirement retention, not only logical payload or candidate pages. Setup and every preceding required stage must fit in the short trial; vary only the named budget. If the actual target is not reached, its observer cannot be qualified, or the limit is outside the existing domain, the witness is unsupported and remains open. A budget set to `D` alone is not an exact-fit test when `B` is nonzero.
 
 The World identity limits are cumulative and exact: the 33554432 assignment ceiling includes every Entity and top-level scene-instance identity, live or retired; nested scene occurrences are provenance, not separate World assignments. The 2097152 entity-slot ceiling includes permanently retired slots, and retirement never requires another assignment. The 1048576 occurrence ceiling includes each root occurrence; the 65536 scene-instance ceiling counts active instances. The 4194304 reference-position limit includes optional null leaves. These count limits are subordinate to byte admission and do not promise that every maximum can be combined.
 
@@ -69,6 +74,19 @@ The 2-GiB shared World-state envelope has these qualification reservations:
 | Other World-owned control and lease metadata | 64 |
 | Subtotal | 1728 |
 | Remaining shared admission credits | 320 |
+
+Attachment installation/replacement preparation, distinct installation obligations, bounded release-report/finalization carriers and unreleased cleanup/quarantine remain charged to these existing World-owned state, control, transition and retirement peaks; they add no budget category or unbounded failure-detail list. System cleanup/finalization carriers, report state and unresolved ownership use the same existing budgets; for N claimed systems requiring cleanup, retained failure details are bounded by `min(N, 64)`, with every omitted failure counted and no unbounded exception list. Resource partitions remain under the existing resource/system-state subceiling. Refusal to reserve a mandatory precommit report occurs before a canonical write grant.
+
+Subscriber-failure delivery uses the existing World-owned budgets. The current
+M03 C# tests validate observable refusal and result behavior through ordinary
+.NET tests; they do not capture stack traces, profile-specific scratch, or
+process/accounting receipts. The 64-subscription ceiling bounds result
+multiplicity, not traversal work.
+
+Capacity checks account for backing storage, grants, interests, observer
+buffers, pooled storage, and retained lifetimes under their owning World,
+domain, or pool. They do not add budget categories or create capacity credit
+from copied or aliased references.
 
 World frame-cohort replacement uses the existing World shared-state and 8-GiB admission domains; it adds no global allocator or unmeasured per-object footprint. Before source leases or participant checks, reserve bounded source-use, diagnostic and scan scratch, then reserve the complete simultaneous old/current + prepared/new + scratch + retained-reader/pin + receipt/cleanup/retirement peak before replacement allocation or preparation callbacks. Charge actual backing, alignment, metadata and independent output/task leases through their real owners. A refusal leaves current caches live; old outputs remain independently charged until actual last use, and stopped-but-unreleased participant cleanup remains charged in quarantine. The 65,536 retained-control limit does not promise storage for that many simultaneous old cohorts; a replacement may explicitly refuse while earlier ownership remains live.
 
@@ -92,7 +110,7 @@ Limits/settings/profile identity appear in diagnostics, cook/cache keys where re
 
 The editor shows requested/admitted/used/pinned/staged/in-flight counts and bytes. A maximum-cost request can be identified before it produces a frame-time spike. Performance targets are measured with named hardware, content, configuration, runtime, and revision; no power-of-two choice is itself certified faster.
 
-The domain-local `LineageMembershipAccounting1` metadata candidate is a sub-budget of the existing 8-GiB World/persistence envelope, not an added entitlement. Per domain, inclusive ceilings are 4096 registered/prospective roots (M), 262144 distinct live/reserved keys (K), 1048576 root-to-key edges (E), 65536 independent root/operation interests (I), 4096 pending start-new reservations (R), and 66561 raw lineage references per root; total charged registry metadata B is `min(134217728, domain.MaximumBytes)`. Root, source/snapshot, candidate, retiring, quarantined and prospective state counts before allocation. No public option raises these ceilings, and count maxima do not imply joint byte fit.
+The domain-local `LineageMembershipAccounting1` metadata candidate is a sub-budget of the existing 8-GiB World/persistence envelope, not an added entitlement. Per domain, inclusive ceilings are 4096 registered/prospective roots (M), 262144 distinct live/reserved keys (K), 1048576 root-to-key edges (E), 65536 independent root/operation interests (I), 4096 prospective, pending or closed-but-unreleased start-new reservation controls (R), and 66561 raw lineage references per root; total charged registry metadata B is `min(134217728, domain.MaximumBytes)`. Root, source/snapshot, candidate, retiring, quarantined and prospective state counts before allocation. No public option raises these ceilings, and count maxima do not imply joint byte fit.
 
 Reserve 256 bytes per root cell (including its cleanup/quarantine control), 128 per interest/operation cell, 256 per reservation cell, 64 per shared full-GUID index slot, and 16 bytes per root-vector capacity entry. The power-of-two index capacity is at least 16, at most 524288, and at most half occupied. Every separately allocated array/buffer is charged `ArrayCharge(capacity, elementBytes) = 64 + RoundUp16(checked(capacity * elementBytes))`, where `RoundUp16(n)` is the checked least multiple of 16 greater than or equal to nonnegative `n` (and zero for zero). Per-cell reservations include each cell's own header/fields; they are not added a second time within the cell. Charge whole array pages, spare capacities and separately owned controls/wrappers/Tasks/backing arrays/sort buffers when not covered by a named cell. Each domain first reserves its fixed 4096-byte registrar control. A default-domain handoff additionally reserves its fixed 256-byte ticket in the domain control accounting and one separate H interest cell; it creates no second owner credit.
 
@@ -115,7 +133,7 @@ RegistryCharge =
 DataCharge =
   actual active/candidate/retiring/quarantined World storage
   + source/transformed/snapshot/recording bytes and scratch
-  + maps, asset/version/source pins and their operational ownership
+  + maps, package-backed asset/source pins and their operational ownership
   + actual data-consumer/use credits under the accepted owner accounting.
 
 RegistryCharge <= B.
@@ -123,6 +141,14 @@ RegistryCharge + DataCharge + all other domain-owned credits <= domain.MaximumBy
 ```
 
 Growth reserves complete old-plus-new peak, candidate vectors and scratch before allocation; old storage remains charged until actual release. Spending converts a grant to allocated charge rather than double-counting the same allocation. Failure preserves old membership and ownership, and quarantine keeps the existing charged credit; no capacity is recovered by dropping a lineage key.
+
+R occupancy includes reservation controls still in actual use, cleanup or quarantine after logical exclusion ends. Logical closure does not refund R occupancy; returning a control credit does not release installed backing. Passive copies do not extend actual ownership.
+
+K accounting and prospective index capacity are not semantic membership or admission priority. Prospective retained grants never win membership priority. E charges each unique exact-root-generation/key pair once; duplicate validated references add no edges. Conversion of the exact target root's prospective grants into membership plus its reservation adds neither a duplicate K entry nor a duplicate E edge. Independently registered roots sharing a key have separate edges.
+
+Candidate, data-owner and operation/consumer I credits remain distinct even when they share the exact target root. Transfers move existing credits without minting another.
+
+Every root, key, edge, interest, reservation control, allocation, scratch buffer and backing charge ends on its own actual lifetime. Claim closure, reservation-control release, history release and backing release are separate facts. Committed membership persists through actual histories/consumers and quarantine; refused prospective ownership retains its actual charges without gaining membership priority. Existing ceilings, formulas, spare-capacity charges and complete old-plus-new growth admission remain unchanged.
 
 ### M03-A process-wide WorldGuid registry accounting
 
@@ -162,88 +188,18 @@ The index is fixed at 32,768 32-byte buckets, at most half occupied, with full-G
 
 The `U = O + 2P` value is the maximum baseline only while each binding owner retains O and each coordinator/commit role retains its associated P and U. It does not include additional independent consumers: each consumes remaining U and may be refused at baseline saturation. A 4,096-World sizing example requires four distinct keys per target (current, one changed destination, and two retiring keys) distributed across enough domains; it is not a single-domain capacity promise. Two changed destinations plus both retirees require 20,480 keys and are not promised. A changed or unknown replacement destination consumes prospective K before inspection, so full K may refuse a replacement later shown to have the same GUID. Multiple plans are subject to aggregate admission, not guaranteed; invalidated-but-retained claims continue to count. These examples do not qualify a workload or imply simultaneous fit.
 
-## 4. Asset and cooker retention admission
+## 4. Content package and asset loading limits
 
-### M03 4.6 Finite operational limits, admission domains and charging
+The package ceiling is a file-extent bound, not an allocation promise. Package loading validates the header and directory with checked integer arithmetic before allocating decoded or retained payload storage. The fixed EIDX directory contains one 64-byte header and at most 131072 32-byte entries, so its maximum encoded size is 4194368 bytes. Package bytes, directory bytes, per-asset decoding, concurrent decoding, and retained CPU backing are separate limits; exceeding any one rejects before the corresponding allocation or publication.
 
-These are frozen operational limits, not additional EBIN fields, C0 rules, compressed-format limits or accepted measurements. MiB=1048576 bytes; GiB=1073741824 bytes. Counts and byte demands use checked arithmetic; a scalar format ceiling does not promise all ceilings fit together. An operation must satisfy every applicable object, domain, store/decode and format limit. The limits appear in the operational configuration/evidence manifest and diagnostics, not the semantic native/package keys: lowering capacity changes admission, never a successful output's bits. Actual compiled producer/artifact operands still change when implementation changes.
-
-#### M03 4.6.1 Detached objects and exact per-object bounds
-
-An ordinary UnmanagedBuffer/lease, NativeAssetNode, unqualified StagedAssetGraph, AssetCookRequest or immutable specification is caller-owned detached data. Its constructor is not engine/cooker admission, creates no worker/queue/domain and makes no process-memory guarantee. Many such bounded objects can be created by an ordinary program; their sum is the caller's responsibility. They are not counted as engine retained merely because their bytes may later be submitted. Engine work never keeps the original disposable wrappers as its credit carrier: it captures independently owned bounded snapshots.
-
-Core BufferChain construction has a hard input-array limit65536, checked after IsDefault and before Segment[segments.Length], enumeration or Clone. It counts raw input entries, including zero-length ones, so an all-empty input cannot bypass descriptor allocation. Above65536 throws ArgumentOutOfRangeException naming segments with no acquisition. Zero-length segments remain omitted; new immutable `int SegmentCount` reports0..65536 canonical nonempty segments even after close. Retain/engine capture allocates for this canonical count, not the original raw array capacity; it never flattens/coalesces payloads to evade admission. This numeric guard is a required implementation prerequisite.
-
-NativeGraphLimits is an Assets-owned sealed immutable public options value with get-only properties named below, a constructor taking every value in table order, and static Default. A seven-input StagedAssetGraph constructor uses Default; add an overload taking NativeGraphLimits last. NativeAssetNode applies the intrinsic node ceilings; graphs/requests apply their selected local limits before copying/acquiring. Values may be lowered exactly, without rounding, within0..hard; a graph must still allow its one required root. Defaults/hards for fixed schema limits are identical; byte limits may be zero for an intentional no-capacity policy. Default below is not a claim of simultaneous capacity.
-
-| NativeGraphLimits property / other intrinsic surface | Default | Hard | Scope and charge |
+| Asset loading bound | Default | Hard | Scope |
 |---|---:|---:|---|
-| MaximumSourceChainSegments | 4096 | 65536 | Each nonempty source/dependency-byte chain retained by a graph/request/domain; Core raw-input hard cap remains65536. |
-| MaximumNodes | 131072 | 131072 | Graph Nodes, reusing cook/graph/package output ceiling. |
-| MaximumSuppliedDependencies | 524288 | 524288 | Graph exact outside-node versions, reusing its schema ceiling. |
-| MaximumSources | 65536 | 65536 | Graph recorded/retained sources, reusing cook/graph. |
-| MaximumReadDescriptors | 1048576 | 1048576 | Per graph: node payloads + two read descriptors per supplied dependency (envelope/publication) + all source-chain nonempty segments. Empty-chain wrapper metadata is charged separately. |
-| MaximumLogicalInputBytes | 1073741824 | 8589934592 | Checked sum of every declared node/source/dependency envelope/publication range, counting duplicate ranges here; detached graph shape bound, not shared-physical charge. |
-| MaximumGraphMetadataBytes | 67108864 | 268435456 | All-in graph copied immutable facts, dictionaries/order/index/snapshot arrays, private descriptor/credit bookkeeping and construction peak. |
-| MaximumNodeMetadataBytes | 33554432 | 33554432 | Each node's copied facts/dependency IDs/metadata/header/digest and node-private bookkeeping; no payload bytes. Dependency-ID count still <=1048576. |
-| MaximumDependencyMetadataBytes | 16384 | 16384 | Each supplied dependency's copied full-version/schema/profile/hash/source facts; envelope/publication payload and credit bookkeeping are separately charged. |
-| MaximumSourceMetadataBytes | 16384 | 16384 | Each source's copied fingerprint/count/optional UTF8 facts; chain bookkeeping separately charged. |
-| MaximumSourceChainMetadataBytes | 4194304 | 67108864 | Each chain's all-in descriptor/registration/header/snapshot/temporary-traversal reservation, distinct from logical bytes and source facts. |
-| Intrinsic payload/source/dependency-record range | 268435456 | 268435456 | Each node payload, source byte extent, supplied envelope and supplied publication; existing native/source/decoded ceilings, not a256-MiB allocation promise. |
-| Intrinsic native/metadata encoded key/value aggregate | 65536 | 65536 | Existing metadata wire rule; each key/value/count cap remains [M03 4.2](10-binary-data-and-authoring-formats.md#m03-42-transportprovenance-records)'s. |
-| Intrinsic copied trusted absolute path UTF8 extent | 4096 | 4096 | Cache/output/source-registration path facts; valid absolute OS path required independently. No URI/source-name path authority. |
+| Maximum package bytes | 8589934592 | 8589934592 | Complete EPKG2 file extent; streaming only, never a request to allocate the whole package as one array. |
+| Maximum directory entries | 131072 | 131072 | Live content-set AssetIds; IDs themselves range through 2147483647 and are not compacted to this count. |
+| Maximum directory bytes | 4194368 | 4194368 | 64-byte header plus 32 bytes per permitted entry; no dependency/name/profile-index tables. |
+| Maximum decoded asset bytes | 268435456 | 268435456 | One decoded payload before schema validation. |
+| Maximum concurrent decoded bytes | 268435456 | 268435456 | Aggregate reserved decoded output across concurrent loads. |
+| Retained CPU backing bytes | 536870912 | 8589934592 | Distinct package-backed or decoded storage retained by live leases in the selected store. |
+| Maximum live asset leases | 4096 | 65536 | Caller-visible leases; lease-count exhaustion does not evict an in-use asset. |
 
-Node/source/dependency metadata limits include actual retained managed storage and padding attributable to that object, not merely its canonical serialized length. The graph limit includes both complete existing storage and provisional constructor/Retain peaks. Different wrapper instances cannot be treated as free because their payloads match. Count1048576 plus the required node means the nominal524288 outside-dependency maximum cannot fit two descriptors per dependency in a single graph; classify that shadowed endpoint honestly. Other simultaneous maxima likewise need their exact reachability ledger.
-
-For source-byte/import request variants, the primary source plus dependency-byte chains is one bounded source-input set: initialized arrays, at most65536 total chains including the primary, each<=256MiB/MaximumSourceChainSegments, aggregate read descriptors/logical bytes/metadata within the same NativeGraphLimits. A lease overload is a one-segment chain and receives identical charging. An importer-produced native graph must obtain its additional graph/credit/metadata reservation before creation while old source credits still exist, not replace/discharge consumed source ownership early. Source adapters execute at their later owner; the native M03 credit/domain path is not their acceptance.
-
-Detached construction uses checked preflight under its selected per-object limits and the build's trusted footprint plan before any copied metadata/credit allocation. Expected object-limit failure is synchronous ArgumentException/ArgumentOutOfRangeException with the offending operand/claim/limit; arithmetic overflow is OverflowException. Caller input bytes/credits are not consumed or disposed. These checks do not call a cooker or borrow a store's quota. Engine capture repeats policy admission against its own limits; a detached object valid under larger explicit limits can receive an expected domain refusal, not a fake constructor error.
-
-#### M03 4.6.2 Explicit store and cooker domains
-
-Assets owns sealed `AssetRetentionLimits`/`AssetRetentionDomain` and immutable `AssetRetentionSnapshot`. AssetRetentionLimits' get-only members/defaults/hards are the operational rows below except queue/workers and existing store byte options. Its constructor takes NativeGraphLimits first, then the listed count/byte/cleanup values; static Default uses the default column. AssetRetentionDomain(limits,maximumRetainedBackingBytes) is a managed-only synchronous factory: it validates/fixes the complete limits and trusted charge profile, reserves its own bookkeeping and Core retention subdomain, starts no worker and acquires no filesystem/process resource. Its constructor can conventionally fail without a partially returned native owner.
-
-AssetStore owns one such domain, exposed read-only as `RetentionDomain`. AssetStoreOptions gains `AssetRetentionLimits RetentionLimits { get; init; } = AssetRetentionLimits.Default`; the existing CpuAssetBudgetBytes is the sole source of its retained-backing ceiling, not a second shadow value. Existing MaximumDecodedAssetBytes/MaximumConcurrentDecodeBytes apply independently. Store factory freezes all options. Store creation validates an existing trusted absolute cache directory/registrations and creates managed idle workers; it does not create staging, open a producer, call ownership-bearing plugin factories or perform an asset load before returning the store. Registered supplied codecs remain caller-supplied immutable registrations. Persistent handle/data acquisition begins only inside an admitted load with a recovery record.
-
-Content.Tools gains sealed immutable AssetCookerOptions(AssetRetentionLimits limits) with init-only ImportQueueCapacity=128, CookWorkerCount=2, RetainedBackingBudgetBytes=1073741824, MaximumDecodedAssetBytes=268435456 and MaximumConcurrentDecodeBytes=268435456. Its additional registration constructor accepts the complete verification `AssetStoreRegistration`; the existing constructor selects the compiled built-in registration. `AssetCookerAdmissionDomain.CreateAsync(options,token)` freezes those options, owns fixed worker execution over the Assets domain-owned queue and an Assets AssetRetentionDomain, and returns only an initialized managed idle service. There is no second Tools queue/credit ledger. It implements IAsyncDisposable, exposes its frozen Options/RetentionDomain, and exposes RetryCleanupAsync. It creates no staging/process before an operation is accepted.
-
-For explicit participants, `AssetStoreRegistration` freezes one complete trusted `AssetRetentionParticipantRegistration` together with the selected catalogue, codecs and source rows. Store and cooker factories pass that exact operand through the Assets-owned lower initializer into each actual newly created domain; a detached caller-created domain or observational `RetentionDomain` property is not an installation route. The existing builder/cooker constructors retain built-in-only behavior. Assets and Tools framework entries are composed by their owners without an Assets-to-Tools dependency, and both retain the same physical capacity/charge ledger. Full deployment/qualification closure is checked before any participant callback; a valid earlier entry must not have its getter invoked if a later required binding is invalid.
-
-Retain the public static AssetCooker class but replace the incomplete two-argument entry point with exactly:
-
-```csharp
-public static Task<AssetCookReceipt> CookAsync(
-    AssetCookerAdmissionDomain domain,
-    AssetCookRequest request,
-    CancellationToken cancellationToken = default);
-```
-
-There is no legacy overload with an implicit global domain or a new domain per call. This is an explicit chapter11/30 API amendment, justified before implementation/API freeze. Ordinary detached requests remain reusable inputs. Add `StagedAssetGraph Retain(AssetRetentionDomain domain)` and `AssetCookRequest Retain(AssetRetentionDomain domain)` for explicitly domain-bound preparation. Request retention independently books one request snapshot and its graph/byte snapshot; native and byte variants preserve their variant. A bound no-argument Retain inherits the domain. Closing that prepared wrapper releases only its own charges/credits. Cooker admission always takes another operation snapshot; it does not consume an earlier prepared snapshot.
-
-| Admission-domain surface | Default | Hard | Exact interpretation |
-|---|---:|---:|---|
-| Queue capacity: existing store/new cooker ImportQueueCapacity | 128 | 128 | Aggregate pending work records across that owner's channels, not128 per hidden stage. Configurable1..128. |
-| Store IoWorkerCount / CookWorkerCount; cooker CookWorkerCount | 4 / 2; 2 | 64 each | Configurable1..64; no inheritance from WorldOptions.WorkerCount or invented zero-worker semantics. |
-| MaximumGraphSnapshots | 256 | 1024 | Engine/cooker prepared, accepted, provisional, candidate, retiring and quarantined graph-data snapshots; runtime reconstructed inert graphs count here. |
-| MaximumRequestSnapshots | 256 | 1024 | Domain-owned prepared and accepted request/load work descriptors, not detached caller requests. |
-| MaximumOutstandingOperations | 256 | 1024 | Accepted + provisional + cleanup/retirement/quarantine records until fully released. Queue/running ceilings additionally apply. |
-| MaximumPinnedAssetLeases | 4096 | 65536 | Store CPU version/dependency pin wrappers; cooker has no CPU-ready result lease and uses this pool only if explicitly preparing the same Assets pin variant. |
-| MaximumReadCredits | 262144 | 4194304 | All domain-created long-lived/provisional/read-child Core reference slots plus temporary traversal/actual-use reservations; backing aliases do not reduce this count. |
-| MaximumMetadataBytes | 67108864 | 268435456 | Aggregate actual/planned owned metadata, shared immutable facts, Core registrations/descriptors, maps/capacity/padding/resize peaks, work/results/cleanup/scratch and diagnostic headers. |
-| Store CpuAssetBudgetBytes / cooker RetainedBackingBudgetBytes | 536870912 / 1073741824 | 8589934592 each | Complete distinct rounded native backing retained/allocated by that domain: source windows, decoded/cache/dependencies, staging/scratch, candidate/retiring/quarantine. One backing charge per storage identity per domain. |
-| Existing/new MaximumDecodedAssetBytes | 268435456 | 268435456 | Per decoded asset; reuses chapter11. |
-| Existing/new MaximumConcurrentDecodeBytes | 268435456 | 268435456 | All concurrent decode reservations including provisional outputs; also fit aggregate backing. |
-| MaximumNamedStagingBytes | 8589934592 | 8589934592 | Aggregate owned uncommitted filesystem extents, active/retiring/quarantine; distinct from memory and committed cache retention. File growth reserved before write. |
-| MaximumNamedStagingEntries | 262144 | 1048576 | Aggregate owned file/directory/handle/process cleanup records; per operation at most262144 entries. Existing schema/package counts apply too. |
-| MaximumRequestMetadataBytes | 16777216 | 67108864 | Request/specification/path/producer/policy copied facts and their peak, excluding separately counted graph/byte carriers. |
-| MaximumOperationMetadataBytes | 67108864 | 268435456 | Per-operation total scratch/work/verification/writer/retirement metadata, also constrained by aggregate. |
-| MaximumLiveHandlesPerOperation | 8 | 64 | File/stream/process/pipe ownership records, including provisional acquisition; shared physical handle counted once, each wrapper metadata charged. |
-| MaximumLiveProcessesPerOperation / total domain | 1 / 2 | 1 / 64 | Each invocation's complete owned process/pipe lifecycle; native-only M03 may use zero. |
-| Process raw capture per invocation / aggregate | 8388608 / 16777216 | 8388608 / 536870912 | Existing8-MiB per-process cap; aggregate cap also fits backing. Read chunks<=16384 before decoding; no new source codec. |
-| MaximumCleanupFailureSamples | 16 | 16 | Detailed original cleanup-exception/resource samples per operation/pass; exact total failure count and each remaining resource state are retained separately. |
-| Intrinsic cleanup-only metadata reserve | 1048576 | 1048576 | Within the aggregate metadata budget, reserved at domain initialization for one serialized retry/shutdown pass's header/selection/counters. Ordinary work cannot spend it; cleanup must remain possible when quarantine fills ordinary capacity. |
-| ShutdownWaitMilliseconds | 5000 | 30000 | Configurable1..30000; chapter02's default5s retained. Bounds an observation, never forces native/process/file-I/O completion. |
-
-All new aggregate count values may be lowered from0..hard; required initialization and a desired one-root operation still need their actual reservations. Byte budgets may be0..hard. A valid but insufficient initialization budget conventionally refuses before worker/resource acquisition; it is not silently increased. Workers/queue/wait have the positive ranges above. AssetRetentionLimits does not duplicate store CpuAssetBudgetBytes or decode settings. Store/cooker options reject an inconsistent profile at creation with a synchronous usage error; expected operation pressure follows [M03 4.6.5](11-assets-import-streaming-and-packages.md#m03-465-queue-full-execution-refusal-and-retry).
-
-The schema-derived per-object counts and store512/256/128/4/2 defaults are reused. Chain4096/65536,64/256-MiB metadata envelopes,256/1024 outstanding objects,262144/4194304 reference slots,1-GiB cooker/8-GiB hard backing and bounded cleanup/handle settings are selected candidate envelopes: powers of two keep the metadata amplification finite while preserving explicit larger trusted workloads. The1-GiB cooker default allows separately charged source/output/scratch classes beyond the512-MiB resident-store default; it is not a measured sufficient capacity. Eight-GiB hard backing/staging permits bounded trusted streaming, not an8-GiB array or a coupling to the World admission domain. Different explicit domains charge the same borrowed backing independently; these are not a process-total or host-wide shared-memory promise.
+The package and directory ceilings are fixed format bounds. Store options may lower the decoded-asset, concurrent-decode, retained-backing, and live-lease defaults within their hard limits. The store checks every requested range, decompressed length, and aggregate budget before the associated allocation; a package that fits the file-size limit can still fail a tighter decode or retained-memory limit. Package replacement switches the selected content set atomically, while old leases keep their own package backing until consumers release them. Source-adapter and offline build-process budgets belong to their actual implementation owner and are not represented as serialized graph/source records here.

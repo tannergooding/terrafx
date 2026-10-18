@@ -1,33 +1,34 @@
 # Implementation roadmap
 
-The [design roadmap](../design/35-implementation-roadmap.md) defines milestone
-scope, dependencies, and acceptance gates. This page tracks the current
-implementation state and remaining qualification.
+The [design roadmap](../design/35-implementation-roadmap.md) defines milestone scope, dependencies, and acceptance gates. This page tracks current implementation status and remaining qualification; it does not redefine those contracts.
+
+Current focus is M03-A. M03-B has not started. Compiled content-schema registration, authoritative World/component transactions, and their real consumer paths remain incomplete. Tests cover implemented Core/Runtime behavior only; they do not establish acceptance of missing schemas, packages, persistence, or M03 milestones.
 
 ## Milestone status
 
+The retired implementation and samples are not an implementation baseline for these milestones.
+
 | Milestone | Status | Progress / remaining work |
 |---|---|---|
-| M01 - Repository and implementation readiness | Complete | Repository, build, test foundation, and first-unit prerequisites are established. This is readiness, not engine qualification. |
-| M02 - Core ownership, numerics, and spatial data | Qualification pending | Core-owned implementation and managed regression coverage are present. NativeAOT target-profile and workload qualification remain unexecuted. |
-| M03 - Worlds and native semantic content | In progress | M03-A owner contracts and Runtime identity/scheduling foundations are present. Complete owner-derived schedule membership, catalogue admission, World/component transactions, architecture enforcement, native content/persistence, and A-ready capacity/AOT evidence remain incomplete. M03-B has not started. |
-| M04 - Native host, input, and presentation resources | Not started | Requires the applicable M02/M03 capabilities and observations. |
-| M05 - Renderer, animation, and source adapters | Not started | Schedule by the capability and observation gates in design chapter 35. |
+| M01 - Repository and implementation readiness | Complete | Repository/build/test foundation and first-unit prerequisites established. This is readiness, not engine qualification. |
+| M02 - Core ownership, numerics, and spatial data | Qualification pending | Core-owned implementation and managed regression coverage are present. Required NativeAOT target-profile and workload qualification remain unexecuted; later-owner observations are tracked separately. |
+| M03 - Worlds and native semantic content | In progress | M03-A remains active; M03-B has not started. Core owner identity/content-schema references and Runtime entity identity, scheduling, and slot/archetype foundations are present. Compiled schema registration/admission, authoritative World/component transactions, complete architecture enforcement, native content/persistence, and A-ready consumer/capacity/AOT evidence remain incomplete. Existing Core/Runtime tests cover implemented foundations and do not establish package/runtime or milestone acceptance. The actual M03-A feature and consumer gates remain open. |
+| M04 - Native host, input, and presentation resources | Not started | Portable Input/Platform/Graphics foundations can proceed from M02; World/timeline routes require accepted M03-A, while public host startup and hosted observations require their real M03-B service-producer closure. |
+| M05 - Renderer, animation, and source adapters | Not started | Schedule by the capability and observation gates in design chapter 35, not as a blanket M03/M04 edge. B-owned Assets/Scene/extraction producers gate integrated content consumers; live animation also needs its separately reviewed World-state extension. |
 | M06 - Standalone custom physics | Not started | Requires M02; dimensional cooking, solver, queries, CCD, and checkpoint qualification remain. |
-| M07 - Custom audio and subsystem integration | Not started | Requires the applicable M02-M06 units. |
-| M08 - Editor, extensibility, and release qualification | Not started | Requires M03-M07. |
+| M07 - Custom audio and subsystem integration | Not started | Requires the applicable M02-M06 units; custom mixer/endpoints and integrated runtime witnesses remain. |
+| M08 - Editor, extensibility, and release qualification | Not started | Requires M03-M07; editor, closed modules, complete acceptance, and release measurements remain. |
 
-`Ready to start` means prerequisites are accepted, not that a whole milestone is
-implemented. `In progress` records implementation work; `Blocked` names the
-missing decision or capability and unexecuted observations. `Qualification
-pending` means implementation is present but required observations remain.
-`Complete` requires the entire design milestone exit boundary; a managed build
-or reference helper is not engine/native/AOT qualification.
+`Ready to start` means the next unit has accepted prerequisites, not that the entire milestone is contract-ready or implemented. `In progress` records actual implementation work; `Blocked` names the missing decision or capability and the unexecuted observations. `Qualification pending` means implementation is present but required observations remain; it is not a completed prerequisite milestone. `Complete` requires the design milestone's entire exit boundary. A partial feature, empty suite, managed build, or reference helper cannot stand in for a required engine/native/AOT observation.
 
+## Validation boundaries
+
+Use the repository's ordinary .NET build and test commands. Debug and Release runs, focused behavioral coverage, and runtime/native/AOT qualification are distinct observations. Test outputs are generated by the ordinary .NET test workflow and do not substitute for accepted design contracts, functional schema inputs, or engine qualification.
 ## Maintaining status
 
-Update this page when a coherent unit starts, completes, or encounters a
-material blocker. Reference checked-in contracts or durable published records,
-not checkout-local artifacts. Use Git history rather than repeating
-implementation history here. Do not change design contracts to describe
-implementation progress.
+Update this page when a coherent unit or milestone starts, completes, or encounters a
+material blocker. Record completed scope, accepted prerequisite revisions and remaining
+qualification. Reference checked-in contracts or durable published review records, not
+checkout-local artifacts. Keep generated logs and qualification outputs out of Git, and
+use Git history rather than repeating implementation history here. Do not change design
+contracts to describe implementation progress.

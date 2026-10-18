@@ -10,7 +10,11 @@ Reference the `TerraFX.Runtime` library package for the integrated engine and on
 
 Package references do not start or register every contained service. Supply selected typed modules/features/closed generics and keep initialization scoped to the admitted host profile. The one-assembly package rule is not a claim that native dependencies trim automatically, or that a namespace's code is absent merely because its service is disabled.
 
-Start the selected profile with `EngineHost.StartAsync`. Use `InvokeAsync` for a synchronous owner-thread setup callback: create the world, register component schemas/systems, and establish scene/input integration before registration freezes. An awaited factory does not transfer its native owner thread to the caller.
+Prepare World registration before constructing any World. Obtain the application-compiled `CompiledContentSchemaRegistry`, register the selected component schemas/factories, tags, systems, and support providers through `WorldRegistrationBuilder(registry)`, then call `Build()` and pass that frozen registration to `new WorldOptions(registration)`. Registration is not a live-World mutation surface.
+
+For a standalone World, call `World.Create(options)` on its owner thread. For a hosted World, start the selected profile with `EngineHost.StartAsync`, then use `InvokeAsync` for a synchronous owner-thread callback that calls `EngineContext.CreateWorld(options)` and establishes any host-bound scene/input integration. Do not register schemas or systems after World construction. An awaited factory does not transfer its native owner thread to the caller.
+
+`World.Diagnostics` exposes the associated Core diagnostics service while the World is live or faulted. A standalone World owns its service; a hosted World borrows `EngineHost.Diagnostics`. Use bounded `GetSnapshot` polling with an exact optional `WorldGuid` filter; a minimum-tick filter excludes tickless records such as subscription-capacity warnings. The returned snapshot is immutable and remains readable after World disposal. The property itself throws after disposal.
 
 At an idle owner boundary, direct entity creation/destruction is available; during a tick, use the admitted `CommandWriter`. Chunk traversal passes a local ordinary/ref-struct callable by `ref`, preserving its state while borrowing scoped views; copied entity/component values can outlive an invocation. Generated query/column registrations make the same flow available in NativeAOT without reflection-only activation. `TryGet<T>` distinguishes a missing component from invalid ownership. [Chapter 12](12-entities-components-and-queries.md) defines storage/mutation and [Chapter 13](13-jobs-and-frame-pipeline.md) defines ordering/publication.
 
@@ -26,7 +30,7 @@ Clock use follows [03](03-shared-conventions-and-clocks.md#2-four-clocks), witho
 
 Use [Chapter 06](06-owned-geometry-and-numerics-interchange.md)'s `TerraFX.Numerics` values and explicit identity pose construction. Forward members such as `AsSystemVector2` copy bits to the corresponding BCL value; they do not convert an imported basis or projection convention or expose a borrowed alias. The reverse extensions, such as `systemValue.AsTerraFXVector2()`, are declared by `TerraFX.Numerics.SystemNumericsExtensions` in [30](30-public-api-review-surface.md#geometry). Import that namespace or invoke the extension class statically with full qualification; use aliases when BCL/engine type names collide. Both directions remain safe-callable from a consumer with unsafe compilation disabled. Reviewed bitcasts use narrowly scoped unsafe implementation blocks rather than propagating a caller obligation.
 
-Load an `AssetLease<T>` for CPU readiness, then request GPU residency separately when needed. Prepare a scene asynchronously and activate it at the owner's `Begin` transaction. Unload releases scene ownership without revoking independently retained render/audio versions. [11](11-assets-import-streaming-and-packages.md) and [16](16-scenes-transforms-and-cameras.md) define those boundaries.
+Load an `AssetLease<T>` for CPU readiness, then request GPU residency separately when needed. Prepare a scene asynchronously and activate it at the owner's `Begin` transaction. Unload releases scene ownership without revoking package-backed render/audio asset leases still held by consumers. [11](11-assets-import-streaming-and-packages.md) and [16](16-scenes-transforms-and-cameras.md) define those boundaries.
 
 `value.IsFinite()` retains one mask lane per component; use `value.IsFinite().All()` to establish complete finite admission, or `Any()`/`None()` for those explicit queries. Parameterless reductions match complete all-bits-set lanes; `value.All(0)` instead compares every numeric component with zero using IEEE equality. Quaternion classification returns `Vector4`; matrices retain their mask rows. Do not compare a true float mask numerically to NaN or include an imaginary fourth Vector3 lane. Ordinary `Equals` and `Try` results remain scalar.
 
@@ -63,7 +67,7 @@ The first-sprite/model path uses existing scene components and Renderer defaults
 | Copied handles, components, and scoped chunk views | [12](12-entities-components-and-queries.md) |
 | Tick context, command receipts, and committed publications | [13](13-jobs-and-frame-pipeline.md) |
 | Retained bytes, generic window visitors and read-only finalized outputs | [05](05-owned-buffers-and-internal-collections.md) |
-| CPU asset versions and dependent leases | [11](11-assets-import-streaming-and-packages.md) |
+| Content-set AssetIds and package-backed leases | [11](11-assets-import-streaming-and-packages.md) |
 | Immutable draw snapshots and GPU/presentation retirement | [21](21-2d-and-3d-rendering.md), [19](19-render-graph-synchronization-and-presentation.md) |
 | Physics, audio, and input observations | [22](22-custom-physics-world-and-solver.md), [24](24-custom-audio-mixing-and-spatialization.md), [14](14-custom-input-actions-and-text.md) |
 | Diagnostics and durable save state | [28](28-diagnostics-performance-and-validation.md), [27](27-state-serialization-replay-and-recovery.md) |
@@ -232,53 +236,18 @@ Factory cancellation is separate from eventual owner cleanup. DisposeAsync recei
 
 ```csharp
 using System;
-using System.Collections.Immutable;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX.Assets;
 
-public static class AssetRegistrationConsumer
+public static class AssetPackageConsumer
 {
-    public static AssetStoreRegistration BuildStoreRegistration(
-        ContentSchemaCatalogue catalogue,
-        AssetRetentionChargeProfile chargeProfile,
-        ImmutableArray<AssetRetentionTypeEntry> extensionEntries)
+    public static async Task UseAssetAsync<T>(AssetStore store, AssetId assetId,
+        Func<T, CancellationToken, Task> consume, CancellationToken cancellationToken = default)
     {
-        AssetRetentionParticipantRegistration participants =
-            AssetRetentionParticipantRegistration.CreateForStore(chargeProfile, extensionEntries);
-        return new AssetStoreRegistrationBuilder(catalogue, participants).Build();
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(consume);
+        using AssetLease<T> lease = await store.LoadAsync<T>(assetId, cancellationToken).ConfigureAwait(false);
+        await consume(lease.Value, cancellationToken).ConfigureAwait(false);
     }
 }
-
-public static class AssetOwnerConsumer
-{
-    public static async Task RunAsync(string absoluteCacheDirectory, AssetStoreRegistration registration,
-        Func<AssetStore, CancellationToken, Task> operation, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(operation);
-        await using AssetStore store = await AssetStore.CreateAsync(
-            new AssetStoreOptions(absoluteCacheDirectory, registration), cancellationToken).ConfigureAwait(false);
-        await operation(store, cancellationToken).ConfigureAwait(false);
-    }
-}
-```
-
-The separate Content.Tools registration helper has a Tools-only compile surface:
-
-```csharp
-using System.Collections.Immutable;
-using TerraFX.Assets;
-using TerraFX.Content.Tools;
-
-public static class CookerRegistrationConsumer
-{
-    public static AssetRetentionParticipantRegistration Build(
-        AssetRetentionChargeProfile chargeProfile,
-        ImmutableArray<AssetRetentionTypeEntry> extensionEntries)
-    {
-        return AssetCookerAdmissionDomain.CreateParticipantRegistration(chargeProfile, extensionEntries);
-    }
-}
-```
-
-The store factory binds the exact frozen participant registration to its own new retention domain before starting workers. A Runtime-only executable uses the Assets-only helper with just its qualified inspectors/materializers and has no producer/Tools reference; a separate Content.Tools executable uses its own helper and the actual cooker/store factories. The helpers create declarations only. Neither receipt construction nor the read-only `RetentionDomain` observations install or qualify participants, and no registration can be reused as a domain-bound wrapper across factory domains.

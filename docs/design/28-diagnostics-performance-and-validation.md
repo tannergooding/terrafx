@@ -8,7 +8,13 @@ Diagnostic record: code/severity, monotonic timestamp, host/world/device/surface
 
 `EventSource`/`ActivitySource`/`Meter` instruments host/tick/jobs/barriers/physics/narrowphase/solver/graph/upload/submit/present/audio/import/save/replay. Counters include active/peak/owned/pooled bytes, native allocator blocks/residency estimates, queue occupancy/highwater/backpressure, dropped PRESENTATION snapshots, audio underruns, input overflow, query/continuous collision detection (CCD) indeterminate, cache/import failures, waits and retirement ages.
 
-Diagnostic queue capacity 8192/default; critical fault state has independent durable last-error slot and caller result so queue overflow cannot erase failure. Repeated warnings coalesce by code/object with occurrence count; dropped diagnostics counter itself visible. `DiagnosticsService.GetSnapshot(DiagnosticQuery)` is bounded, non-destructive copied polling, not a public emitting-thread subscription. `DiagnosticQuery(maximumRecords, minimumSeverity, worldGuid, minimumTick)` has explicit inputs: count in `[1, 8192]`, closed severity enum, nullable world GUID filter and nullable lower tick bound. Results retain stable admission order, drop/coalesce counts and immutable records; a filtered query does not drain another consumer's telemetry. The editor replaces its bounded copied view. `TryGetLatestFault(out Diagnostic?)` is false only when no critical fault is retained; faults remain independent of the ordinary ring.
+Diagnostic queue capacity is 8192 records per standalone service or one shared 8192-record ring per host service; retained storage is additionally bounded by chapter [04](04-capacity-and-workload-profiles.md)'s per-World diagnostic sublimit and fixed 8-MiB host-service ceiling. Critical fault state has an independent durable last-error slot and caller result so queue overflow cannot erase failure. Repeated warnings coalesce by code and operational object identity. A coalescible warning's first retained record carries the reserved context entry `OccurrenceCount=1`, appended after producer context entries; each merged occurrence increments it with saturation, and `CoalescedCount` counts merged occurrences. For `WorldSubscriptionCapacityExceeded`, the producer context order is `ActiveSubscriptions`, then `MaximumSubscriptions`, followed by the service-owned `OccurrenceCount`. The count is a positive invariant-decimal string in `[1, 9223372036854775807]`. `DroppedCount` counts every occurrence no longer retained, including all occurrences represented by an evicted aggregate; the two cumulative counters may overlap when a coalesced record is later evicted. Both counters saturate at `long.MaxValue`.
+
+`DiagnosticsService.GetSnapshot(DiagnosticQuery)` is bounded, non-destructive copied polling, not a public emitting-thread subscription. `DiagnosticQuery(maximumRecords, minimumSeverity, worldGuid, minimumTick)` has explicit inputs: count in `[1, 8192]`, closed severity enum, nullable world GUID filter and nullable lower tick bound. A present `minimumTick` is inclusive and matches only diagnostics with a nonnull `Tick` greater than or equal to it; tickless records are excluded. A present `worldGuid` requires exact equality. Results retain stable admission order, drop/coalesce counts and immutable records; a filtered query does not drain another consumer's telemetry. The editor replaces its bounded copied view. `TryGetLatestFault(out Diagnostic?)` is false only when no critical fault is retained; faults remain independent of the ordinary ring.
+
+For `WorldSubscriptionCapacityExceeded`, the coalescing identity is the operational tuple `(Code, ExecutionSessionId, WorldOwnerId)`, not `WorldGuid` or callback identity. Its visible `WorldGuid` remains a semantic filter field and its `Tick` is null. Queue/byte refusal may drop the warning only while incrementing the applicable saturated dropped counter; it cannot alter the operation's return value. Snapshot arrays copy immutable Diagnostic references in stable admission order; the returned snapshot owns that copied array independently of subsequent ring eviction and service shutdown.
+
+Coalescing replaces the retained aggregate in its original admission position; it never moves the record to the position of a later occurrence. Each copied snapshot and its records remain unchanged when the live aggregate is subsequently coalesced, evicted, or the service is shut down. The M03-A diagnostics-service regression uses the actual internal service-admission path with this fixed sequence: admit `WorldSubscriptionCapacityExceeded` for `(session S0, owner O0, WorldGuid G0)`, snapshot; admit the same code for `(S0,O1,G1)`; admit it again for `(S0,O0,G2)` where `G2 != G0`; then admit it for `(S1,O0,G0)`. The first warning coalesces in place to occurrence 2; distinct owner and session identities remain separate, and the final admission order is the original O0 record followed by O1 and S1. The snapshot taken after the first admission remains occurrence 1 and byte-for-byte unchanged. A direct coalescing-key comparison with the same session/owner tuple and a distinct closed `Code` must be unequal. Test identities are valid internal values supplied through the test boundary; this does not create a public emitter or claim hosted-World behavior.
 
 Tick filters and cumulative observational counts/byte budgets use nonnegative `long`; bounded polling counts use `int`. Dropped/coalesced, clipped-sample, underrun and histogram/replacement telemetry saturates at `long.MaxValue` with a retained `DiagnosticCounterSaturated` diagnostic identifying the affected counter; it cannot wrap or turn negative. Saturation does not erase an independent operation failure or falsely advance an ordered timeline. Counter-saturation recording is preallocated/bounded and never blocks an audio callback; the control owner publishes its diagnostic.
 
@@ -86,9 +92,50 @@ Graphics validation: D3D12 debug layer/GPU-based validation/DRED as available, V
 
 `Physics` tests cover stability, limits, inside hits, bounded separating axis theorem (SAT)/feature enumeration, manifolds, continuous collision detection (CCD), joints, and the default/tight budget profiles in [Chapter 33](33-physics-acceptance-and-reference.md); visualize adversarial repros but assert numeric expectations. `Audio` tests use offline deterministic digital signal processing (DSP) sample arrays plus hardware underrun/hotplug tests; silent endpoint/headless tests cannot certify real latency. `Input` tests inject normalized events plus native focus/input method editor (IME)/device tests. File fault injection covers every save phase.
 
-### M03 retained ownership and oracle evidence
+### M03 package bounds and schema tests
 
-Operational limits in [04](04-capacity-and-workload-profiles.md) are selected candidate ceilings, not sustaining capacity. Qualify the explicit all-in Core/Assets/participant charge-profile and typed storage-site manifests before admission; unqualified accounting fails ResourceAccountingUnavailable. Measure one-time rounded backing/shared immutable storage, per-reference/provisional/copy/resize/descriptor/work/result/cleanup metadata, actual reserve-versus-used peaks, active/candidate/retiring/quarantined ownership and actual-release counts. No serialized-length proxy or scalar/shadowed guard is a measured capacity pass. [10](10-binary-data-and-authoring-formats.md) owns two independent oracles, full branch/mutation/rehash and schema-reader-writer-generated-binding ledgers; [34](34-engine-acceptance-cases.md) owns all 86 specified extension families, 0 executed by this adoption. Distinguish phase helper completion, real EndExecution, original operation cleanup and each resource close generation. Qualification records actual public-only/reference/AOT compiler/producer/provider artifacts and BF12 code generation, not a design-review or author-audit substitute.
+Package loading uses the independent whole-package checksum, fixed EPKG2/EIDX1 extents, the 131072-entry directory bound, and the per-package/decode/retained-memory limits in [04](04-capacity-and-workload-profiles.md#4-content-package-and-asset-loading-limits). The production repository does not yet compile/admit M03 content schemas or load EPKG2 packages; current Core tests cover only implemented foundation behavior. Add focused tests with the actual schema registrations and package/store implementation when those features arrive. Ordinary .NET test/build results do not establish unimplemented package/store behavior.
+Once tag and storage behavior is implemented, test it through the owning
+Runtime NUnit suite after real registration, construction, transition and
+cleanup operations. Cover type-budget success/refusal, 257-row tag-only and
+Position12-plus-tag growth, the 32756-byte row boundary, absence of tag
+payload columns, atomic refusal, migration, pool/reuse and cleanup. Assert
+the actual owning state and result; do not add a source/result schema,
+terminal observer, retained-reference recorder or isolated Runtime build.
+
+Subscriber-exception stack provenance uses the same derivation rule. A finite
+selected-case count establishes invocation/result multiplicity, not arbitrary
+callback stack depth, frame-acquisition cost or rendering work. Rich capture
+requires an independently qualified target profile covering its input domain,
+capture and rendering bounds, actual allocation-site capacities/multiplicities,
+runtime/metadata work, pool use and lifetime overlap, plus a safe admission
+mechanism that does not first perform the unbounded operation it is meant to
+exclude. A profile value may equal a familiar number only with its derivation
+and applicability proof; no general frame/work ceiling or elapsed-time target
+is implied.
+
+The capture outcome is `C:` only after rendering completion within 4096 UTF-16
+units, `T:` only after observing the 4097th unit, or an explicit `U:` reason.
+`U:WorkLimit` requires an attempted admitted capture to reach an independently
+derived and enforced traversal/resource extent before C/T is established.
+Exceeding a profile that claims to cover a required case is a qualification
+failure even when the U outcome truthfully reports the boundary. With no
+qualified bounded implementation, select `U:Unqualified` without attempting
+unbounded public-BCL stack capture. Optional provenance richness is separate
+from mandatory report/result accounting: reserve the latter before the
+publication marker; optional refusal cannot consume its credits or interrupt
+captured delivery.
+
+Rich capture does not request file/PDB information, read exception Message or
+Data, traverse the application exception graph, invoke application
+`StackTrace`/`ToString` overrides, or upload details. Unavailable processing
+reads none of those payloads. This contract does not authorize private
+CoreLib-layout assumptions or a native capture adapter; either requires its
+own reviewed design and target-specific qualification before use.
+
+Test the diagnostic context and sealed delivery report against actual
+subscriber invocations and outcomes. Do not require a separate source-derived
+observer membership, import-accounting record or terminal capture receipt.
 
 ## 4. Release gates
 
@@ -96,6 +143,9 @@ Every mandatory case from [Chapter 34](34-engine-acceptance-cases.md), [Chapter 
 
 API compatibility/schema migration/layout generation/analyzer/AOT trim warnings are release failures unless an exact reviewed bounded-metadata exception exists; dynamic-code requirements, missing generic instantiations and JIT-only core features are not exceptions. Build manifests/SBOM/native licenses/content digest/test artifacts and performance evidence preserved. The reference scripts establish selected finite arithmetic/integrity only; native engine tests require implementation.
 
-That generic exception wording does not authorize architecture suppression or audit-only qualification: enforcement violations, invalid applicable policy and incomplete required analysis fail under [29](29-project-setup-build-and-deployment.md#diagnostics-audit-and-suppression), including source-suppressed results. Change exact reviewed policy/effect entries when justified; no broad baseline or namespace/type grant waives ownership/issuer checks.
+Build and package failures remain release blockers. Concrete ownership and
+issuer violations remain covered by their owner contracts and functional
+negative cases; the project DAG alone does not prove every logical boundary
+within an assembly.
 
 The revised API lane additionally checks `bool` Try/out single-failure behavior, domain status/payload invariants and task fault/cancellation versus protocol rejection, no synthesized positional public contract, Runtime Async wrapper semantics and optional Unsafe Evolution caller propagation. GA qualification is separate from supported RC qualification; benchmark wins cannot waive either safety or compatibility.

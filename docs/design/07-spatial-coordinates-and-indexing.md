@@ -102,7 +102,7 @@ Per-cell BVHs use outward-rounded local float bounds. Dynamic broad-phase tree b
 
 Queries declare maximum visited nodes, candidates, output capacity, and admitted calculation extent. Exhaustion has the existing domain budget/indeterminate response, not `Miss` or a silently truncated result. Results sort by stable cell/proxy/feature keys, not hash iteration, allocation order, worker arrival, or tree rotations. Indices update transactionally with scene/physics structural revisions.
 
-Chunk residency owns scene registrations and asset/version leases. Eviction cannot destroy an active physics proxy, current snapshot, retained audio source, or submitted GPU resource. Required neighboring collision data is pinned before admitting a motion sweep. Missing required residency is an explicit admission refusal; the body must not advance through an unloaded cell.
+Chunk residency owns scene registrations and package-backed asset leases. Eviction cannot destroy an active physics proxy, current snapshot, retained audio source, or submitted GPU resource. Required neighboring collision data is pinned before admitting a motion sweep. Missing required residency is an explicit admission refusal; the body must not advance through an unloaded cell.
 
 ## 5. Physics, rendering, audio, and budgets
 

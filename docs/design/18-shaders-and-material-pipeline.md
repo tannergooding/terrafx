@@ -73,7 +73,7 @@ Texture references select `native/texture` 1.0, atlas references `native/atlas` 
 
 The fixed Sprite layout exposes UV0 only, so a Sprite texture binding requires UVSet0. PBR UVSet0/1 requires the corresponding supplied mesh stream at pairing. This is a known layout/binding predicate, not an unsupported-enum fallback or a guessed duplicate UV stream.
 
-RR29 additionally requires each spot's `0 < InnerHalfAngle <= OuterHalfAngle < pi32/2`; equality is the admitted hard-cutoff branch. Colors/intensity/flux/range/direction retain their exact finite/nonnegative/positive/unit predicates above, never inferred clamps. Shadow request/priority is copied inert extraction data at M03, not an implemented shadow-pass certificate.
+The fixed spot-light schema contract additionally requires each spot's `0 < InnerHalfAngle <= OuterHalfAngle < pi32/2`; equality is the admitted hard-cutoff branch. Colors/intensity/flux/range/direction retain their exact finite/nonnegative/positive/unit predicates above, never inferred clamps. Shadow request/priority is copied inert extraction data at M03, not an implemented shadow-pass certificate.
 
 ## 3. Reflection and binding validation
 
