@@ -31,6 +31,50 @@ internal sealed class SystemExecutionScheduleTests
         return builder.MoveToImmutable();
     }
 
+    private static ImmutableArray<SystemDescription> CreateConflictComparisonRegistration(
+        bool oneBeyond,
+        out ImmutableArray<SystemResourceDescription> resources)
+    {
+        var resource1 = CreateResource(900_001, allowParallelAccess: true);
+        var resource2 = CreateResource(900_002, allowParallelAccess: true);
+        var resource3 = CreateResource(900_003, allowParallelAccess: true);
+        var resource4 = CreateResource(900_004, allowParallelAccess: true);
+        resources = [resource1, resource2, resource3, resource4];
+
+        var fullRange = new SystemPartitionRange(0, 1);
+        var access1 = new SystemResourceAccess(SystemResourceKind.Resource, resource1.ResourceId, SystemAccessMode.Write, fullRange);
+        var access2 = new SystemResourceAccess(SystemResourceKind.Resource, resource2.ResourceId, SystemAccessMode.Write, fullRange);
+        var access3 = new SystemResourceAccess(SystemResourceKind.Resource, resource3.ResourceId, SystemAccessMode.Write, fullRange);
+        var access4Write = new SystemResourceAccess(SystemResourceKind.Resource, resource4.ResourceId, SystemAccessMode.Write, fullRange);
+        var access4Read = new SystemResourceAccess(SystemResourceKind.Resource, resource4.ResourceId, SystemAccessMode.Read, fullRange);
+        var descriptions = ImmutableArray.CreateBuilder<SystemDescription>(MaximumSystemCount);
+
+        for (var index = 0; index < MaximumSystemCount; index++)
+        {
+            var accesses = ImmutableArray.CreateBuilder<SystemResourceAccess>(4);
+            accesses.Add(access1);
+            accesses.Add(access2);
+
+            if (index < 91)
+            {
+                accesses.Add(access3);
+            }
+
+            if (index == 0)
+            {
+                accesses.Add(access4Write);
+            }
+            else if ((index == 1) || (oneBeyond && (index == 2)))
+            {
+                accesses.Add(access4Read);
+            }
+
+            descriptions.Add(CreateDescription(index + 1, index, access: accesses.ToImmutable()));
+        }
+
+        return descriptions.MoveToImmutable();
+    }
+
     private static SystemDescription CreateDescription(
         int id,
         int order,
@@ -82,37 +126,12 @@ internal sealed class SystemExecutionScheduleTests
     [Test]
     public void CompileAdmitsExactConflictComparisonLimitAndRejectsOneBelow()
     {
-        const int SystemCount = MaximumSystemCount;
         const int MaximumComparisons = 16_777_216;
-        var access1 = new SystemResourceAccess(SystemResourceKind.Component, CreateGuid(900_001), SystemAccessMode.Write);
-        var access2 = new SystemResourceAccess(SystemResourceKind.Component, CreateGuid(900_002), SystemAccessMode.Write);
-        var access3 = new SystemResourceAccess(SystemResourceKind.Component, CreateGuid(900_003), SystemAccessMode.Write);
-        var access4 = new SystemResourceAccess(SystemResourceKind.Component, CreateGuid(900_004), SystemAccessMode.Write);
-        var descriptions = ImmutableArray.CreateBuilder<SystemDescription>(SystemCount);
-
-        for (var index = 0; index < SystemCount; index++)
-        {
-            var access = ImmutableArray.CreateBuilder<SystemResourceAccess>(4);
-            access.Add(access1);
-            access.Add(access2);
-
-            if (index < 91)
-            {
-                access.Add(access3);
-            }
-
-            if (index < 2)
-            {
-                access.Add(access4);
-            }
-
-            descriptions.Add(CreateDescription(index + 1, index, access: access.ToImmutable()));
-        }
-
-        var registration = descriptions.MoveToImmutable();
+        var registration = CreateConflictComparisonRegistration(oneBeyond: false, out var resources);
         var belowLimit = Assert.Throws<SystemScheduleException>(() =>
             SystemExecutionSchedule.Compile(
                 registration,
+                resources,
                 CreateLimits(maximumConflictComparisons: MaximumComparisons - 1)));
 
         Assert.That(belowLimit!.Failure, Is.EqualTo(SystemScheduleFailure.ConflictBudgetExceeded));
@@ -121,9 +140,10 @@ internal sealed class SystemExecutionScheduleTests
 
         var atLimit = SystemExecutionSchedule.Compile(
             registration,
+            resources,
             CreateLimits(maximumConflictComparisons: MaximumComparisons));
 
-        Assert.That(atLimit.ExecutionCount, Is.EqualTo(SystemCount));
+        Assert.That(atLimit.ExecutionCount, Is.EqualTo(MaximumSystemCount));
     }
 
     [Test]
@@ -453,6 +473,22 @@ internal sealed class SystemExecutionScheduleTests
 
         Assert.That(resourceGraphException!.Failure, Is.EqualTo(SystemScheduleFailure.GraphBudgetExceeded));
         Assert.That(resourceGraphException.Required, Is.GreaterThan(resourceGraphException.Maximum));
+    }
+
+    [Test]
+    public void CompileRejectsOneBeyondConflictComparisonLimit()
+    {
+        const int MaximumComparisons = 16_777_216;
+        var registration = CreateConflictComparisonRegistration(oneBeyond: true, out var resources);
+        var exception = Assert.Throws<SystemScheduleException>(() =>
+            SystemExecutionSchedule.Compile(
+                registration,
+                resources,
+                CreateLimits(maximumConflictComparisons: MaximumComparisons)));
+
+        Assert.That(exception!.Failure, Is.EqualTo(SystemScheduleFailure.ConflictBudgetExceeded));
+        Assert.That(exception.Required, Is.EqualTo(MaximumComparisons + 1));
+        Assert.That(exception.Maximum, Is.EqualTo(MaximumComparisons));
     }
 
     [Test]
