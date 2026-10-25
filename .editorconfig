@@ -511,15 +511,26 @@ csharp_using_directive_placement = outside_namespace:error
 #   CA2211: Non-constant fields should not be visible
 #   CA2225: Operator overloads have named alternates
 #   CA5394: Do not use insecure randomness
+#    disable CA1508 pending https://github.com/dotnet/sdk/issues/56412
+#    disable CA5390/CA5403 pending https://github.com/dotnet/sdk/issues/56413
+#    disable related CA2329/CA2330/CA3001 pending https://github.com/dotnet/sdk/pull/56415
+#    disable CA3003 pending https://github.com/dotnet/sdk/pull/56415
 ###############################################################################
 [*.cs]
 dotnet_diagnostic.CA1043.severity = none
 dotnet_diagnostic.CA1051.severity = error
+dotnet_diagnostic.CA1508.severity = none
 dotnet_diagnostic.CA1507.severity = error
 dotnet_diagnostic.CA1852.severity = error
 dotnet_diagnostic.CA2211.severity = error
 dotnet_diagnostic.CA2225.severity = none
 dotnet_diagnostic.CA5394.severity = none
+dotnet_diagnostic.CA5390.severity = none
+dotnet_diagnostic.CA5403.severity = none
+dotnet_diagnostic.CA2329.severity = none
+dotnet_diagnostic.CA2330.severity = none
+dotnet_diagnostic.CA3001.severity = none
+dotnet_diagnostic.CA3003.severity = none
 
 ###############################################################################
 # Set IDE diagnostic severities to:
