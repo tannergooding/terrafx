@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Immutable;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -91,6 +92,48 @@ internal sealed class BufferTests
     }
 
     [Test]
+    public void BufferChainRejectsExcessRawSegmentCountBeforeInspectingEntries()
+    {
+        var segments = ImmutableArray.CreateRange(new BufferReadLease<int>[65_537]);
+
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(() => new BufferChain<int>(segments));
+
+        Assert.That(exception!.ParamName, Is.EqualTo("segments"));
+    }
+
+    [Test]
+    public void BufferChainRetainsIndependentSegmentsAfterDisposal()
+    {
+        using var first = UnmanagedBuffer<int>.Allocate(2, new BufferAllocationOptions(8, 4));
+        using var empty = UnmanagedBuffer<int>.Allocate(0, new BufferAllocationOptions(0, 4));
+        using var second = UnmanagedBuffer<int>.Allocate(1, new BufferAllocationOptions(4, 4));
+        first.CopyFrom([3, 5], 0);
+        second.CopyFrom([7], 0);
+        using var firstLease = first.AcquireRead(0, 2);
+        using var emptyLease = empty.AcquireRead(0, 0);
+        using var secondLease = second.AcquireRead(0, 1);
+        using var chain = new BufferChain<int>([firstLease, emptyLease, secondLease]);
+        using var retained = chain.Retain();
+
+        Assert.That(chain.SegmentCount, Is.EqualTo(2));
+        Assert.That(retained.SegmentCount, Is.EqualTo(2));
+
+        chain.Dispose();
+        _ = Assert.Throws<ObjectDisposedException>(() => chain.Retain());
+        first.Dispose();
+        empty.Dispose();
+        second.Dispose();
+
+        InlineArray2<int> stateStorage = default;
+        Span<int> state = stateStorage;
+        var visitor = new BufferPublicConsumer.ChainStateVisitor(state);
+        Assert.That(retained.VisitWindows(ref visitor), Is.True);
+        Assert.That(state[0], Is.EqualTo(15));
+        Assert.That(state[1], Is.EqualTo(2));
+        Assert.That(chain.SegmentCount, Is.EqualTo(2));
+    }
+
+    [Test]
     public void BufferChainRetainsSegmentsCopiesAcrossBoundariesAndVisitsRefStructState()
     {
         using var first = UnmanagedBuffer<int>.Allocate(3, new BufferAllocationOptions(12, 4));
@@ -111,6 +154,7 @@ internal sealed class BufferTests
         empty.Dispose();
 
         Assert.That(chain.Length, Is.EqualTo(5));
+        Assert.That(chain.SegmentCount, Is.EqualTo(2));
         Unsafe.SkipInit(out InlineArray4<int> copyStorage); // CopyTo writes the entire destination before assertion.
         Span<int> copy = copyStorage;
         chain.CopyTo(1, copy);
@@ -287,6 +331,24 @@ internal sealed class BufferTests
         Assert.That(action.ObservedValue, Is.EqualTo(42));
         _ = Assert.Throws<ObjectDisposedException>(() => buffer.AcquireRead(0, 1));
         _ = Assert.Throws<ObjectDisposedException>(() => lease.UseWindow(0, 1, ref action));
+    }
+
+    [Test]
+    public void ReadLeaseRetainSurvivesSourceLeaseAndOwnerDisposal()
+    {
+        using var buffer = UnmanagedBuffer<int>.Allocate(1, new BufferAllocationOptions(4, 4));
+        buffer.CopyFrom([42], 0);
+        using var sourceLease = buffer.AcquireRead(0, 1);
+        using var retainedLease = sourceLease.Retain();
+
+        sourceLease.Dispose();
+        buffer.Dispose();
+        _ = Assert.Throws<ObjectDisposedException>(() => sourceLease.Retain());
+
+        var sum = new BufferPublicConsumer.SumReadAction();
+        BufferPublicConsumer.UseRead(retainedLease, 0, 1, ref sum);
+
+        Assert.That(sum.Sum, Is.EqualTo(42));
     }
 
     [Test]

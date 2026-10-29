@@ -11,6 +11,8 @@ namespace TerraFX.Buffers;
 public sealed class BufferChain<T> : IDisposable
     where T : unmanaged
 {
+    private const int MaximumSegmentCount = 65_536;
+
     private ReentrantGate _gate;
     private bool _isDisposed;
     private readonly int _segmentCount;
@@ -28,6 +30,8 @@ public sealed class BufferChain<T> : IDisposable
         {
             ThrowHelper.ThrowArgumentException("The segment array must be initialized.", nameof(segments));
         }
+
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(segments.Length, MaximumSegmentCount, nameof(segments));
 
         _segments = new Segment[segments.Length];
         long totalLength = 0;
@@ -78,8 +82,18 @@ public sealed class BufferChain<T> : IDisposable
         Length = totalLength;
     }
 
+    private BufferChain(Segment[] segments, long length)
+    {
+        _segments = segments;
+        _segmentCount = segments.Length;
+        Length = length;
+    }
+
     /// <summary>Gets the immutable checked logical element count.</summary>
     public long Length { get; }
+
+    /// <summary>Gets the immutable number of retained nonempty segments.</summary>
+    public int SegmentCount => _segmentCount;
 
     private static void EndOperation(BufferReadLease<T>[] operationLeases)
     {
@@ -168,6 +182,37 @@ public sealed class BufferChain<T> : IDisposable
         for (var index = 0; index < _segmentCount; index++)
         {
             _segments[index].Lease.Dispose();
+        }
+    }
+
+    /// <summary>Returns an independent chain retaining the same ordered segments.</summary>
+    /// <returns>The new chain.</returns>
+    /// <exception cref="ObjectDisposedException">The chain is disposed.</exception>
+    public BufferChain<T> Retain()
+    {
+        var operationLeases = BeginOperation(sourceOffset: null, destinationLength: 0);
+        var ownershipTransferred = false;
+
+        try
+        {
+            var segments = new Segment[_segmentCount];
+
+            for (var index = 0; index < _segmentCount; index++)
+            {
+                var source = _segments[index];
+                segments[index] = new Segment(operationLeases[index], source.LogicalOffset, source.Length);
+            }
+
+            var retained = new BufferChain<T>(segments, Length);
+            ownershipTransferred = true;
+            return retained;
+        }
+        finally
+        {
+            if (!ownershipTransferred)
+            {
+                EndOperation(operationLeases);
+            }
         }
     }
 

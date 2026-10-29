@@ -28,6 +28,14 @@ public sealed class BufferReadLease<T> : IDisposable
         _owner.ReleaseLease(_registration);
     }
 
+    /// <summary>Returns an independent read lease for the same range.</summary>
+    /// <returns>The new read lease.</returns>
+    /// <exception cref="ObjectDisposedException">The lease is disposed.</exception>
+    public BufferReadLease<T> Retain()
+    {
+        return Clone();
+    }
+
     /// <summary>Invokes a synchronous callback with a borrowed readonly window.</summary>
     /// <typeparam name="TAction">The concrete callback type, which may be a ref struct.</typeparam>
     /// <param name="relativeOffset">The nonnegative offset relative to this lease.</param>

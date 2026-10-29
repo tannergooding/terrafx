@@ -390,56 +390,65 @@ internal sealed class WorldGuidRegistry
             throw new ArgumentException("A WorldGuid cannot be empty.", nameof(worldGuid));
         }
 
-        using (ReentrantGate.EnterScope(ref _admissionGate))
+        while (true)
         {
-            if (!CanAdmitFresh(worldGuid, out refusal))
+            using (ReentrantGate.EnterScope(ref _admissionGate))
             {
-                grant = default;
-                return false;
+                if (!CanAdmitFresh(worldGuid, out refusal))
+                {
+                    grant = default;
+                    return false;
+                }
             }
-        }
 
-        if (!EnsureCellAvailability(SlabCategoryKey, 1, out refusal)
-         || !EnsureCellAvailability(SlabCategoryBinding, 1, out refusal)
-         || !EnsureCellAvailability(SlabCategoryPreparation, 1, out refusal)
-         || !EnsureCellAvailability(SlabCategoryUse, 2, out refusal))
-        {
-            grant = default;
-            return false;
-        }
-
-        using (ReentrantGate.EnterScope(ref _admissionGate))
-        {
-            if (!CanAdmitFresh(worldGuid, out refusal))
+            if (!EnsureCellAvailability(SlabCategoryKey, 1, out refusal)
+             || !EnsureCellAvailability(SlabCategoryBinding, 1, out refusal)
+             || !EnsureCellAvailability(SlabCategoryPreparation, 1, out refusal)
+             || !EnsureCellAvailability(SlabCategoryUse, 2, out refusal))
             {
                 grant = default;
                 return false;
             }
 
-            var keyCellIndex = AllocateKeyCell(worldGuid, out var keyGeneration);
-            var bindingCellIndex = AllocateBindingCell(keyCellIndex, keyGeneration, out var bindingGeneration);
-            var preparationCellIndex = AllocatePreparationCell(keyCellIndex, keyGeneration, bindingCellIndex, bindingGeneration, out var preparationGeneration);
-            var ownerUseCellIndex = AllocateUseCell(keyCellIndex, keyGeneration, bindingCellIndex, bindingGeneration, UseRoleOwner, out var ownerUseGeneration);
-            var coordinatorUseCellIndex = AllocateUseCell(keyCellIndex, keyGeneration, bindingCellIndex, bindingGeneration, UseRoleCoordinator, out var coordinatorUseGeneration);
-            InsertIndexEntry(worldGuid, keyCellIndex, keyGeneration);
-            _retainedKeyCount++;
+            using (ReentrantGate.EnterScope(ref _admissionGate))
+            {
+                if (!CanAdmitFresh(worldGuid, out refusal))
+                {
+                    grant = default;
+                    return false;
+                }
 
-            grant = new WorldGuidGrant(
-                this,
-                worldGuid,
-                keyCellIndex,
-                keyGeneration,
-                bindingCellIndex,
-                bindingGeneration,
-                preparationCellIndex,
-                preparationGeneration,
-                ownerUseCellIndex,
-                ownerUseGeneration,
-                coordinatorUseCellIndex,
-                coordinatorUseGeneration);
+                if (!HasFreshCellAvailability())
+                {
+                    // Cell growth is prepared outside the gate, so another reservation may consume these cells first.
+                    continue;
+                }
 
-            refusal = default;
-            return true;
+                var keyCellIndex = AllocateKeyCell(worldGuid, out var keyGeneration);
+                var bindingCellIndex = AllocateBindingCell(keyCellIndex, keyGeneration, out var bindingGeneration);
+                var preparationCellIndex = AllocatePreparationCell(keyCellIndex, keyGeneration, bindingCellIndex, bindingGeneration, out var preparationGeneration);
+                var ownerUseCellIndex = AllocateUseCell(keyCellIndex, keyGeneration, bindingCellIndex, bindingGeneration, UseRoleOwner, out var ownerUseGeneration);
+                var coordinatorUseCellIndex = AllocateUseCell(keyCellIndex, keyGeneration, bindingCellIndex, bindingGeneration, UseRoleCoordinator, out var coordinatorUseGeneration);
+                InsertIndexEntry(worldGuid, keyCellIndex, keyGeneration);
+                _retainedKeyCount++;
+
+                grant = new WorldGuidGrant(
+                    this,
+                    worldGuid,
+                    keyCellIndex,
+                    keyGeneration,
+                    bindingCellIndex,
+                    bindingGeneration,
+                    preparationCellIndex,
+                    preparationGeneration,
+                    ownerUseCellIndex,
+                    ownerUseGeneration,
+                    coordinatorUseCellIndex,
+                    coordinatorUseGeneration);
+
+                refusal = default;
+                return true;
+            }
         }
     }
 
@@ -920,6 +929,12 @@ internal sealed class WorldGuidRegistry
         var page = directory[index / CellsPerSlab] ?? throw new InvalidOperationException("The WorldGuid use slab is unavailable.");
         return ref page[index % CellsPerSlab];
     }
+
+    private bool HasFreshCellAvailability()
+        => (GetAvailableCellCount(SlabCategoryKey) >= 1)
+        && (GetAvailableCellCount(SlabCategoryBinding) >= 1)
+        && (GetAvailableCellCount(SlabCategoryPreparation) >= 1)
+        && (GetAvailableCellCount(SlabCategoryUse) >= 2);
 
     private void InitializeColdBacking()
     {
