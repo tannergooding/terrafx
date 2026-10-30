@@ -1,0 +1,13 @@
+// Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
+
+namespace TerraFX.Input;
+
+/// <summary>Identifies a normalized gamepad trigger.</summary>
+public enum GamepadTrigger
+{
+    /// <summary>The left trigger.</summary>
+    Left = 0,
+
+    /// <summary>The right trigger.</summary>
+    Right = 1,
+}

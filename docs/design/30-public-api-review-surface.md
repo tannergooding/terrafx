@@ -5648,16 +5648,16 @@ public enum BindingKind
 }
 
 [Flags]
-public enum InputClassFlags
+public enum InputClass
 {
     None = 0,
     Keyboard = 1,
-    Pointer = 2,
+    Pointing = 2,
     Gamepad = 4
 }
 
 [Flags]
-public enum BindingFlags
+public enum InputBindingBehavior
 {
     None = 0,
     ConsumePhysicalEvent = 1
@@ -5757,11 +5757,11 @@ public sealed class ActionDefinition
 
 public sealed class ContextDefinition
 {
-    public ContextDefinition(Guid contextId, byte bit, int priority = 0, InputClassFlags captureClasses = InputClassFlags.None);
+    public ContextDefinition(Guid contextId, byte bit, int priority = 0, InputClass captureClasses = InputClass.None);
     public Guid ContextId { get; }
     public byte Bit { get; }
     public int Priority { get; }
-    public InputClassFlags CaptureClasses { get; }
+    public InputClass CaptureClasses { get; }
 }
 
 public sealed class KeyboardControl
@@ -5821,7 +5821,7 @@ public sealed class BindingDefinition
     public BindingKind Kind { get; }
     public int Priority { get; init; }
     public bool Enabled { get; init; } = true;
-    public BindingFlags Flags { get; init; } = BindingFlags.None;
+    public InputBindingBehavior Flags { get; init; } = InputBindingBehavior.None;
     public DigitalControl? Control { get; init; }
     public ImmutableArray<DigitalControl> Controls { get; init; } = ImmutableArray<DigitalControl>.Empty;
     public int? CompletionWindowMilliseconds { get; init; }
