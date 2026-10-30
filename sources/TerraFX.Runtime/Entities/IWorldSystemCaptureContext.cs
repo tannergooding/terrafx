@@ -1,0 +1,22 @@
+// Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
+
+using System;
+
+namespace TerraFX.Entities;
+
+internal interface IWorldSystemCaptureContext
+{
+    Exception? Failure { get; }
+
+    bool IsActive { get; }
+
+    int OwnerThreadId { get; }
+
+    ContentSchemaReference Schema { get; }
+
+    Guid SystemId { get; }
+
+    Guid GetEntityId(WorldSystemFieldDescriptor referenceField, Entity entity);
+
+    Exception RecordFailure(Exception exception);
+}
