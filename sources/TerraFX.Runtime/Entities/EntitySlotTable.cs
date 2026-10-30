@@ -166,6 +166,54 @@ internal sealed class EntitySlotTable
         }
     }
 
+    internal void ReleaseOwnedStorage()
+    {
+        _slots = [];
+        _freeSlots = [];
+        _allocatedSlotCount = 0;
+        _freeSlotCount = 0;
+        _liveEntityCount = 0;
+        _retiredSlotCount = 0;
+    }
+
+    internal void RollbackAllocation(uint index, uint generation, bool reusedFreeSlot)
+    {
+        if (!IsLive(index, generation))
+        {
+            throw new InvalidOperationException("The entity slot allocation cannot be rolled back at the supplied generation.");
+        }
+
+        ref var slot = ref _slots[(int)index];
+
+        if ((slot._archetypeIndex >= 0) || (slot._chunkOrdinal >= 0) || (slot._row >= 0))
+        {
+            throw new InvalidOperationException("A located entity slot allocation cannot be rolled back.");
+        }
+
+        if (reusedFreeSlot)
+        {
+            if (_freeSlotCount == _freeSlots.Length)
+            {
+                throw new InvalidOperationException("Entity slot rollback requires preflighted free-list capacity.");
+            }
+
+            slot._state = SlotState.Free;
+            _freeSlots[_freeSlotCount++] = checked((int)index);
+        }
+        else
+        {
+            if ((index != _allocatedSlotCount) || (_allocatedSlotCount == 0))
+            {
+                throw new InvalidOperationException("Only the newest Entity slot allocation can be rolled back.");
+            }
+
+            _allocatedSlotCount--;
+            slot = default;
+        }
+
+        _liveEntityCount--;
+    }
+
     internal void SetLocation(uint index, uint generation, int archetypeIndex, long chunkOrdinal, int row)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(archetypeIndex);
@@ -229,6 +277,52 @@ internal sealed class EntitySlotTable
         return true;
     }
 
+    internal bool TryGetAllocationPreview(int allocationOrdinal, out uint index, out uint generation)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(allocationOrdinal);
+
+        if (allocationOrdinal < _freeSlotCount)
+        {
+            index = (uint)_freeSlots[_freeSlotCount - allocationOrdinal - 1];
+            var slot = _slots[(int)index];
+
+            if ((slot._state != SlotState.Free) || (slot._generation == 0))
+            {
+                throw new InvalidOperationException("The entity slot free list is inconsistent.");
+            }
+
+            generation = slot._generation;
+            return true;
+        }
+
+        var newSlotOrdinal = checked(allocationOrdinal - _freeSlotCount);
+        var newSlotIndex = checked((long)_allocatedSlotCount + newSlotOrdinal + 1);
+
+        if (newSlotIndex > _maximumSlots)
+        {
+            index = 0;
+            generation = 0;
+            return false;
+        }
+
+        index = checked((uint)newSlotIndex);
+        generation = _initialGeneration;
+        return true;
+    }
+
+    internal bool TryGetLive(uint index, out uint generation)
+    {
+        if ((index == 0) || (index > _allocatedSlotCount))
+        {
+            generation = 0;
+            return false;
+        }
+
+        var slot = _slots[(int)index];
+        generation = slot._generation;
+        return slot._state == SlotState.Live;
+    }
+
     internal bool TryGetLocation(uint index, uint generation, out int archetypeIndex, out long chunkOrdinal, out int row)
     {
         if (IsLive(index, generation))
@@ -248,6 +342,34 @@ internal sealed class EntitySlotTable
         chunkOrdinal = -1;
         row = -1;
         return false;
+    }
+
+    internal bool TryGetNextAllocation(out uint index, out uint generation)
+    {
+        if (_freeSlotCount != 0)
+        {
+            index = (uint)_freeSlots[_freeSlotCount - 1];
+            var slot = _slots[(int)index];
+
+            if ((slot._state != SlotState.Free) || (slot._generation == 0))
+            {
+                throw new InvalidOperationException("The entity slot free list is inconsistent.");
+            }
+
+            generation = slot._generation;
+            return true;
+        }
+
+        if (_allocatedSlotCount == _maximumSlots)
+        {
+            index = 0;
+            generation = 0;
+            return false;
+        }
+
+        index = checked((uint)(_allocatedSlotCount + 1));
+        generation = _initialGeneration;
+        return true;
     }
 
     private bool IsCapacityValid(int requiredAllocatedSlots, int requiredFreeSlotCount)

@@ -1,7 +1,10 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Immutable;
+using System.Threading;
 using NUnit.Framework;
+using TerraFX;
 using TerraFX.Entities;
 
 namespace TerraFX.Runtime.Tests;
@@ -9,6 +12,20 @@ namespace TerraFX.Runtime.Tests;
 [TestFixture]
 internal sealed class EntityArchetypeStorageTests
 {
+    [Test]
+    public void ArchetypeRowCapacityUsesTheEntityAndRegisteredComponentBytes()
+    {
+        var maximumComponent = new TestComponentRegistration(32756);
+        var singleRowStorage = new EntityArchetypeStorage(7, 0, 1, [maximumComponent]);
+
+        Assert.That(singleRowStorage.RowCapacity, Is.EqualTo(1));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => _ = new EntityArchetypeStorage(
+            7,
+            0,
+            1,
+            [new TestComponentRegistration(16384), new TestComponentRegistration(16373)]));
+    }
+
     [Test]
     public void AvailabilityIndexFindsTheNextChunkAcrossSummaryWords()
     {
@@ -268,5 +285,200 @@ internal sealed class EntityArchetypeStorageTests
         var entities = storage.GetEntities(0);
         Assert.That(entities.Length, Is.EqualTo(1));
         Assert.That(entities[0], Is.EqualTo(entity));
+    }
+
+    [Test]
+    public void TypedColumnRowsMoveAndClearWithEntitySwapRemoval()
+    {
+        var registration = new TestComponentRegistration(sizeof(int));
+        var components = ImmutableArray.Create<IComponentRegistration>(registration);
+        var slots = new EntitySlotTable(3);
+        Assert.That(slots.PrepareCapacity(3, 0), Is.True);
+        var storage = new EntityArchetypeStorage(7, 0, 3, components);
+        Assert.That(storage.RowCapacity, Is.EqualTo(EntityArchetypeStorage.ChunkCapacity));
+        var preparationBytes = storage.GetCapacityPreparationBytes(3);
+        Assert.That(storage.PrepareCapacity(3), Is.True);
+        Assert.That(storage.OwnedByteReservation, Is.EqualTo(preparationBytes));
+
+        var entities = new Entity[3];
+        var nextChunkOrdinal = 0L;
+
+        for (var index = 0; index < entities.Length; index++)
+        {
+            Assert.That(slots.TryAllocate(out var entityIndex, out var generation), Is.True);
+            entities[index] = new Entity(7, entityIndex, generation);
+            Assert.That(storage.TryAppend(entities[index], slots, ref nextChunkOrdinal), Is.True);
+        }
+
+        var values = storage.GetColumnSpan<int>(0, 0, 0, 3);
+        values[0] = 10;
+        values[1] = 20;
+        values[2] = 30;
+
+        _ = storage.Remove(entities[1], slots);
+
+        Assert.That(values[1], Is.EqualTo(30));
+        Assert.That(values[2], Is.Zero);
+    }
+
+    [Test]
+    public void TypedDescriptionValuesStageIntoUncommittedColumnRows()
+    {
+        var registration = new TestComponentRegistration(sizeof(int));
+        var storage = new EntityArchetypeStorage(7, 0, 1, [registration]);
+        Assert.That(storage.PrepareCapacity(1), Is.True);
+
+        var firstValue = 73;
+        var firstDescription = new EntityDescription(components: [ComponentInitialization.Value(in firstValue)]);
+        storage.InitializeColumnRow(0, 0, 0, firstDescription.Components[0]);
+        storage.ClearUncommittedRow(0, 0);
+
+        var value = 91;
+        var description = new EntityDescription(components: [ComponentInitialization.Value(in value)]);
+        storage.InitializeColumnRow(0, 0, 0, description.Components[0]);
+        var slots = new EntitySlotTable(1);
+        Assert.That(slots.PrepareCapacity(1, 0), Is.True);
+        Assert.That(slots.TryAllocate(out var entityIndex, out var generation), Is.True);
+        var entity = new Entity(7, entityIndex, generation);
+        var nextChunkOrdinal = 0L;
+        Assert.That(storage.TryAppend(entity, slots, ref nextChunkOrdinal), Is.True);
+
+        var column = storage.GetReadOnlyColumnSpan<int>(0, 0, 0, 1);
+        Assert.That(column[0], Is.EqualTo(91));
+    }
+
+    [Test]
+    public void WriteColumnRowUpdatesOnlyALiveTypedRowFromResolvedValue()
+    {
+        var registration = new TestComponentRegistration(sizeof(int));
+        var storage = new EntityArchetypeStorage(7, 0, 1, [registration]);
+        Assert.That(storage.PrepareCapacity(1), Is.True);
+        var slots = new EntitySlotTable(1);
+        Assert.That(slots.PrepareCapacity(1, 0), Is.True);
+        Assert.That(slots.TryAllocate(out var entityIndex, out var generation), Is.True);
+        var entity = new Entity(7, entityIndex, generation);
+        var initialValue = 19;
+        storage.InitializeColumnRow(0, 0, 0, ComponentInitialization.Value(in initialValue));
+        var nextChunkOrdinal = 0L;
+        Assert.That(storage.TryAppend(entity, slots, ref nextChunkOrdinal), Is.True);
+
+        var replacementValue = 47;
+        storage.WriteColumnRow(0, 0, 0, ComponentInitialization.Value(in replacementValue));
+
+        Assert.That(storage.GetReadOnlyColumnSpan<int>(0, 0, 0, 1)[0], Is.EqualTo(47));
+        Assert.That(
+            () => storage.WriteColumnRow(0, 0, 0, ComponentInitialization.Defaults<int>()),
+            Throws.ArgumentException);
+        Assert.That(storage.GetReadOnlyColumnSpan<int>(0, 0, 0, 1)[0], Is.EqualTo(47));
+    }
+
+    private sealed class TestComponentRegistration : IComponentRegistration
+    {
+        internal TestComponentRegistration(int logicalBytes)
+        {
+            Layout = new ComponentLayout(Guid.NewGuid(), logicalBytes);
+            SchemaReference = new ContentSchemaReference(Guid.NewGuid(), 1, 0, ContentSchemaScope.Content);
+        }
+
+        public Type ComponentType => typeof(int);
+
+        public ComponentFactoryDescriptor Descriptor => throw new NotSupportedException();
+
+        public ComponentLayout Layout { get; }
+
+        public ContentSchemaReference SchemaReference { get; }
+
+        public ComponentInitialization CaptureColumnRow(object column, int row)
+        {
+            var value = ((int[])column)[row];
+            return ComponentInitialization.Value(in value);
+        }
+
+        public void ClearColumn(object column, int row)
+            => ((int[])column)[row] = 0;
+
+        public void CopyColumnRow(object sourceColumn, int sourceRow, object destinationColumn, int destinationRow)
+            => ((int[])destinationColumn)[destinationRow] = ((int[])sourceColumn)[sourceRow];
+
+        public object CreateColumn(int capacity) => new int[capacity];
+
+        public ComponentInitialization CreateInitializedValue(ComponentInitialization initialization)
+        {
+            ArgumentNullException.ThrowIfNull(initialization);
+            return initialization.IsDefault
+                ? ComponentInitialization.Value(0)
+                : initialization;
+        }
+
+        public long GetColumnArrayBytes(int capacity)
+            => checked(64L + ((checked((long)capacity * sizeof(int)) + 7L) & ~7L));
+
+        public void InitializeColumn(object column, int row, ComponentInitialization initialization)
+        {
+            if (initialization.IsDefault)
+            {
+                ((int[])column)[row] = 0;
+            }
+            else if (initialization.TryGetValue<int>(out var value))
+            {
+                ((int[])column)[row] = value;
+            }
+            else
+            {
+                throw new InvalidOperationException();
+            }
+        }
+
+        public bool IsEntityReferencePath(ComponentFieldPath path) => false;
+
+        public void MoveColumnRow(object column, int sourceRow, int destinationRow)
+        {
+            var values = (int[])column;
+            values[destinationRow] = values[sourceRow];
+        }
+
+        public ComponentInitialization SetEntityReference(
+            ComponentInitialization current,
+            ComponentFieldPath path,
+            Entity? target)
+            => throw new NotSupportedException();
+
+        public ImmutableArray<Diagnostic> ValidateColumnRow(object column, int row, CancellationToken cancellationToken)
+            => [];
+
+        public void ValidateEntityReferencesColumnRow(
+            object column,
+            int row,
+            World world,
+            Entity? excludedEntity,
+            string? parameterName)
+        {
+        }
+
+        public void ValidateEntityReferencesInitialization(
+            ComponentInitialization initialization,
+            World world,
+            Entity? excludedEntity,
+            string? parameterName)
+        {
+        }
+
+        public void ValidateEntityReferencesValue<TValue>(
+            in TValue value,
+            World world,
+            Entity? excludedEntity,
+            string? parameterName)
+            where TValue : unmanaged
+        {
+        }
+
+        public ImmutableArray<Diagnostic> ValidateInitialization(
+            ComponentInitialization initialization,
+            CancellationToken cancellationToken)
+            => [];
+
+        public ImmutableArray<Diagnostic> ValidateValue<TValue>(in TValue value, CancellationToken cancellationToken)
+            where TValue : unmanaged
+            => [];
     }
 }

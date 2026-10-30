@@ -22,6 +22,13 @@ internal sealed class StableIdentityLedger
     internal const int RecordSize = 24;
     internal const int RecordsPerPage = 4096;
     private const int LiveMask = 1 << 14;
+    private static readonly State s_emptyState = new(
+        [],
+        [],
+        [],
+        new IdentityGuidIndex([], [], 0, -1),
+        0,
+        0);
 
     private readonly int _maximumAssignments;
     private readonly int _maximumEntitySlots;
@@ -67,6 +74,17 @@ internal sealed class StableIdentityLedger
         ArgumentOutOfRangeException.ThrowIfNegative(maximumEntitySlots);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumEntitySlots, MaximumEntitySlots);
         ArgumentOutOfRangeException.ThrowIfNegative(maximumSceneInstances);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumSceneInstances, MaximumSceneInstances);
+        return new StableIdentityLedger(maximumAssignments, maximumEntitySlots, maximumSceneInstances);
+    }
+
+    internal static StableIdentityLedger CreateForWorld(int maximumAssignments, int maximumEntitySlots, int maximumSceneInstances)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumAssignments);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumAssignments, MaximumAssignments);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumEntitySlots);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumEntitySlots, MaximumEntitySlots);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSceneInstances);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumSceneInstances, MaximumSceneInstances);
         return new StableIdentityLedger(maximumAssignments, maximumEntitySlots, maximumSceneInstances);
     }
@@ -188,6 +206,25 @@ internal sealed class StableIdentityLedger
         }
 
         return new Guid(GetRecord(_state.LedgerPages, ordinal)[..16], bigEndian: true);
+    }
+
+    internal int GetBranchIndexForLiveLocator(IdentityKind kind, uint locator)
+    {
+        var ordinal = GetLiveOrdinal(kind, locator);
+
+        if (ordinal == 0)
+        {
+            throw new ArgumentException("The identity locator is not live.", nameof(locator));
+        }
+
+        return GetBranchIndexForOrdinal(ordinal);
+    }
+
+    internal int GetBranchIndexForOrdinal(uint ordinal)
+    {
+        ValidateOrdinal(ordinal, _state.AssignmentCount);
+        var metadata = BinaryPrimitives.ReadUInt32LittleEndian(GetRecord(_state.LedgerPages, ordinal)[20..]);
+        return (int)(metadata & ((1u << 10) - 1));
     }
 
     internal uint GetLiveOrdinal(IdentityKind kind, uint locator)
@@ -354,6 +391,9 @@ internal sealed class StableIdentityLedger
         return new PreparedChange(this, source, candidate, reservation);
     }
 
+    internal void ReleaseOwnedStorage()
+        => _state = s_emptyState;
+
     internal bool TryFind(Guid stableId, out uint ordinal)
     {
         if (stableId == Guid.Empty)
@@ -451,6 +491,9 @@ internal sealed class StableIdentityLedger
             _candidate = candidate;
             ReservedBytes = reservedBytes;
         }
+
+        internal long CandidateOwnedByteReservation
+            => _candidate?.OwnedByteReservation ?? throw new ObjectDisposedException(nameof(PreparedChange));
 
         internal long ReservedBytes { get; }
 

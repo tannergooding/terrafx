@@ -24,6 +24,33 @@ internal sealed class EntitySlotTableTests
     }
 
     [Test]
+    public void AllocationSequencePreviewMatchesFreeListOrderWithoutMutation()
+    {
+        var table = new EntitySlotTable(4);
+        Assert.That(table.PrepareCapacity(3, 2), Is.True);
+        Assert.That(table.TryAllocate(out var first, out var firstGeneration), Is.True);
+        Assert.That(table.TryAllocate(out _, out _), Is.True);
+        Assert.That(table.TryAllocate(out var third, out var thirdGeneration), Is.True);
+        table.Release(first, firstGeneration);
+        table.Release(third, thirdGeneration);
+
+        Assert.That(table.TryGetAllocationPreview(0, out var preview0, out var generation0), Is.True);
+        Assert.That(table.TryGetAllocationPreview(1, out var preview1, out var generation1), Is.True);
+        Assert.That(table.TryGetAllocationPreview(2, out var preview2, out var generation2), Is.True);
+        Assert.That(table.TryGetAllocationPreview(3, out _, out _), Is.False);
+
+        Assert.That(preview0, Is.EqualTo(third));
+        Assert.That(generation0, Is.EqualTo(thirdGeneration + 1));
+        Assert.That(preview1, Is.EqualTo(first));
+        Assert.That(generation1, Is.EqualTo(firstGeneration + 1));
+        Assert.That(preview2, Is.EqualTo(4u));
+        Assert.That(generation2, Is.EqualTo(1));
+        Assert.That(table.AllocatedSlotCount, Is.EqualTo(3));
+        Assert.That(table.FreeSlotCount, Is.EqualTo(2));
+        Assert.That(table.LiveEntityCount, Is.EqualTo(1));
+    }
+
+    [Test]
     public void CapacityPreparationBytesMatchRequiredBackingArrayGrowth()
     {
         var table = new EntitySlotTable(2);
@@ -142,6 +169,29 @@ internal sealed class EntitySlotTableTests
         Assert.That(table.IsLive(secondIndex, secondGeneration), Is.False);
         Assert.That(table.IsLive(firstIndex, firstGeneration), Is.False);
         Assert.That(table.IsLive(thirdIndex, thirdGeneration), Is.True);
+    }
+
+    [Test]
+    public void NextAllocationPreviewDoesNotMutateTheTable()
+    {
+        var table = new EntitySlotTable(2);
+
+        Assert.That(table.TryGetNextAllocation(out var firstIndex, out var firstGeneration), Is.True);
+        Assert.That(firstIndex, Is.EqualTo(1));
+        Assert.That(firstGeneration, Is.EqualTo(1));
+        Assert.That(table.AllocatedSlotCount, Is.Zero);
+        Assert.That(table.LiveEntityCount, Is.Zero);
+        Assert.That(table.PrepareCapacity(2, 1), Is.True);
+        Assert.That(table.TryAllocate(out var allocatedIndex, out var allocatedGeneration), Is.True);
+        Assert.That(allocatedIndex, Is.EqualTo(firstIndex));
+        Assert.That(allocatedGeneration, Is.EqualTo(firstGeneration));
+
+        table.Release(allocatedIndex, allocatedGeneration);
+        Assert.That(table.TryGetNextAllocation(out var reusedIndex, out var reusedGeneration), Is.True);
+        Assert.That(reusedIndex, Is.EqualTo(allocatedIndex));
+        Assert.That(reusedGeneration, Is.EqualTo(allocatedGeneration + 1));
+        Assert.That(table.FreeSlotCount, Is.EqualTo(1));
+        Assert.That(table.LiveEntityCount, Is.Zero);
     }
 
     [Test]
