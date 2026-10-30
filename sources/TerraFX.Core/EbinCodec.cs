@@ -24,9 +24,16 @@ internal static class EbinCodec
         return bytes[start..end];
     }
 
-    internal static EbinStatus Fail(Guid schema, uint tag, string category, out EbinDiagnostic diagnostic, ulong offset = 0, ulong limit = 0)
+    internal static EbinStatus Fail(
+        Guid schema,
+        uint tag,
+        string category,
+        out EbinDiagnostic diagnostic,
+        ulong offset = 0,
+        ulong limit = 0,
+        ulong claim = 0)
     {
-        diagnostic = new EbinDiagnostic(schema, tag, category, offset, limit);
+        diagnostic = new EbinDiagnostic(schema, tag, category, offset, limit, claim);
         return EbinStatus.InvalidRecord;
     }
 
@@ -211,7 +218,14 @@ internal static class EbinCodec
         return value;
     }
 
-    internal static EbinStatus ScanPayload(ushort kind, ulong count, ulong length, scoped ReadOnlySpan<byte> bytes, int depth, out EbinDiagnostic diagnostic)
+    internal static EbinStatus ScanPayload(
+        ushort kind,
+        ulong count,
+        ulong length,
+        scoped ReadOnlySpan<byte> bytes,
+        int depth,
+        ref EbinScanState state,
+        out EbinDiagnostic diagnostic)
     {
         diagnostic = default;
         var stride = Stride(kind);
@@ -242,9 +256,9 @@ internal static class EbinCodec
 
             if (kind == 12)
             {
-                if (length > 1_048_576)
+                if (!state.TryValidateUtf8Bytes(default, 0, length, out diagnostic))
                 {
-                    return Fail(default, 0, "utf8-byte-budget", out diagnostic, limit: 1_048_576);
+                    return EbinStatus.InvalidRecord;
                 }
 
                 var text = bytes;
@@ -286,7 +300,7 @@ internal static class EbinCodec
                 return Fail(default, 0, "nested-record-total", out diagnostic);
             }
 
-            var status = ScanRecord(bytes, depth + 1, out var total, out diagnostic);
+            var status = ScanRecord(bytes, depth + 1, ref state, out var total, out diagnostic);
 
             if (status != EbinStatus.Complete)
             {
@@ -326,9 +340,9 @@ internal static class EbinCodec
                     return Fail(default, 0, "array-product-overflow", out diagnostic);
                 }
 
-                if (count > MaximumArrayCount)
+                if (!state.TryAddArrayElements(default, 0, count, out diagnostic))
                 {
-                    return Fail(default, 0, "array-count-budget", out diagnostic, limit: MaximumArrayCount);
+                    return EbinStatus.InvalidRecord;
                 }
 
                 if (required != length)
@@ -347,14 +361,14 @@ internal static class EbinCodec
                     }
                 }
             }
-            else if (count > MaximumArrayCount)
+            else if (!state.TryAddArrayElements(default, 0, count, out diagnostic))
             {
-                return Fail(default, 0, "array-count-budget", out diagnostic, limit: MaximumArrayCount);
+                return EbinStatus.InvalidRecord;
             }
         }
         else if (kind == 24)
         {
-            return ScanRecordArray(count, length, bytes, depth, out diagnostic);
+            return ScanRecordArray(count, length, bytes, depth, ref state, out diagnostic);
         }
         else if (kind == 0)
         {
@@ -364,15 +378,26 @@ internal static class EbinCodec
         return (ulong)bytes.Length < length ? EbinStatus.NeedMoreData : EbinStatus.Complete;
     }
 
-    internal static EbinStatus ScanRecord(scoped ReadOnlySpan<byte> source, int depth, out int total, out EbinDiagnostic diagnostic)
+    internal static EbinStatus ScanPayload(ushort kind, ulong count, ulong length, scoped ReadOnlySpan<byte> bytes, int depth, out EbinDiagnostic diagnostic)
+    {
+        var state = new EbinScanState(EbinReadLimits.Foundation);
+        return ScanPayload(kind, count, length, bytes, depth, ref state, out diagnostic);
+    }
+
+    internal static EbinStatus ScanRecord(
+        scoped ReadOnlySpan<byte> source,
+        int depth,
+        ref EbinScanState state,
+        out int total,
+        out EbinDiagnostic diagnostic)
     {
         total = 0;
         diagnostic = default;
         var schema = source.Length >= 32 ? new Guid(source.Slice(16, 16), bigEndian: true) : default;
 
-        if (depth > MaximumDepth)
+        if (!state.TryCountRecord(schema, depth, out diagnostic))
         {
-            return Fail(schema, 0, "nesting-depth-budget", out diagnostic, limit: MaximumDepth);
+            return EbinStatus.InvalidRecord;
         }
 
         if (!source[..Math.Min(source.Length, 4)].SequenceEqual("EBIN"u8[..Math.Min(source.Length, 4)]))
@@ -393,17 +418,17 @@ internal static class EbinCodec
 
         var count = checked((uint)ReadUnsignedPrefix(source, 12, 4));
 
-        if (count > MaximumFields)
+        if (!state.TryCountFields(schema, count, out diagnostic))
         {
-            return Fail(schema, 0, "field-count-budget", out diagnostic, limit: MaximumFields);
+            return EbinStatus.InvalidRecord;
         }
 
         var payloadStart = 64UL + (count * 32UL);
         var extent = source.Length >= 40 ? BinaryPrimitives.ReadUInt64LittleEndian(source[32..]) : 0;
 
-        if (source.Length < 40 && ReadUnsignedPrefix(source, 32, 8) > MaximumRecordBytes)
+        if (source.Length < 40 && !state.TryValidateRecordBytes(schema, ReadUnsignedPrefix(source, 32, 8), out diagnostic))
         {
-            return Fail(schema, 0, "record-byte-budget", out diagnostic, limit: MaximumRecordBytes);
+            return EbinStatus.InvalidRecord;
         }
 
         if (source.Length > 32 && (source[32] & 15) != 0)
@@ -418,9 +443,9 @@ internal static class EbinCodec
                 return Fail(schema, 0, "range-arithmetic-overflow", out diagnostic);
             }
 
-            if (extent > MaximumRecordBytes)
+            if (!state.TryValidateRecordBytes(schema, extent, out diagnostic))
             {
-                return Fail(schema, 0, "record-byte-budget", out diagnostic, limit: MaximumRecordBytes);
+                return EbinStatus.InvalidRecord;
             }
 
             if (extent < payloadStart || (extent & 15) != 0)
@@ -566,7 +591,7 @@ internal static class EbinCodec
             var fieldBytes = offset <= (ulong)source.Length
                 ? source.Slice(checked((int)offset), checked((int)Math.Min(length, (ulong)source.Length - offset)))
                 : [];
-            var status = ScanPayload(kind, elementCount, length, fieldBytes, depth, out diagnostic);
+            var status = ScanPayload(kind, elementCount, length, fieldBytes, depth, ref state, out diagnostic);
 
             if (status is EbinStatus.InvalidRecord or EbinStatus.UnsupportedSchema)
             {
@@ -619,6 +644,12 @@ internal static class EbinCodec
 
         total = checked((int)extent);
         return EbinStatus.Complete;
+    }
+
+    internal static EbinStatus ScanRecord(scoped ReadOnlySpan<byte> source, int depth, out int total, out EbinDiagnostic diagnostic)
+    {
+        var state = new EbinScanState(EbinReadLimits.Foundation);
+        return ScanRecord(source, depth, ref state, out total, out diagnostic);
     }
 
     internal static EbinRecord Stage(scoped ReadOnlySpan<byte> bytes)
@@ -681,6 +712,9 @@ internal static class EbinCodec
         result = left * right;
         return true;
     }
+
+    internal static EbinStatus ValidatePayloadKinds(ushort kind, scoped ReadOnlySpan<byte> bytes, out EbinDiagnostic diagnostic)
+        => ValidatePayloadKindsCore(kind, bytes, out diagnostic);
 
     internal static EbinStatus ValidateRequiredKinds(EbinRecordView view, out EbinDiagnostic diagnostic)
     {
@@ -872,7 +906,13 @@ internal static class EbinCodec
         return EbinStatus.Complete;
     }
 
-    private static EbinStatus ScanRecordArray(ulong count, ulong length, scoped ReadOnlySpan<byte> bytes, int depth, out EbinDiagnostic diagnostic)
+    private static EbinStatus ScanRecordArray(
+        ulong count,
+        ulong length,
+        scoped ReadOnlySpan<byte> bytes,
+        int depth,
+        ref EbinScanState state,
+        out EbinDiagnostic diagnostic)
     {
         diagnostic = default;
 
@@ -882,9 +922,9 @@ internal static class EbinCodec
             return Fail(default, 0, "array-product-overflow", out diagnostic);
         }
 
-        if (count > MaximumArrayCount)
+        if (!state.TryAddArrayElements(default, 0, count, out diagnostic))
         {
-            return Fail(default, 0, "array-count-budget", out diagnostic, limit: MaximumArrayCount);
+            return EbinStatus.InvalidRecord;
         }
 
         if (length < first || (length & 15) != 0 || (count == 0 && length != 16))
@@ -939,7 +979,7 @@ internal static class EbinCodec
                 return Fail(default, 0, "recordarray-nested-total", out diagnostic);
             }
 
-            var status = ScanRecord(child, depth + 1, out var total, out diagnostic);
+            var status = ScanRecord(child, depth + 1, ref state, out var total, out diagnostic);
 
             if (status is EbinStatus.InvalidRecord or EbinStatus.UnsupportedSchema)
             {
@@ -965,7 +1005,7 @@ internal static class EbinCodec
         return (ulong)bytes.Length < length ? EbinStatus.NeedMoreData : EbinStatus.Complete;
     }
 
-    private static EbinStatus ValidatePayloadKinds(ushort kind, scoped ReadOnlySpan<byte> bytes, out EbinDiagnostic diagnostic)
+    private static EbinStatus ValidatePayloadKindsCore(ushort kind, scoped ReadOnlySpan<byte> bytes, out EbinDiagnostic diagnostic)
     {
         diagnostic = default;
 

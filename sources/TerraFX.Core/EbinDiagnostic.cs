@@ -4,4 +4,10 @@ using System;
 
 namespace TerraFX;
 
-internal readonly record struct EbinDiagnostic(Guid SchemaId, uint Tag, string? Category, ulong Offset = 0, ulong Limit = 0);
+internal readonly record struct EbinDiagnostic(
+    Guid SchemaId,
+    uint Tag,
+    string? Category,
+    ulong Offset = 0,
+    ulong Limit = 0,
+    ulong Claim = 0);
