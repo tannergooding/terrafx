@@ -116,6 +116,7 @@
     <Project Path="tests/TerraFX.Input.Tests/TerraFX.Input.Tests.csproj" />
     <Project Path="tests/TerraFX.Physics.Tests/TerraFX.Physics.Tests.csproj" />
     <Project Path="tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" />
+    <Project Path="tests/TerraFX.Runtime.GeneratedComponentConsumer/TerraFX.Runtime.GeneratedComponentConsumer.csproj" />
     <Project Path="tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">

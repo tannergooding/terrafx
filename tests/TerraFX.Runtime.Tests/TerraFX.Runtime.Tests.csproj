@@ -4,6 +4,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\sources\TerraFX.Runtime\TerraFX.Runtime.csproj" />
+    <ProjectReference Include="..\TerraFX.Runtime.ComponentConsumer\TerraFX.Runtime.ComponentConsumer.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\TerraFX.Runtime.GeneratedComponentConsumer\TerraFX.Runtime.GeneratedComponentConsumer.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
 </Project>

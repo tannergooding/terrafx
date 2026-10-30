@@ -3,6 +3,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <ProjectReference Include="..\..\sources\TerraFX.Runtime\TerraFX.Runtime.csproj" />
     <ProjectReference Include="..\..\sources\TerraFX.Generators\TerraFX.Generators.csproj" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />
   </ItemGroup>

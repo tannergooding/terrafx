@@ -9,6 +9,11 @@
     <RootNamespace>TerraFX.Core.SpatialConsumer</RootNamespace>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(TerraFXPublishAot)' == 'true'">
+    <DocumentationFile>$(BaseOutputPath)$(Configuration)/$(TargetFramework)/$(RuntimeIdentifier)/$(AssemblyName).xml</DocumentationFile>
+    <PublishAot>true</PublishAot>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Remove="Microsoft.NET.Test.Sdk;NUnit;NUnit3TestAdapter" />
     <ProjectReference Include="..\..\sources\TerraFX.Core\TerraFX.Core.csproj" />
