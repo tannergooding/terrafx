@@ -63,6 +63,19 @@ With a compatible SDK installed, `dotnet build` also restores dependencies autom
 
 Test filtering uses the runner's existing `FullyQualifiedName` support, as in the foundation-codec commands below. For implemented cases, confirm nonzero selected and executed counts and inspect current-run TRX results under `artifacts\tst`. A successful command with no selected tests is not validation.
 
+### Public structural EBIN and schema metadata
+
+Core exposes bounded schema-agnostic EBIN reader/writer and scalar/array payload helpers. These validate wire structure and preserve canonical byte layout; they do not activate or validate an owner schema. `CompiledContentSchemaRegistry` contains immutable schema/profile metadata only. Typed owner codecs and their roots are separately compiled with the selected application registrations.
+
+Run the focused structural, payload, and registry metadata regressions:
+
+```powershell
+dotnet test .\tests\TerraFX.Core.Tests\TerraFX.Core.Tests.csproj --configuration Debug --filter "FullyQualifiedName~EbinStructuralReaderTests|FullyQualifiedName~EbinStructuralWriterTests|FullyQualifiedName~EbinPayloadWriterTests|FullyQualifiedName~ContentSchemaRegistryTests"
+dotnet test .\tests\TerraFX.Core.Tests\TerraFX.Core.Tests.csproj --configuration Release --filter "FullyQualifiedName~EbinStructuralReaderTests|FullyQualifiedName~EbinStructuralWriterTests|FullyQualifiedName~EbinPayloadWriterTests|FullyQualifiedName~ContentSchemaRegistryTests"
+```
+
+These tests establish only the behaviors they exercise; schema-owner semantics, World registration, package loading, persistence, and M03 acceptance remain distinct.
+
 ### Core-private foundation codecs
 
 The EBIN1 structural layer and M02 foundation admission layer live in `sources\TerraFX.Core`.
@@ -91,6 +104,15 @@ Focused cases exercise distinct codec, validation, binding and ownership behavio
 M02 fixture manifest, materializer, prefix corpus or fixture-package pin to maintain. The test project
 also builds the separate unsafe-disabled public spatial consumer.
 
+The spatial consumer can be run separately as JIT or published for a Windows x64 NativeAOT execution:
+
+```powershell
+dotnet run --project .\tests\TerraFX.Core.SpatialConsumer\TerraFX.Core.SpatialConsumer.csproj --configuration Release
+dotnet publish .\tests\TerraFX.Core.SpatialConsumer\TerraFX.Core.SpatialConsumer.csproj --configuration Release --runtime win-x64 --self-contained true -p:TerraFXPublishAot=true
+```
+
+This consumer covers its selected spatial API surface only; it does not complete the M02 NativeAOT numerical profiles or Linux target qualification.
+
 ### Focused production behavior tests
 
 The Core suite contains focused literal cases for bounded rounding, spatial conversion/normalization,
@@ -103,3 +125,23 @@ dotnet test .\tests\TerraFX.Physics.Tests\TerraFX.Physics.Tests.csproj --configu
 ```
 
 Repeat the applicable selections in Release after Debug succeeds. Confirm nonzero selected and executed counts in current-run TRX results under `artifacts\tst\<Configuration>`.
+
+### Runtime public-provider consumers
+
+The Runtime test project builds two independent unsafe-disabled executable witnesses: the original handwritten component consumer and the generated-component consumer. The generated consumer references `TerraFX.Generators` as an analyzer and exercises the same public schema registration, World mutation, default, and scoped-query path without changing the handwritten source.
+
+Run each executable separately after building:
+
+```powershell
+dotnet run --project .\tests\TerraFX.Runtime.ComponentConsumer\TerraFX.Runtime.ComponentConsumer.csproj --configuration Debug
+dotnet run --project .\tests\TerraFX.Runtime.GeneratedComponentConsumer\TerraFX.Runtime.GeneratedComponentConsumer.csproj --configuration Debug
+```
+
+For Windows NativeAOT qualification, each executable project enables `PublishAot` locally when `TerraFXPublishAot=true`; the generated project's analyzer reference removes that switch. Publish and execute the artifacts separately:
+
+```powershell
+dotnet publish .\tests\TerraFX.Runtime.ComponentConsumer\TerraFX.Runtime.ComponentConsumer.csproj --configuration Release --runtime win-x64 --self-contained true -p:TerraFXPublishAot=true
+dotnet publish .\tests\TerraFX.Runtime.GeneratedComponentConsumer\TerraFX.Runtime.GeneratedComponentConsumer.csproj --configuration Release --runtime win-x64 --self-contained true -p:TerraFXPublishAot=true
+```
+
+NativeAOT does not support cross-OS compilation; publish Linux artifacts on the required Linux host, then execute them there. JIT or Windows NativeAOT execution does not qualify the Linux target or M02 profiles.

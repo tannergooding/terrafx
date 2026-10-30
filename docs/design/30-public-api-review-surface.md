@@ -820,17 +820,197 @@ All members use [05](05-owned-buffers-and-internal-collections.md)'s checked adm
 | Owner / public surface | Exact amendment contract |
 |---|---|
 | Core: `ContentSchemaReference(Guid schemaId, int major, int minor, ContentSchemaScope scope)` | Readonly immutable value exposing Guid SchemaId, int Major, int Minor and ContentSchemaScope Scope; constructor requires nonempty ID, positive major/nonnegative minor, scope Content0/Foundation1. Default is intrinsically invalid; equality compares the full tuple. Metadata descriptors (`DataSchema`, `ContentFieldDescriptor`, tag/assignment/default/profile descriptions) expose exactly the [M03 3](10-binary-data-and-authoring-formats.md#m03-3-complete-descriptor-notation-and-expansion) fields/enums/ordered immutable collections, not CLR member discovery. |
-| Core: compiled schema registrations | `CompiledContentSchemaRegistry` is an immutable application-owned set of compiled schema descriptors and rooted codecs. It is emitted from source declarations and cannot be created from package bytes, imported catalogues, schema digests, approval receipts, or runtime discovery. Schema references resolve only by their exact ID/major/minor/scope tuple. |
+| Core: `CoreContentSchemaCatalogue.PrimitiveSchemas` | Immutable compiled declarations for the four functional content wire records and all 21 `content/literal/<suffix>` schemas in Chapter 10 M03 3.2. This is the initial Core C0 slice, not the complete C0 catalogue. |
+| Core: `CoreContentSchemaCatalogue.FoundationSchemas` | Immutable DataSchema projections of the eight frozen Foundation descriptors, using Foundation scope and the unchanged schema identities/versions/field shapes. These metadata rows do not alter Foundation wire bytes or replace its existing codec. |
+| Core: compiled schema registrations | `CompiledContentSchemaRegistry` is an immutable application-owned set of schema and profile metadata only. It is emitted from source declarations and cannot be created from package bytes, imported catalogues, schema digests, approval receipts, or runtime discovery. Codec implementations are separately rooted by selected typed owner registrations; Core metadata does not execute or register them. Schema references resolve only by their exact ID/major/minor/scope tuple. |
+| Assets: `NativeAssetSchemaCatalogue.Schemas` | Immutable declarations for `native/envelope` 2.0, `native/asset-reference`, `native/metadata`, and `native/metadata-entry`. This is the envelope/metadata slice only; it does not register native payload codecs. |
+| Runtime: `SceneSchemaCatalogue.Schemas` | Immutable declarations for the selected native scene/prefab graph and the four persistent built-in scene components. This does not imply scene expansion, native payload execution, or complete C0/application composition. |
+| Graphics: `RenderingSchemaCatalogue.Schemas` | Immutable declarations for 26 mesh/material/texture/atlas and persistent rendering-component schemas. This does not imply native decoding, GPU resource creation, or render execution. |
+| Runtime: `AnimationSchemaCatalogue.Schemas` | Immutable declarations for 11 skeleton, clip, track, key, root-motion, and event schemas, including the selected EventPayload marker. This does not imply animation evaluation or event production. |
+| Physics: `PhysicsSchemaCatalogue.Schemas` | Immutable declarations for the ten primitive, support, statistics, and spatial-settings schemas. This does not imply primitive payload decoding, geometry admission, or physics execution. |
+| Runtime: `StandaloneContinuationSchemaCatalogue.Schemas` | Immutable declarations for 60 selected checkpoint, continuation, control, identity, ECS-layout, and scene-state schemas from Chapter 10 M03 and Chapter 27. Cross-owner C0 closure, application-owned state roles, and persistence/continuation execution remain separate requirements. |
 | Core/owner generated semantic values | Each selected row is an immutable typed model exposing exactly that table's fields/optional presence/ordered immutable collections; constructor signatures take those operands, never CLR discovery or serialized padding. Foundation-valued fields use the [M03 2](10-binary-data-and-authoring-formats.md#m03-2-preserved-foundation-and-reader-boundary) owned canonical-record/parsed-value wrapper so inert optional bytes survive. Explicit descriptor/attribute generation emits public symbolic author values/codecs and distinct World-bound component bindings. An Entity-valued author field uses stable Guid/selector input, not a fabricated live Entity. Each selected codec root is present in the application's closed compiled registration graph. |
 | Core: `BinarySchemaDiagnostic` | Immutable SchemaId, uint Tag, physical path of uint tags plus optional int array indices, category and optional exact claim/limit. Preserve the schema-version contract and actual field/ancestor path; structural scanner failures retain their structural diagnostic. No validator ID, version, per-field rule-use index or executable rule assignment is serialized. Adds no diagnostic identity to the record bytes. Native/contextual and state codecs can return owned diagnostics without mutable last-error state or an Assets dependency in Entities. |
 
 ### M03 compiled schema registrations
 
-`CompiledContentSchemaRegistry` is an immutable application-owned set of compiled schema descriptors and rooted codecs. The application build emits this set from source declarations; runtime accepts no schema manifest, imports, historical schema table, migration recipe, approval registry, or executable catalogue data from an asset package. Descriptor metadata is a build input, not a package record or content identity digest.
+`CompiledContentSchemaRegistry` is an immutable application-owned set of compiled schema and profile descriptors. The application build emits this metadata from source declarations; runtime accepts no schema manifest, imports, historical schema table, migration recipe, approval registry, or executable catalogue data from an asset package. Descriptor metadata is a build input, not a package record or content identity digest. The registry does not contain callbacks or execute owner codecs. Core metadata resolution and the separately frozen, selected owner-codec roots have distinct admission responsibilities.
 
-The registry resolves a schema only by its exact `ContentSchemaReference` tuple. A later schema version is a separate compiled registration and owns its fixed required fields and behavior. Unknown versions reject; there is no latest/minor fallback. Adding an application schema requires its compiled descriptor and codec in the application and a rebuild. No validator/rule identity or migration selector is serialized.
+The registry resolves a schema only by its exact `ContentSchemaReference` tuple. A later schema version is a separate compiled descriptor and owner-codec registration and owns its fixed required fields and behavior. Unknown versions reject; there is no latest/minor fallback. Adding an application schema requires its compiled descriptor and codec in the application and a rebuild. No validator/rule identity or migration selector is serialized.
 
 There is no public dynamic catalogue-admission, historical lookup, schema-approval, or generic migration API. Content schema diagnostics remain fixed-schema diagnostics with the physical schema/tag/path and failure category. EBIN structural validation and schema-specific validation remain distinct.
+
+The public metadata construction surface is:
+
+```csharp
+public readonly struct ContentSchemaIdentityAssignment
+{
+    public ContentSchemaIdentityAssignment(string name);
+    public static Guid NamespaceId { get; }
+    public static string Recipe { get; }
+    public string Name { get; }
+    public Guid SchemaId { get; }
+}
+
+public enum ContentSchemaRole
+{
+    None = 0, Descriptor = 1, NativeAsset = 2, Component = 3, EntityTag = 4,
+    SystemState = 5, AttachmentState = 6, Checkpoint = 7, EventPayload = 8,
+    ControlPayload = 9, Cook = 10, Auxiliary = 11, ResourceState = 12, TypedSettings = 13
+}
+
+public enum ContentSchemaOwner
+{
+    Core = 0, Assets = 1, Entities = 2, Scenes = 3, Rendering = 4, Animation = 5,
+    Physics = 6, ContentTools = 7, Hosting = 8, Application = 9
+}
+
+public enum ContentSchemaStorage
+{
+    NotComponent = 0, Persistent = 1, Transient = 2
+}
+
+public enum ContentTransientRestore
+{
+    NotApplicable = 0, ResetDeclaredDefaults = 1, ExactDerivedRehydration = 2
+}
+
+public enum ContentUnit
+{
+    None = 0, EngineDistance = 1, Meters = 2, Seconds = 3, Radians = 4, LinearColor = 5,
+    SquareMeters = 6, CubicMeters = 7, TimeSpanTicks = 8, EngineArea = 9,
+    EngineVolume = 10, Lux = 11, Lumens = 12
+}
+
+public enum ContentReferenceKind
+{
+    None = 0, Schema = 1, Asset = 2, Entity = 3, Joint = 4, World = 5,
+    SceneInstance = 6, Recipe = 7, System = 8, Profile = 9, Event = 10, Stream = 11,
+    Module = 12, Material = 13, Factory = 14, ExternalSceneBinding = 15,
+    EntityOrJoint = 16, HistoricalEntity = 17, HistoricalSceneInstance = 18,
+    ResourceOrSchema = 19
+}
+
+[Flags]
+public enum ContentAuthoring
+{
+    None = 0, PrefabEditable = 1, Animatable = 2
+}
+
+public enum ContentFieldDefaultKind
+{
+    None = 0, Literal = 1, Meters = 2, MaterialProperty = 3
+}
+
+public enum ContentMaterialDefaultProperty
+{
+    AlphaMode = 0, DepthTest = 1, DepthWrite = 2, CullMode = 3,
+    OutputAlpha = 4, Capabilities = 5
+}
+
+public enum BinarySchemaPathSegmentKind
+{
+    None = 0, FieldTag = 1, ArrayIndex = 2
+}
+
+public readonly struct BinarySchemaPathSegment
+{
+    public static BinarySchemaPathSegment ArrayIndex(int index);
+    public static BinarySchemaPathSegment FieldTag(uint tag);
+    public BinarySchemaPathSegmentKind Kind { get; }
+    public uint Value { get; }
+}
+
+public sealed class BinarySchemaDiagnostic
+{
+    public BinarySchemaDiagnostic(
+        Guid schemaId, uint tag, ImmutableArray<BinarySchemaPathSegment> path,
+        string category, ulong? claim, ulong? limit);
+    public string Category { get; }
+    public ulong? Claim { get; }
+    public ulong? Limit { get; }
+    public ImmutableArray<BinarySchemaPathSegment> Path { get; }
+    public Guid SchemaId { get; }
+    public uint Tag { get; }
+}
+
+public sealed class DataSchema
+{
+    public DataSchema(
+        ContentSchemaReference schema,
+        ContentSchemaIdentityAssignment identityAssignment,
+        ContentSchemaRole role,
+        ContentSchemaOwner owner,
+        ContentSchemaStorage storage,
+        ContentTransientRestore transientRestore,
+        ImmutableArray<ContentFieldDescriptor> fields);
+    public ImmutableArray<ContentFieldDescriptor> Fields { get; }
+    public ContentSchemaIdentityAssignment IdentityAssignment { get; }
+    public ContentSchemaOwner Owner { get; }
+    public ContentSchemaRole Role { get; }
+    public ContentSchemaReference Schema { get; }
+    public ContentSchemaStorage Storage { get; }
+    public ContentTransientRestore TransientRestore { get; }
+}
+
+public sealed class ContentFieldDescriptor
+{
+    public ContentFieldDescriptor(
+        uint tag, ushort wireKind, ushort elementKind, bool isRequired, ulong minimumCount, ulong maximumCount,
+        ImmutableArray<ContentSchemaReference> nestedSchemas, ulong nestedRoleMask,
+        ContentUnit unit, ContentReferenceKind reference, ContentAuthoring authoringFlags,
+        ContentFieldDefaultDescriptor? defaultValue);
+    public ContentAuthoring AuthoringFlags { get; }
+    public ContentFieldDefaultDescriptor? DefaultValue { get; }
+    public ushort ElementKind { get; }
+    public bool IsRequired { get; }
+    public ulong MaximumCount { get; }
+    public ulong MinimumCount { get; }
+    public ImmutableArray<ContentSchemaReference> NestedSchemas { get; }
+    public ulong NestedRoleMask { get; }
+    public ContentReferenceKind Reference { get; }
+    public uint Tag { get; }
+    public ContentUnit Unit { get; }
+    public ushort WireKind { get; }
+}
+
+public sealed class ContentFieldDefaultDescriptor
+{
+    public static ContentFieldDefaultDescriptor Literal(ushort wireKind, ulong count, ReadOnlySpan<byte> payload);
+    public static ContentFieldDefaultDescriptor Meters(ImmutableArray<long> numerators, ulong denominator);
+    public static ContentFieldDefaultDescriptor ForMaterialProperty(ContentMaterialDefaultProperty property);
+    public ulong Count { get; }
+    public ContentFieldDefaultKind Kind { get; }
+    public ImmutableArray<byte> LiteralPayload { get; }
+    public ContentMaterialDefaultProperty MaterialProperty { get; }
+    public ulong MeterDenominator { get; }
+    public ImmutableArray<long> MeterNumerators { get; }
+    public ushort WireKind { get; }
+}
+
+public sealed class ContentProfileDescriptor
+{
+    public ContentProfileDescriptor(Guid profileId, ImmutableArray<ContentSchemaReference> schemas);
+    public Guid ProfileId { get; }
+    public ImmutableArray<ContentSchemaReference> Schemas { get; }
+}
+
+public sealed class CompiledContentSchemaRegistry
+{
+    public CompiledContentSchemaRegistry(ImmutableArray<DataSchema> schemas);
+    public CompiledContentSchemaRegistry(ImmutableArray<DataSchema> schemas, ImmutableArray<ContentProfileDescriptor> profiles);
+    public ImmutableArray<DataSchema> Schemas { get; }
+    public ImmutableArray<ContentProfileDescriptor> Profiles { get; }
+    public bool TryGetSchema(ContentSchemaReference schema, out DataSchema? dataSchema);
+    public bool TryGetProfile(Guid profileId, out ContentProfileDescriptor? profile);
+}
+```
+
+`ContentFieldDefaultKind` is None=0, Literal=1, Meters=2, MaterialProperty=3. `ContentMaterialDefaultProperty` is AlphaMode=0, DepthTest=1, DepthWrite=2, CullMode=3, OutputAlpha=4, Capabilities=5. `ContentAuthoring` is a flags enum with None=0, PrefabEditable=1, Animatable=2.
+
+Schema descriptor enums preserve Chapter 10's exact ordinals: `ContentSchemaRole` is None=0, Descriptor=1, NativeAsset=2, Component=3, EntityTag=4, SystemState=5, AttachmentState=6, Checkpoint=7, EventPayload=8, ControlPayload=9, Cook=10, Auxiliary=11, ResourceState=12, TypedSettings=13; `ContentSchemaOwner` is Core=0, Assets=1, Entities=2, Scenes=3, Rendering=4, Animation=5, Physics=6, ContentTools=7, Hosting=8, Application=9; `ContentSchemaStorage` is NotComponent=0, Persistent=1, Transient=2; `ContentTransientRestore` is NotApplicable=0, ResetDeclaredDefaults=1, ExactDerivedRehydration=2. `ContentUnit`, `ContentReferenceKind`, and `ContentAuthoring` use Chapter 10's Unit, Reference, and Authoring-flags tables, respectively. Default forms are Literal=1, Meters=2, MaterialProperty=3; material default properties are AlphaMode=0, DepthTest=1, DepthWrite=2, CullMode=3, OutputAlpha=4, Capabilities=5. `None` values are invalid schema-role/default forms where the owning descriptor requires a selection.
+
+The identity assignment uses the single fixed namespace and `TerraFXNameUuidSha256V1` recipe. Data-schema field lists are strictly tag-ordered; nested schema sets and profile schema sets are copied, sorted by RFC GUID tuple, and unique. Every exact nested reference must resolve to a registered schema tuple; a role-mask selection must admit at least one registered Content-scope schema. Profile composition and schema lookup compare the complete tuple; neither registry nor profile resolves a newest/minor-compatible version. A `DataSchema` with Component role alone may select Persistent or Transient storage; all non-component roles use NotComponent storage. A Transient component selects exactly one transient restore policy; other schemas use NotApplicable. Owner-specific numeric bounds, enums, masks, ordering, cross-field predicates, and executable codec behavior remain in the exact compiled schema-version owner implementation, not generic descriptor metadata.
 ### EBIN structural reader
 
 The public Core reader exposes schema-agnostic bounded EBIN structure without making M02's private `FoundationCodec`, `EbinRecord`, or persistence bindings public. `TerraFX.Assets` and `TerraFX.Entities` use this shared implementation rather than duplicating parsers or obtaining blanket friend access.
@@ -1672,8 +1852,16 @@ public sealed class ComponentSchema<T> where T : unmanaged
     public ComponentFieldDescriptor GetField(ComponentFieldPath path);
 }
 
+public enum ComponentStorageFlags
+{
+    None = 0,
+    Persistent = 1,
+    Transient = 2
+}
+
 public enum ComponentPropertySegmentKind
 {
+    None = 0,
     FieldTag = 1,
     FixedArrayIndex = 2
 }
@@ -1703,6 +1891,7 @@ public sealed class ComponentFieldDescriptor
 
 public enum ComponentStorageSegmentKind
 {
+    None = 0,
     Member = 1,
     InlineIndex = 2
 }
@@ -1725,6 +1914,7 @@ public sealed class ComponentStoragePath
 
 public enum ComponentStorageKind
 {
+    None = 0,
     Value = 1,
     OptionalValue = 2,
     EntityHandle = 3,
@@ -1736,6 +1926,7 @@ public enum ComponentStorageKind
 
 public enum ComponentStoragePurpose
 {
+    None = 0,
     SchemaValue = 1,
     DeclaredRuntimeOnly = 2
 }
@@ -2525,6 +2716,23 @@ public readonly struct Entity : IEquatable<Entity>
     public static bool operator !=(Entity left, Entity right);
 }
 
+public abstract class ComponentInitialization
+{
+    public static ComponentInitialization Defaults<T>() where T : unmanaged;
+    public static ComponentInitialization Value<T>(in T value) where T : unmanaged;
+}
+
+public sealed class EntityDescription
+{
+    public EntityDescription(
+        Guid? persistentId = null,
+        ImmutableArray<ComponentInitialization> components = default,
+        ImmutableArray<Guid> tags = default);
+    public ImmutableArray<ComponentInitialization> Components { get; }
+    public ImmutableArray<Guid> Tags { get; }
+    public Guid? PersistentId { get; }
+}
+
 public ref struct EntityChunkView
 {
     internal EntityChunkView(ReadOnlySpan<Entity> entities);
@@ -2788,6 +2996,19 @@ public sealed class WorldSystemContext
             allows ref struct;
 }
 
+public readonly struct SimulationStepContext
+{
+    internal SimulationStepContext(long tickIndex, int tickRate);
+    public static bool operator ==(SimulationStepContext left, SimulationStepContext right);
+    public static bool operator !=(SimulationStepContext left, SimulationStepContext right);
+    public bool Equals(SimulationStepContext other);
+    public override bool Equals(object? obj);
+    public float FixedDeltaTimeSeconds { get; }
+    public override int GetHashCode();
+    public long TickIndex { get; }
+    public int TickRate { get; }
+}
+
 public readonly ref struct WorldResourcePartitionView<T>
     where T : unmanaged
 {
@@ -2903,6 +3124,7 @@ CLR accessibility and assembly friendship alone grant no authority.
 | Exact semantic actor signature | Allowed caller / effect |
 |---|---|
 | `static World Create(WorldOptions options)` | Public standalone entry; validates and seals its admission inputs. In M03-A it is the only caller permitted to construct `World(WorldConstructionPlan)`; it has no direct owner-allocator permission. |
+| `void Dispose()` | Owner-thread, idle-only retirement of the standalone World; it closes diagnostics and releases World-owned storage and its fresh identity/domain interests exactly once. |
 | `World(WorldConstructionPlan constructionPlan)` | Revalidates the exact admitted plan and issues once after final domain/identity validation. This is the only Runtime caller of `TerraFX.OwnerIdAllocator.Allocate(): uint` across full M03. Hosted and restore factories become additional exact construction callers only under their owning milestones. |
 | `Entity IssueEntity(uint index, uint generation)` | Exact entity-issuance helper. In M03-A, only `World.CommitStructuralTransactions()` may call it; producers and generated helpers may not. The future replacement-restore route receives a separately reviewed exact binding under its owning milestone. |
 | `Entity(uint ownerId, uint index, uint generation)` | Internal constructor; only `World.IssueEntity(uint,uint)` may call it. Replacement reconstruction issues on the candidate World through its separately enrolled restore route, not by direct construction. |
@@ -2973,6 +3195,8 @@ GUID-based reattachment route is allowed.
 `WorldSchedulingLimits.Default` has byte limits of 16 MiB registration, 8 MiB graph, 64 MiB work plans, 32 MiB command staging, 2 GiB shared owned state and 8 MiB diagnostics; resource/system state is additionally bounded by min(128 MiB, configured shared owned state), plus 16,777,216 conflict comparisons. Each byte limit can be lowered exactly to 4096 bytes; the comparison limit can be lowered to zero. The scheduler charges actual owned memory and in-flight reservations, not only logical payload. `SystemPartitionRange` is a nonempty checked half-open range; its default is invalid. `SystemResourceAccess.IsValid` and `SystemPartitionRange.IsValid` validate only intrinsic representation, not registration correspondence, ownership, execution phase or contextual domain bounds. Access equality preserves absent versus present range; `Tag` access is read-only.
 
 `Entity`, `EntityDescription`, `EntityToken`, `CommandReceipt`, `SimulationStepContext`, `ComponentSchema<T>` field descriptors, `SystemResourceAccess`, `EntityQueryDescription`, `WorldStepReceipt`, `CommittedWorldEvent`, `CommittedWorldPublication`, `PublicationDeliveryReport`, and `WorldSubscription` use [12](12-entities-components-and-queries.md) and [13](13-jobs-and-frame-pipeline.md)'s contracts. `Entity` carries `OwnerId`, `Index`, and `Generation`; its default is invalid. Component registration is `T : unmanaged`, with no marker interface. `TryGet<T>` returns false only when the live entity lacks that registered component; stale or foreign entities throw.
+
+`EntityDescription` maps default component/tag arrays to initialized-empty immutable arrays and copies supplied arrays. A present `PersistentId` must be nonempty but may be UUIDv8; the selected World assignment operation enforces the reserved identity domain. A description has at most one initialization per CLR component type and no duplicate/empty tag schema IDs. `ComponentInitialization.Value<T>` copies its unmanaged value into a closed generic holder without boxing; `Defaults<T>` requests the exact registered component's default provider. The description itself does not resolve schema identity, invoke providers, assign an Entity, or mutate World state.
 
 The declaration block above is the complete selected M03-A public member set
 for these receipt, publication, subscriber-result, subscription and token
@@ -3049,7 +3273,7 @@ and grants no registration authority.
 
 `ForEachResourcePartition<T,TAction>` traverses ascending resource partition indices synchronously on the executing thread with the same uncopied scoped callable-state contract. It validates the exact registered resource and actual `[0, PartitionCount)` domain against the active invocation's declared access/range before callbacks. `WorldResourcePartitionView<T>.Read()` returns a copy; `Write(in T)` is available only under Write access. Its `PartitionIndex` is lifetime-checked, and no mutable backing/reference/span escapes; every view is revoked in `finally`, including exceptional exits.
 
-`World.Create(options)` called by a standalone owner creates a World on that calling thread and owns its worker pool; a host-created World is owned and stepped only by the Host scheduler. `World.Step()` is owner-thread-only for a standalone World and issues exactly one fixed tick; its immutable context is engine-issued, not caller-constructed. It may explicitly single-step a paused standalone World and does not consume paused gameplay input. Calling `Step` directly on a host-managed World is refused. `PumpControlBoundary()` drains accepted owner-control operations while a standalone World is idle without advancing time; Host invokes the same boundary between catch-up ticks and while no tick is admitted. `SetTimeScale` is owner-only and invalidates the committed marker before changing canonical control state; the Hosting async counterpart queues and completes with an applied/rejected receipt. `World.Step` succeeds only with a committed `WorldStepReceipt` for one admitted fixed tick. A precommit tick fault suppresses that tick's publication, faults the world, updates `LastFault`, and throws `WorldStepException` with the failed tick, diagnostic, and original exception. The committed receipt and current report distinguish canonical publication from each subscriber's `Delivered`/`Failed` result. `TrySubscribe` is owner-thread-only and valid only for a live nonfaulted World outside system/provider and precommit invocation; it is also valid during postcommit subscriber delivery, where changes affect later captured batches only. It returns false only at the chapter [13](13-jobs-and-frame-pipeline.md) per-world bound of 64 subscriptions; false leaves the subscription null, consumes no ID and changes no registration or canonical World state. That otherwise-valid refusal emits the bounded `WorldSubscriptionCapacityExceeded` warning through this World’s diagnostic service. `World.Diagnostics` is the associated Core-owned service while the World is live or faulted and throws `ObjectDisposedException` after disposal; standalone World disposal closes its service, whereas hosted World disposal does not close the shared host service. A subscriber fault cannot undo the stage-9 marker or block later subscribers.
+`World.Create(options)` called by a standalone owner creates a World on that calling thread and owns its worker pool; a host-created World is owned and stepped only by the Host scheduler. `World.Step()` is owner-thread-only for a standalone World and issues exactly one fixed tick; its immutable context is engine-issued, not caller-constructed. It may explicitly single-step a paused standalone World and does not consume paused gameplay input. Calling `Step` directly on a host-managed World is refused. `PumpControlBoundary()` drains accepted owner-control operations while a standalone World is idle without advancing time; Host invokes the same boundary between catch-up ticks and while no tick is admitted. `SetTimeScale` is owner-only and invalidates the committed marker before changing canonical control state; the Hosting async counterpart queues and completes with an applied/rejected receipt. `World.Step` succeeds only with a committed `WorldStepReceipt` for one admitted fixed tick. A precommit tick fault suppresses that tick's publication, faults the world, updates `LastFault`, and throws `WorldStepException` with the failed tick, diagnostic, and original exception. The committed receipt and current report distinguish canonical publication from each subscriber's `Delivered`/`Failed` result. `TrySubscribe` is owner-thread-only and valid only for a live nonfaulted World outside system/provider and precommit invocation; it is also valid during postcommit subscriber delivery, where changes affect later captured batches only. It returns false only at the chapter [13](13-jobs-and-frame-pipeline.md) per-world bound of 64 subscriptions; false leaves the subscription null, consumes no ID and changes no registration or canonical World state. That otherwise-valid refusal emits the bounded `WorldSubscriptionCapacityExceeded` warning through this World’s diagnostic service. `World.Diagnostics` is the associated Core-owned service while the World is live or faulted and throws `ObjectDisposedException` after disposal; standalone World disposal retires its fresh lineage root, closes its diagnostic service, and releases its domain interest, whereas hosted World disposal does not close the shared host service. A subscriber fault cannot undo the stage-9 marker or block later subscribers.
 
 `World.CreateEntity` and `DestroyEntity` are idle owner-boundary operations. During a tick, use the `CommandWriter` from `WorldSystemContext`; structural effects appear only after whole-batch preflight/commit and resolve temporary `EntityToken` values through the resulting `CommandReceipt`. Immediate destruction, both deferred target forms and scene unload always name `HierarchyDestroyMode`; the detach policy is not a mode-less call default, and mode is never inferred from a constructor, target kind or nullable parent. Unknown modes reject before append/reservation/sequence allocation; the writer validates invocation and authority before mode, then target. Successful deferred receipts expose copied destruction identities in receipt-local structural order.
 
@@ -3057,7 +3281,7 @@ The four `CommandWriter.SetEntityReference<T>` overloads accept live/temporary E
 
 `EntityDescription` permits a nonempty UUIDv8 `PersistentId` candidate; its public construction does not issue or reserve a World identity. `World.CreateEntity` rejects such a candidate with `ArgumentException(nameof(description))` before mutation or assignment. `CommandWriter.Create` rejects it with the same declared parameter exception and records the actual exception as the live invocation's first sticky fault before throwing; no key, sequence, token, payload preparation or staging reservation is consumed. These are assignment-domain checks, not authored-ID validation. General structural preflight preserves its actual exception cause; only `ExplicitIdentityCollision` has no required `ParamName`, while other reasons retain their declared exception contracts.
 
-`ComponentLayout` rejects an empty LayoutId or logical size outside `[1, 32756]`; `ComponentSchema<T>` additionally requires its selected size to equal `Unsafe.SizeOf<T>()`, initialized required arrays and valid intrinsic flags/tuple. `FromRegistry` resolves only the exact active component tuple and derives selected fields/defaults/rules/storage/restore/flags from Core metadata. `GetField` follows an exact selected `ComponentFieldPath`; unresolved or ambiguous paths throw rather than returning null or a best match. Property paths are initialized, nonempty and at most 64 segments, begin with a positive FieldTag, and traverse only declared records or fixed arrays; they cannot name a RecordArray ordinal or CLR member. Storage member paths are ordinal source spellings, bounded in length/UTF-8 bytes; inline indices are nonnegative. A storage declaration has initialized unique paths and byte-offset-ordered leaves/padding that cover exactly `[0, LogicalBytes)` with no overlap or gap. Inline count/stride multiplication is checked; non-inline leaves cannot carry inline metadata. Runtime construction checks these declarations, but cannot discover undeclared fields or prove true CLR offsets.
+`ComponentStorageFlags` is a flags enum with None=0 as an invalid sentinel, Persistent=1 and Transient=2; exactly one storage class must be selected and it must match Core metadata. `ComponentLayout` rejects an empty LayoutId or logical size outside `[1, 32756]`; `ComponentSchema<T>` additionally requires its selected size to equal `Unsafe.SizeOf<T>()`, initialized required arrays and valid intrinsic flags/tuple. `FromRegistry` resolves only the exact active component tuple and derives selected fields/defaults/rules/storage/restore/flags from Core metadata. `GetField` follows an exact selected `ComponentFieldPath`; unresolved or ambiguous paths throw rather than returning null or a best match. Property paths are initialized, nonempty and at most 64 segments, begin with a positive FieldTag, and traverse only declared records or fixed arrays; they cannot name a RecordArray ordinal or CLR member. `ComponentPropertySegmentKind.None` and default segments are invalid sentinels. Storage paths are initialized, nonempty and at most 64 segments; member names preserve exact ordinal spelling, require valid UTF-16, and are bounded to 128 characters and 128 UTF-8 bytes. Inline indices are nonnegative. A storage declaration has initialized unique paths and byte-offset-ordered leaves/padding that cover exactly `[0, LogicalBytes)` with no overlap or gap. Inline count/stride multiplication is checked; non-inline leaves cannot carry inline metadata. Runtime construction checks these declarations, but cannot discover undeclared fields or prove true CLR offsets.
 
 `ComponentFieldBinding` factories capture concrete accessor structs by value and reject incompatible selected field roles, required/optional shape, wire type, fixed extent, storage path, duplicate/foreign child or incomplete aggregate closure before provider invocation. Scalar Guid access is opaque; StableGuidReference and EntityReference have explicit separate constructors and reference roles. Optional getters check presence before value access; Clear is the absent transition. Entity getters/setters expose only copied live values, and World-bound mappings use the exact engine-issued complete map. `ComponentFactoryBinding<T>.Create<TAuthor>` validates and captures schema/storage/providers/field roots once, requires positive FactoryId/version and the exact managed stride, then exposes an immutable `ComponentFactoryDescriptor`; the descriptor and `WorldRegistration.GetComponentBinding` are copied facts, not executable authority. Default/restore/capture/validation bindings are engine-issued, operation/thread-scoped and revoked when their callback ends.
 
