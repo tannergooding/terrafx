@@ -17,20 +17,37 @@ internal sealed class SystemExecutionSchedule
     private const int StageCount = (int)SimulationStage.Extract + 1;
 
     private readonly ImmutableArray<int> _executionOrder;
+    private readonly ImmutableArray<int> _executionPlan;
+    private readonly int _executionPlanBatchCount;
+    private readonly ImmutableArray<int> _executionPlanOffsets;
+    private readonly int _requiredConflictComparisons;
+    private readonly long _requiredGraphBytes;
     private readonly ImmutableArray<int> _stageOffsets;
     private readonly ImmutableArray<SystemDescription> _systems;
 
     private SystemExecutionSchedule(
         ImmutableArray<SystemDescription> systems,
         ImmutableArray<int> executionOrder,
-        ImmutableArray<int> stageOffsets)
+        ImmutableArray<int> executionPlan,
+        ImmutableArray<int> executionPlanOffsets,
+        int executionPlanBatchCount,
+        ImmutableArray<int> stageOffsets,
+        long requiredGraphBytes,
+        int requiredConflictComparisons)
     {
         _systems = systems;
         _executionOrder = executionOrder;
+        _executionPlan = executionPlan;
+        _executionPlanOffsets = executionPlanOffsets;
+        _executionPlanBatchCount = executionPlanBatchCount;
         _stageOffsets = stageOffsets;
+        _requiredGraphBytes = requiredGraphBytes;
+        _requiredConflictComparisons = requiredConflictComparisons;
     }
 
     internal int ExecutionCount => _executionOrder.Length;
+
+    internal int ExecutionPlanBatchCount => _executionPlanBatchCount;
 
     internal static SystemExecutionSchedule Compile(
         ImmutableArray<SystemDescription> descriptions,
@@ -110,6 +127,9 @@ internal sealed class SystemExecutionSchedule
         var indegrees = new int[systemCount];
         var readyHeap = new int[systemCount];
         var executionOrder = new int[systemCount];
+        var executionDepth = new int[systemCount];
+        var executionPlan = new int[systemCount];
+        var executionPlanOffsets = new int[systemCount + 1];
         var visitState = new byte[systemCount];
         var visitStack = new int[systemCount];
         var nextVisitIndex = new int[systemCount];
@@ -271,16 +291,29 @@ internal sealed class SystemExecutionSchedule
             wordsPerRow,
             readyHeap,
             executionOrder,
+            executionDepth,
             visitState,
             visitStack,
             nextVisitIndex,
             cyclePath,
             stageOffsets);
+        var executionPlanBatchCount = CreateExecutionPlan(
+            systems,
+            executionOrder,
+            executionDepth,
+            stageOffsets,
+            executionPlan,
+            executionPlanOffsets);
 
         return new SystemExecutionSchedule(
             System.Runtime.InteropServices.ImmutableCollectionsMarshal.AsImmutableArray(systems),
             System.Runtime.InteropServices.ImmutableCollectionsMarshal.AsImmutableArray(executionOrder),
-            System.Runtime.InteropServices.ImmutableCollectionsMarshal.AsImmutableArray(stageOffsets));
+            System.Runtime.InteropServices.ImmutableCollectionsMarshal.AsImmutableArray(executionPlan),
+            System.Runtime.InteropServices.ImmutableCollectionsMarshal.AsImmutableArray(executionPlanOffsets),
+            executionPlanBatchCount,
+            System.Runtime.InteropServices.ImmutableCollectionsMarshal.AsImmutableArray(stageOffsets),
+            requiredGraphBytes,
+            checked((int)requiredConflictComparisons));
     }
 
     internal static SystemExecutionSchedule Compile(
@@ -397,12 +430,13 @@ internal sealed class SystemExecutionSchedule
             var wordsPerRow = (systemCount + 63L) / 64;
             var adjacencyWords = systemCount * wordsPerRow;
             var arrayHeaderBytes = 3L * IntPtr.Size;
-            var arrayHeaderCount = 14; // Every owned graph, index, ordering, traversal, and result array.
+            var arrayHeaderCount = 17; // Every owned graph, index, ordering, traversal, and result array.
             var arrayPaddingBytes = arrayHeaderCount * (IntPtr.Size - 1L);
-            var auxiliaryObjectBytes = (4L * arrayHeaderBytes) + (5L * IntPtr.Size); // Four comparers and the schedule.
-            var intArrayBytes = (systemCount * (7L * sizeof(int)))
+            var auxiliaryObjectBytes = (4L * arrayHeaderBytes) + (7L * IntPtr.Size); // Four comparers and the schedule.
+            var intArrayBytes = (systemCount * (9L * sizeof(int)))
                 + (resourceCount * (long)sizeof(int))
-                + ((StageCount + 1L) * sizeof(int));
+                + ((StageCount + 1L) * sizeof(int))
+                + ((systemCount + 1L) * sizeof(int));
 
             return (arrayHeaderCount * arrayHeaderBytes)
                 + arrayPaddingBytes
@@ -460,6 +494,7 @@ internal sealed class SystemExecutionSchedule
         int wordsPerRow,
         int[] readyHeap,
         int[] executionOrder,
+        int[] executionDepth,
         byte[] visitState,
         int[] visitStack,
         int[] nextVisitIndex,
@@ -504,6 +539,7 @@ internal sealed class SystemExecutionSchedule
                         continue;
                     }
 
+                    executionDepth[target] = Math.Max(executionDepth[target], checked(executionDepth[current] + 1));
                     indegrees[target]--;
 
                     if (indegrees[target] == 0)
@@ -529,6 +565,60 @@ internal sealed class SystemExecutionSchedule
 
             stageOffsets[stageIndex + 1] = executionIndex;
         }
+    }
+
+    private static int CreateExecutionPlan(
+        SystemDescription[] systems,
+        int[] executionOrder,
+        int[] executionDepth,
+        int[] stageOffsets,
+        int[] executionPlan,
+        int[] executionPlanOffsets)
+    {
+        var planIndex = 0;
+        var batchCount = 0;
+
+        for (var stageIndex = 0; stageIndex < StageCount; stageIndex++)
+        {
+            var stageStart = stageOffsets[stageIndex];
+            var stageEnd = stageOffsets[stageIndex + 1];
+
+            if (stageStart == stageEnd)
+            {
+                continue;
+            }
+
+            var maximumDepth = 0;
+
+            for (var executionIndex = stageStart; executionIndex < stageEnd; executionIndex++)
+            {
+                maximumDepth = Math.Max(maximumDepth, executionDepth[executionOrder[executionIndex]]);
+            }
+
+            for (var depth = 0; depth <= maximumDepth; depth++)
+            {
+                executionPlanOffsets[batchCount++] = planIndex;
+                var previousPlanIndex = planIndex;
+
+                for (var executionIndex = stageStart; executionIndex < stageEnd; executionIndex++)
+                {
+                    var systemIndex = executionOrder[executionIndex];
+
+                    if (executionDepth[systemIndex] == depth)
+                    {
+                        executionPlan[planIndex++] = systemIndex;
+                    }
+                }
+
+                if (planIndex == previousPlanIndex)
+                {
+                    throw new InvalidOperationException("The compiled schedule contains an empty execution wave.");
+                }
+            }
+        }
+
+        executionPlanOffsets[batchCount] = planIndex;
+        return batchCount;
     }
 
     private static int FindResourceById(
@@ -769,6 +859,20 @@ internal sealed class SystemExecutionSchedule
         ArgumentOutOfRangeException.ThrowIfGreaterThan((int)stage, (int)SimulationStage.Extract);
     }
 
+    internal int GetExecutionPlanBatchEnd(int batchIndex)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(batchIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(batchIndex, _executionPlanBatchCount);
+        return _executionPlanOffsets[batchIndex + 1];
+    }
+
+    internal int GetExecutionPlanBatchStart(int batchIndex)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(batchIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(batchIndex, _executionPlanBatchCount);
+        return _executionPlanOffsets[batchIndex];
+    }
+
     internal int GetStageEnd(SimulationStage stage)
     {
         ValidateStage(stage);
@@ -787,6 +891,35 @@ internal sealed class SystemExecutionSchedule
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, _executionOrder.Length);
 
         return _systems[_executionOrder[index]];
+    }
+
+    internal SystemDescription GetSystemAtExecutionPlanPosition(int index)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, _executionPlan.Length);
+
+        return _systems[_executionPlan[index]];
+    }
+
+    internal void ValidateLimits(WorldSchedulingLimits limits)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+
+        if (_requiredGraphBytes > limits.MaximumGraphBytes)
+        {
+            throw new SystemScheduleException(
+                SystemScheduleFailure.GraphBudgetExceeded,
+                _requiredGraphBytes,
+                limits.MaximumGraphBytes);
+        }
+
+        if (_requiredConflictComparisons > limits.MaximumConflictComparisons)
+        {
+            throw new SystemScheduleException(
+                SystemScheduleFailure.ConflictBudgetExceeded,
+                _requiredConflictComparisons,
+                limits.MaximumConflictComparisons);
+        }
     }
 
     private sealed class AccessRecordComparer : IComparer<ScheduleAccessRecord>
