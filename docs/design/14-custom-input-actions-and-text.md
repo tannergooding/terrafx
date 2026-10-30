@@ -79,6 +79,8 @@ The field types below describe signed semantic/authoring values where appropriat
 
 The runtime representation is a typed native action-map schema encoded as `EBIN1` under [10](10-binary-data-and-authoring-formats.md). Masks encode unsigned 64-bit values, GUIDs canonical bytes, and enum kinds stable numeric schema IDs. JSON/XML are interchangeable authoring adapters; neither defines runtime ownership or layout. JSON authoring uses enum names, canonical GUID strings and fixed-width hexadecimal masks. Unknown fields/duplicate properties reject, never last-property-wins. IDs remain stable while editing and are not derived from names/indices. Stated defaults materialize before common semantic validation; other fields are required.
 
+The complete `input/map` record and each nested record or record-array payload are limited to 2,097,152 encoded bytes. This bounded profile admits every version-one action, context, binding, control, and UTF-8 name limit above; writers check all extents before allocating or modifying the destination, and readers reject larger claims before retaining input bytes.
+
 ### JSON authoring example (informative)
 
 This map binds right-arrow minus left-arrow to one `Axis1` action:
