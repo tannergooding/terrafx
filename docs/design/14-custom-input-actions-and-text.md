@@ -167,7 +167,7 @@ Keyboard/pointer events route to the native focused window's recipients. Focus l
 
 Pausing one simulation timeline leaves the host pump, `HostLiveUI`, and other timelines active but cancels only that recipient's gameplay actions with `Paused`, clears its gameplay-held state, and discards/counts only its pending copies. That timeline is not sent gameplay records while paused; its physical state is reconciled from a fresh timestamped snapshot on resume. Controls reported non-neutral remain disarmed until their source-specific neutral/up condition in section 4 and a later press/threshold crossing. `Input` is not accumulated for later gameplay and no pause duration is converted into buffered gameplay taps.
 
-Device removal, window-focus loss, context masking, consumed input, mapping replacement, overflow, world pause, and recipient disposal are distinct action-cancellation reasons (`DeviceRemoved`, `FocusLost`, `ContextMasked`, `InputConsumed`, `Rebound`, `InputOverflow`, `Paused`, and `RecipientDisposed`). Consumers receive exactly one cancellation for each active action and cannot mistake cancellation for an ordinary physical release.
+Device removal, window-focus loss, context masking, consumed input, mapping replacement, overflow, world pause, and recipient disposal are distinct action-cancellation reasons with fixed semantic/wire values: `DeviceRemoved=0`, `FocusLost=1`, `ContextMasked=2`, `InputConsumed=3`, `Rebound=4`, `InputOverflow=5`, `Paused=6`, and `RecipientDisposed=7`. Consumers receive exactly one cancellation for each active action and cannot mistake cancellation for an ordinary physical release. The public `InputCancellationReason` uses these same explicit values.
 
 ## 6. Text sessions and native IME contracts
 

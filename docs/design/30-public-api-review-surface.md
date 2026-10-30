@@ -5628,6 +5628,221 @@ public sealed class AudioMixer : IAsyncDisposable
 
 namespace TerraFX.Input
 {
+public enum InputActionKind
+{
+    Digital = 0,
+    Axis1 = 1,
+    Axis2 = 2
+}
+
+public enum BindingKind
+{
+    Button = 0,
+    Chord = 1,
+    Axis1Keys = 2,
+    Axis2Keys = 3,
+    GamepadAxis1 = 4,
+    GamepadStick2 = 5,
+    GamepadTrigger = 6,
+    AxisThreshold = 7
+}
+
+[Flags]
+public enum InputClassFlags
+{
+    None = 0,
+    Keyboard = 1,
+    Pointer = 2,
+    Gamepad = 4
+}
+
+[Flags]
+public enum BindingFlags
+{
+    None = 0,
+    ConsumePhysicalEvent = 1
+}
+
+public enum KeyboardControlKind
+{
+    KeyboardHid = 0,
+    LogicalKey = 1
+}
+
+public enum DigitalControlKind
+{
+    KeyboardHid = 0,
+    LogicalKey = 1,
+    MouseButton = 2,
+    GamepadButton = 3
+}
+
+public enum MouseButtonValue
+{
+    Primary = 0,
+    Secondary = 1,
+    Middle = 2,
+    Auxiliary1 = 3,
+    Auxiliary2 = 4,
+    Auxiliary3 = 5,
+    Auxiliary4 = 6,
+    Auxiliary5 = 7
+}
+
+public enum GamepadButtonValue
+{
+    South = 0,
+    East = 1,
+    West = 2,
+    North = 3,
+    DpadUp = 4,
+    DpadDown = 5,
+    DpadLeft = 6,
+    DpadRight = 7,
+    Menu = 8,
+    Start = 9,
+    System = 10,
+    LeftBumper = 11,
+    RightBumper = 12
+}
+
+public enum GamepadAxis
+{
+    LeftX = 0,
+    LeftY = 1,
+    RightX = 2,
+    RightY = 3
+}
+
+public enum GamepadStick
+{
+    Left = 0,
+    Right = 1
+}
+
+public enum GamepadTrigger
+{
+    Left = 0,
+    Right = 1
+}
+
+public enum AxisThresholdDirection
+{
+    Negative = 0,
+    Positive = 1,
+    Magnitude = 2
+}
+
+public sealed class InputActionMapV1
+{
+    public InputActionMapV1(int schemaVersion, Guid mapId, long revision, ulong initialActiveContextMask, ImmutableArray<ActionDefinition> actions, ImmutableArray<ContextDefinition> contexts, ImmutableArray<BindingDefinition> bindings);
+    public int SchemaVersion { get; }
+    public Guid MapId { get; }
+    public long Revision { get; }
+    public ulong InitialActiveContextMask { get; }
+    public ImmutableArray<ActionDefinition> Actions { get; }
+    public ImmutableArray<ContextDefinition> Contexts { get; }
+    public ImmutableArray<BindingDefinition> Bindings { get; }
+}
+
+public sealed class ActionDefinition
+{
+    public ActionDefinition(Guid actionId, string name, InputActionKind kind, float? downPressThreshold = null, float? downReleaseThreshold = null);
+    public Guid ActionId { get; }
+    public string Name { get; }
+    public InputActionKind Kind { get; }
+    public float? DownPressThreshold { get; }
+    public float? DownReleaseThreshold { get; }
+}
+
+public sealed class ContextDefinition
+{
+    public ContextDefinition(Guid contextId, byte bit, int priority = 0, InputClassFlags captureClasses = InputClassFlags.None);
+    public Guid ContextId { get; }
+    public byte Bit { get; }
+    public int Priority { get; }
+    public InputClassFlags CaptureClasses { get; }
+}
+
+public sealed class KeyboardControl
+{
+    public KeyboardControl(ushort usagePage, ushort usage);
+    public KeyboardControl(string logicalKeyName);
+    public KeyboardControlKind Kind { get; }
+    public ushort UsagePage { get; }
+    public ushort Usage { get; }
+    public string? LogicalKeyName { get; }
+}
+
+public sealed class DigitalControl
+{
+    public DigitalControl(KeyboardControl keyboard);
+    public DigitalControl(MouseButtonValue mouseButton);
+    public DigitalControl(ushort playerSlot, GamepadButtonValue gamepadButton);
+    public DigitalControlKind Kind { get; }
+    public KeyboardControl? Keyboard { get; }
+    public MouseButtonValue? MouseButton { get; }
+    public ushort? PlayerSlot { get; }
+    public GamepadButtonValue? GamepadButton { get; }
+}
+
+public sealed class GamepadAxis1Source
+{
+    public GamepadAxis1Source(ushort playerSlot, GamepadAxis axis, bool invert = false, float deadzone = 0.15f);
+    public ushort PlayerSlot { get; }
+    public GamepadAxis Axis { get; }
+    public bool Invert { get; }
+    public float Deadzone { get; }
+}
+
+public sealed class GamepadStick2Source
+{
+    public GamepadStick2Source(ushort playerSlot, GamepadStick stick, bool invertY = false, float radialDeadzone = 0.15f);
+    public ushort PlayerSlot { get; }
+    public GamepadStick Stick { get; }
+    public bool InvertY { get; }
+    public float RadialDeadzone { get; }
+}
+
+public sealed class GamepadTriggerSource
+{
+    public GamepadTriggerSource(ushort playerSlot, GamepadTrigger trigger, float deadzone = 0.05f);
+    public ushort PlayerSlot { get; }
+    public GamepadTrigger Trigger { get; }
+    public float Deadzone { get; }
+}
+
+public sealed class BindingDefinition
+{
+    public BindingDefinition(Guid bindingId, Guid actionId, ulong contextMask, BindingKind kind);
+    public Guid BindingId { get; }
+    public Guid ActionId { get; }
+    public ulong ContextMask { get; }
+    public BindingKind Kind { get; }
+    public int Priority { get; init; }
+    public bool Enabled { get; init; } = true;
+    public BindingFlags Flags { get; init; } = BindingFlags.None;
+    public DigitalControl? Control { get; init; }
+    public ImmutableArray<DigitalControl> Controls { get; init; } = ImmutableArray<DigitalControl>.Empty;
+    public int? CompletionWindowMilliseconds { get; init; }
+    public KeyboardControl? Negative { get; init; }
+    public KeyboardControl? Positive { get; init; }
+    public KeyboardControl? Left { get; init; }
+    public KeyboardControl? Right { get; init; }
+    public KeyboardControl? Down { get; init; }
+    public KeyboardControl? Up { get; init; }
+    public GamepadAxis1Source? Axis1Source { get; init; }
+    public GamepadStick2Source? Stick2Source { get; init; }
+    public GamepadTriggerSource? TriggerSource { get; init; }
+    public GamepadAxis1Source? ThresholdAxisSource { get; init; }
+    public GamepadTriggerSource? ThresholdTriggerSource { get; init; }
+    public AxisThresholdDirection? ThresholdDirection { get; init; }
+    public float? PressThreshold { get; init; }
+    public float? ReleaseThreshold { get; init; }
+}
+
+These are immutable semantic input values. Construction does not normalize enums, thresholds, or source settings; `InputRouter.RegisterMap`/`ReplaceMap` validate the complete candidate before publishing it. `BindingDefinition` is a tagged schema record, not a closed C# union: `Kind` selects the exact source fields from [14](14-custom-input-actions-and-text.md), and fields for other kinds must remain null or empty. `Controls` defaults to an initialized empty array. Action and binding enum values are zero-based API values; their EBIN IDs are explicitly mapped to one-based values by [10](10-binary-data-and-authoring-formats.md). The eight `InputCancellationReason` values use their fixed wire values.
+
 public enum InputMapStatus
 {
     Registered,
@@ -5666,26 +5881,24 @@ public sealed class InputRoutingReceipt
     public ValidationIssue? Rejection { get; }
 }
 
-public enum InputActionKind
-{
-    Digital,
-    Axis1,
-    Axis2
-}
-
 public enum InputTransitionKind
 {
-    ValueChanged,
-    Pressed,
-    Released,
-    Canceled
+    ValueChanged = 0,
+    Pressed = 1,
+    Released = 2,
+    Canceled = 3
 }
 
 public enum InputCancellationReason
 {
-    InputConsumed,
-    ContextMasked,
-    Rebound
+    DeviceRemoved = 0,
+    FocusLost = 1,
+    ContextMasked = 2,
+    InputConsumed = 3,
+    Rebound = 4,
+    InputOverflow = 5,
+    Paused = 6,
+    RecipientDisposed = 7
 }
 
 public sealed class InputActionTransition
