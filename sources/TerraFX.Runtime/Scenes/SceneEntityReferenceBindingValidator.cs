@@ -69,6 +69,48 @@ internal static class SceneEntityReferenceBindingValidator
         return leafCount;
     }
 
+    internal static int ValidateEncodedComponentRecord(
+        SceneAuthoredComponentRecord component,
+        Guid authoredEntityId,
+        DataSchema metadata,
+        ImmutableArray<SceneEntityReferenceBinding> bindings,
+        CompiledContentSchemaRegistry schemas,
+        EbinReadLimits limits,
+        bool allowInstanceAbsoluteSources)
+    {
+        ArgumentNullException.ThrowIfNull(component);
+        ArgumentNullException.ThrowIfNull(metadata);
+        ArgumentNullException.ThrowIfNull(schemas);
+        ArgumentNullException.ThrowIfNull(limits);
+        var action = new EncodedComponentValidationAction(
+            authoredEntityId,
+            component.Schema,
+            metadata,
+            bindings,
+            schemas,
+            allowInstanceAbsoluteSources);
+        var encodedRecord = component.EncodedRecord;
+        var status = EbinStructuralReader.Read(
+            encodedRecord,
+            limits,
+            EbinReadPolicy.Canonical,
+            ref action,
+            out var bytesConsumed,
+            out var diagnostic);
+
+        if (status is EbinReadStatus.UnsupportedSchema)
+        {
+            throw new NotSupportedException($"The authored Component uses an unsupported schema: {diagnostic?.Category ?? status.ToString()}.");
+        }
+
+        if ((status is not EbinReadStatus.Complete) || (bytesConsumed != encodedRecord.Length))
+        {
+            throw new InvalidDataException($"The authored Component record is invalid: {diagnostic?.Category ?? status.ToString()}.");
+        }
+
+        return action.LeafCount;
+    }
+
     private static int CompareBindingToSourceKey(
         SceneEntityReferenceBinding binding,
         SceneEntitySelectorScope scope,
@@ -464,6 +506,57 @@ internal static class SceneEntityReferenceBindingValidator
                         ref leafCount);
                 }
             }
+        }
+    }
+
+    private struct EncodedComponentValidationAction : IAction<EbinRecordReadView>
+    {
+        private readonly bool _allowInstanceAbsoluteSources;
+        private readonly Guid _authoredEntityId;
+        private readonly ImmutableArray<SceneEntityReferenceBinding> _bindings;
+        private readonly ContentSchemaReference _componentSchema;
+        private readonly DataSchema _metadata;
+        private readonly CompiledContentSchemaRegistry _schemas;
+        private int _leafCount;
+
+        internal EncodedComponentValidationAction(
+            Guid authoredEntityId,
+            ContentSchemaReference componentSchema,
+            DataSchema metadata,
+            ImmutableArray<SceneEntityReferenceBinding> bindings,
+            CompiledContentSchemaRegistry schemas,
+            bool allowInstanceAbsoluteSources)
+        {
+            _authoredEntityId = authoredEntityId;
+            _componentSchema = componentSchema;
+            _metadata = metadata;
+            _bindings = bindings;
+            _schemas = schemas;
+            _allowInstanceAbsoluteSources = allowInstanceAbsoluteSources;
+            _leafCount = 0;
+        }
+
+        internal readonly int LeafCount => _leafCount;
+
+        public void Invoke(scoped EbinRecordReadView record)
+        {
+            var header = record.Header;
+
+            if ((header.SchemaId != _componentSchema.SchemaId)
+                || (header.Major != _componentSchema.Major)
+                || (header.Minor != _componentSchema.Minor))
+            {
+                throw new InvalidDataException("The authored Component record does not match its selected schema tuple.");
+            }
+
+            _leafCount = ValidateComponentRecord(
+                record,
+                _authoredEntityId,
+                _componentSchema,
+                _metadata,
+                _bindings,
+                _schemas,
+                _allowInstanceAbsoluteSources);
         }
     }
 }

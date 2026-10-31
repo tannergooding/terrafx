@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Immutable;
+using TerraFX;
 using TerraFX.Assets;
 
 namespace TerraFX.Scenes;
@@ -15,6 +16,8 @@ internal sealed class ScenePrefabAsset
         ImmutableArray<ScenePrefabPlacement> placements,
         ImmutableArray<SceneEntityReferenceBinding> references,
         ImmutableArray<SceneExternalSlot> externalSlots,
+        CompiledContentSchemaRegistry schemas,
+        EbinReadLimits readLimits,
         ImmutableArray<byte> encodedRecord)
     {
         if (!assetId.IsValid)
@@ -44,6 +47,9 @@ internal sealed class ScenePrefabAsset
             throw new ArgumentException("The Prefab external-slot array must be initialized.", nameof(externalSlots));
         }
 
+        ArgumentNullException.ThrowIfNull(schemas);
+        ArgumentNullException.ThrowIfNull(readLimits);
+
         if (encodedRecord.IsDefaultOrEmpty)
         {
             throw new ArgumentException("The Prefab record bytes must be initialized and nonempty.", nameof(encodedRecord));
@@ -55,6 +61,8 @@ internal sealed class ScenePrefabAsset
         Placements = placements;
         References = references;
         ExternalSlots = externalSlots;
+        Schemas = schemas;
+        ReadLimits = readLimits;
         EncodedRecord = encodedRecord;
     }
 
@@ -70,5 +78,9 @@ internal sealed class ScenePrefabAsset
 
     internal ImmutableArray<ScenePrefabPlacement> Placements { get; }
 
+    internal EbinReadLimits ReadLimits { get; }
+
     internal ImmutableArray<SceneEntityReferenceBinding> References { get; }
+
+    internal CompiledContentSchemaRegistry Schemas { get; }
 }

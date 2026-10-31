@@ -44,6 +44,8 @@ internal sealed class ScenePrefabSlotBindingResolverTests
             placements: [],
             references: [],
             externalSlots,
+            schemas: SceneAssetReaderTests.Fixtures.CreateRegistry(),
+            readLimits: EbinReadLimits.Foundation,
             encodedRecord: [1]);
 
     private static ContentSchemaReference CreateSchemaReference(string schemaName)

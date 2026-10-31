@@ -145,6 +145,35 @@ internal static class SceneEntityReader
         return new SceneEntity(entityId, localTransformPosition, components.MoveToImmutable());
     }
 
+    internal static Vector3 ReadLocalTransformPosition(
+        SceneAuthoredComponentRecord component,
+        EbinReadLimits limits)
+    {
+        ArgumentNullException.ThrowIfNull(component);
+        ArgumentNullException.ThrowIfNull(limits);
+        var action = new LocalTransformPositionReadAction();
+        var encodedRecord = component.EncodedRecord;
+        var status = EbinStructuralReader.Read(
+            encodedRecord,
+            limits,
+            EbinReadPolicy.Canonical,
+            ref action,
+            out var bytesConsumed,
+            out var diagnostic);
+
+        if (status is EbinReadStatus.UnsupportedSchema)
+        {
+            throw new NotSupportedException($"The LocalTransform record uses an unsupported schema: {diagnostic?.Category ?? status.ToString()}.");
+        }
+
+        if ((status is not EbinReadStatus.Complete) || (bytesConsumed != encodedRecord.Length))
+        {
+            throw new InvalidDataException($"The LocalTransform record is invalid: {diagnostic?.Category ?? status.ToString()}.");
+        }
+
+        return action.Position;
+    }
+
     internal static SceneAuthoredComponentRecord ReadLocalTransformRecord(
         EbinRecordReadView record,
         out Vector3 position)
@@ -157,6 +186,33 @@ internal static class SceneEntityReader
             header.Minor,
             ContentSchemaScope.Content);
         return new SceneAuthoredComponentRecord(schema, record.EncodedBytes);
+    }
+
+    internal static void ValidateRootPositionComponentRecord(
+        SceneAuthoredComponentRecord component,
+        EbinReadLimits limits)
+    {
+        ArgumentNullException.ThrowIfNull(component);
+        ArgumentNullException.ThrowIfNull(limits);
+        var action = new RootPositionValidationAction();
+        var encodedRecord = component.EncodedRecord;
+        var status = EbinStructuralReader.Read(
+            encodedRecord,
+            limits,
+            EbinReadPolicy.Canonical,
+            ref action,
+            out var bytesConsumed,
+            out var diagnostic);
+
+        if (status is EbinReadStatus.UnsupportedSchema)
+        {
+            throw new NotSupportedException($"The RootPosition record uses an unsupported schema: {diagnostic?.Category ?? status.ToString()}.");
+        }
+
+        if ((status is not EbinReadStatus.Complete) || (bytesConsumed != encodedRecord.Length))
+        {
+            throw new InvalidDataException($"The RootPosition record is invalid: {diagnostic?.Category ?? status.ToString()}.");
+        }
     }
 
     internal static void ValidateRootPositionPayload(scoped ReadOnlySpan<byte> payload)
@@ -273,5 +329,19 @@ internal static class SceneEntityReader
         ValidateHeader(record, s_rootPositionSchemaId, major: 1, fieldCount: 1);
         var position = GetField(record, tag: 1, kind: 21, payloadLength: 24);
         ValidateRootPositionPayload(position.Payload);
+    }
+
+    private struct LocalTransformPositionReadAction : IAction<EbinRecordReadView>
+    {
+        internal Vector3 Position { get; private set; }
+
+        public void Invoke(scoped EbinRecordReadView record)
+            => Position = ReadLocalTransformPosition(record);
+    }
+
+    private struct RootPositionValidationAction : IAction<EbinRecordReadView>
+    {
+        public readonly void Invoke(scoped EbinRecordReadView record)
+            => ValidateRootPositionRecord(record);
     }
 }

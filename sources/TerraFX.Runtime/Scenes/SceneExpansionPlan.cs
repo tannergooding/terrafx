@@ -19,6 +19,7 @@ internal sealed class SceneExpansionPlan : IDisposable
     private readonly Guid[] _occurrenceIds;
     private readonly ImmutableArray<SceneExpandedOccurrence> _occurrences;
     private Dictionary<AssetId, AssetLease<ScenePrefabAsset>>? _prefabLeases;
+    private readonly ImmutableArray<SceneExpandedReferenceBinding> _referenceBindings;
     private readonly ImmutableArray<int> _rootEntityIndicesByOccurrence;
     private readonly AssetId _sceneAssetId;
     private AssetLease<SceneAsset>? _sceneLease;
@@ -31,6 +32,7 @@ internal sealed class SceneExpansionPlan : IDisposable
         ImmutableArray<int> entityIndicesByOccurrence,
         ImmutableArray<int> childOccurrenceIndicesByPlacement,
         ImmutableArray<int> rootEntityIndicesByOccurrence,
+        ImmutableArray<SceneExpandedReferenceBinding> referenceBindings,
         Guid[] entityAssignmentKeys,
         Guid[] occurrenceIds)
     {
@@ -41,7 +43,8 @@ internal sealed class SceneExpansionPlan : IDisposable
             || entities.IsDefault
             || entityIndicesByOccurrence.IsDefault
             || childOccurrenceIndicesByPlacement.IsDefault
-            || rootEntityIndicesByOccurrence.IsDefault)
+            || rootEntityIndicesByOccurrence.IsDefault
+            || referenceBindings.IsDefault)
         {
             throw new ArgumentException("The expansion plan arrays must be initialized.");
         }
@@ -57,6 +60,7 @@ internal sealed class SceneExpansionPlan : IDisposable
         _entityIndicesByOccurrence = entityIndicesByOccurrence;
         _childOccurrenceIndicesByPlacement = childOccurrenceIndicesByPlacement;
         _rootEntityIndicesByOccurrence = rootEntityIndicesByOccurrence;
+        _referenceBindings = referenceBindings;
         _entityAssignmentKeys = entityAssignmentKeys;
         _occurrenceIds = occurrenceIds;
     }
@@ -94,6 +98,15 @@ internal sealed class SceneExpansionPlan : IDisposable
         {
             ThrowIfDisposed();
             return _occurrences;
+        }
+    }
+
+    internal ImmutableArray<SceneExpandedReferenceBinding> ReferenceBindings
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return _referenceBindings;
         }
     }
 

@@ -51,6 +51,173 @@ internal sealed class SceneAssetStoreTests
         }
     }
 
+    private static byte[] CreateEntityReferenceBindingToExternalSlot(
+        Guid entityId,
+        ContentSchemaReference componentSchema,
+        Guid externalSlotId)
+    {
+        var source = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("native/entity-selector").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(1, (byte)SceneEntitySelectorScope.OccurrenceRelative),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFixedGuidArrayField(2),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(3, entityId));
+        var propertySegment = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("content/property-segment").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(1, (byte)ScenePropertyPathSegmentKind.FieldTag),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(2, 1));
+        var target = SceneAssetReaderTests.Fixtures.CreateReferenceTarget(
+            SceneReferenceTargetKind.ExternalSlot,
+            externalSlotId: externalSlotId);
+
+        return SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("native/entity-reference-binding").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(1, source),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(
+                2,
+                CreateSchemaReference("test/scene-expanded-entity-reference")),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(3, propertySegment),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(4, target));
+    }
+
+    private static byte[] CreateEntityReferenceComponent(
+        Guid schemaId,
+        Guid externalSlotId,
+        bool isRequired = true)
+        => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            schemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(1, externalSlotId, isRequired));
+
+    private static DataSchema CreateEntityReferenceComponentSchema(bool optional = false)
+    {
+        var identity = new ContentSchemaIdentityAssignment("test/scene-expanded-entity-reference");
+        return new DataSchema(
+            new ContentSchemaReference(identity.SchemaId, 1, 0, ContentSchemaScope.Content),
+            identity,
+            ContentSchemaRole.Component,
+            ContentSchemaOwner.Application,
+            ContentSchemaStorage.Persistent,
+            ContentTransientRestore.NotApplicable,
+            [
+                new ContentFieldDescriptor(
+                    tag: 1,
+                    wireKind: 11,
+                    elementKind: 0,
+                    isRequired: !optional,
+                    minimumCount: 1,
+                    maximumCount: 1,
+                    nestedSchemas: [],
+                    nestedRoleMask: 0,
+                    unit: ContentUnit.None,
+                    reference: ContentReferenceKind.Entity,
+                    authoringFlags: ContentAuthoring.PrefabEditable,
+                    defaultValue: null),
+            ]);
+    }
+
+    private static byte[] CreateEntityReferenceInternalOverride(
+        Guid entityId,
+        Guid[] placementPath,
+        Guid componentSchemaId,
+        Guid targetEntityId)
+    {
+        var targetEntity = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("native/entity-selector").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(1, (byte)SceneEntitySelectorScope.OccurrenceRelative),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFixedGuidArrayField(2, placementPath),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(3, entityId));
+        var propertySegment = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("content/property-segment").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(1, (byte)ScenePropertyPathSegmentKind.FieldTag),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(2, 1));
+        var literal = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("content/literal/guid").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(1, targetEntityId));
+        var referenceValue = SceneAssetReaderTests.Fixtures.CreateReferenceTarget(
+            SceneReferenceTargetKind.Internal,
+            entityId: targetEntityId);
+
+        return SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("native/prefab-override").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(1, targetEntity),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(
+                2,
+                CreateSchemaReference("test/scene-expanded-entity-reference")),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(3, propertySegment),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(4, literal, isRequired: false),
+            new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(5, 1, 0, 1, [(byte)ScenePrefabOverrideOperation.Set]),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(6, referenceValue, isRequired: false));
+    }
+
+    private static byte[] CreateEntityReferenceOverride(
+        Guid entityId,
+        Guid[] placementPath,
+        Guid componentSchemaId,
+        Guid externalSlotId,
+        bool omit = false)
+    {
+        var targetEntity = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("native/entity-selector").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(1, (byte)SceneEntitySelectorScope.OccurrenceRelative),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFixedGuidArrayField(2, placementPath),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(3, entityId));
+        var propertySegment = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("content/property-segment").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(1, (byte)ScenePropertyPathSegmentKind.FieldTag),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(2, 1));
+        List<SceneHierarchyCodecTests.FixtureBuilder.FixtureField> fields = [
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(1, targetEntity),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(
+                2,
+                CreateSchemaReference("test/scene-expanded-entity-reference")),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(3, propertySegment),
+        ];
+
+        if (!omit)
+        {
+            var literal = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                new ContentSchemaIdentityAssignment("content/literal/guid").SchemaId,
+                1,
+                0,
+                SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(1, externalSlotId));
+            var referenceValue = SceneAssetReaderTests.Fixtures.CreateReferenceTarget(
+                SceneReferenceTargetKind.ExternalSlot,
+                externalSlotId: externalSlotId);
+            fields.Add(SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(4, literal, isRequired: false));
+            fields.Add(new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(5, 1, 0, 1, [(byte)ScenePrefabOverrideOperation.Set]));
+            fields.Add(SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(6, referenceValue, isRequired: false));
+        }
+        else
+        {
+            fields.Add(new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(5, 1, 0, 1, [(byte)ScenePrefabOverrideOperation.Omit]));
+        }
+
+        return SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("native/prefab-override").SchemaId,
+            1,
+            0,
+            [.. fields]);
+    }
+
     private static byte[] CreateExternalSlot(
         Guid slotId,
         bool required,
@@ -65,6 +232,20 @@ internal sealed class SceneAssetStoreTests
             new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(3, 9, 1, 1, [allowNull ? (byte)1 : (byte)0]),
             SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(4, requiredComponents));
 
+    private static byte[] CreateLocalTransformPositionOverride(
+        Guid targetEntityId,
+        Guid[] placementPath,
+        byte scope,
+        float positionX)
+        => CreateLocalTransformValueOverride(
+            targetEntityId,
+            placementPath,
+            scope,
+            fieldTag: 1,
+            x: positionX,
+            y: 0.0f,
+            z: 0.0f);
+
     private static byte[] CreateLocalTransformRecord(float positionX, float scaleX)
         => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
             new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId,
@@ -73,6 +254,59 @@ internal sealed class SceneAssetStoreTests
             SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 15, positionX, 0, 0),
             SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(2, 17, 0, 0, 0, 1),
             SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(3, 15, scaleX, 1, 1));
+
+    private static byte[] CreateLocalTransformScaleOverride(
+        Guid targetEntityId,
+        Guid[] placementPath,
+        byte scope,
+        float scaleX)
+        => CreateLocalTransformValueOverride(
+            targetEntityId,
+            placementPath,
+            scope,
+            fieldTag: 3,
+            x: scaleX,
+            y: 1.0f,
+            z: 1.0f);
+
+    private static byte[] CreateLocalTransformValueOverride(
+        Guid targetEntityId,
+        Guid[] placementPath,
+        byte scope,
+        uint fieldTag,
+        float x,
+        float y,
+        float z)
+    {
+        var target = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("native/entity-selector").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(1, scope),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFixedGuidArrayField(2, placementPath),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(3, targetEntityId));
+        var propertySegment = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("content/property-segment").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(1, (byte)ScenePropertyPathSegmentKind.FieldTag),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(2, fieldTag));
+        var literal = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("content/literal/vector3").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 15, x, y, z));
+
+        return SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("native/prefab-override").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(1, target),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(2, CreateSchemaReference("scene/local-transform")),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(3, propertySegment),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(4, literal, isRequired: false),
+            new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(5, 1, 0, 1, [(byte)ScenePrefabOverrideOperation.Set]));
+    }
 
     private static byte[] CreateNestedExpansionPackage(
         Guid outerPlacementId,
@@ -221,6 +455,303 @@ internal sealed class SceneAssetStoreTests
                     Is.EqualTo(CreateLocalTransformRecord(positionX: 2.0f, scaleX: 1.0f)));
                 Assert.That(rootComponents.Length, Is.EqualTo(2));
                 Assert.That(childComponents.Length, Is.EqualTo(1));
+            }
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task AppliesNestedInternalReferenceOverrideFromSelectedOccurrence()
+    {
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var componentSchema = CreateEntityReferenceComponentSchema();
+        var registeredSchemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var schemas = new CompiledContentSchemaRegistry([.. registeredSchemas.Schemas, componentSchema]);
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var outerPlacementId = new Guid("20000000-0000-4000-8000-00000000004f");
+        var innerPlacementId = new Guid("20000000-0000-4000-8000-000000000050");
+        var externalSlotId = new Guid("30000000-0000-4000-8000-000000000054");
+        var externalSlot = CreateExternalSlot(externalSlotId, required: false, allowNull: true, []);
+        var innerBinding = CreateEntityReferenceBindingToExternalSlot(
+            rootEntityId,
+            componentSchema.Schema,
+            externalSlotId);
+        var innerPrefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(2),
+            entityId: rootEntityId,
+            references: [innerBinding],
+            externalSlots: [externalSlot],
+            additionalEntityComponents: [
+                CreateEntityReferenceComponent(componentSchema.Schema.SchemaId, externalSlotId),
+            ]);
+        var outerPrefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(1),
+            placementId: innerPlacementId,
+            placementRootPoses: [SceneAssetReaderTests.Fixtures.CreateRootPose(rootEntityId)],
+            placementPrefabAssetId: new AssetId(2));
+        var scene = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
+            new AssetId(3),
+            outerPlacementId,
+            rootPoses: [
+                SceneAssetReaderTests.Fixtures.CreateRootPose(
+                    rootEntityId,
+                    placementPath: [innerPlacementId]),
+            ],
+            overrides: [
+                CreateEntityReferenceInternalOverride(
+                    rootEntityId,
+                    [innerPlacementId],
+                    componentSchema.Schema.SchemaId,
+                    rootEntityId),
+            ]);
+        var package = Package.CreatePackage(
+            new Package.Entry(1, Package.CreateEnvelope(1, outerPrefab)),
+            new Package.Entry(2, Package.CreateEnvelope(2, innerPrefab)),
+            new Package.Entry(3, Package.CreateEnvelope(3, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+            try
+            {
+                using var expansion = await ScenePrefabExpansionPlanner.PrepareAsync(
+                    store,
+                    new AssetId(3),
+                    SceneExpansionLimits.Default).ConfigureAwait(false);
+                Assert.That(expansion.ReferenceBindings, Has.Length.EqualTo(1));
+                var referenceBinding = expansion.ReferenceBindings[0];
+                Assert.That(referenceBinding.OwnerOccurrenceIndex, Is.Zero);
+                Assert.That(referenceBinding.TargetAnchorOccurrenceIndex, Is.EqualTo(2));
+                Assert.That(referenceBinding.Target.Kind, Is.EqualTo(SceneReferenceTargetKind.Internal));
+                Assert.That(referenceBinding.Target.Entity?.AuthoredEntityId, Is.EqualTo(rootEntityId));
+            }
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task AppliesNestedOverridesFromInnerToOuterAfterRootPoses()
+    {
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var outerPlacementId = new Guid("20000000-0000-4000-8000-000000000049");
+        var innerPlacementId = new Guid("20000000-0000-4000-8000-00000000004a");
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var innerRootPose = SceneAssetReaderTests.Fixtures.CreateRootPose(rootEntityId);
+        var innerOverride = CreateLocalTransformScaleOverride(rootEntityId, [], 1, 2.0f);
+        var outerPrefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(1),
+            entityId: rootEntityId,
+            placementId: innerPlacementId,
+            placementRootPoses: [innerRootPose],
+            overrides: [innerOverride],
+            placementPrefabAssetId: new AssetId(2));
+        var innerPrefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(2),
+            entityId: rootEntityId);
+        var scene = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
+            new AssetId(3),
+            outerPlacementId,
+            rootPoses: [
+                SceneAssetReaderTests.Fixtures.CreateRootPose(
+                    rootEntityId,
+                    localScaleX: 4.0f,
+                    rootChunkX: 1),
+                SceneAssetReaderTests.Fixtures.CreateRootPose(
+                    rootEntityId,
+                    placementPath: [innerPlacementId],
+                    localScaleX: 4.0f,
+                    rootChunkX: 2),
+            ],
+            overrides: [
+                CreateLocalTransformScaleOverride(rootEntityId, [], 1, 3.0f),
+            ]);
+        var package = Package.CreatePackage(
+            new Package.Entry(1, Package.CreateEnvelope(1, outerPrefab)),
+            new Package.Entry(2, Package.CreateEnvelope(2, innerPrefab)),
+            new Package.Entry(3, Package.CreateEnvelope(3, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+            try
+            {
+                using var expansion = await ScenePrefabExpansionPlanner.PrepareAsync(
+                    store,
+                    new AssetId(3),
+                    SceneExpansionLimits.Default).ConfigureAwait(false);
+
+                Assert.That(expansion.Entities, Has.Length.EqualTo(2));
+                Assert.That(
+                    GetComponentRecord(
+                        expansion.Entities[0],
+                        new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId).EncodedRecord.ToArray(),
+                    Is.EqualTo(CreateLocalTransformRecord(positionX: 0.0f, scaleX: 3.0f)));
+                Assert.That(
+                    GetComponentRecord(
+                        expansion.Entities[1],
+                        new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId).EncodedRecord.ToArray(),
+                    Is.EqualTo(CreateLocalTransformRecord(positionX: 0.0f, scaleX: 4.0f)));
+                Assert.That(
+                    GetComponentRecord(
+                        expansion.Entities[1],
+                        new ContentSchemaIdentityAssignment("scene/root-position").SchemaId).EncodedRecord.ToArray(),
+                    Is.EqualTo(CreateRootPositionRecord(chunkX: 2)));
+            }
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task AppliesRootEntityReferenceOverrideToEffectiveBinding()
+    {
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var componentSchema = CreateEntityReferenceComponentSchema();
+        var registeredSchemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var schemas = new CompiledContentSchemaRegistry([.. registeredSchemas.Schemas, componentSchema]);
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var placementId = new Guid("20000000-0000-4000-8000-00000000004d");
+        var originalSlotId = new Guid("30000000-0000-4000-8000-000000000051");
+        var replacementSlotId = new Guid("30000000-0000-4000-8000-000000000052");
+        var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(1),
+            entityId: rootEntityId,
+            references: [
+                CreateEntityReferenceBindingToExternalSlot(
+                    rootEntityId,
+                    componentSchema.Schema,
+                    originalSlotId),
+            ],
+            externalSlots: [
+                CreateExternalSlot(originalSlotId, required: false, allowNull: true, []),
+                CreateExternalSlot(replacementSlotId, required: false, allowNull: true, []),
+            ],
+            additionalEntityComponents: [
+                CreateEntityReferenceComponent(componentSchema.Schema.SchemaId, originalSlotId),
+            ]);
+        var scene = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
+            new AssetId(3),
+            placementId,
+            rootPoses: [SceneAssetReaderTests.Fixtures.CreateRootPose(rootEntityId)],
+            overrides: [
+                CreateEntityReferenceOverride(
+                    rootEntityId,
+                    [],
+                    componentSchema.Schema.SchemaId,
+                    replacementSlotId),
+            ],
+            externalSlots: [
+                CreateExternalSlot(replacementSlotId, required: false, allowNull: true, []),
+            ]);
+        var package = Package.CreatePackage(
+            new Package.Entry(1, Package.CreateEnvelope(1, prefab)),
+            new Package.Entry(3, Package.CreateEnvelope(3, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+            try
+            {
+                using var expansion = await ScenePrefabExpansionPlanner.PrepareAsync(
+                    store,
+                    new AssetId(3),
+                    SceneExpansionLimits.Default).ConfigureAwait(false);
+
+                Assert.That(expansion.ReferenceBindings, Has.Length.EqualTo(1));
+                Assert.That(expansion.ReferenceBindings[0].ExpandedEntityIndex, Is.Zero);
+                Assert.That(expansion.ReferenceBindings[0].OwnerOccurrenceIndex, Is.Zero);
+                Assert.That(expansion.ReferenceBindings[0].TargetAnchorOccurrenceIndex, Is.EqualTo(1));
+                Assert.That(expansion.ReferenceBindings[0].Target.Kind, Is.EqualTo(SceneReferenceTargetKind.ExternalSlot));
+                Assert.That(expansion.ReferenceBindings[0].Target.ExternalSlotId, Is.EqualTo(replacementSlotId));
+                Assert.That(
+                    GetComponentRecord(expansion.Entities[0], componentSchema.Schema.SchemaId).EncodedRecord.ToArray(),
+                    Is.EqualTo(CreateEntityReferenceComponent(componentSchema.Schema.SchemaId, replacementSlotId)));
+            }
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task AppliesRootSceneOverridesAfterPlacementLayers()
+    {
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var placementId = new Guid("20000000-0000-4000-8000-00000000004b");
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(1),
+            entityId: rootEntityId);
+        var placementOverride = CreateLocalTransformScaleOverride(rootEntityId, [], 1, 3.0f);
+        var sceneOverride = CreateLocalTransformScaleOverride(
+            rootEntityId,
+            [placementId],
+            (byte)SceneEntitySelectorScope.InstanceAbsolute,
+            5.0f);
+        var scene = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
+            new AssetId(3),
+            placementId,
+            rootPoses: [SceneAssetReaderTests.Fixtures.CreateRootPose(rootEntityId)],
+            overrides: [placementOverride],
+            sceneOverrides: [sceneOverride]);
+        var package = Package.CreatePackage(
+            new Package.Entry(1, Package.CreateEnvelope(1, prefab)),
+            new Package.Entry(3, Package.CreateEnvelope(3, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+            try
+            {
+                using var expansion = await ScenePrefabExpansionPlanner.PrepareAsync(
+                    store,
+                    new AssetId(3),
+                    SceneExpansionLimits.Default).ConfigureAwait(false);
+
+                Assert.That(
+                    GetComponentRecord(
+                        expansion.Entities[0],
+                        new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId).EncodedRecord.ToArray(),
+                    Is.EqualTo(CreateLocalTransformRecord(positionX: 0.0f, scaleX: 5.0f)));
             }
             finally
             {
@@ -448,6 +979,81 @@ internal sealed class SceneAssetStoreTests
                 Assert.That(resolvedBindings[0].Target?.ExternalSlotId, Is.EqualTo(containingSlotId));
             }
 
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task OmitsEntityReferenceAndRemovesEffectiveBinding()
+    {
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var componentSchema = CreateEntityReferenceComponentSchema(optional: true);
+        var registeredSchemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var schemas = new CompiledContentSchemaRegistry([.. registeredSchemas.Schemas, componentSchema]);
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var placementId = new Guid("20000000-0000-4000-8000-00000000004e");
+        var externalSlotId = new Guid("30000000-0000-4000-8000-000000000053");
+        var externalSlot = CreateExternalSlot(externalSlotId, required: false, allowNull: true, []);
+        var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(1),
+            entityId: rootEntityId,
+            references: [
+                CreateEntityReferenceBindingToExternalSlot(
+                    rootEntityId,
+                    componentSchema.Schema,
+                    externalSlotId),
+            ],
+            externalSlots: [externalSlot],
+            additionalEntityComponents: [
+                CreateEntityReferenceComponent(
+                    componentSchema.Schema.SchemaId,
+                    externalSlotId,
+                    isRequired: false),
+            ]);
+        var scene = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
+            new AssetId(3),
+            placementId,
+            rootPoses: [SceneAssetReaderTests.Fixtures.CreateRootPose(rootEntityId)],
+            overrides: [
+                CreateEntityReferenceOverride(
+                    rootEntityId,
+                    [],
+                    componentSchema.Schema.SchemaId,
+                    externalSlotId,
+                    omit: true),
+            ]);
+        var package = Package.CreatePackage(
+            new Package.Entry(1, Package.CreateEnvelope(1, prefab)),
+            new Package.Entry(3, Package.CreateEnvelope(3, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+            try
+            {
+                using var expansion = await ScenePrefabExpansionPlanner.PrepareAsync(
+                    store,
+                    new AssetId(3),
+                    SceneExpansionLimits.Default).ConfigureAwait(false);
+
+                Assert.That(expansion.ReferenceBindings, Is.Empty);
+                Assert.That(
+                    GetComponentRecord(expansion.Entities[0], componentSchema.Schema.SchemaId).EncodedRecord.ToArray(),
+                    Is.EqualTo(SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                        componentSchema.Schema.SchemaId,
+                        1,
+                        0)));
+            }
             finally
             {
                 await store.DisposeAsync().ConfigureAwait(false);
@@ -691,6 +1297,29 @@ internal sealed class SceneAssetStoreTests
     }
 
     [Test]
+    public async Task RejectsResolvedRootOverrideConflictWithinOneLayer()
+    {
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var placementId = new Guid("20000000-0000-4000-8000-00000000004c");
+        var relativeOverride = CreateLocalTransformScaleOverride(rootEntityId, [placementId], 1, 2.0f);
+        var absoluteOverride = CreateLocalTransformScaleOverride(
+            rootEntityId,
+            [placementId],
+            (byte)SceneEntitySelectorScope.InstanceAbsolute,
+            3.0f);
+        var scene = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
+            new AssetId(3),
+            placementId,
+            rootPoses: [SceneAssetReaderTests.Fixtures.CreateRootPose(rootEntityId)],
+            sceneOverrides: [relativeOverride, absoluteOverride]);
+        var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(1),
+            entityId: rootEntityId);
+
+        await AssertExpansionRejectedAsync(scene, prefab).ConfigureAwait(false);
+    }
+
+    [Test]
     public async Task RejectsRootPlacementRootPoseWithoutPosition()
     {
         var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
@@ -706,6 +1335,23 @@ internal sealed class SceneAssetStoreTests
         var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
             new AssetId(1),
             entityId: rootEntityId);
+
+        await AssertExpansionRejectedAsync(scene, prefab).ConfigureAwait(false);
+    }
+
+    [Test]
+    public async Task RejectsRootSceneOverrideWithTranslatedRootLocalPosition()
+    {
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var overrideRecord = CreateLocalTransformPositionOverride(
+            rootEntityId,
+            [],
+            (byte)SceneEntitySelectorScope.InstanceAbsolute,
+            1.0f);
+        var scene = SceneAssetReaderTests.Fixtures.CreateScene(
+            new AssetId(3),
+            overrides: [overrideRecord]);
+        var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(new AssetId(1));
 
         await AssertExpansionRejectedAsync(scene, prefab).ConfigureAwait(false);
     }

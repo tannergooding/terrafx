@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Immutable;
+using TerraFX;
 using TerraFX.Assets;
 
 namespace TerraFX.Scenes;
@@ -51,6 +52,19 @@ internal readonly struct SceneExpansionSource
         }
     }
 
+    internal ImmutableArray<SceneExternalSlot> ExternalSlots
+    {
+        get
+        {
+            if (_scene is SceneAsset scene)
+            {
+                return scene.ExternalSlots;
+            }
+
+            return (_prefab ?? throw new InvalidOperationException("The Scene expansion source is uninitialized.")).ExternalSlots;
+        }
+    }
+
     internal SceneHierarchy Hierarchy
     {
         get
@@ -76,6 +90,45 @@ internal readonly struct SceneExpansionSource
             }
 
             return (_prefab ?? throw new InvalidOperationException("The Scene expansion source is uninitialized.")).Placements;
+        }
+    }
+
+    internal EbinReadLimits ReadLimits
+    {
+        get
+        {
+            if (_scene is SceneAsset scene)
+            {
+                return scene.ReadLimits;
+            }
+
+            return (_prefab ?? throw new InvalidOperationException("The Scene expansion source is uninitialized.")).ReadLimits;
+        }
+    }
+
+    internal ImmutableArray<SceneEntityReferenceBinding> References
+    {
+        get
+        {
+            if (_scene is SceneAsset scene)
+            {
+                return scene.References;
+            }
+
+            return (_prefab ?? throw new InvalidOperationException("The Scene expansion source is uninitialized.")).References;
+        }
+    }
+
+    internal CompiledContentSchemaRegistry Schemas
+    {
+        get
+        {
+            if (_scene is SceneAsset scene)
+            {
+                return scene.Schemas;
+            }
+
+            return (_prefab ?? throw new InvalidOperationException("The Scene expansion source is uninitialized.")).Schemas;
         }
     }
 }

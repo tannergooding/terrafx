@@ -227,6 +227,8 @@ internal static class SceneAssetReader
             references,
             overrides,
             externalSlots,
+            schemas,
+            limits,
             [.. record.EncodedBytes]);
     }
 
@@ -354,6 +356,8 @@ internal static class SceneAssetReader
             placements.MoveToImmutable(),
             references,
             externalSlots,
+            schemas,
+            limits,
             [.. record.EncodedBytes]);
     }
 
