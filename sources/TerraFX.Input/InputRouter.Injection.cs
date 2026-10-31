@@ -13,6 +13,7 @@ public sealed partial class InputRouter
 {
     private const int MaximumPendingInputEvents = 4096;
 
+    private readonly Dictionary<InputControlKey, List<InputConsumptionLease>> _consumptionLeases = [];
     private readonly Dictionary<InputControlKey, long> _digitalControlDownTimestamps = [];
     private readonly Dictionary<InputControlKey, bool> _digitalControlStates = [];
     private long _firstUnacceptedHostSequence;
@@ -26,6 +27,7 @@ public sealed partial class InputRouter
     private long _lastUnacceptedHostSequence;
     private bool _overflowServiced;
     private ImmutableArray<InputContextOrder> _orderedContexts = [];
+    private ImmutableArray<InputBindingRuntimeState> _orderedConsumableBindings = [];
     private readonly Dictionary<InputControlKey, float> _scalarControlValues = [];
     private readonly Dictionary<InputControlKey, (float X, float Y)> _vectorControlValues = [];
 
@@ -1054,10 +1056,12 @@ public sealed partial class InputRouter
 
                 if (matchingContextIndex < 0)
                 {
+                    bindingState.ContextRank = -1;
                     bindingState.IsContextEligible = false;
                     continue;
                 }
 
+                bindingState.ContextRank = matchingContextIndex;
                 var capturedClasses = InputClass.None;
 
                 for (var index = 0; index < matchingContextIndex; index++)
@@ -1069,6 +1073,19 @@ public sealed partial class InputRouter
                     control => (capturedClasses & GetInputClass(control)) != 0);
             }
         }
+
+        _orderedConsumableBindings =
+        [
+            .. _maps.Values.SelectMany(static state => state.BindingStates.Values)
+                .Where(static bindingState =>
+                    bindingState.Definition.Enabled
+                    && ((bindingState.Definition.Flags & InputBindingBehavior.ConsumePhysicalEvent) != 0)
+                    && bindingState.IsContextEligible)
+                .OrderBy(static bindingState => bindingState.ContextRank)
+                .ThenBy(static bindingState => bindingState.Definition.Priority)
+                .ThenBy(static bindingState => bindingState.CanonicalMapId, StringComparer.Ordinal)
+                .ThenBy(static bindingState => bindingState.CanonicalBindingId, StringComparer.Ordinal),
+        ];
     }
 
     private void RecomputeAffectedActions(InputControlKey changedControl, long hostSequence, long assignedTick)
@@ -1510,11 +1527,14 @@ public sealed partial class InputRouter
 
     private sealed class InputBindingRuntimeState
     {
-        internal InputBindingRuntimeState(BindingDefinition definition)
+        internal InputBindingRuntimeState(Guid mapId, BindingDefinition definition)
         {
             CanonicalBindingId = definition.BindingId.ToString("D");
             ControlKeys = GetBindingControlKeys(definition);
             Definition = definition;
+            CanonicalMapId = mapId.ToString("D");
+            ContextRank = -1;
+            MapId = mapId;
         }
 
         internal float AxisX { get; set; }
@@ -1523,11 +1543,17 @@ public sealed partial class InputRouter
 
         internal string CanonicalBindingId { get; }
 
+        internal string CanonicalMapId { get; }
+
         internal bool ChordIsDisarmed { get; set; }
 
         internal bool ChordIsDown { get; set; }
 
         internal long? ChordStartedHostTimestamp { get; set; }
+
+        internal ImmutableArray<InputControlKey> ConsumptionControls { get; set; } = [];
+
+        internal int ContextRank { get; set; }
 
         internal ImmutableArray<InputControlKey> ControlKeys { get; }
 
@@ -1538,6 +1564,8 @@ public sealed partial class InputRouter
         internal bool IsDisarmed { get; set; }
 
         internal bool IsDown { get; set; }
+
+        internal Guid MapId { get; }
     }
 
     private readonly record struct InputContextOrder(

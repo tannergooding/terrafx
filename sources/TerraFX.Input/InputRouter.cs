@@ -603,7 +603,7 @@ public sealed partial class InputRouter
 
             foreach (var binding in map.Bindings)
             {
-                var bindingState = new InputBindingRuntimeState(binding);
+                var bindingState = new InputBindingRuntimeState(map.MapId, binding);
                 BindingStates.Add(binding.BindingId, bindingState);
 
                 foreach (var control in bindingState.ControlKeys)
