@@ -242,6 +242,29 @@ internal sealed class ScenePrefabOverrideReaderTests
     }
 
     [Test]
+    public void ReadsSortedNonOverlappingPrefabPlacementOverrides()
+    {
+        var schemas = CreateRegistry();
+        var assetId = new AssetId(3);
+        var firstOverride = CreatePrefabOverride(
+            new ContentSchemaIdentityAssignment("scene/camera").SchemaId,
+            [CreatePropertySegment((byte)ScenePropertyPathSegmentKind.FieldTag, 1)],
+            value: CreateLiteralUInt8(1));
+        var secondOverride = CreatePrefabOverride(
+            new ContentSchemaIdentityAssignment("scene/camera").SchemaId,
+            [CreatePropertySegment((byte)ScenePropertyPathSegmentKind.FieldTag, 6)],
+            operation: (byte)ScenePrefabOverrideOperation.Omit);
+        var encoded = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            assetId,
+            placementId: new Guid("20000000-0000-4000-8000-000000000018"),
+            overrides: [firstOverride, secondOverride]);
+
+        var prefab = ReadPrefabAsset(encoded, assetId, schemas);
+
+        Assert.That(prefab.Placements[0].Overrides, Has.Length.EqualTo(2));
+    }
+
+    [Test]
     public void RejectsNonFixedPrefabOverrideLiteral()
     {
         var schemas = CreateRegistry();
@@ -272,6 +295,31 @@ internal sealed class ScenePrefabOverrideReaderTests
             assetId,
             placementId: new Guid("20000000-0000-4000-8000-000000000012"),
             overrides: [overrideRecord]);
+
+        Assert.That(() => ReadPrefabAsset(encoded, assetId, schemas), Throws.TypeOf<InvalidDataException>());
+    }
+
+    [Test]
+    public void RejectsOverlappingPrefabPlacementOverridePaths()
+    {
+        var schemas = CreateRegistry();
+        var assetId = new AssetId(3);
+        var componentSchemaId = new ContentSchemaIdentityAssignment("scene/camera").SchemaId;
+        var parentPath = CreatePrefabOverride(
+            componentSchemaId,
+            [CreatePropertySegment((byte)ScenePropertyPathSegmentKind.FieldTag, 1)],
+            value: CreateLiteralUInt8(1));
+        var childPath = CreatePrefabOverride(
+            componentSchemaId,
+            [
+                CreatePropertySegment((byte)ScenePropertyPathSegmentKind.FieldTag, 1),
+                CreatePropertySegment((byte)ScenePropertyPathSegmentKind.FieldTag, 2),
+            ],
+            value: CreateLiteralUInt8(1));
+        var encoded = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            assetId,
+            placementId: new Guid("20000000-0000-4000-8000-000000000019"),
+            overrides: [parentPath, childPath]);
 
         Assert.That(() => ReadPrefabAsset(encoded, assetId, schemas), Throws.TypeOf<InvalidDataException>());
     }
@@ -332,6 +380,27 @@ internal sealed class ScenePrefabOverrideReaderTests
             assetId,
             placementId: new Guid("20000000-0000-4000-8000-000000000011"),
             overrides: [overrideRecord]);
+
+        Assert.That(() => ReadPrefabAsset(encoded, assetId, schemas), Throws.TypeOf<InvalidDataException>());
+    }
+
+    [Test]
+    public void RejectsUnsortedPrefabPlacementOverrides()
+    {
+        var schemas = CreateRegistry();
+        var assetId = new AssetId(3);
+        var laterOverride = CreatePrefabOverride(
+            new ContentSchemaIdentityAssignment("scene/camera").SchemaId,
+            [CreatePropertySegment((byte)ScenePropertyPathSegmentKind.FieldTag, 6)],
+            operation: (byte)ScenePrefabOverrideOperation.Omit);
+        var earlierOverride = CreatePrefabOverride(
+            new ContentSchemaIdentityAssignment("scene/camera").SchemaId,
+            [CreatePropertySegment((byte)ScenePropertyPathSegmentKind.FieldTag, 1)],
+            value: CreateLiteralUInt8(1));
+        var encoded = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            assetId,
+            placementId: new Guid("20000000-0000-4000-8000-000000000020"),
+            overrides: [laterOverride, earlierOverride]);
 
         Assert.That(() => ReadPrefabAsset(encoded, assetId, schemas), Throws.TypeOf<InvalidDataException>());
     }

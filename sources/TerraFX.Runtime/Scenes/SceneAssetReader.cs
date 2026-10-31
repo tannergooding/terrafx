@@ -325,6 +325,70 @@ internal static class SceneAssetReader
             [.. record.EncodedBytes]);
     }
 
+    private static int ComparePrefabOverrideAddress(ScenePrefabOverride left, ScenePrefabOverride right)
+    {
+        var comparison = left.Target.Scope.CompareTo(right.Target.Scope);
+
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        var leftPlacementPath = left.Target.PlacementPath;
+        var rightPlacementPath = right.Target.PlacementPath;
+        var sharedPathLength = Math.Min(leftPlacementPath.Length, rightPlacementPath.Length);
+
+        for (var index = 0; index < sharedPathLength; index++)
+        {
+            comparison = FoundationCatalogue.CompareRfc(leftPlacementPath[index], rightPlacementPath[index]);
+
+            if (comparison != 0)
+            {
+                return comparison;
+            }
+        }
+
+        comparison = leftPlacementPath.Length.CompareTo(rightPlacementPath.Length);
+
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        comparison = FoundationCatalogue.CompareRfc(left.Target.AuthoredEntityId, right.Target.AuthoredEntityId);
+        return (comparison != 0) ? comparison : CompareSchemaReferences(left.ComponentSchema, right.ComponentSchema);
+    }
+
+    private static int ComparePrefabOverrideSourceOrder(ScenePrefabOverride left, ScenePrefabOverride right)
+    {
+        var comparison = ComparePrefabOverrideAddress(left, right);
+        return (comparison != 0) ? comparison : ComparePropertyPaths(left.PropertyPath, right.PropertyPath);
+    }
+
+    private static int ComparePropertyPaths(
+        ImmutableArray<ScenePropertyPathSegment> left,
+        ImmutableArray<ScenePropertyPathSegment> right)
+    {
+        var sharedPathLength = Math.Min(left.Length, right.Length);
+
+        for (var index = 0; index < sharedPathLength; index++)
+        {
+            var comparison = left[index].Kind.CompareTo(right[index].Kind);
+
+            if (comparison == 0)
+            {
+                comparison = left[index].Value.CompareTo(right[index].Value);
+            }
+
+            if (comparison != 0)
+            {
+                return comparison;
+            }
+        }
+
+        return left.Length.CompareTo(right.Length);
+    }
+
     private static int CompareSchemaReferences(ContentSchemaReference left, ContentSchemaReference right)
     {
         var comparison = FoundationCatalogue.CompareRfc(left.SchemaId, right.SchemaId);
@@ -415,6 +479,23 @@ internal static class SceneAssetReader
         }
 
         return field;
+    }
+
+    private static bool HasPropertyPathPrefix(
+        ImmutableArray<ScenePropertyPathSegment> left,
+        ImmutableArray<ScenePropertyPathSegment> right)
+    {
+        var sharedPathLength = Math.Min(left.Length, right.Length);
+
+        for (var index = 0; index < sharedPathLength; index++)
+        {
+            if (left[index] != right[index])
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static AssetId ReadAssetId(EbinRecordReadView record, uint tag)
@@ -879,15 +960,33 @@ internal static class SceneAssetReader
         }
 
         var fixedLiteralSchemas = GetPrefabOverrideLiteralSchemas(schemas);
+        ScenePrefabOverride? previousOverride = null;
 
         for (var index = 0; index < count; index++)
         {
-            overrides.Add(ReadPrefabOverride(
+            var currentOverride = ReadPrefabOverride(
                 record.GetRecordArrayElement(5, index),
                 schemas,
                 limits,
                 fixedLiteralSchemas,
-                allowInternalOverrideReferences));
+                allowInternalOverrideReferences);
+
+            if (previousOverride is not null)
+            {
+                if (ComparePrefabOverrideSourceOrder(previousOverride, currentOverride) >= 0)
+                {
+                    throw new InvalidDataException("PrefabPlacement overrides are not uniquely sorted by source key.");
+                }
+
+                if ((ComparePrefabOverrideAddress(previousOverride, currentOverride) == 0)
+                    && HasPropertyPathPrefix(previousOverride.PropertyPath, currentOverride.PropertyPath))
+                {
+                    throw new InvalidDataException("PrefabPlacement overrides contain overlapping property paths in one layer.");
+                }
+            }
+
+            overrides.Add(currentOverride);
+            previousOverride = currentOverride;
         }
 
         return overrides.MoveToImmutable();
