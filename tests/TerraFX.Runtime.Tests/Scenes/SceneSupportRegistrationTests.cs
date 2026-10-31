@@ -34,6 +34,25 @@ internal sealed class SceneSupportRegistrationTests
     }
 
     [Test]
+    public void CreatesOneSceneParticipantPerWorldFromSharedRegistration()
+    {
+        var schemas = CreateSchemaRegistry();
+        var builder = new WorldRegistrationBuilder(schemas);
+        var support = SceneSupport.CreateRegistration();
+        _ = builder.RegisterSceneSupport(support);
+        var registration = builder.Build();
+
+        using var first = World.Create(new WorldOptions(registration));
+        using var second = World.Create(new WorldOptions(registration));
+        var firstParticipant = support.GetParticipant(first);
+        var secondParticipant = support.GetParticipant(second);
+
+        Assert.That(firstParticipant, Is.Not.SameAs(secondParticipant));
+        Assert.That(support.GetParticipant(first), Is.SameAs(firstParticipant));
+        Assert.That(firstParticipant.OwnedByteReservation, Is.GreaterThan(0));
+    }
+
+    [Test]
     public void RegistersBuiltInComponentsBeforeWorldConstruction()
     {
         var schemas = CreateSchemaRegistry();

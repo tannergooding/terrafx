@@ -16,6 +16,7 @@ namespace TerraFX.Scenes;
 public sealed class SceneLoader
 {
     private readonly AssetStore _assets;
+    private readonly SceneWorldRegistry _registry;
     private readonly World _world;
 
     /// <summary>Initializes a Scene loader for one exact target World and AssetStore.</summary>
@@ -26,6 +27,11 @@ public sealed class SceneLoader
     {
         ArgumentNullException.ThrowIfNull(world);
         ArgumentNullException.ThrowIfNull(assets);
+        var support = world.Registration.SceneSupport
+            ?? throw new InvalidOperationException("The target World was not constructed with Scene support.");
+        _registry = support.GetParticipant(world) as SceneWorldRegistry
+            ?? throw new InvalidOperationException("The target World has an incompatible Scene participant.");
+        _registry.EnsureBoundTo(world);
         _world = world;
         _assets = assets;
     }

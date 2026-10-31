@@ -28,6 +28,12 @@ public static class SceneSupport
 
     private sealed class BuiltInSceneComponentRegistration : IWorldSceneSupportRegistration
     {
+        public IWorldSceneParticipant CreateParticipant(World world, WorldOptions options)
+            => new SceneWorldRegistry(world, options);
+
+        public long GetWorldStorageByteReservation(WorldOptions options)
+            => SceneWorldRegistry.GetWorldStorageByteReservation(options);
+
         public void RegisterComponents(WorldRegistrationBuilder builder, CompiledContentSchemaRegistry schemas)
         {
             _ = SceneComponentDefinitions.RegisterLocalTransform(builder, schemas);

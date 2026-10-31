@@ -82,6 +82,8 @@ public sealed partial class World : IDisposable
     private readonly Guid _replayLineageId;
     private ImmutableArray<object> _resourceStorage;
     private readonly long _resourceStorageByteReservation;
+    private IWorldSceneParticipant? _sceneParticipant;
+    private readonly long _sceneSupportByteReservation;
     private readonly int[] _scheduledSystemRegistrationIndices;
     private readonly SpatialProfileId _spatialProfileId;
     private readonly SpatialSettings _spatialSettings;
@@ -187,6 +189,7 @@ public sealed partial class World : IDisposable
         _worldGuidGrant = constructionPlan.WorldGuidGrant;
         _worldGuid = constructionPlan.WorldGuid;
         _systemCleanupPreparation = new WorldSystemCleanupPreparation(_worldGuid, systems.Length);
+        _sceneSupportByteReservation = options.Registration.SceneSupport?.GetWorldStorageByteReservation(options) ?? 0;
         _systemQuarantineReservation = systemQuarantineReservation;
         _workerPool = workerPool;
         Registration = options.Registration;
@@ -391,6 +394,7 @@ public sealed partial class World : IDisposable
             }
 
             var resourceAndSystemStateBytes = checked(resourceBytes + systemBytes);
+            var sceneSupportBytes = options.Registration.SceneSupport?.GetWorldStorageByteReservation(options) ?? 0;
 
             if (resourceAndSystemStateBytes > options.SchedulingLimits.MaximumResourceAndSystemStateBytes)
             {
@@ -402,6 +406,7 @@ public sealed partial class World : IDisposable
                 + archetypeDirectoryBytes
                 + diagnosticBytes
                 + resourceAndSystemStateBytes
+                + sceneSupportBytes
                 + CalculateSubscriptionStorageByteReservation());
 
             if (!admissionDomain.TryReserveWorld(worldOwnedBytes, out domainReservation)
@@ -463,6 +468,7 @@ public sealed partial class World : IDisposable
 
             try
             {
+                world.InitializeSceneSupport(options);
                 world.InitializeSystemInstances();
 
                 for (var index = 0; index < options.Registration.Resources.Length; index++)
@@ -487,6 +493,7 @@ public sealed partial class World : IDisposable
             }
             catch (Exception exception)
             {
+                world._sceneParticipant?.Dispose();
                 var cleanupReport = world.ReleaseSystemInstances(
                     WorldSystemCleanupOperation.ConstructionUnwind,
                     exception);
@@ -1053,6 +1060,8 @@ public sealed partial class World : IDisposable
             }
 
             _workerPool.Dispose();
+            _sceneParticipant?.Dispose();
+            _sceneParticipant = null;
             ClearSubscriptionsForDisposal();
             _attachments.ClearEntries();
 
@@ -1328,6 +1337,20 @@ public sealed partial class World : IDisposable
         return TryGetEntity(identity.EntityId, out entity);
     }
 
+    internal IWorldSceneParticipant GetSceneParticipant(SceneSupportRegistration registration)
+    {
+        ArgumentNullException.ThrowIfNull(registration);
+        ThrowIfDisposed();
+
+        if (!ReferenceEquals(Registration.SceneSupport, registration))
+        {
+            throw new ArgumentException("The Scene support registration is not the exact registration captured by this World.", nameof(registration));
+        }
+
+        return _sceneParticipant
+            ?? throw new InvalidOperationException("The World Scene participant has not been initialized.");
+    }
+
     internal void ValidateEntityReference(Entity target, Entity? excludedEntity, string? parameterName)
     {
         var isLiveInThisWorld = target.IsValid
@@ -1560,6 +1583,7 @@ public sealed partial class World : IDisposable
             + _resourceStorageByteReservation
             + _systemInstanceStorageByteReservation
             + _systemInvocationStorageByteReservation
+            + _sceneSupportByteReservation
             + _componentTagWorkPlanByteReservation
             + _controlStorageByteReservation
             + _subscriptionStorageByteReservation
@@ -1573,6 +1597,27 @@ public sealed partial class World : IDisposable
         }
 
         return bytes;
+    }
+
+    private void InitializeSceneSupport(WorldOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var sceneSupport = Registration.SceneSupport;
+
+        if (sceneSupport is null)
+        {
+            return;
+        }
+
+        var participant = sceneSupport.CreateParticipant(this, options);
+
+        if (participant.OwnedByteReservation != _sceneSupportByteReservation)
+        {
+            participant.Dispose();
+            throw new InvalidOperationException("The Scene participant storage reservation does not match World admission.");
+        }
+
+        _sceneParticipant = participant;
     }
 
     private void InitializeSystemInstances()
