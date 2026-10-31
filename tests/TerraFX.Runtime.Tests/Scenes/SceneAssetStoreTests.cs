@@ -1617,6 +1617,16 @@ internal sealed class SceneAssetStoreTests
                 var instance = receipt.Instance
                     ?? throw new InvalidOperationException("An activated Scene receipt omitted its instance.");
                 Assert.That(instance.TryGetEntity(SceneAssetReaderTests.Fixtures.RootEntityId, out var entity), Is.True);
+                var address = new SceneEntityAddress([], SceneAssetReaderTests.Fixtures.RootEntityId);
+                Assert.That(instance.TryGetEntity(address, out var addressedEntity), Is.True);
+                Assert.That(addressedEntity, Is.EqualTo(entity));
+                Assert.That(instance.TryGetProvenance(entity, out var provenance), Is.True);
+                var source = provenance
+                    ?? throw new InvalidOperationException("A live Scene Entity omitted its provenance.");
+                Assert.That(source.SceneInstanceId, Is.EqualTo(instance.SceneInstanceId));
+                Assert.That(source.SourceAssetId, Is.EqualTo(new AssetId(sceneAssetIdValue)));
+                Assert.That(source.PlacementPath, Is.Empty);
+                Assert.That(source.WorldIdentity, Is.EqualTo(world.GetEntityIdentity(entity)));
                 Assert.That(world.IdentityLedger.TryFind(instance.SceneInstanceId, out var sceneOrdinal), Is.True);
                 Assert.That(world.IdentityLedger.TryFind(world.GetEntityId(entity), out var entityOrdinal), Is.True);
                 Assert.That(world.TryGet<SceneComponentDefinitions.LocalTransformComponent>(entity, out var localTransform), Is.True);
@@ -1634,6 +1644,7 @@ internal sealed class SceneAssetStoreTests
                 Assert.That(unloadReceipt.Diagnostics, Is.Empty);
                 Assert.That(world.IdentityLedger.SceneInstanceCount, Is.Zero);
                 Assert.That(instance.TryGetEntity(SceneAssetReaderTests.Fixtures.RootEntityId, out _), Is.False);
+                Assert.That(instance.TryGetProvenance(entity, out _), Is.False);
 
                 var alreadyUnloaded = instance.UnloadAsync(HierarchyDestroyMode.DetachChildrenKeepWorld);
                 world.PumpControlBoundary();
@@ -2042,6 +2053,90 @@ internal sealed class SceneAssetStoreTests
                     await new SceneLoader(world, assets)
                         .PrepareAsync(new AssetId(sceneAssetIdValue), new SceneLoadOptions())
                         .ConfigureAwait(false));
+            }
+            finally
+            {
+                await assets.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    [SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "ActivateAsync detaches the expansion plan before returning; the awaited request owns it independently of PreparedScene.")]
+    public async Task SceneLoaderResolvesNestedAddressesAndProvenance()
+    {
+        const int sceneAssetIdValue = 3;
+        const int prefabAssetIdValue = 1;
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var childEntityId = new Guid("10000000-0000-4000-8000-000000000002");
+        var placementId = new Guid("40000000-0000-4000-8000-000000000002");
+        var scene = SceneAssetReaderTests.Fixtures.CreateSceneWithChildPlacement(
+            new AssetId(sceneAssetIdValue),
+            rootEntityId,
+            placementId,
+            SceneAssetReaderTests.Fixtures.CreateRootPose(childEntityId, includeRootPosition: false));
+        var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(prefabAssetIdValue),
+            entityId: childEntityId);
+        var package = Package.CreatePackage(
+            new Package.Entry(prefabAssetIdValue, Package.CreateEnvelope(prefabAssetIdValue, prefab)),
+            new Package.Entry(sceneAssetIdValue, Package.CreateEnvelope(sceneAssetIdValue, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var storeRegistration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+            var assets = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), storeRegistration)).ConfigureAwait(false);
+
+            try
+            {
+                var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
+                _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+                using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
+                var loader = new SceneLoader(world, assets);
+                using var prepared = loader
+                    .PrepareAsync(new AssetId(sceneAssetIdValue), new SceneLoadOptions())
+                    .GetAwaiter()
+                    .GetResult();
+                var activation = loader.ActivateAsync(prepared);
+                world.PumpControlBoundary();
+                var receipt = await activation.ConfigureAwait(false);
+                var instance = receipt.Instance
+                    ?? throw new InvalidOperationException("The nested Scene activation did not return its instance.");
+
+                Assert.That(receipt.Status, Is.EqualTo(SceneActivationStatus.Activated));
+                Assert.That(instance.TryGetEntity(childEntityId, out _), Is.False);
+                var address = new SceneEntityAddress([placementId], childEntityId);
+                Assert.That(instance.TryGetEntity(address, out var child), Is.True);
+                Assert.That(instance.TryGetProvenance(child, out var provenance), Is.True);
+
+                var childProvenance = provenance
+                    ?? throw new InvalidOperationException("The nested Scene Entity has no provenance.");
+                var rootOccurrence = SceneOccurrenceIdentity.CreateRootOccurrence(new AssetId(sceneAssetIdValue));
+                var childOccurrence = SceneOccurrenceIdentity.CreatePrefabOccurrence(
+                    rootOccurrence,
+                    placementId,
+                    new AssetId(prefabAssetIdValue));
+                Guid[] expectedPlacementPath = [placementId];
+
+                Assert.That(childProvenance.SceneInstanceId, Is.EqualTo(instance.SceneInstanceId));
+                Assert.That(childProvenance.OccurrenceId, Is.EqualTo(childOccurrence));
+                Assert.That(childProvenance.SourceAssetId, Is.EqualTo(new AssetId(prefabAssetIdValue)));
+                Assert.That(childProvenance.AuthoredEntityId, Is.EqualTo(childEntityId));
+                Assert.That(
+                    childProvenance.ExpandedEntityKey,
+                    Is.EqualTo(SceneOccurrenceIdentity.CreateExpandedEntityKey(childOccurrence, childEntityId)));
+                Assert.That(childProvenance.PlacementPath, Is.EqualTo(expectedPlacementPath));
+                Assert.That(childProvenance.WorldIdentity, Is.EqualTo(world.GetEntityIdentity(child)));
             }
             finally
             {

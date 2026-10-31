@@ -1407,6 +1407,28 @@ public sealed partial class World : IDisposable
         return true;
     }
 
+    internal bool TryGetLiveEntityIdentityOrdinal(Entity entity, out uint ordinal)
+    {
+        EnsureWorldReadAccess();
+
+        if (!entity.IsValid
+            || (entity.OwnerId != _ownerId)
+            || !_entitySlots.TryGetLocation(entity.Index, entity.Generation, out _, out _, out _))
+        {
+            ordinal = 0;
+            return false;
+        }
+
+        ordinal = _identityLedger.GetLiveOrdinal(IdentityKind.Entity, entity.Index);
+
+        if (ordinal == 0)
+        {
+            throw new InvalidOperationException("The live Entity has no stable identity assignment.");
+        }
+
+        return true;
+    }
+
     internal void ValidateEntityReference(Entity target, Entity? excludedEntity, string? parameterName)
     {
         var isLiveInThisWorld = target.IsValid

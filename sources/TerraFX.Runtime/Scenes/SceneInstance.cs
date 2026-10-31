@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX;
@@ -62,15 +63,78 @@ public sealed class SceneInstance
             return false;
         }
 
-        var assignmentOrdinal = checked(
-            _firstEntityIdentityOrdinal
-            + (uint)plan.GetEntityAssignmentOrdinal(expandedEntityIndex));
+        return TryGetLiveEntity(plan, expandedEntityIndex, out entity);
+    }
 
-        if (!_world.TryGetEntityByIdentityOrdinal(assignmentOrdinal, out entity))
+    /// <summary>Looks up a live Entity by an exact root-relative placement address.</summary>
+    /// <param name="address">The bounded placement path and authored Entity identity.</param>
+    /// <param name="entity">The live Entity, or default when the address does not exist or is no longer live.</param>
+    /// <returns><see langword="true"/> when the addressed Entity is live in this instance.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="address"/> is null.</exception>
+    /// <exception cref="InvalidOperationException">The World is not idle on its owner thread.</exception>
+    public bool TryGetEntity(SceneEntityAddress address, out Entity entity)
+    {
+        ArgumentNullException.ThrowIfNull(address);
+
+        if ((Volatile.Read(ref _isActive) != 1) || (_plan is not { } plan))
         {
+            entity = default;
             return false;
         }
 
+        try
+        {
+            var expandedEntityIndex = plan.ResolveEntity(
+                new SceneEntitySelector(
+                    SceneEntitySelectorScope.OccurrenceRelative,
+                    address.PlacementPath,
+                    address.AuthoredEntityId),
+                relativeAnchorOccurrenceIndex: 0);
+            return TryGetLiveEntity(plan, expandedEntityIndex, out entity);
+        }
+        catch (System.IO.InvalidDataException)
+        {
+            entity = default;
+            return false;
+        }
+    }
+
+    /// <summary>Gets immutable provenance only for an Entity that is live in this exact Scene instance.</summary>
+    /// <param name="entity">The candidate Entity handle.</param>
+    /// <param name="provenance">The copied provenance, or null when the Entity is not a live member.</param>
+    /// <returns><see langword="true"/> when the Entity is a live member of this Scene instance.</returns>
+    /// <exception cref="InvalidOperationException">The World is not idle on its owner thread.</exception>
+    public bool TryGetProvenance(Entity entity, [NotNullWhen(true)] out SceneEntityProvenance? provenance)
+    {
+        if ((Volatile.Read(ref _isActive) != 1)
+            || (_plan is not { } plan)
+            || !_world.TryGetLiveEntityIdentityOrdinal(entity, out var identityOrdinal)
+            || (identityOrdinal < _firstEntityIdentityOrdinal))
+        {
+            provenance = null;
+            return false;
+        }
+
+        var assignmentIndex = identityOrdinal - _firstEntityIdentityOrdinal;
+
+        if (assignmentIndex >= (uint)plan.Entities.Length)
+        {
+            provenance = null;
+            return false;
+        }
+
+        var expandedEntityIndex = plan.EntityIndicesByAssignmentOrdinal[checked((int)assignmentIndex)];
+        var expandedEntity = plan.Entities[expandedEntityIndex];
+        var occurrence = plan.Occurrences[expandedEntity.OccurrenceIndex];
+        var placementPath = plan.GetOccurrencePlacementPath(expandedEntity.OccurrenceIndex);
+        provenance = new SceneEntityProvenance(
+            _sceneInstanceId,
+            occurrence.OccurrenceId,
+            occurrence.AssetId,
+            expandedEntity.AuthoredEntityId,
+            expandedEntity.ExpandedEntityKey,
+            placementPath,
+            _world.GetEntityIdentity(entity));
         return true;
     }
 
@@ -136,5 +200,13 @@ public sealed class SceneInstance
     {
         _ = Interlocked.Exchange(ref _isActive, 0);
         Interlocked.Exchange(ref _plan, null)?.Dispose();
+    }
+
+    private bool TryGetLiveEntity(SceneExpansionPlan plan, int expandedEntityIndex, out Entity entity)
+    {
+        var assignmentOrdinal = checked(
+            _firstEntityIdentityOrdinal
+            + (uint)plan.GetEntityAssignmentOrdinal(expandedEntityIndex));
+        return _world.TryGetEntityByIdentityOrdinal(assignmentOrdinal, out entity);
     }
 }

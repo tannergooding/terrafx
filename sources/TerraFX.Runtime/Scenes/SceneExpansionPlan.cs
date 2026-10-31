@@ -275,6 +275,38 @@ internal sealed class SceneExpansionPlan : IDisposable
         throw new InvalidOperationException("The Scene expanded Entity is missing from the assignment map.");
     }
 
+    internal ImmutableArray<Guid> GetOccurrencePlacementPath(int occurrenceIndex)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfNegative(occurrenceIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(occurrenceIndex, _occurrences.Length);
+        var pathLength = 0;
+        var currentIndex = occurrenceIndex;
+
+        while (_occurrences[currentIndex].ParentOccurrenceIndex >= 0)
+        {
+            pathLength++;
+            currentIndex = _occurrences[currentIndex].ParentOccurrenceIndex;
+        }
+
+        if (pathLength > 32)
+        {
+            throw new InvalidOperationException("A retained Scene occurrence path exceeds the reviewed placement-depth bound.");
+        }
+
+        var placementPath = new Guid[pathLength];
+        currentIndex = occurrenceIndex;
+
+        for (var index = pathLength - 1; index >= 0; index--)
+        {
+            var occurrence = _occurrences[currentIndex];
+            placementPath[index] = occurrence.PlacementId;
+            currentIndex = occurrence.ParentOccurrenceIndex;
+        }
+
+        return [.. placementPath];
+    }
+
     internal ReadOnlySpan<int> GetRootEntityIndices(int occurrenceIndex)
     {
         ThrowIfDisposed();
