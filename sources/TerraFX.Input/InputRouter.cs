@@ -30,6 +30,7 @@ public sealed partial class InputRouter
     private readonly InputRecipientKind _recipientKind;
     private readonly HostEventSequenceLease _sequenceLease;
     private InputActionSnapshot _simulationActionSnapshot;
+    private SimulationClockSegment _simulationClockSegment;
     private readonly TextInputBatchBudget _textInputBatchBudget;
     private readonly WindowHandle? _window;
 

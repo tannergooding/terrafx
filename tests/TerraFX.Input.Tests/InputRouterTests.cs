@@ -93,6 +93,126 @@ internal sealed class InputRouterTests
     }
 
     [Test]
+    public void AppliesTimelineClockSegmentsAndReportsLateAssignment()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            37,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var key = new KeyboardControl(7, 4);
+        var action = new ActionDefinition(Guid.NewGuid(), "Move", InputActionKind.Digital);
+        var context = new ContextDefinition(Guid.NewGuid(), 0);
+        var binding = new BindingDefinition(Guid.NewGuid(), action.ActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(key),
+        };
+        var map = CreateMapWithContext(Guid.NewGuid(), 1, context, action);
+        var mapResponse = router.RegisterMap(new InputActionMapV1(
+            map.SchemaVersion,
+            map.MapId,
+            map.Revision,
+            map.InitialActiveContextMask,
+            map.Actions,
+            map.Contexts,
+            [binding]));
+        Assert.That(mapResponse.Status, Is.EqualTo(InputMapStatus.Registered));
+
+        var unavailableSequence = sequenceLease.Allocate();
+        var unavailableReceipt = router.EnqueueHeadlessInjection(
+            new InputInjection(key, InputKeyEventKind.Down),
+            1,
+            unavailableSequence);
+        Assert.That(unavailableReceipt.Status, Is.EqualTo(InputRoutingStatus.Rejected));
+        Assert.That(unavailableReceipt.Rejection?.Code, Is.EqualTo("ClockSegmentUnavailable"));
+
+        var firstSequence = sequenceLease.Allocate();
+        var segment = new SimulationClockSegment(
+            1,
+            0,
+            firstSequence,
+            0,
+            0.0,
+            60,
+            0,
+            1.0f,
+            isPaused: false);
+        router.SetSimulationClockSegment(in segment);
+
+        var earlyReceipt = router.EnqueueHeadlessInjection(
+            new InputInjection(key, InputKeyEventKind.Down),
+            0,
+            firstSequence - 1);
+        Assert.That(earlyReceipt.Status, Is.EqualTo(InputRoutingStatus.Rejected));
+        Assert.That(earlyReceipt.Rejection?.Code, Is.EqualTo("InvalidEventOrder"));
+
+        var downReceipt = router.EnqueueHeadlessInjection(
+            new InputInjection(key, InputKeyEventKind.Down),
+            166_666,
+            firstSequence);
+        Assert.That(downReceipt.Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(downReceipt.HostSequence, Is.EqualTo(firstSequence));
+        Assert.That(downReceipt.AssignedTick, Is.EqualTo(0));
+        Assert.That(downReceipt.Late, Is.False);
+
+        _ = router.PublishSimulationActionSnapshot(0);
+        _ = router.PublishSimulationActionSnapshot(1);
+
+        var lateSequence = sequenceLease.Allocate();
+        var lateReceipt = router.EnqueueHeadlessInjection(
+            new InputInjection(key, InputKeyEventKind.Up),
+            166_667,
+            lateSequence);
+        Assert.That(lateReceipt.Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(lateReceipt.HostSequence, Is.EqualTo(lateSequence));
+        Assert.That(lateReceipt.AssignedTick, Is.EqualTo(2));
+        Assert.That(lateReceipt.Late, Is.True);
+
+        var snapshot = router.PublishSimulationActionSnapshot(2);
+        Assert.That(snapshot.Actions, Has.Length.EqualTo(1));
+        Assert.That(snapshot.Actions[0].Transitions, Has.Length.EqualTo(1));
+        Assert.That(snapshot.Actions[0].Transitions[0].HostSequence, Is.EqualTo(lateSequence));
+        Assert.That(snapshot.Actions[0].Transitions[0].AssignedTick, Is.EqualTo(2));
+
+        router.Dispose();
+    }
+
+    [Test]
+    public void AppliesTimelineClockSegmentsWithoutEligibleTicksAsRejections()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            38,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var sequence = sequenceLease.Allocate();
+        var pausedSegment = new SimulationClockSegment(
+            1,
+            0,
+            sequence,
+            0,
+            0.0,
+            60,
+            0,
+            0.0f,
+            isPaused: false);
+        router.SetSimulationClockSegment(in pausedSegment);
+
+        var receipt = router.EnqueueHeadlessInjection(
+            new InputInjection(new KeyboardControl(7, 4), InputKeyEventKind.Down),
+            0,
+            sequence);
+        Assert.That(receipt.Status, Is.EqualTo(InputRoutingStatus.Rejected));
+        Assert.That(receipt.Rejection?.Code, Is.EqualTo("NoEligibleTick"));
+        Assert.That(receipt.HostSequence, Is.Null);
+        Assert.That(receipt.AssignedTick, Is.Null);
+        Assert.That(receipt.Late, Is.False);
+
+        router.Dispose();
+    }
+
+    [Test]
     public void CancelsFocusScopedInputWithoutClearingGamepadState()
     {
         var sequenceLease = new HostEventSequenceLease();
@@ -818,6 +938,68 @@ internal sealed class InputRouterTests
         Assert.That(transitions[0].HostSequence, Is.GreaterThan(downSequence));
         Assert.That(transitions[0].AssignedTick, Is.Null);
         Assert.That(router.DisposeAndGetTransitions(), Is.Empty);
+    }
+
+    [Test]
+    public void DoesNotCoalesceAdjacentAnalogEventsWithDifferentLateMetadata()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            39,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var action = new ActionDefinition(Guid.NewGuid(), "Move", InputActionKind.Axis1);
+        var context = new ContextDefinition(Guid.NewGuid(), 0);
+        var map = new InputActionMapV1(
+            1,
+            Guid.NewGuid(),
+            1,
+            1,
+            [action],
+            [context],
+            [
+                new BindingDefinition(Guid.NewGuid(), action.ActionId, 1, BindingKind.GamepadAxis1) {
+                    Axis1Source = new GamepadAxis1Source(1, GamepadAxis.RightX, deadzone: 0.0f),
+                },
+            ]);
+        Assert.That(router.RegisterMap(map).Status, Is.EqualTo(InputMapStatus.Registered));
+
+        var firstSequence = sequenceLease.Allocate();
+        var segment = new SimulationClockSegment(
+            1,
+            0,
+            firstSequence,
+            0,
+            0.0,
+            60,
+            2,
+            1.0f,
+            isPaused: false);
+        router.SetSimulationClockSegment(in segment);
+
+        var lateReceipt = router.EnqueueHeadlessInjection(
+            new InputInjection(1, GamepadAxis.RightX, 0.1f),
+            0,
+            firstSequence);
+        var onTimeSequence = sequenceLease.Allocate();
+        var onTimeReceipt = router.EnqueueHeadlessInjection(
+            new InputInjection(1, GamepadAxis.RightX, 0.2f),
+            500_000,
+            onTimeSequence);
+        Assert.That(lateReceipt.AssignedTick, Is.EqualTo(2));
+        Assert.That(lateReceipt.Late, Is.True);
+        Assert.That(onTimeReceipt.AssignedTick, Is.EqualTo(2));
+        Assert.That(onTimeReceipt.Late, Is.False);
+
+        var snapshot = router.PublishSimulationActionSnapshot(2);
+        Assert.That(snapshot.Actions, Has.Length.EqualTo(1));
+        Assert.That(snapshot.Actions[0].Transitions, Has.Length.EqualTo(2));
+        Assert.That(snapshot.Actions[0].Transitions[0].HostSequence, Is.EqualTo(firstSequence));
+        Assert.That(snapshot.Actions[0].Transitions[1].HostSequence, Is.EqualTo(onTimeSequence));
+        Assert.That(snapshot.Actions[0].AxisX, Is.EqualTo(0.2f));
+
+        router.Dispose();
     }
 
     [Test]

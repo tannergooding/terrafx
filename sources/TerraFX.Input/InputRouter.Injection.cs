@@ -674,8 +674,50 @@ public sealed partial class InputRouter
     internal InputRoutingReceipt EnqueueHeadlessInjection(
         InputInjection injection,
         long hostTimestamp,
+        long hostSequence)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(injection);
+        ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
+        ArgumentOutOfRangeException.ThrowIfLessThan(hostSequence, 1);
+
+        if (_recipientKind != InputRecipientKind.SimulationTimeline)
+        {
+            return CreateInputRejection("InvalidRecipient", "/RecipientKind");
+        }
+
+        var segment = _simulationClockSegment;
+
+        if (!segment.IsValid)
+        {
+            return CreateInputRejection("ClockSegmentUnavailable", "/ClockSegment");
+        }
+
+        if (hostTimestamp < segment.HostTimestampStartTicks)
+        {
+            return CreateInputRejection("InvalidEventOrder", "/HostTimestamp");
+        }
+
+        if ((hostTimestamp == segment.HostTimestampStartTicks)
+            && (hostSequence < segment.HostSequenceStart))
+        {
+            return CreateInputRejection("InvalidEventOrder", "/HostSequence");
+        }
+
+        if (!segment.TryGetTickIndexForHostEvent(hostTimestamp, hostSequence, out var assignedTick, out var late))
+        {
+            return CreateInputRejection("NoEligibleTick", "/ClockSegment");
+        }
+
+        return EnqueueHeadlessInjection(injection, hostTimestamp, hostSequence, assignedTick, late);
+    }
+
+    internal InputRoutingReceipt EnqueueHeadlessInjection(
+        InputInjection injection,
+        long hostTimestamp,
         long hostSequence,
-        long assignedTick)
+        long assignedTick,
+        bool late = false)
     {
         EnsureOwnerThread();
         ArgumentNullException.ThrowIfNull(injection);
@@ -702,13 +744,14 @@ public sealed partial class InputRouter
         _lastSeenHostSequence = hostSequence;
         _lastSeenHostTimestamp = hostTimestamp;
 
+        var effectiveLate = late || (assignedTick < _nextOpenTick);
+        var effectiveTick = Math.Max(assignedTick, _nextOpenTick);
+
         if (_inputOverflowed)
         {
             RecordUnacceptedSequence(hostSequence);
-            return CreateInputCapacityFailure(hostSequence, Math.Max(assignedTick, _nextOpenTick));
+            return CreateInputCapacityFailure(hostSequence, effectiveTick, effectiveLate);
         }
-
-        var effectiveTick = Math.Max(assignedTick, _nextOpenTick);
 
         if (effectiveTick < _lastAssignedInputTick)
         {
@@ -716,28 +759,28 @@ public sealed partial class InputRouter
         }
 
         var control = GetControlKey(injection);
-        var envelope = new InputEnvelope(injection, control, hostTimestamp, hostSequence, effectiveTick);
+        var envelope = new InputEnvelope(injection, control, hostTimestamp, hostSequence, effectiveTick, effectiveLate);
 
         if ((_inputInboxTail is { } tail)
             && CanCoalesceInputEnvelope(tail, envelope)
             && tail.TryCoalesceWith(envelope))
         {
             _lastAssignedInputTick = effectiveTick;
-            return new InputRoutingReceipt(InputRoutingStatus.Applied, _recipientId, hostSequence, effectiveTick, null);
+            return new InputRoutingReceipt(InputRoutingStatus.Applied, _recipientId, hostSequence, effectiveTick, null, effectiveLate);
         }
 
         if (_inputInbox.Count >= MaximumPendingInputEvents)
         {
             _inputOverflowed = true;
             RecordUnacceptedSequence(hostSequence);
-            return CreateInputCapacityFailure(hostSequence, Math.Max(assignedTick, _nextOpenTick));
+            return CreateInputCapacityFailure(hostSequence, effectiveTick, effectiveLate);
         }
 
         _inputInbox.Enqueue(envelope);
         _inputInboxTail = envelope;
         _lastAssignedInputTick = effectiveTick;
 
-        return new InputRoutingReceipt(InputRoutingStatus.Applied, _recipientId, hostSequence, effectiveTick, null);
+        return new InputRoutingReceipt(InputRoutingStatus.Applied, _recipientId, hostSequence, effectiveTick, null, effectiveLate);
     }
 
     internal InputRoutingReceipt ReconcileHeadlessInputState(
@@ -1004,6 +1047,54 @@ public sealed partial class InputRouter
         }
 
         return transitions.ToImmutable();
+    }
+
+    internal void SetSimulationClockSegment(in SimulationClockSegment segment)
+    {
+        EnsureOwnerThread();
+
+        if (_recipientKind != InputRecipientKind.SimulationTimeline)
+        {
+            throw new InvalidOperationException("Only a simulation timeline owns a simulation clock segment.");
+        }
+
+        if (!segment.IsValid)
+        {
+            throw new ArgumentException("The selected simulation clock segment is not initialized.", nameof(segment));
+        }
+
+        if ((segment.HostTimestampStartTicks < _hostControlTimestamp)
+            || (segment.HostTimestampStartTicks < _lastSeenHostTimestamp)
+            || (segment.HostSequenceStart <= _lastSeenHostSequence))
+        {
+            throw new ArgumentException("The simulation clock segment starts before the recipient's next host event.", nameof(segment));
+        }
+
+        if (_simulationClockSegment.IsValid)
+        {
+            if ((segment.Revision <= _simulationClockSegment.Revision)
+                || (segment.TickRate != _simulationClockSegment.TickRate)
+                || (segment.HostTimestampStartTicks < _simulationClockSegment.HostTimestampStartTicks)
+                || (segment.HostSequenceStart < _simulationClockSegment.HostSequenceStart)
+                || (segment.NextOpenTick != _nextOpenTick))
+            {
+                throw new ArgumentException("The simulation clock segment regresses or disagrees with the recipient timeline.", nameof(segment));
+            }
+        }
+        else
+        {
+            if ((_inputInbox.Count != 0)
+                || (_inputControlInbox.Count != 0)
+                || (_lastAssignedInputTick >= 0)
+                || (segment.NextOpenTick < _nextOpenTick))
+            {
+                throw new ArgumentException("The first simulation clock segment cannot skip pending recipient state.", nameof(segment));
+            }
+
+            _nextOpenTick = segment.NextOpenTick;
+        }
+
+        _simulationClockSegment = segment;
     }
 
     private void AddConsumptionChangedControl(
@@ -1461,13 +1552,14 @@ public sealed partial class InputRouter
         return count;
     }
 
-    private InputRoutingReceipt CreateInputCapacityFailure(long hostSequence, long assignedTick)
+    private InputRoutingReceipt CreateInputCapacityFailure(long hostSequence, long assignedTick, bool late = false)
         => new InputRoutingReceipt(
             InputRoutingStatus.CapacityExceeded,
             _recipientId,
             hostSequence,
             assignedTick,
-            new ValidationIssue("CapacityExceeded", "/InputInbox"));
+            new ValidationIssue("CapacityExceeded", "/InputInbox"),
+            late);
 
     private InputRoutingReceipt CreateInputRejection(string code, string path)
         => new InputRoutingReceipt(
@@ -2715,7 +2807,8 @@ public sealed partial class InputRouter
         InputControlKey control,
         long hostTimestamp,
         long hostSequence,
-        long assignedTick)
+        long assignedTick,
+        bool late)
     {
         private InputInjection _injection = injection;
         private long _lastHostSequence = hostSequence;
@@ -2736,6 +2829,8 @@ public sealed partial class InputRouter
 
         internal InputInjection Injection => _injection;
 
+        internal bool Late { get; } = late;
+
         internal long LastHostSequence => _lastHostSequence;
 
         internal long LastHostTimestamp => _lastHostTimestamp;
@@ -2746,6 +2841,7 @@ public sealed partial class InputRouter
         {
             return (Control == next.Control)
                 && (AssignedTick == next.AssignedTick)
+                && (Late == next.Late)
                 && (Injection.Kind == next.Injection.Kind)
                 && (Injection.Kind is InputInjectionKind.GamepadAxis
                     or InputInjectionKind.GamepadStick

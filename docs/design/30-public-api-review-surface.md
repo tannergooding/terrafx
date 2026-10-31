@@ -5979,11 +5979,12 @@ public enum InputRoutingStatus
 
 public sealed class InputRoutingReceipt
 {
-    internal InputRoutingReceipt(InputRoutingStatus status, uint recipientId, long? hostSequence, long? assignedTick, ValidationIssue? rejection);
+    internal InputRoutingReceipt(InputRoutingStatus status, uint recipientId, long? hostSequence, long? assignedTick, ValidationIssue? rejection, bool late = false);
     public InputRoutingStatus Status { get; }
     public uint RecipientId { get; }
     public long? HostSequence { get; }
     public long? AssignedTick { get; }
+    public bool Late { get; }
     public ValidationIssue? Rejection { get; }
 }
 

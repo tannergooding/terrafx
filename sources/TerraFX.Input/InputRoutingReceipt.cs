@@ -10,10 +10,12 @@ public sealed class InputRoutingReceipt
         uint recipientId,
         long? hostSequence,
         long? assignedTick,
-        ValidationIssue? rejection)
+        ValidationIssue? rejection,
+        bool late = false)
     {
         AssignedTick = assignedTick;
         HostSequence = hostSequence;
+        Late = late;
         RecipientId = recipientId;
         Rejection = rejection;
         Status = status;
@@ -24,6 +26,9 @@ public sealed class InputRoutingReceipt
 
     /// <summary>Gets the process-wide host sequence assigned to an admitted operation.</summary>
     public long? HostSequence { get; }
+
+    /// <summary>Gets whether the recipient mapped this captured event to its next open tick because its eligible tick had already passed.</summary>
+    public bool Late { get; }
 
     /// <summary>Gets the recipient that owned the operation.</summary>
     public uint RecipientId { get; }
