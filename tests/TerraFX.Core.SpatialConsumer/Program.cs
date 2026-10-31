@@ -23,6 +23,9 @@ internal static class Program
 
     private static void ExercisePublicSurface()
     {
+        var window = default(WindowHandle);
+        Check(!window.IsValid);
+
         var settings = new SpatialSettings(metersPerUnitExponent: 0, chunkSizeExponent: 12);
         var profile = new SpatialProfileId(value: SpatialProfileId.Default.Value);
         Check(profile.IsValid && SpatialProfiles.TryGetSettings(id: profile, settings: out var found) && found == settings);
@@ -108,7 +111,7 @@ internal static class Program
         if (args.Length == 0)
         {
             ExercisePublicSurface();
-            Console.WriteLine("Spatial public consumer passed: 16 types and 8 dimensional operations; unsafe disabled.");
+            Console.WriteLine("Spatial public consumer passed: 17 types and 8 dimensional operations; unsafe disabled.");
         }
         else if (args.Length == 1 && args[0] == "--capacity")
         {
