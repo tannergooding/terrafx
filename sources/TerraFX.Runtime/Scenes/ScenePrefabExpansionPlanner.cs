@@ -696,11 +696,14 @@ internal static class ScenePrefabExpansionPlanner
 
             var entityAssignmentKeys = new Guid[_entityCount];
             var entityIndicesByAssignmentOrdinal = new int[_entityCount];
+            var entityParentIndices = new int[_entityCount];
 
             for (var index = 0; index < _entityCount; index++)
             {
+                _cancellationToken.ThrowIfCancellationRequested();
                 entityAssignmentKeys[index] = _entities[index].ExpandedEntityKey;
                 entityIndicesByAssignmentOrdinal[index] = index;
+                entityParentIndices[index] = _entities[index].ParentEntityIndex;
             }
 
             SceneOccurrenceIdentity.SortExpandedEntityKeysForAssignment(
@@ -722,6 +725,7 @@ internal static class ScenePrefabExpansionPlanner
                 _externalSlotBindings.MoveToImmutable(),
                 entityAssignmentKeys,
                 entityIndicesByAssignmentOrdinal,
+                entityParentIndices,
                 _occurrenceIdentities,
                 requiredBytes,
                 _storageReservation);
@@ -1874,6 +1878,7 @@ internal static class ScenePrefabExpansionPlanner
             var requiredBytes = _totalComponentRecordBytes;
             requiredBytes = checked(requiredBytes + ArrayBytes(_entityCount, Unsafe.SizeOf<SceneExpandedEntity>()));
             requiredBytes = checked(requiredBytes + ArrayBytes(_occurrenceCount, Unsafe.SizeOf<SceneExpandedOccurrence>()));
+            requiredBytes = checked(requiredBytes + ArrayBytes(_entityCount, sizeof(int)));
             requiredBytes = checked(requiredBytes + ArrayBytes(_entityCount, sizeof(int)));
             requiredBytes = checked(requiredBytes + ArrayBytes(_placementOccurrenceCount, sizeof(int)));
             requiredBytes = checked(requiredBytes + ArrayBytes(_rootEntityIndexCount, sizeof(int)));

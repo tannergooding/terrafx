@@ -9,6 +9,48 @@ namespace TerraFX.Entities;
 
 public sealed partial class World
 {
+    private static void ValidateHierarchyParentIndices(
+        scoped ReadOnlySpan<int> parentIndices,
+        scoped Span<int> hierarchyDepths)
+    {
+        if (parentIndices.IsEmpty)
+        {
+            return;
+        }
+
+        if (parentIndices.Length != hierarchyDepths.Length)
+        {
+            throw new ArgumentException("The hierarchy depth workspace must cover every parent index.", nameof(hierarchyDepths));
+        }
+
+        for (var entityIndex = 0; entityIndex < parentIndices.Length; entityIndex++)
+        {
+            var parentIndex = parentIndices[entityIndex];
+
+            if (parentIndex == -1)
+            {
+                hierarchyDepths[entityIndex] = 0;
+                continue;
+            }
+
+            if ((uint)parentIndex >= (uint)entityIndex)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(parentIndices),
+                    "A hierarchy parent must be an earlier expanded Entity or the root.");
+            }
+
+            var depth = checked(hierarchyDepths[parentIndex] + 1);
+
+            if (depth > EntitySlotTable.MaximumHierarchyDepth)
+            {
+                throw new InvalidOperationException("The Scene Entity parent map exceeds the World hierarchy depth bound.");
+            }
+
+            hierarchyDepths[entityIndex] = depth;
+        }
+    }
+
     internal ImmutableArray<Entity> CreateEntitiesAtomically(
         int entityCount,
         Func<ImmutableArray<Entity>, ImmutableArray<EntityDescription>> createDescriptions)
@@ -25,6 +67,7 @@ public sealed partial class World
                 sceneInstanceAssignment: null,
                 sceneInstanceLocator: 0,
                 entityIndicesByAssignmentOrdinal: [],
+                parentEntityIndices: default,
                 cancellationToken: CancellationToken.None).Entities;
         }
         finally
@@ -48,6 +91,7 @@ public sealed partial class World
         Guid? requestedSceneInstanceId,
         scoped ReadOnlySpan<int> entityIndicesByAssignmentOrdinal,
         Func<ImmutableArray<Entity>, ImmutableArray<EntityDescription>> createDescriptions,
+        ReadOnlyMemory<int> parentEntityIndices = default,
         CancellationToken cancellationToken = default)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(entityCount);
@@ -57,6 +101,17 @@ public sealed partial class World
             && (entityIndicesByAssignmentOrdinal.Length != entityCount))
         {
             throw new ArgumentException("The assignment-order map must be empty or cover every expanded Entity.", nameof(entityIndicesByAssignmentOrdinal));
+        }
+
+        if (!parentEntityIndices.IsEmpty
+            && (parentEntityIndices.Length != entityCount))
+        {
+            throw new ArgumentException("The parent map must cover every expanded Entity.", nameof(parentEntityIndices));
+        }
+
+        if (!parentEntityIndices.IsEmpty && (_sceneParticipant is null))
+        {
+            throw new InvalidOperationException("The World was not constructed with Scene support.");
         }
 
         if (requestedSceneInstanceId is Guid sceneInstanceId
@@ -90,6 +145,7 @@ public sealed partial class World
                 sceneInstanceAssignment,
                 sceneInstanceLocator,
                 entityIndicesByAssignmentOrdinal,
+                parentEntityIndices,
                 cancellationToken);
         }
         finally
@@ -188,6 +244,7 @@ public sealed partial class World
         IdentityAssignment? sceneInstanceAssignment,
         uint sceneInstanceLocator,
         scoped ReadOnlySpan<int> entityIndicesByAssignmentOrdinal,
+        ReadOnlyMemory<int> parentEntityIndices,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -205,11 +262,13 @@ public sealed partial class World
         var assignmentMapWordCount = (entityIndicesByAssignmentOrdinal.IsEmpty || (entityCount == 0))
             ? 0
             : checked((entityCount + 63) / 64);
+        var hierarchyParentIndices = parentEntityIndices.Span;
         var preparationBytes = (entityCount == 0)
             ? 0
             : checked(
                 ArrayBytes(entityCount, Unsafe.SizeOf<Entity>())
-                + ((assignmentMapWordCount == 0) ? 0 : ArrayBytes(assignmentMapWordCount, sizeof(ulong))));
+                + ((assignmentMapWordCount == 0) ? 0 : ArrayBytes(assignmentMapWordCount, sizeof(ulong)))
+                + (hierarchyParentIndices.IsEmpty ? 0 : ArrayBytes(entityCount, sizeof(int))));
         var oldOwnedBytes = GetWorldOwnedStateBytes();
 
         if ((checked(oldOwnedBytes + preparationBytes) > _maximumOwnedStateBytes)
@@ -222,6 +281,8 @@ public sealed partial class World
 
         try
         {
+            var hierarchyDepths = hierarchyParentIndices.IsEmpty ? [] : new int[entityCount];
+            ValidateHierarchyParentIndices(hierarchyParentIndices, hierarchyDepths);
             var candidates = PreviewCandidateEntityHandles(entityCount, entityIndicesByAssignmentOrdinal, assignmentMapWordCount);
             var descriptions = createDescriptions(candidates);
             cancellationToken.ThrowIfCancellationRequested();
@@ -269,6 +330,24 @@ public sealed partial class World
                 {
                     throw new InvalidOperationException("The owner-control batch resolved an unexpected Entity handle.");
                 }
+            }
+
+            for (var entityIndex = 0; entityIndex < hierarchyParentIndices.Length; entityIndex++)
+            {
+                var parentIndex = hierarchyParentIndices[entityIndex];
+
+                if (parentIndex < 0)
+                {
+                    continue;
+                }
+
+                var child = candidates[entityIndex];
+                var parent = candidates[parentIndex];
+                _entitySlots.SetParent(
+                    child.Index,
+                    child.Generation,
+                    parent.Index,
+                    parent.Generation);
             }
 
             return new WorldSceneEntityBatchCommit(

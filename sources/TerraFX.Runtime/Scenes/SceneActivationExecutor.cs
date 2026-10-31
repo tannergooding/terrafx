@@ -83,7 +83,8 @@ internal static class SceneActivationExecutor
                         candidateInstance = new SceneInstance(world, registry, plan);
                         return descriptions;
                     },
-                    cancellationToken);
+                    parentEntityIndices: plan.EntityParentIndices,
+                    cancellationToken: cancellationToken);
             }
             catch (SceneActivationRejectedException exception)
             {

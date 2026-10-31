@@ -2257,9 +2257,13 @@ internal sealed partial class SceneAssetStoreTests
 
                 Assert.That(receipt.Status, Is.EqualTo(SceneActivationStatus.Activated));
                 Assert.That(instance.TryGetEntity(childEntityId, out _), Is.False);
+                Assert.That(instance.TryGetEntity(rootEntityId, out var root), Is.True);
                 var address = new SceneEntityAddress([placementId], childEntityId);
                 Assert.That(instance.TryGetEntity(address, out var child), Is.True);
                 Assert.That(instance.TryGetProvenance(child, out var provenance), Is.True);
+                Assert.That(world.TryGetHierarchyParent(root, out _), Is.False);
+                Assert.That(world.TryGetHierarchyParent(child, out var parent), Is.True);
+                Assert.That(parent, Is.EqualTo(root));
 
                 var childProvenance = provenance
                     ?? throw new InvalidOperationException("The nested Scene Entity has no provenance.");

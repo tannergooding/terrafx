@@ -18,6 +18,7 @@ internal sealed class SceneExpansionPlan : IDisposable
     private readonly Guid[] _entityAssignmentKeys;
     private readonly int[] _entityIndicesByAssignmentOrdinal;
     private readonly ImmutableArray<int> _entityIndicesByOccurrence;
+    private readonly int[] _entityParentIndices;
     private readonly ImmutableArray<SceneExpandedExternalSlotBinding> _externalSlotBindings;
     private readonly Guid[] _occurrenceIds;
     private readonly ImmutableArray<SceneExpandedOccurrence> _occurrences;
@@ -40,6 +41,7 @@ internal sealed class SceneExpansionPlan : IDisposable
         ImmutableArray<SceneExpandedExternalSlotBinding> externalSlotBindings,
         Guid[] entityAssignmentKeys,
         int[] entityIndicesByAssignmentOrdinal,
+        int[] entityParentIndices,
         Guid[] occurrenceIds,
         long requiredByteReservation,
         WorldSceneStorageReservation? storageReservation)
@@ -66,12 +68,33 @@ internal sealed class SceneExpansionPlan : IDisposable
 
         ArgumentNullException.ThrowIfNull(entityAssignmentKeys);
         ArgumentNullException.ThrowIfNull(entityIndicesByAssignmentOrdinal);
+        ArgumentNullException.ThrowIfNull(entityParentIndices);
         ArgumentNullException.ThrowIfNull(occurrenceIds);
 
         if ((entityAssignmentKeys.Length != entities.Length)
-            || (entityIndicesByAssignmentOrdinal.Length != entities.Length))
+            || (entityIndicesByAssignmentOrdinal.Length != entities.Length)
+            || (entityParentIndices.Length != entities.Length))
         {
-            throw new ArgumentException("The Scene Entity assignment map must cover every expanded Entity.");
+            throw new ArgumentException("The Scene Entity assignment and parent maps must cover every expanded Entity.");
+        }
+
+        for (var index = 0; index < entities.Length; index++)
+        {
+            var parentIndex = entityParentIndices[index];
+
+            if ((parentIndex < -1) || (parentIndex >= index))
+            {
+                throw new ArgumentException("The Scene Entity parent map must refer only to an earlier expanded Entity or the root.", nameof(entityParentIndices));
+            }
+
+            var expectedHierarchyDepth = (parentIndex < 0)
+                ? 1
+                : checked(entities[parentIndex].HierarchyDepth + 1);
+
+            if (entities[index].HierarchyDepth != expectedHierarchyDepth)
+            {
+                throw new ArgumentException("The Scene Entity parent map does not match the expanded hierarchy depths.", nameof(entityParentIndices));
+            }
         }
 
         _sceneAssetId = sceneLease.AssetId;
@@ -86,6 +109,7 @@ internal sealed class SceneExpansionPlan : IDisposable
         _externalSlotBindings = externalSlotBindings;
         _entityAssignmentKeys = entityAssignmentKeys;
         _entityIndicesByAssignmentOrdinal = entityIndicesByAssignmentOrdinal;
+        _entityParentIndices = entityParentIndices;
         _occurrenceIds = occurrenceIds;
         RequiredByteReservation = requiredByteReservation;
         _storageReservation = storageReservation;
@@ -115,6 +139,15 @@ internal sealed class SceneExpansionPlan : IDisposable
         {
             ThrowIfDisposed();
             return _entityIndicesByAssignmentOrdinal;
+        }
+    }
+
+    internal ReadOnlyMemory<int> EntityParentIndices
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return _entityParentIndices;
         }
     }
 
