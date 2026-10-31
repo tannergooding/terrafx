@@ -22,6 +22,14 @@ internal static class Program
     [SuppressMessage("Globalization", "CA1303", Justification = "This is a machine-checked public-consumer completion marker.")]
     public static int Main()
     {
+        Check(
+            ((byte)CameraProjectionKind.Perspective == 0)
+            && ((byte)CameraProjectionKind.Orthographic == 1)
+            && ((byte)CameraFarMode.Finite == 0)
+            && ((byte)CameraFarMode.Infinite == 1)
+            && ((byte)CameraClearFlags.Color == 1)
+            && ((byte)CameraClearFlags.Depth == 2));
+
         var assignment = new ContentSchemaIdentityAssignment("application/component/public-consumer/v1");
         var schemaReference = new ContentSchemaReference(assignment.SchemaId, 1, 0, ContentSchemaScope.Content);
         ImmutableArray<ContentFieldDescriptor> fields = [
