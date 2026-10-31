@@ -13,7 +13,7 @@ internal sealed class SceneAsset
         ImmutableArray<SceneEntity> entities,
         SceneHierarchy hierarchy,
         ImmutableArray<ScenePrefabPlacement> placements,
-        ImmutableArray<SceneAuthoredRecord> references,
+        ImmutableArray<SceneEntityReferenceBinding> references,
         ImmutableArray<ScenePrefabOverride> overrides,
         ImmutableArray<SceneExternalSlot> externalSlots,
         ImmutableArray<byte> encodedRecord)
@@ -79,5 +79,5 @@ internal sealed class SceneAsset
 
     internal ImmutableArray<ScenePrefabPlacement> Placements { get; }
 
-    internal ImmutableArray<SceneAuthoredRecord> References { get; }
+    internal ImmutableArray<SceneEntityReferenceBinding> References { get; }
 }

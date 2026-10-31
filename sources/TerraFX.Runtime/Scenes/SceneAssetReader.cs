@@ -189,12 +189,14 @@ internal static class SceneAssetReader
 
         ValidateRootPositionComponents(entities, hierarchy);
 
-        var references = ReadAuthoredRecords(
+        var references = ReadEntityReferenceBindings(
             record,
             tag: 6,
             referenceField,
-            s_entityReferenceBindingSchemaId,
-            maximumCount: 1_048_576);
+            schemas,
+            limits,
+            allowInstanceAbsoluteSources: true,
+            allowInstanceAbsoluteTargets: true);
         var overrides = ReadPrefabOverrides(
             record,
             tag: 7,
@@ -311,12 +313,14 @@ internal static class SceneAssetReader
                 $"The Prefab hierarchy is invalid: {validation.Error} ({validation.SubjectId:N}).");
         }
 
-        var references = ReadAuthoredRecords(
+        var references = ReadEntityReferenceBindings(
             record,
             tag: 6,
             referenceField,
-            s_entityReferenceBindingSchemaId,
-            maximumCount: 1_048_576);
+            schemas,
+            limits,
+            allowInstanceAbsoluteSources: false,
+            allowInstanceAbsoluteTargets: false);
         var externalSlots = ReadExternalSlots(record, tag: 8, externalSlotField, schemas, limits);
 
         return new ScenePrefabAsset(
@@ -329,17 +333,32 @@ internal static class SceneAssetReader
             [.. record.EncodedBytes]);
     }
 
-    private static int ComparePrefabOverrideAddress(ScenePrefabOverride left, ScenePrefabOverride right)
+    private static int CompareEntityReferenceBindingSourceOrder(
+        SceneEntityReferenceBinding left,
+        SceneEntityReferenceBinding right)
     {
-        var comparison = left.Target.Scope.CompareTo(right.Target.Scope);
+        var comparison = CompareEntitySelectors(left.Source, right.Source);
 
         if (comparison != 0)
         {
             return comparison;
         }
 
-        var leftPlacementPath = left.Target.PlacementPath;
-        var rightPlacementPath = right.Target.PlacementPath;
+        comparison = CompareSchemaReferences(left.ComponentSchema, right.ComponentSchema);
+        return (comparison != 0) ? comparison : ComparePropertyPaths(left.PropertyPath, right.PropertyPath);
+    }
+
+    private static int CompareEntitySelectors(SceneEntitySelector left, SceneEntitySelector right)
+    {
+        var comparison = left.Scope.CompareTo(right.Scope);
+
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        var leftPlacementPath = left.PlacementPath;
+        var rightPlacementPath = right.PlacementPath;
         var sharedPathLength = Math.Min(leftPlacementPath.Length, rightPlacementPath.Length);
 
         for (var index = 0; index < sharedPathLength; index++)
@@ -359,7 +378,12 @@ internal static class SceneAssetReader
             return comparison;
         }
 
-        comparison = FoundationCatalogue.CompareRfc(left.Target.AuthoredEntityId, right.Target.AuthoredEntityId);
+        return FoundationCatalogue.CompareRfc(left.AuthoredEntityId, right.AuthoredEntityId);
+    }
+
+    private static int ComparePrefabOverrideAddress(ScenePrefabOverride left, ScenePrefabOverride right)
+    {
+        var comparison = CompareEntitySelectors(left.Target, right.Target);
         return (comparison != 0) ? comparison : CompareSchemaReferences(left.ComponentSchema, right.ComponentSchema);
     }
 
@@ -523,37 +547,6 @@ internal static class SceneAssetReader
         return new AssetId(checked((int)value));
     }
 
-    private static ImmutableArray<SceneAuthoredRecord> ReadAuthoredRecords(
-        EbinRecordReadView record,
-        uint tag,
-        EbinFieldReadView field,
-        Guid schemaId,
-        int maximumCount)
-    {
-        if (field.Count > checked((ulong)maximumCount))
-        {
-            throw new InvalidDataException($"Scene record-array field {tag} exceeds its selected schema limit.");
-        }
-
-        var count = checked((int)field.Count);
-        var records = ImmutableArray.CreateBuilder<SceneAuthoredRecord>(count);
-
-        for (var index = 0; index < count; index++)
-        {
-            var nestedRecord = record.GetRecordArrayElement(tag, index);
-            ValidateSchema(nestedRecord, schemaId, major: 1);
-            var header = nestedRecord.Header;
-            var schema = new ContentSchemaReference(
-                header.SchemaId,
-                header.Major,
-                header.Minor,
-                ContentSchemaScope.Content);
-            records.Add(new SceneAuthoredRecord(schema, nestedRecord.EncodedBytes));
-        }
-
-        return records.MoveToImmutable();
-    }
-
     private static bool ReadBoolean(EbinRecordReadView record, uint tag)
     {
         if (!record.TryGetField(tag, out var field)
@@ -567,6 +560,94 @@ internal static class SceneAssetReader
         }
 
         return field.Payload[0] != 0;
+    }
+
+    private static SceneEntityReferenceBinding ReadEntityReferenceBinding(
+        EbinRecordReadView record,
+        CompiledContentSchemaRegistry schemas,
+        EbinReadLimits limits,
+        bool allowInstanceAbsoluteSources,
+        bool allowInstanceAbsoluteTargets)
+    {
+        ValidateHeader(record, s_entityReferenceBindingSchemaId, major: 1, fieldCount: 4);
+        var source = ReadEntitySelector(record.GetRecord(1), limits);
+
+        if ((source.Scope == SceneEntitySelectorScope.InstanceAbsolute)
+            && !allowInstanceAbsoluteSources)
+        {
+            throw new InvalidDataException("A Prefab Entity-reference source must be occurrence-relative.");
+        }
+
+        var componentSchema = ReadSchemaReference(record.GetRecord(2));
+
+        if (componentSchema.Scope != ContentSchemaScope.Content)
+        {
+            throw new InvalidDataException("An Entity-reference component schema must use Content scope.");
+        }
+
+        if (!schemas.TryGetSchema(componentSchema, out var componentMetadata))
+        {
+            throw new NotSupportedException($"The Entity-reference component schema {componentSchema} is not registered.");
+        }
+
+        if (componentMetadata.Role != ContentSchemaRole.Component)
+        {
+            throw new InvalidDataException("An Entity-reference binding does not identify a Component.");
+        }
+
+        var propertyPathField = GetRecordArrayField(record, tag: 3, maximumCount: 64, limits);
+
+        if (propertyPathField.Count == 0)
+        {
+            throw new InvalidDataException("An Entity-reference property path cannot be empty.");
+        }
+
+        var propertyPath = ReadPropertyPath(record, tag: 3, propertyPathField);
+        var target = ReadReferenceTarget(record.GetRecord(4), limits);
+
+        if ((target.Kind == SceneReferenceTargetKind.Internal)
+            && (target.Entity!.Value.Scope == SceneEntitySelectorScope.InstanceAbsolute)
+            && !allowInstanceAbsoluteTargets)
+        {
+            throw new InvalidDataException("A Prefab Internal Entity-reference target must be occurrence-relative.");
+        }
+
+        return new SceneEntityReferenceBinding(source, componentSchema, propertyPath, target);
+    }
+
+    private static ImmutableArray<SceneEntityReferenceBinding> ReadEntityReferenceBindings(
+        EbinRecordReadView record,
+        uint tag,
+        EbinFieldReadView field,
+        CompiledContentSchemaRegistry schemas,
+        EbinReadLimits limits,
+        bool allowInstanceAbsoluteSources,
+        bool allowInstanceAbsoluteTargets)
+    {
+        var count = checked((int)field.Count);
+        var references = ImmutableArray.CreateBuilder<SceneEntityReferenceBinding>(count);
+        SceneEntityReferenceBinding? previousReference = null;
+
+        for (var index = 0; index < count; index++)
+        {
+            var reference = ReadEntityReferenceBinding(
+                record.GetRecordArrayElement(tag, index),
+                schemas,
+                limits,
+                allowInstanceAbsoluteSources,
+                allowInstanceAbsoluteTargets);
+
+            if (previousReference is not null
+                && (CompareEntityReferenceBindingSourceOrder(previousReference, reference) >= 0))
+            {
+                throw new InvalidDataException("Entity-reference bindings are not uniquely sorted by source key.");
+            }
+
+            references.Add(reference);
+            previousReference = reference;
+        }
+
+        return references.MoveToImmutable();
     }
 
     private static SceneEntitySelector ReadEntitySelector(EbinRecordReadView record, EbinReadLimits limits)
