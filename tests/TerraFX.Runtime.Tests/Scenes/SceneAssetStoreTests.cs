@@ -2283,6 +2283,16 @@ internal sealed partial class SceneAssetStoreTests
                     Is.EqualTo(SceneOccurrenceIdentity.CreateExpandedEntityKey(childOccurrence, childEntityId)));
                 Assert.That(childProvenance.PlacementPath, Is.EqualTo(expectedPlacementPath));
                 Assert.That(childProvenance.WorldIdentity, Is.EqualTo(world.GetEntityIdentity(child)));
+
+                var rootIdentity = world.GetEntityId(root);
+                var childIdentity = world.GetEntityId(child);
+                var unload = instance.UnloadAsync(HierarchyDestroyMode.DestroySubtree);
+                world.PumpControlBoundary();
+                var unloadReceipt = await unload.ConfigureAwait(false);
+
+                Assert.That(unloadReceipt.Status, Is.EqualTo(SceneUnloadStatus.Unloaded));
+                Assert.That(world.TryGetEntity(rootIdentity, out _), Is.False);
+                Assert.That(world.TryGetEntity(childIdentity, out _), Is.False);
             }
             finally
             {

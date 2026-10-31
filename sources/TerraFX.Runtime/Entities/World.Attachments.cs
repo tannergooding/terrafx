@@ -633,15 +633,18 @@ public sealed partial class World
         "Usage",
         "CA1031:Do not catch general exception types",
         Justification = "Captured attachment field readers must not swallow a reentrant World-operation protocol failure during Entity retirement.")]
-    private void ValidateAttachmentEntityReferencesExcludingOwners(IReadOnlySet<Guid> excludedOwnerIds)
+    private void ValidateAttachmentEntityReferencesExcludingOwners(
+        IReadOnlySet<Guid> excludedOwnerIds,
+        IReadOnlySet<Entity> excludedEntities)
     {
         ArgumentNullException.ThrowIfNull(excludedOwnerIds);
+        ArgumentNullException.ThrowIfNull(excludedEntities);
         StartAttachmentCallback();
         Exception? callbackFailure = null;
 
         try
         {
-            _attachments.ValidateEntityReferencesExcludingOwners(this, excludedOwnerIds);
+            _attachments.ValidateEntityReferencesExcludingOwners(this, excludedOwnerIds, excludedEntities);
         }
         catch (Exception exception)
         {

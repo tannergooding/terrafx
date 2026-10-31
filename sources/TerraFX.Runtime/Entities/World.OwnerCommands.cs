@@ -196,6 +196,7 @@ public sealed partial class World
                 throw new InvalidOperationException("The live SceneInstance identity has no ledger ordinal.");
             }
 
+            var lastEntityIdentityOrdinalExclusive = checked(firstEntityIdentityOrdinal + (uint)entityCount);
             using var staging = new WorldCommandStaging(
                 this,
                 _maximumDeferredCommands,
@@ -221,8 +222,27 @@ public sealed partial class World
                     throw new InvalidOperationException("A live Scene Entity identity references a non-live Entity slot.");
                 }
 
+                var entity = new Entity(_ownerId, entityLocator, generation);
+
+                if (mode == HierarchyDestroyMode.DestroySubtree
+                    && _entitySlots.TryGetParent(
+                        entityLocator,
+                        generation,
+                        out var parentLocator,
+                        out var parentGeneration)
+                    && _entitySlots.IsLive(parentLocator, parentGeneration))
+                {
+                    var parentIdentityOrdinal = _identityLedger.GetLiveOrdinal(IdentityKind.Entity, parentLocator);
+
+                    if ((parentIdentityOrdinal >= firstEntityIdentityOrdinal)
+                        && (parentIdentityOrdinal < lastEntityIdentityOrdinalExclusive))
+                    {
+                        continue;
+                    }
+                }
+
                 staging.AppendOwnerDestroy(
-                    new Entity(_ownerId, entityLocator, generation),
+                    entity,
                     mode);
             }
 

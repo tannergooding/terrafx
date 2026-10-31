@@ -4,12 +4,58 @@ using System;
 using System.Collections.Immutable;
 using NUnit.Framework;
 using TerraFX.Entities;
+using TerraFX.Scenes;
 
 namespace TerraFX.Runtime.Tests.Entities;
 
 [TestFixture]
 internal sealed class WorldOwnerCommandTests
 {
+    [Test]
+    public void DestroySubtreeRetiresItsLiveDescendants()
+    {
+        var schemas = TerraFX.Runtime.Tests.Scenes.SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var builder = new WorldRegistrationBuilder(schemas);
+        var sceneSupport = SceneSupport.CreateRegistration();
+        _ = builder.RegisterSceneSupport(sceneSupport);
+        using var world = World.Create(new WorldOptions(builder.Build()));
+        var participant = world.GetSceneParticipant(sceneSupport);
+        var entities = world.CreateEntitiesAtomically(
+            3,
+            static _ => [
+                new EntityDescription(),
+                new EntityDescription(),
+                new EntityDescription(),
+            ]);
+        var root = entities[0];
+        var child = entities[1];
+        var grandchild = entities[2];
+        world.ApplyHierarchyParentChange(participant, child, root);
+        world.ApplyHierarchyParentChange(participant, grandchild, child);
+        var rootId = world.GetEntityId(root);
+        var childId = world.GetEntityId(child);
+        var grandchildId = world.GetEntityId(grandchild);
+
+        Assert.That(world.TryGetHierarchyParent(child, out var actualParent), Is.True);
+        Assert.That(actualParent, Is.EqualTo(root));
+        Assert.That(world.TryGetHierarchyParent(grandchild, out actualParent), Is.True);
+        Assert.That(actualParent, Is.EqualTo(child));
+
+        Assert.That(
+            () => world.DestroyEntity(root, HierarchyDestroyMode.DetachChildrenKeepWorld),
+            Throws.InvalidOperationException);
+        Assert.That(world.TryGetEntity(rootId, out var stillLiveRoot), Is.True);
+        Assert.That(stillLiveRoot, Is.EqualTo(root));
+        Assert.That(world.TryGetEntity(childId, out _), Is.True);
+        Assert.That(world.TryGetEntity(grandchildId, out _), Is.True);
+
+        world.DestroyEntity(root, HierarchyDestroyMode.DestroySubtree);
+
+        Assert.That(world.TryGetEntity(rootId, out _), Is.False);
+        Assert.That(world.TryGetEntity(childId, out _), Is.False);
+        Assert.That(world.TryGetEntity(grandchildId, out _), Is.False);
+    }
+
     [Test]
     public void EntityBatchCommitsAsOneIdentityTransaction()
     {

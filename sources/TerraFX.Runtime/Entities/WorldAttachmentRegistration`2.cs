@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Threading;
 
@@ -55,7 +56,7 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
             throw new ArgumentException("The transferred attachment does not match its registered CLR type.", nameof(value));
         }
 
-        var context = new ValidationContext(world, _binding, attachment, null);
+        var context = new ValidationContext(world, _binding, attachment, excludedEntity: null, excludedEntities: null);
         var scopedBinding = new WorldAttachmentValidationBinding(context);
 
         try
@@ -88,6 +89,19 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
     }
 
     public void ValidateEntityReferences(World world, object value, Entity excludedEntity)
+        => ValidateEntityReferences(world, value, excludedEntity, excludedEntities: null);
+
+    public void ValidateEntityReferences(World world, object value, IReadOnlySet<Entity> excludedEntities)
+    {
+        ArgumentNullException.ThrowIfNull(excludedEntities);
+        ValidateEntityReferences(world, value, excludedEntity: null, excludedEntities: excludedEntities);
+    }
+
+    private void ValidateEntityReferences(
+        World world,
+        object value,
+        Entity? excludedEntity,
+        IReadOnlySet<Entity>? excludedEntities)
     {
         ArgumentNullException.ThrowIfNull(world);
         ArgumentNullException.ThrowIfNull(value);
@@ -97,7 +111,7 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
             throw new ArgumentException("The attachment does not match its registered CLR type.", nameof(value));
         }
 
-        var context = new ValidationContext(world, _binding, attachment, excludedEntity);
+        var context = new ValidationContext(world, _binding, attachment, excludedEntity, excludedEntities);
 
         try
         {
@@ -112,6 +126,7 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
     private sealed class ValidationContext : IWorldAttachmentValidationContext
     {
         private readonly WorldAttachmentFactoryBinding<T, TAuthor> _binding;
+        private readonly IReadOnlySet<Entity>? _excludedEntities;
         private readonly Entity? _excludedEntity;
         private Exception? _failure;
         private int _isActive = 1;
@@ -122,11 +137,13 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
             World world,
             WorldAttachmentFactoryBinding<T, TAuthor> binding,
             T value,
-            Entity? excludedEntity)
+            Entity? excludedEntity,
+            IReadOnlySet<Entity>? excludedEntities)
         {
             _world = world;
             _binding = binding;
             _excludedEntity = excludedEntity;
+            _excludedEntities = excludedEntities;
             _value = value;
             OwnerThreadId = Environment.CurrentManagedThreadId;
         }
@@ -152,7 +169,8 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
 
             _world.ValidateAttachmentEntityReference(entity);
 
-            if ((_excludedEntity is { } excludedEntity) && entity.Equals(excludedEntity))
+            if (((_excludedEntity is { } excludedEntity) && entity.Equals(excludedEntity))
+                || (_excludedEntities?.Contains(entity) ?? false))
             {
                 throw new InvalidOperationException("A live attachment reference prevents destruction of its target Entity.");
             }

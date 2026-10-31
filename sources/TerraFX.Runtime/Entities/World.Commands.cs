@@ -507,6 +507,139 @@ public sealed partial class World
                 return projection.Entity;
             }
 
+            ProjectedCommandEntity GetLiveProjection(Entity entity)
+            {
+                if (projectionsByEntity.TryGetValue(entity, out var projection))
+                {
+                    return projection;
+                }
+
+                var source = GetLiveArchetype(entity, out var sourceChunkIndex, out var sourceRow);
+                var membershipBytes = checked(
+                    256L
+                    + ((long)(source.Components.Length + source.Tags.Length) * 32L));
+                ReservePlanBytes(membershipBytes);
+                var components = new HashSet<Type>(source.Components.Length);
+
+                foreach (var component in source.Components)
+                {
+                    _ = components.Add(component.ComponentType);
+                }
+
+                var tags = new HashSet<Guid>(source.Tags.Length);
+
+                foreach (var tag in source.Tags)
+                {
+                    _ = tags.Add(tag);
+                }
+
+                projection = new ProjectedCommandEntity(
+                    entity,
+                    source,
+                    sourceChunkIndex,
+                    sourceRow,
+                    components,
+                    tags,
+                    token: default,
+                    description: null);
+                projectionsByEntity.Add(entity, projection);
+                projections.Add(projection);
+                return projection;
+            }
+
+            int CountLiveSubtree(ProjectedCommandEntity projection)
+            {
+                if (projection.IsDestroyed)
+                {
+                    return 0;
+                }
+
+                var entity = projection.Entity;
+                var count = 1;
+
+                if (_entitySlots.TryGetFirstChild(
+                        entity.Index,
+                        entity.Generation,
+                        out var childIndex,
+                        out var childGeneration))
+                {
+                    while (true)
+                    {
+                        var child = new Entity(_ownerId, childIndex, childGeneration);
+                        var childProjection = GetLiveProjection(child);
+                        count = checked(count + CountLiveSubtree(childProjection));
+
+                        if (!_entitySlots.TryGetNextSibling(
+                                childIndex,
+                                childGeneration,
+                                out childIndex,
+                                out childGeneration))
+                        {
+                            break;
+                        }
+                    }
+                }
+
+                return count;
+            }
+
+            void AppendDestroyedSubtree(
+                ProjectedCommandEntity projection,
+                ImmutableArray<WorldEntityIdentity>.Builder destroyedIdentities)
+            {
+                if (projection.IsDestroyed)
+                {
+                    return;
+                }
+
+                var entity = projection.Entity;
+
+                if (_entitySlots.TryGetFirstChild(
+                        entity.Index,
+                        entity.Generation,
+                        out var childIndex,
+                        out var childGeneration))
+                {
+                    while (true)
+                    {
+                        var child = new Entity(_ownerId, childIndex, childGeneration);
+                        AppendDestroyedSubtree(GetLiveProjection(child), destroyedIdentities);
+
+                        if (!_entitySlots.TryGetNextSibling(
+                                childIndex,
+                                childGeneration,
+                                out childIndex,
+                                out childGeneration))
+                        {
+                            break;
+                        }
+                    }
+                }
+
+                var identityOrdinal = _identityLedger.GetLiveOrdinal(IdentityKind.Entity, entity.Index);
+                var entityId = _identityLedger.GetAssignedId(IdentityKind.Entity, entity.Index);
+
+                if ((identityOrdinal == 0) || (entityId == Guid.Empty))
+                {
+                    throw new InvalidOperationException("The live Entity has no stable identity assignment.");
+                }
+
+                var identityBranchIndex = _identityLedger.GetBranchIndexForOrdinal(identityOrdinal);
+                projection.IdentityOrdinal = identityOrdinal;
+                projection.IdentityBranchIndex = identityBranchIndex;
+                projection.IdentityId = entityId;
+                projection.IsDestroyed = true;
+                destroyedProjections.Add(projection);
+                _ = destroyedEntityHandles.Add(entity);
+                _ = destroyedOwnerIds.Add(entityId);
+                destroyedIdentities.Add(
+                    new WorldEntityIdentity(
+                        _worldGuid,
+                        _replayLineageId,
+                        _identityBranches[identityBranchIndex].BranchId,
+                        entityId));
+            }
+
             void ValidateProjectedEntityReferences()
             {
                 var previousProjectedHandles = _activeCommandProjectedEntityHandles;
@@ -594,7 +727,7 @@ public sealed partial class World
 
                     if (destroyedOwnerIds.Count != 0)
                     {
-                        ValidateAttachmentEntityReferencesExcludingOwners(destroyedOwnerIds);
+                        ValidateAttachmentEntityReferencesExcludingOwners(destroyedOwnerIds, destroyedEntityHandles);
                     }
                 }
                 finally
@@ -717,42 +850,9 @@ public sealed partial class World
 
                     projection = tokenProjection;
                 }
-                else if (projectionsByEntity.TryGetValue(command.Entity, out var liveProjection))
-                {
-                    projection = liveProjection;
-                }
                 else
                 {
-                    var source = GetLiveArchetype(command.Entity, out var sourceChunkIndex, out var sourceRow);
-                    var membershipBytes = checked(
-                        256L
-                        + ((long)(source.Components.Length + source.Tags.Length) * 32L));
-                    ReservePlanBytes(membershipBytes);
-                    var components = new HashSet<Type>(source.Components.Length);
-
-                    foreach (var component in source.Components)
-                    {
-                        _ = components.Add(component.ComponentType);
-                    }
-
-                    var tags = new HashSet<Guid>(source.Tags.Length);
-
-                    foreach (var tag in source.Tags)
-                    {
-                        _ = tags.Add(tag);
-                    }
-
-                    projection = new ProjectedCommandEntity(
-                        command.Entity,
-                        source,
-                        sourceChunkIndex,
-                        sourceRow,
-                        components,
-                        tags,
-                        token: default,
-                        description: null);
-                    projectionsByEntity.Add(command.Entity, projection);
-                    projections.Add(projection);
+                    projection = GetLiveProjection(command.Entity);
                 }
 
                 if (projection.IsDestroyed)
@@ -762,30 +862,34 @@ public sealed partial class World
 
                 if (command.Kind == WorldCommandStaging.CommandKind.DestroyEntity)
                 {
-                    var identityOrdinal = _identityLedger.GetLiveOrdinal(IdentityKind.Entity, projection.Entity.Index);
-                    var entityId = _identityLedger.GetAssignedId(IdentityKind.Entity, projection.Entity.Index);
+                    var destroyMode = command.DestroyMode
+                        ?? throw new InvalidOperationException("A staged Entity destruction command has no hierarchy mode.");
+                    var hasChildren = _entitySlots.TryGetFirstChild(
+                        projection.Entity.Index,
+                        projection.Entity.Generation,
+                        out _,
+                        out _);
 
-                    if ((identityOrdinal == 0) || (entityId == Guid.Empty))
+                    if ((destroyMode == HierarchyDestroyMode.DetachChildrenKeepWorld) && hasChildren)
                     {
-                        throw new InvalidOperationException("The live Entity has no stable identity assignment.");
+                        throw new InvalidOperationException("KeepWorld hierarchy detachment requires the Scenes owner transform preparation.");
                     }
 
-                    var identityBranchIndex = _identityLedger.GetBranchIndexForOrdinal(identityOrdinal);
-                    projection.IdentityOrdinal = identityOrdinal;
-                    projection.IdentityBranchIndex = identityBranchIndex;
-                    projection.IdentityId = entityId;
-                    projection.IsDestroyed = true;
-                    destroyedProjections.Add(projection);
-                    _ = destroyedEntityHandles.Add(projection.Entity);
-                    _ = destroyedOwnerIds.Add(entityId);
-                    command.DestroyedEntityIdentities =
-                    [
-                        new WorldEntityIdentity(
-                            _worldGuid,
-                            _replayLineageId,
-                            _identityBranches[identityBranchIndex].BranchId,
-                            entityId),
-                    ];
+                    var destroyedIdentityCount = (destroyMode == HierarchyDestroyMode.DestroySubtree)
+                        ? CountLiveSubtree(projection)
+                        : 1;
+                    ReservePlanBytes(GetArrayByteReservation(
+                        destroyedIdentityCount,
+                        Unsafe.SizeOf<WorldEntityIdentity>()));
+                    var destroyedIdentities = ImmutableArray.CreateBuilder<WorldEntityIdentity>(destroyedIdentityCount);
+                    AppendDestroyedSubtree(projection, destroyedIdentities);
+
+                    if (destroyedIdentities.Count != destroyedIdentityCount)
+                    {
+                        throw new InvalidOperationException("The hierarchy destruction result did not match its preflight count.");
+                    }
+
+                    command.DestroyedEntityIdentities = destroyedIdentities.MoveToImmutable();
                     continue;
                 }
 

@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 
 namespace TerraFX.Entities;
@@ -18,4 +19,6 @@ internal interface IWorldAttachmentRegistration
     ImmutableArray<Diagnostic> Validate(World world, object value);
 
     void ValidateEntityReferences(World world, object value, Entity excludedEntity);
+
+    void ValidateEntityReferences(World world, object value, IReadOnlySet<Entity> excludedEntities);
 }

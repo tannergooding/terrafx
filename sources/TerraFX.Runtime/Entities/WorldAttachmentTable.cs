@@ -270,7 +270,7 @@ internal sealed class WorldAttachmentTable
             registration.ValidateEntityReferences(
                 world,
                 entry.Value ?? throw new InvalidOperationException("The transferred attachment has no value."),
-                default);
+                default(Entity));
         }
     }
 
@@ -298,10 +298,14 @@ internal sealed class WorldAttachmentTable
         }
     }
 
-    internal void ValidateEntityReferencesExcludingOwners(World world, IReadOnlySet<Guid> excludedOwnerIds)
+    internal void ValidateEntityReferencesExcludingOwners(
+        World world,
+        IReadOnlySet<Guid> excludedOwnerIds,
+        IReadOnlySet<Entity> excludedEntities)
     {
         ArgumentNullException.ThrowIfNull(world);
         ArgumentNullException.ThrowIfNull(excludedOwnerIds);
+        ArgumentNullException.ThrowIfNull(excludedEntities);
 
         for (var index = 0; index < _count; index++)
         {
@@ -318,7 +322,7 @@ internal sealed class WorldAttachmentTable
             registration.ValidateEntityReferences(
                 world,
                 entry.Value ?? throw new InvalidOperationException("The transferred attachment has no value."),
-                default);
+                excludedEntities);
         }
     }
 

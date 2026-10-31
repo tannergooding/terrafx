@@ -49,159 +49,35 @@ public sealed partial class World
         MigrateTag(entity, schemaId, addTag: true);
     }
 
-    /// <summary>Destroys one live Entity and retires its stable identity.</summary>
+    /// <summary>Destroys a live Entity according to its selected hierarchy policy.</summary>
     /// <param name="entity">The live Entity to destroy.</param>
     /// <param name="mode">The selected hierarchy-destruction mode.</param>
     /// <exception cref="ArgumentException"><paramref name="entity"/> is default, stale, or belongs to another World.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="mode"/> is not a defined value.</exception>
-    /// <exception cref="InvalidOperationException">The World is not idle on its owner thread, an identity row is missing, capacity preparation fails, a live attachment references the Entity, or a transferred Release callback fails after destruction.</exception>
+    /// <exception cref="InvalidOperationException">The World is not idle on its owner thread, a live attachment references a destroyed Entity, hierarchy preparation fails, or a transferred Release callback fails after destruction.</exception>
     public void DestroyEntity(Entity entity, HierarchyDestroyMode mode)
     {
         EnterStructuralOperation();
 
-        var oldOwnedBytes = 0L;
-        var preparationBytes = 0L;
-        var cleanupStarted = false;
-        var preparationReserved = false;
-        WorldAttachmentTable.AttachmentEntry[] detachedAttachments;
-        WorldAttachmentReleaseBinding[] releaseBindings;
-        WorldAttachmentReleasePreparation? releasePreparation;
-        WorldAttachmentQuarantineReservation? quarantineReservation = null;
-        StableIdentityLedger.PreparedChange? identityChange = null;
-
         try
         {
-            try
+            if (mode is not HierarchyDestroyMode.DetachChildrenKeepWorld and not HierarchyDestroyMode.DestroySubtree)
             {
-                if (mode is not HierarchyDestroyMode.DetachChildrenKeepWorld and not HierarchyDestroyMode.DestroySubtree)
-                {
-                    throw new ArgumentOutOfRangeException(nameof(mode));
-                }
-
-                var archetype = GetLiveArchetype(entity, out _, out _);
-                var ordinal = _identityLedger.GetLiveOrdinal(IdentityKind.Entity, entity.Index);
-
-                if (ordinal == 0)
-                {
-                    throw new InvalidOperationException("The live Entity has no stable identity assignment.");
-                }
-
-                var entityPersistentId = _identityLedger.GetAssignedId(IdentityKind.Entity, entity.Index);
-                var attachmentReleaseCount = _attachments.CountTransferredOwner(entityPersistentId);
-
-                var generationCanBeReused = entity.Generation != uint.MaxValue;
-                var requiredFreeSlotCount = checked(_entitySlots.FreeSlotCount + (generationCanBeReused ? 1 : 0));
-                var slotPreparationBytes = _entitySlots.GetCapacityPreparationBytes(
-                    _entitySlots.AllocatedSlotCount,
-                    requiredFreeSlotCount);
-                var identityPreparationBytes = _identityLedger.GetPreparationByteReservation(0, 1);
-                var identityGrowthBytes = checked(identityPreparationBytes - _identityLedger.OwnedByteReservation);
-                var attachmentPreparationBytes = (attachmentReleaseCount == 0)
-                    ? 0
-                    : checked(64L + ((long)attachmentReleaseCount * 256L));
-                oldOwnedBytes = GetWorldOwnedStateBytes();
-                preparationBytes = checked(slotPreparationBytes + identityGrowthBytes + attachmentPreparationBytes);
-                var nextMutationRevision = checked(_canonicalMutationRevision + 1);
-                releasePreparation = (attachmentReleaseCount == 0)
-                    ? null
-                    : new WorldAttachmentReleasePreparation(_worldGuid, attachmentReleaseCount, nextMutationRevision);
-
-                if (checked(oldOwnedBytes + preparationBytes) > _maximumOwnedStateBytes)
-                {
-                    throw new InvalidOperationException("The World-owned state budget cannot admit Entity destruction preparation.");
-                }
-
-                if ((preparationBytes != 0) && !_domainReservation.TryReserveAdditional(preparationBytes))
-                {
-                    throw new InvalidOperationException("The admission domain cannot reserve Entity destruction preparation.");
-                }
-
-                preparationReserved = preparationBytes != 0;
-                detachedAttachments = _attachments.CaptureTransferredOwnerEntries(entityPersistentId);
-                releaseBindings = PrepareAttachmentReleaseBindings(detachedAttachments);
-                quarantineReservation = WorldAttachmentInstanceRegistry.ReserveQuarantineCapacity(detachedAttachments.Length);
-                identityChange = _identityLedger.Prepare([], [ordinal], _maximumOwnedStateBytes);
-
-                if (!_entitySlots.PrepareCapacity(_entitySlots.AllocatedSlotCount, requiredFreeSlotCount))
-                {
-                    throw new InvalidOperationException("The preflighted Entity-slot retirement capacity could not be prepared.");
-                }
-
-                identityChange.ValidateForCommit();
-                ValidateNoEntityReferencesTo(entity);
-                _ = archetype.Storage.Remove(entity, _entitySlots);
-                _entitySlots.Release(entity.Index, entity.Generation);
-                identityChange.Commit();
-                _attachments.RemoveOwner(entityPersistentId);
-                _canonicalMutationRevision = nextMutationRevision;
-                RebuildComponentTagWorkPlan();
-            }
-            catch
-            {
-                Cleanup();
-                throw;
+                throw new ArgumentOutOfRangeException(nameof(mode));
             }
 
-            if (detachedAttachments.Length != 0)
-            {
-                var preparedRelease = releasePreparation
-                    ?? throw new InvalidOperationException("The transferred attachment release report was not prepared.");
-                ReleaseAttachmentEntries(
-                    detachedAttachments,
-                    releaseBindings,
-                    quarantineReservation
-                        ?? throw new InvalidOperationException("The transferred attachment quarantine was not prepared."),
-                    preparedRelease);
-                Cleanup();
-
-                if (preparedRelease.HasFailures)
-                {
-                    throw preparedRelease.CreateException(systemCleanupReport: null);
-                }
-            }
-
-            Cleanup();
+            _ = GetLiveArchetype(entity, out _, out _);
+            using var staging = new WorldCommandStaging(
+                this,
+                _maximumDeferredCommands,
+                _maximumCommandStagingBytes,
+                ownerControl: true);
+            staging.AppendOwnerDestroy(entity, mode);
+            _ = CommitCommandBatch(staging);
         }
         finally
         {
-            identityChange?.Dispose();
-            quarantineReservation?.Release();
-
-            if (preparationReserved && !cleanupStarted)
-            {
-                Cleanup();
-            }
-
             _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
-        }
-
-        void Cleanup()
-        {
-            if (cleanupStarted)
-            {
-                return;
-            }
-
-            cleanupStarted = true;
-
-            if ((preparationBytes == 0) || !preparationReserved)
-            {
-                return;
-            }
-
-            var persistentGrowthBytes = checked(GetWorldOwnedStateBytes() - oldOwnedBytes);
-            var temporaryBytes = preparationBytes - persistentGrowthBytes;
-
-            if (temporaryBytes > 0)
-            {
-                _domainReservation.ReleaseAdditional(temporaryBytes);
-            }
-            else if (temporaryBytes < 0 && !_domainReservation.TryReserveAdditional(-temporaryBytes))
-            {
-                throw new InvalidOperationException("The admission domain cannot retain prepared Entity-destruction storage.");
-            }
-
-            preparationReserved = false;
         }
     }
 
