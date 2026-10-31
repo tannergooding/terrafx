@@ -74,4 +74,46 @@ internal sealed class SceneOccurrenceIdentityTests
             () => SceneOccurrenceIdentity.CreateExpandedEntityKey(Guid.NewGuid(), Guid.Empty),
             Throws.ArgumentException.With.Property("ParamName").EqualTo("authoredEntityId"));
     }
+
+    [Test]
+    public void RejectsSceneIdentityDuplicatesAndEmptyValues()
+    {
+        var duplicate = new Guid("7fffffff-0000-0000-0000-000000000000");
+        Guid[] emptyOccurrence = [Guid.Empty];
+        Guid[] duplicateOccurrences = [duplicate, duplicate];
+        Guid[] emptyEntityKey = [Guid.Empty];
+        Guid[] duplicateEntityKeys = [duplicate, duplicate];
+
+        Assert.That(
+            () => SceneOccurrenceIdentity.SortOccurrenceIdsAndValidateUnique(emptyOccurrence),
+            Throws.ArgumentException.With.Property("ParamName").EqualTo("occurrenceIds"));
+
+        Assert.That(
+            () => SceneOccurrenceIdentity.SortOccurrenceIdsAndValidateUnique(duplicateOccurrences),
+            Throws.ArgumentException.With.Property("ParamName").EqualTo("occurrenceIds"));
+
+        Assert.That(
+            () => SceneOccurrenceIdentity.SortExpandedEntityKeysForAssignment(emptyEntityKey),
+            Throws.ArgumentException.With.Property("ParamName").EqualTo("expandedEntityKeys"));
+
+        Assert.That(
+            () => SceneOccurrenceIdentity.SortExpandedEntityKeysForAssignment(duplicateEntityKeys),
+            Throws.ArgumentException.With.Property("ParamName").EqualTo("expandedEntityKeys"));
+    }
+
+    [Test]
+    public void SortsUniqueOccurrenceAndEntityKeysByUnsignedRfcBytes()
+    {
+        var lower = new Guid("7fffffff-0000-0000-0000-000000000000");
+        var upper = new Guid("80000000-0000-0000-0000-000000000000");
+        Guid[] expected = [lower, upper];
+        var occurrences = new[] { upper, lower };
+        var entityKeys = new[] { upper, lower };
+
+        SceneOccurrenceIdentity.SortOccurrenceIdsAndValidateUnique(occurrences);
+        SceneOccurrenceIdentity.SortExpandedEntityKeysForAssignment(entityKeys);
+
+        Assert.That(occurrences, Is.EqualTo(expected));
+        Assert.That(entityKeys, Is.EqualTo(expected));
+    }
 }
