@@ -1619,6 +1619,9 @@ internal sealed class SceneAssetStoreTests
                 Assert.That(instance.TryGetEntity(SceneAssetReaderTests.Fixtures.RootEntityId, out var entity), Is.True);
                 Assert.That(world.IdentityLedger.TryFind(instance.SceneInstanceId, out var sceneOrdinal), Is.True);
                 Assert.That(world.IdentityLedger.TryFind(world.GetEntityId(entity), out var entityOrdinal), Is.True);
+                Assert.That(world.TryGet<SceneComponentDefinitions.LocalTransformComponent>(entity, out var localTransform), Is.True);
+                Assert.That(localTransform.Position, Is.EqualTo(TerraFX.Numerics.Vector3.Zero));
+                Assert.That(world.TryGet<SceneComponentDefinitions.RootPositionComponent>(entity, out _), Is.True);
                 Assert.That(sceneOrdinal, Is.EqualTo(1));
                 Assert.That(entityOrdinal, Is.EqualTo(2));
             }
