@@ -29,6 +29,16 @@ internal static class Program
             && ((byte)CameraFarMode.Infinite == 1)
             && ((byte)CameraClearFlags.Color == 1)
             && ((byte)CameraClearFlags.Depth == 2));
+        var externalSlotId = new Guid("30000000-0000-4000-8000-000000000081");
+        var externalBinding = new SceneExternalBinding(externalSlotId, target: null);
+        var sceneLoadOptions = new SceneLoadOptions {
+            ExternalBindings = [externalBinding],
+        };
+        Check(
+            (sceneLoadOptions.ExternalBindings.Length == 1)
+            && (sceneLoadOptions.ExternalBindings[0].SlotId == externalSlotId)
+            && (sceneLoadOptions.ExternalBindings[0].Target is null));
+        Check(new SceneLoadOptions().ExternalBindings.IsEmpty);
 
         var assignment = new ContentSchemaIdentityAssignment("application/component/public-consumer/v1");
         var schemaReference = new ContentSchemaReference(assignment.SchemaId, 1, 0, ContentSchemaScope.Content);
@@ -491,7 +501,7 @@ internal static class Program
         admissionDomain.Dispose();
         Check(admissionDomain.Retirement.IsCompleted);
 
-        Console.WriteLine("Handwritten World consumer passed: component/resource bindings, stateless and stateful system lifetimes, transferred World/Entity attachments, system/component/resource defaults and validation, live Entity references, structural transitions, scoped queries, identity admission, diagnostics, and spatial frames; unsafe disabled.");
+        Console.WriteLine("Handwritten World consumer passed: component/resource bindings, stateless and stateful system lifetimes, transferred World/Entity attachments, system/component/resource defaults and validation, live Entity references, Scene external-binding options, structural transitions, scoped queries, identity admission, diagnostics, and spatial frames; unsafe disabled.");
         return 0;
     }
 
