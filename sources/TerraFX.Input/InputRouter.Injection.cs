@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using System.Threading;
+using TerraFX.Numerics;
 
 namespace TerraFX.Input;
 
@@ -12,6 +13,7 @@ public sealed partial class InputRouter
 {
     private const int MaximumPendingInputEvents = 4096;
 
+    private readonly Dictionary<InputControlKey, long> _digitalControlDownTimestamps = [];
     private readonly Dictionary<InputControlKey, bool> _digitalControlStates = [];
     private long _firstUnacceptedHostSequence;
     private readonly Queue<InputEnvelope> _inputInbox = [];
@@ -21,55 +23,365 @@ public sealed partial class InputRouter
     private long _lastSeenHostTimestamp;
     private long _lastUnacceptedHostSequence;
     private bool _overflowServiced;
+    private readonly Dictionary<InputControlKey, float> _scalarControlValues = [];
+    private readonly Dictionary<InputControlKey, (float X, float Y)> _vectorControlValues = [];
+
+    private static float GetAxisThresholdMetric(
+        BindingDefinition binding,
+        Dictionary<InputControlKey, float> scalarControlValues)
+    {
+        var value = (binding.ThresholdAxisSource is { } axisSource)
+            ? GetProcessedAxis1Value(axisSource, scalarControlValues)
+            : GetProcessedTriggerValue(binding.ThresholdTriggerSource!, scalarControlValues);
+
+        return binding.ThresholdDirection switch {
+            AxisThresholdDirection.Negative => MathF.Max(0.0f, -value),
+            AxisThresholdDirection.Positive => MathF.Max(0.0f, value),
+            AxisThresholdDirection.Magnitude => MathF.Abs(value),
+            _ => 0.0f,
+        };
+    }
+
+    private static ImmutableArray<InputControlKey> GetBindingControlKeys(BindingDefinition binding)
+    {
+        var controls = ImmutableArray.CreateBuilder<InputControlKey>();
+
+        switch (binding.Kind)
+        {
+            case BindingKind.Button:
+            {
+                controls.Add(GetControlKey(binding.Control!));
+                break;
+            }
+
+            case BindingKind.Chord:
+            {
+                foreach (var control in binding.Controls)
+                {
+                    controls.Add(GetControlKey(control));
+                }
+
+                break;
+            }
+
+            case BindingKind.Axis1Keys:
+            {
+                controls.Add(GetControlKey(binding.Negative!));
+                controls.Add(GetControlKey(binding.Positive!));
+                break;
+            }
+
+            case BindingKind.Axis2Keys:
+            {
+                controls.Add(GetControlKey(binding.Left!));
+                controls.Add(GetControlKey(binding.Right!));
+                controls.Add(GetControlKey(binding.Down!));
+                controls.Add(GetControlKey(binding.Up!));
+                break;
+            }
+
+            case BindingKind.GamepadAxis1:
+            {
+                controls.Add(GetControlKey(binding.Axis1Source!));
+                break;
+            }
+
+            case BindingKind.GamepadStick2:
+            {
+                controls.Add(GetControlKey(binding.Stick2Source!));
+                break;
+            }
+
+            case BindingKind.GamepadTrigger:
+            {
+                controls.Add(GetControlKey(binding.TriggerSource!));
+                break;
+            }
+
+            case BindingKind.AxisThreshold:
+            {
+                if (binding.ThresholdAxisSource is { } axisSource)
+                {
+                    controls.Add(GetControlKey(axisSource));
+                }
+                else
+                {
+                    controls.Add(GetControlKey(binding.ThresholdTriggerSource!));
+                }
+
+                break;
+            }
+        }
+
+        return controls.ToImmutable();
+    }
 
     private static InputControlKey GetControlKey(DigitalControl control)
         => control.Kind switch {
-            DigitalControlKind.KeyboardHid => new InputControlKey(
-                control.Kind,
-                control.Keyboard!.UsagePage,
-                control.Keyboard.Usage,
-                null,
-                0,
-                0),
-            DigitalControlKind.LogicalKey => new InputControlKey(
-                control.Kind,
-                0,
-                0,
-                control.Keyboard!.LogicalKeyName,
-                0,
-                0),
-            DigitalControlKind.GamepadButton => new InputControlKey(
-                control.Kind,
-                0,
-                0,
-                null,
-                control.PlayerSlot.GetValueOrDefault(),
-                (int)control.GamepadButton.GetValueOrDefault()),
+            DigitalControlKind.KeyboardHid => GetControlKey(control.Keyboard!),
+            DigitalControlKind.LogicalKey => GetControlKey(control.Keyboard!),
+            DigitalControlKind.MouseButton => new InputControlKey(InputControlKind.MouseButton, 0, 0, null, 0, (int)control.MouseButton.GetValueOrDefault()),
+            DigitalControlKind.GamepadButton => new InputControlKey(InputControlKind.GamepadButton, 0, 0, null, control.PlayerSlot.GetValueOrDefault(), (int)control.GamepadButton.GetValueOrDefault()),
             _ => default,
         };
 
-    private static InputControlKey GetControlKey(InputInjection injection)
-    {
-        if (injection.Kind == InputInjectionKind.KeyboardKey)
-        {
-            var keyboard = injection.Key!;
+    private static InputControlKey GetControlKey(GamepadAxis1Source source)
+        => new InputControlKey(InputControlKind.GamepadAxis, 0, 0, null, source.PlayerSlot, (int)source.Axis);
 
-            return new InputControlKey(
-                (keyboard.Kind == KeyboardControlKind.KeyboardHid) ? DigitalControlKind.KeyboardHid : DigitalControlKind.LogicalKey,
-                keyboard.UsagePage,
-                keyboard.Usage,
-                keyboard.LogicalKeyName,
-                0,
-                0);
+    private static InputControlKey GetControlKey(GamepadStick2Source source)
+        => new InputControlKey(InputControlKind.GamepadStick, 0, 0, null, source.PlayerSlot, (int)source.Stick);
+
+    private static InputControlKey GetControlKey(GamepadTriggerSource source)
+        => new InputControlKey(InputControlKind.GamepadTrigger, 0, 0, null, source.PlayerSlot, (int)source.Trigger);
+
+    private static InputControlKey GetControlKey(InputInjection injection)
+        => injection.Kind switch {
+            InputInjectionKind.KeyboardKey => GetControlKey(injection.Key!),
+            InputInjectionKind.GamepadButton => new InputControlKey(InputControlKind.GamepadButton, 0, 0, null, injection.PlayerSlot.GetValueOrDefault(), (int)injection.Button.GetValueOrDefault()),
+            InputInjectionKind.GamepadAxis => new InputControlKey(InputControlKind.GamepadAxis, 0, 0, null, injection.PlayerSlot.GetValueOrDefault(), (int)injection.Axis.GetValueOrDefault()),
+            InputInjectionKind.GamepadStick => new InputControlKey(InputControlKind.GamepadStick, 0, 0, null, injection.PlayerSlot.GetValueOrDefault(), (int)injection.Stick.GetValueOrDefault()),
+            InputInjectionKind.GamepadTrigger => new InputControlKey(InputControlKind.GamepadTrigger, 0, 0, null, injection.PlayerSlot.GetValueOrDefault(), (int)injection.Trigger.GetValueOrDefault()),
+            _ => default,
+        };
+
+    private static InputControlKey GetControlKey(KeyboardControl key)
+        => key.Kind switch {
+            KeyboardControlKind.KeyboardHid => new InputControlKey(InputControlKind.KeyboardHid, key.UsagePage, key.Usage, null, 0, 0),
+            KeyboardControlKind.LogicalKey => new InputControlKey(InputControlKind.LogicalKey, 0, 0, key.LogicalKeyName, 0, 0),
+            _ => default,
+        };
+
+    private static float GetProcessedAxis1Value(
+        GamepadAxis1Source source,
+        Dictionary<InputControlKey, float> scalarControlValues)
+    {
+        var value = Math.Clamp(GetScalarControlValue(GetControlKey(source), scalarControlValues), -1.0f, 1.0f);
+        var magnitude = MathF.Abs(value);
+
+        if (magnitude <= source.Deadzone)
+        {
+            value = 0.0f;
+        }
+        else
+        {
+            value = MathF.Sign(value) * ((magnitude - source.Deadzone) / (1.0f - source.Deadzone));
         }
 
-        return new InputControlKey(
-            DigitalControlKind.GamepadButton,
-            0,
-            0,
-            null,
-            injection.PlayerSlot.GetValueOrDefault(),
-            (int)injection.Button.GetValueOrDefault());
+        if (source.Invert)
+        {
+            value = -value;
+        }
+
+        return NormalizeZero(value);
+    }
+
+    private static (float X, float Y) GetProcessedStick2Value(
+        GamepadStick2Source source,
+        Dictionary<InputControlKey, (float X, float Y)> vectorControlValues)
+    {
+        var (rawX, rawY) = GetVectorControlValue(GetControlKey(source), vectorControlValues);
+        var value = NormalizeStick(new Vector2(Math.Clamp(rawX, -1.0f, 1.0f), Math.Clamp(rawY, -1.0f, 1.0f)));
+        var radius = MathF.Sqrt(Vector2.LengthSquared(value));
+
+        if (radius <= source.RadialDeadzone)
+        {
+            return (0.0f, 0.0f);
+        }
+
+        var remappedRadius = MathF.Min(1.0f, (radius - source.RadialDeadzone) / (1.0f - source.RadialDeadzone));
+        var scale = remappedRadius / radius;
+        var x = value.X * scale;
+        var y = value.Y * scale;
+
+        if (source.InvertY)
+        {
+            y = -y;
+        }
+
+        return (NormalizeZero(x), NormalizeZero(y));
+    }
+
+    private static float GetProcessedTriggerValue(
+        GamepadTriggerSource source,
+        Dictionary<InputControlKey, float> scalarControlValues)
+    {
+        var value = Math.Clamp(GetScalarControlValue(GetControlKey(source), scalarControlValues), 0.0f, 1.0f);
+        return NormalizeZero(MathF.Max(0.0f, (value - source.Deadzone) / (1.0f - source.Deadzone)));
+    }
+
+    private static float GetScalarControlValue(
+        InputControlKey control,
+        Dictionary<InputControlKey, float> scalarControlValues)
+        => scalarControlValues.TryGetValue(control, out var value) ? value : 0.0f;
+
+    private static (float X, float Y) GetVectorControlValue(
+        InputControlKey control,
+        Dictionary<InputControlKey, (float X, float Y)> vectorControlValues)
+        => vectorControlValues.TryGetValue(control, out var value) ? value : (0.0f, 0.0f);
+
+    private static bool IsDigitalRelease(InputEnvelope envelope)
+        => envelope.Injection.Kind switch {
+            InputInjectionKind.KeyboardKey => envelope.Injection.KeyEventKind == InputKeyEventKind.Up,
+            InputInjectionKind.GamepadButton => !envelope.Injection.IsDown.GetValueOrDefault(),
+            _ => false,
+        };
+
+    private static Vector2 NormalizeStick(Vector2 value)
+    {
+        var lengthSquared = Vector2.LengthSquared(value);
+
+        if (lengthSquared > 1.0f)
+        {
+            var inverseLength = 1.0f / MathF.Sqrt(lengthSquared);
+            value = new Vector2(value.X * inverseLength, value.Y * inverseLength);
+        }
+
+        return new Vector2(NormalizeZero(value.X), NormalizeZero(value.Y));
+    }
+
+    private static float NormalizeZero(float value) => (value == 0.0f) ? 0.0f : value;
+
+    private static void ProcessActionEvent(
+        InputActionMapState mapState,
+        ActionDefinition action,
+        long hostSequence,
+        long assignedTick)
+    {
+        var actionState = mapState.ActionStates[action.ActionId];
+
+        if (action.Kind == InputActionKind.Digital)
+        {
+            var isDown = false;
+
+            foreach (var binding in mapState.Map.Bindings)
+            {
+                var bindingState = mapState.BindingStates[binding.BindingId];
+
+                if ((binding.ActionId == action.ActionId)
+                    && binding.Enabled
+                    && ((binding.ContextMask & mapState.ActiveContextMask) != 0)
+                    && !bindingState.IsDisarmed
+                    && bindingState.IsDown)
+                {
+                    isDown = true;
+                    break;
+                }
+            }
+
+            if (actionState.IsDownAtEnd != isDown)
+            {
+                actionState.IsDownAtEnd = isDown;
+                actionState.PressedThisTick |= isDown;
+                actionState.ReleasedThisTick |= !isDown;
+                actionState.Transitions.Add(new InputActionTransition(
+                    mapState.Map.MapId,
+                    action.ActionId,
+                    isDown ? InputTransitionKind.Pressed : InputTransitionKind.Released,
+                    null,
+                    hostSequence,
+                    assignedTick,
+                    0.0f,
+                    0.0f));
+            }
+
+            return;
+        }
+
+        var hasWinner = false;
+        var winnerPriority = 0;
+        var winnerId = string.Empty;
+        var winnerMagnitudeSquared = 0.0f;
+        var axisX = 0.0f;
+        var axisY = 0.0f;
+
+        foreach (var binding in mapState.Map.Bindings)
+        {
+            if ((binding.ActionId != action.ActionId)
+                || !binding.Enabled
+                || ((binding.ContextMask & mapState.ActiveContextMask) == 0))
+            {
+                continue;
+            }
+
+            var bindingState = mapState.BindingStates[binding.BindingId];
+
+            if (bindingState.IsDisarmed)
+            {
+                continue;
+            }
+
+            var candidateX = bindingState.AxisX;
+            var candidateY = (action.Kind == InputActionKind.Axis2) ? bindingState.AxisY : 0.0f;
+            var magnitudeSquared = (action.Kind == InputActionKind.Axis1)
+                ? (candidateX * candidateX)
+                : ((candidateX * candidateX) + (candidateY * candidateY));
+
+            if (!hasWinner
+                || (magnitudeSquared > winnerMagnitudeSquared)
+                || ((magnitudeSquared == winnerMagnitudeSquared)
+                    && ((binding.Priority < winnerPriority)
+                        || ((binding.Priority == winnerPriority)
+                            && (string.CompareOrdinal(bindingState.CanonicalBindingId, winnerId) < 0)))))
+            {
+                hasWinner = true;
+                winnerId = bindingState.CanonicalBindingId;
+                winnerMagnitudeSquared = magnitudeSquared;
+                winnerPriority = binding.Priority;
+                axisX = candidateX;
+                axisY = candidateY;
+            }
+        }
+
+        UpdateAxisActionState(mapState.Map.MapId, actionState, hostSequence, assignedTick, axisX, axisY);
+    }
+
+    private static void UpdateAxisActionState(
+        Guid mapId,
+        InputActionRuntimeState actionState,
+        long hostSequence,
+        long assignedTick,
+        float axisX,
+        float axisY)
+    {
+        axisX = NormalizeZero(axisX);
+        axisY = (actionState.Definition.Kind == InputActionKind.Axis2) ? NormalizeZero(axisY) : 0.0f;
+
+        if ((actionState.AxisX != axisX) || (actionState.AxisY != axisY))
+        {
+            actionState.AxisX = axisX;
+            actionState.AxisY = axisY;
+            actionState.ValueChangedThisTick = true;
+            actionState.Transitions.Add(new InputActionTransition(
+                mapId,
+                actionState.Definition.ActionId,
+                InputTransitionKind.ValueChanged,
+                null,
+                hostSequence,
+                assignedTick,
+                axisX,
+                axisY));
+        }
+
+        var magnitude = MathF.Sqrt((axisX * axisX) + (axisY * axisY));
+        var pressThreshold = actionState.Definition.DownPressThreshold ?? 0.55f;
+        var releaseThreshold = actionState.Definition.DownReleaseThreshold ?? 0.45f;
+        var isDown = actionState.IsDownAtEnd ? magnitude > releaseThreshold : magnitude >= pressThreshold;
+
+        if (actionState.IsDownAtEnd != isDown)
+        {
+            actionState.IsDownAtEnd = isDown;
+            actionState.PressedThisTick |= isDown;
+            actionState.ReleasedThisTick |= !isDown;
+            actionState.Transitions.Add(new InputActionTransition(
+                mapId,
+                actionState.Definition.ActionId,
+                isDown ? InputTransitionKind.Pressed : InputTransitionKind.Released,
+                null,
+                hostSequence,
+                assignedTick,
+                axisX,
+                axisY));
+        }
     }
 
     internal InputRoutingReceipt EnqueueHeadlessInjection(
@@ -97,11 +409,6 @@ public sealed partial class InputRouter
 
         _lastSeenHostSequence = hostSequence;
         _lastSeenHostTimestamp = hostTimestamp;
-
-        if (injection.Kind is not (InputInjectionKind.KeyboardKey or InputInjectionKind.GamepadButton))
-        {
-            return CreateInputRejection("UnsupportedFeature", "/Kind");
-        }
 
         if (_inputOverflowed)
         {
@@ -161,23 +468,60 @@ public sealed partial class InputRouter
         {
             ArgumentNullException.ThrowIfNull(input);
 
-            var isHeldDigitalInput = input.Kind switch {
+            var isNonNeutralInput = input.Kind switch {
                 InputInjectionKind.KeyboardKey => input.KeyEventKind == InputKeyEventKind.Down,
                 InputInjectionKind.GamepadButton => input.IsDown.GetValueOrDefault(),
+                InputInjectionKind.GamepadAxis => input.AxisValue.GetValueOrDefault() != 0.0f,
+                InputInjectionKind.GamepadStick => (input.StickValue.GetValueOrDefault().X != 0.0f)
+                    || (input.StickValue.GetValueOrDefault().Y != 0.0f),
+                InputInjectionKind.GamepadTrigger => input.TriggerValue.GetValueOrDefault() != 0.0f,
                 _ => false,
             };
 
-            if (!isHeldDigitalInput || !reconciledControls.Add(GetControlKey(input)))
+            if (!isNonNeutralInput || !reconciledControls.Add(GetControlKey(input)))
             {
                 return CreateInputRejection("InvalidReconciliation", "/State");
             }
         }
 
         _digitalControlStates.Clear();
+        _digitalControlDownTimestamps.Clear();
+        _scalarControlValues.Clear();
+        _vectorControlValues.Clear();
 
-        foreach (var control in reconciledControls)
+        foreach (var input in heldInputs)
         {
-            _digitalControlStates.Add(control, true);
+            var control = GetControlKey(input);
+
+            switch (input.Kind)
+            {
+                case InputInjectionKind.KeyboardKey:
+                case InputInjectionKind.GamepadButton:
+                {
+                    _digitalControlStates.Add(control, true);
+                    _digitalControlDownTimestamps.Add(control, hostTimestamp);
+                    break;
+                }
+
+                case InputInjectionKind.GamepadAxis:
+                {
+                    _scalarControlValues.Add(control, NormalizeZero(input.AxisValue.GetValueOrDefault()));
+                    break;
+                }
+
+                case InputInjectionKind.GamepadStick:
+                {
+                    var stick = NormalizeStick(input.StickValue.GetValueOrDefault());
+                    _vectorControlValues.Add(control, (stick.X, stick.Y));
+                    break;
+                }
+
+                case InputInjectionKind.GamepadTrigger:
+                {
+                    _scalarControlValues.Add(control, NormalizeZero(input.TriggerValue.GetValueOrDefault()));
+                    break;
+                }
+            }
         }
 
         _inputInbox.Clear();
@@ -196,13 +540,13 @@ public sealed partial class InputRouter
                 actionState.IsDownAtEnd = false;
                 actionState.PressedThisTick = false;
                 actionState.ReleasedThisTick = false;
+                actionState.ValueChangedThisTick = false;
+                actionState.AxisX = 0.0f;
+                actionState.AxisY = 0.0f;
                 actionState.Transitions.Clear();
             }
 
-            foreach (var bindingState in mapState.BindingStates.Values)
-            {
-                bindingState.IsDown = false;
-            }
+            InitializeMapState(mapState);
         }
 
         return new InputRoutingReceipt(InputRoutingStatus.Applied, _recipientId, hostSequence, null, null);
@@ -222,28 +566,65 @@ public sealed partial class InputRouter
 
     private void ApplyInputEnvelope(InputEnvelope envelope)
     {
-        if (envelope.Injection.KeyEventKind == InputKeyEventKind.Repeat)
+        var changed = false;
+
+        switch (envelope.Injection.Kind)
         {
-            return;
+            case InputInjectionKind.KeyboardKey:
+            {
+                if (envelope.Injection.KeyEventKind == InputKeyEventKind.Repeat)
+                {
+                    return;
+                }
+
+                var isDown = envelope.Injection.KeyEventKind == InputKeyEventKind.Down;
+                changed = SetDigitalControlState(envelope.Control, isDown, envelope.HostTimestamp);
+                break;
+            }
+
+            case InputInjectionKind.GamepadButton:
+            {
+                changed = SetDigitalControlState(
+                    envelope.Control,
+                    envelope.Injection.IsDown.GetValueOrDefault(),
+                    envelope.HostTimestamp);
+                break;
+            }
+
+            case InputInjectionKind.GamepadAxis:
+            {
+                changed = SetScalarControlValue(envelope.Control, envelope.Injection.AxisValue.GetValueOrDefault());
+                break;
+            }
+
+            case InputInjectionKind.GamepadStick:
+            {
+                var value = NormalizeStick(envelope.Injection.StickValue.GetValueOrDefault());
+                changed = SetVectorControlValue(envelope.Control, value.X, value.Y);
+                break;
+            }
+
+            case InputInjectionKind.GamepadTrigger:
+            {
+                changed = SetScalarControlValue(envelope.Control, envelope.Injection.TriggerValue.GetValueOrDefault());
+                break;
+            }
         }
 
-        var isDown = (envelope.Injection.Kind == InputInjectionKind.KeyboardKey)
-            ? envelope.Injection.KeyEventKind == InputKeyEventKind.Down
-            : envelope.Injection.IsDown.GetValueOrDefault();
-
-        if (_digitalControlStates.TryGetValue(envelope.Control, out var currentState) && (currentState == isDown))
+        if (changed)
         {
-            return;
+            UpdateAffectedBindingStates(envelope.Control, envelope);
+            RecomputeAffectedActions(envelope.Control, envelope.HostSequence, envelope.AssignedTick);
         }
-
-        _digitalControlStates[envelope.Control] = isDown;
-        RecomputeAffectedDigitalActions(envelope.Control, envelope.HostSequence, envelope.AssignedTick);
     }
 
     private void ClearInputState()
     {
+        _digitalControlDownTimestamps.Clear();
         _digitalControlStates.Clear();
         _inputInbox.Clear();
+        _scalarControlValues.Clear();
+        _vectorControlValues.Clear();
         _inputOverflowed = false;
         _firstUnacceptedHostSequence = 0;
         _lastAssignedInputTick = -1;
@@ -271,8 +652,11 @@ public sealed partial class InputRouter
 
     private InputOverflowResult HandleInputOverflow(long? assignedTick)
     {
+        _digitalControlDownTimestamps.Clear();
         _inputInbox.Clear();
         _digitalControlStates.Clear();
+        _scalarControlValues.Clear();
+        _vectorControlValues.Clear();
         var transitions = ImmutableArray.CreateBuilder<InputActionTransition>();
 
         foreach (var mapState in _maps.Values.OrderBy(static state => state.Map.MapId.ToString("D"), StringComparer.Ordinal))
@@ -280,6 +664,24 @@ public sealed partial class InputRouter
             foreach (var action in mapState.OrderedActions)
             {
                 var actionState = mapState.ActionStates[action.ActionId];
+
+                if ((action.Kind != InputActionKind.Digital) && ((actionState.AxisX != 0.0f) || (actionState.AxisY != 0.0f)))
+                {
+                    actionState.AxisX = 0.0f;
+                    actionState.AxisY = 0.0f;
+                    actionState.ValueChangedThisTick = true;
+                    var valueChanged = new InputActionTransition(
+                        mapState.Map.MapId,
+                        action.ActionId,
+                        InputTransitionKind.ValueChanged,
+                        null,
+                        _lastUnacceptedHostSequence,
+                        assignedTick,
+                        0.0f,
+                        0.0f);
+                    actionState.Transitions.Add(valueChanged);
+                    transitions.Add(valueChanged);
+                }
 
                 if (!actionState.IsDownAtEnd)
                 {
@@ -305,6 +707,83 @@ public sealed partial class InputRouter
         _overflowServiced = true;
         return new InputOverflowResult(_firstUnacceptedHostSequence, _lastUnacceptedHostSequence, transitions.ToImmutable());
     }
+
+    private void InitializeMapState(InputActionMapState mapState)
+    {
+        foreach (var bindingState in mapState.BindingStates.Values)
+        {
+            UpdateBindingState(bindingState, envelope: null);
+        }
+    }
+
+    private bool IsBindingNeutral(InputBindingRuntimeState bindingState)
+    {
+        var binding = bindingState.Definition;
+
+        switch (binding.Kind)
+        {
+            case BindingKind.Button:
+            {
+                return !IsControlDown(GetControlKey(binding.Control!));
+            }
+
+            case BindingKind.Chord:
+            {
+                foreach (var control in binding.Controls)
+                {
+                    if (IsControlDown(GetControlKey(control)))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+
+            case BindingKind.Axis1Keys:
+            {
+                return !IsControlDown(GetControlKey(binding.Negative!))
+                    && !IsControlDown(GetControlKey(binding.Positive!));
+            }
+
+            case BindingKind.Axis2Keys:
+            {
+                return !IsControlDown(GetControlKey(binding.Left!))
+                    && !IsControlDown(GetControlKey(binding.Right!))
+                    && !IsControlDown(GetControlKey(binding.Down!))
+                    && !IsControlDown(GetControlKey(binding.Up!));
+            }
+
+            case BindingKind.GamepadAxis1:
+            {
+                return GetProcessedAxis1Value(binding.Axis1Source!, _scalarControlValues) == 0.0f;
+            }
+
+            case BindingKind.GamepadStick2:
+            {
+                var (x, y) = GetProcessedStick2Value(binding.Stick2Source!, _vectorControlValues);
+                return (x == 0.0f) && (y == 0.0f);
+            }
+
+            case BindingKind.GamepadTrigger:
+            {
+                return GetProcessedTriggerValue(binding.TriggerSource!, _scalarControlValues) == 0.0f;
+            }
+
+            case BindingKind.AxisThreshold:
+            {
+                return GetAxisThresholdMetric(binding, _scalarControlValues) <= (binding.ReleaseThreshold ?? 0.45f);
+            }
+
+            default:
+            {
+                return true;
+            }
+        }
+    }
+
+    private bool IsControlDown(InputControlKey control)
+        => _digitalControlStates.TryGetValue(control, out var isDown) && isDown;
 
     private InputActionSnapshot ProcessSimulationInputStage(long assignedTick)
     {
@@ -338,79 +817,39 @@ public sealed partial class InputRouter
         return snapshot;
     }
 
-    private void RecomputeAffectedDigitalActions(InputControlKey changedControl, long hostSequence, long assignedTick)
+    private void RecomputeAffectedActions(InputControlKey changedControl, long hostSequence, long assignedTick)
     {
         foreach (var mapState in _maps.Values.OrderBy(static state => state.Map.MapId.ToString("D"), StringComparer.Ordinal))
         {
+            if (!mapState.BindingsByControl.TryGetValue(changedControl, out var affectedBindings))
+            {
+                continue;
+            }
+
             foreach (var action in mapState.OrderedActions)
             {
-                if (action.Kind != InputActionKind.Digital)
-                {
-                    continue;
-                }
-
                 var isAffected = false;
 
-                foreach (var binding in mapState.Map.Bindings)
+                foreach (var bindingState in affectedBindings)
                 {
-                    if ((binding.ActionId == action.ActionId)
-                        && binding.Enabled
-                        && ((binding.ContextMask & mapState.ActiveContextMask) != 0)
-                        && (binding.Kind == BindingKind.Button)
-                        && (binding.Control is { } control)
-                        && (GetControlKey(control) == changedControl))
+                    if (bindingState.Definition.ActionId == action.ActionId)
                     {
                         isAffected = true;
                         break;
                     }
                 }
 
-                if (!isAffected)
+                if (isAffected)
                 {
-                    continue;
+                    ProcessActionEvent(mapState, action, hostSequence, assignedTick);
                 }
-
-                var isDown = false;
-
-                foreach (var binding in mapState.Map.Bindings)
-                {
-                    if ((binding.ActionId != action.ActionId)
-                        || !binding.Enabled
-                        || ((binding.ContextMask & mapState.ActiveContextMask) == 0)
-                        || (binding.Kind != BindingKind.Button)
-                        || (binding.Control is not { } control))
-                    {
-                        continue;
-                    }
-
-                    if (_digitalControlStates.TryGetValue(GetControlKey(control), out var bindingIsDown) && bindingIsDown)
-                    {
-                        isDown = true;
-                        break;
-                    }
-                }
-
-                var actionState = mapState.ActionStates[action.ActionId];
-
-                if (actionState.IsDownAtEnd == isDown)
-                {
-                    continue;
-                }
-
-                actionState.IsDownAtEnd = isDown;
-                actionState.PressedThisTick |= isDown;
-                actionState.ReleasedThisTick |= !isDown;
-                actionState.Transitions.Add(new InputActionTransition(
-                    mapState.Map.MapId,
-                    action.ActionId,
-                    isDown ? InputTransitionKind.Pressed : InputTransitionKind.Released,
-                    null,
-                    hostSequence,
-                    assignedTick,
-                    0.0f,
-                    0.0f));
             }
         }
+    }
+
+    private void RecordHostControlSequence(long hostSequence)
+    {
+        _lastSeenHostSequence = Math.Max(_lastSeenHostSequence, hostSequence);
     }
 
     private void RecordUnacceptedSequence(long hostSequence)
@@ -421,6 +860,276 @@ public sealed partial class InputRouter
         }
 
         _lastUnacceptedHostSequence = hostSequence;
+    }
+
+    private bool SetDigitalControlState(InputControlKey control, bool isDown, long hostTimestamp)
+    {
+        if (IsControlDown(control) == isDown)
+        {
+            return false;
+        }
+
+        if (isDown)
+        {
+            _digitalControlStates[control] = true;
+            _digitalControlDownTimestamps[control] = hostTimestamp;
+        }
+        else
+        {
+            _ = _digitalControlStates.Remove(control);
+            _ = _digitalControlDownTimestamps.Remove(control);
+        }
+
+        return true;
+    }
+
+    private bool SetScalarControlValue(InputControlKey control, float value)
+    {
+        value = NormalizeZero(value);
+        var currentValue = GetScalarControlValue(control, _scalarControlValues);
+
+        if (currentValue == value)
+        {
+            return false;
+        }
+
+        if (value == 0.0f)
+        {
+            _ = _scalarControlValues.Remove(control);
+        }
+        else
+        {
+            _scalarControlValues[control] = value;
+        }
+
+        return true;
+    }
+
+    private bool SetVectorControlValue(InputControlKey control, float x, float y)
+    {
+        x = NormalizeZero(x);
+        y = NormalizeZero(y);
+        var (currentX, currentY) = GetVectorControlValue(control, _vectorControlValues);
+
+        if ((currentX == x) && (currentY == y))
+        {
+            return false;
+        }
+
+        if ((x == 0.0f) && (y == 0.0f))
+        {
+            _ = _vectorControlValues.Remove(control);
+        }
+        else
+        {
+            _vectorControlValues[control] = (x, y);
+        }
+
+        return true;
+    }
+
+    private void UpdateAffectedBindingStates(InputControlKey changedControl, InputEnvelope envelope)
+    {
+        foreach (var mapState in _maps.Values.OrderBy(static state => state.Map.MapId.ToString("D"), StringComparer.Ordinal))
+        {
+            if (!mapState.BindingsByControl.TryGetValue(changedControl, out var affectedBindings))
+            {
+                continue;
+            }
+
+            foreach (var bindingState in affectedBindings)
+            {
+                UpdateBindingState(bindingState, envelope);
+            }
+        }
+    }
+
+    private void UpdateBindingState(InputBindingRuntimeState bindingState, InputEnvelope? envelope)
+    {
+        var binding = bindingState.Definition;
+
+        switch (binding.Kind)
+        {
+            case BindingKind.Button:
+            {
+                bindingState.IsDown = IsControlDown(GetControlKey(binding.Control!));
+                break;
+            }
+
+            case BindingKind.Chord:
+            {
+                bindingState.IsDown = UpdateChordState(bindingState, envelope);
+                break;
+            }
+
+            case BindingKind.Axis1Keys:
+            {
+                var negativeDown = IsControlDown(GetControlKey(binding.Negative!));
+                var positiveDown = IsControlDown(GetControlKey(binding.Positive!));
+                bindingState.AxisX = (positiveDown == negativeDown) ? 0.0f : positiveDown ? 1.0f : -1.0f;
+                bindingState.AxisY = 0.0f;
+                break;
+            }
+
+            case BindingKind.Axis2Keys:
+            {
+                var leftDown = IsControlDown(GetControlKey(binding.Left!));
+                var rightDown = IsControlDown(GetControlKey(binding.Right!));
+                var downDown = IsControlDown(GetControlKey(binding.Down!));
+                var upDown = IsControlDown(GetControlKey(binding.Up!));
+                var x = (rightDown ? 1.0f : 0.0f) - (leftDown ? 1.0f : 0.0f);
+                var y = (upDown ? 1.0f : 0.0f) - (downDown ? 1.0f : 0.0f);
+                var magnitudeSquared = (x * x) + (y * y);
+
+                if (magnitudeSquared > 1.0f)
+                {
+                    var inverseMagnitude = 1.0f / MathF.Sqrt(magnitudeSquared);
+                    x *= inverseMagnitude;
+                    y *= inverseMagnitude;
+                }
+
+                bindingState.AxisX = NormalizeZero(x);
+                bindingState.AxisY = NormalizeZero(y);
+                break;
+            }
+
+            case BindingKind.GamepadAxis1:
+            {
+                bindingState.AxisX = GetProcessedAxis1Value(binding.Axis1Source!, _scalarControlValues);
+                bindingState.AxisY = 0.0f;
+                break;
+            }
+
+            case BindingKind.GamepadStick2:
+            {
+                var (x, y) = GetProcessedStick2Value(binding.Stick2Source!, _vectorControlValues);
+                bindingState.AxisX = x;
+                bindingState.AxisY = y;
+                break;
+            }
+
+            case BindingKind.GamepadTrigger:
+            {
+                bindingState.AxisX = GetProcessedTriggerValue(binding.TriggerSource!, _scalarControlValues);
+                bindingState.AxisY = 0.0f;
+                break;
+            }
+
+            case BindingKind.AxisThreshold:
+            {
+                var metric = GetAxisThresholdMetric(binding, _scalarControlValues);
+                var pressThreshold = binding.PressThreshold ?? 0.55f;
+                var releaseThreshold = binding.ReleaseThreshold ?? 0.45f;
+                bindingState.IsDown = bindingState.IsDown ? metric > releaseThreshold : metric >= pressThreshold;
+                break;
+            }
+        }
+
+        if (envelope is null)
+        {
+            bindingState.IsDisarmed = !IsBindingNeutral(bindingState);
+        }
+        else if (bindingState.IsDisarmed && IsBindingNeutral(bindingState))
+        {
+            bindingState.IsDisarmed = false;
+        }
+    }
+
+    private bool UpdateChordState(InputBindingRuntimeState bindingState, InputEnvelope? envelope)
+    {
+        var binding = bindingState.Definition;
+
+        if (envelope is null)
+        {
+            bindingState.ChordIsDown = false;
+            bindingState.ChordStartedHostTimestamp = null;
+            bindingState.ChordIsDisarmed = !IsBindingNeutral(bindingState);
+            return false;
+        }
+
+        var anyDown = false;
+        var allDown = true;
+        var allUp = true;
+        var releaseIsMember = false;
+
+        foreach (var control in binding.Controls)
+        {
+            var controlKey = GetControlKey(control);
+            var isDown = IsControlDown(controlKey);
+            anyDown |= isDown;
+            allDown &= isDown;
+            allUp &= !isDown;
+            releaseIsMember |= IsDigitalRelease(envelope) && (controlKey == envelope.Control);
+        }
+
+        if (bindingState.ChordIsDown)
+        {
+            if (allDown)
+            {
+                return true;
+            }
+
+            bindingState.ChordIsDown = false;
+            bindingState.ChordIsDisarmed = !allUp;
+            bindingState.ChordStartedHostTimestamp = null;
+            return false;
+        }
+
+        if (bindingState.ChordIsDisarmed)
+        {
+            if (allUp)
+            {
+                bindingState.ChordIsDisarmed = false;
+                bindingState.ChordStartedHostTimestamp = null;
+            }
+
+            return false;
+        }
+
+        if (!anyDown)
+        {
+            bindingState.ChordStartedHostTimestamp = null;
+            return false;
+        }
+
+        if (bindingState.ChordStartedHostTimestamp is not { } startTimestamp)
+        {
+            startTimestamp = long.MaxValue;
+
+            foreach (var control in binding.Controls)
+            {
+                var controlKey = GetControlKey(control);
+
+                if (_digitalControlDownTimestamps.TryGetValue(controlKey, out var downTimestamp))
+                {
+                    startTimestamp = Math.Min(startTimestamp, downTimestamp);
+                }
+            }
+
+            bindingState.ChordStartedHostTimestamp = startTimestamp;
+        }
+
+        if (releaseIsMember && !allDown)
+        {
+            bindingState.ChordIsDisarmed = !allUp;
+            bindingState.ChordStartedHostTimestamp = null;
+            return false;
+        }
+
+        if (binding.CompletionWindowMilliseconds is { } windowMilliseconds)
+        {
+            var windowTicks = checked((long)windowMilliseconds * TimeSpan.TicksPerMillisecond);
+
+            if ((envelope.HostTimestamp - startTimestamp) > windowTicks)
+            {
+                bindingState.ChordIsDisarmed = !allUp;
+                bindingState.ChordStartedHostTimestamp = null;
+                return false;
+            }
+        }
+
+        bindingState.ChordIsDown = allDown;
+        return bindingState.ChordIsDown;
     }
 
     internal sealed class InputOverflowResult
@@ -479,21 +1188,47 @@ public sealed partial class InputRouter
     {
         internal InputBindingRuntimeState(BindingDefinition definition)
         {
+            CanonicalBindingId = definition.BindingId.ToString("D");
             Definition = definition;
         }
 
+        internal float AxisX { get; set; }
+
+        internal float AxisY { get; set; }
+
+        internal string CanonicalBindingId { get; }
+
+        internal bool ChordIsDisarmed { get; set; }
+
+        internal bool ChordIsDown { get; set; }
+
+        internal long? ChordStartedHostTimestamp { get; set; }
+
         internal BindingDefinition Definition { get; }
+
+        internal bool IsDisarmed { get; set; }
 
         internal bool IsDown { get; set; }
     }
 
     private readonly record struct InputControlKey(
-        DigitalControlKind Kind,
+        InputControlKind Kind,
         ushort UsagePage,
         ushort Usage,
         string? LogicalKeyName,
         ushort PlayerSlot,
         int Value);
+
+    private enum InputControlKind
+    {
+        GamepadAxis,
+        GamepadButton,
+        GamepadStick,
+        GamepadTrigger,
+        KeyboardHid,
+        LogicalKey,
+        MouseButton,
+    }
 
     private sealed class InputEnvelope(
         InputInjection injection,

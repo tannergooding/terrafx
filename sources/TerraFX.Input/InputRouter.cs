@@ -212,7 +212,9 @@ public sealed partial class InputRouter
         }
 
         var hostSequence = _sequenceLease.Allocate();
+        RecordHostControlSequence(hostSequence);
         var mapState = new InputActionMapState(map, map.InitialActiveContextMask, insertionSequences);
+        InitializeMapState(mapState);
         _maps.Add(map.MapId, mapState);
         _lastInsertionSequence = lastInsertionSequence;
         _controlCommandsInBoundary++;
@@ -267,7 +269,9 @@ public sealed partial class InputRouter
             return CreateMapCapacityFailure("/InputControl");
         }
 
+        InitializeMapState(replacementState);
         var hostSequence = _sequenceLease.Allocate();
+        RecordHostControlSequence(hostSequence);
         _maps[map.MapId] = replacementState;
         _controlCommandsInBoundary++;
         PublishHostActionSnapshot();
@@ -340,6 +344,7 @@ public sealed partial class InputRouter
         }
 
         var hostSequence = _sequenceLease.Allocate();
+        RecordHostControlSequence(hostSequence);
         current.SetContextMask(newMask, insertionSequences);
         _lastInsertionSequence = lastInsertionSequence;
         _controlCommandsInBoundary++;
@@ -524,6 +529,7 @@ public sealed partial class InputRouter
             ActiveContextMask = activeContextMask;
             ActionStates = [];
             BindingStates = [];
+            BindingsByControl = [];
             ContextInsertionSequences = contextInsertionSequences;
             Map = map;
             OrderedActions = [.. map.Actions.OrderBy(static action => action.ActionId.ToString("D"), StringComparer.Ordinal)];
@@ -535,7 +541,19 @@ public sealed partial class InputRouter
 
             foreach (var binding in map.Bindings)
             {
-                BindingStates.Add(binding.BindingId, new InputBindingRuntimeState(binding));
+                var bindingState = new InputBindingRuntimeState(binding);
+                BindingStates.Add(binding.BindingId, bindingState);
+
+                foreach (var control in GetBindingControlKeys(binding))
+                {
+                    if (!BindingsByControl.TryGetValue(control, out var bindings))
+                    {
+                        bindings = [];
+                        BindingsByControl.Add(control, bindings);
+                    }
+
+                    bindings.Add(bindingState);
+                }
             }
         }
 
@@ -544,6 +562,8 @@ public sealed partial class InputRouter
         internal ulong ActiveContextMask { get; private set; }
 
         internal Dictionary<Guid, InputBindingRuntimeState> BindingStates { get; }
+
+        internal Dictionary<InputControlKey, List<InputBindingRuntimeState>> BindingsByControl { get; }
 
         internal long[] ContextInsertionSequences { get; private set; }
 
