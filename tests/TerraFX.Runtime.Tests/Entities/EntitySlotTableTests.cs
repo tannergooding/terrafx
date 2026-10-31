@@ -105,6 +105,100 @@ internal sealed class EntitySlotTableTests
     }
 
     [Test]
+    public void HierarchyLinksPreserveSiblingOrderAndDepthAcrossReparenting()
+    {
+        var table = new EntitySlotTable(4);
+        Assert.That(table.PrepareCapacity(4, 4), Is.True);
+        Assert.That(table.TryAllocate(out var rootIndex, out var rootGeneration), Is.True);
+        Assert.That(table.TryAllocate(out var firstChildIndex, out var firstChildGeneration), Is.True);
+        Assert.That(table.TryAllocate(out var secondChildIndex, out var secondChildGeneration), Is.True);
+        Assert.That(table.TryAllocate(out var grandchildIndex, out var grandchildGeneration), Is.True);
+
+        table.SetParent(firstChildIndex, firstChildGeneration, rootIndex, rootGeneration);
+        table.SetParent(secondChildIndex, secondChildGeneration, rootIndex, rootGeneration);
+        table.SetParent(grandchildIndex, grandchildGeneration, firstChildIndex, firstChildGeneration);
+
+        Assert.That(table.GetHierarchyDepth(rootIndex, rootGeneration), Is.Zero);
+        Assert.That(table.GetHierarchyDepth(firstChildIndex, firstChildGeneration), Is.EqualTo(1));
+        Assert.That(table.GetHierarchyDepth(grandchildIndex, grandchildGeneration), Is.EqualTo(2));
+        Assert.That(
+            table.TryGetFirstChild(rootIndex, rootGeneration, out var firstChild, out _),
+            Is.True);
+        Assert.That(firstChild, Is.EqualTo(firstChildIndex));
+        Assert.That(
+            table.TryGetNextSibling(firstChildIndex, firstChildGeneration, out var nextSibling, out _),
+            Is.True);
+        Assert.That(nextSibling, Is.EqualTo(secondChildIndex));
+
+        table.SetParent(secondChildIndex, secondChildGeneration, grandchildIndex, grandchildGeneration);
+
+        Assert.That(table.TryGetNextSibling(firstChildIndex, firstChildGeneration, out _, out _), Is.False);
+        Assert.That(table.GetHierarchyDepth(secondChildIndex, secondChildGeneration), Is.EqualTo(3));
+        Assert.That(
+            table.TryGetFirstChild(grandchildIndex, grandchildGeneration, out var movedChild, out _),
+            Is.True);
+        Assert.That(movedChild, Is.EqualTo(secondChildIndex));
+
+        table.SetParent(secondChildIndex, secondChildGeneration, parentIndex: 0, parentGeneration: 0);
+
+        Assert.That(table.TryGetParent(secondChildIndex, secondChildGeneration, out _, out _), Is.False);
+        Assert.That(table.GetHierarchyDepth(secondChildIndex, secondChildGeneration), Is.Zero);
+        Assert.That(table.TryGetFirstChild(grandchildIndex, grandchildGeneration, out _, out _), Is.False);
+    }
+
+    [Test]
+    public void HierarchyParentChangesRejectCyclesAndDepthOverflowWithoutMutation()
+    {
+        var slotCount = EntitySlotTable.MaximumHierarchyDepth + 2;
+        var table = new EntitySlotTable(slotCount);
+        Assert.That(table.PrepareCapacity(slotCount, 0), Is.True);
+        var generations = new uint[slotCount + 1];
+
+        for (var index = 1; index <= slotCount; index++)
+        {
+            Assert.That(table.TryAllocate(out var allocatedIndex, out var generation), Is.True);
+            Assert.That(allocatedIndex, Is.EqualTo((uint)index));
+            generations[index] = generation;
+
+            if (index is > 1 and <= EntitySlotTable.MaximumHierarchyDepth + 1)
+            {
+                table.SetParent(
+                    allocatedIndex,
+                    generation,
+                    allocatedIndex - 1,
+                    generations[index - 1]);
+            }
+        }
+
+        var deepestIndex = checked((uint)(EntitySlotTable.MaximumHierarchyDepth + 1));
+        Assert.That(
+            table.GetHierarchyDepth(deepestIndex, generations[checked((int)deepestIndex)]),
+            Is.EqualTo(EntitySlotTable.MaximumHierarchyDepth));
+
+        _ = Assert.Throws<InvalidOperationException>(
+            () => table.SetParent(
+                1,
+                generations[1],
+                deepestIndex,
+                generations[checked((int)deepestIndex)]));
+
+        var overflowChildIndex = checked(deepestIndex + 1);
+        _ = Assert.Throws<InvalidOperationException>(
+            () => table.SetParent(
+                overflowChildIndex,
+                generations[checked((int)overflowChildIndex)],
+                deepestIndex,
+                generations[checked((int)deepestIndex)]));
+        Assert.That(
+            table.TryGetParent(
+                overflowChildIndex,
+                generations[checked((int)overflowChildIndex)],
+                out _,
+                out _),
+            Is.False);
+    }
+
+    [Test]
     public void IncrementToMaximumGenerationRemainsUsableUntilThatGenerationIsDestroyed()
     {
         var table = EntitySlotTable.CreateForTesting(1, uint.MaxValue - 1);
