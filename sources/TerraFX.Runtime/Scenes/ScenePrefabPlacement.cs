@@ -14,7 +14,7 @@ internal sealed class ScenePrefabPlacement
         Guid? parentEntityId,
         ImmutableArray<ScenePrefabRootPose> rootPoses,
         ImmutableArray<SceneAuthoredRecord> overrides,
-        ImmutableArray<SceneAuthoredRecord> slotBindings,
+        ImmutableArray<ScenePlacementSlotBinding> slotBindings,
         ImmutableArray<byte> encodedRecord)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(placementId, Guid.Empty);
@@ -70,5 +70,5 @@ internal sealed class ScenePrefabPlacement
 
     internal ImmutableArray<ScenePrefabRootPose> RootPoses { get; }
 
-    internal ImmutableArray<SceneAuthoredRecord> SlotBindings { get; }
+    internal ImmutableArray<ScenePlacementSlotBinding> SlotBindings { get; }
 }

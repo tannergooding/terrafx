@@ -227,8 +227,8 @@ internal sealed class SceneHierarchyCodecTests
             return payload[..bytesWritten];
         }
 
-        public static FixtureField CreateRecordField(uint tag, byte[] record)
-            => new(tag, 22, 1, 1, record);
+        public static FixtureField CreateRecordField(uint tag, byte[] record, bool isRequired = true)
+            => new(tag, 22, isRequired ? (ushort)1 : (ushort)0, 1, record);
 
         public static FixtureField CreateUInt32Field(uint tag, uint value)
         {

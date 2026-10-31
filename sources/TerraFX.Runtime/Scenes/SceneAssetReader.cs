@@ -15,11 +15,12 @@ internal static class SceneAssetReader
     private static readonly Guid s_entityReferenceBindingSchemaId = new ContentSchemaIdentityAssignment("native/entity-reference-binding").SchemaId;
     private static readonly Guid s_entitySelectorSchemaId = new ContentSchemaIdentityAssignment("native/entity-selector").SchemaId;
     private static readonly Guid s_externalSlotSchemaId = new ContentSchemaIdentityAssignment("native/external-slot").SchemaId;
+    private static readonly Guid s_placementSlotBindingSchemaId = new ContentSchemaIdentityAssignment("native/placement-slot-binding").SchemaId;
     private static readonly Guid s_prefabOverrideSchemaId = new ContentSchemaIdentityAssignment("native/prefab-override").SchemaId;
     private static readonly Guid s_prefabPlacementSchemaId = new ContentSchemaIdentityAssignment("native/prefab-placement").SchemaId;
     private static readonly Guid s_prefabRootPoseSchemaId = new ContentSchemaIdentityAssignment("native/prefab-root-pose").SchemaId;
     private static readonly Guid s_prefabSchemaId = new ContentSchemaIdentityAssignment("native/prefab").SchemaId;
-    private static readonly Guid s_placementSlotBindingSchemaId = new ContentSchemaIdentityAssignment("native/placement-slot-binding").SchemaId;
+    private static readonly Guid s_referenceTargetSchemaId = new ContentSchemaIdentityAssignment("native/reference-target").SchemaId;
     private static readonly Guid s_rootPositionSchemaId = new ContentSchemaIdentityAssignment("scene/root-position").SchemaId;
     private static readonly Guid s_sceneSchemaId = new ContentSchemaIdentityAssignment("native/scene").SchemaId;
 
@@ -465,6 +466,46 @@ internal static class SceneAssetReader
         return id;
     }
 
+    private static ScenePlacementSlotBinding ReadPlacementSlotBinding(
+        EbinRecordReadView record,
+        EbinReadLimits limits)
+    {
+        var hasTarget = record.TryGetField(2, out var targetField);
+        ValidateHeader(record, s_placementSlotBindingSchemaId, major: 1, fieldCount: hasTarget ? 2 : 1);
+        var slotId = ReadGuid(record, tag: 1, isRequired: true);
+        SceneReferenceTarget? target = null;
+
+        if (hasTarget)
+        {
+            if ((targetField.Kind != 22)
+                || targetField.IsRequired
+                || (targetField.Count != 1))
+            {
+                throw new InvalidDataException("The PrefabPlacement slot target is not an optional reference record.");
+            }
+
+            target = ReadReferenceTarget(record.GetRecord(2), limits);
+        }
+
+        return new ScenePlacementSlotBinding(slotId, target);
+    }
+
+    private static ImmutableArray<ScenePlacementSlotBinding> ReadPlacementSlotBindings(
+        EbinRecordReadView record,
+        EbinFieldReadView field,
+        EbinReadLimits limits)
+    {
+        var count = checked((int)field.Count);
+        var bindings = ImmutableArray.CreateBuilder<ScenePlacementSlotBinding>(count);
+
+        for (var index = 0; index < count; index++)
+        {
+            bindings.Add(ReadPlacementSlotBinding(record.GetRecordArrayElement(6, index), limits));
+        }
+
+        return bindings.MoveToImmutable();
+    }
+
     private static ScenePrefabPlacement ReadPrefabPlacement(
         EbinRecordReadView record,
         EbinReadLimits limits)
@@ -498,12 +539,7 @@ internal static class SceneAssetReader
             overrideField,
             s_prefabOverrideSchemaId,
             maximumCount: 65_536);
-        var slotBindings = ReadAuthoredRecords(
-            record,
-            tag: 6,
-            slotBindingField,
-            s_placementSlotBindingSchemaId,
-            maximumCount: 65_536);
+        var slotBindings = ReadPlacementSlotBindings(record, slotBindingField, limits);
         var encodedRecord = ImmutableArray.CreateRange(record.EncodedBytes.ToArray());
         return new ScenePrefabPlacement(
             placementId,
@@ -584,6 +620,51 @@ internal static class SceneAssetReader
         }
 
         return rootPoses.MoveToImmutable();
+    }
+
+    private static SceneReferenceTarget ReadReferenceTarget(EbinRecordReadView record, EbinReadLimits limits)
+    {
+        var hasEntity = record.TryGetField(2, out var entityField);
+        var hasExternalSlot = record.TryGetField(3, out var externalSlotField);
+        ValidateHeader(record, s_referenceTargetSchemaId, major: 1, fieldCount: 2);
+        var kind = ReadUInt8(record, tag: 1);
+
+        if (kind is (byte)SceneReferenceTargetKind.Internal)
+        {
+            if (!hasEntity
+                || hasExternalSlot
+                || (entityField.Kind != 22)
+                || entityField.IsRequired
+                || (entityField.Count != 1))
+            {
+                throw new InvalidDataException("An Internal reference target requires only an EntitySelector.");
+            }
+
+            return new SceneReferenceTarget(
+                SceneReferenceTargetKind.Internal,
+                ReadEntitySelector(record.GetRecord(2), limits),
+                externalSlotId: null);
+        }
+
+        if (kind is (byte)SceneReferenceTargetKind.ExternalSlot)
+        {
+            if (hasEntity
+                || !hasExternalSlot
+                || (externalSlotField.Kind != 11)
+                || externalSlotField.IsRequired
+                || (externalSlotField.Count != 1)
+                || (externalSlotField.Payload.Length != 16))
+            {
+                throw new InvalidDataException("An ExternalSlot reference target requires only an ExternalSlotId.");
+            }
+
+            return new SceneReferenceTarget(
+                SceneReferenceTargetKind.ExternalSlot,
+                entity: null,
+                externalSlotId: ReadGuidPayload(externalSlotField.Payload));
+        }
+
+        throw new InvalidDataException("A reference-target kind is not defined by the schema.");
     }
 
     private static uint ReadUInt32(EbinRecordReadView record, uint tag)

@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using NUnit.Framework;
 using TerraFX;
@@ -67,6 +68,35 @@ internal sealed class SceneAssetReaderTests
         Assert.That(
             prefab.Hierarchy.Roots,
             Is.EqualTo([new SceneHierarchyEntry(SceneHierarchyEntryKind.PrefabPlacement, placementId)]));
+    }
+
+    [Test]
+    public void ReadsPrefabPlacementExternalSlotBinding()
+    {
+        var schemas = Fixtures.CreateRegistry();
+        var assetId = new AssetId(3);
+        var placementId = new Guid("20000000-0000-4000-8000-000000000007");
+        var slotId = new Guid("30000000-0000-4000-8000-000000000007");
+        var target = Fixtures.CreateReferenceTarget(SceneReferenceTargetKind.ExternalSlot, externalSlotId: slotId);
+        var slotBinding = Fixtures.CreatePlacementSlotBinding(slotId, target);
+        var encoded = Fixtures.CreatePrefab(assetId, placementId: placementId, slotBindings: [slotBinding]);
+        var workspace = new SceneHierarchyValidationWorkspace(entityCount: 0, placementCount: 1);
+        var action = new PrefabReadAction(assetId, schemas, workspace);
+        var status = EbinStructuralReader.Read(
+            encoded,
+            EbinReadLimits.Foundation,
+            EbinReadPolicy.Canonical,
+            ref action,
+            out _,
+            out var diagnostic);
+
+        Assert.That(status, Is.EqualTo(EbinReadStatus.Complete), diagnostic?.Category);
+        var prefab = action.Result
+            ?? throw new InvalidOperationException("The Prefab reader did not produce a value.");
+        var binding = prefab.Placements[0].SlotBindings[0];
+        Assert.That(binding.SlotId, Is.EqualTo(slotId));
+        Assert.That(binding.Target?.Kind, Is.EqualTo(SceneReferenceTargetKind.ExternalSlot));
+        Assert.That(binding.Target?.ExternalSlotId, Is.EqualTo(slotId));
     }
 
     [Test]
@@ -272,6 +302,35 @@ internal sealed class SceneAssetReaderTests
     }
 
     [Test]
+    public void RejectsPrefabPlacementReferenceTargetOperandMismatch()
+    {
+        var schemas = Fixtures.CreateRegistry();
+        var assetId = new AssetId(3);
+        var placementId = new Guid("20000000-0000-4000-8000-000000000008");
+        var slotId = new Guid("30000000-0000-4000-8000-000000000008");
+        var target = Fixtures.CreateReferenceTarget(
+            SceneReferenceTargetKind.Internal,
+            externalSlotId: new Guid("40000000-0000-4000-8000-000000000008"));
+        var slotBinding = Fixtures.CreatePlacementSlotBinding(slotId, target);
+        var encoded = Fixtures.CreatePrefab(assetId, placementId: placementId, slotBindings: [slotBinding]);
+        var workspace = new SceneHierarchyValidationWorkspace(entityCount: 0, placementCount: 1);
+
+        void ReadInvalidTarget()
+        {
+            var action = new PrefabReadAction(assetId, schemas, workspace);
+            _ = EbinStructuralReader.Read(
+                encoded,
+                EbinReadLimits.Foundation,
+                EbinReadPolicy.Canonical,
+                ref action,
+                out _,
+                out _);
+        }
+
+        Assert.That(ReadInvalidTarget, Throws.TypeOf<InvalidDataException>());
+    }
+
+    [Test]
     public void RejectsPrefabRootPoseInstanceAbsoluteSelector()
     {
         var schemas = Fixtures.CreateRegistry();
@@ -391,6 +450,21 @@ internal sealed class SceneAssetReaderTests
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8));
         }
 
+        internal static byte[] CreatePlacementSlotBinding(Guid slotId, byte[]? target)
+        {
+            SceneHierarchyCodecTests.FixtureBuilder.FixtureField[] fields = target is null
+                ? [SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(1, slotId)]
+                : [
+                    SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(1, slotId),
+                    SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(2, target, isRequired: false)
+                ];
+            return SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                new ContentSchemaIdentityAssignment("native/placement-slot-binding").SchemaId,
+                1,
+                0,
+                fields);
+        }
+
         internal static byte[] CreatePrefab(
             AssetId assetId,
             Guid? entityId = null,
@@ -476,6 +550,40 @@ internal sealed class SceneAssetReaderTests
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(6, slotBindings));
         }
 
+        internal static byte[] CreateReferenceTarget(
+            SceneReferenceTargetKind kind,
+            Guid? entityId = null,
+            Guid? externalSlotId = null)
+        {
+            List<SceneHierarchyCodecTests.FixtureBuilder.FixtureField> fields = [
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(1, (byte)kind),
+            ];
+
+            if (entityId is { } targetEntityId)
+            {
+                fields.Add(
+                    SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(
+                        2,
+                        CreateEntitySelector(targetEntityId),
+                        isRequired: false));
+            }
+
+            if (externalSlotId is { } targetSlotId)
+            {
+                fields.Add(
+                    SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(
+                        3,
+                        targetSlotId,
+                        isRequired: false));
+            }
+
+            return SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                new ContentSchemaIdentityAssignment("native/reference-target").SchemaId,
+                1,
+                0,
+                [.. fields]);
+        }
+
         internal static CompiledContentSchemaRegistry CreateRegistry()
             => new CompiledContentSchemaRegistry([
                 .. CoreContentSchemaCatalogue.PrimitiveSchemas,
@@ -508,13 +616,7 @@ internal sealed class SceneAssetReaderTests
 
         internal static byte[] CreateRootPose(Guid entityId, byte scope = 1)
         {
-            var selector = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
-                new ContentSchemaIdentityAssignment("native/entity-selector").SchemaId,
-                1,
-                0,
-                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(1, scope),
-                SceneHierarchyCodecTests.FixtureBuilder.CreateFixedGuidArrayField(2),
-                SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(3, entityId));
+            var selector = CreateEntitySelector(entityId, scope);
             var localTransform = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
                 new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId,
                 1,
@@ -589,6 +691,15 @@ internal sealed class SceneAssetReaderTests
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(7),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8));
         }
+
+        private static byte[] CreateEntitySelector(Guid entityId, byte scope = 1)
+            => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                new ContentSchemaIdentityAssignment("native/entity-selector").SchemaId,
+                1,
+                0,
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(1, scope),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateFixedGuidArrayField(2),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(3, entityId));
     }
 
     private struct PrefabReadAction : IAction<EbinRecordReadView>
