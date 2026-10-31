@@ -19,10 +19,12 @@ public sealed partial class InputRouter
     private int _controlCommandsInBoundary;
     private InputActionSnapshot _hostActionSnapshot;
     private int _isDisposed;
+    private bool _isPaused;
     private long _lastInsertionSequence;
     private readonly Dictionary<Guid, InputActionMapState> _maps;
     private long _nextOpenTick;
     private readonly int _ownerThreadId;
+    private bool _pauseControlPending;
     private readonly uint _recipientId;
     private readonly InputRecipientKind _recipientKind;
     private readonly HostEventSequenceLease _sequenceLease;
@@ -421,11 +423,16 @@ public sealed partial class InputRouter
         RecordHostControlSequence(hostSequence);
         _lastSeenHostTimestamp = _hostControlTimestamp;
         _inputControlInbox.Enqueue(new InputControlEnvelope(
+            InputControlCommandKind.SetActiveContextMask,
             mapId,
             expectedRevision,
             newMask,
             insertionSequences,
             lastInsertionSequence,
+            InputClass.None,
+            null,
+            null,
+            [],
             _hostControlTimestamp,
             hostSequence,
             (_recipientKind == InputRecipientKind.SimulationTimeline) ? _nextOpenTick : null));
@@ -462,19 +469,41 @@ public sealed partial class InputRouter
 
     internal void Dispose()
     {
+        _ = DisposeAndGetTransitions();
+    }
+
+    internal ImmutableArray<InputActionTransition> DisposeAndGetTransitions()
+    {
         if (Environment.CurrentManagedThreadId != _ownerThreadId)
         {
             throw new InvalidOperationException("An input router must be disposed on its host owner thread.");
         }
 
+        if (Volatile.Read(ref _isDisposed) != 0)
+        {
+            return [];
+        }
+
+        var hostSequence = _sequenceLease.Allocate();
+        RecordHostControlSequence(hostSequence);
+        _unreconciledControls.Clear();
+        ClearInputValuesForScope(InputClass.Keyboard | InputClass.Pointing | InputClass.Gamepad, playerSlot: null);
+        UpdateBindingsForScope(InputClass.Keyboard | InputClass.Pointing | InputClass.Gamepad, playerSlot: null);
+        RefreshAllConsumptionLeases();
+        var transitions = RecomputeAllActions(
+            hostSequence,
+            assignedTick: null,
+            InputCancellationReason.RecipientDisposed);
+
         if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
         {
-            return;
+            return [];
         }
 
         _maps.Clear();
         _controlCommandsInBoundary = 0;
         ClearInputState();
+        return transitions;
     }
 
     internal InputActionSnapshot PublishSimulationActionSnapshot(long assignedTick)

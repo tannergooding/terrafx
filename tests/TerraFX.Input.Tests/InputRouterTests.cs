@@ -88,6 +88,172 @@ internal sealed class InputRouterTests
     }
 
     [Test]
+    public void CancelsFocusScopedInputWithoutClearingGamepadState()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            24,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var keyboardAction = new ActionDefinition(new Guid("20000000-0000-0000-0000-000000000101"), "Keyboard", InputActionKind.Digital);
+        var combinedAction = new ActionDefinition(new Guid("20000000-0000-0000-0000-000000000102"), "Combined", InputActionKind.Digital);
+        var context = new ContextDefinition(new Guid("30000000-0000-0000-0000-000000000101"), 0);
+        var key = new KeyboardControl(7, 4);
+        var map = new InputActionMapV1(
+            1,
+            new Guid("10000000-0000-0000-0000-000000000101"),
+            1,
+            1,
+            [keyboardAction, combinedAction],
+            [context],
+            [
+                new BindingDefinition(Guid.NewGuid(), keyboardAction.ActionId, 1, BindingKind.Button) {
+                    Control = new DigitalControl(key),
+                },
+                new BindingDefinition(Guid.NewGuid(), combinedAction.ActionId, 1, BindingKind.Button) {
+                    Control = new DigitalControl(key),
+                },
+                new BindingDefinition(Guid.NewGuid(), combinedAction.ActionId, 1, BindingKind.Button) {
+                    Control = new DigitalControl(1, GamepadButtonValue.South),
+                },
+            ]);
+
+        Assert.That(router.RegisterMap(map).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Down), 1, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(1, GamepadButtonValue.South, true), 2, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        var active = router.PublishSimulationActionSnapshot(0);
+        Assert.That(active.Actions[0].IsDownAtEnd, Is.True);
+        Assert.That(active.Actions[1].IsDownAtEnd, Is.True);
+
+        router.BeginHostControlBoundary(1, 3);
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Down), 3, sequenceLease.Allocate(), 1).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        var cancellation = router.CancelInputState(
+            InputCancellationReason.FocusLost,
+            InputClass.Keyboard | InputClass.Pointing,
+            playerSlot: null,
+            hostTimestamp: 3,
+            hostSequence: sequenceLease.Allocate(),
+            out var discardedInputCount);
+        Assert.That(cancellation.Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(discardedInputCount, Is.EqualTo(1));
+
+        var boundaryTransitions = router.ServiceInputControlBoundary();
+        Assert.That(boundaryTransitions, Has.Length.EqualTo(1));
+        Assert.That(boundaryTransitions[0].ActionId, Is.EqualTo(keyboardAction.ActionId));
+        Assert.That(boundaryTransitions[0].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+        Assert.That(boundaryTransitions[0].CancellationReason, Is.EqualTo(InputCancellationReason.FocusLost));
+
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Down), 4, sequenceLease.Allocate(), 1).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(1, GamepadButtonValue.South, false), 5, sequenceLease.Allocate(), 1).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        var afterFocusLoss = router.PublishSimulationActionSnapshot(1);
+        Assert.That(afterFocusLoss.Actions[0].IsDownAtEnd, Is.False);
+        Assert.That(afterFocusLoss.Actions[0].Transitions, Is.Empty);
+        Assert.That(afterFocusLoss.Actions[1].IsDownAtEnd, Is.False);
+        Assert.That(afterFocusLoss.Actions[1].Transitions, Has.Length.EqualTo(1));
+        Assert.That(afterFocusLoss.Actions[1].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Released));
+
+        router.BeginHostControlBoundary(2, 6);
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Up), 6, sequenceLease.Allocate(), 2).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.PublishSimulationActionSnapshot(2).Actions[0].Transitions, Is.Empty);
+        router.BeginHostControlBoundary(3, 7);
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Down), 7, sequenceLease.Allocate(), 3).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        var rearmed = router.PublishSimulationActionSnapshot(3);
+        Assert.That(rearmed.Actions[0].IsDownAtEnd, Is.True);
+        Assert.That(rearmed.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Pressed));
+
+        router.Dispose();
+    }
+
+    [Test]
+    public void CancelsOnlyTheRemovedGamepadPlayerSlot()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            25,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var removedAction = new ActionDefinition(new Guid("20000000-0000-0000-0000-000000000111"), "Removed", InputActionKind.Digital);
+        var retainedAction = new ActionDefinition(new Guid("20000000-0000-0000-0000-000000000112"), "Retained", InputActionKind.Digital);
+        var combinedAction = new ActionDefinition(new Guid("20000000-0000-0000-0000-000000000113"), "Combined", InputActionKind.Digital);
+        var context = new ContextDefinition(new Guid("30000000-0000-0000-0000-000000000111"), 0);
+        var slotOneButton = new DigitalControl(1, GamepadButtonValue.South);
+        var slotTwoButton = new DigitalControl(2, GamepadButtonValue.East);
+        var map = new InputActionMapV1(
+            1,
+            new Guid("10000000-0000-0000-0000-000000000111"),
+            1,
+            1,
+            [removedAction, retainedAction, combinedAction],
+            [context],
+            [
+                new BindingDefinition(Guid.NewGuid(), removedAction.ActionId, 1, BindingKind.Button) {
+                    Control = slotOneButton,
+                },
+                new BindingDefinition(Guid.NewGuid(), retainedAction.ActionId, 1, BindingKind.Button) {
+                    Control = slotTwoButton,
+                },
+                new BindingDefinition(Guid.NewGuid(), combinedAction.ActionId, 1, BindingKind.Button) {
+                    Control = slotOneButton,
+                },
+                new BindingDefinition(Guid.NewGuid(), combinedAction.ActionId, 1, BindingKind.Button) {
+                    Control = slotTwoButton,
+                },
+            ]);
+
+        Assert.That(router.RegisterMap(map).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(1, GamepadButtonValue.South, true), 1, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(2, GamepadButtonValue.East, true), 2, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        var active = router.PublishSimulationActionSnapshot(0);
+        Assert.That(active.Actions[0].IsDownAtEnd, Is.True);
+        Assert.That(active.Actions[1].IsDownAtEnd, Is.True);
+        Assert.That(active.Actions[2].IsDownAtEnd, Is.True);
+
+        router.BeginHostControlBoundary(1, 3);
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(1, GamepadButtonValue.South, true), 3, sequenceLease.Allocate(), 1).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        var cancellation = router.CancelInputState(
+            InputCancellationReason.DeviceRemoved,
+            InputClass.Gamepad,
+            playerSlot: 1,
+            hostTimestamp: 3,
+            hostSequence: sequenceLease.Allocate(),
+            out var discardedInputCount);
+        Assert.That(cancellation.Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(discardedInputCount, Is.EqualTo(1));
+
+        var transitions = router.ServiceInputControlBoundary();
+        Assert.That(transitions, Has.Length.EqualTo(1));
+        Assert.That(transitions[0].ActionId, Is.EqualTo(removedAction.ActionId));
+        Assert.That(transitions[0].CancellationReason, Is.EqualTo(InputCancellationReason.DeviceRemoved));
+
+        var reconciliation = router.ReconcileInputState(
+            [new InputInjection(1, GamepadButtonValue.South, true)],
+            InputClass.Gamepad,
+            playerSlot: 1,
+            hostTimestamp: 4,
+            hostSequence: sequenceLease.Allocate(),
+            out discardedInputCount);
+        Assert.That(reconciliation.Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(discardedInputCount, Is.Zero);
+        Assert.That(router.ServiceInputControlBoundary(), Is.Empty);
+
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(1, GamepadButtonValue.South, false), 5, sequenceLease.Allocate(), 1).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        var neutral = router.PublishSimulationActionSnapshot(1);
+        Assert.That(neutral.Actions[0].IsDownAtEnd, Is.False);
+        Assert.That(neutral.Actions[1].IsDownAtEnd, Is.True);
+        Assert.That(neutral.Actions[2].IsDownAtEnd, Is.True);
+
+        router.BeginHostControlBoundary(2, 6);
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(1, GamepadButtonValue.South, true), 6, sequenceLease.Allocate(), 2).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        var rearmed = router.PublishSimulationActionSnapshot(2);
+        Assert.That(rearmed.Actions[0].IsDownAtEnd, Is.True);
+        Assert.That(rearmed.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Pressed));
+
+        router.Dispose();
+    }
+
+    [Test]
     public void CapturesKeyboardFromAHigherPriorityContextAcrossMaps()
     {
         var sequenceLease = new HostEventSequenceLease();
@@ -572,6 +738,38 @@ internal sealed class InputRouterTests
     }
 
     [Test]
+    public void DisposeReturnsRecipientDisposedCancellationsForActiveActions()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            27,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var action = new ActionDefinition(Guid.NewGuid(), "Move", InputActionKind.Digital);
+        var context = new ContextDefinition(Guid.NewGuid(), 0);
+        var key = new KeyboardControl(7, 4);
+        var binding = new BindingDefinition(Guid.NewGuid(), action.ActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(key),
+        };
+        var map = new InputActionMapV1(1, Guid.NewGuid(), 1, 1, [action], [context], [binding]);
+        Assert.That(router.RegisterMap(map).Status, Is.EqualTo(InputMapStatus.Registered));
+        var downSequence = sequenceLease.Allocate();
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Down), 1, downSequence, 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.PublishSimulationActionSnapshot(0).Actions[0].IsDownAtEnd, Is.True);
+
+        var transitions = router.DisposeAndGetTransitions();
+
+        Assert.That(transitions, Has.Length.EqualTo(1));
+        Assert.That(transitions[0].ActionId, Is.EqualTo(action.ActionId));
+        Assert.That(transitions[0].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+        Assert.That(transitions[0].CancellationReason, Is.EqualTo(InputCancellationReason.RecipientDisposed));
+        Assert.That(transitions[0].HostSequence, Is.GreaterThan(downSequence));
+        Assert.That(transitions[0].AssignedTick, Is.Null);
+        Assert.That(router.DisposeAndGetTransitions(), Is.Empty);
+    }
+
+    [Test]
     public void EnforcesOwnerThreadForMapMutations()
     {
         var router = CreateRouter();
@@ -638,6 +836,76 @@ internal sealed class InputRouterTests
         Assert.That(recoveredTick.Actions[0].IsDownAtEnd, Is.True);
         Assert.That(recoveredTick.Actions[0].Transitions, Has.Length.EqualTo(1));
         Assert.That(recoveredTick.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Pressed));
+
+        router.Dispose();
+    }
+
+    [Test]
+    public void OrdersContextActivationsAcrossCancellationControls()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            28,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var action = new ActionDefinition(new Guid("20000000-0000-0000-0000-000000000121"), "Move", InputActionKind.Digital);
+        var lowContext = new ContextDefinition(new Guid("30000000-0000-0000-0000-000000000121"), 0);
+        var key = new KeyboardControl(7, 4);
+        var lowMap = new InputActionMapV1(
+            1,
+            new Guid("10000000-0000-0000-0000-000000000122"),
+            1,
+            1,
+            [action],
+            [lowContext],
+            [
+                new BindingDefinition(new Guid("40000000-0000-0000-0000-000000000121"), action.ActionId, 1, BindingKind.Button) {
+                    Control = new DigitalControl(key),
+                },
+            ]);
+        var middleMap = new InputActionMapV1(
+            1,
+            new Guid("10000000-0000-0000-0000-000000000121"),
+            1,
+            0,
+            [],
+            [new ContextDefinition(new Guid("30000000-0000-0000-0000-000000000122"), 0)],
+            []);
+        var highestMap = new InputActionMapV1(
+            1,
+            new Guid("10000000-0000-0000-0000-000000000123"),
+            1,
+            0,
+            [],
+            [new ContextDefinition(
+                new Guid("30000000-0000-0000-0000-000000000123"),
+                0,
+                captureClasses: InputClass.Keyboard)],
+            []);
+
+        Assert.That(router.RegisterMap(lowMap).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.RegisterMap(middleMap).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.RegisterMap(highestMap).Status, Is.EqualTo(InputMapStatus.Registered));
+        router.BeginHostControlBoundary(0, 1);
+        Assert.That(router.SetActiveContextMask(middleMap.MapId, 1, 1).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(
+            router.CancelInputState(
+                InputCancellationReason.DeviceRemoved,
+                InputClass.Gamepad,
+                playerSlot: 1,
+                hostTimestamp: 1,
+                hostSequence: sequenceLease.Allocate(),
+                out _).Status,
+            Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.SetActiveContextMask(highestMap.MapId, 1, 1).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.ServiceInputControlBoundary(), Is.Empty);
+
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Down), 2, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        var snapshot = router.PublishSimulationActionSnapshot(0);
+        Assert.That(snapshot.Actions, Has.Length.EqualTo(1));
+        Assert.That(snapshot.Actions[0].IsDownAtEnd, Is.False);
+        Assert.That(snapshot.Actions[0].Transitions, Is.Empty);
 
         router.Dispose();
     }
@@ -765,6 +1033,81 @@ internal sealed class InputRouterTests
         var snapshot = router.PublishSimulationActionSnapshot(0);
         Assert.That(snapshot.Actions[0].IsDownAtEnd, Is.False);
         Assert.That(snapshot.Actions[0].Transitions, Is.Empty);
+
+        router.Dispose();
+    }
+
+    [Test]
+    public void PausesAndReconcilesTimelineInputWithoutSyntheticPress()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            26,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var action = new ActionDefinition(Guid.NewGuid(), "Move", InputActionKind.Digital);
+        var context = new ContextDefinition(Guid.NewGuid(), 0);
+        var key = new KeyboardControl(7, 4);
+        var binding = new BindingDefinition(Guid.NewGuid(), action.ActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(key),
+        };
+        var map = new InputActionMapV1(1, Guid.NewGuid(), 1, 1, [action], [context], [binding]);
+
+        Assert.That(router.RegisterMap(map).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Down), 1, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.PublishSimulationActionSnapshot(0).Actions[0].IsDownAtEnd, Is.True);
+
+        router.BeginHostControlBoundary(1, 2);
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Down), 2, sequenceLease.Allocate(), 1).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(1, GamepadButtonValue.South, true), 2, sequenceLease.Allocate(), 1).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        var pause = router.CancelInputState(
+            InputCancellationReason.Paused,
+            InputClass.Keyboard | InputClass.Pointing | InputClass.Gamepad,
+            playerSlot: null,
+            hostTimestamp: 2,
+            hostSequence: sequenceLease.Allocate(),
+            out var discardedInputCount);
+        Assert.That(pause.Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(discardedInputCount, Is.EqualTo(2));
+
+        var rejectedWhilePaused = router.EnqueueHeadlessInjection(
+            new InputInjection(key, InputKeyEventKind.Up),
+            3,
+            sequenceLease.Allocate(),
+            1);
+        Assert.That(rejectedWhilePaused.Status, Is.EqualTo(InputRoutingStatus.Rejected));
+        Assert.That(rejectedWhilePaused.Rejection?.Code, Is.EqualTo("Paused"));
+
+        var pauseTransitions = router.ServiceInputControlBoundary();
+        Assert.That(pauseTransitions, Has.Length.EqualTo(1));
+        Assert.That(pauseTransitions[0].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+        Assert.That(pauseTransitions[0].CancellationReason, Is.EqualTo(InputCancellationReason.Paused));
+
+        var resumed = router.ReconcileInputState(
+            [new InputInjection(key, InputKeyEventKind.Down)],
+            InputClass.Keyboard | InputClass.Pointing | InputClass.Gamepad,
+            playerSlot: null,
+            hostTimestamp: 3,
+            hostSequence: sequenceLease.Allocate(),
+            out discardedInputCount);
+        Assert.That(resumed.Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(discardedInputCount, Is.Zero);
+        Assert.That(router.ServiceInputControlBoundary(), Is.Empty);
+
+        var heldSnapshot = router.PublishSimulationActionSnapshot(1);
+        Assert.That(heldSnapshot.Actions[0].IsDownAtEnd, Is.False);
+        Assert.That(heldSnapshot.Actions[0].Transitions, Is.Empty);
+
+        router.BeginHostControlBoundary(2, 4);
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Up), 4, sequenceLease.Allocate(), 2).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.PublishSimulationActionSnapshot(2).Actions[0].Transitions, Is.Empty);
+        router.BeginHostControlBoundary(3, 5);
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Down), 5, sequenceLease.Allocate(), 3).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        var rearmed = router.PublishSimulationActionSnapshot(3).Actions[0];
+        Assert.That(rearmed.IsDownAtEnd, Is.True);
+        Assert.That(rearmed.Transitions, Has.Length.EqualTo(1));
+        Assert.That(rearmed.Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Pressed));
 
         router.Dispose();
     }

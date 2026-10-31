@@ -12,6 +12,7 @@ namespace TerraFX.Input;
 public sealed partial class InputRouter
 {
     private const int MaximumPendingInputEvents = 4096;
+    private const int MaximumPendingReconciliationInputs = 4096;
 
     private readonly Dictionary<InputControlKey, List<InputConsumptionLease>> _consumptionLeases = [];
     private readonly Dictionary<InputControlKey, long> _digitalControlDownTimestamps = [];
@@ -26,9 +27,11 @@ public sealed partial class InputRouter
     private long _lastSeenHostTimestamp;
     private long _lastUnacceptedHostSequence;
     private bool _overflowServiced;
+    private int _pendingReconciliationInputCount;
     private ImmutableArray<InputContextOrder> _orderedContexts = [];
     private ImmutableArray<InputBindingRuntimeState> _orderedConsumableBindings = [];
     private readonly List<PendingReboundAction> _pendingReboundActions = [];
+    private readonly HashSet<InputControlKey> _unreconciledControls = [];
     private readonly List<InputActionState> _terminalActionStates = [];
     private readonly Dictionary<InputControlKey, float> _scalarControlValues = [];
     private readonly Dictionary<InputControlKey, (float X, float Y)> _vectorControlValues = [];
@@ -268,6 +271,78 @@ public sealed partial class InputRouter
         => (input.HostTimestamp < control.HostTimestamp)
             || ((input.HostTimestamp == control.HostTimestamp) && (input.HostSequence < control.HostSequence));
 
+    private static bool IsNeutralInput(InputInjection injection)
+    {
+        return injection.Kind switch {
+            InputInjectionKind.KeyboardKey => injection.KeyEventKind == InputKeyEventKind.Up,
+            InputInjectionKind.GamepadButton => !injection.IsDown.GetValueOrDefault(),
+            InputInjectionKind.GamepadAxis => injection.AxisValue.GetValueOrDefault() == 0.0f,
+            InputInjectionKind.GamepadStick => (injection.StickValue.GetValueOrDefault().X == 0.0f)
+                && (injection.StickValue.GetValueOrDefault().Y == 0.0f),
+            InputInjectionKind.GamepadTrigger => injection.TriggerValue.GetValueOrDefault() == 0.0f,
+            _ => false,
+        };
+    }
+
+    private static bool IsNonNeutralInput(InputInjection injection)
+        => !IsNeutralInput(injection)
+            && (injection.Kind != InputInjectionKind.KeyboardKey
+                || injection.KeyEventKind == InputKeyEventKind.Down);
+
+    private static bool IsValidCancellationRequest(
+        InputCancellationReason reason,
+        InputClass inputClasses,
+        ushort? playerSlot)
+    {
+        const InputClass allClasses = InputClass.Keyboard | InputClass.Pointing | InputClass.Gamepad;
+        const InputClass focusedWindowClasses = InputClass.Keyboard | InputClass.Pointing;
+
+        if ((inputClasses == InputClass.None) || ((inputClasses & ~allClasses) != 0))
+        {
+            return false;
+        }
+
+        return reason switch {
+            InputCancellationReason.DeviceRemoved => (inputClasses == InputClass.Gamepad) && (playerSlot is not null),
+            InputCancellationReason.FocusLost => (inputClasses == focusedWindowClasses) && (playerSlot is null),
+            InputCancellationReason.Paused => (inputClasses == allClasses) && (playerSlot is null),
+            _ => false,
+        };
+    }
+
+    private static bool IsValidReconciliationScope(
+        InputClass inputClasses,
+        ushort? playerSlot,
+        bool isPaused)
+    {
+        const InputClass allClasses = InputClass.Keyboard | InputClass.Pointing | InputClass.Gamepad;
+        const InputClass focusedWindowClasses = InputClass.Keyboard | InputClass.Pointing;
+
+        if ((inputClasses == InputClass.None) || ((inputClasses & ~allClasses) != 0))
+        {
+            return false;
+        }
+
+        if (isPaused)
+        {
+            return (inputClasses == allClasses) && (playerSlot is null);
+        }
+
+        return ((inputClasses == focusedWindowClasses) && (playerSlot is null))
+            || ((inputClasses == InputClass.Gamepad) && (playerSlot is not null))
+            || ((inputClasses == allClasses) && (playerSlot is null));
+    }
+
+    private static bool MatchesInputScope(
+        InputControlKey control,
+        InputClass inputClasses,
+        ushort? playerSlot)
+    {
+        return ((GetInputClass(control) & inputClasses) != 0)
+            && ((playerSlot is not { } slot)
+                || ((GetInputClass(control) == InputClass.Gamepad) && (control.PlayerSlot == slot)));
+    }
+
     private static Vector2 NormalizeStick(Vector2 value)
     {
         var lengthSquared = Vector2.LengthSquared(value);
@@ -462,6 +537,80 @@ public sealed partial class InputRouter
         }
     }
 
+    internal InputRoutingReceipt CancelInputState(
+        InputCancellationReason reason,
+        InputClass inputClasses,
+        ushort? playerSlot,
+        long hostTimestamp,
+        long hostSequence,
+        out int discardedInputCount)
+    {
+        EnsureOwnerThread();
+        ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
+        ArgumentOutOfRangeException.ThrowIfLessThan(hostSequence, 1);
+        discardedInputCount = 0;
+
+        if (!IsValidCancellationRequest(reason, inputClasses, playerSlot))
+        {
+            return CreateRoutingRejection("InvalidCancellation", "/Cancellation");
+        }
+
+        if ((reason == InputCancellationReason.Paused)
+            ? ((_recipientKind != InputRecipientKind.SimulationTimeline) || _isPaused || _pauseControlPending)
+            : _isPaused)
+        {
+            return CreateRoutingRejection("InvalidCancellation", "/Recipient");
+        }
+
+        if ((hostSequence <= _lastSeenHostSequence)
+            || (hostTimestamp < _hostControlTimestamp)
+            || (hostTimestamp < _lastSeenHostTimestamp))
+        {
+            return CreateRoutingRejection("InvalidEventOrder", "/HostSequence");
+        }
+
+        if (!CanAdmitControlCommand() || (_inputControlInbox.Count >= MaximumControlCommandsPerBoundary))
+        {
+            return CreateRoutingCapacityFailure("/InputControl");
+        }
+
+        var hostTick = (_recipientKind == InputRecipientKind.SimulationTimeline) ? _nextOpenTick : (long?)null;
+        var envelope = new InputControlEnvelope(
+            InputControlCommandKind.CancelInput,
+            Guid.Empty,
+            0,
+            0,
+            [],
+            _lastInsertionSequence,
+            inputClasses,
+            playerSlot,
+            reason,
+            [],
+            hostTimestamp,
+            hostSequence,
+            hostTick);
+
+        discardedInputCount = DiscardPendingInputCopies(inputClasses, playerSlot);
+        _inputControlInbox.Enqueue(envelope);
+        RecordHostControlSequence(hostSequence);
+        _hostControlTimestamp = hostTimestamp;
+        _lastSeenHostTimestamp = hostTimestamp;
+        _controlCommandsInBoundary++;
+
+        if (reason == InputCancellationReason.Paused)
+        {
+            _isPaused = true;
+            _pauseControlPending = true;
+        }
+
+        return new InputRoutingReceipt(
+            InputRoutingStatus.Applied,
+            _recipientId,
+            hostSequence,
+            hostTick,
+            null);
+    }
+
     internal InputRoutingReceipt EnqueueHeadlessInjection(
         InputInjection injection,
         long hostTimestamp,
@@ -477,6 +626,11 @@ public sealed partial class InputRouter
         if (_recipientKind != InputRecipientKind.SimulationTimeline)
         {
             return CreateInputRejection("InvalidRecipient", "/RecipientKind");
+        }
+
+        if (_isPaused)
+        {
+            return CreateInputRejection("Paused", "/Recipient");
         }
 
         if ((hostSequence <= _lastSeenHostSequence) || (hostTimestamp < _lastSeenHostTimestamp))
@@ -525,7 +679,10 @@ public sealed partial class InputRouter
         ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
         ArgumentOutOfRangeException.ThrowIfLessThan(hostSequence, 1);
 
-        if (!_inputOverflowed || !_overflowServiced)
+        var isOverflowRecovery = _inputOverflowed && _overflowServiced;
+        var isPauseRecovery = _isPaused && !_pauseControlPending;
+
+        if ((!isOverflowRecovery && !isPauseRecovery) || (_inputControlInbox.Count != 0))
         {
             return CreateInputRejection("InvalidReconciliation", "/InputOverflow");
         }
@@ -605,6 +762,10 @@ public sealed partial class InputRouter
         _inputInbox.Clear();
         _inputOverflowed = false;
         _overflowServiced = false;
+        _isPaused = false;
+        _pauseControlPending = false;
+        _pendingReconciliationInputCount = 0;
+        _unreconciledControls.Clear();
         _firstUnacceptedHostSequence = 0;
         _lastAssignedInputTick = _nextOpenTick;
         _lastSeenHostSequence = hostSequence;
@@ -629,6 +790,100 @@ public sealed partial class InputRouter
 
         RefreshAllConsumptionLeases();
         return new InputRoutingReceipt(InputRoutingStatus.Applied, _recipientId, hostSequence, null, null);
+    }
+
+    internal InputRoutingReceipt ReconcileInputState(
+        ImmutableArray<InputInjection> heldInputs,
+        InputClass inputClasses,
+        ushort? playerSlot,
+        long hostTimestamp,
+        long hostSequence,
+        out int discardedInputCount)
+    {
+        EnsureOwnerThread();
+        ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
+        ArgumentOutOfRangeException.ThrowIfLessThan(hostSequence, 1);
+        discardedInputCount = 0;
+
+        if (heldInputs.IsDefault
+            || (heldInputs.Length > MaximumPendingReconciliationInputs)
+            || _inputOverflowed
+            || !IsValidReconciliationScope(inputClasses, playerSlot, _isPaused))
+        {
+            return CreateRoutingRejection("InvalidReconciliation", "/State");
+        }
+
+        if (_isPaused && _pauseControlPending)
+        {
+            return CreateRoutingRejection("InvalidReconciliation", "/PauseBoundary");
+        }
+
+        if (heldInputs.Length > (MaximumPendingReconciliationInputs - _pendingReconciliationInputCount))
+        {
+            return CreateRoutingCapacityFailure("/Reconciliation");
+        }
+
+        var reconciledControls = new HashSet<InputControlKey>();
+
+        foreach (var input in heldInputs)
+        {
+            ArgumentNullException.ThrowIfNull(input);
+
+            if (!IsNonNeutralInput(input)
+                || !MatchesInputScope(GetControlKey(input), inputClasses, playerSlot)
+                || !reconciledControls.Add(GetControlKey(input)))
+            {
+                return CreateRoutingRejection("InvalidReconciliation", "/State");
+            }
+        }
+
+        if ((hostSequence <= _lastSeenHostSequence)
+            || (hostTimestamp < _hostControlTimestamp)
+            || (hostTimestamp < _lastSeenHostTimestamp))
+        {
+            return CreateRoutingRejection("InvalidEventOrder", "/HostSequence");
+        }
+
+        if (!CanAdmitControlCommand() || (_inputControlInbox.Count >= MaximumControlCommandsPerBoundary))
+        {
+            return CreateRoutingCapacityFailure("/InputControl");
+        }
+
+        var hostTick = (_recipientKind == InputRecipientKind.SimulationTimeline) ? _nextOpenTick : (long?)null;
+        var envelope = new InputControlEnvelope(
+            InputControlCommandKind.ReconcileInput,
+            Guid.Empty,
+            0,
+            0,
+            [],
+            _lastInsertionSequence,
+            inputClasses,
+            playerSlot,
+            null,
+            heldInputs,
+            hostTimestamp,
+            hostSequence,
+            hostTick);
+
+        discardedInputCount = DiscardPendingInputCopies(inputClasses, playerSlot);
+        _inputControlInbox.Enqueue(envelope);
+        _pendingReconciliationInputCount += heldInputs.Length;
+        RecordHostControlSequence(hostSequence);
+        _hostControlTimestamp = hostTimestamp;
+        _lastSeenHostTimestamp = hostTimestamp;
+        _controlCommandsInBoundary++;
+
+        if (_isPaused)
+        {
+            _isPaused = false;
+        }
+
+        return new InputRoutingReceipt(
+            InputRoutingStatus.Applied,
+            _recipientId,
+            hostSequence,
+            hostTick,
+            null);
     }
 
     internal InputOverflowResult? ServiceHostControlBoundary()
@@ -699,7 +954,7 @@ public sealed partial class InputRouter
         }
     }
 
-    private ImmutableArray<InputActionTransition> ApplyInputControlEnvelope(
+    private ImmutableArray<InputActionTransition> ApplyContextMaskEnvelope(
         InputControlEnvelope control,
         long? assignedTick)
     {
@@ -720,9 +975,61 @@ public sealed partial class InputRouter
             deferTransitions: false);
     }
 
+    private ImmutableArray<InputActionTransition> ApplyInputCancellationEnvelope(
+        InputControlEnvelope control,
+        long? assignedTick)
+    {
+        if (control.CancellationReason is not { } reason)
+        {
+            throw new InvalidOperationException("An admitted input-cancellation command has no reason.");
+        }
+
+        ClearInputValuesForScope(control.InputClasses, control.PlayerSlot);
+        MarkUnreconciledControls(control.InputClasses, control.PlayerSlot);
+        UpdateBindingsForScope(control.InputClasses, control.PlayerSlot);
+        RefreshAllConsumptionLeases();
+        var transitions = RecomputeAllActions(
+            control.HostSequence,
+            assignedTick,
+            reason);
+
+        if (reason == InputCancellationReason.Paused)
+        {
+            _pauseControlPending = false;
+        }
+
+        return transitions;
+    }
+
+    private ImmutableArray<InputActionTransition> ApplyInputControlEnvelope(
+        InputControlEnvelope control,
+        long? assignedTick)
+    {
+        switch (control.Kind)
+        {
+            case InputControlCommandKind.CancelInput:
+            {
+                return ApplyInputCancellationEnvelope(control, assignedTick);
+            }
+
+            case InputControlCommandKind.ReconcileInput:
+            {
+                return ApplyInputReconciliationEnvelope(control, assignedTick);
+            }
+
+            case InputControlCommandKind.SetActiveContextMask:
+            {
+                return ApplyContextMaskEnvelope(control, assignedTick);
+            }
+        }
+
+        throw new InvalidOperationException("An admitted input-control command has an unknown kind.");
+    }
+
     private void ApplyInputEnvelope(InputEnvelope envelope)
     {
         var changed = false;
+        var wasUnreconciled = _unreconciledControls.Contains(envelope.Control);
 
         switch (envelope.Injection.Kind)
         {
@@ -767,11 +1074,78 @@ public sealed partial class InputRouter
             }
         }
 
-        if (changed)
+        var isNeutral = IsNeutralInput(envelope.Injection);
+
+        if (wasUnreconciled && isNeutral)
+        {
+            _ = _unreconciledControls.Remove(envelope.Control);
+        }
+
+        if (wasUnreconciled && !isNeutral)
+        {
+            DisarmBindingsForControl(envelope.Control);
+        }
+
+        if (changed || wasUnreconciled)
         {
             var affectedControls = UpdateAffectedBindingStates(envelope.Control, envelope);
             RecomputeAffectedActions(affectedControls, envelope.HostSequence, envelope.AssignedTick);
         }
+    }
+
+    private ImmutableArray<InputActionTransition> ApplyInputReconciliationEnvelope(
+        InputControlEnvelope control,
+        long? assignedTick)
+    {
+        ClearInputValuesForScope(control.InputClasses, control.PlayerSlot);
+        _ = _unreconciledControls.RemoveWhere(
+            key => MatchesInputScope(key, control.InputClasses, control.PlayerSlot));
+
+        foreach (var input in control.ReconciliationInputs)
+        {
+            var inputControl = GetControlKey(input);
+
+            switch (input.Kind)
+            {
+                case InputInjectionKind.KeyboardKey:
+                case InputInjectionKind.GamepadButton:
+                {
+                    _digitalControlStates.Add(inputControl, true);
+                    _digitalControlDownTimestamps.Add(inputControl, control.HostTimestamp);
+                    break;
+                }
+
+                case InputInjectionKind.GamepadAxis:
+                {
+                    _scalarControlValues.Add(inputControl, NormalizeZero(input.AxisValue.GetValueOrDefault()));
+                    break;
+                }
+
+                case InputInjectionKind.GamepadStick:
+                {
+                    var stick = NormalizeStick(input.StickValue.GetValueOrDefault());
+                    _vectorControlValues.Add(inputControl, (stick.X, stick.Y));
+                    break;
+                }
+
+                case InputInjectionKind.GamepadTrigger:
+                {
+                    _scalarControlValues.Add(inputControl, NormalizeZero(input.TriggerValue.GetValueOrDefault()));
+                    break;
+                }
+            }
+        }
+
+        UpdateBindingsForScope(control.InputClasses, control.PlayerSlot);
+        RefreshAllConsumptionLeases();
+
+        if (control.ReconciliationInputs.Length > _pendingReconciliationInputCount)
+        {
+            throw new InvalidOperationException("The pending reconciliation input count is inconsistent.");
+        }
+
+        _pendingReconciliationInputCount -= control.ReconciliationInputs.Length;
+        return RecomputeAllActions(control.HostSequence, assignedTick, cancellationReason: null);
     }
 
     private void ApplyPendingReboundActions(long? assignedTick)
@@ -880,10 +1254,37 @@ public sealed partial class InputRouter
         _lastUnacceptedHostSequence = 0;
         _overflowServiced = false;
         _hostControlTimestamp = 0;
+        _isPaused = false;
+        _pauseControlPending = false;
+        _pendingReconciliationInputCount = 0;
         _pendingReboundActions.Clear();
         _orderedConsumableBindings = [];
         _orderedContexts = [];
         _terminalActionStates.Clear();
+        _unreconciledControls.Clear();
+    }
+
+    private void ClearInputValuesForScope(InputClass inputClasses, ushort? playerSlot)
+    {
+        foreach (var control in _digitalControlStates.Keys.Where(key => MatchesInputScope(key, inputClasses, playerSlot)).ToArray())
+        {
+            _ = _digitalControlStates.Remove(control);
+        }
+
+        foreach (var control in _digitalControlDownTimestamps.Keys.Where(key => MatchesInputScope(key, inputClasses, playerSlot)).ToArray())
+        {
+            _ = _digitalControlDownTimestamps.Remove(control);
+        }
+
+        foreach (var control in _scalarControlValues.Keys.Where(key => MatchesInputScope(key, inputClasses, playerSlot)).ToArray())
+        {
+            _ = _scalarControlValues.Remove(control);
+        }
+
+        foreach (var control in _vectorControlValues.Keys.Where(key => MatchesInputScope(key, inputClasses, playerSlot)).ToArray())
+        {
+            _ = _vectorControlValues.Remove(control);
+        }
     }
 
     private int CountPlannedActiveContexts(Guid excludedMapId, ulong replacementMask)
@@ -901,7 +1302,8 @@ public sealed partial class InputRouter
 
             foreach (var control in _inputControlInbox)
             {
-                if (control.MapId == mapState.Map.MapId)
+                if ((control.Kind == InputControlCommandKind.SetActiveContextMask)
+                    && (control.MapId == mapState.Map.MapId))
                 {
                     activeMask = control.NewMask;
                 }
@@ -952,6 +1354,50 @@ public sealed partial class InputRouter
                 }
             }
         }
+    }
+
+    private void DisarmBindingsForControl(InputControlKey control)
+    {
+        foreach (var mapState in _maps.Values)
+        {
+            if (!mapState.BindingsByControl.TryGetValue(control, out var bindings))
+            {
+                continue;
+            }
+
+            foreach (var bindingState in bindings)
+            {
+                if (!IsBindingNeutral(bindingState))
+                {
+                    bindingState.IsDisarmed = true;
+                }
+            }
+        }
+    }
+
+    private int DiscardPendingInputCopies(InputClass inputClasses, ushort? playerSlot)
+    {
+        var retainedInputs = new Queue<InputEnvelope>(_inputInbox.Count);
+        var discardedInputCount = 0;
+
+        while (_inputInbox.TryDequeue(out var envelope))
+        {
+            if (MatchesInputScope(envelope.Control, inputClasses, playerSlot))
+            {
+                discardedInputCount++;
+            }
+            else
+            {
+                retainedInputs.Enqueue(envelope);
+            }
+        }
+
+        while (retainedInputs.TryDequeue(out var envelope))
+        {
+            _inputInbox.Enqueue(envelope);
+        }
+
+        return discardedInputCount;
     }
 
     private ImmutableArray<InputControlKey> GetConsumptionControls(InputBindingRuntimeState bindingState)
@@ -1056,6 +1502,11 @@ public sealed partial class InputRouter
 
         foreach (var control in _inputControlInbox)
         {
+            if (control.Kind != InputControlCommandKind.SetActiveContextMask)
+            {
+                continue;
+            }
+
             lastInsertionSequence = control.LastInsertionSequence;
 
             if (control.MapId == mapState.Map.MapId)
@@ -1162,6 +1613,14 @@ public sealed partial class InputRouter
 
     private bool IsBindingNeutral(InputBindingRuntimeState bindingState)
     {
+        foreach (var control in bindingState.ControlKeys)
+        {
+            if (_unreconciledControls.Contains(control))
+            {
+                return false;
+            }
+        }
+
         var binding = bindingState.Definition;
 
         switch (binding.Kind)
@@ -1228,6 +1687,23 @@ public sealed partial class InputRouter
 
     private bool IsControlDown(InputControlKey control)
         => _digitalControlStates.TryGetValue(control, out var isDown) && isDown;
+
+    private void MarkUnreconciledControls(InputClass inputClasses, ushort? playerSlot)
+    {
+        foreach (var mapState in _maps.Values)
+        {
+            foreach (var bindingState in mapState.BindingStates.Values)
+            {
+                foreach (var control in bindingState.ControlKeys)
+                {
+                    if (MatchesInputScope(control, inputClasses, playerSlot))
+                    {
+                        _ = _unreconciledControls.Add(control);
+                    }
+                }
+            }
+        }
+    }
 
     private InputActionSnapshot ProcessSimulationInputStage(long assignedTick)
     {
@@ -1407,6 +1883,35 @@ public sealed partial class InputRouter
                 }
             }
         }
+    }
+
+    private ImmutableArray<InputActionTransition> RecomputeAllActions(
+        long hostSequence,
+        long? assignedTick,
+        InputCancellationReason? cancellationReason)
+    {
+        var transitions = ImmutableArray.CreateBuilder<InputActionTransition>();
+
+        foreach (var mapState in _maps.Values.OrderBy(static state => state.Map.MapId.ToString("D"), StringComparer.Ordinal))
+        {
+            foreach (var action in mapState.OrderedActions)
+            {
+                var actionState = mapState.ActionStates[action.ActionId];
+                var firstTransitionIndex = actionState.Transitions.Count;
+                ProcessActionEvent(
+                    mapState,
+                    action,
+                    hostSequence,
+                    assignedTick,
+                    cancellationReason,
+                    _consumptionLeases);
+                transitions.AddRange(actionState.Transitions.GetRange(
+                    firstTransitionIndex,
+                    actionState.Transitions.Count - firstTransitionIndex));
+            }
+        }
+
+        return transitions.ToImmutable();
     }
 
     private void RecordHostControlSequence(long hostSequence)
@@ -1754,6 +2259,20 @@ public sealed partial class InputRouter
         }
     }
 
+    private void UpdateBindingsForScope(InputClass inputClasses, ushort? playerSlot)
+    {
+        foreach (var mapState in _maps.Values)
+        {
+            foreach (var bindingState in mapState.BindingStates.Values)
+            {
+                if (bindingState.ControlKeys.Any(control => MatchesInputScope(control, inputClasses, playerSlot)))
+                {
+                    UpdateBindingState(bindingState, envelope: null);
+                }
+            }
+        }
+    }
+
     private bool UpdateChordState(InputBindingRuntimeState bindingState, InputEnvelope? envelope)
     {
         var binding = bindingState.Definition;
@@ -1967,17 +2486,31 @@ public sealed partial class InputRouter
         long InsertionSequence,
         string CanonicalContextId);
 
+    private enum InputControlCommandKind
+    {
+        CancelInput,
+        ReconcileInput,
+        SetActiveContextMask,
+    }
+
     private sealed class InputControlEnvelope(
+        InputControlCommandKind kind,
         Guid mapId,
         long expectedRevision,
         ulong newMask,
         long[] contextInsertionSequences,
         long lastInsertionSequence,
+        InputClass inputClasses,
+        ushort? playerSlot,
+        InputCancellationReason? cancellationReason,
+        ImmutableArray<InputInjection> reconciliationInputs,
         long hostTimestamp,
         long hostSequence,
         long? assignedTick)
     {
         internal long? AssignedTick { get; } = assignedTick;
+
+        internal InputCancellationReason? CancellationReason { get; } = cancellationReason;
 
         internal long[] ContextInsertionSequences { get; } = contextInsertionSequences;
 
@@ -1987,11 +2520,19 @@ public sealed partial class InputRouter
 
         internal long HostTimestamp { get; } = hostTimestamp;
 
+        internal InputClass InputClasses { get; } = inputClasses;
+
+        internal InputControlCommandKind Kind { get; } = kind;
+
         internal long LastInsertionSequence { get; } = lastInsertionSequence;
 
         internal Guid MapId { get; } = mapId;
 
         internal ulong NewMask { get; } = newMask;
+
+        internal ushort? PlayerSlot { get; } = playerSlot;
+
+        internal ImmutableArray<InputInjection> ReconciliationInputs { get; } = reconciliationInputs;
     }
 
     private readonly record struct InputControlKey(
