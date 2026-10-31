@@ -130,13 +130,29 @@ internal static class SceneAssetReader
             throw new InvalidOperationException("The hierarchy validation workspace does not match the Scene entity and placement counts.");
         }
 
+        var references = ReadEntityReferenceBindings(
+            record,
+            tag: 6,
+            referenceField,
+            schemas,
+            limits,
+            allowInstanceAbsoluteSources: true,
+            allowInstanceAbsoluteTargets: true);
         var entities = ImmutableArray.CreateBuilder<SceneEntity>(entityCount);
         var entityIds = hierarchyWorkspace.EntityIds;
         var previousEntityId = Guid.Empty;
+        var entityReferenceLeafCount = 0;
 
         for (var entityIndex = 0; entityIndex < entityCount; entityIndex++)
         {
-            var entity = SceneEntityReader.Read(record.GetRecordArrayElement(2, entityIndex), schemas, limits);
+            var entity = SceneEntityReader.Read(
+                record.GetRecordArrayElement(2, entityIndex),
+                schemas,
+                limits,
+                references,
+                allowInstanceAbsoluteReferenceSources: true,
+                out var currentEntityReferenceLeafCount);
+            entityReferenceLeafCount = checked(entityReferenceLeafCount + currentEntityReferenceLeafCount);
 
             if (previousEntityId != Guid.Empty
                 && (FoundationCatalogue.CompareRfc(previousEntityId, entity.AuthoredEntityId) >= 0))
@@ -189,14 +205,6 @@ internal static class SceneAssetReader
 
         ValidateRootPositionComponents(entities, hierarchy);
 
-        var references = ReadEntityReferenceBindings(
-            record,
-            tag: 6,
-            referenceField,
-            schemas,
-            limits,
-            allowInstanceAbsoluteSources: true,
-            allowInstanceAbsoluteTargets: true);
         var overrides = ReadPrefabOverrides(
             record,
             tag: 7,
@@ -206,6 +214,10 @@ internal static class SceneAssetReader
             allowInternalOverrideReferences: true,
             allowInstanceAbsoluteOverrideTargets: true);
         var externalSlots = ReadExternalSlots(record, tag: 8, externalSlotField, schemas, limits);
+        SceneEntityReferenceBindingValidator.Validate(
+            references,
+            externalSlots,
+            entityReferenceLeafCount);
 
         return new SceneAsset(
             sceneId,
@@ -256,13 +268,29 @@ internal static class SceneAssetReader
             throw new InvalidOperationException("The hierarchy validation workspace does not match the Prefab entity and placement counts.");
         }
 
+        var references = ReadEntityReferenceBindings(
+            record,
+            tag: 6,
+            referenceField,
+            schemas,
+            limits,
+            allowInstanceAbsoluteSources: false,
+            allowInstanceAbsoluteTargets: false);
         var entities = ImmutableArray.CreateBuilder<SceneEntity>(entityCount);
         var entityIds = hierarchyWorkspace.EntityIds;
         var previousEntityId = Guid.Empty;
+        var entityReferenceLeafCount = 0;
 
         for (var entityIndex = 0; entityIndex < entityCount; entityIndex++)
         {
-            var entity = SceneEntityReader.Read(record.GetRecordArrayElement(3, entityIndex), schemas, limits);
+            var entity = SceneEntityReader.Read(
+                record.GetRecordArrayElement(3, entityIndex),
+                schemas,
+                limits,
+                references,
+                allowInstanceAbsoluteReferenceSources: false,
+                out var currentEntityReferenceLeafCount);
+            entityReferenceLeafCount = checked(entityReferenceLeafCount + currentEntityReferenceLeafCount);
 
             if (previousEntityId != Guid.Empty
                 && (FoundationCatalogue.CompareRfc(previousEntityId, entity.AuthoredEntityId) >= 0))
@@ -313,15 +341,11 @@ internal static class SceneAssetReader
                 $"The Prefab hierarchy is invalid: {validation.Error} ({validation.SubjectId:N}).");
         }
 
-        var references = ReadEntityReferenceBindings(
-            record,
-            tag: 6,
-            referenceField,
-            schemas,
-            limits,
-            allowInstanceAbsoluteSources: false,
-            allowInstanceAbsoluteTargets: false);
         var externalSlots = ReadExternalSlots(record, tag: 8, externalSlotField, schemas, limits);
+        SceneEntityReferenceBindingValidator.Validate(
+            references,
+            externalSlots,
+            entityReferenceLeafCount);
 
         return new ScenePrefabAsset(
             prefabId,

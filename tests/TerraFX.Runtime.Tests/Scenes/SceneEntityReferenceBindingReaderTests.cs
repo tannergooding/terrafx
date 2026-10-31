@@ -17,7 +17,8 @@ internal sealed class SceneEntityReferenceBindingReaderTests
         Guid entityId,
         Guid? parentEntityId,
         Guid? entityReferenceSchemaId,
-        Guid? entityReferenceTargetId)
+        Guid? entityReferenceTargetId,
+        byte[]? referenceComponentRecord = null)
     {
         List<byte[]> components = [CreateLocalTransformRecord()];
 
@@ -37,6 +38,11 @@ internal sealed class SceneEntityReferenceBindingReaderTests
                     SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(1, targetEntityId)));
         }
 
+        if (referenceComponentRecord is not null)
+        {
+            components.Add(referenceComponentRecord);
+        }
+
         components.Sort(static (left, right) => StringComparer.Ordinal.Compare(
             new Guid(left.AsSpan(16, 16), bigEndian: true).ToString("N"),
             new Guid(right.AsSpan(16, 16), bigEndian: true).ToString("N")));
@@ -48,13 +54,63 @@ internal sealed class SceneEntityReferenceBindingReaderTests
             SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(2, [.. components]));
     }
 
+    private static byte[] CreateEntityReferenceArrayComponentRecord(Guid componentSchemaId, params Guid[] targets)
+        => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            componentSchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFixedGuidArrayField(1, targets));
+
+    private static DataSchema CreateEntityReferenceArrayComponentSchema()
+    {
+        var identityAssignment = new ContentSchemaIdentityAssignment("test/entity-reference-array-component");
+        var schema = new ContentSchemaReference(
+            identityAssignment.SchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+        var field = new ContentFieldDescriptor(
+            tag: 1,
+            wireKind: 23,
+            elementKind: 11,
+            isRequired: true,
+            minimumCount: 0,
+            maximumCount: 2,
+            nestedSchemas: [],
+            nestedRoleMask: 0,
+            unit: ContentUnit.None,
+            reference: ContentReferenceKind.Entity,
+            authoringFlags: ContentAuthoring.None,
+            defaultValue: null);
+        return new DataSchema(
+            schema,
+            identityAssignment,
+            ContentSchemaRole.Component,
+            ContentSchemaOwner.Application,
+            ContentSchemaStorage.Persistent,
+            ContentTransientRestore.NotApplicable,
+            [field]);
+    }
+
     private static byte[] CreateEntityReferenceBinding(
         Guid componentSchemaId,
         byte sourceScope,
         Guid sourceEntityId,
         byte targetScope,
-        Guid targetEntityId)
-        => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+        Guid targetEntityId,
+        params ScenePropertyPathSegment[] propertyPath)
+    {
+        var path = propertyPath.Length == 0
+            ? [new ScenePropertyPathSegment(ScenePropertyPathSegmentKind.FieldTag, 1)]
+            : propertyPath;
+        var segments = new byte[path.Length][];
+
+        for (var index = 0; index < path.Length; index++)
+        {
+            segments[index] = CreatePropertySegment((byte)path[index].Kind, path[index].Value);
+        }
+
+        return SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
             new ContentSchemaIdentityAssignment("native/entity-reference-binding").SchemaId,
             1,
             0,
@@ -62,14 +118,33 @@ internal sealed class SceneEntityReferenceBindingReaderTests
                 1,
                 CreateEntitySelector(sourceScope, sourceEntityId)),
             SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(2, CreateSchemaReference(componentSchemaId)),
-            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(
-                3,
-                CreatePropertySegment((byte)ScenePropertyPathSegmentKind.FieldTag, 1)),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(3, segments),
             SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(
                 4,
                 CreateReferenceTarget(targetScope, targetEntityId)));
+    }
 
-    private static DataSchema CreateEntityReferenceComponentSchema()
+    private static byte[] CreateEntityReferenceBindingToExternalSlot(
+        Guid componentSchemaId,
+        byte sourceScope,
+        Guid sourceEntityId,
+        Guid externalSlotId)
+        => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                new ContentSchemaIdentityAssignment("native/entity-reference-binding").SchemaId,
+                1,
+                0,
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(
+                    1,
+                    CreateEntitySelector(sourceScope, sourceEntityId)),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(2, CreateSchemaReference(componentSchemaId)),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(
+                    3,
+                    CreatePropertySegment((byte)ScenePropertyPathSegmentKind.FieldTag, 1)),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(
+                    4,
+                    CreateExternalSlotReferenceTarget(externalSlotId)));
+
+    private static DataSchema CreateEntityReferenceComponentSchema(bool optional = false)
     {
         var identityAssignment = new ContentSchemaIdentityAssignment("test/entity-reference-component");
         var schema = new ContentSchemaReference(
@@ -81,7 +156,7 @@ internal sealed class SceneEntityReferenceBindingReaderTests
             tag: 1,
             wireKind: 11,
             elementKind: 0,
-            isRequired: true,
+            isRequired: !optional,
             minimumCount: 1,
             maximumCount: 1,
             nestedSchemas: [],
@@ -108,6 +183,24 @@ internal sealed class SceneEntityReferenceBindingReaderTests
             SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(1, scope),
             SceneHierarchyCodecTests.FixtureBuilder.CreateFixedGuidArrayField(2),
             SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(3, entityId));
+
+    private static byte[] CreateExternalSlot(Guid slotId)
+        => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("native/external-slot").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(1, slotId),
+            new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(2, 9, 1, 1, [0]),
+            new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(3, 9, 1, 1, [1]),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(4));
+
+    private static byte[] CreateExternalSlotReferenceTarget(Guid slotId)
+        => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("native/reference-target").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(1, (byte)SceneReferenceTargetKind.ExternalSlot),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(3, slotId, isRequired: false));
 
     private static byte[] CreateHierarchyRecord(Guid rootEntityId, Guid childEntityId)
     {
@@ -144,7 +237,8 @@ internal sealed class SceneEntityReferenceBindingReaderTests
         Guid childEntityId,
         byte[] rootEntity,
         byte[] childEntity,
-        byte[] reference)
+        byte[][]? externalSlots = null,
+        params byte[][] references)
         => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
             new ContentSchemaIdentityAssignment("native/prefab").SchemaId,
             2,
@@ -155,8 +249,8 @@ internal sealed class SceneEntityReferenceBindingReaderTests
                 4,
                 CreateHierarchyRecord(rootEntityId, childEntityId)),
             SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(5),
-            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(6, reference),
-            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8));
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(6, references),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8, externalSlots ?? []));
 
     private static byte[] CreatePropertySegment(byte kind, uint value)
         => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
@@ -196,7 +290,7 @@ internal sealed class SceneEntityReferenceBindingReaderTests
         Guid childEntityId,
         byte[] rootEntity,
         byte[] childEntity,
-        byte[] reference)
+        params byte[][] references)
         => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
             new ContentSchemaIdentityAssignment("native/scene").SchemaId,
             2,
@@ -207,7 +301,7 @@ internal sealed class SceneEntityReferenceBindingReaderTests
                 3,
                 CreateHierarchyRecord(rootEntityId, childEntityId)),
             SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(4),
-            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(6, reference),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(6, references),
             SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(7),
             SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8));
 
@@ -274,6 +368,113 @@ internal sealed class SceneEntityReferenceBindingReaderTests
     }
 
     [Test]
+    public void AllowsAbsentOptionalEntityReferenceWithoutBinding()
+    {
+        var componentSchema = CreateEntityReferenceComponentSchema(optional: true);
+        var schemas = CreateRegistry(componentSchema);
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var childEntityId = new Guid("20000000-0000-4000-8000-000000000070");
+        var optionalComponent = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            componentSchema.Schema.SchemaId,
+            1,
+            0);
+        var rootEntity = CreateEntityRecord(
+            rootEntityId,
+            parentEntityId: null,
+            entityReferenceSchemaId: null,
+            entityReferenceTargetId: null,
+            optionalComponent);
+        var childEntity = CreateEntityRecord(childEntityId, rootEntityId, entityReferenceSchemaId: null, entityReferenceTargetId: null);
+
+        var prefab = ReadPrefabAsset(
+            CreatePrefabRecord(new AssetId(1), rootEntityId, childEntityId, rootEntity, childEntity),
+            new AssetId(1),
+            schemas);
+
+        Assert.That(prefab.References, Is.Empty);
+    }
+
+    [Test]
+    public void AllowsDeclaredExternalSlotEntityReference()
+    {
+        var componentSchema = CreateEntityReferenceComponentSchema();
+        var schemas = CreateRegistry(componentSchema);
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var childEntityId = new Guid("20000000-0000-4000-8000-000000000071");
+        var externalSlotId = new Guid("30000000-0000-4000-8000-000000000071");
+        var rootEntity = CreateEntityRecord(rootEntityId, null, componentSchema.Schema.SchemaId, externalSlotId);
+        var childEntity = CreateEntityRecord(childEntityId, rootEntityId, entityReferenceSchemaId: null, entityReferenceTargetId: null);
+        var binding = CreateEntityReferenceBindingToExternalSlot(
+            componentSchema.Schema.SchemaId,
+            sourceScope: (byte)SceneEntitySelectorScope.OccurrenceRelative,
+            rootEntityId,
+            externalSlotId);
+        var externalSlot = CreateExternalSlot(externalSlotId);
+
+        var prefab = ReadPrefabAsset(
+            CreatePrefabRecord(
+                new AssetId(1),
+                rootEntityId,
+                childEntityId,
+                rootEntity,
+                childEntity,
+                externalSlots: [externalSlot],
+                references: [binding]),
+            new AssetId(1),
+            schemas);
+
+        Assert.That(prefab.References[0].Target.Kind, Is.EqualTo(SceneReferenceTargetKind.ExternalSlot));
+        Assert.That(prefab.References[0].Target.ExternalSlotId, Is.EqualTo(externalSlotId));
+    }
+
+    [Test]
+    public void ReadsEveryFixedArrayEntityReferenceLeaf()
+    {
+        var componentSchema = CreateEntityReferenceArrayComponentSchema();
+        var schemas = CreateRegistry(componentSchema);
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var childEntityId = new Guid("20000000-0000-4000-8000-000000000066");
+        var rootEntity = CreateEntityRecord(
+            rootEntityId,
+            parentEntityId: null,
+            entityReferenceSchemaId: null,
+            entityReferenceTargetId: null,
+            CreateEntityReferenceArrayComponentRecord(componentSchema.Schema.SchemaId, childEntityId, childEntityId));
+        var childEntity = CreateEntityRecord(childEntityId, rootEntityId, entityReferenceSchemaId: null, entityReferenceTargetId: null);
+        var firstBinding = CreateEntityReferenceBinding(
+            componentSchema.Schema.SchemaId,
+            sourceScope: (byte)SceneEntitySelectorScope.OccurrenceRelative,
+            rootEntityId,
+            targetScope: (byte)SceneEntitySelectorScope.OccurrenceRelative,
+            childEntityId,
+            new ScenePropertyPathSegment(ScenePropertyPathSegmentKind.FieldTag, 1),
+            new ScenePropertyPathSegment(ScenePropertyPathSegmentKind.FixedArrayIndex, 0));
+        var secondBinding = CreateEntityReferenceBinding(
+            componentSchema.Schema.SchemaId,
+            sourceScope: (byte)SceneEntitySelectorScope.OccurrenceRelative,
+            rootEntityId,
+            targetScope: (byte)SceneEntitySelectorScope.OccurrenceRelative,
+            childEntityId,
+            new ScenePropertyPathSegment(ScenePropertyPathSegmentKind.FieldTag, 1),
+            new ScenePropertyPathSegment(ScenePropertyPathSegmentKind.FixedArrayIndex, 1));
+
+        var prefab = ReadPrefabAsset(
+            CreatePrefabRecord(
+                new AssetId(1),
+                rootEntityId,
+                childEntityId,
+                rootEntity,
+                childEntity,
+                references: [firstBinding, secondBinding]),
+            new AssetId(1),
+            schemas);
+
+        Assert.That(prefab.References, Has.Length.EqualTo(2));
+        Assert.That(prefab.References[0].PropertyPath[^1].Value, Is.Zero);
+        Assert.That(prefab.References[1].PropertyPath[^1].Value, Is.EqualTo(1));
+    }
+
+    [Test]
     public void ReadsPrefabReferenceBindingWithOccurrenceRelativeSelectors()
     {
         var componentSchema = CreateEntityReferenceComponentSchema();
@@ -293,7 +494,13 @@ internal sealed class SceneEntityReferenceBindingReaderTests
             targetScope: (byte)SceneEntitySelectorScope.OccurrenceRelative,
             childEntityId);
         var prefab = ReadPrefabAsset(
-            CreatePrefabRecord(new AssetId(1), rootEntityId, childEntityId, rootEntity, childEntity, reference),
+            CreatePrefabRecord(
+                new AssetId(1),
+                rootEntityId,
+                childEntityId,
+                rootEntity,
+                childEntity,
+                references: [reference]),
             new AssetId(1),
             schemas);
         var binding = prefab.References[0];
@@ -339,6 +546,153 @@ internal sealed class SceneEntityReferenceBindingReaderTests
     }
 
     [Test]
+    public void RejectsEntityReferenceBindingToUndeclaredExternalSlot()
+    {
+        var componentSchema = CreateEntityReferenceComponentSchema();
+        var schemas = CreateRegistry(componentSchema);
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var childEntityId = new Guid("20000000-0000-4000-8000-000000000072");
+        var externalSlotId = new Guid("30000000-0000-4000-8000-000000000072");
+        var rootEntity = CreateEntityRecord(rootEntityId, null, componentSchema.Schema.SchemaId, externalSlotId);
+        var childEntity = CreateEntityRecord(childEntityId, rootEntityId, entityReferenceSchemaId: null, entityReferenceTargetId: null);
+        var binding = CreateEntityReferenceBindingToExternalSlot(
+            componentSchema.Schema.SchemaId,
+            sourceScope: (byte)SceneEntitySelectorScope.OccurrenceRelative,
+            rootEntityId,
+            externalSlotId);
+
+        Assert.That(
+            () => ReadPrefabAsset(
+                CreatePrefabRecord(
+                    new AssetId(1),
+                    rootEntityId,
+                    childEntityId,
+                    rootEntity,
+                    childEntity,
+                    references: [binding]),
+                new AssetId(1),
+                schemas),
+            Throws.TypeOf<InvalidDataException>());
+    }
+
+    [Test]
+    public void RejectsEntityReferenceBindingWithMismatchedSymbolicTarget()
+    {
+        var componentSchema = CreateEntityReferenceComponentSchema();
+        var schemas = CreateRegistry(componentSchema);
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var childEntityId = new Guid("20000000-0000-4000-8000-000000000068");
+        var mismatchedTargetId = new Guid("20000000-0000-4000-8000-000000000069");
+        var rootEntity = CreateEntityRecord(rootEntityId, null, componentSchema.Schema.SchemaId, childEntityId);
+        var childEntity = CreateEntityRecord(childEntityId, rootEntityId, entityReferenceSchemaId: null, entityReferenceTargetId: null);
+        var binding = CreateEntityReferenceBinding(
+            componentSchema.Schema.SchemaId,
+            sourceScope: (byte)SceneEntitySelectorScope.OccurrenceRelative,
+            rootEntityId,
+            targetScope: (byte)SceneEntitySelectorScope.OccurrenceRelative,
+            mismatchedTargetId);
+
+        Assert.That(
+            () => ReadPrefabAsset(
+                CreatePrefabRecord(
+                    new AssetId(1),
+                    rootEntityId,
+                    childEntityId,
+                    rootEntity,
+                    childEntity,
+                    references: [binding]),
+                new AssetId(1),
+                schemas),
+            Throws.TypeOf<InvalidDataException>());
+    }
+
+    [Test]
+    public void RejectsEntityReferenceBindingWithUnmatchedPropertyPath()
+    {
+        var componentSchema = CreateEntityReferenceComponentSchema();
+        var schemas = CreateRegistry(componentSchema);
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var childEntityId = new Guid("20000000-0000-4000-8000-000000000073");
+        var rootEntity = CreateEntityRecord(rootEntityId, null, componentSchema.Schema.SchemaId, childEntityId);
+        var childEntity = CreateEntityRecord(childEntityId, rootEntityId, entityReferenceSchemaId: null, entityReferenceTargetId: null);
+        var binding = CreateEntityReferenceBinding(
+            componentSchema.Schema.SchemaId,
+            sourceScope: (byte)SceneEntitySelectorScope.OccurrenceRelative,
+            rootEntityId,
+            targetScope: (byte)SceneEntitySelectorScope.OccurrenceRelative,
+            childEntityId,
+            new ScenePropertyPathSegment(ScenePropertyPathSegmentKind.FieldTag, 2));
+
+        Assert.That(
+            () => ReadPrefabAsset(
+                CreatePrefabRecord(
+                    new AssetId(1),
+                    rootEntityId,
+                    childEntityId,
+                    rootEntity,
+                    childEntity,
+                    references: [binding]),
+                new AssetId(1),
+                schemas),
+            Throws.TypeOf<InvalidDataException>());
+    }
+
+    [Test]
+    public void RejectsIncompleteFixedArrayEntityReferenceCoverage()
+    {
+        var componentSchema = CreateEntityReferenceArrayComponentSchema();
+        var schemas = CreateRegistry(componentSchema);
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var childEntityId = new Guid("20000000-0000-4000-8000-000000000074");
+        var rootEntity = CreateEntityRecord(
+            rootEntityId,
+            parentEntityId: null,
+            entityReferenceSchemaId: null,
+            entityReferenceTargetId: null,
+            CreateEntityReferenceArrayComponentRecord(componentSchema.Schema.SchemaId, childEntityId, childEntityId));
+        var childEntity = CreateEntityRecord(childEntityId, rootEntityId, entityReferenceSchemaId: null, entityReferenceTargetId: null);
+        var binding = CreateEntityReferenceBinding(
+            componentSchema.Schema.SchemaId,
+            sourceScope: (byte)SceneEntitySelectorScope.OccurrenceRelative,
+            rootEntityId,
+            targetScope: (byte)SceneEntitySelectorScope.OccurrenceRelative,
+            childEntityId,
+            new ScenePropertyPathSegment(ScenePropertyPathSegmentKind.FieldTag, 1),
+            new ScenePropertyPathSegment(ScenePropertyPathSegmentKind.FixedArrayIndex, 0));
+
+        Assert.That(
+            () => ReadPrefabAsset(
+                CreatePrefabRecord(
+                    new AssetId(1),
+                    rootEntityId,
+                    childEntityId,
+                    rootEntity,
+                    childEntity,
+                    references: [binding]),
+                new AssetId(1),
+                schemas),
+            Throws.TypeOf<InvalidDataException>());
+    }
+
+    [Test]
+    public void RejectsMissingEntityReferenceBinding()
+    {
+        var componentSchema = CreateEntityReferenceComponentSchema();
+        var schemas = CreateRegistry(componentSchema);
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var childEntityId = new Guid("20000000-0000-4000-8000-000000000067");
+        var rootEntity = CreateEntityRecord(rootEntityId, null, componentSchema.Schema.SchemaId, childEntityId);
+        var childEntity = CreateEntityRecord(childEntityId, rootEntityId, entityReferenceSchemaId: null, entityReferenceTargetId: null);
+
+        Assert.That(
+            () => ReadPrefabAsset(
+                CreatePrefabRecord(new AssetId(1), rootEntityId, childEntityId, rootEntity, childEntity),
+                new AssetId(1),
+                schemas),
+            Throws.TypeOf<InvalidDataException>());
+    }
+
+    [Test]
     public void RejectsPrefabReferenceBindingWithInstanceAbsoluteSource()
     {
         var componentSchema = CreateEntityReferenceComponentSchema();
@@ -360,7 +714,13 @@ internal sealed class SceneEntityReferenceBindingReaderTests
 
         Assert.That(
             () => ReadPrefabAsset(
-                CreatePrefabRecord(new AssetId(1), rootEntityId, childEntityId, rootEntity, childEntity, reference),
+                CreatePrefabRecord(
+                    new AssetId(1),
+                    rootEntityId,
+                    childEntityId,
+                    rootEntity,
+                    childEntity,
+                    references: [reference]),
                 new AssetId(1),
                 schemas),
             Throws.TypeOf<InvalidDataException>());
@@ -388,7 +748,13 @@ internal sealed class SceneEntityReferenceBindingReaderTests
 
         Assert.That(
             () => ReadPrefabAsset(
-                CreatePrefabRecord(new AssetId(1), rootEntityId, childEntityId, rootEntity, childEntity, reference),
+                CreatePrefabRecord(
+                    new AssetId(1),
+                    rootEntityId,
+                    childEntityId,
+                    rootEntity,
+                    childEntity,
+                    references: [reference]),
                 new AssetId(1),
                 schemas),
             Throws.TypeOf<InvalidDataException>());

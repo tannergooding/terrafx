@@ -61,6 +61,67 @@ internal static class ScenePrefabOverrideApplier
             action.Result ?? throw new InvalidDataException("The Prefab override did not produce a component record."));
     }
 
+    internal static DataSchema ResolveNestedSchema(
+        ContentFieldDescriptor field,
+        EbinRecordReadView nestedRecord,
+        CompiledContentSchemaRegistry schemas)
+    {
+        var header = nestedRecord.Header;
+
+        if ((header.SchemaId == Guid.Empty) || (header.Major <= 0))
+        {
+            throw new InvalidDataException("A nested component record has an invalid schema identity or major version.");
+        }
+
+        if (!field.NestedSchemas.IsEmpty)
+        {
+            for (var index = 0; index < field.NestedSchemas.Length; index++)
+            {
+                var nestedSchema = field.NestedSchemas[index];
+
+                if ((nestedSchema.SchemaId == header.SchemaId)
+                    && (nestedSchema.Major == header.Major)
+                    && (nestedSchema.Minor == header.Minor))
+                {
+                    if (!schemas.TryGetSchema(nestedSchema, out var exactMetadata))
+                    {
+                        throw new NotSupportedException($"The nested component schema {nestedSchema} is not registered.");
+                    }
+
+                    return exactMetadata;
+                }
+            }
+
+            throw new InvalidDataException("A nested component record is outside the field's exact schema set.");
+        }
+
+        var contentSchema = new ContentSchemaReference(
+            header.SchemaId,
+            header.Major,
+            header.Minor,
+            ContentSchemaScope.Content);
+
+        if (schemas.TryGetSchema(contentSchema, out var metadata)
+            && IsAllowedNestedRole(field, metadata.Role))
+        {
+            return metadata;
+        }
+
+        var foundationSchema = new ContentSchemaReference(
+            header.SchemaId,
+            header.Major,
+            header.Minor,
+            ContentSchemaScope.Foundation);
+
+        if (schemas.TryGetSchema(foundationSchema, out metadata)
+            && IsAllowedNestedRole(field, metadata.Role))
+        {
+            return metadata;
+        }
+
+        throw new NotSupportedException("A nested component record does not resolve to an allowed registered schema role.");
+    }
+
     private static byte[] ApplyFixedArrayElement(
         EbinRecordReadView record,
         EbinFieldReadView field,
@@ -366,67 +427,6 @@ internal static class ScenePrefabOverrideApplier
 
         return action.Result
             ?? throw new InvalidDataException("The Prefab override Value did not produce a literal.");
-    }
-
-    private static DataSchema ResolveNestedSchema(
-        ContentFieldDescriptor field,
-        EbinRecordReadView nestedRecord,
-        CompiledContentSchemaRegistry schemas)
-    {
-        var header = nestedRecord.Header;
-
-        if ((header.SchemaId == Guid.Empty) || (header.Major <= 0))
-        {
-            throw new InvalidDataException("A nested Prefab override record has an invalid schema identity or major version.");
-        }
-
-        if (!field.NestedSchemas.IsEmpty)
-        {
-            for (var index = 0; index < field.NestedSchemas.Length; index++)
-            {
-                var nestedSchema = field.NestedSchemas[index];
-
-                if ((nestedSchema.SchemaId == header.SchemaId)
-                    && (nestedSchema.Major == header.Major)
-                    && (nestedSchema.Minor == header.Minor))
-                {
-                    if (!schemas.TryGetSchema(nestedSchema, out var exactMetadata))
-                    {
-                        throw new NotSupportedException($"The nested Prefab override schema {nestedSchema} is not registered.");
-                    }
-
-                    return exactMetadata;
-                }
-            }
-
-            throw new InvalidDataException("A nested Prefab override record is outside the field's exact schema set.");
-        }
-
-        var contentSchema = new ContentSchemaReference(
-            header.SchemaId,
-            header.Major,
-            header.Minor,
-            ContentSchemaScope.Content);
-
-        if (schemas.TryGetSchema(contentSchema, out var metadata)
-            && IsAllowedNestedRole(field, metadata.Role))
-        {
-            return metadata;
-        }
-
-        var foundationSchema = new ContentSchemaReference(
-            header.SchemaId,
-            header.Major,
-            header.Minor,
-            ContentSchemaScope.Foundation);
-
-        if (schemas.TryGetSchema(foundationSchema, out metadata)
-            && IsAllowedNestedRole(field, metadata.Role))
-        {
-            return metadata;
-        }
-
-        throw new NotSupportedException("A nested Prefab override record does not resolve to an allowed registered schema role.");
     }
 
     private static byte[] RewriteRecord(

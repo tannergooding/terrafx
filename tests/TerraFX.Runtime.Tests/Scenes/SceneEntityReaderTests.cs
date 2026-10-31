@@ -101,6 +101,12 @@ internal sealed class SceneEntityReaderTests
         internal SceneEntity? Result { get; private set; }
 
         public void Invoke(scoped EbinRecordReadView record)
-            => Result = SceneEntityReader.Read(record, _schemas, EbinReadLimits.Foundation);
+            => Result = SceneEntityReader.Read(
+                record,
+                _schemas,
+                EbinReadLimits.Foundation,
+                [],
+                allowInstanceAbsoluteReferenceSources: false,
+                out _);
     }
 }

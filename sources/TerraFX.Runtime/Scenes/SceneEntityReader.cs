@@ -16,10 +16,14 @@ internal static class SceneEntityReader
     internal static SceneEntity Read(
         EbinRecordReadView record,
         CompiledContentSchemaRegistry schemas,
-        EbinReadLimits limits)
+        EbinReadLimits limits,
+        ImmutableArray<SceneEntityReferenceBinding> referenceBindings,
+        bool allowInstanceAbsoluteReferenceSources,
+        out int entityReferenceLeafCount)
     {
         ArgumentNullException.ThrowIfNull(schemas);
         ArgumentNullException.ThrowIfNull(limits);
+        entityReferenceLeafCount = 0;
         ValidateHeader(record, s_entitySchemaId, major: 1, fieldCount: 2);
         var entityId = ReadGuid(record, tag: 1, isRequired: true);
         var componentField = GetRecordArrayField(record, tag: 2, isRequired: true, limits);
@@ -66,6 +70,20 @@ internal static class SceneEntityReader
             if (metadata.Role is not ContentSchemaRole.Component and not ContentSchemaRole.EntityTag)
             {
                 throw new InvalidDataException("An authored Entity record contains a non-component schema.");
+            }
+
+            if (metadata.Role == ContentSchemaRole.Component)
+            {
+                entityReferenceLeafCount = checked(
+                    entityReferenceLeafCount
+                    + SceneEntityReferenceBindingValidator.ValidateComponentRecord(
+                        componentRecord,
+                        entityId,
+                        schema,
+                        metadata,
+                        referenceBindings,
+                        schemas,
+                        allowInstanceAbsoluteReferenceSources));
             }
 
             if (header.SchemaId == s_localTransformSchemaId)
