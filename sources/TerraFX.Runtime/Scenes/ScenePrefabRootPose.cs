@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Immutable;
+using TerraFX.Numerics;
 
 namespace TerraFX.Scenes;
 
@@ -10,6 +11,7 @@ internal sealed class ScenePrefabRootPose
     internal ScenePrefabRootPose(
         SceneEntitySelector target,
         SceneAuthoredComponentRecord localTransform,
+        Vector3 localTransformPosition,
         ImmutableArray<byte>? rootPositionPayload)
     {
         ArgumentNullException.ThrowIfNull(localTransform);
@@ -22,10 +24,13 @@ internal sealed class ScenePrefabRootPose
 
         Target = target;
         LocalTransform = localTransform;
+        LocalTransformPosition = localTransformPosition;
         RootPositionPayload = rootPositionPayload;
     }
 
     internal SceneAuthoredComponentRecord LocalTransform { get; }
+
+    internal Vector3 LocalTransformPosition { get; }
 
     internal ImmutableArray<byte>? RootPositionPayload { get; }
 

@@ -1198,7 +1198,7 @@ internal static class SceneAssetReader
             throw new InvalidDataException("A Prefab RootPose target must be occurrence-relative.");
         }
 
-        var localTransform = SceneEntityReader.ReadLocalTransformRecord(record.GetRecord(2));
+        var localTransform = SceneEntityReader.ReadLocalTransformRecord(record.GetRecord(2), out var localTransformPosition);
         ImmutableArray<byte>? rootPositionPayload = null;
 
         if (hasRootPosition)
@@ -1211,10 +1211,11 @@ internal static class SceneAssetReader
                 throw new InvalidDataException("The Prefab RootPose RootPosition does not match its optional schema field.");
             }
 
+            SceneEntityReader.ValidateRootPositionPayload(rootPositionField.Payload);
             rootPositionPayload = [.. rootPositionField.Payload];
         }
 
-        return new ScenePrefabRootPose(target, localTransform, rootPositionPayload);
+        return new ScenePrefabRootPose(target, localTransform, localTransformPosition, rootPositionPayload);
     }
 
     private static ImmutableArray<ScenePrefabRootPose> ReadPrefabRootPoses(

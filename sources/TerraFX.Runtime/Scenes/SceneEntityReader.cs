@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Buffers.Binary;
 using System.Collections.Immutable;
 using System.IO;
 using TerraFX;
@@ -10,8 +11,38 @@ namespace TerraFX.Scenes;
 
 internal static class SceneEntityReader
 {
+    // The EBIN record, field header, and 24-byte Position payload are padded to a 16-byte boundary.
+    internal const int RootPositionRecordByteLength = 128;
+
     private static readonly Guid s_entitySchemaId = new ContentSchemaIdentityAssignment("native/entity").SchemaId;
     private static readonly Guid s_localTransformSchemaId = new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId;
+    private static readonly Guid s_rootPositionSchemaId = new ContentSchemaIdentityAssignment("scene/root-position").SchemaId;
+
+    internal static Guid LocalTransformSchemaId => s_localTransformSchemaId;
+
+    internal static Guid RootPositionSchemaId => s_rootPositionSchemaId;
+
+    internal static SceneAuthoredComponentRecord CreateRootPositionRecord(scoped ReadOnlySpan<byte> payload)
+    {
+        ValidateRootPositionPayload(payload);
+        var position = new SpatialPosition3(
+            new ChunkIndex3(
+                BinaryPrimitives.ReadInt32LittleEndian(payload),
+                BinaryPrimitives.ReadInt32LittleEndian(payload[4..]),
+                BinaryPrimitives.ReadInt32LittleEndian(payload[8..])),
+            EbinPrimitives.Vector3(payload[12..]));
+        var record = new EbinRecord(s_rootPositionSchemaId, 1, 0, [EbinPrimitives.Position(1, position)]);
+        var status = EbinCodec.Prepare(record, out var encodedRecord, out var diagnostic);
+
+        if (status != EbinStatus.Complete)
+        {
+            throw new InvalidDataException($"The Prefab RootPose RootPosition could not be encoded: {diagnostic.Category}.");
+        }
+
+        return new SceneAuthoredComponentRecord(
+            new ContentSchemaReference(s_rootPositionSchemaId, 1, 0, ContentSchemaScope.Content),
+            encodedRecord);
+    }
 
     internal static SceneEntity Read(
         EbinRecordReadView record,
@@ -72,6 +103,11 @@ internal static class SceneEntityReader
                 throw new InvalidDataException("An authored Entity record contains a non-component schema.");
             }
 
+            if (header.SchemaId == s_rootPositionSchemaId)
+            {
+                ValidateRootPositionRecord(componentRecord);
+            }
+
             if (metadata.Role == ContentSchemaRole.Component)
             {
                 entityReferenceLeafCount = checked(
@@ -109,9 +145,11 @@ internal static class SceneEntityReader
         return new SceneEntity(entityId, localTransformPosition, components.MoveToImmutable());
     }
 
-    internal static SceneAuthoredComponentRecord ReadLocalTransformRecord(EbinRecordReadView record)
+    internal static SceneAuthoredComponentRecord ReadLocalTransformRecord(
+        EbinRecordReadView record,
+        out Vector3 position)
     {
-        _ = ReadLocalTransformPosition(record);
+        position = ReadLocalTransformPosition(record);
         var header = record.Header;
         var schema = new ContentSchemaReference(
             header.SchemaId,
@@ -119,6 +157,19 @@ internal static class SceneEntityReader
             header.Minor,
             ContentSchemaScope.Content);
         return new SceneAuthoredComponentRecord(schema, record.EncodedBytes);
+    }
+
+    internal static void ValidateRootPositionPayload(scoped ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length != 24)
+        {
+            throw new InvalidDataException("The RootPosition payload must contain exactly 24 bytes.");
+        }
+
+        if (!EbinPrimitives.Vector3(payload[12..]).IsFinite().All())
+        {
+            throw new InvalidDataException("The RootPosition offset must be finite.");
+        }
     }
 
     private static EbinFieldReadView GetField(
@@ -182,9 +233,26 @@ internal static class SceneEntityReader
     {
         ValidateHeader(record, s_localTransformSchemaId, major: 1, fieldCount: 3);
         var position = GetField(record, tag: 1, kind: 15, payloadLength: 12);
-        _ = GetField(record, tag: 2, kind: 17, payloadLength: 16);
-        _ = GetField(record, tag: 3, kind: 15, payloadLength: 12);
-        return EbinPrimitives.Vector3(position.Payload);
+        var rotation = GetField(record, tag: 2, kind: 17, payloadLength: 16);
+        var scale = GetField(record, tag: 3, kind: 15, payloadLength: 12);
+        var positionValue = EbinPrimitives.Vector3(position.Payload);
+        var rotationValue = new Quaternion(
+            EbinPrimitives.Single(rotation.Payload),
+            EbinPrimitives.Single(rotation.Payload[4..]),
+            EbinPrimitives.Single(rotation.Payload[8..]),
+            EbinPrimitives.Single(rotation.Payload[12..]));
+        var scaleValue = EbinPrimitives.Vector3(scale.Payload);
+
+        try
+        {
+            _ = SceneComponentDefinitions.CreateAssignedLocalTransform(positionValue, rotationValue, scaleValue);
+        }
+        catch (ArgumentException error)
+        {
+            throw new InvalidDataException("The authored LocalTransform is invalid.", error);
+        }
+
+        return positionValue;
     }
 
     private static void ValidateHeader(EbinRecordReadView record, Guid schemaId, uint major, int fieldCount)
@@ -198,5 +266,12 @@ internal static class SceneEntityReader
         {
             throw new InvalidDataException("The authored Entity record does not match the selected schema tuple.");
         }
+    }
+
+    private static void ValidateRootPositionRecord(EbinRecordReadView record)
+    {
+        ValidateHeader(record, s_rootPositionSchemaId, major: 1, fieldCount: 1);
+        var position = GetField(record, tag: 1, kind: 21, payloadLength: 24);
+        ValidateRootPositionPayload(position.Payload);
     }
 }

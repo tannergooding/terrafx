@@ -57,6 +57,9 @@ internal static class ScenePrefabExpansionPlanner
         private int[] _rootCounts = [];
         private int _rootEntityIndexCount;
         private ImmutableArray<int>.Builder _rootEntityIndicesByOccurrence = ImmutableArray.CreateBuilder<int>();
+        private long _rootPoseComponentArrayBytes;
+        private long _rootPoseTargetScratchBytes;
+        private long _rootPositionComponentBytes;
         private AssetLease<SceneAsset>? _sceneLease;
         private long _totalComponentRecordBytes;
 
@@ -68,6 +71,113 @@ internal static class ScenePrefabExpansionPlanner
             _assets = assets;
             _limits = limits;
             _cancellationToken = cancellationToken;
+        }
+
+        private static ImmutableArray<SceneAuthoredComponentRecord> ApplyRootPoseComponents(
+            ImmutableArray<SceneAuthoredComponentRecord> sourceComponents,
+            SceneAuthoredComponentRecord localTransform,
+            SceneAuthoredComponentRecord? rootPosition)
+        {
+            if (localTransform.Schema.SchemaId != SceneEntityReader.LocalTransformSchemaId
+                || localTransform.Schema.Major != 1
+                || localTransform.Schema.Minor != 0
+                || localTransform.Schema.Scope != ContentSchemaScope.Content)
+            {
+                throw new InvalidDataException("A Prefab RootPose LocalTransform does not match the registered component schema.");
+            }
+
+            if (rootPosition is not null
+                && ((rootPosition.Schema.SchemaId != SceneEntityReader.RootPositionSchemaId)
+                    || (rootPosition.Schema.Major != 1)
+                    || (rootPosition.Schema.Minor != 0)
+                    || (rootPosition.Schema.Scope != ContentSchemaScope.Content)))
+            {
+                throw new InvalidDataException("A Prefab RootPose RootPosition does not match the registered component schema.");
+            }
+
+            var hasLocalTransform = false;
+            var hasRootPosition = false;
+
+            for (var index = 0; index < sourceComponents.Length; index++)
+            {
+                var schemaId = sourceComponents[index].Schema.SchemaId;
+
+                if (schemaId == SceneEntityReader.LocalTransformSchemaId)
+                {
+                    if (hasLocalTransform)
+                    {
+                        throw new InvalidDataException("An expanded Entity contains more than one LocalTransform component.");
+                    }
+
+                    hasLocalTransform = true;
+                }
+                else if (schemaId == SceneEntityReader.RootPositionSchemaId)
+                {
+                    if (hasRootPosition)
+                    {
+                        throw new InvalidDataException("An expanded Entity contains more than one RootPosition component.");
+                    }
+
+                    hasRootPosition = true;
+                }
+            }
+
+            if (!hasLocalTransform)
+            {
+                throw new InvalidDataException("A Prefab RootPose target has no LocalTransform component.");
+            }
+
+            var componentCount = checked(
+                sourceComponents.Length
+                + ((rootPosition is not null && !hasRootPosition) ? 1 : 0)
+                - ((rootPosition is null && hasRootPosition) ? 1 : 0));
+            var components = ImmutableArray.CreateBuilder<SceneAuthoredComponentRecord>(componentCount);
+            var localTransformWritten = false;
+            var rootPositionWritten = false;
+
+            for (var index = 0; index < sourceComponents.Length; index++)
+            {
+                var component = sourceComponents[index];
+                var schemaId = component.Schema.SchemaId;
+
+                if ((rootPosition is not null)
+                    && !rootPositionWritten
+                    && (FoundationCatalogue.CompareRfc(rootPosition.Schema.SchemaId, schemaId) < 0))
+                {
+                    components.Add(rootPosition);
+                    rootPositionWritten = true;
+                }
+
+                if (schemaId == SceneEntityReader.LocalTransformSchemaId)
+                {
+                    components.Add(localTransform);
+                    localTransformWritten = true;
+                }
+                else if (schemaId == SceneEntityReader.RootPositionSchemaId)
+                {
+                    if (rootPosition is not null)
+                    {
+                        components.Add(rootPosition);
+                        rootPositionWritten = true;
+                    }
+                }
+                else
+                {
+                    components.Add(component);
+                }
+            }
+
+            if (!localTransformWritten)
+            {
+                throw new InvalidDataException("A Prefab RootPose did not replace the target LocalTransform.");
+            }
+
+            if ((rootPosition is not null) && !rootPositionWritten)
+            {
+                components.Add(rootPosition);
+            }
+
+            return components.MoveToImmutable();
         }
 
         private static long ArrayBytes(int count, int elementSize)
@@ -305,6 +415,69 @@ internal static class ScenePrefabExpansionPlanner
             return plan;
         }
 
+        private void ApplyRootPoses(
+            ScenePrefabPlacement placement,
+            int childOccurrenceIndex,
+            ImmutableArray<int>.Builder childOccurrenceIndicesByPlacement)
+        {
+            _cancellationToken.ThrowIfCancellationRequested();
+            var occurrence = _occurrences[childOccurrenceIndex];
+            var rootCount = occurrence.RootEntityCount;
+
+            if (placement.RootPoses.Length != rootCount)
+            {
+                throw new InvalidDataException("A PrefabPlacement RootPoses table does not match its expanded root count.");
+            }
+
+            for (var rootIndex = 1; rootIndex < rootCount; rootIndex++)
+            {
+                if (_rootEntityIndicesByOccurrence[occurrence.RootEntityIndicesStart + rootIndex - 1]
+                    >= _rootEntityIndicesByOccurrence[occurrence.RootEntityIndicesStart + rootIndex])
+                {
+                    throw new InvalidOperationException("Expanded root Entity indices are not in stable traversal order.");
+                }
+            }
+
+            var coveredRoots = rootCount == 0 ? [] : new bool[rootCount];
+
+            for (var rootPoseIndex = 0; rootPoseIndex < placement.RootPoses.Length; rootPoseIndex++)
+            {
+                _cancellationToken.ThrowIfCancellationRequested();
+                var rootPose = placement.RootPoses[rootPoseIndex];
+                var expandedEntityIndex = ResolveEntity(
+                    rootPose.Target,
+                    childOccurrenceIndex,
+                    childOccurrenceIndicesByPlacement);
+                var rootSlot = FindRootSlot(
+                    occurrence.RootEntityIndicesStart,
+                    rootCount,
+                    expandedEntityIndex);
+
+                if (rootSlot < 0)
+                {
+                    throw new InvalidDataException("A Prefab RootPose target is not a final expanded root.");
+                }
+
+                if (coveredRoots[rootSlot])
+                {
+                    throw new InvalidDataException("A PrefabPlacement RootPoses table targets one final root more than once.");
+                }
+
+                coveredRoots[rootSlot] = true;
+                var rootPosition = placement.ParentEntityId is null
+                    ? SceneEntityReader.CreateRootPositionRecord(
+                        (rootPose.RootPositionPayload
+                            ?? throw new InvalidDataException("A root PrefabPlacement RootPose has no RootPosition.")).AsSpan())
+                    : null;
+                var expandedEntity = _entities[expandedEntityIndex];
+                var components = ApplyRootPoseComponents(
+                    expandedEntity.Components,
+                    rootPose.LocalTransform,
+                    rootPosition);
+                _entities[expandedEntityIndex] = expandedEntity with { Components = components };
+            }
+        }
+
         private async ValueTask CountEntitySubtreeAsync(
             SceneExpansionSource source,
             Guid entityId,
@@ -470,10 +643,56 @@ internal static class ScenePrefabExpansionPlanner
 
             try
             {
-                return await CountOccurrenceAsync(
+                var rootCount = await CountOccurrenceAsync(
                     new SceneExpansionSource(childPrefab),
                     childPrefabDepth,
                     parentHierarchyDepth).ConfigureAwait(false);
+
+                if (placement.RootPoses.Length != rootCount)
+                {
+                    throw new InvalidDataException("A PrefabPlacement RootPoses table must cover every final expanded root exactly once.");
+                }
+
+                if (rootCount > 0)
+                {
+                    _rootPoseTargetScratchBytes = checked(
+                        _rootPoseTargetScratchBytes
+                        + ArrayBytes(rootCount, sizeof(bool)));
+                }
+
+                for (var rootPoseIndex = 0; rootPoseIndex < placement.RootPoses.Length; rootPoseIndex++)
+                {
+                    _cancellationToken.ThrowIfCancellationRequested();
+                    var rootPose = placement.RootPoses[rootPoseIndex];
+
+                    if (placement.ParentEntityId is null)
+                    {
+                        if ((rootPose.RootPositionPayload is null)
+                            || (rootPose.LocalTransformPosition.X != 0.0f)
+                            || (rootPose.LocalTransformPosition.Y != 0.0f)
+                            || (rootPose.LocalTransformPosition.Z != 0.0f))
+                        {
+                            throw new InvalidDataException("A root PrefabPlacement requires a RootPosition and zero LocalTransform.Position for every RootPose.");
+                        }
+
+                        _rootPositionComponentBytes = checked(
+                            _rootPositionComponentBytes
+                            + SceneEntityReader.RootPositionRecordByteLength);
+                    }
+                    else if (rootPose.RootPositionPayload is not null)
+                    {
+                        throw new InvalidDataException("A child PrefabPlacement RootPose cannot contain a RootPosition.");
+                    }
+
+                    var sourceEntity = await GetRootPoseTargetSourceEntityAsync(
+                        new SceneExpansionSource(childPrefab),
+                        rootPose.Target).ConfigureAwait(false);
+                    _rootPoseComponentArrayBytes = checked(
+                        _rootPoseComponentArrayBytes
+                        + ArrayBytes(checked(sourceEntity.Components.Length + 1), IntPtr.Size));
+                }
+
+                return rootCount;
             }
             finally
             {
@@ -517,7 +736,8 @@ internal static class ScenePrefabExpansionPlanner
                     sourceEntityIndex,
                     parentEntityIndex,
                     childOrdinal,
-                    hierarchyDepth));
+                    hierarchyDepth,
+                    sourceEntity.Components));
             _entityIndicesByOccurrence[entityMapStart + sourceEntityIndex] = entityIndex;
             await ExpandEntityChildrenAsync(
                 source,
@@ -740,6 +960,7 @@ internal static class ScenePrefabExpansionPlanner
                 childOrdinal,
                 childOccurrenceIndicesByPlacement).ConfigureAwait(false);
             childOccurrenceIndicesByPlacement[childPlacementMapStart + placementIndex] = childOccurrenceIndex;
+            ApplyRootPoses(placement, childOccurrenceIndex, childOccurrenceIndicesByPlacement);
             return childOccurrenceIndex;
         }
 
@@ -845,6 +1066,34 @@ internal static class ScenePrefabExpansionPlanner
                 parentHierarchyDepth).ConfigureAwait(false);
         }
 
+        private int FindRootSlot(int rootStart, int rootCount, int expandedEntityIndex)
+        {
+            var low = 0;
+            var high = rootCount - 1;
+
+            while (low <= high)
+            {
+                var middle = low + ((high - low) / 2);
+                var comparison = _rootEntityIndicesByOccurrence[rootStart + middle].CompareTo(expandedEntityIndex);
+
+                if (comparison == 0)
+                {
+                    return middle;
+                }
+
+                if (comparison < 0)
+                {
+                    low = middle + 1;
+                }
+                else
+                {
+                    high = middle - 1;
+                }
+            }
+
+            return -1;
+        }
+
         private async ValueTask<ScenePrefabAsset> GetPrefabAsync(AssetId assetId)
         {
             _cancellationToken.ThrowIfCancellationRequested();
@@ -885,11 +1134,146 @@ internal static class ScenePrefabExpansionPlanner
             requiredBytes = checked(requiredBytes + ArrayBytes(_entityCount, sizeof(int)));
             requiredBytes = checked(requiredBytes + ArrayBytes(_placementOccurrenceCount, sizeof(int)));
             requiredBytes = checked(requiredBytes + ArrayBytes(_rootEntityIndexCount, sizeof(int)));
+            requiredBytes = checked(requiredBytes + _rootPositionComponentBytes);
+            requiredBytes = checked(requiredBytes + _rootPoseComponentArrayBytes);
+            requiredBytes = checked(requiredBytes + _rootPoseTargetScratchBytes);
+
+            if (_rootPositionComponentBytes > 0)
+            {
+                requiredBytes = checked(requiredBytes + SceneEntityReader.RootPositionRecordByteLength);
+            }
+
             requiredBytes = checked(requiredBytes + ArrayBytes(_entityCount, Unsafe.SizeOf<Guid>()));
             requiredBytes = checked(requiredBytes + ArrayBytes(_occurrenceCount, Unsafe.SizeOf<Guid>()));
             requiredBytes = checked(requiredBytes + ArrayBytes(_occurrenceCount, sizeof(int)));
             requiredBytes = checked(requiredBytes + (checked((long)prefabLeases.Count) * 256L));
             return checked(requiredBytes + 2048L);
+        }
+
+        private async ValueTask<SceneEntity> GetRootPoseTargetSourceEntityAsync(
+            SceneExpansionSource source,
+            SceneEntitySelector selector)
+        {
+            if ((selector.Scope is not SceneEntitySelectorScope.OccurrenceRelative)
+                || selector.PlacementPath.IsDefault
+                || (selector.PlacementPath.Length > 32)
+                || (selector.AuthoredEntityId == Guid.Empty))
+            {
+                throw new InvalidDataException("A Prefab RootPose target selector is invalid.");
+            }
+
+            for (var pathIndex = 0; pathIndex < selector.PlacementPath.Length; pathIndex++)
+            {
+                _cancellationToken.ThrowIfCancellationRequested();
+                var placementIndex = FindPlacementIndex(source.Placements, selector.PlacementPath[pathIndex]);
+
+                if (placementIndex < 0)
+                {
+                    throw new InvalidDataException("A Prefab RootPose target placement path does not exist.");
+                }
+
+                var nestedPlacement = source.Placements[placementIndex];
+
+                if (nestedPlacement.ParentEntityId is not null)
+                {
+                    throw new InvalidDataException("A Prefab RootPose target path must follow root placements to a final expanded root.");
+                }
+
+                source = new SceneExpansionSource(await GetPrefabAsync(nestedPlacement.PrefabAssetId).ConfigureAwait(false));
+            }
+
+            var sourceEntityIndex = FindEntityIndex(source.Entities, selector.AuthoredEntityId);
+
+            if (sourceEntityIndex < 0)
+            {
+                throw new InvalidDataException("A Prefab RootPose target Entity does not exist in its selected occurrence.");
+            }
+
+            var hierarchyNodeIndex = FindHierarchyNodeIndex(source.Hierarchy.Nodes, selector.AuthoredEntityId);
+
+            if ((hierarchyNodeIndex < 0) || (source.Hierarchy.Nodes[hierarchyNodeIndex].ParentEntityId is not null))
+            {
+                throw new InvalidDataException("A Prefab RootPose target must identify a final expanded root.");
+            }
+
+            return source.Entities[sourceEntityIndex];
+        }
+
+        private SceneExpansionSource GetSource(int occurrenceIndex)
+        {
+            var assetId = _occurrences[occurrenceIndex].AssetId;
+            var sceneLease = _sceneLease
+                ?? throw new ObjectDisposedException(nameof(SceneExpansionBuilder));
+
+            if (assetId == sceneLease.AssetId)
+            {
+                return new SceneExpansionSource(sceneLease.Value);
+            }
+
+            var prefabLeases = _prefabLeases
+                ?? throw new ObjectDisposedException(nameof(SceneExpansionBuilder));
+
+            if (prefabLeases.TryGetValue(assetId, out var prefabLease))
+            {
+                return new SceneExpansionSource(prefabLease.Value);
+            }
+
+            throw new InvalidOperationException("The Scene expansion does not retain the selected Prefab asset lease.");
+        }
+
+        private int ResolveEntity(
+            SceneEntitySelector selector,
+            int relativeAnchorOccurrenceIndex,
+            ImmutableArray<int>.Builder childOccurrenceIndicesByPlacement)
+        {
+            if ((selector.Scope is not SceneEntitySelectorScope.OccurrenceRelative)
+                || selector.PlacementPath.IsDefault
+                || (selector.PlacementPath.Length > 32)
+                || (selector.AuthoredEntityId == Guid.Empty))
+            {
+                throw new InvalidDataException("A Prefab RootPose EntitySelector is invalid.");
+            }
+
+            var occurrenceIndex = relativeAnchorOccurrenceIndex;
+
+            for (var pathIndex = 0; pathIndex < selector.PlacementPath.Length; pathIndex++)
+            {
+                var occurrence = _occurrences[occurrenceIndex];
+                var source = GetSource(occurrenceIndex);
+                var placementIndex = FindPlacementIndex(source.Placements, selector.PlacementPath[pathIndex]);
+
+                if (placementIndex < 0)
+                {
+                    throw new InvalidDataException("A Prefab RootPose EntitySelector placement path does not exist.");
+                }
+
+                occurrenceIndex = childOccurrenceIndicesByPlacement[
+                    occurrence.ChildPlacementMapStart + placementIndex];
+
+                if (occurrenceIndex < 0)
+                {
+                    throw new InvalidDataException("A Prefab RootPose EntitySelector placement was not expanded.");
+                }
+            }
+
+            var targetSource = GetSource(occurrenceIndex);
+            var sourceEntityIndex = FindEntityIndex(targetSource.Entities, selector.AuthoredEntityId);
+
+            if (sourceEntityIndex < 0)
+            {
+                throw new InvalidDataException("A Prefab RootPose EntitySelector Entity does not exist.");
+            }
+
+            var targetOccurrence = _occurrences[occurrenceIndex];
+            var expandedEntityIndex = _entityIndicesByOccurrence[
+                targetOccurrence.EntityMapStart + sourceEntityIndex];
+
+            if (expandedEntityIndex < 0)
+            {
+                throw new InvalidDataException("A Prefab RootPose EntitySelector Entity was not expanded.");
+            }
+
+            return expandedEntityIndex;
         }
     }
 }

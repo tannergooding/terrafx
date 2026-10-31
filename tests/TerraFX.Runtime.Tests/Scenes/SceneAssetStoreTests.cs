@@ -2,6 +2,7 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.IO;
 using System.Security.Cryptography;
@@ -17,6 +18,39 @@ namespace TerraFX.Runtime.Tests.Scenes;
 [TestFixture]
 internal sealed class SceneAssetStoreTests
 {
+    private static async Task AssertExpansionRejectedAsync(byte[] scene, byte[] prefab)
+    {
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var package = Package.CreatePackage(
+            new Package.Entry(1, Package.CreateEnvelope(1, prefab)),
+            new Package.Entry(3, Package.CreateEnvelope(3, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+            try
+            {
+                _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
+                    await ScenePrefabExpansionPlanner.PrepareAsync(
+                        store,
+                        new AssetId(3),
+                        SceneExpansionLimits.Default).ConfigureAwait(false));
+            }
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
     private static byte[] CreateExternalSlot(
         Guid slotId,
         bool required,
@@ -31,6 +65,15 @@ internal sealed class SceneAssetStoreTests
             new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(3, 9, 1, 1, [allowNull ? (byte)1 : (byte)0]),
             SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(4, requiredComponents));
 
+    private static byte[] CreateLocalTransformRecord(float positionX, float scaleX)
+        => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 15, positionX, 0, 0),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(2, 17, 0, 0, 0, 1),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(3, 15, scaleX, 1, 1));
+
     private static byte[] CreateNestedExpansionPackage(
         Guid outerPlacementId,
         Guid innerPlacementId,
@@ -39,14 +82,36 @@ internal sealed class SceneAssetStoreTests
         bool includeInnerEntity = true,
         bool includeOuterEntity = false)
     {
+        byte[][] innerRootPoses = includeInnerEntity
+            ? [SceneAssetReaderTests.Fixtures.CreateRootPose(entityId, localScaleX: 2.0f)]
+            : [];
+        List<byte[]> sceneRootPoses = [];
+
+        if (includeOuterEntity)
+        {
+            sceneRootPoses.Add(SceneAssetReaderTests.Fixtures.CreateRootPose(entityId, localScaleX: 3.0f, rootChunkX: 1));
+        }
+
+        if (includeInnerEntity)
+        {
+            sceneRootPoses.Add(
+                SceneAssetReaderTests.Fixtures.CreateRootPose(
+                    entityId,
+                    placementPath: [innerPlacementId],
+                    localScaleX: 4.0f,
+                    rootChunkX: 2));
+        }
+
         var outerPrefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
             new AssetId(1),
             entityId: includeOuterEntity ? entityId : null,
             placementId: innerPlacementId,
+            placementRootPoses: innerRootPoses,
             placementPrefabAssetId: innerTargetAssetId);
         var scene = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
             new AssetId(3),
-            outerPlacementId);
+            outerPlacementId,
+            rootPoses: [.. sceneRootPoses]);
         var outerEntry = new Package.Entry(1, Package.CreateEnvelope(1, outerPrefab));
         var sceneEntry = new Package.Entry(3, Package.CreateEnvelope(3, scene));
 
@@ -64,6 +129,13 @@ internal sealed class SceneAssetStoreTests
             sceneEntry);
     }
 
+    private static byte[] CreateRootPositionRecord(int chunkX, float offsetX = 0.0f)
+        => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("scene/root-position").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreatePosition3Field(1, chunkX, 0, 0, offsetX, 0, 0));
+
     private static byte[] CreateSchemaReference(string schemaName)
         => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
             new ContentSchemaIdentityAssignment("content/schema-ref").SchemaId,
@@ -73,6 +145,93 @@ internal sealed class SceneAssetStoreTests
             SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(2, 1),
             SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(3, 0),
             SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(4, (byte)ContentSchemaScope.Content));
+
+    private static SceneAuthoredComponentRecord GetComponentRecord(SceneExpandedEntity entity, Guid schemaId)
+    {
+        for (var index = 0; index < entity.Components.Length; index++)
+        {
+            if (entity.Components[index].Schema.SchemaId == schemaId)
+            {
+                return entity.Components[index];
+            }
+        }
+
+        throw new AssertionException($"Expanded Entity {entity.AuthoredEntityId:N} has no component {schemaId:N}.");
+    }
+
+    private static bool HasComponent(SceneExpandedEntity entity, Guid schemaId)
+    {
+        for (var index = 0; index < entity.Components.Length; index++)
+        {
+            if (entity.Components[index].Schema.SchemaId == schemaId)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    [Test]
+    public async Task AppliesChildPlacementRootPoseAndRemovesTemplateRootPosition()
+    {
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var placementId = new Guid("20000000-0000-4000-8000-000000000045");
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var childRootPose = SceneAssetReaderTests.Fixtures.CreateRootPose(
+            rootEntityId,
+            localPositionX: 2.0f,
+            includeRootPosition: false);
+        var scene = SceneAssetReaderTests.Fixtures.CreateSceneWithChildPlacement(
+            new AssetId(3),
+            rootEntityId,
+            placementId,
+            childRootPose);
+        var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(1),
+            entityId: rootEntityId);
+        var package = Package.CreatePackage(
+            new Package.Entry(1, Package.CreateEnvelope(1, prefab)),
+            new Package.Entry(3, Package.CreateEnvelope(3, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+            try
+            {
+                using var expansion = await ScenePrefabExpansionPlanner.PrepareAsync(
+                    store,
+                    new AssetId(3),
+                    SceneExpansionLimits.Default).ConfigureAwait(false);
+                var rootPositionSchemaId = new ContentSchemaIdentityAssignment("scene/root-position").SchemaId;
+                var localTransformSchemaId = new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId;
+                var rootComponents = expansion.Entities[0].Components;
+                var childComponents = expansion.Entities[1].Components;
+
+                Assert.That(
+                    GetComponentRecord(expansion.Entities[0], rootPositionSchemaId).EncodedRecord.ToArray(),
+                    Is.EqualTo(CreateRootPositionRecord(chunkX: 0)));
+                Assert.That(HasComponent(expansion.Entities[1], rootPositionSchemaId), Is.False);
+                Assert.That(
+                    GetComponentRecord(expansion.Entities[1], localTransformSchemaId).EncodedRecord.ToArray(),
+                    Is.EqualTo(CreateLocalTransformRecord(positionX: 2.0f, scaleX: 1.0f)));
+                Assert.That(rootComponents.Length, Is.EqualTo(2));
+                Assert.That(childComponents.Length, Is.EqualTo(1));
+            }
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
 
     [Test]
     public async Task ExpandsEmptyPrefabPlacementsAsOccurrences()
@@ -124,11 +283,27 @@ internal sealed class SceneAssetStoreTests
         var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
         var sceneRecord = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
             new AssetId(3),
-            outerPlacementId);
+            outerPlacementId,
+            rootPoses: [
+                SceneAssetReaderTests.Fixtures.CreateRootPose(
+                    rootEntityId,
+                    localScaleX: 3.0f,
+                    rootChunkX: 1,
+                    rootOffsetX: 1.5f),
+                SceneAssetReaderTests.Fixtures.CreateRootPose(
+                    rootEntityId,
+                    placementPath: [innerPlacementId],
+                    localScaleX: 4.0f,
+                    rootChunkX: 2,
+                    rootOffsetX: -2.25f),
+            ]);
         var outerPrefabRecord = SceneAssetReaderTests.Fixtures.CreatePrefab(
             new AssetId(1),
             entityId: rootEntityId,
             placementId: innerPlacementId,
+            placementRootPoses: [
+                SceneAssetReaderTests.Fixtures.CreateRootPose(rootEntityId, localScaleX: 2.0f),
+            ],
             placementPrefabAssetId: new AssetId(2));
         var innerPrefabRecord = SceneAssetReaderTests.Fixtures.CreatePrefab(
             new AssetId(2),
@@ -173,6 +348,22 @@ internal sealed class SceneAssetStoreTests
                 Assert.That(expansion.GetRootEntityIndices(0).Length, Is.EqualTo(2));
                 Assert.That(expansion.GetSourceEntity(0).AuthoredEntityId, Is.EqualTo(rootEntityId));
                 Assert.That(expansion.GetSourceEntity(1).AuthoredEntityId, Is.EqualTo(rootEntityId));
+                Assert.That(
+                    GetComponentRecord(expansion.Entities[0], new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId)
+                        .EncodedRecord.ToArray(),
+                    Is.EqualTo(CreateLocalTransformRecord(positionX: 0.0f, scaleX: 3.0f)));
+                Assert.That(
+                    GetComponentRecord(expansion.Entities[1], new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId)
+                        .EncodedRecord.ToArray(),
+                    Is.EqualTo(CreateLocalTransformRecord(positionX: 0.0f, scaleX: 4.0f)));
+                Assert.That(
+                    GetComponentRecord(expansion.Entities[0], new ContentSchemaIdentityAssignment("scene/root-position").SchemaId)
+                        .EncodedRecord.ToArray(),
+                    Is.EqualTo(CreateRootPositionRecord(chunkX: 1, offsetX: 1.5f)));
+                Assert.That(
+                    GetComponentRecord(expansion.Entities[1], new ContentSchemaIdentityAssignment("scene/root-position").SchemaId)
+                        .EncodedRecord.ToArray(),
+                    Is.EqualTo(CreateRootPositionRecord(chunkX: 2, offsetX: -2.25f)));
 
                 var selector = new SceneEntitySelector(
                     SceneEntitySelectorScope.OccurrenceRelative,
@@ -222,7 +413,7 @@ internal sealed class SceneAssetStoreTests
         var sceneRecord = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
             new AssetId(3),
             placementId,
-            SceneAssetReaderTests.Fixtures.CreateRootPose(rootEntityId),
+            rootPoses: [SceneAssetReaderTests.Fixtures.CreateRootPose(rootEntityId)],
             slotBindings: [slotBinding],
             externalSlots: [containingSlot]);
         var package = Package.CreatePackage(
@@ -338,6 +529,7 @@ internal sealed class SceneAssetStoreTests
                 _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
                     await ScenePrefabExpansionPlanner.PrepareAsync(store, new AssetId(3), limits).ConfigureAwait(false));
             }
+
             finally
             {
                 await store.DisposeAsync().ConfigureAwait(false);
@@ -387,6 +579,38 @@ internal sealed class SceneAssetStoreTests
         {
             File.Delete(packagePath);
         }
+    }
+
+    [Test]
+    public async Task RejectsIncompleteRootPoseTable()
+    {
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var placementId = new Guid("20000000-0000-4000-8000-000000000046");
+        var scene = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
+            new AssetId(3),
+            placementId);
+        var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(1),
+            entityId: rootEntityId);
+
+        await AssertExpansionRejectedAsync(scene, prefab).ConfigureAwait(false);
+    }
+
+    [Test]
+    public async Task RejectsPrefabChildPlacementRootPosition()
+    {
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var placementId = new Guid("20000000-0000-4000-8000-000000000047");
+        var scene = SceneAssetReaderTests.Fixtures.CreateSceneWithChildPlacement(
+            new AssetId(3),
+            rootEntityId,
+            placementId,
+            SceneAssetReaderTests.Fixtures.CreateRootPose(rootEntityId));
+        var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(1),
+            entityId: rootEntityId);
+
+        await AssertExpansionRejectedAsync(scene, prefab).ConfigureAwait(false);
     }
 
     [Test]
@@ -459,10 +683,31 @@ internal sealed class SceneAssetStoreTests
                 await store.DisposeAsync().ConfigureAwait(false);
             }
         }
+
         finally
         {
             File.Delete(packagePath);
         }
+    }
+
+    [Test]
+    public async Task RejectsRootPlacementRootPoseWithoutPosition()
+    {
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var placementId = new Guid("20000000-0000-4000-8000-000000000048");
+        var scene = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
+            new AssetId(3),
+            placementId,
+            rootPoses: [
+                SceneAssetReaderTests.Fixtures.CreateRootPose(
+                    rootEntityId,
+                    includeRootPosition: false),
+            ]);
+        var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(1),
+            entityId: rootEntityId);
+
+        await AssertExpansionRejectedAsync(scene, prefab).ConfigureAwait(false);
     }
 
     private static class Package
