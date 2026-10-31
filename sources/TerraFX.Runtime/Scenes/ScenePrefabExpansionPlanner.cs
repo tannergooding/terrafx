@@ -394,10 +394,12 @@ internal static class ScenePrefabExpansionPlanner
 
             for (var entityIndex = 0; entityIndex < source.Entities.Length; entityIndex++)
             {
+                _cancellationToken.ThrowIfCancellationRequested();
                 var entity = source.Entities[entityIndex];
 
                 for (var componentIndex = 0; componentIndex < entity.Components.Length; componentIndex++)
                 {
+                    _cancellationToken.ThrowIfCancellationRequested();
                     _totalComponentRecordBytes = checked(
                         _totalComponentRecordBytes
                         + entity.Components[componentIndex].EncodedRecord.Length);
