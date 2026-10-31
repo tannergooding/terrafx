@@ -56,6 +56,41 @@ internal static class SceneAssetReader
             fieldCount: 7,
             limits: limits);
 
+    internal static ImmutableArray<ContentSchemaReference> GetPrefabOverrideLiteralSchemas(
+        CompiledContentSchemaRegistry schemas)
+    {
+        ArgumentNullException.ThrowIfNull(schemas);
+        var prefabOverrideSchema = new ContentSchemaReference(
+            s_prefabOverrideSchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+
+        if (!schemas.TryGetSchema(prefabOverrideSchema, out var metadata)
+            || (metadata.Role != ContentSchemaRole.Auxiliary))
+        {
+            throw new NotSupportedException("The selected schema registry does not contain the native/prefab-override descriptor.");
+        }
+
+        foreach (var field in metadata.Fields)
+        {
+            if (field.Tag == 4)
+            {
+                if ((field.WireKind != 22)
+                    || field.IsRequired
+                    || field.NestedSchemas.IsEmpty
+                    || (field.NestedRoleMask != 0))
+                {
+                    throw new InvalidOperationException("The native/prefab-override Value field does not expose its fixed literal schema set.");
+                }
+
+                return field.NestedSchemas;
+            }
+        }
+
+        throw new InvalidOperationException("The native/prefab-override descriptor has no Value field.");
+    }
+
     internal static SceneAsset Read(
         EbinRecordReadView record,
         AssetId expectedSceneId,
@@ -361,40 +396,6 @@ internal static class SceneAssetReader
         }
 
         return field;
-    }
-
-    private static ImmutableArray<ContentSchemaReference> GetPrefabOverrideLiteralSchemas(
-        CompiledContentSchemaRegistry schemas)
-    {
-        var prefabOverrideSchema = new ContentSchemaReference(
-            s_prefabOverrideSchemaId,
-            1,
-            0,
-            ContentSchemaScope.Content);
-
-        if (!schemas.TryGetSchema(prefabOverrideSchema, out var metadata)
-            || (metadata.Role != ContentSchemaRole.Auxiliary))
-        {
-            throw new NotSupportedException("The selected schema registry does not contain the native/prefab-override descriptor.");
-        }
-
-        foreach (var field in metadata.Fields)
-        {
-            if (field.Tag == 4)
-            {
-                if ((field.WireKind != 22)
-                    || field.IsRequired
-                    || field.NestedSchemas.IsEmpty
-                    || (field.NestedRoleMask != 0))
-                {
-                    throw new InvalidOperationException("The native/prefab-override Value field does not expose its fixed literal schema set.");
-                }
-
-                return field.NestedSchemas;
-            }
-        }
-
-        throw new InvalidOperationException("The native/prefab-override descriptor has no Value field.");
     }
 
     private static EbinFieldReadView GetRecordArrayField(
