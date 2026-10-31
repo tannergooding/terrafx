@@ -4,6 +4,7 @@ using System;
 using System.Collections.Immutable;
 using System.IO;
 using TerraFX;
+using TerraFX.Numerics;
 
 namespace TerraFX.Scenes;
 
@@ -33,6 +34,7 @@ internal static class SceneEntityReader
         var components = ImmutableArray.CreateBuilder<SceneAuthoredComponentRecord>(componentCount);
         var previousSchemaId = Guid.Empty;
         var hasLocalTransform = false;
+        var localTransformPosition = Vector3.Zero;
 
         for (var componentIndex = 0; componentIndex < componentCount; componentIndex++)
         {
@@ -74,6 +76,7 @@ internal static class SceneEntityReader
                 }
 
                 hasLocalTransform = true;
+                localTransformPosition = ReadLocalTransformPosition(componentRecord);
             }
 
             components.Add(new SceneAuthoredComponentRecord(schema, componentRecord.EncodedBytes));
@@ -85,7 +88,25 @@ internal static class SceneEntityReader
             throw new InvalidDataException("Every native Scene Entity requires a LocalTransform component.");
         }
 
-        return new SceneEntity(entityId, components.MoveToImmutable());
+        return new SceneEntity(entityId, localTransformPosition, components.MoveToImmutable());
+    }
+
+    private static EbinFieldReadView GetField(
+        EbinRecordReadView record,
+        uint tag,
+        ushort kind,
+        int payloadLength)
+    {
+        if (!record.TryGetField(tag, out var field)
+            || (field.Kind != kind)
+            || !field.IsRequired
+            || (field.Count != 1)
+            || (field.Payload.Length != payloadLength))
+        {
+            throw new InvalidDataException($"Scene component field {tag} does not match its schema.");
+        }
+
+        return field;
     }
 
     private static EbinFieldReadView GetRecordArrayField(
@@ -125,6 +146,15 @@ internal static class SceneEntityReader
         }
 
         return id;
+    }
+
+    private static Vector3 ReadLocalTransformPosition(EbinRecordReadView record)
+    {
+        ValidateHeader(record, s_localTransformSchemaId, major: 1, fieldCount: 3);
+        var position = GetField(record, tag: 1, kind: 15, payloadLength: 12);
+        _ = GetField(record, tag: 2, kind: 17, payloadLength: 16);
+        _ = GetField(record, tag: 3, kind: 15, payloadLength: 12);
+        return EbinPrimitives.Vector3(position.Payload);
     }
 
     private static void ValidateHeader(EbinRecordReadView record, Guid schemaId, uint major, int fieldCount)

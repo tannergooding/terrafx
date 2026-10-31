@@ -140,6 +140,25 @@ internal sealed class SceneHierarchyCodecTests
         public static FixtureField CreateGuidField(uint tag, Guid value, bool isRequired = true)
             => new(tag, 11, isRequired ? (ushort)1 : (ushort)0, 1, GetGuidBytes(value));
 
+        public static FixtureField CreatePosition3Field(
+            uint tag,
+            int chunkX,
+            int chunkY,
+            int chunkZ,
+            float offsetX,
+            float offsetY,
+            float offsetZ)
+        {
+            var payload = new byte[24];
+            BinaryPrimitives.WriteInt32LittleEndian(payload, chunkX);
+            BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(4), chunkY);
+            BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(8), chunkZ);
+            BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(12), BitConverter.SingleToInt32Bits(offsetX));
+            BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(16), BitConverter.SingleToInt32Bits(offsetY));
+            BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(20), BitConverter.SingleToInt32Bits(offsetZ));
+            return new FixtureField(tag, 21, 1, 1, payload);
+        }
+
         public static FixtureField CreateRecordArrayField(uint tag, params byte[][] records)
             => new(tag, 24, 1, checked((ulong)records.Length), CreateRecordArrayPayload(records));
 
@@ -187,6 +206,16 @@ internal sealed class SceneHierarchyCodecTests
             }
 
             return payload[..bytesWritten];
+        }
+
+        public static FixtureField CreateRecordField(uint tag, byte[] record)
+            => new(tag, 22, 1, 1, record);
+
+        public static FixtureField CreateUInt32Field(uint tag, uint value)
+        {
+            var payload = new byte[sizeof(uint)];
+            BinaryPrimitives.WriteUInt32LittleEndian(payload, value);
+            return new FixtureField(tag, 3, 1, 1, payload);
         }
 
         public static FixtureField CreateUInt8Field(uint tag, byte value)

@@ -2,12 +2,16 @@
 
 using System;
 using System.Collections.Immutable;
+using TerraFX.Numerics;
 
 namespace TerraFX.Scenes;
 
 internal sealed class SceneEntity
 {
-    internal SceneEntity(Guid authoredEntityId, ImmutableArray<SceneAuthoredComponentRecord> components)
+    internal SceneEntity(
+        Guid authoredEntityId,
+        Vector3 localTransformPosition,
+        ImmutableArray<SceneAuthoredComponentRecord> components)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(authoredEntityId, Guid.Empty);
 
@@ -17,10 +21,13 @@ internal sealed class SceneEntity
         }
 
         AuthoredEntityId = authoredEntityId;
+        LocalTransformPosition = localTransformPosition;
         Components = components;
     }
 
     internal Guid AuthoredEntityId { get; }
 
     internal ImmutableArray<SceneAuthoredComponentRecord> Components { get; }
+
+    internal Vector3 LocalTransformPosition { get; }
 }
