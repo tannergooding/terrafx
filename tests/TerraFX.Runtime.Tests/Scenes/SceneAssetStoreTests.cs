@@ -4,6 +4,7 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Security.Cryptography;
@@ -18,7 +19,7 @@ using TerraFX.Scenes;
 namespace TerraFX.Runtime.Tests.Scenes;
 
 [TestFixture]
-internal sealed class SceneAssetStoreTests
+internal sealed partial class SceneAssetStoreTests
 {
     private static async Task AssertExpansionRejectedAsync(byte[] scene, byte[] prefab)
     {
@@ -381,6 +382,27 @@ internal sealed class SceneAssetStoreTests
             SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(2, 1),
             SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(3, 0),
             SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(4, (byte)ContentSchemaScope.Content));
+
+    private static async Task DeleteTemporaryPackageAsync(string packagePath)
+    {
+        ArgumentNullException.ThrowIfNull(packagePath);
+
+        for (var retry = 0; ; retry++)
+        {
+            try
+            {
+                File.Delete(packagePath);
+                return;
+            }
+            catch (IOException exception) when (
+                (retry < 299)
+                && ((exception.HResult == unchecked((int)0x80070020))
+                    || (exception.HResult == unchecked((int)0x80070021))))
+            {
+                await Task.Delay(50).ConfigureAwait(false);
+            }
+        }
+    }
 
     private static SceneAuthoredComponentRecord GetComponentRecord(SceneExpandedEntity entity, Guid schemaId)
     {
@@ -1660,6 +1682,98 @@ internal sealed class SceneAssetStoreTests
         finally
         {
             File.Delete(packagePath);
+        }
+    }
+
+    [TestCase(true)]
+    [TestCase(false)]
+    public async Task SceneLoaderActivationHandlesExplicitNullEntityReference(bool optional)
+    {
+        const int sceneAssetIdValue = 3;
+        var componentSchema = CreateEntityReferenceComponentSchema(optional);
+        var registeredSchemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var schemas = new CompiledContentSchemaRegistry([.. registeredSchemas.Schemas, componentSchema]);
+        var externalSlotId = new Guid("30000000-0000-4000-8000-000000000091");
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var scene = SceneAssetReaderTests.Fixtures.CreateScene(
+            new AssetId(sceneAssetIdValue),
+            externalSlots: [CreateExternalSlot(externalSlotId, required: false, allowNull: true, [])],
+            references: [
+                CreateEntityReferenceBindingToExternalSlot(
+                    rootEntityId,
+                    componentSchema.Schema,
+                    externalSlotId),
+            ],
+            additionalEntityComponents: [
+                CreateEntityReferenceComponent(
+                    componentSchema.Schema.SchemaId,
+                    externalSlotId,
+                    isRequired: !optional),
+            ]);
+        var package = Package.CreatePackage(new Package.Entry(
+            sceneAssetIdValue,
+            Package.CreateEnvelope(sceneAssetIdValue, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            DirectoryInfo? repositoryDirectory = new(AppContext.BaseDirectory);
+
+            while (repositoryDirectory is not null
+                && !File.Exists(Path.Combine(repositoryDirectory.FullName, "TerraFX.slnx")))
+            {
+                repositoryDirectory = repositoryDirectory.Parent;
+            }
+
+            var repositoryRoot = repositoryDirectory?.FullName
+                ?? throw new DirectoryNotFoundException("The Scene activation public consumer could not locate the repository root.");
+            var consumerProject = Path.Combine(
+                repositoryRoot,
+                "tests",
+                "TerraFX.Runtime.ComponentConsumer",
+                "TerraFX.Runtime.ComponentConsumer.csproj");
+            var startInfo = new ProcessStartInfo("dotnet") {
+                WorkingDirectory = repositoryRoot,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+            };
+#if DEBUG
+            const string configuration = "Debug";
+#else
+            const string configuration = "Release";
+#endif
+            startInfo.ArgumentList.Add("run");
+            startInfo.ArgumentList.Add("--project");
+            startInfo.ArgumentList.Add(consumerProject);
+            startInfo.ArgumentList.Add("--configuration");
+            startInfo.ArgumentList.Add(configuration);
+            startInfo.ArgumentList.Add("--no-build");
+            startInfo.ArgumentList.Add("--");
+            startInfo.ArgumentList.Add("--scene-activation");
+            startInfo.ArgumentList.Add(packagePath);
+            startInfo.ArgumentList.Add(optional ? "optional" : "required");
+            startInfo.ArgumentList.Add(externalSlotId.ToString("N"));
+            startInfo.ArgumentList.Add(rootEntityId.ToString("N"));
+            using var process = Process.Start(startInfo)
+                ?? throw new InvalidOperationException("The Scene activation public consumer did not start.");
+            var standardOutputTask = process.StandardOutput.ReadToEndAsync();
+            var standardErrorTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync().ConfigureAwait(false);
+            var standardOutput = await standardOutputTask.ConfigureAwait(false);
+            var standardError = await standardErrorTask.ConfigureAwait(false);
+
+            Assert.That(
+                process.ExitCode,
+                Is.Zero,
+                $"The Scene activation public consumer failed.{Environment.NewLine}{standardOutput}{standardError}");
+            Assert.That(
+                standardOutput,
+                Does.Contain(optional ? "optional-null activation passed" : "required-null rejection passed"));
+        }
+        finally
+        {
+            await DeleteTemporaryPackageAsync(packagePath).ConfigureAwait(false);
         }
     }
 

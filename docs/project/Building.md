@@ -137,6 +137,15 @@ dotnet run --project .\tests\TerraFX.Runtime.ComponentConsumer\TerraFX.Runtime.C
 dotnet run --project .\tests\TerraFX.Runtime.GeneratedComponentConsumer\TerraFX.Runtime.GeneratedComponentConsumer.csproj --configuration Debug
 ```
 
+The Runtime suite also runs an unsafe-disabled Scene activation witness through the handwritten consumer as a separate process. It covers an encoded optional Entity reference bound explicitly to null and rejects the same null target for a required reference:
+
+```powershell
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SceneLoaderActivationHandlesExplicitNullEntityReference"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SceneLoaderActivationHandlesExplicitNullEntityReference"
+```
+
+These are focused JIT observations only; they do not complete Scene hierarchy transactions, CPU extraction, NativeAOT, or native qualification.
+
 For Windows NativeAOT qualification, each executable project enables `PublishAot` locally when `TerraFXPublishAot=true`; the generated project's analyzer reference removes that switch. Publish and execute the artifacts separately:
 
 ```powershell

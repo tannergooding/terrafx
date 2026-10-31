@@ -764,7 +764,8 @@ internal sealed class SceneAssetReaderTests
             float localPositionX = 0.0f,
             byte[][]? externalSlots = null,
             byte[][]? overrides = null,
-            byte[][]? references = null)
+            byte[][]? references = null,
+            byte[][]? additionalEntityComponents = null)
         {
             var localTransformSchema = new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId;
             var rootPositionSchema = new ContentSchemaIdentityAssignment("scene/root-position").SchemaId;
@@ -780,14 +781,28 @@ internal sealed class SceneAssetReaderTests
                 SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 15, localPositionX, 0, 0),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(2, 17, 0, 0, 0, 1),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(3, 15, 1, 1, 1));
+            var entityComponents = new byte[(includeRootPosition ? 2 : 1) + (additionalEntityComponents?.Length ?? 0)][];
+
+            if (includeRootPosition)
+            {
+                entityComponents[0] = rootPosition;
+                entityComponents[1] = localTransform;
+            }
+            else
+            {
+                entityComponents[0] = localTransform;
+            }
+
+            additionalEntityComponents?.CopyTo(entityComponents, includeRootPosition ? 2 : 1);
+            Array.Sort(
+                entityComponents,
+                static (left, right) => left.AsSpan(16, 16).SequenceCompareTo(right.AsSpan(16, 16)));
             var entity = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
                 new ContentSchemaIdentityAssignment("native/entity").SchemaId,
                 1,
                 0,
                 SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(1, RootEntityId),
-                includeRootPosition
-                    ? SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(2, rootPosition, localTransform)
-                    : SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(2, localTransform));
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(2, entityComponents));
             var hierarchyNode = SceneHierarchyCodecTests.FixtureBuilder.EncodeNode(RootEntityId, parentEntityId: null);
             var hierarchyEntry = SceneHierarchyCodecTests.FixtureBuilder.EncodeEntry(
                 (byte)SceneHierarchyEntryKind.Entity,

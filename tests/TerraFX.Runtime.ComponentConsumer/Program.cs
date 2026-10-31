@@ -4,8 +4,10 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Threading;
 using TerraFX;
 using TerraFX.Animation;
@@ -17,11 +19,16 @@ using TerraFX.Scenes;
 
 namespace TerraFX.Runtime.ComponentConsumer;
 
-internal static class Program
+internal static partial class Program
 {
     [SuppressMessage("Globalization", "CA1303", Justification = "This is a machine-checked public-consumer completion marker.")]
-    public static int Main()
+    public static int Main(string[] args)
     {
+        if (args.Length != 0)
+        {
+            return RunSceneActivationConsumer(args);
+        }
+
         Check(
             ((byte)CameraProjectionKind.Perspective == 0)
             && ((byte)CameraProjectionKind.Orthographic == 1)
@@ -366,7 +373,8 @@ internal static class Program
         Check(registration.GetResourceBinding(resourceId).PartitionCount == 2);
         ExpectException<InvalidOperationException>(() => registrationBuilder.RegisterTag(entityTag));
 
-        using var admissionDomain = new WorldAdmissionDomain(16 * 1024 * 1024);
+        // The default Scene registry reserves more than 16 MiB for its active-instance directory.
+        using var admissionDomain = new WorldAdmissionDomain(64 * 1024 * 1024);
         var firstWorldGuid = new Guid("00112233-4455-4677-8899-aabbccddeeff");
         var firstLineageId = new Guid("10112233-4455-4677-8899-aabbccddeeff");
 
@@ -566,6 +574,163 @@ internal static class Program
 
     private static ComponentStoragePath MemberPath(string name)
         => new([ComponentStorageSegment.Member(name)]);
+
+    [SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "The prepared Scene and World remain owned through the awaited activation/unload request, and the AssetStore is disposed after its leases retire.")]
+    [SuppressMessage("Globalization", "CA1303", Justification = "The Scene activation consumer writes machine-checked witness markers.")]
+    private static int RunSceneActivationConsumer(string[] args)
+    {
+        if ((args.Length != 5)
+            || (args[0] != "--scene-activation")
+            || !Guid.TryParseExact(args[3], "N", out var externalSlotId)
+            || !Guid.TryParseExact(args[4], "N", out var rootEntityId)
+            || (args[2] is not "optional" and not "required"))
+        {
+            throw new ArgumentException("The Scene activation consumer arguments are invalid.", nameof(args));
+        }
+
+        var optional = args[2] == "optional";
+        var assignment = new ContentSchemaIdentityAssignment("test/scene-expanded-entity-reference");
+        var schemaReference = new ContentSchemaReference(
+            assignment.SchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+        var metadata = new DataSchema(
+            schemaReference,
+            assignment,
+            ContentSchemaRole.Component,
+            ContentSchemaOwner.Application,
+            ContentSchemaStorage.Persistent,
+            ContentTransientRestore.NotApplicable,
+            [
+                new ContentFieldDescriptor(
+                    1,
+                    11,
+                    0,
+                    !optional,
+                    1,
+                    1,
+                    [],
+                    0,
+                    ContentUnit.None,
+                    ContentReferenceKind.Entity,
+                    ContentAuthoring.PrefabEditable,
+                    null),
+            ]);
+        var schemas = new CompiledContentSchemaRegistry([
+            .. CoreContentSchemaCatalogue.PrimitiveSchemas,
+            .. CoreContentSchemaCatalogue.FoundationSchemas,
+            .. NativeAssetSchemaCatalogue.Schemas,
+            .. SceneSchemaCatalogue.Schemas,
+            metadata,
+        ]);
+        var assetStoreRegistrationBuilder = new AssetStoreRegistrationBuilder(schemas);
+        _ = SceneSupport.RegisterAssetCodecs(assetStoreRegistrationBuilder);
+        var assetStoreRegistration = assetStoreRegistrationBuilder.Build();
+        var layout = new ComponentLayout(
+            new ContentSchemaIdentityAssignment("test/scene-expanded-entity-reference/layout/v1").SchemaId,
+            Unsafe.SizeOf<ReferenceComponent>());
+        var schema = ComponentSchema<ReferenceComponent>.FromRegistry(schemas, schemaReference, layout);
+        var targetField = schema.GetField(new ComponentFieldPath([ComponentPropertySegment.FieldTag(1)]));
+        var targetPath = MemberPath("_target");
+        var storage = new ComponentStorageDeclaration(
+            layout.LogicalBytes,
+            [
+                new ComponentStorageLeaf(
+                    targetPath,
+                    optional ? ComponentStorageKind.OptionalEntityHandle : ComponentStorageKind.EntityHandle,
+                    0,
+                    Unsafe.SizeOf<Entity>(),
+                    0,
+                    0,
+                    ComponentStoragePurpose.SchemaValue),
+            ],
+            []);
+        var registrationBuilder = new WorldRegistrationBuilder(schemas);
+        _ = registrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+
+        if (optional)
+        {
+            var targetReference = ComponentFieldBinding<ReferenceComponent, OptionalReferenceAuthor>
+                .OptionalEntityReference(
+                    targetField,
+                    [targetPath],
+                    new OptionalReferenceAccessor(),
+                    new OptionalReferenceAuthorReader());
+            _ = registrationBuilder.RegisterComponent(
+                schema,
+                new OptionalReferenceFactory(schema, storage, targetReference, targetField));
+        }
+        else
+        {
+            var targetReference = ComponentFieldBinding<ReferenceComponent, ReferenceAuthor>
+                .EntityReference<TargetAccessor, TargetReader>(
+                    targetField,
+                    [targetPath],
+                    default,
+                    default);
+            _ = registrationBuilder.RegisterComponent(
+                schema,
+                new ReferenceFactory(schema, storage, targetReference, targetField));
+        }
+
+        var registration = registrationBuilder.Build();
+        var packageBytes = File.ReadAllBytes(args[1]);
+        var assets = AssetStore.CreateAsync(
+            new AssetStoreOptions(args[1], SHA256.HashData(packageBytes), assetStoreRegistration))
+            .GetAwaiter()
+            .GetResult();
+
+        try
+        {
+            using var world = World.Create(new WorldOptions(registration));
+            var loader = new SceneLoader(world, assets);
+            using var prepared = loader.PrepareAsync(
+                new AssetId(3),
+                new SceneLoadOptions {
+                    ExternalBindings = [new SceneExternalBinding(externalSlotId, target: null)],
+                })
+                .GetAwaiter()
+                .GetResult();
+            var activation = loader.ActivateAsync(prepared);
+            world.PumpControlBoundary();
+
+            if (!optional)
+            {
+                try
+                {
+                    _ = activation.GetAwaiter().GetResult();
+                }
+                catch (InvalidDataException)
+                {
+                    Console.WriteLine("Scene consumer required-null rejection passed.");
+                    return 0;
+                }
+
+                throw new InvalidOperationException("The Scene consumer accepted null for a required Entity reference.");
+            }
+
+            var receipt = activation.GetAwaiter().GetResult();
+            Check(receipt.Status == SceneActivationStatus.Activated);
+            var instance = receipt.Instance
+                ?? throw new InvalidOperationException("The Scene consumer activation omitted its instance.");
+            Check(instance.TryGetEntity(rootEntityId, out var entity));
+            Check(world.TryGet<ReferenceComponent>(entity, out var component));
+            Check(!component.Target.IsValid);
+            var unload = instance.UnloadAsync(HierarchyDestroyMode.DestroySubtree);
+            world.PumpControlBoundary();
+            Check(unload.GetAwaiter().GetResult().Status == SceneUnloadStatus.Unloaded);
+            Console.WriteLine("Scene consumer optional-null activation passed.");
+            return 0;
+        }
+        finally
+        {
+            assets.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+    }
 
     private struct ComponentQueryWitness : IAction<EntityChunkView>
     {
