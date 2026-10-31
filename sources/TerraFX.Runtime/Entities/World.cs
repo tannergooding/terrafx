@@ -1350,6 +1350,59 @@ public sealed partial class World : IDisposable
         return TryGetEntity(identity.EntityId, out entity);
     }
 
+    internal void ApplyHierarchyParentChange(
+        IWorldSceneParticipant participant,
+        Entity child,
+        Entity? parent)
+    {
+        ArgumentNullException.ThrowIfNull(participant);
+        EnterStructuralOperation();
+
+        try
+        {
+            if (!ReferenceEquals(_sceneParticipant, participant))
+            {
+                throw new ArgumentException("The Scene participant is not owned by this exact World.", nameof(participant));
+            }
+
+            _ = GetLiveArchetype(child, out _, out _);
+
+            if (parent is Entity parentEntity)
+            {
+                _ = GetLiveArchetype(parentEntity, out _, out _);
+            }
+
+            var hasCurrentParent = _entitySlots.TryGetParent(
+                child.Index,
+                child.Generation,
+                out var currentParentIndex,
+                out var currentParentGeneration);
+
+            var hasRequestedParent = parent.HasValue;
+            var requestedParent = parent.GetValueOrDefault();
+
+            if (hasCurrentParent == hasRequestedParent
+                && (!hasCurrentParent
+                    || ((currentParentIndex == requestedParent.Index)
+                        && (currentParentGeneration == requestedParent.Generation))))
+            {
+                return;
+            }
+
+            var nextMutationRevision = checked(_canonicalMutationRevision + 1);
+            _entitySlots.SetParent(
+                child.Index,
+                child.Generation,
+                hasRequestedParent ? requestedParent.Index : 0,
+                hasRequestedParent ? requestedParent.Generation : 0);
+            _canonicalMutationRevision = nextMutationRevision;
+        }
+        finally
+        {
+            _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
+        }
+    }
+
     internal Diagnostic CreateDiagnostic(
         string code,
         DiagnosticSeverity severity,
@@ -1470,6 +1523,54 @@ public sealed partial class World : IDisposable
         return true;
     }
 
+    internal bool TryGetFirstHierarchyChild(Entity parent, out Entity child)
+    {
+        EnsureWorldReadAccess();
+        _ = GetLiveArchetype(parent, out _, out _);
+
+        if (_sceneParticipant is null)
+        {
+            throw new InvalidOperationException("The World was not constructed with Scene support.");
+        }
+
+        if (!_entitySlots.TryGetFirstChild(
+                parent.Index,
+                parent.Generation,
+                out var childIndex,
+                out var childGeneration))
+        {
+            child = default;
+            return false;
+        }
+
+        child = new Entity(_ownerId, childIndex, childGeneration);
+        return true;
+    }
+
+    internal bool TryGetHierarchyParent(Entity child, out Entity parent)
+    {
+        EnsureWorldReadAccess();
+        _ = GetLiveArchetype(child, out _, out _);
+
+        if (_sceneParticipant is null)
+        {
+            throw new InvalidOperationException("The World was not constructed with Scene support.");
+        }
+
+        if (!_entitySlots.TryGetParent(
+                child.Index,
+                child.Generation,
+                out var parentIndex,
+                out var parentGeneration))
+        {
+            parent = default;
+            return false;
+        }
+
+        parent = new Entity(_ownerId, parentIndex, parentGeneration);
+        return true;
+    }
+
     internal bool TryGetLiveEntityIdentityOrdinal(Entity entity, out uint ordinal)
     {
         EnsureWorldReadAccess();
@@ -1489,6 +1590,30 @@ public sealed partial class World : IDisposable
             throw new InvalidOperationException("The live Entity has no stable identity assignment.");
         }
 
+        return true;
+    }
+
+    internal bool TryGetNextHierarchySibling(Entity child, out Entity sibling)
+    {
+        EnsureWorldReadAccess();
+        _ = GetLiveArchetype(child, out _, out _);
+
+        if (_sceneParticipant is null)
+        {
+            throw new InvalidOperationException("The World was not constructed with Scene support.");
+        }
+
+        if (!_entitySlots.TryGetNextSibling(
+                child.Index,
+                child.Generation,
+                out var siblingIndex,
+                out var siblingGeneration))
+        {
+            sibling = default;
+            return false;
+        }
+
+        sibling = new Entity(_ownerId, siblingIndex, siblingGeneration);
         return true;
     }
 

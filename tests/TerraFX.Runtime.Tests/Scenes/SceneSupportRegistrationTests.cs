@@ -166,4 +166,37 @@ internal sealed class SceneSupportRegistrationTests
 
         Assert.That(world.GetWorldOwnedStateBytes(), Is.EqualTo(baselineWorldBytes));
     }
+
+    [Test]
+    public void WorldHierarchyParentChangesPreserveWorldOwnershipAndCycleSafety()
+    {
+        var schemas = CreateSchemaRegistry();
+        var builder = new WorldRegistrationBuilder(schemas);
+        var support = SceneSupport.CreateRegistration();
+        _ = builder.RegisterSceneSupport(support);
+        var registration = builder.Build();
+        using var world = World.Create(new WorldOptions(registration));
+        using var foreignWorld = World.Create(new WorldOptions(registration));
+        var participant = support.GetParticipant(world);
+        var parent = world.CreateEntity(new EntityDescription());
+        var child = world.CreateEntity(new EntityDescription());
+        var foreignParent = foreignWorld.CreateEntity(new EntityDescription());
+
+        world.ApplyHierarchyParentChange(participant, child, parent);
+
+        Assert.That(world.TryGetHierarchyParent(child, out var actualParent), Is.True);
+        Assert.That(actualParent, Is.EqualTo(parent));
+        Assert.That(world.TryGetFirstHierarchyChild(parent, out var firstChild), Is.True);
+        Assert.That(firstChild, Is.EqualTo(child));
+        Assert.That(world.TryGetNextHierarchySibling(child, out _), Is.False);
+        Assert.That(world.TryGetHierarchyParent(parent, out _), Is.False);
+
+        _ = Assert.Throws<InvalidOperationException>(
+            () => world.ApplyHierarchyParentChange(participant, parent, child));
+        _ = Assert.Throws<ArgumentException>(
+            () => world.ApplyHierarchyParentChange(participant, child, foreignParent));
+
+        Assert.That(world.TryGetHierarchyParent(child, out actualParent), Is.True);
+        Assert.That(actualParent, Is.EqualTo(parent));
+    }
 }
