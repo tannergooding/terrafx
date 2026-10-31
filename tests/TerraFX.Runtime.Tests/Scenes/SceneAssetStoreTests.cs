@@ -1557,6 +1557,224 @@ internal sealed class SceneAssetStoreTests
         }
     }
 
+    [Test]
+    public async Task SceneLoaderAllowsExplicitNullForOptionalRootSlot()
+    {
+        const int sceneAssetIdValue = 3;
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var slotId = new Guid("30000000-0000-4000-8000-000000000091");
+        var scene = SceneAssetReaderTests.Fixtures.CreateScene(
+            new AssetId(sceneAssetIdValue),
+            externalSlots: [CreateExternalSlot(slotId, required: false, allowNull: true, [])]);
+        var package = Package.CreatePackage(new Package.Entry(
+            sceneAssetIdValue,
+            Package.CreateEnvelope(sceneAssetIdValue, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var storeRegistration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+            var assets = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), storeRegistration)).ConfigureAwait(false);
+
+            try
+            {
+                var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
+                _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+                using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
+                var options = new SceneLoadOptions {
+                    ExternalBindings = [new SceneExternalBinding(slotId, target: null)],
+                };
+                using var prepared = new SceneLoader(world, assets)
+                    .PrepareAsync(new AssetId(sceneAssetIdValue), options)
+                    .GetAwaiter()
+                    .GetResult();
+
+                Assert.That(prepared.AssetId, Is.EqualTo(new AssetId(sceneAssetIdValue)));
+            }
+            finally
+            {
+                await assets.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task SceneLoaderPreparesAgainstExactWorldSchemaRegistry()
+    {
+        const int sceneAssetIdValue = 3;
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var package = Package.CreatePackage(
+            new Package.Entry(
+                sceneAssetIdValue,
+                Package.CreateEnvelope(
+                    sceneAssetIdValue,
+                    SceneAssetReaderTests.Fixtures.CreateScene(new AssetId(sceneAssetIdValue)))));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var storeRegistration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+            var assets = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), storeRegistration)).ConfigureAwait(false);
+
+            try
+            {
+                var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
+                _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+                using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
+                using var prepared = new SceneLoader(world, assets)
+                    .PrepareAsync(new AssetId(sceneAssetIdValue), new SceneLoadOptions())
+                    .GetAwaiter()
+                    .GetResult();
+
+                Assert.That(prepared.AssetId, Is.EqualTo(new AssetId(sceneAssetIdValue)));
+            }
+            finally
+            {
+                await assets.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task SceneLoaderRejectsUnknownRootExternalBinding()
+    {
+        const int sceneAssetIdValue = 3;
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var package = Package.CreatePackage(
+            new Package.Entry(
+                sceneAssetIdValue,
+                Package.CreateEnvelope(
+                    sceneAssetIdValue,
+                    SceneAssetReaderTests.Fixtures.CreateScene(new AssetId(sceneAssetIdValue)))));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var storeRegistration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+            var assets = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), storeRegistration)).ConfigureAwait(false);
+
+            try
+            {
+                var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
+                _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+                using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
+                var options = new SceneLoadOptions {
+                    ExternalBindings = [new SceneExternalBinding(Guid.NewGuid(), target: null)],
+                };
+                _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
+                    await new SceneLoader(world, assets)
+                        .PrepareAsync(new AssetId(sceneAssetIdValue), options)
+                        .ConfigureAwait(false));
+            }
+            finally
+            {
+                await assets.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task SceneLoaderRejectsWorldMissingRequiredRootSlot()
+    {
+        const int sceneAssetIdValue = 3;
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var scene = SceneAssetReaderTests.Fixtures.CreateScene(
+            new AssetId(sceneAssetIdValue),
+            externalSlots: [
+                CreateExternalSlot(
+                    new Guid("30000000-0000-4000-8000-000000000092"),
+                    required: true,
+                    allowNull: false,
+                    []),
+            ]);
+        var package = Package.CreatePackage(new Package.Entry(
+            sceneAssetIdValue,
+            Package.CreateEnvelope(sceneAssetIdValue, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var storeRegistration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+            var assets = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), storeRegistration)).ConfigureAwait(false);
+
+            try
+            {
+                var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
+                _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+                using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
+                _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
+                    await new SceneLoader(world, assets)
+                        .PrepareAsync(new AssetId(sceneAssetIdValue), new SceneLoadOptions())
+                        .ConfigureAwait(false));
+            }
+            finally
+            {
+                await assets.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task SceneLoaderRejectsWorldSchemaRegistryMismatch()
+    {
+        const int sceneAssetIdValue = 3;
+        var assetSchemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var worldSchemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var package = Package.CreatePackage(
+            new Package.Entry(
+                sceneAssetIdValue,
+                Package.CreateEnvelope(
+                    sceneAssetIdValue,
+                    SceneAssetReaderTests.Fixtures.CreateScene(new AssetId(sceneAssetIdValue)))));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var storeRegistration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(assetSchemas)).Build();
+            var assets = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), storeRegistration)).ConfigureAwait(false);
+
+            try
+            {
+                var worldRegistrationBuilder = new WorldRegistrationBuilder(worldSchemas);
+                _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+                using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
+                _ = Assert.ThrowsAsync<ArgumentException>(async () =>
+                    await new SceneLoader(world, assets)
+                        .PrepareAsync(new AssetId(sceneAssetIdValue), new SceneLoadOptions())
+                        .ConfigureAwait(false));
+            }
+            finally
+            {
+                await assets.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
     private static class Package
     {
         private static readonly byte[] s_profileRecord = Convert.FromHexString("4542494E0100000040000000090000003B9760CE468A8AABBB89F38DB9E3BC0020020000000000002001000000000000020000000000000000000000000000000100000003000100600100000000000004000000000000000100000000000000020000000300010070010000000000000400000000000000010000000000000003000000030001008001000000000000040000000000000001000000000000000500000001000100900100000000000001000000000000000100000000000000060000000D000100A00100000000000020000000000000002000000000000000070000000D000100C00100000000000020000000000000002000000000000000080000000D000100E00100000000000020000000000000002000000000000000090000000B0001000002000000000000100000000000000001000000000000000A000000070001001002000000000000040000000000000001000000000000000100000000000000000000000000000002000000000000000000000000000000020000000000000000000000000000000C0000000000000000000000000000009EF6534033621925D39355058D26782EB3B1A41A20690EFD829EF6D3EFE0EB1CF21833596ED8BEDEAA7E366505A2ADE8AD349AB35F7BF0554AD2D8CE5AEDA43F494F69B9559DE1C609B2C51A11454FCDC3A0BE8B108FDC91F242D89B38D18105C2DDC5D89EE68676BDEFDFFD36A56D8900000000000000000000000000000000");

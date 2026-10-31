@@ -123,7 +123,25 @@ internal sealed class SceneExpansionPlan : IDisposable
         }
     }
 
+    internal ImmutableArray<SceneExternalSlot> RootExternalSlots
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return (_sceneLease ?? throw new ObjectDisposedException(nameof(SceneExpansionPlan))).Value.ExternalSlots;
+        }
+    }
+
     internal AssetId SceneAssetId => _sceneAssetId;
+
+    internal CompiledContentSchemaRegistry Schemas
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return (_sceneLease ?? throw new ObjectDisposedException(nameof(SceneExpansionPlan))).Value.Schemas;
+        }
+    }
 
     private static int FindEntityIndex(ImmutableArray<SceneEntity> entities, Guid entityId)
     {

@@ -322,6 +322,8 @@ public sealed partial class World : IDisposable
 
     internal StableIdentityLedger IdentityLedger => _identityLedger;
 
+    internal long MaximumOwnedStateBytes => _maximumOwnedStateBytes;
+
     internal uint OwnerId => _ownerId;
 
     /// <summary>Creates a standalone World from a frozen registration and validated options.</summary>
