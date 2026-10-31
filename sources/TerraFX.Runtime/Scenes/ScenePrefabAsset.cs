@@ -1,0 +1,65 @@
+// Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
+
+using System;
+using System.Collections.Immutable;
+using TerraFX.Assets;
+
+namespace TerraFX.Scenes;
+
+internal sealed class ScenePrefabAsset
+{
+    internal ScenePrefabAsset(
+        AssetId assetId,
+        ImmutableArray<SceneEntity> entities,
+        SceneHierarchy hierarchy,
+        ImmutableArray<ScenePrefabPlacement> placements,
+        ImmutableArray<SceneAuthoredRecord> references,
+        ImmutableArray<SceneAuthoredRecord> externalSlots)
+    {
+        if (!assetId.IsValid)
+        {
+            throw new ArgumentOutOfRangeException(nameof(assetId));
+        }
+
+        if (entities.IsDefault)
+        {
+            throw new ArgumentException("The Prefab entity array must be initialized.", nameof(entities));
+        }
+
+        ArgumentNullException.ThrowIfNull(hierarchy);
+
+        if (placements.IsDefault)
+        {
+            throw new ArgumentException("The Prefab placement array must be initialized.", nameof(placements));
+        }
+
+        if (references.IsDefault)
+        {
+            throw new ArgumentException("The Prefab reference array must be initialized.", nameof(references));
+        }
+
+        if (externalSlots.IsDefault)
+        {
+            throw new ArgumentException("The Prefab external-slot array must be initialized.", nameof(externalSlots));
+        }
+
+        AssetId = assetId;
+        Entities = entities;
+        Hierarchy = hierarchy;
+        Placements = placements;
+        References = references;
+        ExternalSlots = externalSlots;
+    }
+
+    internal AssetId AssetId { get; }
+
+    internal ImmutableArray<SceneEntity> Entities { get; }
+
+    internal ImmutableArray<SceneAuthoredRecord> ExternalSlots { get; }
+
+    internal SceneHierarchy Hierarchy { get; }
+
+    internal ImmutableArray<ScenePrefabPlacement> Placements { get; }
+
+    internal ImmutableArray<SceneAuthoredRecord> References { get; }
+}

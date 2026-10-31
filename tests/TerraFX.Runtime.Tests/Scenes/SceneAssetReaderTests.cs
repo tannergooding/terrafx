@@ -13,6 +13,91 @@ namespace TerraFX.Runtime.Tests.Scenes;
 internal sealed class SceneAssetReaderTests
 {
     [Test]
+    public void ReadsEmptyPrefabAsset()
+    {
+        var schemas = Fixtures.CreateRegistry();
+        var assetId = new AssetId(3);
+        var encoded = Fixtures.CreatePrefab(assetId);
+        var workspace = new SceneHierarchyValidationWorkspace(entityCount: 0, placementCount: 0);
+        var action = new PrefabReadAction(assetId, schemas, workspace);
+        var status = EbinStructuralReader.Read(
+            encoded,
+            EbinReadLimits.Foundation,
+            EbinReadPolicy.Canonical,
+            ref action,
+            out var bytesConsumed,
+            out var diagnostic);
+
+        Assert.That(status, Is.EqualTo(EbinReadStatus.Complete), diagnostic?.Category);
+        Assert.That(bytesConsumed, Is.EqualTo(encoded.Length));
+        var prefab = action.Result
+            ?? throw new InvalidOperationException("The Prefab reader did not produce a value.");
+        Assert.That(prefab.AssetId, Is.EqualTo(assetId));
+        Assert.That(prefab.Entities, Is.Empty);
+        Assert.That(prefab.Hierarchy.Nodes, Is.Empty);
+        Assert.That(prefab.Hierarchy.Roots, Is.Empty);
+        Assert.That(prefab.Placements, Is.Empty);
+        Assert.That(prefab.References, Is.Empty);
+        Assert.That(prefab.ExternalSlots, Is.Empty);
+    }
+
+    [Test]
+    public void ReadsPrefabPlacementAndTargetReference()
+    {
+        var schemas = Fixtures.CreateRegistry();
+        var assetId = new AssetId(3);
+        var placementId = new Guid("20000000-0000-4000-8000-000000000003");
+        var encoded = Fixtures.CreatePrefab(assetId, placementId: placementId);
+        var workspace = new SceneHierarchyValidationWorkspace(entityCount: 0, placementCount: 1);
+        var action = new PrefabReadAction(assetId, schemas, workspace);
+        var status = EbinStructuralReader.Read(
+            encoded,
+            EbinReadLimits.Foundation,
+            EbinReadPolicy.Canonical,
+            ref action,
+            out _,
+            out var diagnostic);
+
+        Assert.That(status, Is.EqualTo(EbinReadStatus.Complete), diagnostic?.Category);
+        var prefab = action.Result
+            ?? throw new InvalidOperationException("The Prefab reader did not produce a value.");
+        Assert.That(prefab.Placements, Has.Length.EqualTo(1));
+        Assert.That(prefab.Placements[0].PlacementId, Is.EqualTo(placementId));
+        Assert.That(prefab.Placements[0].PrefabAssetId, Is.EqualTo(new AssetId(1)));
+        Assert.That(
+            prefab.Hierarchy.Roots,
+            Is.EqualTo([new SceneHierarchyEntry(SceneHierarchyEntryKind.PrefabPlacement, placementId)]));
+    }
+
+    [Test]
+    public void ReadsPrefabRootEntityAndComponents()
+    {
+        var schemas = Fixtures.CreateRegistry();
+        var assetId = new AssetId(3);
+        var encoded = Fixtures.CreatePrefab(assetId, entityId: Fixtures.RootEntityId);
+        var workspace = new SceneHierarchyValidationWorkspace(entityCount: 1, placementCount: 0);
+        var action = new PrefabReadAction(assetId, schemas, workspace);
+        var status = EbinStructuralReader.Read(
+            encoded,
+            EbinReadLimits.Foundation,
+            EbinReadPolicy.Canonical,
+            ref action,
+            out _,
+            out var diagnostic);
+
+        Assert.That(status, Is.EqualTo(EbinReadStatus.Complete), diagnostic?.Category);
+        var prefab = action.Result
+            ?? throw new InvalidOperationException("The Prefab reader did not produce a value.");
+        Assert.That(prefab.Entities, Has.Length.EqualTo(1));
+        Assert.That(prefab.Entities[0].AuthoredEntityId, Is.EqualTo(Fixtures.RootEntityId));
+        Assert.That(prefab.Entities[0].Components, Has.Length.EqualTo(2));
+        Assert.That(prefab.Hierarchy.Nodes, Has.Length.EqualTo(1));
+        Assert.That(
+            prefab.Hierarchy.Roots,
+            Is.EqualTo([new SceneHierarchyEntry(SceneHierarchyEntryKind.Entity, Fixtures.RootEntityId)]));
+    }
+
+    [Test]
     public void ReadsSceneEntitiesHierarchyAndEmptyOptionalCollections()
     {
         var schemas = Fixtures.CreateRegistry();
@@ -100,6 +185,28 @@ internal sealed class SceneAssetReaderTests
         }
 
         Assert.That(ReadMismatchedScene, Throws.TypeOf<InvalidDataException>());
+    }
+
+    [Test]
+    public void RejectsPrefabEnclosingAssetIdMismatch()
+    {
+        var schemas = Fixtures.CreateRegistry();
+        var encoded = Fixtures.CreatePrefab(new AssetId(4));
+        var workspace = new SceneHierarchyValidationWorkspace(entityCount: 0, placementCount: 0);
+
+        void ReadMismatchedPrefab()
+        {
+            var action = new PrefabReadAction(new AssetId(3), schemas, workspace);
+            _ = EbinStructuralReader.Read(
+                encoded,
+                EbinReadLimits.Foundation,
+                EbinReadPolicy.Canonical,
+                ref action,
+                out _,
+                out _);
+        }
+
+        Assert.That(ReadMismatchedPrefab, Throws.TypeOf<InvalidDataException>());
     }
 
     [Test]
@@ -196,6 +303,75 @@ internal sealed class SceneAssetReaderTests
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8));
         }
 
+        internal static byte[] CreatePrefab(AssetId assetId, Guid? entityId = null, Guid? placementId = null)
+        {
+            var entities = entityId is Guid authoredEntityId
+                ? new[] { CreateRootEntity(authoredEntityId) }
+                : [];
+            var placements = placementId is Guid authoredPlacementId
+                ? new[] { CreatePrefabPlacement(authoredPlacementId) }
+                : [];
+            var nodes = entityId is Guid nodeEntityId
+                ? new[] { SceneHierarchyCodecTests.FixtureBuilder.EncodeNode(nodeEntityId, parentEntityId: null) }
+                : [];
+            var entries = new byte[entities.Length + placements.Length][];
+            var entryIndex = 0;
+
+            if (entityId is Guid rootEntityId)
+            {
+                entries[entryIndex++] = SceneHierarchyCodecTests.FixtureBuilder.EncodeEntry(
+                    (byte)SceneHierarchyEntryKind.Entity,
+                    rootEntityId);
+            }
+
+            if (placementId is Guid rootPlacementId)
+            {
+                entries[entryIndex] = SceneHierarchyCodecTests.FixtureBuilder.EncodeEntry(
+                    (byte)SceneHierarchyEntryKind.PrefabPlacement,
+                    rootPlacementId);
+            }
+
+            var hierarchy = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                new ContentSchemaIdentityAssignment("native/hierarchy").SchemaId,
+                2,
+                0,
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(1, nodes),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(2, entries));
+
+            return SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                new ContentSchemaIdentityAssignment("native/prefab").SchemaId,
+                2,
+                0,
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(1, checked((uint)assetId.Value)),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(3, entities),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(4, hierarchy),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(5, placements),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(6),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8));
+        }
+
+        internal static byte[] CreatePrefabPlacement(Guid placementId)
+        {
+            var prefabReference = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                new ContentSchemaIdentityAssignment("native/asset-reference").SchemaId,
+                1,
+                0,
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(1, 1),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(
+                    2,
+                    new ContentSchemaIdentityAssignment("native/prefab").SchemaId),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(3, 2));
+            return SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                new ContentSchemaIdentityAssignment("native/prefab-placement").SchemaId,
+                1,
+                0,
+                SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(1, placementId),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(2, prefabReference),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(4),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(5),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(6));
+        }
+
         internal static CompiledContentSchemaRegistry CreateRegistry()
             => new CompiledContentSchemaRegistry([
                 .. CoreContentSchemaCatalogue.PrimitiveSchemas,
@@ -203,6 +379,28 @@ internal sealed class SceneAssetReaderTests
                 .. NativeAssetSchemaCatalogue.Schemas,
                 .. SceneSchemaCatalogue.Schemas,
             ]);
+
+        internal static byte[] CreateRootEntity(Guid entityId)
+        {
+            var rootPosition = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                new ContentSchemaIdentityAssignment("scene/root-position").SchemaId,
+                1,
+                0,
+                SceneHierarchyCodecTests.FixtureBuilder.CreatePosition3Field(1, 0, 0, 0, 0, 0, 0));
+            var localTransform = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId,
+                1,
+                0,
+                SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 15, 0, 0, 0),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(2, 17, 0, 0, 0, 1),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(3, 15, 1, 1, 1));
+            return SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                new ContentSchemaIdentityAssignment("native/entity").SchemaId,
+                1,
+                0,
+                SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(1, entityId),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(2, rootPosition, localTransform));
+        }
 
         internal static byte[] CreateScene(
             AssetId assetId,
@@ -254,6 +452,35 @@ internal sealed class SceneAssetReaderTests
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(7),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8));
         }
+    }
+
+    private struct PrefabReadAction : IAction<EbinRecordReadView>
+    {
+        private readonly AssetId _expectedPrefabId;
+        private readonly CompiledContentSchemaRegistry _schemas;
+        private readonly SceneHierarchyValidationWorkspace _workspace;
+
+        internal PrefabReadAction(
+            AssetId expectedPrefabId,
+            CompiledContentSchemaRegistry schemas,
+            SceneHierarchyValidationWorkspace workspace)
+        {
+            _expectedPrefabId = expectedPrefabId;
+            _schemas = schemas;
+            _workspace = workspace;
+            Result = null;
+        }
+
+        internal ScenePrefabAsset? Result { get; private set; }
+
+        public void Invoke(scoped EbinRecordReadView record)
+            => Result = SceneAssetReader.ReadPrefab(
+                record,
+                _expectedPrefabId,
+                _schemas,
+                EbinReadLimits.Foundation,
+                _workspace,
+                maximumHierarchyDepth: 256);
     }
 
     private struct ReadAction : IAction<EbinRecordReadView>

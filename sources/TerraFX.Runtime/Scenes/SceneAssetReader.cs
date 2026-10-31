@@ -142,6 +142,118 @@ internal static class SceneAssetReader
             externalSlots);
     }
 
+    internal static ScenePrefabAsset ReadPrefab(
+        EbinRecordReadView record,
+        AssetId expectedPrefabId,
+        CompiledContentSchemaRegistry schemas,
+        EbinReadLimits limits,
+        SceneHierarchyValidationWorkspace hierarchyWorkspace,
+        int maximumHierarchyDepth)
+    {
+        if (!expectedPrefabId.IsValid)
+        {
+            throw new ArgumentOutOfRangeException(nameof(expectedPrefabId));
+        }
+
+        ArgumentNullException.ThrowIfNull(schemas);
+        ArgumentNullException.ThrowIfNull(limits);
+        ArgumentNullException.ThrowIfNull(hierarchyWorkspace);
+        ValidateHeader(record, s_prefabSchemaId, major: 2, fieldCount: 6);
+
+        var prefabId = ReadAssetId(record, tag: 1);
+
+        if (prefabId != expectedPrefabId)
+        {
+            throw new InvalidDataException("The PrefabId does not match the enclosing AssetId.");
+        }
+
+        var entityField = GetRecordArrayField(record, tag: 3, maximumCount: 65_536, limits);
+        var placementField = GetRecordArrayField(record, tag: 5, maximumCount: 65_536, limits);
+        var referenceField = GetRecordArrayField(record, tag: 6, maximumCount: 1_048_576, limits);
+        var externalSlotField = GetRecordArrayField(record, tag: 8, maximumCount: 65_536, limits);
+        var entityCount = checked((int)entityField.Count);
+        var placementCount = checked((int)placementField.Count);
+
+        if ((hierarchyWorkspace.EntityCount != entityCount)
+            || (hierarchyWorkspace.PlacementCount != placementCount))
+        {
+            throw new InvalidOperationException("The hierarchy validation workspace does not match the Prefab entity and placement counts.");
+        }
+
+        var entities = ImmutableArray.CreateBuilder<SceneEntity>(entityCount);
+        var entityIds = hierarchyWorkspace.EntityIds;
+        var previousEntityId = Guid.Empty;
+
+        for (var entityIndex = 0; entityIndex < entityCount; entityIndex++)
+        {
+            var entity = SceneEntityReader.Read(record.GetRecordArrayElement(3, entityIndex), schemas, limits);
+
+            if (previousEntityId != Guid.Empty
+                && (FoundationCatalogue.CompareRfc(previousEntityId, entity.AuthoredEntityId) >= 0))
+            {
+                throw new InvalidDataException("Prefab Entity records are not in strictly increasing RFC EntityId order.");
+            }
+
+            previousEntityId = entity.AuthoredEntityId;
+            entityIds[entityIndex] = entity.AuthoredEntityId;
+            entities.Add(entity);
+        }
+
+        var hierarchy = SceneHierarchyReader.Read(record.GetRecord(4).EncodedBytes, limits);
+        var placements = ImmutableArray.CreateBuilder<ScenePrefabPlacement>(placementCount);
+        var placementIds = hierarchyWorkspace.Placements;
+        var previousPlacementId = Guid.Empty;
+
+        for (var placementIndex = 0; placementIndex < placementCount; placementIndex++)
+        {
+            var placement = ReadPrefabPlacement(record.GetRecordArrayElement(5, placementIndex), limits);
+
+            if (previousPlacementId != Guid.Empty
+                && (FoundationCatalogue.CompareRfc(previousPlacementId, placement.PlacementId) >= 0))
+            {
+                throw new InvalidDataException("Prefab Placement records are not in strictly increasing RFC PlacementId order.");
+            }
+
+            previousPlacementId = placement.PlacementId;
+            placementIds[placementIndex] = new SceneHierarchyPlacement(placement.PlacementId, placement.ParentEntityId);
+            placements.Add(placement);
+        }
+
+        var validation = SceneHierarchyValidator.Validate(
+            hierarchy,
+            entityIds,
+            placementIds,
+            hierarchyWorkspace,
+            maximumHierarchyDepth);
+
+        if (!validation.IsValid)
+        {
+            throw new InvalidDataException(
+                $"The Prefab hierarchy is invalid: {validation.Error} ({validation.SubjectId:N}).");
+        }
+
+        var references = ReadAuthoredRecords(
+            record,
+            tag: 6,
+            referenceField,
+            s_assetReferenceSchemaId,
+            maximumCount: 1_048_576);
+        var externalSlots = ReadAuthoredRecords(
+            record,
+            tag: 8,
+            externalSlotField,
+            s_externalSlotSchemaId,
+            maximumCount: 65_536);
+
+        return new ScenePrefabAsset(
+            prefabId,
+            entities.MoveToImmutable(),
+            hierarchy,
+            placements.MoveToImmutable(),
+            references,
+            externalSlots);
+    }
+
     private static EbinFieldReadView GetRecordArrayField(
         EbinRecordReadView record,
         uint tag,
