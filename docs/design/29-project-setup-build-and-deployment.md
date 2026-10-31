@@ -135,6 +135,15 @@ at `long.MaxValue` without wrapping.
 The host revokes the lease only after capture and recipient consumers have stopped
 accepting work. Revocation does not roll back or reuse any sequence already issued.
 
+#### Input router construction
+
+`TerraFX.Input.csproj` grants only `TerraFX.Runtime` a strong-name-qualified
+`InternalsVisibleTo` entry using `$(AssemblyOriginatorPublicKey)`. The internal
+`InputRouter` constructor receives the Runtime-issued recipient ID, dedicated host
+owner thread, and Core `HostEventSequenceLease`; Runtime alone creates and disposes
+routers. This assembly-wide friendship is not a per-member security boundary, but
+Input has no Runtime reference and exposes no public router/owner fabrication path.
+
 Semantic issuance is narrower than CLR access. `World..ctor(WorldConstructionPlan)` is
 the only Runtime caller of `Allocate`; it consumes the exact Entities-owned admitted
 plan, validates its final target/domain/root/reservation/handoff grants before issuing

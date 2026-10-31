@@ -5893,6 +5893,12 @@ public enum InputMapStatus
     CapacityExceeded
 }
 
+public enum InputRecipientKind
+{
+    HostLiveUI = 0,
+    SimulationTimeline = 1
+}
+
 public sealed class ValidationIssue
 {
     internal ValidationIssue(string code, string schemaPath);
