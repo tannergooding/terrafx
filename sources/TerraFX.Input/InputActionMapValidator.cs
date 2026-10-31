@@ -17,6 +17,22 @@ internal static class InputActionMapValidator
 
     private static readonly UTF8Encoding s_strictUtf8 = new(false, true);
 
+    internal static bool IsValidKeyboardControl(KeyboardControl? control)
+    {
+        if (control is null)
+        {
+            return false;
+        }
+
+        return control.Kind switch {
+            KeyboardControlKind.KeyboardHid => control.LogicalKeyName is null,
+            KeyboardControlKind.LogicalKey => (control.UsagePage == 0)
+                && (control.Usage == 0)
+                && IsValidUtf8(control.LogicalKeyName, 1, 64),
+            _ => false,
+        };
+    }
+
     internal static ValidationIssue? Validate(InputActionMapV1 map)
     {
         ArgumentNullException.ThrowIfNull(map);
@@ -626,38 +642,20 @@ internal static class InputActionMapValidator
             return null;
         }
 
-        switch (control.Kind)
+        if (!IsValidKeyboardControl(control))
         {
-            case KeyboardControlKind.KeyboardHid:
-            {
-                if (control.LogicalKeyName is not null)
-                {
-                    Add(issues, "InvalidSchema", path);
-                    return null;
-                }
-
-                return new KeyboardControlKey(control.Kind, control.UsagePage, control.Usage, null);
-            }
-
-            case KeyboardControlKind.LogicalKey:
-            {
-                if ((control.UsagePage != 0)
-                    || (control.Usage != 0)
-                    || !IsValidUtf8(control.LogicalKeyName, 1, 64))
-                {
-                    Add(issues, "InvalidStringOrEncoding", path);
-                    return null;
-                }
-
-                return new KeyboardControlKey(control.Kind, 0, 0, control.LogicalKeyName);
-            }
-
-            default:
-            {
-                Add(issues, "InvalidEnumOrFlags", path);
-                return null;
-            }
+            var code = control.Kind switch {
+                KeyboardControlKind.KeyboardHid => "InvalidSchema",
+                KeyboardControlKind.LogicalKey => "InvalidStringOrEncoding",
+                _ => "InvalidEnumOrFlags",
+            };
+            Add(issues, code, path);
+            return null;
         }
+
+        return (control.Kind == KeyboardControlKind.KeyboardHid)
+            ? new KeyboardControlKey(control.Kind, control.UsagePage, control.Usage, null)
+            : new KeyboardControlKey(control.Kind, 0, 0, control.LogicalKeyName);
     }
 
     private static void ValidateStickSource(GamepadStick2Source? source, string path, List<ValidationIssue> issues)

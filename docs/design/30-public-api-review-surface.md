@@ -1356,6 +1356,8 @@ public sealed class EngineContext
     public World CreateWorld(WorldOptions options);
     public InputRouter CreateInputRouter(InputRecipientKind recipientKind);
     public InputBindingReceipt BindGameplayInput(WindowHandle window, World world);
+    public InputBindingReceipt BindHeadlessGameplayInput(InputRouter router, World world);
+    public ImmutableArray<InputRoutingReceipt> InjectHeadlessInput(ImmutableArray<InputRouter> recipients, InputInjection input);
 }
 
 public enum InputBindingStatus
@@ -1375,7 +1377,7 @@ public sealed class InputBindingReceipt
 }
 ```
 
-`EngineHost` has no public constructor; `StartAsync` owns startup and returns only a running host or a faulted task with startup context. `CpuWorkerCount` admits `[0, 64]`; zero runs stable parallel partitions inline. The host owns one Entities CPU worker pool shared by its Worlds and disposes it only after every World has joined. A host-created `WorldOptions.CpuWorkerCount` must be `null` (inherit the host pool) or equal the host's configured count; a mismatched explicit count rejects before World allocation. A standalone World's null count resolves to the documented default and it owns its pool. `Headless` requires an explicit headless platform and no graphics backend; `OffscreenNative` requires an explicit real D3D12 or Vulkan backend. No backend, display, endpoint, or physical-input fallback is inferred. The host owns its dedicated owner thread and keeps pumping native readiness and accepted owner-control operations while paused, minimized, or stopping. The host assigns each `HostLiveUI` and `SimulationTimeline` router a fresh Core `OwnerId` through the private Runtime issuer path. `EngineContext.CreateInputRouter` is owner-bound and creates one router for exactly one recipient. `BindGameplayInput` establishes [14](14-custom-input-actions-and-text.md)'s focused-window/world/timeline route and returns `Bound` with a router only on success; `Rejected` returns a diagnostic and no router.
+`EngineHost` has no public constructor; `StartAsync` owns startup and returns only a running host or a faulted task with startup context. `CpuWorkerCount` admits `[0, 64]`; zero runs stable parallel partitions inline. The host owns one Entities CPU worker pool shared by its Worlds and disposes it only after every World has joined. A host-created `WorldOptions.CpuWorkerCount` must be `null` (inherit the host pool) or equal the host's configured count; a mismatched explicit count rejects before World allocation. A standalone World's null count resolves to the documented default and it owns its pool. `Headless` requires an explicit headless platform and no graphics backend; `OffscreenNative` requires an explicit real D3D12 or Vulkan backend. No backend, display, endpoint, or physical-input fallback is inferred. The host owns its dedicated owner thread and keeps pumping native readiness and accepted owner-control operations while paused, minimized, or stopping. The host assigns each `HostLiveUI` and `SimulationTimeline` router a fresh Core `OwnerId` through the private Runtime issuer path. `EngineContext.CreateInputRouter` is owner-bound and creates one router for exactly one recipient. `BindGameplayInput` establishes [14](14-custom-input-actions-and-text.md)'s focused-window/world/timeline route and returns `Bound` with a router only on success; `Rejected` returns a diagnostic and no router. `BindHeadlessGameplayInput` requires the caller's exact same-host `SimulationTimeline` router and hosted World in `Headless`; it never discovers a World or creates a native route. `InjectHeadlessInput` is owner-thread-only during a live `EngineContext` callback and fans one caller-supplied normalized `InputInjection` to an explicit recipient set. Invalid recipient sets reject before capture; on admission the host assigns one capture timestamp/sequence, and every recipient gets that same identity while mapping it to its own tick. Queue overflow is recipient-local, reported as `CapacityExceeded`, and does not stop fanout to other targets.
 
 `Assets`, `Diagnostics`, `Persistence`, `Platform`, and `Renderer` are initialized host-owned services available after `StartAsync` succeeds. `EngineHost` creates its `Assets` service through `AssetStore.CreateAsync` using the required immutable `EngineHostOptions.AssetStoreOptions`, then owns and disposes that instance during shutdown; standalone stores use the same factory and are owned/disposed by their callers. Host construction validates the Assets registration independently of each future `WorldRegistration`; `CreateWorld` checks their compatible compiled schema registrations and package schema tuples before allocating a World. `Renderer` is a CPU-capable extraction service in every host profile. `GraphicsDevice` and `GpuResidency` are both available when a graphics backend is selected and both `null` for `Headless`; no placeholder device is constructed. In `Headless`, `Renderer.Extract` validates and copies logical scene data only, while `BuildGraph` and `SubmitAsync` throw `InvalidOperationException` because no real graphics device exists; no GPU output is synthesized. Capture/extraction requires the World owner's current canonical mutation revision to match a committed/restored marker. `OffscreenNative` has a real device and no interactive surface. `CreateAudioMixerAsync` creates an independently owned mixer from explicit `AudioMixerOptions`; the selected physical or offline endpoint is required by those options and is never inferred. A pre-canceled token prevents creation; after admission the task completes with the created mixer or faults with initialization context, and the caller owns/disposes the returned mixer.
 
@@ -5895,7 +5897,8 @@ public sealed class InputMapResponse
 public enum InputRoutingStatus
 {
     Applied,
-    Rejected
+    Rejected,
+    CapacityExceeded
 }
 
 public sealed class InputRoutingReceipt
@@ -5964,6 +5967,43 @@ public sealed class InputActionSnapshot
     public uint RecipientId { get; }
     public long? AssignedTick { get; }
     public ImmutableArray<InputActionState> Actions { get; }
+}
+
+public enum InputKeyEventKind
+{
+    Down = 0,
+    Up = 1,
+    Repeat = 2
+}
+
+public enum InputInjectionKind
+{
+    KeyboardKey = 0,
+    GamepadButton = 1,
+    GamepadAxis = 2,
+    GamepadStick = 3,
+    GamepadTrigger = 4
+}
+
+public sealed class InputInjection
+{
+    public InputInjection(ushort playerSlot, GamepadAxis axis, float value);
+    public InputInjection(ushort playerSlot, GamepadButtonValue button, bool isDown);
+    public InputInjection(ushort playerSlot, GamepadStick stick, Vector2 value);
+    public InputInjection(ushort playerSlot, GamepadTrigger trigger, float value);
+    public InputInjection(KeyboardControl key, InputKeyEventKind keyEventKind);
+    public GamepadAxis? Axis { get; }
+    public float? AxisValue { get; }
+    public GamepadButtonValue? Button { get; }
+    public bool? IsDown { get; }
+    public KeyboardControl? Key { get; }
+    public InputKeyEventKind? KeyEventKind { get; }
+    public InputInjectionKind Kind { get; }
+    public ushort? PlayerSlot { get; }
+    public GamepadStick? Stick { get; }
+    public Vector2? StickValue { get; }
+    public GamepadTrigger? Trigger { get; }
+    public float? TriggerValue { get; }
 }
 
 public enum TextInputPurpose
