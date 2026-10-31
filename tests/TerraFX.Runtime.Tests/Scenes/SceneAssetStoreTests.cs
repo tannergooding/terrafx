@@ -2,6 +2,7 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Collections.Immutable;
 using System.IO;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
@@ -15,6 +16,30 @@ namespace TerraFX.Runtime.Tests.Scenes;
 [TestFixture]
 internal sealed class SceneAssetStoreTests
 {
+    private static byte[] CreateExternalSlot(
+        Guid slotId,
+        bool required,
+        bool allowNull,
+        byte[][] requiredComponents)
+        => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("native/external-slot").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(1, slotId),
+            new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(2, 9, 1, 1, [required ? (byte)1 : (byte)0]),
+            new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(3, 9, 1, 1, [allowNull ? (byte)1 : (byte)0]),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(4, requiredComponents));
+
+    private static byte[] CreateSchemaReference(string schemaName)
+        => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("content/schema-ref").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(1, new ContentSchemaIdentityAssignment(schemaName).SchemaId),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(2, 1),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(3, 0),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(4, (byte)ContentSchemaScope.Content));
+
     [Test]
     public async Task LoadsSceneAndPrefabThroughRegisteredCodecs()
     {
@@ -22,11 +47,33 @@ internal sealed class SceneAssetStoreTests
         var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
         var placementId = new Guid("20000000-0000-4000-8000-000000000003");
         var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
-        var prefabRecord = SceneAssetReaderTests.Fixtures.CreatePrefab(new AssetId(1), entityId: rootEntityId);
+        var childSlotId = new Guid("30000000-0000-4000-8000-000000000031");
+        var containingSlotId = new Guid("30000000-0000-4000-8000-000000000032");
+        var requiredComponents = new[] { CreateSchemaReference("scene/camera") };
+        var childSlot = CreateExternalSlot(
+            childSlotId,
+            required: false,
+            allowNull: true,
+            requiredComponents: requiredComponents);
+        var containingSlot = CreateExternalSlot(
+            containingSlotId,
+            required: false,
+            allowNull: true,
+            requiredComponents: requiredComponents);
+        var slotTarget = SceneAssetReaderTests.Fixtures.CreateReferenceTarget(
+            SceneReferenceTargetKind.ExternalSlot,
+            externalSlotId: containingSlotId);
+        var slotBinding = SceneAssetReaderTests.Fixtures.CreatePlacementSlotBinding(childSlotId, slotTarget);
+        var prefabRecord = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(1),
+            entityId: rootEntityId,
+            externalSlots: [childSlot]);
         var sceneRecord = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
             new AssetId(3),
             placementId,
-            SceneAssetReaderTests.Fixtures.CreateRootPose(rootEntityId));
+            SceneAssetReaderTests.Fixtures.CreateRootPose(rootEntityId),
+            slotBindings: [slotBinding],
+            externalSlots: [containingSlot]);
         var package = Package.CreatePackage(
             new Package.Entry(1, Package.CreateEnvelope(1, prefabRecord)),
             new Package.Entry(3, Package.CreateEnvelope(3, sceneRecord)));
@@ -47,6 +94,16 @@ internal sealed class SceneAssetStoreTests
                 Assert.That(sceneLease.Value.Placements, Has.Length.EqualTo(1));
                 Assert.That(sceneLease.Value.Placements[0].PrefabAssetId, Is.EqualTo(prefabLease.AssetId));
                 Assert.That(sceneLease.Value.Placements[0].RootPoses, Has.Length.EqualTo(1));
+                var resolvedBindings = ScenePrefabSlotBindingResolver.Resolve(
+                    sceneLease.Value.Placements[0],
+                    prefabLease.Value,
+                    sceneLease.Value.ExternalSlots,
+                    static _ => ImmutableArray<ContentSchemaReference>.Empty,
+                    allowInstanceAbsoluteInternalTargets: true);
+                Assert.That(resolvedBindings, Has.Length.EqualTo(1));
+                Assert.That(resolvedBindings[0].SlotId, Is.EqualTo(childSlotId));
+                Assert.That(resolvedBindings[0].Target?.Kind, Is.EqualTo(SceneReferenceTargetKind.ExternalSlot));
+                Assert.That(resolvedBindings[0].Target?.ExternalSlotId, Is.EqualTo(containingSlotId));
             }
             finally
             {

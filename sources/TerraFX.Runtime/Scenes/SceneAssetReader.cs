@@ -645,10 +645,20 @@ internal static class SceneAssetReader
     {
         var count = checked((int)field.Count);
         var bindings = ImmutableArray.CreateBuilder<ScenePlacementSlotBinding>(count);
+        Guid? previousSlotId = null;
 
         for (var index = 0; index < count; index++)
         {
-            bindings.Add(ReadPlacementSlotBinding(record.GetRecordArrayElement(6, index), limits));
+            var binding = ReadPlacementSlotBinding(record.GetRecordArrayElement(6, index), limits);
+
+            if (previousSlotId is { } previous
+                && (FoundationCatalogue.CompareRfc(previous, binding.SlotId) >= 0))
+            {
+                throw new InvalidDataException("Placement slot bindings are not uniquely sorted by RFC SlotId.");
+            }
+
+            bindings.Add(binding);
+            previousSlotId = binding.SlotId;
         }
 
         return bindings.MoveToImmutable();

@@ -409,7 +409,9 @@ internal sealed class SceneAssetReaderTests
             AssetId assetId,
             Guid placementId,
             byte[]? rootPose = null,
-            byte[][]? overrides = null)
+            byte[][]? overrides = null,
+            byte[][]? slotBindings = null,
+            byte[][]? externalSlots = null)
         {
             var prefabReference = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
                 new ContentSchemaIdentityAssignment("native/asset-reference").SchemaId,
@@ -429,7 +431,7 @@ internal sealed class SceneAssetReaderTests
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(2, prefabReference),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(4, rootPoses),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(5, overrides ?? []),
-                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(6));
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(6, slotBindings ?? []));
             var hierarchy = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
                 new ContentSchemaIdentityAssignment("native/hierarchy").SchemaId,
                 2,
@@ -451,7 +453,7 @@ internal sealed class SceneAssetReaderTests
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(4, placement),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(6),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(7),
-                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8));
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8, externalSlots ?? []));
         }
 
         internal static byte[] CreatePlacementSlotBinding(Guid slotId, byte[]? target)
