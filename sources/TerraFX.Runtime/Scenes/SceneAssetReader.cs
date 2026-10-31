@@ -165,12 +165,7 @@ internal static class SceneAssetReader
             overrideField,
             s_prefabOverrideSchemaId,
             maximumCount: 65_536);
-        var externalSlots = ReadAuthoredRecords(
-            record,
-            tag: 8,
-            externalSlotField,
-            s_externalSlotSchemaId,
-            maximumCount: 65_536);
+        var externalSlots = ReadExternalSlots(record, tag: 8, externalSlotField, schemas, limits);
 
         return new SceneAsset(
             sceneId,
@@ -283,12 +278,7 @@ internal static class SceneAssetReader
             referenceField,
             s_entityReferenceBindingSchemaId,
             maximumCount: 1_048_576);
-        var externalSlots = ReadAuthoredRecords(
-            record,
-            tag: 8,
-            externalSlotField,
-            s_externalSlotSchemaId,
-            maximumCount: 65_536);
+        var externalSlots = ReadExternalSlots(record, tag: 8, externalSlotField, schemas, limits);
 
         return new ScenePrefabAsset(
             prefabId,
@@ -298,6 +288,26 @@ internal static class SceneAssetReader
             references,
             externalSlots,
             [.. record.EncodedBytes]);
+    }
+
+    private static int CompareSchemaReferences(ContentSchemaReference left, ContentSchemaReference right)
+    {
+        var comparison = FoundationCatalogue.CompareRfc(left.SchemaId, right.SchemaId);
+
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        comparison = left.Major.CompareTo(right.Major);
+
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        comparison = left.Minor.CompareTo(right.Minor);
+        return (comparison != 0) ? comparison : left.Scope.CompareTo(right.Scope);
     }
 
     private static SceneHierarchyValidationWorkspace CreateValidationWorkspace(
@@ -458,6 +468,21 @@ internal static class SceneAssetReader
         return records.MoveToImmutable();
     }
 
+    private static bool ReadBoolean(EbinRecordReadView record, uint tag)
+    {
+        if (!record.TryGetField(tag, out var field)
+            || (field.Kind != 9)
+            || !field.IsRequired
+            || (field.Count != 1)
+            || (field.Payload.Length != sizeof(byte))
+            || (field.Payload[0] > 1))
+        {
+            throw new InvalidDataException($"Scene Boolean field {tag} does not match its schema.");
+        }
+
+        return field.Payload[0] != 0;
+    }
+
     private static SceneEntitySelector ReadEntitySelector(EbinRecordReadView record, EbinReadLimits limits)
     {
         ValidateHeader(record, s_entitySelectorSchemaId, major: 1, fieldCount: 3);
@@ -482,6 +507,85 @@ internal static class SceneAssetReader
             (SceneEntitySelectorScope)scope,
             placementPath.MoveToImmutable(),
             ReadGuid(record, tag: 3, isRequired: true));
+    }
+
+    private static SceneExternalSlot ReadExternalSlot(
+        EbinRecordReadView record,
+        CompiledContentSchemaRegistry schemas,
+        EbinReadLimits limits)
+    {
+        ValidateHeader(record, s_externalSlotSchemaId, major: 1, fieldCount: 4);
+        var slotId = ReadGuid(record, tag: 1, isRequired: true);
+        var required = ReadBoolean(record, tag: 2);
+        var allowNull = ReadBoolean(record, tag: 3);
+
+        if (required && allowNull)
+        {
+            throw new InvalidDataException("A required external slot cannot allow a null binding.");
+        }
+
+        var requiredComponentsField = GetRecordArrayField(record, tag: 4, maximumCount: 256, limits);
+        var count = checked((int)requiredComponentsField.Count);
+        var requiredComponents = ImmutableArray.CreateBuilder<ContentSchemaReference>(count);
+        ContentSchemaReference? previousSchema = null;
+
+        for (var index = 0; index < count; index++)
+        {
+            var schema = ReadSchemaReference(record.GetRecordArrayElement(4, index));
+
+            if (schema.Scope != ContentSchemaScope.Content)
+            {
+                throw new InvalidDataException("An external-slot RequiredComponents entry must use Content scope.");
+            }
+
+            if (!schemas.TryGetSchema(schema, out var metadata))
+            {
+                throw new NotSupportedException($"The external-slot RequiredComponents schema {schema} is not registered.");
+            }
+
+            if (metadata.Role is not ContentSchemaRole.Component and not ContentSchemaRole.EntityTag)
+            {
+                throw new InvalidDataException("An external-slot RequiredComponents entry must identify a Component or EntityTag.");
+            }
+
+            if (previousSchema is { } previous && (CompareSchemaReferences(previous, schema) >= 0))
+            {
+                throw new InvalidDataException("External-slot RequiredComponents are not uniquely sorted by schema tuple.");
+            }
+
+            requiredComponents.Add(schema);
+            previousSchema = schema;
+        }
+
+        return new SceneExternalSlot(slotId, required, allowNull, requiredComponents.MoveToImmutable());
+    }
+
+    private static ImmutableArray<SceneExternalSlot> ReadExternalSlots(
+        EbinRecordReadView record,
+        uint tag,
+        EbinFieldReadView field,
+        CompiledContentSchemaRegistry schemas,
+        EbinReadLimits limits)
+    {
+        var count = checked((int)field.Count);
+        var externalSlots = ImmutableArray.CreateBuilder<SceneExternalSlot>(count);
+        Guid? previousSlotId = null;
+
+        for (var index = 0; index < count; index++)
+        {
+            var externalSlot = ReadExternalSlot(record.GetRecordArrayElement(tag, index), schemas, limits);
+
+            if (previousSlotId is { } previous
+                && (FoundationCatalogue.CompareRfc(previous, externalSlot.SlotId) >= 0))
+            {
+                throw new InvalidDataException("External slots are not uniquely sorted by RFC SlotId.");
+            }
+
+            externalSlots.Add(externalSlot);
+            previousSlotId = externalSlot.SlotId;
+        }
+
+        return externalSlots.MoveToImmutable();
     }
 
     private static Guid ReadGuid(EbinRecordReadView record, uint tag, bool isRequired)

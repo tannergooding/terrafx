@@ -475,7 +475,8 @@ internal sealed class SceneAssetReaderTests
             Guid? placementId = null,
             byte[][]? placementRootPoses = null,
             byte[][]? overrides = null,
-            byte[][]? slotBindings = null)
+            byte[][]? slotBindings = null,
+            byte[][]? externalSlots = null)
         {
             var entities = entityId is Guid authoredEntityId
                 ? new[] { CreateRootEntity(authoredEntityId) }
@@ -525,7 +526,7 @@ internal sealed class SceneAssetReaderTests
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(4, hierarchy),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(5, placements),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(6),
-                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8));
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8, externalSlots ?? []));
         }
 
         internal static byte[] CreatePrefabPlacement(
@@ -648,7 +649,8 @@ internal sealed class SceneAssetReaderTests
         internal static byte[] CreateScene(
             AssetId assetId,
             bool includeRootPosition = true,
-            float localPositionX = 0.0f)
+            float localPositionX = 0.0f,
+            byte[][]? externalSlots = null)
         {
             var localTransformSchema = new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId;
             var rootPositionSchema = new ContentSchemaIdentityAssignment("scene/root-position").SchemaId;
@@ -693,7 +695,7 @@ internal sealed class SceneAssetReaderTests
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(4),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(6),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(7),
-                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8));
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8, externalSlots ?? []));
         }
 
         private static byte[] CreateEntitySelector(Guid entityId, byte scope = 1)

@@ -15,7 +15,7 @@ internal sealed class SceneAsset
         ImmutableArray<ScenePrefabPlacement> placements,
         ImmutableArray<SceneAuthoredRecord> references,
         ImmutableArray<SceneAuthoredRecord> overrides,
-        ImmutableArray<SceneAuthoredRecord> externalSlots,
+        ImmutableArray<SceneExternalSlot> externalSlots,
         ImmutableArray<byte> encodedRecord)
     {
         if (!assetId.IsValid)
@@ -71,7 +71,7 @@ internal sealed class SceneAsset
 
     internal ImmutableArray<SceneEntity> Entities { get; }
 
-    internal ImmutableArray<SceneAuthoredRecord> ExternalSlots { get; }
+    internal ImmutableArray<SceneExternalSlot> ExternalSlots { get; }
 
     internal SceneHierarchy Hierarchy { get; }
 
