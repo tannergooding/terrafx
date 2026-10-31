@@ -880,6 +880,20 @@ internal sealed class SceneAssetStoreTests
                     SceneOccurrenceIdentity.CreateExpandedEntityKey(outerOccurrenceId, rootEntityId)));
                 Assert.That(expansion.Entities[1].ExpandedEntityKey, Is.EqualTo(
                     SceneOccurrenceIdentity.CreateExpandedEntityKey(innerOccurrenceId, rootEntityId)));
+                var assignmentKeys = expansion.EntityAssignmentKeys.ToArray();
+                var assignmentIndices = expansion.EntityIndicesByAssignmentOrdinal.ToArray();
+                var sortedAssignmentKeys = (Guid[])assignmentKeys.Clone();
+                SceneOccurrenceIdentity.SortExpandedEntityKeysForAssignment(sortedAssignmentKeys);
+                Assert.That(assignmentKeys, Is.EqualTo(sortedAssignmentKeys));
+                Assert.That(assignmentIndices, Has.Length.EqualTo(assignmentKeys.Length));
+
+                for (var index = 0; index < assignmentKeys.Length; index++)
+                {
+                    Assert.That(
+                        expansion.Entities[assignmentIndices[index]].ExpandedEntityKey,
+                        Is.EqualTo(assignmentKeys[index]));
+                }
+
                 Assert.That(expansion.GetRootEntityIndices(0).Length, Is.EqualTo(2));
                 Assert.That(expansion.GetSourceEntity(0).AuthoredEntityId, Is.EqualTo(rootEntityId));
                 Assert.That(expansion.GetSourceEntity(1).AuthoredEntityId, Is.EqualTo(rootEntityId));

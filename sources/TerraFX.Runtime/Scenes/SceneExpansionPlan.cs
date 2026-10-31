@@ -15,6 +15,7 @@ internal sealed class SceneExpansionPlan : IDisposable
     private int _disposed;
     private readonly ImmutableArray<SceneExpandedEntity> _entities;
     private readonly Guid[] _entityAssignmentKeys;
+    private readonly int[] _entityIndicesByAssignmentOrdinal;
     private readonly ImmutableArray<int> _entityIndicesByOccurrence;
     private readonly ImmutableArray<SceneExpandedExternalSlotBinding> _externalSlotBindings;
     private readonly Guid[] _occurrenceIds;
@@ -36,6 +37,7 @@ internal sealed class SceneExpansionPlan : IDisposable
         ImmutableArray<SceneExpandedReferenceBinding> referenceBindings,
         ImmutableArray<SceneExpandedExternalSlotBinding> externalSlotBindings,
         Guid[] entityAssignmentKeys,
+        int[] entityIndicesByAssignmentOrdinal,
         Guid[] occurrenceIds)
     {
         ArgumentNullException.ThrowIfNull(sceneLease);
@@ -53,7 +55,14 @@ internal sealed class SceneExpansionPlan : IDisposable
         }
 
         ArgumentNullException.ThrowIfNull(entityAssignmentKeys);
+        ArgumentNullException.ThrowIfNull(entityIndicesByAssignmentOrdinal);
         ArgumentNullException.ThrowIfNull(occurrenceIds);
+
+        if ((entityAssignmentKeys.Length != entities.Length)
+            || (entityIndicesByAssignmentOrdinal.Length != entities.Length))
+        {
+            throw new ArgumentException("The Scene Entity assignment map must cover every expanded Entity.");
+        }
 
         _sceneAssetId = sceneLease.AssetId;
         _sceneLease = sceneLease;
@@ -66,6 +75,7 @@ internal sealed class SceneExpansionPlan : IDisposable
         _referenceBindings = referenceBindings;
         _externalSlotBindings = externalSlotBindings;
         _entityAssignmentKeys = entityAssignmentKeys;
+        _entityIndicesByAssignmentOrdinal = entityIndicesByAssignmentOrdinal;
         _occurrenceIds = occurrenceIds;
     }
 
@@ -84,6 +94,15 @@ internal sealed class SceneExpansionPlan : IDisposable
         {
             ThrowIfDisposed();
             return _entityAssignmentKeys;
+        }
+    }
+
+    internal ReadOnlySpan<int> EntityIndicesByAssignmentOrdinal
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return _entityIndicesByAssignmentOrdinal;
         }
     }
 
@@ -311,6 +330,29 @@ internal sealed class SceneExpansionPlan : IDisposable
         }
 
         return expandedEntityIndex;
+    }
+
+    internal bool TryResolveRootEntity(Guid authoredEntityId, out int expandedEntityIndex)
+    {
+        ThrowIfDisposed();
+
+        if (authoredEntityId == Guid.Empty)
+        {
+            throw new ArgumentException("A nonempty authored Entity identity is required.", nameof(authoredEntityId));
+        }
+
+        var source = GetSource(0);
+        var sourceEntityIndex = FindEntityIndex(source.Entities, authoredEntityId);
+
+        if (sourceEntityIndex < 0)
+        {
+            expandedEntityIndex = -1;
+            return false;
+        }
+
+        var rootOccurrence = _occurrences[0];
+        expandedEntityIndex = _entityIndicesByOccurrence[rootOccurrence.EntityMapStart + sourceEntityIndex];
+        return expandedEntityIndex >= 0;
     }
 
     private SceneExpansionSource GetAssetSource(AssetId assetId)

@@ -102,6 +102,22 @@ internal sealed class SceneOccurrenceIdentityTests
     }
 
     [Test]
+    public void SortsUniqueEntityKeysWithTheirExpandedIndices()
+    {
+        var lower = new Guid("7fffffff-0000-0000-0000-000000000000");
+        var upper = new Guid("80000000-0000-0000-0000-000000000000");
+        Guid[] expectedKeys = [lower, upper];
+        int[] expectedIndices = [1, 0];
+        Guid[] entityKeys = [upper, lower];
+        int[] expandedIndices = [0, 1];
+
+        SceneOccurrenceIdentity.SortExpandedEntityKeysForAssignment(entityKeys, expandedIndices);
+
+        Assert.That(entityKeys, Is.EqualTo(expectedKeys));
+        Assert.That(expandedIndices, Is.EqualTo(expectedIndices));
+    }
+
+    [Test]
     public void SortsUniqueOccurrenceAndEntityKeysByUnsignedRfcBytes()
     {
         var lower = new Guid("7fffffff-0000-0000-0000-000000000000");

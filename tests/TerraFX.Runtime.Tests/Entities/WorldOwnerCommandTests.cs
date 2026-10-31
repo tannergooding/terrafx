@@ -82,4 +82,25 @@ internal sealed class WorldOwnerCommandTests
         Assert.That(world.IdentityLedger.SceneInstanceCount, Is.EqualTo(2));
         Assert.That(world.IdentityLedger.AssignmentCount, Is.EqualTo(4));
     }
+
+    [Test]
+    public void SceneEntityBatchUsesExpandedIndexMapForIdentityOrder()
+    {
+        var registration = new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build();
+        using var world = World.Create(new WorldOptions(registration));
+        var assignmentOrder = ImmutableArray.Create(1, 0);
+        var commit = world.CreateSceneEntitiesAtomically(
+            2,
+            requestedSceneInstanceId: null,
+            entityIndicesByAssignmentOrdinal: assignmentOrder.AsSpan(),
+            static _ => [
+                new EntityDescription(),
+                new EntityDescription(),
+            ]);
+
+        Assert.That(world.IdentityLedger.TryFind(world.GetEntityId(commit.Entities[1]), out var firstAssignedOrdinal), Is.True);
+        Assert.That(world.IdentityLedger.TryFind(world.GetEntityId(commit.Entities[0]), out var secondAssignedOrdinal), Is.True);
+        Assert.That(firstAssignedOrdinal, Is.EqualTo(2));
+        Assert.That(secondAssignedOrdinal, Is.EqualTo(3));
+    }
 }

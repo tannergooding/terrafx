@@ -61,6 +61,35 @@ internal static class SceneOccurrenceIdentity
         return FoundationNameUuid.Create(s_rootNamespace, "scene/occurrence/root/v1/" + rootAssetId);
     }
 
+    internal static void SortExpandedEntityKeysForAssignment(Guid[] expandedEntityKeys, int[] expandedEntityIndices)
+    {
+        ArgumentNullException.ThrowIfNull(expandedEntityKeys);
+        ArgumentNullException.ThrowIfNull(expandedEntityIndices);
+
+        if (expandedEntityKeys.Length != expandedEntityIndices.Length)
+        {
+            throw new ArgumentException("Expanded Entity keys and indices must have identical lengths.", nameof(expandedEntityIndices));
+        }
+
+        for (var index = 0; index < expandedEntityKeys.Length; index++)
+        {
+            if (expandedEntityKeys[index] == Guid.Empty)
+            {
+                throw new ArgumentException("An expanded Entity key must be nonempty.", nameof(expandedEntityKeys));
+            }
+        }
+
+        Array.Sort(expandedEntityKeys, expandedEntityIndices, s_identityComparer);
+
+        for (var index = 1; index < expandedEntityKeys.Length; index++)
+        {
+            if (expandedEntityKeys[index - 1] == expandedEntityKeys[index])
+            {
+                throw new ArgumentException("The expanded Entity key set contains a duplicate.", nameof(expandedEntityKeys));
+            }
+        }
+    }
+
     internal static void SortExpandedEntityKeysForAssignment(Span<Guid> expandedEntityKeys)
         => SortUnique(expandedEntityKeys, nameof(expandedEntityKeys), "expanded Entity key");
 

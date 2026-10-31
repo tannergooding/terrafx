@@ -686,13 +686,17 @@ internal static class ScenePrefabExpansionPlanner
             _ = _referenceBindings.RemoveAll(static binding => !binding.IsPresent);
 
             var entityAssignmentKeys = new Guid[_entityCount];
+            var entityIndicesByAssignmentOrdinal = new int[_entityCount];
 
             for (var index = 0; index < _entityCount; index++)
             {
                 entityAssignmentKeys[index] = _entities[index].ExpandedEntityKey;
+                entityIndicesByAssignmentOrdinal[index] = index;
             }
 
-            SceneOccurrenceIdentity.SortExpandedEntityKeysForAssignment(entityAssignmentKeys);
+            SceneOccurrenceIdentity.SortExpandedEntityKeysForAssignment(
+                entityAssignmentKeys,
+                entityIndicesByAssignmentOrdinal);
             SceneOccurrenceIdentity.SortOccurrenceIdsAndValidateUnique(_occurrenceIdentities);
 
             var prefabLeases = _prefabLeases
@@ -708,6 +712,7 @@ internal static class ScenePrefabExpansionPlanner
                 [.. _referenceBindings],
                 _externalSlotBindings.MoveToImmutable(),
                 entityAssignmentKeys,
+                entityIndicesByAssignmentOrdinal,
                 _occurrenceIdentities);
             _sceneLease = null;
             _prefabLeases = null;
@@ -1889,6 +1894,7 @@ internal static class ScenePrefabExpansionPlanner
             }
 
             requiredBytes = checked(requiredBytes + ArrayBytes(_entityCount, Unsafe.SizeOf<Guid>()));
+            requiredBytes = checked(requiredBytes + ArrayBytes(_entityCount, sizeof(int)));
             requiredBytes = checked(requiredBytes + ArrayBytes(_occurrenceCount, Unsafe.SizeOf<Guid>()));
             requiredBytes = checked(requiredBytes + ArrayBytes(_occurrenceCount, sizeof(int)));
             requiredBytes = checked(requiredBytes + (checked((long)prefabLeases.Count) * 256L));
