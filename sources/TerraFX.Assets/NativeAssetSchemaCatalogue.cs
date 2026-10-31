@@ -61,7 +61,7 @@ public static class NativeAssetSchemaCatalogue
                 CreateField(2, 22, nestedRoleMask: RoleMask(ContentSchemaRole.NativeAsset)),
             ]),
             CreateSchema("native/asset-reference", 1, [
-                CreateField(1, 3),
+                CreateField(1, 3, reference: ContentReferenceKind.Asset),
                 CreateField(2, 11, reference: ContentReferenceKind.Schema),
                 CreateField(3, 3),
             ]),

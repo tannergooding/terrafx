@@ -28,6 +28,17 @@ public sealed class AssetStoreRegistration
             throw new ArgumentException("The codec set must be initialized.", nameof(codecs));
         }
 
+        foreach (var compiledNativeSchema in NativeAssetSchemaCatalogue.Schemas)
+        {
+            if (!schemas.TryGetSchema(compiledNativeSchema.Schema, out var registeredSchema)
+                || !ReferenceEquals(registeredSchema, compiledNativeSchema))
+            {
+                throw new ArgumentException(
+                    "The registration must include the canonical compiled native-asset schemas.",
+                    nameof(schemas));
+            }
+        }
+
         var codecsBySchema = ImmutableDictionary.CreateBuilder<ContentSchemaReference, IAssetCodec>();
         var codecsByType = ImmutableDictionary.CreateBuilder<Type, IAssetCodec>();
 

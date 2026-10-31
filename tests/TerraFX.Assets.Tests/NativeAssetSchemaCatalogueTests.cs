@@ -46,6 +46,7 @@ internal sealed class NativeAssetSchemaCatalogueTests
         var assetReference = schemas.Single(static schema => schema.IdentityAssignment.Name == "native/asset-reference");
         Assert.That(assetReference.Schema.Major, Is.EqualTo(1));
         Assert.That(assetReference.Fields.Select(static field => field.WireKind), Is.EqualTo(new ushort[] { 3, 11, 3 }));
+        Assert.That(assetReference.Fields[0].Reference, Is.EqualTo(ContentReferenceKind.Asset));
         Assert.That(assetReference.Fields[1].Reference, Is.EqualTo(ContentReferenceKind.Schema));
 
         var metadata = schemas.Single(static schema => schema.IdentityAssignment.Name == "native/metadata");

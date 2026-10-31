@@ -3669,7 +3669,7 @@ public sealed class AssetStore : IAsyncDisposable
 
 public sealed class AssetLease<T> : IDisposable
 {
-    internal AssetLease(AssetId assetId, T value, IDisposable packageLease);
+    internal AssetLease(AssetId assetId, T value, AssetLeaseLifetime leaseLifetime);
     public AssetId AssetId { get; }
     public T Value { get; }
     public void Dispose();
@@ -3718,7 +3718,9 @@ public interface IContextualBinarySchemaCodec<T>
 }
 ```
 
-The expected digest is exactly 32 bytes and applies to the complete package, not an individual asset. The store uses the application's compiled schema registrations; package data cannot add schemas or codecs. `AssetStoreRegistrationBuilder` admits only exact registered Content-scope `NativeAsset` schema tuples, with one codec per tuple and one tuple per CLR value type; nested descriptor schemas remain in the registry for owner-codec validation and are not asset roots. `LoadAsync<T>` resolves the AssetId only in the selected content set and requires the registered schema expected by `T` and every declared typed reference. It returns a CPU lease, not GPU/audio readiness. A replacement package is validated before an atomic content-set switch; outstanding leases keep their old package backing alive until disposal. Cancellation cannot release bytes still used by a decoder or consumer. Source adapters and deterministic cooking are offline Content.Tools/MSBuild responsibilities, not runtime importer or cook-receipt APIs.
+The expected digest is exactly 32 bytes and applies to the complete package, not an individual asset. The store uses the application's compiled schema registrations; package data cannot add schemas or codecs. `AssetStoreRegistrationBuilder` admits only exact registered Content-scope `NativeAsset` schema tuples, with one codec per tuple and one tuple per CLR value type; nested descriptor schemas remain in the registry for owner-codec validation and are not asset roots. `LoadAsync<T>` validates the canonical envelope and exact registered root schema, requires the selected codec to consume the complete record, and scans schema-declared nested `native/asset-reference` records. Each reference must resolve in the same content set, and its declared schema ID/major must match the target's actual registered envelope schema. The CPU live-lease budget charges each lease's declared decoded wire length until disposal; the concurrent decode budget charges active decoded wire buffers. Codec-owned managed allocations are not measured by either budget. Exhausted budgets or lease capacity fail explicitly rather than queueing an unbounded waiter. The result is a CPU lease, not GPU/audio readiness; `AssetLease.Value` throws after disposal. The internal `AssetLeaseLifetime` is created only after the package reference and lease budgets are reserved. Store disposal closes admission and releases its package-owner reference; admitted reads and leases retain their package backing until completion/disposal. A replacement package is validated before an atomic content-set switch; outstanding leases keep their old package backing alive until disposal. Cancellation cannot release bytes still used by a decoder or consumer. Source adapters and deterministic cooking are offline Content.Tools/MSBuild responsibilities, not runtime importer or cook-receipt APIs.
+
+The AssetStore registration includes the canonical `NativeAssetSchemaCatalogue` descriptors; omitting or redefining the native envelope/reference/metadata schemas rejects at registration build.
 
 The asset ID allocator, sidecar persistence, provisional ranges and finalization rules are in [11](11-assets-import-streaming-and-packages.md). Ordinary saves retain AssetIds; only StrictLocal may pin the package-wide SHA-256. No public `AssetVersion`, per-asset digest, import-recipe identity, package catalogue, staging graph, publication receipt, or generic migration API is defined.
 ## 7. Graphics and rendering

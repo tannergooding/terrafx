@@ -17,12 +17,17 @@ internal sealed class AssetPackageReaderTests
 {
     private static readonly byte[] s_profileRecord = Convert.FromHexString("4542494E0100000040000000090000003B9760CE468A8AABBB89F38DB9E3BC0020020000000000002001000000000000020000000000000000000000000000000100000003000100600100000000000004000000000000000100000000000000020000000300010070010000000000000400000000000000010000000000000003000000030001008001000000000000040000000000000001000000000000000500000001000100900100000000000001000000000000000100000000000000060000000D000100A00100000000000020000000000000002000000000000000070000000D000100C00100000000000020000000000000002000000000000000080000000D000100E00100000000000020000000000000002000000000000000090000000B0001000002000000000000100000000000000001000000000000000A000000070001001002000000000000040000000000000001000000000000000100000000000000000000000000000002000000000000000000000000000000020000000000000000000000000000000C0000000000000000000000000000009EF6534033621925D39355058D26782EB3B1A41A20690EFD829EF6D3EFE0EB1CF21833596ED8BEDEAA7E366505A2ADE8AD349AB35F7BF0554AD2D8CE5AEDA43F494F69B9559DE1C609B2C51A11454FCDC3A0BE8B108FDC91F242D89B38D18105C2DDC5D89EE68676BDEFDFFD36A56D8900000000000000000000000000000000");
 
-    private static ulong Align16(ulong value) => (value + 15) & ~15UL;
+    internal static AssetStoreOptions CreateOptions(
+        string path,
+        byte[] package,
+        AssetStoreRegistration registration,
+        byte[]? expectedDigest = null)
+        => new AssetStoreOptions(path, expectedDigest ?? SHA256.HashData(package), registration);
 
-    private static AssetStoreOptions CreateOptions(string path, byte[] package, byte[]? expectedDigest = null)
+    internal static AssetStoreOptions CreateOptions(string path, byte[] package, byte[]? expectedDigest = null)
         => new AssetStoreOptions(path, expectedDigest ?? SHA256.HashData(package), CreateRegistration());
 
-    private static byte[] CreatePackage(params TestEntry[] entries)
+    internal static byte[] CreatePackage(params TestEntry[] entries)
     {
         var directoryOffset = checked((ulong)(64 + s_profileRecord.Length));
         var directoryLength = checked(64UL + (checked((ulong)entries.Length) * 32));
@@ -66,22 +71,38 @@ internal sealed class AssetPackageReaderTests
             encodedEntry[4] = entry.Codec;
             BinaryPrimitives.WriteUInt64LittleEndian(encodedEntry[8..], payloadOffsets[index]);
             BinaryPrimitives.WriteUInt64LittleEndian(encodedEntry[16..], checked((ulong)entry.Payload.Length));
-            BinaryPrimitives.WriteUInt64LittleEndian(encodedEntry[24..], checked((ulong)entry.Payload.Length));
+            BinaryPrimitives.WriteUInt64LittleEndian(
+                encodedEntry[24..],
+                checked((ulong)(entry.DecodedLength ?? entry.Payload.Length)));
             entry.Payload.CopyTo(package.AsSpan(checked((int)payloadOffsets[index])));
         }
 
         return package;
     }
 
-    private static AssetStoreRegistration CreateRegistration()
-        => new AssetStoreRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build();
+    internal static AssetStoreRegistration CreateRegistration()
+    {
+        var assignment = new ContentSchemaIdentityAssignment("test/package-root");
+        var schema = new DataSchema(
+            new ContentSchemaReference(assignment.SchemaId, 1, 0, ContentSchemaScope.Content),
+            assignment,
+            ContentSchemaRole.NativeAsset,
+            ContentSchemaOwner.Application,
+            ContentSchemaStorage.NotComponent,
+            ContentTransientRestore.NotApplicable,
+            []);
+        var schemas = new CompiledContentSchemaRegistry([.. NativeAssetSchemaCatalogue.Schemas, schema]);
+        return new AssetStoreRegistrationBuilder(schemas).Build();
+    }
 
-    private static string WritePackage(byte[] package)
+    internal static string WritePackage(byte[] package)
     {
         var path = Path.Combine(Path.GetTempPath(), $"terrafx-{Guid.NewGuid():N}.epkg");
         File.WriteAllBytes(path, package);
         return path;
     }
+
+    private static ulong Align16(ulong value) => (value + 15) & ~15UL;
 
     [Test]
     public async Task PackageAdmissionRejectsChecksumMismatchBeforeParsingHeader()
@@ -181,13 +202,17 @@ internal sealed class AssetPackageReaderTests
             var options = CreateOptions(path, package);
             var backing = await AssetPackageReader.OpenAsync(options, CancellationToken.None).ConfigureAwait(false);
 
-            await using (backing.ConfigureAwait(false))
+            try
             {
                 Assert.That(backing.Entries, Is.Empty);
                 Assert.That(backing.PackageByteLength, Is.EqualTo(package.Length));
                 Assert.That(backing.ProfileId, Is.EqualTo(SpatialProfileId.Default));
                 Assert.That(backing.SpatialSettings, Is.EqualTo(SpatialSettings.Default));
                 Assert.That(backing.Registration, Is.SameAs(options.Registration));
+            }
+            finally
+            {
+                backing.ReleaseOwner();
             }
         }
         finally
@@ -196,5 +221,5 @@ internal sealed class AssetPackageReaderTests
         }
     }
 
-    private readonly record struct TestEntry(uint AssetId, byte[] Payload, byte Codec = 0);
+    internal readonly record struct TestEntry(uint AssetId, byte[] Payload, byte Codec = 0, int? DecodedLength = null);
 }

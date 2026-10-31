@@ -3,6 +3,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Immutable;
+using System.IO.Compression;
 using System.IO;
 using System.Security.Cryptography;
 using System.Threading;
@@ -148,6 +149,8 @@ internal static class AssetPackageReader
                     || (storedLength == 0)
                     || (decodedLength == 0)
                     || (decodedLength > checked((ulong)options.MaximumDecodedAssetBytes))
+                    || ((codec == 1)
+                        && (storedLength > checked((ulong)BrotliEncoder.GetMaxCompressedLength(checked((int)decodedLength)))))
                     || ((codec == 0) && (storedLength != decodedLength)))
                 {
                     throw new InvalidDataException($"The EPKG2 entry {index} has an invalid ID, codec, flag, or length.");
@@ -202,7 +205,7 @@ internal static class AssetPackageReader
                 entries.MoveToImmutable(),
                 profileId,
                 spatialSettings,
-                options.Registration,
+                options,
                 packageByteLength);
             return backing;
         }

@@ -21,16 +21,35 @@ internal sealed class AssetStoreRegistrationTests
         ContentSchemaScope.Content);
 
     private static CompiledContentSchemaRegistry CreateSchemaRegistry(ContentSchemaRole role = ContentSchemaRole.NativeAsset)
-        => new CompiledContentSchemaRegistry([
-            new DataSchema(
-                s_schema,
-                s_identityAssignment,
-                role,
-                ContentSchemaOwner.Application,
-                ContentSchemaStorage.NotComponent,
-                ContentTransientRestore.NotApplicable,
-                []),
+    {
+        var applicationRoot = new DataSchema(
+            s_schema,
+            s_identityAssignment,
+            role,
+            ContentSchemaOwner.Application,
+            ContentSchemaStorage.NotComponent,
+            ContentTransientRestore.NotApplicable,
+            []);
+        var nativeRootAssignment = new ContentSchemaIdentityAssignment("test/native-root");
+        var nativeRoot = new DataSchema(
+            new ContentSchemaReference(
+                nativeRootAssignment.SchemaId,
+                1,
+                0,
+                ContentSchemaScope.Content),
+            nativeRootAssignment,
+            ContentSchemaRole.NativeAsset,
+            ContentSchemaOwner.Application,
+            ContentSchemaStorage.NotComponent,
+            ContentTransientRestore.NotApplicable,
+            []);
+
+        return new CompiledContentSchemaRegistry([
+            .. NativeAssetSchemaCatalogue.Schemas,
+            applicationRoot,
+            nativeRoot,
         ]);
+    }
 
     [Test]
     public void AssetIdRequiresPositiveValues()
@@ -88,6 +107,25 @@ internal sealed class AssetStoreRegistrationTests
         var builder = new AssetStoreRegistrationBuilder(CreateSchemaRegistry(ContentSchemaRole.Descriptor));
 
         _ = Assert.Throws<ArgumentException>(() => builder.RegisterCodec(new IntegerCodec()));
+    }
+
+    [Test]
+    public void RegistrationRequiresCanonicalNativeAssetSchemas()
+    {
+        var schemas = new CompiledContentSchemaRegistry([
+            new DataSchema(
+                s_schema,
+                s_identityAssignment,
+                ContentSchemaRole.NativeAsset,
+                ContentSchemaOwner.Application,
+                ContentSchemaStorage.NotComponent,
+                ContentTransientRestore.NotApplicable,
+                []),
+        ]);
+        var registration = new AssetStoreRegistrationBuilder(schemas)
+            .RegisterCodec(new IntegerCodec());
+
+        _ = Assert.Throws<ArgumentException>(() => registration.Build());
     }
 
     [Test]
