@@ -366,13 +366,21 @@ public sealed class WorldAdmissionDomain : IDisposable
                 return false;
             }
 
+            var interestIndex = reservation.InterestIndex;
+            ref var interest = ref _interests[interestIndex];
+
+            var additionalBytes = interest.Bytes - reservation.InitialBytes;
+
+            if (bytes > reservation.MaximumAdditionalBytes - additionalBytes)
+            {
+                return false;
+            }
+
             if (bytes > _maximumBytes - _registryCharge - _pendingGrowthBytes - _worldBytes)
             {
                 return false;
             }
 
-            var interestIndex = reservation.InterestIndex;
-            ref var interest = ref _interests[interestIndex];
             var updatedBytes = checked(interest.Bytes + bytes);
             _worldBytes = checked(_worldBytes + bytes);
             interest.Bytes = updatedBytes;
@@ -563,9 +571,10 @@ public sealed class WorldAdmissionDomain : IDisposable
         }
     }
 
-    internal bool TryReserveWorld(long bytes, out WorldDomainReservation? reservation)
+    internal bool TryReserveWorld(long bytes, long maximumAdditionalBytes, out WorldDomainReservation? reservation)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumAdditionalBytes);
 
         using var growthScope = ReentrantGate.EnterScope(ref _growthGate);
 
@@ -617,7 +626,12 @@ public sealed class WorldAdmissionDomain : IDisposable
 
         try
         {
-            reservation = new WorldDomainReservation(this, bytes, interestIndex, interestGeneration);
+            reservation = new WorldDomainReservation(
+                this,
+                bytes,
+                maximumAdditionalBytes,
+                interestIndex,
+                interestGeneration);
             return true;
         }
         catch (OutOfMemoryException)
@@ -626,6 +640,9 @@ public sealed class WorldAdmissionDomain : IDisposable
             throw;
         }
     }
+
+    internal bool TryReserveWorld(long bytes, out WorldDomainReservation? reservation)
+        => TryReserveWorld(bytes, _maximumBytes, out reservation);
 
     internal bool TryRollbackFreshLineage(in WorldLineageGrant grant)
     {

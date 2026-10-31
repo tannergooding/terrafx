@@ -1622,10 +1622,13 @@ internal sealed partial class SceneAssetStoreTests
                 _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
                 using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
                 var loader = new SceneLoader(world, assets);
+                var initialWorldBytes = world.GetWorldOwnedStateBytes();
                 using var prepared = loader
                     .PrepareAsync(new AssetId(sceneAssetIdValue), new SceneLoadOptions())
                     .GetAwaiter()
                     .GetResult();
+                var preparedWorldBytes = world.GetWorldOwnedStateBytes();
+                Assert.That(preparedWorldBytes, Is.GreaterThan(initialWorldBytes));
                 var activation = loader.ActivateAsync(prepared);
 
                 Assert.That(activation.IsCompleted, Is.False);
@@ -1633,6 +1636,7 @@ internal sealed partial class SceneAssetStoreTests
                 var receipt = await activation.ConfigureAwait(false);
 
                 Assert.That(receipt.Status, Is.EqualTo(SceneActivationStatus.Activated));
+                Assert.That(world.GetWorldOwnedStateBytes(), Is.GreaterThan(preparedWorldBytes));
                 Assert.That(receipt.Instance, Is.Not.Null);
                 Assert.That(receipt.CommittedStructuralRevision, Is.Not.Null);
                 Assert.That(receipt.Diagnostics, Is.Empty);
@@ -1657,12 +1661,22 @@ internal sealed partial class SceneAssetStoreTests
                 Assert.That(sceneOrdinal, Is.EqualTo(1));
                 Assert.That(entityOrdinal, Is.EqualTo(2));
 
+                var activeWorldBytes = world.GetWorldOwnedStateBytes();
                 var unload = instance.UnloadAsync(HierarchyDestroyMode.DestroySubtree);
                 Assert.That(unload.IsCompleted, Is.False);
                 world.PumpControlBoundary();
                 var unloadReceipt = unload.GetAwaiter().GetResult();
                 Assert.That(unloadReceipt.Status, Is.EqualTo(SceneUnloadStatus.Unloaded));
                 Assert.That(unloadReceipt.StructuralRevision, Is.Not.Null);
+                var unloadedWorldBytes = world.GetWorldOwnedStateBytes();
+                Assert.That(unloadedWorldBytes, Is.LessThan(activeWorldBytes));
+
+                var abandoned = loader.PrepareAsync(
+                    new AssetId(sceneAssetIdValue),
+                    new SceneLoadOptions()).GetAwaiter().GetResult();
+                Assert.That(world.GetWorldOwnedStateBytes(), Is.GreaterThan(unloadedWorldBytes));
+                abandoned.Dispose();
+                Assert.That(world.GetWorldOwnedStateBytes(), Is.EqualTo(unloadedWorldBytes));
                 Assert.That(unloadReceipt.Diagnostics, Is.Empty);
                 Assert.That(world.IdentityLedger.SceneInstanceCount, Is.Zero);
                 Assert.That(instance.TryGetEntity(SceneAssetReaderTests.Fixtures.RootEntityId, out _), Is.False);

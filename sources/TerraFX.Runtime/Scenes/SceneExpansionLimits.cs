@@ -13,7 +13,8 @@ internal readonly struct SceneExpansionLimits
         int maximumExpandedOccurrences,
         int maximumPrefabDepth,
         int maximumHierarchyDepth,
-        long maximumExpandedBytes)
+        long maximumExpandedBytes,
+        Func<long, WorldSceneStorageReservation?>? reserveStorage = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumExpandedEntities);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumExpandedEntities, 1_048_576);
@@ -36,6 +37,7 @@ internal readonly struct SceneExpansionLimits
         MaximumPrefabDepth = maximumPrefabDepth;
         MaximumHierarchyDepth = maximumHierarchyDepth;
         MaximumExpandedBytes = maximumExpandedBytes;
+        ReserveStorage = reserveStorage;
     }
 
     internal static SceneExpansionLimits Default => new(1_048_576, 65_536, 1_048_576, 32, 256, WorldSchedulingLimits.Default.MaximumOwnedStateBytes);
@@ -51,4 +53,6 @@ internal readonly struct SceneExpansionLimits
     internal int MaximumPrefabDepth { get; }
 
     internal int MaximumPrefabEntities { get; }
+
+    internal Func<long, WorldSceneStorageReservation?>? ReserveStorage { get; }
 }

@@ -83,6 +83,8 @@ public sealed partial class World : IDisposable
     private ImmutableArray<object> _resourceStorage;
     private readonly long _resourceStorageByteReservation;
     private IWorldSceneParticipant? _sceneParticipant;
+    private long _scenePlanStorageByteReservation;
+    private readonly Lock _sceneStorageGate = new();
     private readonly long _sceneSupportByteReservation;
     private readonly int[] _scheduledSystemRegistrationIndices;
     private readonly SpatialProfileId _spatialProfileId;
@@ -477,6 +479,8 @@ public sealed partial class World : IDisposable
                 {
                     options.Registration.Resources[index].InitializeAndValidate(world._resourceStorage[index]);
                 }
+
+                world.ConfigureOwnedStateBudget();
 
                 if (!admissionDomain.TryCommitFreshLineage(lineageGrant))
                 {
@@ -1050,14 +1054,21 @@ public sealed partial class World : IDisposable
                     _canonicalMutationRevision);
             attachmentQuarantineReservation = WorldAttachmentInstanceRegistry.ReserveQuarantineCapacity(transferredAttachments.Length);
 
-            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            lock (_sceneStorageGate)
             {
-                return;
+                if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                {
+                    return;
+                }
             }
 
             if (!_registry.TryReleaseFresh(_worldGuidGrant))
             {
-                _ = Interlocked.Exchange(ref _disposed, 0);
+                lock (_sceneStorageGate)
+                {
+                    _ = Interlocked.Exchange(ref _disposed, 0);
+                }
+
                 throw new InvalidOperationException("The WorldGuid binding could not be retired; the World remains active.");
             }
 
@@ -1380,11 +1391,63 @@ public sealed partial class World : IDisposable
             ?? throw new InvalidOperationException("The World Scene participant has not been initialized.");
     }
 
+    internal long GetWorldOwnedStateBytes()
+    {
+        var bytes = checked(
+            _identityLedger.OwnedByteReservation
+            + _entitySlots.OwnedByteReservation
+            + _attachments.OwnedByteReservation
+            + _resourceStorageByteReservation
+            + _systemInstanceStorageByteReservation
+            + _systemInvocationStorageByteReservation
+            + _sceneSupportByteReservation
+            + Interlocked.Read(ref _scenePlanStorageByteReservation)
+            + _componentTagWorkPlanByteReservation
+            + _controlStorageByteReservation
+            + _subscriptionStorageByteReservation
+            + _ownerCommandPreparationByteReservation);
+
+        for (var index = 0; index < _archetypeCount; index++)
+        {
+            var archetype = _archetypes[index]
+                ?? throw new InvalidOperationException("The World archetype directory contains an empty active slot.");
+            bytes = checked(bytes + archetype.MetadataByteReservation + archetype.Storage.OwnedByteReservation);
+        }
+
+        return bytes;
+    }
+
     internal bool HasComponentFromScene(Entity entity, ContentSchemaReference schema)
     {
         var archetype = GetLiveArchetype(entity, out _, out _);
         var registration = Registration.GetComponentRegistration(schema);
         return archetype.GetComponentIndex(registration.ComponentType) >= 0;
+    }
+
+    internal void ReleaseSceneStorageReservation(long bytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        lock (_sceneStorageGate)
+        {
+            var currentReservation = Interlocked.Read(ref _scenePlanStorageByteReservation);
+
+            if (bytes > currentReservation)
+            {
+                throw new InvalidOperationException("The released Scene storage reservation exceeds its live World reservation.");
+            }
+
+            try
+            {
+                _domainReservation.ReleaseAdditional(bytes);
+            }
+            catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
+            {
+                return;
+            }
+
+            _ = Interlocked.Exchange(ref _scenePlanStorageByteReservation, currentReservation - bytes);
+        }
     }
 
     internal bool TryGetEntityByIdentityOrdinal(uint ordinal, out Entity entity)
@@ -1427,6 +1490,46 @@ public sealed partial class World : IDisposable
         }
 
         return true;
+    }
+
+    internal WorldSceneStorageReservation? TryReserveSceneStorage(
+        IWorldSceneParticipant participant,
+        long bytes)
+    {
+        ArgumentNullException.ThrowIfNull(participant);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        lock (_sceneStorageGate)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                return null;
+            }
+
+            if (!ReferenceEquals(_sceneParticipant, participant))
+            {
+                throw new ArgumentException("The Scene participant is not owned by this exact World.", nameof(participant));
+            }
+
+            var nextReservation = checked(Interlocked.Read(ref _scenePlanStorageByteReservation) + bytes);
+
+            if (!_domainReservation.TryReserveAdditional(bytes))
+            {
+                return null;
+            }
+
+            try
+            {
+                var reservation = new WorldSceneStorageReservation(this, bytes);
+                _ = Interlocked.Exchange(ref _scenePlanStorageByteReservation, nextReservation);
+                return reservation;
+            }
+            catch
+            {
+                _domainReservation.ReleaseAdditional(bytes);
+                throw;
+            }
+        }
     }
 
     internal void ValidateEntityReference(Entity target, Entity? excludedEntity, string? parameterName)
@@ -1493,6 +1596,16 @@ public sealed partial class World : IDisposable
         }
 
         return tags.MoveToImmutable();
+    }
+
+    private void ConfigureOwnedStateBudget()
+    {
+        var currentAdditionalBytes = checked(_domainReservation.Bytes - _domainReservation.InitialBytes);
+        var remainingOwnedStateBytes = Math.Max(
+            0L,
+            _maximumOwnedStateBytes - GetWorldOwnedStateBytes());
+        _domainReservation.SetMaximumAdditionalBytes(
+            checked(currentAdditionalBytes + remainingOwnedStateBytes));
     }
 
     private void EnsureOwnerThread()
@@ -1650,31 +1763,6 @@ public sealed partial class World : IDisposable
         }
 
         return archetype;
-    }
-
-    private long GetWorldOwnedStateBytes()
-    {
-        var bytes = checked(
-            _identityLedger.OwnedByteReservation
-            + _entitySlots.OwnedByteReservation
-            + _attachments.OwnedByteReservation
-            + _resourceStorageByteReservation
-            + _systemInstanceStorageByteReservation
-            + _systemInvocationStorageByteReservation
-            + _sceneSupportByteReservation
-            + _componentTagWorkPlanByteReservation
-            + _controlStorageByteReservation
-            + _subscriptionStorageByteReservation
-            + _ownerCommandPreparationByteReservation);
-
-        for (var index = 0; index < _archetypeCount; index++)
-        {
-            var archetype = _archetypes[index]
-                ?? throw new InvalidOperationException("The World archetype directory contains an empty active slot.");
-            bytes = checked(bytes + archetype.MetadataByteReservation + archetype.Storage.OwnedByteReservation);
-        }
-
-        return bytes;
     }
 
     private void InitializeSceneSupport(WorldOptions options)

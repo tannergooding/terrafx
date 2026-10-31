@@ -6,6 +6,7 @@ using System.Collections.Immutable;
 using System.IO;
 using System.Threading;
 using TerraFX.Assets;
+using TerraFX.Entities;
 
 namespace TerraFX.Scenes;
 
@@ -25,6 +26,7 @@ internal sealed class SceneExpansionPlan : IDisposable
     private readonly ImmutableArray<int> _rootEntityIndicesByOccurrence;
     private readonly AssetId _sceneAssetId;
     private AssetLease<SceneAsset>? _sceneLease;
+    private WorldSceneStorageReservation? _storageReservation;
 
     internal SceneExpansionPlan(
         AssetLease<SceneAsset> sceneLease,
@@ -38,10 +40,18 @@ internal sealed class SceneExpansionPlan : IDisposable
         ImmutableArray<SceneExpandedExternalSlotBinding> externalSlotBindings,
         Guid[] entityAssignmentKeys,
         int[] entityIndicesByAssignmentOrdinal,
-        Guid[] occurrenceIds)
+        Guid[] occurrenceIds,
+        long requiredByteReservation,
+        WorldSceneStorageReservation? storageReservation)
     {
         ArgumentNullException.ThrowIfNull(sceneLease);
         ArgumentNullException.ThrowIfNull(prefabLeases);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(requiredByteReservation);
+
+        if (storageReservation is not null && (storageReservation.Bytes != requiredByteReservation))
+        {
+            throw new ArgumentException("The retained Scene byte reservation does not match the preflight estimate.", nameof(storageReservation));
+        }
 
         if (occurrences.IsDefaultOrEmpty
             || entities.IsDefault
@@ -77,6 +87,8 @@ internal sealed class SceneExpansionPlan : IDisposable
         _entityAssignmentKeys = entityAssignmentKeys;
         _entityIndicesByAssignmentOrdinal = entityIndicesByAssignmentOrdinal;
         _occurrenceIds = occurrenceIds;
+        RequiredByteReservation = requiredByteReservation;
+        _storageReservation = storageReservation;
     }
 
     internal ImmutableArray<SceneExpandedEntity> Entities
@@ -141,6 +153,8 @@ internal sealed class SceneExpansionPlan : IDisposable
             return _referenceBindings;
         }
     }
+
+    internal long RequiredByteReservation { get; }
 
     internal ImmutableArray<SceneExternalSlot> RootExternalSlots
     {
@@ -225,17 +239,24 @@ internal sealed class SceneExpansionPlan : IDisposable
             return;
         }
 
-        var prefabLeases = Interlocked.Exchange(ref _prefabLeases, null);
-
-        if (prefabLeases is not null)
+        try
         {
-            foreach (var lease in prefabLeases.Values)
-            {
-                lease.Dispose();
-            }
-        }
+            var prefabLeases = Interlocked.Exchange(ref _prefabLeases, null);
 
-        Interlocked.Exchange(ref _sceneLease, null)?.Dispose();
+            if (prefabLeases is not null)
+            {
+                foreach (var lease in prefabLeases.Values)
+                {
+                    lease.Dispose();
+                }
+            }
+
+            Interlocked.Exchange(ref _sceneLease, null)?.Dispose();
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _storageReservation, null)?.Dispose();
+        }
     }
 
     internal int GetEntityAssignmentOrdinal(int expandedEntityIndex)

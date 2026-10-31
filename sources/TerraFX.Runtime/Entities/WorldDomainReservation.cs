@@ -9,20 +9,32 @@ internal sealed class WorldDomainReservation : IDisposable
 {
     private long _bytes;
     private WorldAdmissionDomain? _domain;
+    private long _maximumAdditionalBytes;
 
-    internal WorldDomainReservation(WorldAdmissionDomain domain, long bytes, int interestIndex, uint interestGeneration)
+    internal WorldDomainReservation(
+        WorldAdmissionDomain domain,
+        long bytes,
+        long maximumAdditionalBytes,
+        int interestIndex,
+        uint interestGeneration)
     {
         _domain = domain;
         _bytes = bytes;
+        _maximumAdditionalBytes = maximumAdditionalBytes;
+        InitialBytes = bytes;
         InterestIndex = interestIndex;
         InterestGeneration = interestGeneration;
     }
 
     internal long Bytes => Interlocked.Read(ref _bytes);
 
+    internal long InitialBytes { get; }
+
     internal uint InterestGeneration { get; }
 
     internal int InterestIndex { get; }
+
+    internal long MaximumAdditionalBytes => Interlocked.Read(ref _maximumAdditionalBytes);
 
     public void Dispose()
     {
@@ -53,6 +65,9 @@ internal sealed class WorldDomainReservation : IDisposable
 
     internal void RemoveBytes(long bytes)
         => _ = Interlocked.Add(ref _bytes, -bytes);
+
+    internal void SetMaximumAdditionalBytes(long bytes)
+        => _ = Interlocked.Exchange(ref _maximumAdditionalBytes, bytes);
 
     internal bool TryReserveAdditional(long bytes)
     {

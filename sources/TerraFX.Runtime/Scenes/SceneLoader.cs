@@ -106,7 +106,8 @@ public sealed class SceneLoader
             options.MaximumExpandedOccurrences,
             options.MaximumPrefabDepth,
             options.MaximumHierarchyDepth,
-            _world.MaximumOwnedStateBytes);
+            _world.MaximumOwnedStateBytes,
+            bytes => _world.TryReserveSceneStorage(_registry, bytes));
         var plan = await ScenePrefabExpansionPlanner.PrepareAsync(
             _assets,
             sceneId,
@@ -116,6 +117,7 @@ public sealed class SceneLoader
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
+            _registry.EnsureBoundTo(_world);
 
             if (!ReferenceEquals(plan.Schemas, _world.Registration.Schemas))
             {

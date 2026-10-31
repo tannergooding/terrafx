@@ -233,4 +233,23 @@ internal sealed class WorldAdmissionDomainTests
         worldReservation.Dispose();
         Assert.That(domain.Retirement.IsCompleted, Is.True);
     }
+
+    [Test]
+    public void WorldReservationGrowthCannotExceedItsOwnedStateCeiling()
+    {
+        using var domain = new WorldAdmissionDomain(16 * 1024 * 1024);
+        Assert.That(domain.TryReserveWorld(4096, 8192, out var reservation), Is.True);
+        using var worldReservation = reservation!;
+
+        Assert.That(worldReservation.TryReserveAdditional(8192), Is.True);
+        Assert.That(worldReservation.Bytes, Is.EqualTo(12_288));
+        Assert.That(worldReservation.TryReserveAdditional(1), Is.False);
+        Assert.That(worldReservation.Bytes, Is.EqualTo(12_288));
+
+        worldReservation.ReleaseAdditional(8192);
+        Assert.That(worldReservation.Bytes, Is.EqualTo(4096));
+        domain.Dispose();
+        worldReservation.Dispose();
+        Assert.That(domain.Retirement.IsCompleted, Is.True);
+    }
 }

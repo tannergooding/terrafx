@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Assets;
@@ -100,5 +101,69 @@ internal sealed class SceneSupportRegistrationTests
             () => builder.RegisterSceneSupport(SceneSupport.CreateRegistration()),
             Throws.ArgumentException);
         Assert.That(builder.Build().SceneSupport, Is.SameAs(support));
+    }
+
+    [Test]
+    public void SceneStorageReservationsAreThreadSafeAndRespectTheWorldBudget()
+    {
+        var schemas = CreateSchemaRegistry();
+        var builder = new WorldRegistrationBuilder(schemas);
+        var support = SceneSupport.CreateRegistration();
+        _ = builder.RegisterSceneSupport(support);
+        var registration = builder.Build();
+        long baselineWorldBytes;
+
+        using (var baselineWorld = World.Create(new WorldOptions(registration)))
+        {
+            baselineWorldBytes = baselineWorld.GetWorldOwnedStateBytes();
+        }
+
+        const int admittedReservationCount = 128;
+        const int reservationAttemptCount = 160;
+        const long reservationBytes = 8;
+        var maximumOwnedStateBytes = checked(baselineWorldBytes + (admittedReservationCount * reservationBytes));
+        var defaults = WorldSchedulingLimits.Default;
+        var limits = new WorldSchedulingLimits(
+            defaults.MaximumRegistrationBytes,
+            defaults.MaximumGraphBytes,
+            defaults.MaximumWorkPlanBytes,
+            defaults.MaximumCommandStagingBytes,
+            maximumOwnedStateBytes,
+            defaults.MaximumDiagnosticBytes,
+            defaults.MaximumConflictComparisons);
+        using var world = World.Create(new WorldOptions(registration) {
+            SchedulingLimits = limits,
+        });
+        var participant = support.GetParticipant(world);
+        var reservations = new WorldSceneStorageReservation?[reservationAttemptCount];
+
+        try
+        {
+            _ = Parallel.For(
+                0,
+                reservations.Length,
+                index => reservations[index] = world.TryReserveSceneStorage(participant, reservationBytes));
+
+            var admittedCount = 0;
+
+            for (var index = 0; index < reservations.Length; index++)
+            {
+                admittedCount += reservations[index] is null ? 0 : 1;
+            }
+
+            Assert.That(admittedCount, Is.EqualTo(admittedReservationCount));
+            Assert.That(
+                world.GetWorldOwnedStateBytes(),
+                Is.EqualTo(maximumOwnedStateBytes));
+        }
+        finally
+        {
+            for (var index = 0; index < reservations.Length; index++)
+            {
+                reservations[index]?.Dispose();
+            }
+        }
+
+        Assert.That(world.GetWorldOwnedStateBytes(), Is.EqualTo(baselineWorldBytes));
     }
 }

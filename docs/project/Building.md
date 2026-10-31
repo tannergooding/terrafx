@@ -146,6 +146,15 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 
 These are focused JIT observations only; they do not complete Scene hierarchy transactions, CPU extraction, NativeAOT, or native qualification.
 
+The Scene owner-boundary regression also checks that the estimated expansion bytes are reserved before materialization, remain charged after activation, and are released on unload or when a prepared plan is abandoned. The admission-domain case checks the per-World ceiling under concurrent reservation attempts:
+
+```powershell
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~WorldReservationGrowthCannotExceedItsOwnedStateCeiling|FullyQualifiedName~SceneLoaderActivatesAtTheWorldOwnerControlBoundary|FullyQualifiedName~SceneStorageReservationsAreThreadSafeAndRespectTheWorldBudget"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~WorldReservationGrowthCannotExceedItsOwnedStateCeiling|FullyQualifiedName~SceneLoaderActivatesAtTheWorldOwnerControlBoundary|FullyQualifiedName~SceneStorageReservationsAreThreadSafeAndRespectTheWorldBudget"
+```
+
+These managed regressions do not qualify Scene hierarchy transactions, NativeAOT, or native execution.
+
 For Windows NativeAOT qualification, each executable project enables `PublishAot` locally when `TerraFXPublishAot=true`; the generated project's analyzer reference removes that switch. Publish and execute the artifacts separately:
 
 ```powershell

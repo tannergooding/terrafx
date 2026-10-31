@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using TerraFX;
 using TerraFX.Assets;
+using TerraFX.Entities;
 
 namespace TerraFX.Scenes;
 
@@ -104,6 +105,7 @@ internal static class ScenePrefabExpansionPlanner
         private long _rootPoseTargetScratchBytes;
         private long _rootPositionComponentBytes;
         private AssetLease<SceneAsset>? _sceneLease;
+        private WorldSceneStorageReservation? _storageReservation;
         private long _totalComponentRecordBytes;
 
         internal SceneExpansionBuilder(
@@ -568,6 +570,7 @@ internal static class ScenePrefabExpansionPlanner
                 }
             }
 
+            Interlocked.Exchange(ref _storageReservation, null)?.Dispose();
             _entities = ImmutableArray.CreateBuilder<SceneExpandedEntity>();
             _occurrences = ImmutableArray.CreateBuilder<SceneExpandedOccurrence>();
             _entityIndicesByOccurrence = ImmutableArray.CreateBuilder<int>();
@@ -604,6 +607,12 @@ internal static class ScenePrefabExpansionPlanner
             if (requiredBytes > _limits.MaximumExpandedBytes)
             {
                 throw new InvalidOperationException("The Scene expansion exceeds its selected byte budget.");
+            }
+
+            if (_limits.ReserveStorage is { } reserveStorage)
+            {
+                _storageReservation = reserveStorage(requiredBytes)
+                    ?? throw new InvalidOperationException("The World-owned state budget cannot reserve the retained Scene expansion plan.");
             }
 
             _rootCounts = new int[_occurrenceCount];
@@ -713,9 +722,12 @@ internal static class ScenePrefabExpansionPlanner
                 _externalSlotBindings.MoveToImmutable(),
                 entityAssignmentKeys,
                 entityIndicesByAssignmentOrdinal,
-                _occurrenceIdentities);
+                _occurrenceIdentities,
+                requiredBytes,
+                _storageReservation);
             _sceneLease = null;
             _prefabLeases = null;
+            _storageReservation = null;
             _entities = ImmutableArray.CreateBuilder<SceneExpandedEntity>();
             _occurrences = ImmutableArray.CreateBuilder<SceneExpandedOccurrence>();
             _entityIndicesByOccurrence = ImmutableArray.CreateBuilder<int>();
