@@ -1746,24 +1746,38 @@ internal sealed partial class SceneAssetStoreTests
                 "tests",
                 "TerraFX.Runtime.ComponentConsumer",
                 "TerraFX.Runtime.ComponentConsumer.csproj");
-            var startInfo = new ProcessStartInfo("dotnet") {
+            var sceneActivationConsumer = Environment.GetEnvironmentVariable("TERRAFX_SCENE_ACTIVATION_CONSUMER");
+
+            if (sceneActivationConsumer is not null
+                && !Path.IsPathFullyQualified(sceneActivationConsumer))
+            {
+                throw new InvalidOperationException(
+                    "TERRAFX_SCENE_ACTIVATION_CONSUMER must be an absolute executable path.");
+            }
+
+            var startInfo = new ProcessStartInfo(sceneActivationConsumer ?? "dotnet") {
                 WorkingDirectory = repositoryRoot,
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
             };
+
+            if (sceneActivationConsumer is null)
+            {
 #if DEBUG
-            const string configuration = "Debug";
+                const string configuration = "Debug";
 #else
-            const string configuration = "Release";
+                const string configuration = "Release";
 #endif
-            startInfo.ArgumentList.Add("run");
-            startInfo.ArgumentList.Add("--project");
-            startInfo.ArgumentList.Add(consumerProject);
-            startInfo.ArgumentList.Add("--configuration");
-            startInfo.ArgumentList.Add(configuration);
-            startInfo.ArgumentList.Add("--no-build");
-            startInfo.ArgumentList.Add("--");
+                startInfo.ArgumentList.Add("run");
+                startInfo.ArgumentList.Add("--project");
+                startInfo.ArgumentList.Add(consumerProject);
+                startInfo.ArgumentList.Add("--configuration");
+                startInfo.ArgumentList.Add(configuration);
+                startInfo.ArgumentList.Add("--no-build");
+                startInfo.ArgumentList.Add("--");
+            }
+
             startInfo.ArgumentList.Add("--scene-activation");
             startInfo.ArgumentList.Add(packagePath);
             startInfo.ArgumentList.Add(optional ? "optional" : "required");

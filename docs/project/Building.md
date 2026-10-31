@@ -144,7 +144,7 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SceneLoaderActivationHandlesExplicitNullEntityReference"
 ```
 
-These are focused JIT observations only; they do not complete Scene hierarchy transactions, CPU extraction, NativeAOT, or native qualification.
+By default, these focused tests run the handwritten consumer through JIT. They do not complete Scene hierarchy transactions, CPU extraction, or native qualification.
 
 The Scene owner-boundary regression also checks that the estimated expansion bytes are reserved before materialization, remain charged after activation, and are released on unload or when a prepared plan is abandoned. The admission-domain case checks the per-World ceiling under concurrent reservation attempts:
 
@@ -161,5 +161,15 @@ For Windows NativeAOT qualification, each executable project enables `PublishAot
 dotnet publish .\tests\TerraFX.Runtime.ComponentConsumer\TerraFX.Runtime.ComponentConsumer.csproj --configuration Release --runtime win-x64 --self-contained true -p:TerraFXPublishAot=true
 dotnet publish .\tests\TerraFX.Runtime.GeneratedComponentConsumer\TerraFX.Runtime.GeneratedComponentConsumer.csproj --configuration Release --runtime win-x64 --self-contained true -p:TerraFXPublishAot=true
 ```
+
+The encoded optional-null Scene activation witness can run the exact same cases through the published handwritten NativeAOT executable:
+
+```powershell
+$env:TERRAFX_SCENE_ACTIVATION_CONSUMER = (Resolve-Path .\artifacts\bin\tests\TerraFX.Runtime.ComponentConsumer\Release\net11.0\win-x64\publish\TerraFX.Runtime.ComponentConsumer.exe).Path
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SceneLoaderActivationHandlesExplicitNullEntityReference"
+Remove-Item Env:\TERRAFX_SCENE_ACTIVATION_CONSUMER
+```
+
+When set, the test launches that exact executable and does not fall back to JIT if it fails. Windows x64 NativeAOT does not qualify Linux.
 
 NativeAOT does not support cross-OS compilation; publish Linux artifacts on the required Linux host, then execute them there. JIT or Windows NativeAOT execution does not qualify the Linux target or M02 profiles.
