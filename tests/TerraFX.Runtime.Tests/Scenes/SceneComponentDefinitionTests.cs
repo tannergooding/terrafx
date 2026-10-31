@@ -24,9 +24,7 @@ internal sealed class SceneComponentDefinitionTests
             .. SceneSchemaCatalogue.Schemas,
         ]);
         var builder = new WorldRegistrationBuilder(schemas);
-        _ = SceneComponentDefinitions.RegisterLocalTransform(builder, schemas);
-        _ = SceneComponentDefinitions.RegisterRootPosition(builder, schemas);
-        _ = SceneComponentDefinitions.RegisterCamera(builder, schemas);
+        _ = builder.RegisterSceneSupport(SceneSupport.CreateRegistration());
         var registration = builder.Build();
         var transformRegistration = registration.TryGetComponentType<SceneComponentDefinitions.LocalTransformComponent>(out var componentRegistration)
             ? componentRegistration ?? throw new InvalidOperationException("The LocalTransform registration was null.")

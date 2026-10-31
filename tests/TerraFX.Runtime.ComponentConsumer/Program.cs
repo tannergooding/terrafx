@@ -291,6 +291,7 @@ internal static class Program
 
         var entityTag = new EntityTagSchema(applicationSchemas[1].Schema.SchemaId, applicationSchemas[1].Schema.Major);
         var registrationBuilder = new WorldRegistrationBuilder(registry);
+        _ = registrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
         _ = registrationBuilder.RegisterComponent(schema, factory);
         ExpectException<ArgumentException>(() => registrationBuilder.RegisterComponent(schema, factory));
         _ = registrationBuilder.RegisterComponent(referenceSchema, referenceFactory);
@@ -322,6 +323,24 @@ internal static class Program
         _ = registrationBuilder.RegisterAttachment(AttachmentScope.World, attachmentBinding);
         _ = registrationBuilder.RegisterAttachment(AttachmentScope.Entity, attachmentBinding);
         var registration = registrationBuilder.Build();
+        var localTransformSchema = new ContentSchemaReference(
+            new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+        var rootPositionSchema = new ContentSchemaReference(
+            new ContentSchemaIdentityAssignment("scene/root-position").SchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+        var cameraSchema = new ContentSchemaReference(
+            new ContentSchemaIdentityAssignment("scene/camera").SchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+        Check(registration.GetComponentBinding(localTransformSchema).Schema == localTransformSchema);
+        Check(registration.GetComponentBinding(rootPositionSchema).Schema == rootPositionSchema);
+        Check(registration.GetComponentBinding(cameraSchema).Schema == cameraSchema);
         Check(registration.GetComponentLayout(schemaReference).LogicalBytes == layout.LogicalBytes);
         Check(registration.GetComponentBinding(schemaReference).FactoryId == factory.CapturedBinding.Descriptor.FactoryId);
         Check(registration.Tags.Length == 1

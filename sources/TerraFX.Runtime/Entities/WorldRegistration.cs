@@ -7,12 +7,13 @@ using System.Linq;
 
 namespace TerraFX.Entities;
 
-/// <summary>Contains the immutable component and tag registrations selected before World construction.</summary>
+/// <summary>Contains the immutable component, tag, resource, and optional Scene registrations selected before World construction.</summary>
 public sealed class WorldRegistration
 {
     private readonly ImmutableArray<IWorldAttachmentRegistration> _attachments;
     private readonly ImmutableArray<IComponentRegistration> _components;
     private readonly ImmutableArray<IWorldResourceRegistration> _resources;
+    private readonly SceneSupportRegistration? _sceneSupport;
     private readonly SystemExecutionSchedule _schedule;
     private readonly ImmutableArray<SystemRegistration> _systems;
     private readonly ImmutableArray<EntityTagSchema> _tags;
@@ -24,7 +25,8 @@ public sealed class WorldRegistration
         ImmutableArray<IWorldResourceRegistration> resources = default,
         ImmutableArray<SystemRegistration> systems = default,
         SystemExecutionSchedule? schedule = null,
-        ImmutableArray<IWorldAttachmentRegistration> attachments = default)
+        ImmutableArray<IWorldAttachmentRegistration> attachments = default,
+        SceneSupportRegistration? sceneSupport = null)
     {
         ArgumentNullException.ThrowIfNull(schemas);
 
@@ -113,6 +115,7 @@ public sealed class WorldRegistration
         _resources = [.. sortedResources];
         _systems = [.. sortedSystems];
         _attachments = [.. sortedAttachments];
+        _sceneSupport = sceneSupport;
         _schedule = schedule ?? SystemExecutionSchedule.Compile(
             [],
             [.. sortedResources.Select(static resource => resource.Description)],
@@ -133,6 +136,8 @@ public sealed class WorldRegistration
     internal int RegisteredTypeCount => checked(_components.Length + _tags.Length);
 
     internal ImmutableArray<IWorldResourceRegistration> Resources => _resources;
+
+    internal SceneSupportRegistration? SceneSupport => _sceneSupport;
 
     internal SystemExecutionSchedule Schedule => _schedule;
 

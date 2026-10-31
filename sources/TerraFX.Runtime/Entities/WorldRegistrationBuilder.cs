@@ -6,13 +6,14 @@ using System.Collections.Immutable;
 
 namespace TerraFX.Entities;
 
-/// <summary>Builds the immutable component and tag registrations for a World.</summary>
+/// <summary>Builds the immutable component, tag, resource, and optional Scene registrations for a World.</summary>
 public sealed class WorldRegistrationBuilder
 {
     private readonly List<IWorldAttachmentRegistration> _attachments = [];
     private readonly List<IComponentRegistration> _components = [];
     private bool _isBuilt;
     private readonly List<IWorldResourceRegistration> _resources = [];
+    private SceneSupportRegistration? _sceneSupport;
     private readonly CompiledContentSchemaRegistry _schemas;
     private readonly List<SystemRegistration> _systems = [];
     private readonly List<EntityTagSchema> _tags = [];
@@ -26,7 +27,7 @@ public sealed class WorldRegistrationBuilder
         _schemas = schemas;
     }
 
-    /// <summary>Freezes the registered components, tags, and resources.</summary>
+    /// <summary>Freezes the registered components, tags, resources, and optional Scene support.</summary>
     /// <returns>The immutable World registration.</returns>
     /// <exception cref="InvalidOperationException">The builder has already been frozen.</exception>
     public WorldRegistration Build()
@@ -58,7 +59,8 @@ public sealed class WorldRegistrationBuilder
             [.. _resources],
             [.. _systems],
             schedule,
-            [.. _attachments]);
+            [.. _attachments],
+            sceneSupport: _sceneSupport);
         _isBuilt = true;
         return registration;
     }
@@ -221,6 +223,74 @@ public sealed class WorldRegistrationBuilder
         }
 
         _resources.Add(new WorldResourceRegistration<T>(description, factoryBinding.Control, codecBinding.Dispatch));
+        return this;
+    }
+
+    /// <summary>Registers the built-in Scene components before the World registration is frozen.</summary>
+    /// <param name="support">The opaque registration produced by <see cref="TerraFX.Scenes.SceneSupport.CreateRegistration"/>.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="support"/> is null.</exception>
+    /// <exception cref="ArgumentException">Scene support is already registered, or one of its component registrations conflicts with this builder.</exception>
+    /// <exception cref="InvalidOperationException">The registration contains no supported component bindings or attempted to register non-component state.</exception>
+    public WorldRegistrationBuilder RegisterSceneSupport(SceneSupportRegistration support)
+    {
+        EnsureMutable();
+        ArgumentNullException.ThrowIfNull(support);
+
+        if (_sceneSupport is not null)
+        {
+            throw new ArgumentException("Scene support can be registered only once.", nameof(support));
+        }
+
+        var staging = new WorldRegistrationBuilder(_schemas);
+        support.RegisterComponents(staging, _schemas);
+
+        if ((staging._components.Count == 0)
+            || (staging._attachments.Count != 0)
+            || (staging._resources.Count != 0)
+            || (staging._systems.Count != 0)
+            || (staging._tags.Count != 0))
+        {
+            throw new InvalidOperationException("Scene support must register a nonempty component set only.");
+        }
+
+        var schemaIds = new HashSet<Guid>();
+        var componentTypes = new HashSet<Type>();
+        var registeredTypeCount = _components.Count + _tags.Count;
+
+        foreach (var registration in staging._components)
+        {
+            var schema = registration.SchemaReference;
+            var descriptor = registration.Descriptor;
+
+            if (ContainsSchemaId(schema.SchemaId)
+                || !schemaIds.Add(schema.SchemaId)
+                || ContainsComponentType(registration.ComponentType)
+                || !componentTypes.Add(registration.ComponentType))
+            {
+                throw new ArgumentException("A Scene component schema or CLR type is already registered.", nameof(support));
+            }
+
+            if ((descriptor.Schema != schema)
+                || (descriptor.Layout.LayoutId != registration.Layout.LayoutId)
+                || (descriptor.Layout.LogicalBytes != registration.Layout.LogicalBytes)
+                || !_schemas.TryGetSchema(schema, out var metadata)
+                || (metadata.Role != ContentSchemaRole.Component)
+                || (descriptor.Fields.Length != metadata.Fields.Length))
+            {
+                throw new InvalidOperationException("The Scene component registration does not match this compiled schema registry.");
+            }
+
+            if (registeredTypeCount >= 256)
+            {
+                throw new ArgumentOutOfRangeException(nameof(support), "The registration cannot exceed 256 component and tag identities.");
+            }
+
+            registeredTypeCount++;
+        }
+
+        _components.AddRange(staging._components);
+        _sceneSupport = support;
         return this;
     }
 
