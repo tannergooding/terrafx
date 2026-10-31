@@ -373,11 +373,13 @@ public sealed partial class World
         "Usage",
         "CA1031:Do not catch general exception types",
         Justification = "Command playback must release its preparation reservation before rethrowing the exact operation failure.")]
-    private ImmutableArray<CommandReceipt> CommitCommandBatch(WorldCommandStaging staging)
+    private ImmutableArray<CommandReceipt> CommitCommandBatch(
+        WorldCommandStaging staging,
+        IdentityAssignment? sceneInstanceAssignment = null)
     {
         var commands = staging.Seal();
 
-        if (commands.IsEmpty)
+        if (commands.IsEmpty && (sceneInstanceAssignment is null))
         {
             return [];
         }
@@ -914,10 +916,14 @@ public sealed partial class World
 
             var nextMutationRevision = checked(_canonicalMutationRevision + 1);
 
-            if ((createdProjections.Count != 0) || (destroyedProjections.Count != 0))
+            if ((createdProjections.Count != 0)
+                || (destroyedProjections.Count != 0)
+                || (sceneInstanceAssignment is not null))
             {
                 var createCount = createdProjections.Count;
                 var destroyCount = destroyedProjections.Count;
+                var sceneAssignmentOffset = (sceneInstanceAssignment is null) ? 0 : 1;
+                var identityAssignmentCount = checked(createCount + sceneAssignmentOffset);
                 var liveEntityCountAfterDestroy = _entitySlots.LiveEntityCount - destroyCount;
 
                 if (createCount > (_maximumLiveEntities - liveEntityCountAfterDestroy))
@@ -942,11 +948,18 @@ public sealed partial class World
                 var slotPreparationBytes = _entitySlots.GetCapacityPreparationBytes(
                     requiredAllocatedSlots,
                     requiredFreeSlotCount);
-                var identityPreparationBytes = _identityLedger.GetPreparationByteReservation(createCount, destroyCount);
+                var identityPreparationBytes = _identityLedger.GetPreparationByteReservation(
+                    identityAssignmentCount,
+                    destroyCount);
                 var identityGrowthBytes = checked(identityPreparationBytes - _identityLedger.OwnedByteReservation);
                 ReservePlanBytes(checked(slotPreparationBytes + identityGrowthBytes));
-                var assignments = new IdentityAssignment[createCount];
+                var assignments = new IdentityAssignment[identityAssignmentCount];
                 var retirements = new uint[destroyCount];
+
+                if (sceneInstanceAssignment is { } sceneAssignment)
+                {
+                    assignments[0] = sceneAssignment;
+                }
 
                 for (var index = 0; index < createCount; index++)
                 {
@@ -960,7 +973,7 @@ public sealed partial class World
                         ?? throw new InvalidOperationException("A token-created Entity has no EntityDescription.");
                     projection.Entity = new Entity(_ownerId, slot, generation);
 
-                    assignments[index] = (description.PersistentId is { } persistentId)
+                    assignments[index + sceneAssignmentOffset] = (description.PersistentId is { } persistentId)
                         ? new IdentityAssignment(
                             IdentityKind.Entity,
                             IdentityOrigin.Explicit,

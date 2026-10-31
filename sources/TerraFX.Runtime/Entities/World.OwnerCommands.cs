@@ -19,7 +19,11 @@ public sealed partial class World
 
         try
         {
-            return CreateEntitiesAtomicallyCore(entityCount, createDescriptions);
+            return CreateEntitiesAtomicallyCore(
+                entityCount,
+                createDescriptions,
+                sceneInstanceAssignment: null,
+                sceneInstanceLocator: 0).Entities;
         }
         finally
         {
@@ -27,9 +31,56 @@ public sealed partial class World
         }
     }
 
-    private ImmutableArray<Entity> CreateEntitiesAtomicallyCore(
+    internal WorldSceneEntityBatchCommit CreateSceneEntitiesAtomically(
         int entityCount,
+        Guid? requestedSceneInstanceId,
         Func<ImmutableArray<Entity>, ImmutableArray<EntityDescription>> createDescriptions)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(entityCount);
+        ArgumentNullException.ThrowIfNull(createDescriptions);
+
+        if (requestedSceneInstanceId is Guid sceneInstanceId
+            && ((sceneInstanceId == Guid.Empty) || IsReservedUuidV8ForCommand(sceneInstanceId)))
+        {
+            throw new ArgumentException("A requested Scene instance identity must be nonempty and non-v8.", nameof(requestedSceneInstanceId));
+        }
+
+        EnterStructuralOperation();
+
+        try
+        {
+            var sceneInstanceLocator = checked((uint)(_identityLedger.AssignmentCount + 1));
+            var sceneInstanceAssignment = requestedSceneInstanceId is Guid explicitId
+                ? new IdentityAssignment(
+                    IdentityKind.SceneInstance,
+                    IdentityOrigin.Explicit,
+                    sceneInstanceLocator,
+                    _currentIdentityBranchIndex,
+                    explicitId)
+                : new IdentityAssignment(
+                    IdentityKind.SceneInstance,
+                    IdentityOrigin.Automatic,
+                    sceneInstanceLocator,
+                    _currentIdentityBranchIndex,
+                    issuanceNamespace: _identityBranches[_currentIdentityBranchIndex].NamespaceId);
+
+            return CreateEntitiesAtomicallyCore(
+                entityCount,
+                createDescriptions,
+                sceneInstanceAssignment,
+                sceneInstanceLocator);
+        }
+        finally
+        {
+            _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
+        }
+    }
+
+    private WorldSceneEntityBatchCommit CreateEntitiesAtomicallyCore(
+        int entityCount,
+        Func<ImmutableArray<Entity>, ImmutableArray<EntityDescription>> createDescriptions,
+        IdentityAssignment? sceneInstanceAssignment,
+        uint sceneInstanceLocator)
     {
         if (entityCount > _maximumDeferredCommands)
         {
@@ -76,23 +127,19 @@ public sealed partial class World
                 tokens.Add(staging.AppendOwnerCreate(description));
             }
 
-            var receipts = CommitCommandBatch(staging);
+            var receipts = CommitCommandBatch(staging, sceneInstanceAssignment);
 
-            if (entityCount == 0)
-            {
-                return [];
-            }
-
-            if (receipts.Length != 1)
+            if ((entityCount != 0) && (receipts.Length != 1))
             {
                 throw new InvalidOperationException("An owner-control Entity batch did not produce exactly one receipt.");
             }
 
-            var receipt = receipts[0];
             var entities = ImmutableArray.CreateBuilder<Entity>(entityCount);
 
             for (var index = 0; index < entityCount; index++)
             {
+                var receipt = receipts[0];
+
                 if (!receipt.TryResolve(tokens[index], out var entity)
                     || (entity != candidates[index]))
                 {
@@ -102,7 +149,12 @@ public sealed partial class World
                 entities.Add(entity);
             }
 
-            return entities.MoveToImmutable();
+            return new WorldSceneEntityBatchCommit(
+                (sceneInstanceAssignment is null)
+                    ? Guid.Empty
+                    : _identityLedger.GetAssignedId(IdentityKind.SceneInstance, sceneInstanceLocator),
+                entities.MoveToImmutable(),
+                _canonicalMutationRevision);
         }
         finally
         {
@@ -131,4 +183,9 @@ public sealed partial class World
 
         return candidates.MoveToImmutable();
     }
+
+    internal readonly record struct WorldSceneEntityBatchCommit(
+        Guid SceneInstanceId,
+        ImmutableArray<Entity> Entities,
+        long StructuralRevision);
 }
