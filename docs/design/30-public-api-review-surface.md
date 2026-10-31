@@ -3510,6 +3510,56 @@ public readonly struct ScreenProjection
     public bool IsInsideViewport { get; }
 }
 
+public enum CameraProjectionKind : byte
+{
+    Perspective = 0,
+    Orthographic = 1
+}
+
+public enum CameraFarMode : byte
+{
+    Finite = 0,
+    Infinite = 1
+}
+
+[Flags]
+public enum CameraClearFlags : byte
+{
+    None = 0,
+    Color = 1,
+    Depth = 2
+}
+
+public readonly struct CameraSnapshot
+{
+    internal CameraSnapshot(Guid snapshotId, Guid worldGuid, Guid cameraId, int order,
+        SpatialFrame3 frame3, PixelSize targetExtent, SpatialPosition3 position,
+        TerraFX.Numerics.Quaternion rotation, CameraProjectionKind projectionKind,
+        float verticalFieldOfView, float orthographicHeight, float near,
+        CameraFarMode farMode, float? far, float? aspectRatioOverride,
+        TerraFX.Numerics.Vector4 viewport, CameraClearFlags clearFlags,
+        TerraFX.Numerics.Vector4 clearColor, ulong layerMask);
+    public Guid SnapshotId { get; }
+    public Guid WorldGuid { get; }
+    public Guid CameraId { get; }
+    public int Order { get; }
+    public SpatialFrame3 Frame3 { get; }
+    public PixelSize TargetExtent { get; }
+    public SpatialPosition3 Position { get; }
+    public TerraFX.Numerics.Quaternion Rotation { get; }
+    public CameraProjectionKind ProjectionKind { get; }
+    public float VerticalFieldOfView { get; }
+    public float OrthographicHeight { get; }
+    public float Near { get; }
+    public CameraFarMode FarMode { get; }
+    public float? Far { get; }
+    public float? AspectRatioOverride { get; }
+    public TerraFX.Numerics.Vector4 Viewport { get; }
+    public CameraClearFlags ClearFlags { get; }
+    public TerraFX.Numerics.Vector4 ClearColor { get; }
+    public ulong LayerMask { get; }
+}
+
 public static class CameraMath
 {
     public static bool TryWorldToScreen(SpatialPosition3 position, CameraSnapshot camera, out ScreenProjection projection);
@@ -4498,11 +4548,12 @@ public sealed class RenderExtractionResponse
 
 public abstract class RenderSnapshot : IDisposable
 {
-    internal RenderSnapshot(Guid snapshotId, Guid worldGuid, long tickIndex, ImmutableArray<Guid> cameraIds, PixelSize targetExtent);
+    internal RenderSnapshot(Guid snapshotId, Guid worldGuid, long tickIndex, ImmutableArray<Guid> cameraIds, ImmutableArray<CameraSnapshot> cameras, PixelSize targetExtent);
     public Guid SnapshotId { get; }
     public Guid WorldGuid { get; }
     public long TickIndex { get; }
     public ImmutableArray<Guid> CameraIds { get; }
+    public ImmutableArray<CameraSnapshot> Cameras { get; }
     public PixelSize TargetExtent { get; }
     public abstract RenderFrameDimension FrameDimension { get; }
     public abstract SpatialProfileId ProfileId { get; }
@@ -4512,7 +4563,7 @@ public abstract class RenderSnapshot : IDisposable
 
 public sealed class RenderSnapshot2D : RenderSnapshot
 {
-    internal RenderSnapshot2D(Guid snapshotId, Guid worldGuid, long tickIndex, ImmutableArray<Guid> cameraIds, PixelSize targetExtent, SpatialFrame2 frame);
+    internal RenderSnapshot2D(Guid snapshotId, Guid worldGuid, long tickIndex, ImmutableArray<Guid> cameraIds, ImmutableArray<CameraSnapshot> cameras, PixelSize targetExtent, SpatialFrame2 frame);
     public SpatialFrame2 Frame { get; }
     public override RenderFrameDimension FrameDimension { get; }
     public override SpatialProfileId ProfileId { get; }
@@ -4521,7 +4572,7 @@ public sealed class RenderSnapshot2D : RenderSnapshot
 
 public sealed class RenderSnapshot3D : RenderSnapshot
 {
-    internal RenderSnapshot3D(Guid snapshotId, Guid worldGuid, long tickIndex, ImmutableArray<Guid> cameraIds, PixelSize targetExtent, SpatialFrame3 frame);
+    internal RenderSnapshot3D(Guid snapshotId, Guid worldGuid, long tickIndex, ImmutableArray<Guid> cameraIds, ImmutableArray<CameraSnapshot> cameras, PixelSize targetExtent, SpatialFrame3 frame);
     public SpatialFrame3 Frame { get; }
     public override RenderFrameDimension FrameDimension { get; }
     public override SpatialProfileId ProfileId { get; }
