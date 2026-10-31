@@ -1361,6 +1361,24 @@ internal sealed class SceneAssetStoreTests
     }
 
     [Test]
+    public void ReservesEveryNestedOverrideRewriteAndFixedArrayCopy()
+    {
+        var fieldTag = new ScenePropertyPathSegment(ScenePropertyPathSegmentKind.FieldTag, 1);
+        var nestedFieldTag = new ScenePropertyPathSegment(ScenePropertyPathSegmentKind.FieldTag, 2);
+        var fixedArrayIndex = new ScenePropertyPathSegment(ScenePropertyPathSegmentKind.FixedArrayIndex, 0);
+
+        Assert.That(
+            ScenePrefabExpansionPlanner.CalculateOverrideRewriteReservation(128, [fieldTag]),
+            Is.EqualTo(384));
+        Assert.That(
+            ScenePrefabExpansionPlanner.CalculateOverrideRewriteReservation(128, [fieldTag, nestedFieldTag]),
+            Is.EqualTo(768));
+        Assert.That(
+            ScenePrefabExpansionPlanner.CalculateOverrideRewriteReservation(128, [fieldTag, fixedArrayIndex]),
+            Is.EqualTo(512));
+    }
+
+    [Test]
     public async Task ResolvesInternalSlotTargetToExpandedEntity()
     {
         var outerEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;

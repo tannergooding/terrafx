@@ -14,6 +14,40 @@ namespace TerraFX.Scenes;
 
 internal static class ScenePrefabExpansionPlanner
 {
+    internal static long CalculateOverrideRewriteReservation(
+        long encodedRecordLength,
+        ImmutableArray<ScenePropertyPathSegment> propertyPath)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(encodedRecordLength);
+
+        if (propertyPath.IsDefaultOrEmpty)
+        {
+            throw new ArgumentException("The Prefab override property path must be initialized and nonempty.", nameof(propertyPath));
+        }
+
+        var rewriteCount = 0;
+        var copiesFixedArrayPayload = false;
+
+        for (var index = 0; index < propertyPath.Length; index++)
+        {
+            if (propertyPath[index].Kind is ScenePropertyPathSegmentKind.FieldTag)
+            {
+                rewriteCount++;
+            }
+            else if (propertyPath[index].Kind is ScenePropertyPathSegmentKind.FixedArrayIndex)
+            {
+                copiesFixedArrayPayload = true;
+            }
+            else
+            {
+                throw new ArgumentException("The Prefab override property path contains an undefined segment.", nameof(propertyPath));
+            }
+        }
+
+        var recordMultiplier = checked((3L * rewriteCount) + (copiesFixedArrayPayload ? 1L : 0L));
+        return checked(encodedRecordLength * recordMultiplier);
+    }
+
     internal static async Task<SceneExpansionPlan> PrepareAsync(
         AssetStore assets,
         AssetId sceneId,
@@ -1284,7 +1318,9 @@ internal static class ScenePrefabExpansionPlanner
                     + ArrayBytes(checked(sourceEntity.Components.Length + 1), IntPtr.Size));
                 _overrideComponentRecordBytes = checked(
                     _overrideComponentRecordBytes
-                    + checked(2L * component.EncodedRecord.Length));
+                    + CalculateOverrideRewriteReservation(
+                        component.EncodedRecord.Length,
+                        prefabOverride.PropertyPath));
             }
         }
 
