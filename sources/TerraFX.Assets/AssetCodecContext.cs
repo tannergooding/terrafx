@@ -11,7 +11,8 @@ public sealed class AssetCodecContext
         AssetId rootAssetId,
         CompiledContentSchemaRegistry schemas,
         SpatialProfileId profileId,
-        SpatialSettings spatialSettings)
+        SpatialSettings spatialSettings,
+        EbinReadLimits readLimits)
     {
         if (!rootAssetId.IsValid)
         {
@@ -19,14 +20,19 @@ public sealed class AssetCodecContext
         }
 
         ArgumentNullException.ThrowIfNull(schemas);
+        ArgumentNullException.ThrowIfNull(readLimits);
         RootAssetId = rootAssetId;
         Schemas = schemas;
         ProfileId = profileId;
+        ReadLimits = readLimits;
         SpatialSettings = spatialSettings;
     }
 
     /// <summary>Gets the package's selected spatial profile identity.</summary>
     public SpatialProfileId ProfileId { get; }
+
+    /// <summary>Gets the structural limits derived from the package's decoded-asset budget.</summary>
+    public EbinReadLimits ReadLimits { get; }
 
     /// <summary>Gets the root asset being decoded or encoded.</summary>
     public AssetId RootAssetId { get; }

@@ -15,7 +15,8 @@ internal sealed class SceneAsset
         ImmutableArray<ScenePrefabPlacement> placements,
         ImmutableArray<SceneAuthoredRecord> references,
         ImmutableArray<SceneAuthoredRecord> overrides,
-        ImmutableArray<SceneAuthoredRecord> externalSlots)
+        ImmutableArray<SceneAuthoredRecord> externalSlots,
+        ImmutableArray<byte> encodedRecord)
     {
         if (!assetId.IsValid)
         {
@@ -49,6 +50,11 @@ internal sealed class SceneAsset
             throw new ArgumentException("The Scene external-slot array must be initialized.", nameof(externalSlots));
         }
 
+        if (encodedRecord.IsDefaultOrEmpty)
+        {
+            throw new ArgumentException("The Scene record bytes must be initialized and nonempty.", nameof(encodedRecord));
+        }
+
         AssetId = assetId;
         Entities = entities;
         Hierarchy = hierarchy;
@@ -56,9 +62,12 @@ internal sealed class SceneAsset
         References = references;
         Overrides = overrides;
         ExternalSlots = externalSlots;
+        EncodedRecord = encodedRecord;
     }
 
     internal AssetId AssetId { get; }
+
+    internal ImmutableArray<byte> EncodedRecord { get; }
 
     internal ImmutableArray<SceneEntity> Entities { get; }
 

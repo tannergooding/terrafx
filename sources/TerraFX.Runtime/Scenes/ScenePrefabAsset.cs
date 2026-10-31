@@ -14,7 +14,8 @@ internal sealed class ScenePrefabAsset
         SceneHierarchy hierarchy,
         ImmutableArray<ScenePrefabPlacement> placements,
         ImmutableArray<SceneAuthoredRecord> references,
-        ImmutableArray<SceneAuthoredRecord> externalSlots)
+        ImmutableArray<SceneAuthoredRecord> externalSlots,
+        ImmutableArray<byte> encodedRecord)
     {
         if (!assetId.IsValid)
         {
@@ -43,15 +44,23 @@ internal sealed class ScenePrefabAsset
             throw new ArgumentException("The Prefab external-slot array must be initialized.", nameof(externalSlots));
         }
 
+        if (encodedRecord.IsDefaultOrEmpty)
+        {
+            throw new ArgumentException("The Prefab record bytes must be initialized and nonempty.", nameof(encodedRecord));
+        }
+
         AssetId = assetId;
         Entities = entities;
         Hierarchy = hierarchy;
         Placements = placements;
         References = references;
         ExternalSlots = externalSlots;
+        EncodedRecord = encodedRecord;
     }
 
     internal AssetId AssetId { get; }
+
+    internal ImmutableArray<byte> EncodedRecord { get; }
 
     internal ImmutableArray<SceneEntity> Entities { get; }
 

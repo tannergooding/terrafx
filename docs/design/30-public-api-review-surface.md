@@ -3643,6 +3643,7 @@ public sealed class SceneSupportRegistration
 ```
 
 ```csharp
+using TerraFX.Assets;
 using TerraFX.Entities;
 
 namespace TerraFX.Scenes;
@@ -3650,8 +3651,11 @@ namespace TerraFX.Scenes;
 public static class SceneSupport
 {
     public static SceneSupportRegistration CreateRegistration();
+    public static AssetStoreRegistrationBuilder RegisterAssetCodecs(AssetStoreRegistrationBuilder builder);
 }
 ```
+
+`RegisterAssetCodecs` adds the exact `native/scene` and `native/prefab` codecs to the supplied builder and returns that same builder. Its compiled schema registry must already contain `SceneSchemaCatalogue.Schemas`; it creates neither a registration nor an AssetStore and does not add component or auxiliary codecs. Assets remains independent of Scenes.
 
 ## 6. Assets, schema codecs, and packages
 
@@ -3750,11 +3754,12 @@ public interface IBinarySchemaCodec<T>
 public sealed class AssetCodecContext
 {
     internal AssetCodecContext(AssetId rootAssetId, CompiledContentSchemaRegistry schemas,
-        SpatialProfileId profileId, SpatialSettings spatialSettings);
+        SpatialProfileId profileId, SpatialSettings spatialSettings, EbinReadLimits readLimits);
     public AssetId RootAssetId { get; }
     public CompiledContentSchemaRegistry Schemas { get; }
     public SpatialProfileId ProfileId { get; }
     public SpatialSettings SpatialSettings { get; }
+    public EbinReadLimits ReadLimits { get; }
 }
 
 public interface IContextualBinarySchemaCodec<T>
@@ -3771,6 +3776,8 @@ public interface IContextualBinarySchemaCodec<T>
 ```
 
 The expected digest is exactly 32 bytes and applies to the complete package, not an individual asset. The store uses the application's compiled schema registrations; package data cannot add schemas or codecs. `AssetStoreRegistrationBuilder` admits only exact registered Content-scope `NativeAsset` schema tuples, with one codec per tuple and one tuple per CLR value type; nested descriptor schemas remain in the registry for owner-codec validation and are not asset roots. `LoadAsync<T>` validates the canonical envelope and exact registered root schema, requires the selected codec to consume the complete record, and scans schema-declared nested `native/asset-reference` records. Each reference must resolve in the same content set, and its declared schema ID/major must match the target's actual registered envelope schema. The CPU live-lease budget charges each lease's declared decoded wire length until disposal; the concurrent decode budget charges active decoded wire buffers. Codec-owned managed allocations are not measured by either budget. Exhausted budgets or lease capacity fail explicitly rather than queueing an unbounded waiter. The result is a CPU lease, not GPU/audio readiness; `AssetLease.Value` throws after disposal. The internal `AssetLeaseLifetime` is created only after the package reference and lease budgets are reserved. Store disposal closes admission and releases its package-owner reference; admitted reads and leases retain their package backing until completion/disposal. A replacement package is validated before an atomic content-set switch; outstanding leases keep their old package backing alive until disposal. Cancellation cannot release bytes still used by a decoder or consumer. Source adapters and deterministic cooking are offline Content.Tools/MSBuild responsibilities, not runtime importer or cook-receipt APIs.
+
+`AssetCodecContext.ReadLimits` is the immutable structural limit set derived from the selected store's `MaximumDecodedAssetBytes`. A contextual codec uses this exact set for nested structural scans; it must not substitute `EbinReadLimits.Foundation` or infer larger limits from a schema declaration.
 
 The AssetStore registration includes the canonical `NativeAssetSchemaCatalogue` descriptors; omitting or redefining the native envelope/reference/metadata schemas rejects at registration build.
 

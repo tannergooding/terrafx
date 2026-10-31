@@ -255,7 +255,7 @@ internal sealed class SceneAssetReaderTests
         Assert.That(ReadScene, Throws.TypeOf<InvalidDataException>());
     }
 
-    private static class Fixtures
+    internal static class Fixtures
     {
         internal static Guid RootEntityId { get; } = new("10000000-0000-4000-8000-000000000001");
 

@@ -133,7 +133,8 @@ public sealed class AssetStore : IAsyncDisposable
                 assetId,
                 backing.Registration.Schemas,
                 backing.ProfileId,
-                backing.SpatialSettings);
+                backing.SpatialSettings,
+                backing.ReadLimits);
             var status = AssetEnvelopeDecoder.Decode(
                 encodedEnvelope,
                 assetId,

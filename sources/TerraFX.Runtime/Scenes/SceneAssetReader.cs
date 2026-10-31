@@ -20,6 +20,36 @@ internal static class SceneAssetReader
     private static readonly Guid s_rootPositionSchemaId = new ContentSchemaIdentityAssignment("scene/root-position").SchemaId;
     private static readonly Guid s_sceneSchemaId = new ContentSchemaIdentityAssignment("native/scene").SchemaId;
 
+    internal static SceneHierarchyValidationWorkspace CreatePrefabValidationWorkspace(
+        EbinRecordReadView record,
+        AssetId expectedPrefabId,
+        EbinReadLimits limits)
+        => CreateValidationWorkspace(
+            record,
+            expectedPrefabId,
+            s_prefabSchemaId,
+            entityTag: 3,
+            placementTag: 5,
+            maximumEntityCount: 65_536,
+            maximumPlacementCount: 1_048_576,
+            fieldCount: 6,
+            limits: limits);
+
+    internal static SceneHierarchyValidationWorkspace CreateSceneValidationWorkspace(
+        EbinRecordReadView record,
+        AssetId expectedSceneId,
+        EbinReadLimits limits)
+        => CreateValidationWorkspace(
+            record,
+            expectedSceneId,
+            s_sceneSchemaId,
+            entityTag: 2,
+            placementTag: 4,
+            maximumEntityCount: 1_048_576,
+            maximumPlacementCount: 1_048_576,
+            fieldCount: 7,
+            limits: limits);
+
     internal static SceneAsset Read(
         EbinRecordReadView record,
         AssetId expectedSceneId,
@@ -139,7 +169,8 @@ internal static class SceneAssetReader
             placements.MoveToImmutable(),
             references,
             overrides,
-            externalSlots);
+            externalSlots,
+            [.. record.EncodedBytes]);
     }
 
     internal static ScenePrefabAsset ReadPrefab(
@@ -168,7 +199,7 @@ internal static class SceneAssetReader
         }
 
         var entityField = GetRecordArrayField(record, tag: 3, maximumCount: 65_536, limits);
-        var placementField = GetRecordArrayField(record, tag: 5, maximumCount: 65_536, limits);
+        var placementField = GetRecordArrayField(record, tag: 5, maximumCount: 1_048_576, limits);
         var referenceField = GetRecordArrayField(record, tag: 6, maximumCount: 1_048_576, limits);
         var externalSlotField = GetRecordArrayField(record, tag: 8, maximumCount: 65_536, limits);
         var entityCount = checked((int)entityField.Count);
@@ -236,7 +267,7 @@ internal static class SceneAssetReader
             record,
             tag: 6,
             referenceField,
-            s_assetReferenceSchemaId,
+            s_entityReferenceBindingSchemaId,
             maximumCount: 1_048_576);
         var externalSlots = ReadAuthoredRecords(
             record,
@@ -251,7 +282,39 @@ internal static class SceneAssetReader
             hierarchy,
             placements.MoveToImmutable(),
             references,
-            externalSlots);
+            externalSlots,
+            [.. record.EncodedBytes]);
+    }
+
+    private static SceneHierarchyValidationWorkspace CreateValidationWorkspace(
+        EbinRecordReadView record,
+        AssetId expectedAssetId,
+        Guid schemaId,
+        uint entityTag,
+        uint placementTag,
+        int maximumEntityCount,
+        int maximumPlacementCount,
+        int fieldCount,
+        EbinReadLimits limits)
+    {
+        if (!expectedAssetId.IsValid)
+        {
+            throw new ArgumentOutOfRangeException(nameof(expectedAssetId));
+        }
+
+        ArgumentNullException.ThrowIfNull(limits);
+        ValidateHeader(record, schemaId, major: 2, fieldCount: fieldCount);
+
+        if (ReadAssetId(record, tag: 1) != expectedAssetId)
+        {
+            throw new InvalidDataException("The asset identity does not match the enclosing AssetId.");
+        }
+
+        var entityField = GetRecordArrayField(record, entityTag, maximumEntityCount, limits);
+        var placementField = GetRecordArrayField(record, placementTag, maximumPlacementCount, limits);
+        return new SceneHierarchyValidationWorkspace(
+            checked((int)entityField.Count),
+            checked((int)placementField.Count));
     }
 
     private static EbinFieldReadView GetRecordArrayField(

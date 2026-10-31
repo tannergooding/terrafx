@@ -104,6 +104,12 @@ internal static class Program
             .. StandaloneContinuationSchemaCatalogue.Schemas,
             .. applicationSchemas,
         ]);
+        var assetStoreRegistrationBuilder = new AssetStoreRegistrationBuilder(registry);
+        Check(ReferenceEquals(
+            SceneSupport.RegisterAssetCodecs(assetStoreRegistrationBuilder),
+            assetStoreRegistrationBuilder));
+        var assetStoreRegistration = assetStoreRegistrationBuilder.Build();
+        Check(ReferenceEquals(assetStoreRegistration.Schemas, registry));
         var attachmentSchemaReference = applicationSchemas[4].Schema;
         var attachmentField = WorldAttachmentFieldBinding<PublicConsumerSystemAttachment, int>.Value<
             int,
