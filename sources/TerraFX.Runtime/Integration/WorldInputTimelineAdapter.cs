@@ -56,26 +56,133 @@ internal sealed class WorldInputTimelineAdapter
     {
         EnsureOwnerThread();
         ThrowIfDisposed();
-        ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
+        var nextOpenTick = ValidatePumpBoundary(hostTimestamp, isPaused);
+        return CreateClockSegment(hostTimestamp, isPaused, nextOpenTick, beginHostControlBoundary: true);
+    }
+
+    internal ImmutableArray<InputActionTransition> DisposeAndGetTransitions()
+    {
+        EnsureOwnerThread();
+
+        if (_isDisposed)
+        {
+            return [];
+        }
+
+        var transitions = _router.DisposeAndGetTransitions();
+        _sequenceLease.Revoke();
+        _isDisposed = true;
+        return transitions;
+    }
+
+    internal InputRoutingReceipt EnqueueCapturedInput(
+        InputInjection injection,
+        long hostTimestamp,
+        long hostSequence)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(injection);
         _ = _world.CurrentFrame3;
+        return _router.EnqueueHeadlessInjection(injection, hostTimestamp, hostSequence);
+    }
 
-        if (_router.IsPauseControlPending || (_router.IsPaused != isPaused))
+    internal InputRoutingReceipt InjectHeadlessInput(InputInjection injection, long hostTimestamp)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(injection);
+        ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
+        return EnqueueCapturedInput(injection, hostTimestamp, _sequenceLease.Allocate());
+    }
+
+    internal InputRoutingReceipt PauseHeadlessInput(
+        long hostTimestamp,
+        out long discardedInputCount,
+        out ImmutableArray<InputActionTransition> transitions)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        var nextOpenTick = ValidatePumpBoundary(hostTimestamp, isPaused: false);
+        _router.BeginHostControlBoundary(nextOpenTick, hostTimestamp);
+
+        var receipt = _router.CancelInputState(
+            InputCancellationReason.Paused,
+            InputClass.Keyboard | InputClass.Pointing | InputClass.Gamepad,
+            playerSlot: null,
+            hostTimestamp: hostTimestamp,
+            hostSequence: _sequenceLease.Allocate(),
+            discardedInputCount: out discardedInputCount);
+        transitions = [];
+
+        if (receipt.Status != InputRoutingStatus.Applied)
         {
-            throw new InvalidOperationException("The input recipient pause state must be reconciled before installing its clock segment.");
+            return receipt;
         }
 
-        var nextOpenTick = _world.NextTickIndex;
+        transitions = _router.ServiceInputControlBoundary();
+        _ = CreateClockSegment(
+            hostTimestamp,
+            isPaused: true,
+            nextOpenTick: nextOpenTick,
+            beginHostControlBoundary: false);
+        return receipt;
+    }
 
-        if (_segment.IsValid && (_router.NextOpenTick != nextOpenTick))
+    internal InputActionSnapshot PublishInputStage(long tickIndex)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfNegative(tickIndex);
+
+        if (tickIndex != _world.NextTickIndex)
         {
-            throw new InvalidOperationException("The World and input recipient next-open ticks are not synchronized.");
+            throw new InvalidOperationException("The input snapshot must be published for the World's next open tick.");
         }
 
-        if (_segment.IsValid && (hostTimestamp < _segment.HostTimestampStartTicks))
+        return _router.PublishSimulationActionSnapshot(tickIndex);
+    }
+
+    internal InputRoutingReceipt ReconcileHeadlessInputAtBoundary(
+        ImmutableArray<InputInjection> heldInputs,
+        long hostTimestamp,
+        out long discardedInputCount,
+        out ImmutableArray<InputActionTransition> transitions)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        var nextOpenTick = ValidatePumpBoundary(hostTimestamp, isPaused: true);
+        _router.BeginHostControlBoundary(nextOpenTick, hostTimestamp);
+
+        var receipt = _router.ReconcileInputState(
+            heldInputs,
+            InputClass.Keyboard | InputClass.Pointing | InputClass.Gamepad,
+            playerSlot: null,
+            hostTimestamp: hostTimestamp,
+            hostSequence: _sequenceLease.Allocate(),
+            discardedInputCount: out discardedInputCount);
+        transitions = [];
+
+        if (receipt.Status != InputRoutingStatus.Applied)
         {
-            throw new InvalidOperationException("The input clock boundary precedes the active segment.");
+            return receipt;
         }
 
+        transitions = _router.ServiceInputControlBoundary();
+        _ = CreateClockSegment(
+            hostTimestamp,
+            isPaused: false,
+            nextOpenTick: nextOpenTick,
+            beginHostControlBoundary: false);
+        return receipt;
+    }
+
+    private SimulationClockSegment CreateClockSegment(
+        long hostTimestamp,
+        bool isPaused,
+        long nextOpenTick,
+        bool beginHostControlBoundary)
+    {
         var hostSequenceStart = _sequenceLease.Allocate();
         var elapsedTicks = 0L;
         var fractionalTicks = 0.0;
@@ -115,59 +222,14 @@ internal sealed class WorldInputTimelineAdapter
             _world.CurrentTimeScale,
             isPaused);
         _router.SetSimulationClockSegment(in segment);
-        _router.BeginHostControlBoundary(nextOpenTick, hostTimestamp);
+
+        if (beginHostControlBoundary)
+        {
+            _router.BeginHostControlBoundary(nextOpenTick, hostTimestamp);
+        }
+
         _segment = segment;
         return segment;
-    }
-
-    internal ImmutableArray<InputActionTransition> DisposeAndGetTransitions()
-    {
-        EnsureOwnerThread();
-
-        if (_isDisposed)
-        {
-            return [];
-        }
-
-        var transitions = _router.DisposeAndGetTransitions();
-        _sequenceLease.Revoke();
-        _isDisposed = true;
-        return transitions;
-    }
-
-    internal InputRoutingReceipt EnqueueCapturedInput(
-        InputInjection injection,
-        long hostTimestamp,
-        long hostSequence)
-    {
-        EnsureOwnerThread();
-        ThrowIfDisposed();
-        ArgumentNullException.ThrowIfNull(injection);
-        _ = _world.CurrentFrame3;
-        return _router.EnqueueHeadlessInjection(injection, hostTimestamp, hostSequence);
-    }
-
-    internal InputRoutingReceipt InjectHeadlessInput(InputInjection injection, long hostTimestamp)
-    {
-        EnsureOwnerThread();
-        ThrowIfDisposed();
-        ArgumentNullException.ThrowIfNull(injection);
-        ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
-        return EnqueueCapturedInput(injection, hostTimestamp, _sequenceLease.Allocate());
-    }
-
-    internal InputActionSnapshot PublishInputStage(long tickIndex)
-    {
-        EnsureOwnerThread();
-        ThrowIfDisposed();
-        ArgumentOutOfRangeException.ThrowIfNegative(tickIndex);
-
-        if (tickIndex != _world.NextTickIndex)
-        {
-            throw new InvalidOperationException("The input snapshot must be published for the World's next open tick.");
-        }
-
-        return _router.PublishSimulationActionSnapshot(tickIndex);
     }
 
     private void EnsureOwnerThread()
@@ -181,5 +243,30 @@ internal sealed class WorldInputTimelineAdapter
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_isDisposed, this);
+    }
+
+    private long ValidatePumpBoundary(long hostTimestamp, bool isPaused)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
+        _ = _world.CurrentFrame3;
+
+        if (_router.IsPauseControlPending || (_router.IsPaused != isPaused))
+        {
+            throw new InvalidOperationException("The input recipient pause state must be reconciled before installing its clock segment.");
+        }
+
+        var nextOpenTick = _world.NextTickIndex;
+
+        if (_segment.IsValid && (_router.NextOpenTick != nextOpenTick))
+        {
+            throw new InvalidOperationException("The World and input recipient next-open ticks are not synchronized.");
+        }
+
+        if (_segment.IsValid && (hostTimestamp < _segment.HostTimestampStartTicks))
+        {
+            throw new InvalidOperationException("The input clock boundary precedes the active segment.");
+        }
+
+        return nextOpenTick;
     }
 }

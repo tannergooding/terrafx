@@ -34,6 +34,54 @@ internal sealed class WorldInputTimelineAdapterTests
     }
 
     [Test]
+    public void PauseAndResumeHeadlessTimelineAtPumpBoundaries()
+    {
+        using var world = CreateWorld(initialTimeScale: 1.0f);
+        var adapter = new WorldInputTimelineAdapter(world);
+
+        try
+        {
+            var key = new KeyboardControl(7, 4);
+            Assert.That(adapter.Router.RegisterMap(CreateDigitalMap(key)).Status, Is.EqualTo(InputMapStatus.Registered));
+            _ = adapter.BeginPumpBoundary(hostTimestamp: 0, isPaused: false);
+            Assert.That(
+                adapter.InjectHeadlessInput(new InputInjection(key, InputKeyEventKind.Down), 166_666).Status,
+                Is.EqualTo(InputRoutingStatus.Applied));
+            Assert.That(adapter.PublishInputStage(0).Actions[0].IsDownAtEnd, Is.True);
+            Assert.That(world.Step().CompletedTick, Is.Zero);
+
+            var pause = adapter.PauseHeadlessInput(
+                333_332,
+                out var discardedInputCount,
+                out var pauseTransitions);
+            Assert.That(pause.Status, Is.EqualTo(InputRoutingStatus.Applied));
+            Assert.That(discardedInputCount, Is.Zero);
+            Assert.That(pauseTransitions, Has.Length.EqualTo(1));
+            Assert.That(pauseTransitions[0].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+            Assert.That(pauseTransitions[0].CancellationReason, Is.EqualTo(InputCancellationReason.Paused));
+            Assert.That(adapter.CurrentSegment.IsPaused, Is.True);
+
+            var resume = adapter.ReconcileHeadlessInputAtBoundary(
+                [new InputInjection(key, InputKeyEventKind.Down)],
+                333_332,
+                out discardedInputCount,
+                out var resumeTransitions);
+            Assert.That(resume.Status, Is.EqualTo(InputRoutingStatus.Applied));
+            Assert.That(discardedInputCount, Is.Zero);
+            Assert.That(resumeTransitions, Is.Empty);
+            Assert.That(adapter.CurrentSegment.IsPaused, Is.False);
+
+            var resumedSnapshot = adapter.PublishInputStage(1);
+            Assert.That(resumedSnapshot.Actions[0].IsDownAtEnd, Is.False);
+            Assert.That(resumedSnapshot.Actions[0].Transitions, Is.Empty);
+        }
+        finally
+        {
+            _ = adapter.DisposeAndGetTransitions();
+        }
+    }
+
+    [Test]
     public void RebasePreservesWorldClockAndPublishesInputTicks()
     {
         using var world = CreateWorld(initialTimeScale: 0.5f);
