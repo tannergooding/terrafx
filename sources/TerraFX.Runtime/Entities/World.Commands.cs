@@ -597,6 +597,34 @@ public sealed partial class World
                 }
             }
 
+            if (staging.IsOwnerControl)
+            {
+                var previewIndex = 0;
+
+                foreach (var command in commands)
+                {
+                    if ((command.Kind != WorldCommandStaging.CommandKind.CreateEntity) || command.IsCanceled)
+                    {
+                        continue;
+                    }
+
+                    if (!_entitySlots.TryGetAllocationPreview(
+                            previewIndex,
+                            out var predictedSlot,
+                            out var predictedGeneration))
+                    {
+                        throw new InvalidOperationException("The configured Entity-slot limit was reached during owner-command preflight.");
+                    }
+
+                    if (!createdEntityHandles.Add(new Entity(_ownerId, predictedSlot, predictedGeneration)))
+                    {
+                        throw new InvalidOperationException("The owner-command Entity preview contains a duplicate handle.");
+                    }
+
+                    previewIndex++;
+                }
+            }
+
             foreach (var command in commands)
             {
                 if (command.Kind == WorldCommandStaging.CommandKind.CreateEntity)
@@ -620,7 +648,10 @@ public sealed partial class World
                     {
                         var registration = FindComponentRegistration(requestedInitialization.ComponentType);
                         var initialization = registration.CreateInitializedValue(requestedInitialization, _spatialSettings);
-                        ValidateCommandInitialization(registration, initialization);
+                        ValidateCommandInitialization(
+                            registration,
+                            initialization,
+                            allowProjectedEntityTargets: staging.IsOwnerControl);
                         _ = components.Add(registration.ComponentType);
                         componentValues.Add(registration.ComponentType, initialization);
                     }

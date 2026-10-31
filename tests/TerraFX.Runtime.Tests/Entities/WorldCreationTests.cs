@@ -1256,6 +1256,34 @@ internal sealed class WorldCreationTests
     }
 
     [Test]
+    public void OwnerEntityBatchResolvesMutualCandidateReferences()
+    {
+        var schemas = new CompiledContentSchemaRegistry([]);
+        var component = new DeferredReferenceRegistration();
+        var registration = new WorldRegistration(schemas, [component], []);
+        using var world = World.Create(new WorldOptions(registration));
+
+        var entities = world.CreateEntitiesAtomically(
+            2,
+            static candidates => {
+                var firstValue = new OptionalEntityReferenceComponent(true, candidates[1]);
+                var secondValue = new OptionalEntityReferenceComponent(true, candidates[0]);
+                return [
+                    new EntityDescription(components: [ComponentInitialization.Value(in firstValue)]),
+                    new EntityDescription(components: [ComponentInitialization.Value(in secondValue)]),
+                ];
+            });
+
+        Assert.That(entities, Has.Length.EqualTo(2));
+        Assert.That(world.TryGet(entities[0], out OptionalEntityReferenceComponent first), Is.True);
+        Assert.That(first.IsPresent, Is.True);
+        Assert.That(first.Target, Is.EqualTo(entities[1]));
+        Assert.That(world.TryGet(entities[1], out OptionalEntityReferenceComponent second), Is.True);
+        Assert.That(second.IsPresent, Is.True);
+        Assert.That(second.Target, Is.EqualTo(entities[0]));
+    }
+
+    [Test]
     public void QueryOrdersArchetypesByCanonicalSchemaKeyBeforeSelectingPartitions()
     {
         using var domain = new WorldAdmissionDomain(16 * 1024 * 1024);

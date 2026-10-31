@@ -13,16 +13,18 @@ internal sealed class WorldCommandStaging : IDisposable
 {
     private readonly Dictionary<EntityToken, CommandRecord> _createsByToken = [];
     private readonly Lock _gate = new();
+    private readonly bool _isOwnerControl;
     private bool _isSealed;
     private readonly long _maximumBytes;
     private readonly int _maximumCommands;
+    private CommandPrefix? _ownerControlPrefix;
     private readonly List<CommandPrefix> _prefixes = [];
     private readonly Dictionary<WriterKey, CommandPrefix> _prefixesByKey = [];
     private readonly List<CommandRecord> _records = [];
     private long _reservedBytes;
     private readonly World _world;
 
-    internal WorldCommandStaging(World world, int maximumCommands, long maximumBytes)
+    internal WorldCommandStaging(World world, int maximumCommands, long maximumBytes, bool ownerControl = false)
     {
         ArgumentNullException.ThrowIfNull(world);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumCommands);
@@ -30,7 +32,10 @@ internal sealed class WorldCommandStaging : IDisposable
         _world = world;
         _maximumCommands = maximumCommands;
         _maximumBytes = maximumBytes;
+        _isOwnerControl = ownerControl;
     }
+
+    internal bool IsOwnerControl => _isOwnerControl;
 
     internal long ReservedBytes
     {
@@ -310,6 +315,85 @@ internal sealed class WorldCommandStaging : IDisposable
                 create.IsCanceled = true;
                 prefix.NextSequence = nextSequence;
                 _reservedBytes = checked(_reservedBytes + bytes);
+            }
+            catch
+            {
+                _world.ReleaseCommandStagingBytes(bytes);
+                throw;
+            }
+        }
+    }
+
+    internal EntityToken AppendOwnerCreate(EntityDescription description)
+    {
+        if (!_isOwnerControl)
+        {
+            throw new InvalidOperationException("Owner-control Create commands require owner-control staging.");
+        }
+
+        ArgumentNullException.ThrowIfNull(description);
+
+        lock (_gate)
+        {
+            if (_isSealed)
+            {
+                throw new InvalidOperationException("The World command writer is no longer accepting appends.");
+            }
+
+            if (_records.Count >= _maximumCommands)
+            {
+                throw new InvalidOperationException("The World deferred-command count limit was reached.");
+            }
+
+            var prefix = _ownerControlPrefix
+                ?? new CommandPrefix(SimulationStage.Structural, int.MinValue, writerPartition: 0);
+            var sequence = prefix.NextSequence;
+            var nextSequence = checked(sequence + 1);
+            var bytes = checked(
+                192L
+                + ((long)description.Components.Length * 128L)
+                + ((long)description.Tags.Length * Unsafe.SizeOf<Guid>()));
+
+            if (!_world.TryReserveCommandStagingBytes(bytes, _reservedBytes, _maximumBytes))
+            {
+                throw new InvalidOperationException("The World command-staging byte budget was reached.");
+            }
+
+            try
+            {
+                _ = _records.EnsureCapacity(checked(_records.Count + 1));
+                _ = _createsByToken.EnsureCapacity(checked(_createsByToken.Count + 1));
+
+                if (_ownerControlPrefix is null)
+                {
+                    _ = _prefixes.EnsureCapacity(checked(_prefixes.Count + 1));
+                }
+
+                var token = new EntityToken(prefix.PrefixId, sequence);
+                var record = new CommandRecord(
+                    prefix,
+                    sequence,
+                    default,
+                    registration: null,
+                    kind: CommandKind.CreateEntity,
+                    initialization: null,
+                    path: null,
+                    target: null,
+                    schemaId: Guid.Empty,
+                    token: token,
+                    description: description);
+
+                if (_ownerControlPrefix is null)
+                {
+                    _ownerControlPrefix = prefix;
+                    _prefixes.Add(prefix);
+                }
+
+                _records.Add(record);
+                _createsByToken.Add(token, record);
+                prefix.NextSequence = nextSequence;
+                _reservedBytes = checked(_reservedBytes + bytes);
+                return token;
             }
             catch
             {
@@ -904,18 +988,26 @@ internal sealed class WorldCommandStaging : IDisposable
 
     internal sealed class CommandPrefix
     {
-        internal CommandPrefix(SystemDescription description, int writerPartition)
+        internal CommandPrefix(SimulationStage stage, int order, int writerPartition)
         {
-            Description = description;
+            Stage = stage;
+            Order = order;
             WriterPartition = writerPartition;
             PrefixId = Guid.NewGuid();
         }
 
-        internal SystemDescription Description { get; }
+        internal CommandPrefix(SystemDescription description, int writerPartition)
+            : this(description.Stage, description.Order, writerPartition)
+        {
+        }
 
         internal long NextSequence { get; set; }
 
+        internal int Order { get; }
+
         internal Guid PrefixId { get; }
+
+        internal SimulationStage Stage { get; }
 
         internal int WriterPartition { get; }
     }
@@ -1177,14 +1269,14 @@ internal sealed class WorldCommandStaging : IDisposable
         {
             ArgumentNullException.ThrowIfNull(left);
             ArgumentNullException.ThrowIfNull(right);
-            var comparison = ((int)left.Description.Stage).CompareTo((int)right.Description.Stage);
+            var comparison = ((int)left.Stage).CompareTo((int)right.Stage);
 
             if (comparison != 0)
             {
                 return comparison;
             }
 
-            comparison = left.Description.Order.CompareTo(right.Description.Order);
+            comparison = left.Order.CompareTo(right.Order);
 
             if (comparison != 0)
             {
@@ -1203,14 +1295,14 @@ internal sealed class WorldCommandStaging : IDisposable
         {
             ArgumentNullException.ThrowIfNull(left);
             ArgumentNullException.ThrowIfNull(right);
-            var comparison = ((int)left.Prefix.Description.Stage).CompareTo((int)right.Prefix.Description.Stage);
+            var comparison = ((int)left.Prefix.Stage).CompareTo((int)right.Prefix.Stage);
 
             if (comparison != 0)
             {
                 return comparison;
             }
 
-            comparison = left.Prefix.Description.Order.CompareTo(right.Prefix.Description.Order);
+            comparison = left.Prefix.Order.CompareTo(right.Prefix.Order);
 
             if (comparison != 0)
             {

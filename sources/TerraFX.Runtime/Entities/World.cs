@@ -72,6 +72,7 @@ public sealed partial class World : IDisposable
     private long _nextQueryEpoch;
     private long _nextSystemInvocationEpoch;
     private long _nextTickIndex;
+    private long _ownerCommandPreparationByteReservation;
     private readonly uint _ownerId;
     private readonly int _ownerThreadId;
     private readonly bool _ownsAdmissionDomain;
@@ -1561,7 +1562,8 @@ public sealed partial class World : IDisposable
             + _systemInvocationStorageByteReservation
             + _componentTagWorkPlanByteReservation
             + _controlStorageByteReservation
-            + _subscriptionStorageByteReservation);
+            + _subscriptionStorageByteReservation
+            + _ownerCommandPreparationByteReservation);
 
         for (var index = 0; index < _archetypeCount; index++)
         {
