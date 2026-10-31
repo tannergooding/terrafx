@@ -91,6 +91,18 @@ internal static class SceneEntityReader
         return new SceneEntity(entityId, localTransformPosition, components.MoveToImmutable());
     }
 
+    internal static SceneAuthoredComponentRecord ReadLocalTransformRecord(EbinRecordReadView record)
+    {
+        _ = ReadLocalTransformPosition(record);
+        var header = record.Header;
+        var schema = new ContentSchemaReference(
+            header.SchemaId,
+            header.Major,
+            header.Minor,
+            ContentSchemaScope.Content);
+        return new SceneAuthoredComponentRecord(schema, record.EncodedBytes);
+    }
+
     private static EbinFieldReadView GetField(
         EbinRecordReadView record,
         uint tag,

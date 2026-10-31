@@ -123,6 +123,24 @@ internal sealed class SceneHierarchyCodecTests
 
     internal static class FixtureBuilder
     {
+        public static FixtureField CreateFixedGuidArrayField(uint tag, params Guid[] values)
+        {
+            var payload = new byte[checked(32 + (values.Length * 16))];
+            var status = EbinPayloadWriter.WriteFixedArray(
+                values.AsSpan(),
+                EbinReadLimits.Foundation,
+                payload,
+                out var payloadBytes,
+                out var diagnostic);
+
+            if (status is not EbinWriteStatus.Complete)
+            {
+                throw new InvalidOperationException($"The fixed GUID array fixture failed: {diagnostic?.Category ?? status.ToString()}.");
+            }
+
+            return new FixtureField(tag, 23, 1, checked((ulong)values.Length), payload[..payloadBytes]);
+        }
+
         public static FixtureField CreateFloatGeometryField(uint tag, ushort kind, params float[] values)
         {
             var payload = new byte[checked(values.Length * sizeof(float))];
@@ -147,7 +165,8 @@ internal sealed class SceneHierarchyCodecTests
             int chunkZ,
             float offsetX,
             float offsetY,
-            float offsetZ)
+            float offsetZ,
+            bool isRequired = true)
         {
             var payload = new byte[24];
             BinaryPrimitives.WriteInt32LittleEndian(payload, chunkX);
@@ -156,7 +175,7 @@ internal sealed class SceneHierarchyCodecTests
             BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(12), BitConverter.SingleToInt32Bits(offsetX));
             BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(16), BitConverter.SingleToInt32Bits(offsetY));
             BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(20), BitConverter.SingleToInt32Bits(offsetZ));
-            return new FixtureField(tag, 21, 1, 1, payload);
+            return new FixtureField(tag, 21, isRequired ? (ushort)1 : (ushort)0, 1, payload);
         }
 
         public static FixtureField CreateRecordArrayField(uint tag, params byte[][] records)

@@ -21,8 +21,12 @@ internal sealed class SceneAssetStoreTests
         var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
         var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
         var placementId = new Guid("20000000-0000-4000-8000-000000000003");
-        var prefabRecord = SceneAssetReaderTests.Fixtures.CreatePrefab(new AssetId(1));
-        var sceneRecord = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(new AssetId(3), placementId);
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var prefabRecord = SceneAssetReaderTests.Fixtures.CreatePrefab(new AssetId(1), entityId: rootEntityId);
+        var sceneRecord = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
+            new AssetId(3),
+            placementId,
+            SceneAssetReaderTests.Fixtures.CreateRootPose(rootEntityId));
         var package = Package.CreatePackage(
             new Package.Entry(1, Package.CreateEnvelope(1, prefabRecord)),
             new Package.Entry(3, Package.CreateEnvelope(3, sceneRecord)));
@@ -42,6 +46,7 @@ internal sealed class SceneAssetStoreTests
                 Assert.That(sceneLease.Value.AssetId, Is.EqualTo(new AssetId(3)));
                 Assert.That(sceneLease.Value.Placements, Has.Length.EqualTo(1));
                 Assert.That(sceneLease.Value.Placements[0].PrefabAssetId, Is.EqualTo(prefabLease.AssetId));
+                Assert.That(sceneLease.Value.Placements[0].RootPoses, Has.Length.EqualTo(1));
             }
             finally
             {

@@ -13,10 +13,13 @@ internal static class SceneAssetReader
 {
     private static readonly Guid s_assetReferenceSchemaId = new ContentSchemaIdentityAssignment("native/asset-reference").SchemaId;
     private static readonly Guid s_entityReferenceBindingSchemaId = new ContentSchemaIdentityAssignment("native/entity-reference-binding").SchemaId;
+    private static readonly Guid s_entitySelectorSchemaId = new ContentSchemaIdentityAssignment("native/entity-selector").SchemaId;
     private static readonly Guid s_externalSlotSchemaId = new ContentSchemaIdentityAssignment("native/external-slot").SchemaId;
     private static readonly Guid s_prefabOverrideSchemaId = new ContentSchemaIdentityAssignment("native/prefab-override").SchemaId;
     private static readonly Guid s_prefabPlacementSchemaId = new ContentSchemaIdentityAssignment("native/prefab-placement").SchemaId;
+    private static readonly Guid s_prefabRootPoseSchemaId = new ContentSchemaIdentityAssignment("native/prefab-root-pose").SchemaId;
     private static readonly Guid s_prefabSchemaId = new ContentSchemaIdentityAssignment("native/prefab").SchemaId;
+    private static readonly Guid s_placementSlotBindingSchemaId = new ContentSchemaIdentityAssignment("native/placement-slot-binding").SchemaId;
     private static readonly Guid s_rootPositionSchemaId = new ContentSchemaIdentityAssignment("scene/root-position").SchemaId;
     private static readonly Guid s_sceneSchemaId = new ContentSchemaIdentityAssignment("native/scene").SchemaId;
 
@@ -317,6 +320,28 @@ internal static class SceneAssetReader
             checked((int)placementField.Count));
     }
 
+    private static EbinFieldReadView GetFixedGuidArrayField(
+        EbinRecordReadView record,
+        uint tag,
+        int maximumCount,
+        EbinReadLimits limits)
+    {
+        if (!record.TryGetField(tag, out var field)
+            || (field.Kind != 23)
+            || !field.IsRequired
+            || (field.Count > checked((ulong)maximumCount))
+            || (field.Count > checked((ulong)limits.MaximumArrayElements))
+            || (field.Count > int.MaxValue)
+            || (field.Payload.Length != checked(32 + (checked((int)field.Count) * 16)))
+            || (BinaryPrimitives.ReadUInt16LittleEndian(field.Payload[16..]) != 11)
+            || (BinaryPrimitives.ReadUInt32LittleEndian(field.Payload[20..]) != 16))
+        {
+            throw new InvalidDataException($"Scene fixed GUID array field {tag} does not match its schema.");
+        }
+
+        return field;
+    }
+
     private static EbinFieldReadView GetRecordArrayField(
         EbinRecordReadView record,
         uint tag,
@@ -388,6 +413,32 @@ internal static class SceneAssetReader
         return records.MoveToImmutable();
     }
 
+    private static SceneEntitySelector ReadEntitySelector(EbinRecordReadView record, EbinReadLimits limits)
+    {
+        ValidateHeader(record, s_entitySelectorSchemaId, major: 1, fieldCount: 3);
+        var scope = ReadUInt8(record, tag: 1);
+        var placementPathField = GetFixedGuidArrayField(record, tag: 2, maximumCount: 32, limits);
+        var pathCount = checked((int)placementPathField.Count);
+        var placementPath = ImmutableArray.CreateBuilder<Guid>(pathCount);
+        var pathPayload = placementPathField.Payload[32..];
+
+        for (var index = 0; index < pathCount; index++)
+        {
+            placementPath.Add(ReadGuidPayload(pathPayload.Slice(index * 16, 16)));
+        }
+
+        if (scope is not (byte)SceneEntitySelectorScope.OccurrenceRelative
+            and not (byte)SceneEntitySelectorScope.InstanceAbsolute)
+        {
+            throw new InvalidDataException("An EntitySelector scope is not defined by the schema.");
+        }
+
+        return new SceneEntitySelector(
+            (SceneEntitySelectorScope)scope,
+            placementPath.MoveToImmutable(),
+            ReadGuid(record, tag: 3, isRequired: true));
+    }
+
     private static Guid ReadGuid(EbinRecordReadView record, uint tag, bool isRequired)
     {
         if (!record.TryGetField(tag, out var field)
@@ -437,11 +488,31 @@ internal static class SceneAssetReader
             parentEntityId = ReadGuidPayload(parentField.Payload);
         }
 
-        _ = GetRecordArrayField(record, tag: 4, maximumCount: 65_536, limits);
-        _ = GetRecordArrayField(record, tag: 5, maximumCount: 65_536, limits);
-        _ = GetRecordArrayField(record, tag: 6, maximumCount: 65_536, limits);
+        var rootPoseField = GetRecordArrayField(record, tag: 4, maximumCount: 65_536, limits);
+        var overrideField = GetRecordArrayField(record, tag: 5, maximumCount: 65_536, limits);
+        var slotBindingField = GetRecordArrayField(record, tag: 6, maximumCount: 65_536, limits);
+        var rootPoses = ReadPrefabRootPoses(record, rootPoseField, limits);
+        var overrides = ReadAuthoredRecords(
+            record,
+            tag: 5,
+            overrideField,
+            s_prefabOverrideSchemaId,
+            maximumCount: 65_536);
+        var slotBindings = ReadAuthoredRecords(
+            record,
+            tag: 6,
+            slotBindingField,
+            s_placementSlotBindingSchemaId,
+            maximumCount: 65_536);
         var encodedRecord = ImmutableArray.CreateRange(record.EncodedBytes.ToArray());
-        return new ScenePrefabPlacement(placementId, prefabAssetId, parentEntityId, encodedRecord);
+        return new ScenePrefabPlacement(
+            placementId,
+            prefabAssetId,
+            parentEntityId,
+            rootPoses,
+            overrides,
+            slotBindings,
+            encodedRecord);
     }
 
     private static AssetId ReadPrefabReference(EbinRecordReadView record)
@@ -469,6 +540,52 @@ internal static class SceneAssetReader
         return new AssetId(checked((int)assetId));
     }
 
+    private static ScenePrefabRootPose ReadPrefabRootPose(EbinRecordReadView record, EbinReadLimits limits)
+    {
+        var hasRootPosition = record.TryGetField(3, out var rootPositionField);
+        ValidateHeader(record, s_prefabRootPoseSchemaId, major: 1, fieldCount: hasRootPosition ? 3 : 2);
+        var target = ReadEntitySelector(record.GetRecord(1), limits);
+
+        if (target.Scope is not SceneEntitySelectorScope.OccurrenceRelative)
+        {
+            throw new InvalidDataException("A Prefab RootPose target must be occurrence-relative.");
+        }
+
+        var localTransform = SceneEntityReader.ReadLocalTransformRecord(record.GetRecord(2));
+        ImmutableArray<byte>? rootPositionPayload = null;
+
+        if (hasRootPosition)
+        {
+            if ((rootPositionField.Kind != 21)
+                || rootPositionField.IsRequired
+                || (rootPositionField.Count != 1)
+                || (rootPositionField.Payload.Length != 24))
+            {
+                throw new InvalidDataException("The Prefab RootPose RootPosition does not match its optional schema field.");
+            }
+
+            rootPositionPayload = [.. rootPositionField.Payload];
+        }
+
+        return new ScenePrefabRootPose(target, localTransform, rootPositionPayload);
+    }
+
+    private static ImmutableArray<ScenePrefabRootPose> ReadPrefabRootPoses(
+        EbinRecordReadView record,
+        EbinFieldReadView field,
+        EbinReadLimits limits)
+    {
+        var count = checked((int)field.Count);
+        var rootPoses = ImmutableArray.CreateBuilder<ScenePrefabRootPose>(count);
+
+        for (var index = 0; index < count; index++)
+        {
+            rootPoses.Add(ReadPrefabRootPose(record.GetRecordArrayElement(4, index), limits));
+        }
+
+        return rootPoses.MoveToImmutable();
+    }
+
     private static uint ReadUInt32(EbinRecordReadView record, uint tag)
     {
         if (!record.TryGetField(tag, out var field)
@@ -481,6 +598,20 @@ internal static class SceneAssetReader
         }
 
         return BinaryPrimitives.ReadUInt32LittleEndian(field.Payload);
+    }
+
+    private static byte ReadUInt8(EbinRecordReadView record, uint tag)
+    {
+        if (!record.TryGetField(tag, out var field)
+            || (field.Kind != 1)
+            || !field.IsRequired
+            || (field.Count != 1)
+            || (field.Payload.Length != sizeof(byte)))
+        {
+            throw new InvalidDataException($"Scene UInt8 field {tag} does not match its schema.");
+        }
+
+        return field.Payload[0];
     }
 
     private static void ValidateHeader(EbinRecordReadView record, Guid schemaId, uint major, int fieldCount)
