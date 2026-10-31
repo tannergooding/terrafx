@@ -232,6 +232,29 @@ public sealed partial class InputRouter
         Dictionary<InputControlKey, (float X, float Y)> vectorControlValues)
         => vectorControlValues.TryGetValue(control, out var value) ? value : (0.0f, 0.0f);
 
+    private static bool IsBindingSuppressedByConsumption(
+        InputBindingRuntimeState bindingState,
+        Dictionary<InputControlKey, List<InputConsumptionLease>> consumptionLeases)
+    {
+        foreach (var control in bindingState.ControlKeys)
+        {
+            if (!consumptionLeases.TryGetValue(control, out var leases))
+            {
+                continue;
+            }
+
+            foreach (var lease in leases)
+            {
+                if (lease.ContextRank < bindingState.ContextRank)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     private static bool IsDigitalRelease(InputEnvelope envelope)
         => envelope.Injection.Kind switch {
             InputInjectionKind.KeyboardKey => envelope.Injection.KeyEventKind == InputKeyEventKind.Up,
@@ -263,7 +286,8 @@ public sealed partial class InputRouter
         ActionDefinition action,
         long hostSequence,
         long? assignedTick,
-        InputCancellationReason? cancellationReason = null)
+        InputCancellationReason? cancellationReason,
+        Dictionary<InputControlKey, List<InputConsumptionLease>> consumptionLeases)
     {
         var actionState = mapState.ActionStates[action.ActionId];
 
@@ -278,6 +302,7 @@ public sealed partial class InputRouter
                 if ((binding.ActionId == action.ActionId)
                     && bindingState.Definition.Enabled
                     && bindingState.IsContextEligible
+                    && !IsBindingSuppressedByConsumption(bindingState, consumptionLeases)
                     && !bindingState.IsDisarmed
                     && bindingState.IsDown)
                 {
@@ -338,6 +363,7 @@ public sealed partial class InputRouter
             if ((binding.ActionId != action.ActionId)
                 || !binding.Enabled
                 || !bindingState.IsContextEligible
+                || IsBindingSuppressedByConsumption(bindingState, consumptionLeases)
                 || bindingState.IsDisarmed)
             {
                 continue;
@@ -599,6 +625,7 @@ public sealed partial class InputRouter
             InitializeMapState(mapState);
         }
 
+        RefreshAllConsumptionLeases();
         return new InputRoutingReceipt(InputRoutingStatus.Applied, _recipientId, hostSequence, null, null);
     }
 
@@ -649,6 +676,25 @@ public sealed partial class InputRouter
         }
 
         return transitions.ToImmutable();
+    }
+
+    private void AddConsumptionChangedControl(
+        InputControlKey control,
+        HashSet<InputControlKey> changedControls,
+        HashSet<InputBindingRuntimeState> affectedBindingStates)
+    {
+        _ = changedControls.Add(control);
+
+        foreach (var mapState in _maps.Values)
+        {
+            if (mapState.BindingsByControl.TryGetValue(control, out var bindings))
+            {
+                foreach (var bindingState in bindings)
+                {
+                    _ = affectedBindingStates.Add(bindingState);
+                }
+            }
+        }
     }
 
     private ImmutableArray<InputActionTransition> ApplyInputControlEnvelope(
@@ -721,8 +767,8 @@ public sealed partial class InputRouter
 
         if (changed)
         {
-            UpdateAffectedBindingStates(envelope.Control, envelope);
-            RecomputeAffectedActions(envelope.Control, envelope.HostSequence, envelope.AssignedTick);
+            var affectedControls = UpdateAffectedBindingStates(envelope.Control, envelope);
+            RecomputeAffectedActions(affectedControls, envelope.HostSequence, envelope.AssignedTick);
         }
     }
 
@@ -743,6 +789,7 @@ public sealed partial class InputRouter
 
     private void ClearInputState()
     {
+        _consumptionLeases.Clear();
         _digitalControlDownTimestamps.Clear();
         _digitalControlStates.Clear();
         _inputControlInbox.Clear();
@@ -757,6 +804,7 @@ public sealed partial class InputRouter
         _lastUnacceptedHostSequence = 0;
         _overflowServiced = false;
         _hostControlTimestamp = 0;
+        _orderedConsumableBindings = [];
         _orderedContexts = [];
     }
 
@@ -803,6 +851,125 @@ public sealed partial class InputRouter
             null,
             new ValidationIssue(code, path));
 
+    private void DisarmBindingsForConsumptionChanges(HashSet<InputControlKey> changedControls)
+    {
+        foreach (var control in changedControls)
+        {
+            foreach (var mapState in _maps.Values)
+            {
+                if (!mapState.BindingsByControl.TryGetValue(control, out var bindings))
+                {
+                    continue;
+                }
+
+                foreach (var bindingState in bindings)
+                {
+                    if (bindingState.Definition.Enabled
+                        && bindingState.IsContextEligible
+                        && IsBindingSuppressedByConsumption(bindingState, _consumptionLeases)
+                        && !IsBindingNeutral(bindingState))
+                    {
+                        bindingState.IsDisarmed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    private ImmutableArray<InputControlKey> GetConsumptionControls(InputBindingRuntimeState bindingState)
+    {
+        var binding = bindingState.Definition;
+
+        if (!binding.Enabled
+            || ((binding.Flags & InputBindingBehavior.ConsumePhysicalEvent) == 0)
+            || !bindingState.IsContextEligible
+            || bindingState.IsDisarmed
+            || IsBindingSuppressedByConsumption(bindingState, _consumptionLeases))
+        {
+            return [];
+        }
+
+        var controls = ImmutableArray.CreateBuilder<InputControlKey>();
+
+        switch (binding.Kind)
+        {
+            case BindingKind.Button:
+            {
+                if (bindingState.IsDown)
+                {
+                    controls.Add(bindingState.ControlKeys[0]);
+                }
+
+                break;
+            }
+
+            case BindingKind.Chord:
+            {
+                if (!IsBindingNeutral(bindingState))
+                {
+                    controls.AddRange(bindingState.ControlKeys);
+                }
+
+                break;
+            }
+
+            case BindingKind.Axis1Keys:
+            case BindingKind.Axis2Keys:
+            {
+                foreach (var control in bindingState.ControlKeys)
+                {
+                    if (IsControlDown(control))
+                    {
+                        controls.Add(control);
+                    }
+                }
+
+                break;
+            }
+
+            case BindingKind.GamepadAxis1:
+            case BindingKind.GamepadStick2:
+            case BindingKind.GamepadTrigger:
+            {
+                if ((bindingState.AxisX != 0.0f) || (bindingState.AxisY != 0.0f))
+                {
+                    controls.Add(bindingState.ControlKeys[0]);
+                }
+
+                break;
+            }
+
+            case BindingKind.AxisThreshold:
+            {
+                if (bindingState.IsDown)
+                {
+                    controls.Add(bindingState.ControlKeys[0]);
+                }
+
+                break;
+            }
+        }
+
+        return controls.ToImmutable();
+    }
+
+    private int GetEffectiveConsumptionRank(InputControlKey control)
+    {
+        if (!_consumptionLeases.TryGetValue(control, out var leases))
+        {
+            return int.MaxValue;
+        }
+
+        var rank = int.MaxValue;
+
+        foreach (var lease in leases)
+        {
+            rank = Math.Min(rank, lease.ContextRank);
+        }
+
+        return rank;
+    }
+
     private (ulong ActiveMask, long[] InsertionSequences, long LastInsertionSequence) GetPlannedContextState(InputActionMapState mapState)
     {
         var activeMask = mapState.ActiveContextMask;
@@ -834,6 +1001,8 @@ public sealed partial class InputRouter
 
         foreach (var mapState in _maps.Values.OrderBy(static state => state.Map.MapId.ToString("D"), StringComparer.Ordinal))
         {
+            InitializeMapState(mapState);
+
             foreach (var action in mapState.OrderedActions)
             {
                 var actionState = mapState.ActionStates[action.ActionId];
@@ -877,8 +1046,32 @@ public sealed partial class InputRouter
             }
         }
 
+        RefreshAllConsumptionLeases();
         _overflowServiced = true;
         return new InputOverflowResult(_firstUnacceptedHostSequence, _lastUnacceptedHostSequence, transitions.ToImmutable());
+    }
+
+    private bool HasActiveConsumedBinding(InputActionMapState mapState, ActionDefinition action)
+    {
+        foreach (var binding in mapState.Map.Bindings)
+        {
+            if (binding.ActionId != action.ActionId)
+            {
+                continue;
+            }
+
+            var bindingState = mapState.BindingStates[binding.BindingId];
+
+            if (binding.Enabled
+                && bindingState.IsContextEligible
+                && !IsBindingNeutral(bindingState)
+                && IsBindingSuppressedByConsumption(bindingState, _consumptionLeases))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void InitializeMapState(InputActionMapState mapState)
@@ -1088,31 +1281,49 @@ public sealed partial class InputRouter
         ];
     }
 
-    private void RecomputeAffectedActions(InputControlKey changedControl, long hostSequence, long assignedTick)
+    private void RecomputeAffectedActions(HashSet<InputControlKey> changedControls, long hostSequence, long assignedTick)
     {
         foreach (var mapState in _maps.Values.OrderBy(static state => state.Map.MapId.ToString("D"), StringComparer.Ordinal))
         {
-            if (!mapState.BindingsByControl.TryGetValue(changedControl, out var affectedBindings))
-            {
-                continue;
-            }
-
             foreach (var action in mapState.OrderedActions)
             {
                 var isAffected = false;
 
-                foreach (var bindingState in affectedBindings)
+                foreach (var changedControl in changedControls)
                 {
-                    if (bindingState.Definition.ActionId == action.ActionId)
+                    if (!mapState.BindingsByControl.TryGetValue(changedControl, out var affectedBindings))
                     {
-                        isAffected = true;
+                        continue;
+                    }
+
+                    foreach (var bindingState in affectedBindings)
+                    {
+                        if (bindingState.Definition.ActionId == action.ActionId)
+                        {
+                            isAffected = true;
+                            break;
+                        }
+                    }
+
+                    if (isAffected)
+                    {
                         break;
                     }
                 }
 
                 if (isAffected)
                 {
-                    ProcessActionEvent(mapState, action, hostSequence, assignedTick);
+                    InputCancellationReason? cancellationReason = mapState.ActionStates[action.ActionId].IsDownAtEnd
+                        && HasActiveConsumedBinding(mapState, action)
+                        ? InputCancellationReason.InputConsumed
+                        : null;
+                    ProcessActionEvent(
+                        mapState,
+                        action,
+                        hostSequence,
+                        assignedTick,
+                        cancellationReason,
+                        _consumptionLeases);
                 }
             }
         }
@@ -1131,6 +1342,81 @@ public sealed partial class InputRouter
         }
 
         _lastUnacceptedHostSequence = hostSequence;
+    }
+
+    private void RefreshAllConsumptionLeases()
+    {
+        var changedControls = new HashSet<InputControlKey>(_consumptionLeases.Keys);
+        _consumptionLeases.Clear();
+
+        foreach (var mapState in _maps.Values)
+        {
+            foreach (var bindingState in mapState.BindingStates.Values)
+            {
+                bindingState.ConsumptionControls = [];
+            }
+        }
+
+        var affectedBindingStates = new HashSet<InputBindingRuntimeState>();
+
+        foreach (var bindingState in _orderedConsumableBindings)
+        {
+            RefreshConsumptionForBinding(bindingState, changedControls, affectedBindingStates);
+        }
+
+        DisarmBindingsForConsumptionChanges(changedControls);
+    }
+
+    private void RefreshConsumptionForBinding(
+        InputBindingRuntimeState bindingState,
+        HashSet<InputControlKey> changedControls,
+        HashSet<InputBindingRuntimeState> affectedBindingStates)
+    {
+        foreach (var control in bindingState.ConsumptionControls)
+        {
+            var previousRank = GetEffectiveConsumptionRank(control);
+
+            if (_consumptionLeases.TryGetValue(control, out var leases))
+            {
+                for (var index = leases.Count - 1; index >= 0; index--)
+                {
+                    if (ReferenceEquals(leases[index].BindingState, bindingState))
+                    {
+                        leases.RemoveAt(index);
+                    }
+                }
+
+                if (leases.Count == 0)
+                {
+                    _ = _consumptionLeases.Remove(control);
+                }
+            }
+
+            if (previousRank != GetEffectiveConsumptionRank(control))
+            {
+                AddConsumptionChangedControl(control, changedControls, affectedBindingStates);
+            }
+        }
+
+        bindingState.ConsumptionControls = GetConsumptionControls(bindingState);
+
+        foreach (var control in bindingState.ConsumptionControls)
+        {
+            var previousRank = GetEffectiveConsumptionRank(control);
+
+            if (!_consumptionLeases.TryGetValue(control, out var leases))
+            {
+                leases = [];
+                _consumptionLeases.Add(control, leases);
+            }
+
+            leases.Add(new InputConsumptionLease(bindingState, bindingState.ContextRank));
+
+            if (previousRank != GetEffectiveConsumptionRank(control))
+            {
+                AddConsumptionChangedControl(control, changedControls, affectedBindingStates);
+            }
+        }
     }
 
     private ImmutableArray<InputActionTransition> RefreshContextEligibility(
@@ -1153,17 +1439,26 @@ public sealed partial class InputRouter
                     bindingState.IsDisarmed = true;
                 }
             }
+        }
 
+        RefreshAllConsumptionLeases();
+
+        foreach (var mapState in _maps.Values.OrderBy(static state => state.Map.MapId.ToString("D"), StringComparer.Ordinal))
+        {
             foreach (var action in mapState.OrderedActions)
             {
                 var actionState = mapState.ActionStates[action.ActionId];
                 var firstTransitionIndex = actionState.Transitions.Count;
+                var cancellationReason = actionState.IsDownAtEnd && HasActiveConsumedBinding(mapState, action)
+                    ? InputCancellationReason.InputConsumed
+                    : InputCancellationReason.ContextMasked;
                 ProcessActionEvent(
                     mapState,
                     action,
                     hostSequence,
                     assignedTick,
-                    InputCancellationReason.ContextMasked);
+                    cancellationReason,
+                    _consumptionLeases);
 
                 for (var index = firstTransitionIndex; index < actionState.Transitions.Count; index++)
                 {
@@ -1257,8 +1552,11 @@ public sealed partial class InputRouter
         return true;
     }
 
-    private void UpdateAffectedBindingStates(InputControlKey changedControl, InputEnvelope envelope)
+    private HashSet<InputControlKey> UpdateAffectedBindingStates(InputControlKey changedControl, InputEnvelope envelope)
     {
+        var changedControls = new HashSet<InputControlKey> { changedControl };
+        var affectedBindingStates = new HashSet<InputBindingRuntimeState>();
+
         foreach (var mapState in _maps.Values.OrderBy(static state => state.Map.MapId.ToString("D"), StringComparer.Ordinal))
         {
             if (!mapState.BindingsByControl.TryGetValue(changedControl, out var affectedBindings))
@@ -1269,8 +1567,20 @@ public sealed partial class InputRouter
             foreach (var bindingState in affectedBindings)
             {
                 UpdateBindingState(bindingState, envelope);
+                _ = affectedBindingStates.Add(bindingState);
             }
         }
+
+        foreach (var bindingState in _orderedConsumableBindings)
+        {
+            if (affectedBindingStates.Contains(bindingState))
+            {
+                RefreshConsumptionForBinding(bindingState, changedControls, affectedBindingStates);
+            }
+        }
+
+        DisarmBindingsForConsumptionChanges(changedControls);
+        return changedControls;
     }
 
     private void UpdateBindingState(InputBindingRuntimeState bindingState, InputEnvelope? envelope)
@@ -1567,6 +1877,8 @@ public sealed partial class InputRouter
 
         internal Guid MapId { get; }
     }
+
+    private readonly record struct InputConsumptionLease(InputBindingRuntimeState BindingState, int ContextRank);
 
     private readonly record struct InputContextOrder(
         Guid MapId,

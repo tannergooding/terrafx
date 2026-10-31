@@ -184,6 +184,383 @@ internal sealed class InputRouterTests
     }
 
     [Test]
+    public void ConsumesChordMembersUntilEveryMemberIsNeutral()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            15,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var lowerAction = new ActionDefinition(Guid.NewGuid(), "Lower", InputActionKind.Digital);
+        var consumerAction = new ActionDefinition(Guid.NewGuid(), "Consumer", InputActionKind.Digital);
+        var lowerContext = new ContextDefinition(Guid.NewGuid(), 0, priority: 0);
+        var consumerContext = new ContextDefinition(Guid.NewGuid(), 0, priority: 10);
+        var firstKey = new KeyboardControl(7, 4);
+        var secondKey = new KeyboardControl(7, 5);
+        var lowerMap = new InputActionMapV1(
+            1,
+            new Guid("10000000-0000-0000-0000-000000000061"),
+            1,
+            1,
+            [lowerAction],
+            [lowerContext],
+            [
+                new BindingDefinition(Guid.NewGuid(), lowerAction.ActionId, 1, BindingKind.Button) {
+                    Control = new DigitalControl(firstKey),
+                },
+            ]);
+        var consumerMap = new InputActionMapV1(
+            1,
+            new Guid("10000000-0000-0000-0000-000000000062"),
+            1,
+            1,
+            [consumerAction],
+            [consumerContext],
+            [
+                new BindingDefinition(Guid.NewGuid(), consumerAction.ActionId, 1, BindingKind.Chord) {
+                    Controls = [new DigitalControl(firstKey), new DigitalControl(secondKey)],
+                    Flags = InputBindingBehavior.ConsumePhysicalEvent,
+                },
+            ]);
+
+        Assert.That(router.RegisterMap(lowerMap).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.RegisterMap(consumerMap).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(firstKey, InputKeyEventKind.Down), 1, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(secondKey, InputKeyEventKind.Down), 2, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(firstKey, InputKeyEventKind.Up), 3, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(firstKey, InputKeyEventKind.Down), 4, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(secondKey, InputKeyEventKind.Up), 5, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(firstKey, InputKeyEventKind.Up), 6, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+
+        router.BeginHostControlBoundary(0, 7);
+        Assert.That(router.SetActiveContextMask(consumerMap.MapId, 1, 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(firstKey, InputKeyEventKind.Down), 8, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+
+        var snapshot = router.PublishSimulationActionSnapshot(0);
+        Assert.That(snapshot.Actions[0].ActionId, Is.EqualTo(lowerAction.ActionId));
+        Assert.That(snapshot.Actions[0].IsDownAtEnd, Is.True);
+        Assert.That(snapshot.Actions[0].Transitions, Has.Length.EqualTo(1));
+        Assert.That(snapshot.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Pressed));
+
+        router.Dispose();
+    }
+
+    [TestCase(BindingKind.Axis1Keys, InputActionKind.Axis1)]
+    [TestCase(BindingKind.Axis2Keys, InputActionKind.Axis2)]
+    public void ConsumesKeyAxisBindings(BindingKind bindingKind, InputActionKind actionKind)
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            17,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var lowerAction = new ActionDefinition(new Guid("20000000-0000-0000-0000-000000000041"), "Lower", InputActionKind.Digital);
+        var consumerAction = new ActionDefinition(new Guid("20000000-0000-0000-0000-000000000042"), "Consumer", actionKind);
+        var lowerContext = new ContextDefinition(Guid.NewGuid(), 0, priority: 0);
+        var consumerContext = new ContextDefinition(Guid.NewGuid(), 0, priority: 10);
+        var heldKey = new KeyboardControl(7, 4);
+        var consumedKey = new KeyboardControl(7, 5);
+        var unusedKey = new KeyboardControl(7, 6);
+        var lowerMap = new InputActionMapV1(
+            1,
+            new Guid("10000000-0000-0000-0000-000000000041"),
+            1,
+            1,
+            [lowerAction],
+            [lowerContext],
+            [
+                new BindingDefinition(Guid.NewGuid(), lowerAction.ActionId, 1, BindingKind.Button) {
+                    Control = new DigitalControl(heldKey),
+                },
+                new BindingDefinition(Guid.NewGuid(), lowerAction.ActionId, 1, BindingKind.Button) {
+                    Control = new DigitalControl(consumedKey),
+                },
+            ]);
+        var consumerBinding = bindingKind switch {
+            BindingKind.Axis1Keys => new BindingDefinition(Guid.NewGuid(), consumerAction.ActionId, 1, bindingKind) {
+                Negative = unusedKey,
+                Positive = consumedKey,
+                Flags = InputBindingBehavior.ConsumePhysicalEvent,
+            },
+            BindingKind.Axis2Keys => new BindingDefinition(Guid.NewGuid(), consumerAction.ActionId, 1, bindingKind) {
+                Left = unusedKey,
+                Right = consumedKey,
+                Down = new KeyboardControl(7, 7),
+                Up = new KeyboardControl(7, 8),
+                Flags = InputBindingBehavior.ConsumePhysicalEvent,
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(bindingKind)),
+        };
+        var consumerMap = new InputActionMapV1(
+            1,
+            new Guid("10000000-0000-0000-0000-000000000042"),
+            1,
+            0,
+            [consumerAction],
+            [consumerContext],
+            [consumerBinding]);
+
+        Assert.That(router.RegisterMap(lowerMap).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.RegisterMap(consumerMap).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(heldKey, InputKeyEventKind.Down), 1, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        router.BeginHostControlBoundary(0, 2);
+        Assert.That(router.SetActiveContextMask(consumerMap.MapId, 1, 1).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(consumedKey, InputKeyEventKind.Down), 3, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(heldKey, InputKeyEventKind.Up), 4, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+
+        var snapshot = router.PublishSimulationActionSnapshot(0);
+        Assert.That(snapshot.Actions[0].ActionId, Is.EqualTo(lowerAction.ActionId));
+        Assert.That(snapshot.Actions[0].IsDownAtEnd, Is.False);
+        Assert.That(snapshot.Actions[0].Transitions, Has.Length.EqualTo(2));
+        Assert.That(snapshot.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Pressed));
+        Assert.That(snapshot.Actions[0].Transitions[1].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+        Assert.That(snapshot.Actions[0].Transitions[1].CancellationReason, Is.EqualTo(InputCancellationReason.InputConsumed));
+        Assert.That(snapshot.Actions[1].ActionId, Is.EqualTo(consumerAction.ActionId));
+        Assert.That(snapshot.Actions[1].IsDownAtEnd, Is.True);
+
+        router.Dispose();
+    }
+
+    [Test]
+    public void ConsumesPhysicalEventsUntilNeutralAndCancelsLowerActions()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            16,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var lowerAction = new ActionDefinition(new Guid("20000000-0000-0000-0000-000000000031"), "Lower", InputActionKind.Digital);
+        var consumerAction = new ActionDefinition(new Guid("20000000-0000-0000-0000-000000000032"), "Consumer", InputActionKind.Digital);
+        var lowerContext = new ContextDefinition(Guid.NewGuid(), 0, priority: 0);
+        var consumerContext = new ContextDefinition(Guid.NewGuid(), 0, priority: 10);
+        var firstKey = new KeyboardControl(7, 4);
+        var consumedKey = new KeyboardControl(7, 5);
+        var lowerMap = new InputActionMapV1(
+            1,
+            new Guid("10000000-0000-0000-0000-000000000031"),
+            1,
+            1,
+            [lowerAction],
+            [lowerContext],
+            [
+                new BindingDefinition(Guid.NewGuid(), lowerAction.ActionId, 1, BindingKind.Button) {
+                    Control = new DigitalControl(firstKey),
+                },
+                new BindingDefinition(Guid.NewGuid(), lowerAction.ActionId, 1, BindingKind.Button) {
+                    Control = new DigitalControl(consumedKey),
+                },
+            ]);
+        var consumerMap = new InputActionMapV1(
+            1,
+            new Guid("10000000-0000-0000-0000-000000000032"),
+            1,
+            0,
+            [consumerAction],
+            [consumerContext],
+            [
+                new BindingDefinition(Guid.NewGuid(), consumerAction.ActionId, 1, BindingKind.Button) {
+                    Control = new DigitalControl(consumedKey),
+                    Flags = InputBindingBehavior.ConsumePhysicalEvent,
+                },
+            ]);
+
+        Assert.That(router.RegisterMap(lowerMap).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.RegisterMap(consumerMap).Status, Is.EqualTo(InputMapStatus.Registered));
+
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(firstKey, InputKeyEventKind.Down), 1, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(consumedKey, InputKeyEventKind.Down), 2, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        router.BeginHostControlBoundary(0, 3);
+        Assert.That(router.SetActiveContextMask(consumerMap.MapId, 1, 1).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(consumedKey, InputKeyEventKind.Up), 4, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(consumedKey, InputKeyEventKind.Down), 5, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(firstKey, InputKeyEventKind.Up), 6, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+
+        var snapshot = router.PublishSimulationActionSnapshot(0);
+        Assert.That(snapshot.Actions[0].ActionId, Is.EqualTo(lowerAction.ActionId));
+        Assert.That(snapshot.Actions[0].IsDownAtEnd, Is.False);
+        Assert.That(snapshot.Actions[0].PressedThisTick, Is.True);
+        Assert.That(snapshot.Actions[0].ReleasedThisTick, Is.False);
+        Assert.That(snapshot.Actions[0].Transitions, Has.Length.EqualTo(2));
+        Assert.That(snapshot.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Pressed));
+        Assert.That(snapshot.Actions[0].Transitions[1].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+        Assert.That(snapshot.Actions[0].Transitions[1].CancellationReason, Is.EqualTo(InputCancellationReason.InputConsumed));
+        Assert.That(snapshot.Actions[1].ActionId, Is.EqualTo(consumerAction.ActionId));
+        Assert.That(snapshot.Actions[1].IsDownAtEnd, Is.True);
+
+        router.Dispose();
+    }
+
+    [Test]
+    public void ConsumesThresholdBindingsOnlyWhileAboveTheirReleaseValue()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            18,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var lowerAction = new ActionDefinition(Guid.NewGuid(), "Lower", InputActionKind.Digital);
+        var consumerAction = new ActionDefinition(Guid.NewGuid(), "Consumer", InputActionKind.Digital);
+        var lowerContext = new ContextDefinition(Guid.NewGuid(), 0, priority: 0);
+        var consumerContext = new ContextDefinition(Guid.NewGuid(), 0, priority: 10);
+        var lowerBinding = new BindingDefinition(Guid.NewGuid(), lowerAction.ActionId, 1, BindingKind.AxisThreshold) {
+            ThresholdAxisSource = new GamepadAxis1Source(1, GamepadAxis.RightX, deadzone: 0.0f),
+            ThresholdDirection = AxisThresholdDirection.Positive,
+            PressThreshold = 0.55f,
+            ReleaseThreshold = 0.45f,
+        };
+        var consumerBinding = new BindingDefinition(Guid.NewGuid(), consumerAction.ActionId, 1, BindingKind.AxisThreshold) {
+            ThresholdAxisSource = new GamepadAxis1Source(1, GamepadAxis.RightX, deadzone: 0.0f),
+            ThresholdDirection = AxisThresholdDirection.Positive,
+            PressThreshold = 0.75f,
+            ReleaseThreshold = 0.5f,
+            Flags = InputBindingBehavior.ConsumePhysicalEvent,
+        };
+        var lowerMap = new InputActionMapV1(
+            1,
+            new Guid("10000000-0000-0000-0000-000000000071"),
+            1,
+            1,
+            [lowerAction],
+            [lowerContext],
+            [lowerBinding]);
+        var consumerMap = new InputActionMapV1(
+            1,
+            new Guid("10000000-0000-0000-0000-000000000072"),
+            1,
+            1,
+            [consumerAction],
+            [consumerContext],
+            [consumerBinding]);
+        Assert.That(router.RegisterMap(lowerMap).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.RegisterMap(consumerMap).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(1, GamepadAxis.RightX, 0.6f), 1, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(1, GamepadAxis.RightX, 0.75f), 2, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(1, GamepadAxis.RightX, 0.4f), 3, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(1, GamepadAxis.RightX, 0.6f), 4, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+
+        var snapshot = router.PublishSimulationActionSnapshot(0);
+        Assert.That(snapshot.Actions[0].ActionId, Is.EqualTo(lowerAction.ActionId));
+        Assert.That(snapshot.Actions[0].IsDownAtEnd, Is.True);
+        Assert.That(snapshot.Actions[0].ReleasedThisTick, Is.False);
+        Assert.That(snapshot.Actions[0].Transitions, Has.Length.EqualTo(3));
+        Assert.That(snapshot.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Pressed));
+        Assert.That(snapshot.Actions[0].Transitions[1].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+        Assert.That(snapshot.Actions[0].Transitions[1].CancellationReason, Is.EqualTo(InputCancellationReason.InputConsumed));
+        Assert.That(snapshot.Actions[0].Transitions[2].Kind, Is.EqualTo(InputTransitionKind.Pressed));
+        Assert.That(snapshot.Actions[1].Transitions, Has.Length.EqualTo(2));
+        Assert.That(snapshot.Actions[1].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Pressed));
+        Assert.That(snapshot.Actions[1].Transitions[1].Kind, Is.EqualTo(InputTransitionKind.Released));
+
+        router.Dispose();
+    }
+
+    [TestCase(BindingKind.GamepadAxis1, InputActionKind.Axis1)]
+    [TestCase(BindingKind.GamepadStick2, InputActionKind.Axis2)]
+    [TestCase(BindingKind.GamepadTrigger, InputActionKind.Axis1)]
+    public void ConsumesTypedAnalogBindingsAcrossSourceKinds(BindingKind bindingKind, InputActionKind actionKind)
+    {
+        static BindingDefinition CreateBinding(BindingKind kind, Guid actionId, bool fallback)
+        {
+            return kind switch {
+                BindingKind.GamepadAxis1 => new BindingDefinition(Guid.NewGuid(), actionId, 1, kind) {
+                    Axis1Source = new GamepadAxis1Source(
+                        fallback ? (ushort)2 : (ushort)1,
+                        fallback ? GamepadAxis.LeftX : GamepadAxis.RightX,
+                        deadzone: 0.0f),
+                    Flags = fallback ? InputBindingBehavior.None : InputBindingBehavior.ConsumePhysicalEvent,
+                },
+                BindingKind.GamepadStick2 => new BindingDefinition(Guid.NewGuid(), actionId, 1, kind) {
+                    Stick2Source = new GamepadStick2Source(
+                        fallback ? (ushort)2 : (ushort)1,
+                        fallback ? GamepadStick.Right : GamepadStick.Left,
+                        radialDeadzone: 0.0f),
+                    Flags = fallback ? InputBindingBehavior.None : InputBindingBehavior.ConsumePhysicalEvent,
+                },
+                BindingKind.GamepadTrigger => new BindingDefinition(Guid.NewGuid(), actionId, 1, kind) {
+                    TriggerSource = new GamepadTriggerSource(
+                        fallback ? (ushort)2 : (ushort)1,
+                        fallback ? GamepadTrigger.Left : GamepadTrigger.Right,
+                        deadzone: 0.0f),
+                    Flags = fallback ? InputBindingBehavior.None : InputBindingBehavior.ConsumePhysicalEvent,
+                },
+                _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+            };
+        }
+
+        static InputInjection CreateInjection(BindingKind kind, bool fallback, float value)
+        {
+            return kind switch {
+                BindingKind.GamepadAxis1 => new InputInjection(
+                    fallback ? (ushort)2 : (ushort)1,
+                    fallback ? GamepadAxis.LeftX : GamepadAxis.RightX,
+                    value),
+                BindingKind.GamepadStick2 => new InputInjection(
+                    fallback ? (ushort)2 : (ushort)1,
+                    fallback ? GamepadStick.Right : GamepadStick.Left,
+                    new Vector2(value, 0.0f)),
+                BindingKind.GamepadTrigger => new InputInjection(
+                    fallback ? (ushort)2 : (ushort)1,
+                    fallback ? GamepadTrigger.Left : GamepadTrigger.Right,
+                    value),
+                _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+            };
+        }
+
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            19,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var lowerAction = new ActionDefinition(new Guid("20000000-0000-0000-0000-000000000051"), "Lower", actionKind);
+        var consumerAction = new ActionDefinition(new Guid("20000000-0000-0000-0000-000000000052"), "Consumer", actionKind);
+        var lowerContext = new ContextDefinition(Guid.NewGuid(), 0, priority: 0);
+        var consumerContext = new ContextDefinition(Guid.NewGuid(), 0, priority: 10);
+        var lowerMap = new InputActionMapV1(
+            1,
+            new Guid("10000000-0000-0000-0000-000000000051"),
+            1,
+            1,
+            [lowerAction],
+            [lowerContext],
+            [CreateBinding(bindingKind, lowerAction.ActionId, fallback: true), CreateBinding(bindingKind, lowerAction.ActionId, fallback: false)]);
+        var consumerMap = new InputActionMapV1(
+            1,
+            new Guid("10000000-0000-0000-0000-000000000052"),
+            1,
+            0,
+            [consumerAction],
+            [consumerContext],
+            [CreateBinding(bindingKind, consumerAction.ActionId, fallback: false)]);
+
+        Assert.That(router.RegisterMap(lowerMap).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.RegisterMap(consumerMap).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.EnqueueHeadlessInjection(CreateInjection(bindingKind, fallback: true, 0.8f), 1, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        router.BeginHostControlBoundary(0, 2);
+        Assert.That(router.SetActiveContextMask(consumerMap.MapId, 1, 1).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(CreateInjection(bindingKind, fallback: false, 0.7f), 3, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.EnqueueHeadlessInjection(CreateInjection(bindingKind, fallback: true, 0.0f), 4, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+
+        var snapshot = router.PublishSimulationActionSnapshot(0);
+        Assert.That(snapshot.Actions[0].ActionId, Is.EqualTo(lowerAction.ActionId));
+        Assert.That(snapshot.Actions[0].IsDownAtEnd, Is.False);
+        Assert.That(snapshot.Actions[0].ReleasedThisTick, Is.False);
+        Assert.That(snapshot.Actions[0].Transitions, Has.Length.EqualTo(4));
+        Assert.That(snapshot.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.ValueChanged));
+        Assert.That(snapshot.Actions[0].Transitions[1].Kind, Is.EqualTo(InputTransitionKind.Pressed));
+        Assert.That(snapshot.Actions[0].Transitions[2].Kind, Is.EqualTo(InputTransitionKind.ValueChanged));
+        Assert.That(snapshot.Actions[0].Transitions[3].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+        Assert.That(snapshot.Actions[0].Transitions[3].CancellationReason, Is.EqualTo(InputCancellationReason.InputConsumed));
+        Assert.That(snapshot.Actions[1].IsDownAtEnd, Is.True);
+
+        router.Dispose();
+    }
+
+    [Test]
     public void DisposeIsIdempotentAndClosesRouterOperations()
     {
         var router = CreateRouter();
