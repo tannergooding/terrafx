@@ -25,6 +25,7 @@ public sealed partial class InputRouter
     private long _lastSeenHostTimestamp;
     private long _lastUnacceptedHostSequence;
     private bool _overflowServiced;
+    private ImmutableArray<InputContextOrder> _orderedContexts = [];
     private readonly Dictionary<InputControlKey, float> _scalarControlValues = [];
     private readonly Dictionary<InputControlKey, (float X, float Y)> _vectorControlValues = [];
 
@@ -153,6 +154,14 @@ public sealed partial class InputRouter
             _ => default,
         };
 
+    private static InputClass GetInputClass(InputControlKey control)
+        => control.Kind switch {
+            InputControlKind.KeyboardHid or InputControlKind.LogicalKey => InputClass.Keyboard,
+            InputControlKind.MouseButton => InputClass.Pointing,
+            InputControlKind.GamepadButton or InputControlKind.GamepadAxis or InputControlKind.GamepadStick or InputControlKind.GamepadTrigger => InputClass.Gamepad,
+            _ => InputClass.None,
+        };
+
     private static float GetProcessedAxis1Value(
         GamepadAxis1Source source,
         Dictionary<InputControlKey, float> scalarControlValues)
@@ -265,8 +274,8 @@ public sealed partial class InputRouter
                 var bindingState = mapState.BindingStates[binding.BindingId];
 
                 if ((binding.ActionId == action.ActionId)
-                    && binding.Enabled
-                    && ((binding.ContextMask & mapState.ActiveContextMask) != 0)
+                    && bindingState.Definition.Enabled
+                    && bindingState.IsContextEligible
                     && !bindingState.IsDisarmed
                     && bindingState.IsDown)
                 {
@@ -322,16 +331,12 @@ public sealed partial class InputRouter
 
         foreach (var binding in mapState.Map.Bindings)
         {
-            if ((binding.ActionId != action.ActionId)
-                || !binding.Enabled
-                || ((binding.ContextMask & mapState.ActiveContextMask) == 0))
-            {
-                continue;
-            }
-
             var bindingState = mapState.BindingStates[binding.BindingId];
 
-            if (bindingState.IsDisarmed)
+            if ((binding.ActionId != action.ActionId)
+                || !binding.Enabled
+                || !bindingState.IsContextEligible
+                || bindingState.IsDisarmed)
             {
                 continue;
             }
@@ -654,41 +659,15 @@ public sealed partial class InputRouter
             throw new InvalidOperationException("An admitted input-control command no longer matches its map revision.");
         }
 
-        var oldMask = mapState.ActiveContextMask;
-
-        foreach (var bindingState in mapState.BindingStates.Values)
-        {
-            var wasEligible = (bindingState.Definition.ContextMask & oldMask) != 0;
-            var isEligible = (bindingState.Definition.ContextMask & control.NewMask) != 0;
-
-            if ((wasEligible != isEligible) && !IsBindingNeutral(bindingState))
-            {
-                bindingState.IsDisarmed = true;
-            }
-        }
-
+        var priorEligibility = CaptureBindingEligibility();
         mapState.SetContextMask(control.NewMask, control.ContextInsertionSequences);
         _lastInsertionSequence = control.LastInsertionSequence;
-        var transitions = ImmutableArray.CreateBuilder<InputActionTransition>();
-
-        foreach (var action in mapState.OrderedActions)
-        {
-            var actionState = mapState.ActionStates[action.ActionId];
-            var firstTransitionIndex = actionState.Transitions.Count;
-            ProcessActionEvent(
-                mapState,
-                action,
-                control.HostSequence,
-                assignedTick,
-                InputCancellationReason.ContextMasked);
-
-            for (var index = firstTransitionIndex; index < actionState.Transitions.Count; index++)
-            {
-                transitions.Add(actionState.Transitions[index]);
-            }
-        }
-
-        return transitions.ToImmutable();
+        RebuildOrderedContexts();
+        return RefreshContextEligibility(
+            priorEligibility,
+            control.HostSequence,
+            assignedTick,
+            deferTransitions: false);
     }
 
     private void ApplyInputEnvelope(InputEnvelope envelope)
@@ -745,6 +724,21 @@ public sealed partial class InputRouter
         }
     }
 
+    private Dictionary<InputBindingRuntimeState, bool> CaptureBindingEligibility()
+    {
+        var eligibility = new Dictionary<InputBindingRuntimeState, bool>();
+
+        foreach (var mapState in _maps.Values)
+        {
+            foreach (var bindingState in mapState.BindingStates.Values)
+            {
+                eligibility.Add(bindingState, bindingState.Definition.Enabled && bindingState.IsContextEligible);
+            }
+        }
+
+        return eligibility;
+    }
+
     private void ClearInputState()
     {
         _digitalControlDownTimestamps.Clear();
@@ -761,6 +755,7 @@ public sealed partial class InputRouter
         _lastUnacceptedHostSequence = 0;
         _overflowServiced = false;
         _hostControlTimestamp = 0;
+        _orderedContexts = [];
     }
 
     private int CountPlannedActiveContexts(Guid excludedMapId, ulong replacementMask)
@@ -1011,6 +1006,71 @@ public sealed partial class InputRouter
         return snapshot;
     }
 
+    private void RebuildOrderedContexts()
+    {
+        var contexts = new List<InputContextOrder>();
+
+        foreach (var mapState in _maps.Values)
+        {
+            foreach (var context in mapState.Map.Contexts)
+            {
+                if ((mapState.ActiveContextMask & (1UL << context.Bit)) != 0)
+                {
+                    contexts.Add(new InputContextOrder(
+                        mapState.Map.MapId,
+                        mapState.Map.MapId.ToString("D"),
+                        context,
+                        mapState.ContextInsertionSequences[context.Bit],
+                        context.ContextId.ToString("D")));
+                }
+            }
+        }
+
+        _orderedContexts =
+        [
+            .. contexts.OrderByDescending(static context => context.Context.Priority)
+                .ThenByDescending(static context => context.InsertionSequence)
+                .ThenBy(static context => context.CanonicalMapId, StringComparer.Ordinal)
+                .ThenBy(static context => context.CanonicalContextId, StringComparer.Ordinal),
+        ];
+
+        foreach (var mapState in _maps.Values)
+        {
+            foreach (var bindingState in mapState.BindingStates.Values)
+            {
+                var matchingContextIndex = -1;
+
+                for (var index = 0; index < _orderedContexts.Length; index++)
+                {
+                    var context = _orderedContexts[index];
+
+                    if ((context.MapId == mapState.Map.MapId)
+                        && ((bindingState.Definition.ContextMask & (1UL << context.Context.Bit)) != 0))
+                    {
+                        matchingContextIndex = index;
+                        break;
+                    }
+                }
+
+                if (matchingContextIndex < 0)
+                {
+                    bindingState.IsContextEligible = false;
+                    continue;
+                }
+
+                var capturedClasses = InputClass.None;
+
+                for (var index = 0; index < matchingContextIndex; index++)
+                {
+                    capturedClasses |= _orderedContexts[index].Context.CaptureClasses;
+                }
+
+                bindingState.IsContextEligible = !bindingState.ControlKeys.Any(
+                    control => (capturedClasses & GetInputClass(control)) != 0);
+            }
+        }
+    }
+
     private void RecomputeAffectedActions(InputControlKey changedControl, long hostSequence, long assignedTick)
     {
         foreach (var mapState in _maps.Values.OrderBy(static state => state.Map.MapId.ToString("D"), StringComparer.Ordinal))
@@ -1054,6 +1114,64 @@ public sealed partial class InputRouter
         }
 
         _lastUnacceptedHostSequence = hostSequence;
+    }
+
+    private ImmutableArray<InputActionTransition> RefreshContextEligibility(
+        Dictionary<InputBindingRuntimeState, bool> priorEligibility,
+        long hostSequence,
+        long? assignedTick,
+        bool deferTransitions)
+    {
+        var transitions = ImmutableArray.CreateBuilder<InputActionTransition>();
+
+        foreach (var mapState in _maps.Values.OrderBy(static state => state.Map.MapId.ToString("D"), StringComparer.Ordinal))
+        {
+            foreach (var bindingState in mapState.BindingStates.Values)
+            {
+                var wasEligible = priorEligibility.TryGetValue(bindingState, out var previous) && previous;
+                var isEligible = bindingState.Definition.Enabled && bindingState.IsContextEligible;
+
+                if ((wasEligible != isEligible) && !IsBindingNeutral(bindingState))
+                {
+                    bindingState.IsDisarmed = true;
+                }
+            }
+
+            foreach (var action in mapState.OrderedActions)
+            {
+                var actionState = mapState.ActionStates[action.ActionId];
+                var firstTransitionIndex = actionState.Transitions.Count;
+                ProcessActionEvent(
+                    mapState,
+                    action,
+                    hostSequence,
+                    assignedTick,
+                    InputCancellationReason.ContextMasked);
+
+                for (var index = firstTransitionIndex; index < actionState.Transitions.Count; index++)
+                {
+                    var transition = actionState.Transitions[index];
+
+                    if (deferTransitions)
+                    {
+                        actionState.PendingTransitions.Add(transition);
+                    }
+                    else
+                    {
+                        transitions.Add(transition);
+                    }
+                }
+
+                if (deferTransitions && (actionState.Transitions.Count > firstTransitionIndex))
+                {
+                    actionState.Transitions.RemoveRange(
+                        firstTransitionIndex,
+                        actionState.Transitions.Count - firstTransitionIndex);
+                }
+            }
+        }
+
+        return transitions.ToImmutable();
     }
 
     private bool SetDigitalControlState(InputControlKey control, bool isDown, long hostTimestamp)
@@ -1361,6 +1479,8 @@ public sealed partial class InputRouter
 
         internal bool IsDownAtEnd { get; set; }
 
+        internal List<InputActionTransition> PendingTransitions { get; } = [];
+
         internal bool PressedThisTick { get; set; }
 
         internal bool ReleasedThisTick { get; set; }
@@ -1375,6 +1495,16 @@ public sealed partial class InputRouter
             ReleasedThisTick = false;
             Transitions.Clear();
             ValueChangedThisTick = false;
+            Transitions.AddRange(PendingTransitions);
+
+            foreach (var transition in PendingTransitions)
+            {
+                PressedThisTick |= transition.Kind == InputTransitionKind.Pressed;
+                ReleasedThisTick |= transition.Kind == InputTransitionKind.Released;
+                ValueChangedThisTick |= transition.Kind == InputTransitionKind.ValueChanged;
+            }
+
+            PendingTransitions.Clear();
         }
     }
 
@@ -1383,6 +1513,7 @@ public sealed partial class InputRouter
         internal InputBindingRuntimeState(BindingDefinition definition)
         {
             CanonicalBindingId = definition.BindingId.ToString("D");
+            ControlKeys = GetBindingControlKeys(definition);
             Definition = definition;
         }
 
@@ -1398,12 +1529,23 @@ public sealed partial class InputRouter
 
         internal long? ChordStartedHostTimestamp { get; set; }
 
+        internal ImmutableArray<InputControlKey> ControlKeys { get; }
+
         internal BindingDefinition Definition { get; }
+
+        internal bool IsContextEligible { get; set; }
 
         internal bool IsDisarmed { get; set; }
 
         internal bool IsDown { get; set; }
     }
+
+    private readonly record struct InputContextOrder(
+        Guid MapId,
+        string CanonicalMapId,
+        ContextDefinition Context,
+        long InsertionSequence,
+        string CanonicalContextId);
 
     private sealed class InputControlEnvelope(
         Guid mapId,

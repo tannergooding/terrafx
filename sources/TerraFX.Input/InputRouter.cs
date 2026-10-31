@@ -216,11 +216,18 @@ public sealed partial class InputRouter
             return CreateMapCapacityFailure("/InputControl");
         }
 
+        var priorEligibility = CaptureBindingEligibility();
         var hostSequence = _sequenceLease.Allocate();
         RecordHostControlSequence(hostSequence);
         var mapState = new InputActionMapState(map, map.InitialActiveContextMask, insertionSequences);
         InitializeMapState(mapState);
         _maps.Add(map.MapId, mapState);
+        RebuildOrderedContexts();
+        _ = RefreshContextEligibility(
+            priorEligibility,
+            hostSequence,
+            (_recipientKind == InputRecipientKind.SimulationTimeline) ? _nextOpenTick : null,
+            deferTransitions: _recipientKind == InputRecipientKind.SimulationTimeline);
         _lastInsertionSequence = lastInsertionSequence;
         _controlCommandsInBoundary++;
         PublishHostActionSnapshot();
@@ -279,10 +286,17 @@ public sealed partial class InputRouter
             return CreateMapCapacityFailure("/InputControl");
         }
 
+        var priorEligibility = CaptureBindingEligibility();
         InitializeMapState(replacementState);
         var hostSequence = _sequenceLease.Allocate();
         RecordHostControlSequence(hostSequence);
         _maps[map.MapId] = replacementState;
+        RebuildOrderedContexts();
+        _ = RefreshContextEligibility(
+            priorEligibility,
+            hostSequence,
+            (_recipientKind == InputRecipientKind.SimulationTimeline) ? _nextOpenTick : null,
+            deferTransitions: _recipientKind == InputRecipientKind.SimulationTimeline);
         _controlCommandsInBoundary++;
         PublishHostActionSnapshot();
 
@@ -592,7 +606,7 @@ public sealed partial class InputRouter
                 var bindingState = new InputBindingRuntimeState(binding);
                 BindingStates.Add(binding.BindingId, bindingState);
 
-                foreach (var control in GetBindingControlKeys(binding))
+                foreach (var control in bindingState.ControlKeys)
                 {
                     if (!BindingsByControl.TryGetValue(control, out var bindings))
                     {

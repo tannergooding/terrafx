@@ -88,6 +88,57 @@ internal sealed class InputRouterTests
     }
 
     [Test]
+    public void CapturesKeyboardFromAHigherPriorityContextAcrossMaps()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            14,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var action = new ActionDefinition(Guid.NewGuid(), "Move", InputActionKind.Digital);
+        var lowContext = new ContextDefinition(Guid.NewGuid(), 0, priority: 0);
+        var key = new KeyboardControl(7, 4);
+        var binding = new BindingDefinition(Guid.NewGuid(), action.ActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(key),
+        };
+        var lowerMap = new InputActionMapV1(
+            1,
+            Guid.NewGuid(),
+            1,
+            1,
+            [action],
+            [lowContext],
+            [binding]);
+        var lowerRegistration = router.RegisterMap(lowerMap);
+        Assert.That(lowerRegistration.Status, Is.EqualTo(InputMapStatus.Registered));
+
+        var keyDownSequence = sequenceLease.Allocate();
+        Assert.That(
+            router.EnqueueHeadlessInjection(
+                new InputInjection(key, InputKeyEventKind.Down),
+                1,
+                keyDownSequence,
+                0).Status,
+            Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.PublishSimulationActionSnapshot(0).Actions[0].IsDownAtEnd, Is.True);
+
+        var highContext = new ContextDefinition(Guid.NewGuid(), 0, priority: 10, captureClasses: InputClass.Keyboard);
+        var highMap = CreateMapWithContext(Guid.NewGuid(), 1, highContext);
+        Assert.That(router.RegisterMap(highMap).Status, Is.EqualTo(InputMapStatus.Registered));
+
+        var captured = router.PublishSimulationActionSnapshot(1);
+        Assert.That(captured.Actions, Has.Length.EqualTo(1));
+        Assert.That(captured.Actions[0].IsDownAtEnd, Is.False);
+        Assert.That(captured.Actions[0].ReleasedThisTick, Is.False);
+        Assert.That(captured.Actions[0].Transitions, Has.Length.EqualTo(1));
+        Assert.That(captured.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+        Assert.That(captured.Actions[0].Transitions[0].CancellationReason, Is.EqualTo(InputCancellationReason.ContextMasked));
+
+        router.Dispose();
+    }
+
+    [Test]
     public void CombinesDigitalBindingsWithOrAcrossOneTick()
     {
         var router = CreateRouter(InputRecipientKind.SimulationTimeline, recipientId: 8);
@@ -296,6 +347,47 @@ internal sealed class InputRouterTests
         var repressed = router.PublishSimulationActionSnapshot(3);
         Assert.That(repressed.Actions[0].IsDownAtEnd, Is.True);
         Assert.That(repressed.Actions[0].PressedThisTick, Is.True);
+
+        router.Dispose();
+    }
+
+    [Test]
+    public void OrdersEqualPriorityContextsByRecentActivation()
+    {
+        var router = CreateRouter(InputRecipientKind.SimulationTimeline, recipientId: 15);
+        var action = new ActionDefinition(Guid.NewGuid(), "Move", InputActionKind.Digital);
+        var olderContext = new ContextDefinition(
+            new Guid("10000000-0000-0000-0000-000000000001"),
+            0,
+            priority: 5);
+        var newerContext = new ContextDefinition(
+            new Guid("20000000-0000-0000-0000-000000000001"),
+            1,
+            priority: 5,
+            captureClasses: InputClass.Keyboard);
+        var key = new KeyboardControl(7, 4);
+        var binding = new BindingDefinition(Guid.NewGuid(), action.ActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(key),
+        };
+        var map = new InputActionMapV1(
+            1,
+            Guid.NewGuid(),
+            1,
+            3,
+            [action],
+            [olderContext, newerContext],
+            [binding]);
+        var registration = router.RegisterMap(map);
+        Assert.That(registration.Status, Is.EqualTo(InputMapStatus.Registered));
+        var sequence = registration.HostSequence.GetValueOrDefault() + 1;
+
+        Assert.That(
+            router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Down), 1, sequence, 0).Status,
+            Is.EqualTo(InputRoutingStatus.Applied));
+
+        var snapshot = router.PublishSimulationActionSnapshot(0);
+        Assert.That(snapshot.Actions[0].IsDownAtEnd, Is.False);
+        Assert.That(snapshot.Actions[0].Transitions, Is.Empty);
 
         router.Dispose();
     }
