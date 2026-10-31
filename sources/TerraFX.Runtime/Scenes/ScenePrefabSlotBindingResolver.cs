@@ -13,12 +13,12 @@ internal static class ScenePrefabSlotBindingResolver
         ScenePrefabPlacement placement,
         ScenePrefabAsset childPrefab,
         ImmutableArray<SceneExternalSlot> containingExternalSlots,
-        Func<SceneEntitySelector, ImmutableArray<ContentSchemaReference>?> resolveInternalTargetSchemas,
+        Func<SceneEntitySelector, ImmutableArray<SceneAuthoredComponentRecord>?> resolveInternalTargetComponents,
         bool allowInstanceAbsoluteInternalTargets)
     {
         ArgumentNullException.ThrowIfNull(placement);
         ArgumentNullException.ThrowIfNull(childPrefab);
-        ArgumentNullException.ThrowIfNull(resolveInternalTargetSchemas);
+        ArgumentNullException.ThrowIfNull(resolveInternalTargetComponents);
 
         if (containingExternalSlots.IsDefault)
         {
@@ -85,14 +85,14 @@ internal static class ScenePrefabSlotBindingResolver
                         throw new InvalidDataException("An Internal slot binding has an invalid EntitySelector.");
                     }
 
-                    var targetSchemas = resolveInternalTargetSchemas(selector);
+                    var targetComponents = resolveInternalTargetComponents(selector);
 
-                    if (targetSchemas is not { } schemas || schemas.IsDefault)
+                    if (targetComponents is not { } components || components.IsDefault)
                     {
                         throw new InvalidDataException("An Internal slot binding does not resolve to an entity in the containing occurrence.");
                     }
 
-                    ValidateRequiredComponents(childSlot, schemas);
+                    ValidateRequiredComponents(childSlot, components);
                 }
                 else if (target.Kind == SceneReferenceTargetKind.ExternalSlot)
                 {
@@ -198,6 +198,31 @@ internal static class ScenePrefabSlotBindingResolver
             for (var targetIndex = 0; targetIndex < targetSchemas.Length; targetIndex++)
             {
                 if (targetSchemas[targetIndex] == requiredSchema)
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
+            {
+                throw new InvalidDataException($"The bound target does not satisfy child external slot {childSlot.SlotId:N}.");
+            }
+        }
+    }
+
+    private static void ValidateRequiredComponents(
+        SceneExternalSlot childSlot,
+        ImmutableArray<SceneAuthoredComponentRecord> targetComponents)
+    {
+        for (var requiredIndex = 0; requiredIndex < childSlot.RequiredComponents.Length; requiredIndex++)
+        {
+            var requiredSchema = childSlot.RequiredComponents[requiredIndex];
+            var found = false;
+
+            for (var targetIndex = 0; targetIndex < targetComponents.Length; targetIndex++)
+            {
+                if (targetComponents[targetIndex].Schema == requiredSchema)
                 {
                     found = true;
                     break;

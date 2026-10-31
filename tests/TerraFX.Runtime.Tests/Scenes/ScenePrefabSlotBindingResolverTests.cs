@@ -13,6 +13,19 @@ namespace TerraFX.Runtime.Tests.Scenes;
 [TestFixture]
 internal sealed class ScenePrefabSlotBindingResolverTests
 {
+    private static ImmutableArray<SceneAuthoredComponentRecord> CreateComponentRecords(
+        params ContentSchemaReference[] schemas)
+    {
+        var records = ImmutableArray.CreateBuilder<SceneAuthoredComponentRecord>(schemas.Length);
+
+        for (var index = 0; index < schemas.Length; index++)
+        {
+            records.Add(new SceneAuthoredComponentRecord(schemas[index], [1]));
+        }
+
+        return records.MoveToImmutable();
+    }
+
     private static SceneReferenceTarget CreateExternalSlotTarget(Guid slotId)
         => new(SceneReferenceTargetKind.ExternalSlot, entity: null, externalSlotId: slotId);
 
@@ -66,13 +79,13 @@ internal sealed class ScenePrefabSlotBindingResolverTests
         ScenePrefabPlacement placement,
         ScenePrefabAsset childPrefab,
         ImmutableArray<SceneExternalSlot> containingSlots,
-        Func<SceneEntitySelector, ImmutableArray<ContentSchemaReference>?> resolveInternalTargetSchemas,
+        Func<SceneEntitySelector, ImmutableArray<SceneAuthoredComponentRecord>?> resolveInternalTargetComponents,
         bool allowInstanceAbsoluteInternalTargets)
         => ScenePrefabSlotBindingResolver.Resolve(
             placement,
             childPrefab,
             containingSlots,
-            resolveInternalTargetSchemas,
+            resolveInternalTargetComponents,
             allowInstanceAbsoluteInternalTargets);
 
     [Test]
@@ -89,7 +102,7 @@ internal sealed class ScenePrefabSlotBindingResolverTests
             placement,
             childPrefab,
             containingSlots: [],
-            resolveInternalTargetSchemas: static _ => null,
+            resolveInternalTargetComponents: static _ => null,
             allowInstanceAbsoluteInternalTargets: false);
 
         Assert.That(resolved, Has.Length.EqualTo(1));
@@ -109,7 +122,7 @@ internal sealed class ScenePrefabSlotBindingResolverTests
             placement,
             childPrefab,
             containingSlots: [],
-            resolveInternalTargetSchemas: static _ => null,
+            resolveInternalTargetComponents: static _ => null,
             allowInstanceAbsoluteInternalTargets: false);
 
         Assert.That(resolved, Has.Length.EqualTo(1));
@@ -198,7 +211,7 @@ internal sealed class ScenePrefabSlotBindingResolverTests
                 CreateInternalTarget(targetEntityId, SceneEntitySelectorScope.OccurrenceRelative))]);
 
         Assert.That(
-            () => Resolve(placement, childPrefab, [], static _ => ImmutableArray<ContentSchemaReference>.Empty, allowInstanceAbsoluteInternalTargets: false),
+            () => Resolve(placement, childPrefab, [], static _ => ImmutableArray<SceneAuthoredComponentRecord>.Empty, allowInstanceAbsoluteInternalTargets: false),
             Throws.TypeOf<InvalidDataException>());
     }
 
@@ -322,7 +335,7 @@ internal sealed class ScenePrefabSlotBindingResolverTests
             placement,
             childPrefab,
             [],
-            _ => ImmutableArray<ContentSchemaReference>.Empty,
+            _ => ImmutableArray<SceneAuthoredComponentRecord>.Empty,
             allowInstanceAbsoluteInternalTargets: true);
 
         Assert.That(resolved[0].Target?.Entity?.AuthoredEntityId, Is.EqualTo(targetEntityId));
@@ -345,7 +358,7 @@ internal sealed class ScenePrefabSlotBindingResolverTests
             placement,
             childPrefab,
             [],
-            _ => ImmutableArray.Create(cameraSchema),
+            _ => CreateComponentRecords(cameraSchema),
             allowInstanceAbsoluteInternalTargets: false);
 
         Assert.That(resolved[0].Target?.Entity?.AuthoredEntityId, Is.EqualTo(targetEntityId));

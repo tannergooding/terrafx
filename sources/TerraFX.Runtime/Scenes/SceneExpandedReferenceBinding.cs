@@ -14,4 +14,5 @@ internal readonly record struct SceneExpandedReferenceBinding(
     int TargetAnchorOccurrenceIndex,
     SceneReferenceTarget Target,
     bool IsPresent,
-    int? ResolvedTargetExpandedEntityIndex);
+    int? ResolvedTargetExpandedEntityIndex,
+    int? ResolvedExternalSlotBindingIndex);

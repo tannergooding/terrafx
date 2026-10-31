@@ -16,6 +16,7 @@ internal sealed class SceneExpansionPlan : IDisposable
     private readonly ImmutableArray<SceneExpandedEntity> _entities;
     private readonly Guid[] _entityAssignmentKeys;
     private readonly ImmutableArray<int> _entityIndicesByOccurrence;
+    private readonly ImmutableArray<SceneExpandedExternalSlotBinding> _externalSlotBindings;
     private readonly Guid[] _occurrenceIds;
     private readonly ImmutableArray<SceneExpandedOccurrence> _occurrences;
     private Dictionary<AssetId, AssetLease<ScenePrefabAsset>>? _prefabLeases;
@@ -33,6 +34,7 @@ internal sealed class SceneExpansionPlan : IDisposable
         ImmutableArray<int> childOccurrenceIndicesByPlacement,
         ImmutableArray<int> rootEntityIndicesByOccurrence,
         ImmutableArray<SceneExpandedReferenceBinding> referenceBindings,
+        ImmutableArray<SceneExpandedExternalSlotBinding> externalSlotBindings,
         Guid[] entityAssignmentKeys,
         Guid[] occurrenceIds)
     {
@@ -44,7 +46,8 @@ internal sealed class SceneExpansionPlan : IDisposable
             || entityIndicesByOccurrence.IsDefault
             || childOccurrenceIndicesByPlacement.IsDefault
             || rootEntityIndicesByOccurrence.IsDefault
-            || referenceBindings.IsDefault)
+            || referenceBindings.IsDefault
+            || externalSlotBindings.IsDefault)
         {
             throw new ArgumentException("The expansion plan arrays must be initialized.");
         }
@@ -61,6 +64,7 @@ internal sealed class SceneExpansionPlan : IDisposable
         _childOccurrenceIndicesByPlacement = childOccurrenceIndicesByPlacement;
         _rootEntityIndicesByOccurrence = rootEntityIndicesByOccurrence;
         _referenceBindings = referenceBindings;
+        _externalSlotBindings = externalSlotBindings;
         _entityAssignmentKeys = entityAssignmentKeys;
         _occurrenceIds = occurrenceIds;
     }
@@ -80,6 +84,15 @@ internal sealed class SceneExpansionPlan : IDisposable
         {
             ThrowIfDisposed();
             return _entityAssignmentKeys;
+        }
+    }
+
+    internal ImmutableArray<SceneExpandedExternalSlotBinding> ExternalSlotBindings
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return _externalSlotBindings;
         }
     }
 

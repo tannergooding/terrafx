@@ -47,6 +47,9 @@ internal static class ScenePrefabExpansionPlanner
         private ImmutableArray<SceneExpandedEntity>.Builder _entities = ImmutableArray.CreateBuilder<SceneExpandedEntity>();
         private int _entityCount;
         private ImmutableArray<int>.Builder _entityIndicesByOccurrence = ImmutableArray.CreateBuilder<int>();
+        private int _externalSlotBindingCount;
+        private long _externalSlotBindingResolutionBytes;
+        private ImmutableArray<SceneExpandedExternalSlotBinding>.Builder _externalSlotBindings = ImmutableArray.CreateBuilder<SceneExpandedExternalSlotBinding>();
         private readonly SceneExpansionLimits _limits;
         private int _occurrenceCount;
         private Guid[] _occurrenceIdentities = [];
@@ -190,6 +193,15 @@ internal static class ScenePrefabExpansionPlanner
         {
             var payloadBytes = checked((long)count * elementSize);
             return checked(64L + ((payloadBytes + 7L) & ~7L));
+        }
+
+        private static int CompareExpandedExternalSlotBindings(
+            SceneExpandedExternalSlotBinding binding,
+            int occurrenceIndex,
+            Guid slotId)
+        {
+            var comparison = binding.OccurrenceIndex.CompareTo(occurrenceIndex);
+            return (comparison != 0) ? comparison : FoundationCatalogue.CompareRfc(binding.SlotId, slotId);
         }
 
         private static int ComparePropertyPaths(
@@ -362,6 +374,37 @@ internal static class ScenePrefabExpansionPlanner
             return -1;
         }
 
+        private static int FindExpandedExternalSlotBindingIndex(
+            ImmutableArray<SceneExpandedExternalSlotBinding>.Builder bindings,
+            int occurrenceIndex,
+            Guid slotId)
+        {
+            var low = 0;
+            var high = bindings.Count - 1;
+
+            while (low <= high)
+            {
+                var middle = low + ((high - low) / 2);
+                var comparison = CompareExpandedExternalSlotBindings(bindings[middle], occurrenceIndex, slotId);
+
+                if (comparison == 0)
+                {
+                    return middle;
+                }
+
+                if (comparison < 0)
+                {
+                    low = middle + 1;
+                }
+                else
+                {
+                    high = middle - 1;
+                }
+            }
+
+            return -1;
+        }
+
         private static int FindHierarchyNodeIndex(ImmutableArray<SceneHierarchyNode> nodes, Guid entityId)
         {
             var low = 0;
@@ -496,6 +539,7 @@ internal static class ScenePrefabExpansionPlanner
             _entityIndicesByOccurrence = ImmutableArray.CreateBuilder<int>();
             _rootEntityIndicesByOccurrence = ImmutableArray.CreateBuilder<int>();
             _referenceBindings = [];
+            _externalSlotBindings = ImmutableArray.CreateBuilder<SceneExpandedExternalSlotBinding>();
             _rootCounts = [];
             _occurrenceIdentities = [];
         }
@@ -543,6 +587,7 @@ internal static class ScenePrefabExpansionPlanner
             _entities = ImmutableArray.CreateBuilder<SceneExpandedEntity>(_entityCount);
             _occurrences = ImmutableArray.CreateBuilder<SceneExpandedOccurrence>(_occurrenceCount);
             _entityIndicesByOccurrence = ImmutableArray.CreateBuilder<int>(_entityCount);
+            _externalSlotBindings = ImmutableArray.CreateBuilder<SceneExpandedExternalSlotBinding>(_externalSlotBindingCount);
             _rootEntityIndicesByOccurrence = ImmutableArray.CreateBuilder<int>(_rootEntityIndexCount);
             var childOccurrenceIndicesByPlacement = ImmutableArray.CreateBuilder<int>(_placementOccurrenceCount);
             _ = _referenceBindings.EnsureCapacity(_referenceBindingCount);
@@ -602,6 +647,7 @@ internal static class ScenePrefabExpansionPlanner
                 ownerOccurrenceIndex: 0,
                 childOccurrenceIndicesByPlacement: childOccurrenceIndicesByPlacement,
                 allowInstanceAbsoluteSources: true);
+            BuildResolvedExternalSlotBindings(childOccurrenceIndicesByPlacement);
             ValidateExpandedReferenceBindings(childOccurrenceIndicesByPlacement);
             _ = _referenceBindings.RemoveAll(static binding => !binding.IsPresent);
 
@@ -626,6 +672,7 @@ internal static class ScenePrefabExpansionPlanner
                 childOccurrenceIndicesByPlacement.MoveToImmutable(),
                 _rootEntityIndicesByOccurrence.MoveToImmutable(),
                 [.. _referenceBindings],
+                _externalSlotBindings.MoveToImmutable(),
                 entityAssignmentKeys,
                 _occurrenceIdentities);
             _sceneLease = null;
@@ -737,6 +784,7 @@ internal static class ScenePrefabExpansionPlanner
                         Target = resolved.Value.ReferenceValue,
                         IsPresent = true,
                         ResolvedTargetExpandedEntityIndex = null,
+                        ResolvedExternalSlotBindingIndex = null,
                     };
                 }
                 else if (resolved.Value.Operation is ScenePrefabOverrideOperation.Omit)
@@ -746,6 +794,7 @@ internal static class ScenePrefabExpansionPlanner
                         updatedReferenceBinding = _referenceBindings[referenceBindingIndex] with {
                             IsPresent = false,
                             ResolvedTargetExpandedEntityIndex = null,
+                            ResolvedExternalSlotBindingIndex = null,
                         };
                     }
                 }
@@ -893,7 +942,8 @@ internal static class ScenePrefabExpansionPlanner
                             occurrenceIndex,
                             binding.Target,
                             IsPresent: true,
-                            ResolvedTargetExpandedEntityIndex: null));
+                            ResolvedTargetExpandedEntityIndex: null,
+                            ResolvedExternalSlotBindingIndex: null));
                 }
             }
 
@@ -910,6 +960,114 @@ internal static class ScenePrefabExpansionPlanner
                 {
                     throw new InvalidDataException("Multiple Entity-reference bindings resolve to the same expanded source leaf.");
                 }
+            }
+        }
+
+        private void BuildResolvedExternalSlotBindings(
+            ImmutableArray<int>.Builder childOccurrenceIndicesByPlacement)
+        {
+            var prefabLeases = _prefabLeases
+                ?? throw new InvalidOperationException("The Scene expansion lost its Prefab lease set.");
+
+            for (var occurrenceIndex = 0; occurrenceIndex < _occurrences.Count; occurrenceIndex++)
+            {
+                _cancellationToken.ThrowIfCancellationRequested();
+                var occurrence = _occurrences[occurrenceIndex];
+                var source = GetSource(occurrenceIndex);
+
+                if (occurrenceIndex == 0)
+                {
+                    for (var slotIndex = 0; slotIndex < source.ExternalSlots.Length; slotIndex++)
+                    {
+                        var slot = source.ExternalSlots[slotIndex];
+                        _externalSlotBindings.Add(
+                            new SceneExpandedExternalSlotBinding(
+                                occurrenceIndex,
+                                slot.SlotId,
+                                TargetExpandedEntityIndex: null,
+                                RootExternalSlotId: slot.SlotId));
+                    }
+
+                    continue;
+                }
+
+                if ((occurrence.ParentOccurrenceIndex < 0)
+                    || (occurrence.ParentOccurrenceIndex >= occurrenceIndex)
+                    || !prefabLeases.TryGetValue(occurrence.AssetId, out var childPrefabLease))
+                {
+                    throw new InvalidOperationException("An expanded Prefab occurrence has no parent or retained asset lease.");
+                }
+
+                var parentSource = GetSource(occurrence.ParentOccurrenceIndex);
+                var placementIndex = FindPlacementIndex(parentSource.Placements, occurrence.PlacementId);
+
+                if (placementIndex < 0)
+                {
+                    throw new InvalidDataException("An expanded Prefab occurrence has no source placement.");
+                }
+
+                var placement = parentSource.Placements[placementIndex];
+                var resolvedBindings = ScenePrefabSlotBindingResolver.Resolve(
+                    placement,
+                    childPrefabLease.Value,
+                    parentSource.ExternalSlots,
+                    selector => {
+                        var targetEntityIndex = ResolveEntity(
+                            selector,
+                            occurrence.ParentOccurrenceIndex,
+                            childOccurrenceIndicesByPlacement,
+                            allowInstanceAbsolute: !parentSource.IsPrefab);
+                        return _entities[targetEntityIndex].Components;
+                    },
+                    allowInstanceAbsoluteInternalTargets: !parentSource.IsPrefab);
+
+                for (var bindingIndex = 0; bindingIndex < resolvedBindings.Length; bindingIndex++)
+                {
+                    _cancellationToken.ThrowIfCancellationRequested();
+                    var binding = resolvedBindings[bindingIndex];
+                    int? targetExpandedEntityIndex = null;
+                    Guid? rootExternalSlotId = null;
+
+                    if (binding.Target?.Kind is SceneReferenceTargetKind.Internal)
+                    {
+                        targetExpandedEntityIndex = ResolveEntity(
+                            binding.Target.Entity
+                                ?? throw new InvalidDataException("An Internal slot binding has no EntitySelector."),
+                            occurrence.ParentOccurrenceIndex,
+                            childOccurrenceIndicesByPlacement,
+                            allowInstanceAbsolute: !parentSource.IsPrefab);
+                    }
+                    else if (binding.Target?.Kind is SceneReferenceTargetKind.ExternalSlot)
+                    {
+                        var forwardedSlotId = binding.Target.ExternalSlotId
+                            ?? throw new InvalidDataException("An ExternalSlot binding has no ExternalSlotId.");
+                        var forwardedBindingIndex = FindExpandedExternalSlotBindingIndex(
+                            _externalSlotBindings,
+                            occurrence.ParentOccurrenceIndex,
+                            forwardedSlotId);
+
+                        if (forwardedBindingIndex < 0)
+                        {
+                            throw new InvalidDataException("A placement forwards a child slot to an unresolved containing slot.");
+                        }
+
+                        var forwardedBinding = _externalSlotBindings[forwardedBindingIndex];
+                        targetExpandedEntityIndex = forwardedBinding.TargetExpandedEntityIndex;
+                        rootExternalSlotId = forwardedBinding.RootExternalSlotId;
+                    }
+
+                    _externalSlotBindings.Add(
+                        new SceneExpandedExternalSlotBinding(
+                            occurrenceIndex,
+                            binding.SlotId,
+                            targetExpandedEntityIndex,
+                            rootExternalSlotId));
+                }
+            }
+
+            if (_externalSlotBindings.Count != _externalSlotBindingCount)
+            {
+                throw new InvalidOperationException("Expanded ExternalSlot binding count did not match its preflight.");
             }
         }
 
@@ -988,6 +1146,17 @@ internal static class ScenePrefabExpansionPlanner
             }
 
             _referenceBindingCount += source.References.Length;
+
+            if (source.ExternalSlots.Length > (int.MaxValue - _externalSlotBindingCount))
+            {
+                throw new InvalidDataException("The expanded ExternalSlot binding count exceeds the supported range.");
+            }
+
+            _externalSlotBindingCount += source.ExternalSlots.Length;
+            _externalSlotBindingResolutionBytes = checked(
+                _externalSlotBindingResolutionBytes
+                + ArrayBytes(source.ExternalSlots.Length, IntPtr.Size)
+                + (checked((long)source.ExternalSlots.Length) * 32L));
 
             for (var bindingIndex = 0; bindingIndex < source.References.Length; bindingIndex++)
             {
@@ -1663,6 +1832,12 @@ internal static class ScenePrefabExpansionPlanner
             requiredBytes = checked(requiredBytes + _overrideLayerBytes);
             requiredBytes = checked(
                 requiredBytes
+                + ArrayBytes(
+                    _externalSlotBindingCount,
+                    Unsafe.SizeOf<SceneExpandedExternalSlotBinding>())
+                + _externalSlotBindingResolutionBytes);
+            requiredBytes = checked(
+                requiredBytes
                 + checked(2L * ArrayBytes(
                     _referenceBindingCount,
                     Unsafe.SizeOf<SceneExpandedReferenceBinding>())));
@@ -1841,6 +2016,7 @@ internal static class ScenePrefabExpansionPlanner
 
                 var ownerSource = GetSource(binding.OwnerOccurrenceIndex);
                 int? resolvedTargetExpandedEntityIndex = null;
+                int? resolvedExternalSlotBindingIndex = null;
 
                 if (binding.Target.Kind is SceneReferenceTargetKind.Internal)
                 {
@@ -1853,12 +2029,27 @@ internal static class ScenePrefabExpansionPlanner
                 }
                 else if (binding.Target.Kind is SceneReferenceTargetKind.ExternalSlot)
                 {
+                    var externalSlotId = binding.Target.ExternalSlotId.GetValueOrDefault();
+
                     if (!ContainsExternalSlot(
                         ownerSource.ExternalSlots,
-                        binding.Target.ExternalSlotId.GetValueOrDefault()))
+                        externalSlotId))
                     {
                         throw new InvalidDataException("An Entity-reference binding names an undeclared ExternalSlot.");
                     }
+
+                    resolvedExternalSlotBindingIndex = FindExpandedExternalSlotBindingIndex(
+                        _externalSlotBindings,
+                        binding.OwnerOccurrenceIndex,
+                        externalSlotId);
+
+                    if (resolvedExternalSlotBindingIndex is not int externalSlotBindingIndex)
+                    {
+                        throw new InvalidDataException("An Entity-reference binding names an unresolved ExternalSlot.");
+                    }
+
+                    resolvedTargetExpandedEntityIndex =
+                        _externalSlotBindings[externalSlotBindingIndex].TargetExpandedEntityIndex;
                 }
                 else
                 {
@@ -1867,6 +2058,7 @@ internal static class ScenePrefabExpansionPlanner
 
                 _referenceBindings[bindingIndex] = binding with {
                     ResolvedTargetExpandedEntityIndex = resolvedTargetExpandedEntityIndex,
+                    ResolvedExternalSlotBindingIndex = resolvedExternalSlotBindingIndex,
                 };
             }
 

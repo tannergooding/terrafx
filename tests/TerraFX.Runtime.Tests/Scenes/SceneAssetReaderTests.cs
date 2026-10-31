@@ -570,7 +570,7 @@ internal sealed class SceneAssetReaderTests
             var nodes = entityId is Guid nodeEntityId
                 ? new[] { SceneHierarchyCodecTests.FixtureBuilder.EncodeNode(nodeEntityId, parentEntityId: null, entityChildren) }
                 : [];
-            var entries = new byte[entities.Length + placements.Length][];
+            var entries = new byte[entities.Length + (placementParentEntityId is null ? placements.Length : 0)][];
             var entryIndex = 0;
 
             if (entityId is Guid rootEntityId)

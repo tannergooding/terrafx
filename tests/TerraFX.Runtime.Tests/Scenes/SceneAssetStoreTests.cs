@@ -975,7 +975,7 @@ internal sealed class SceneAssetStoreTests
                     sceneLease.Value.Placements[0],
                     prefabLease.Value,
                     sceneLease.Value.ExternalSlots,
-                    static _ => ImmutableArray<ContentSchemaReference>.Empty,
+                    static _ => ImmutableArray<SceneAuthoredComponentRecord>.Empty,
                     allowInstanceAbsoluteInternalTargets: true);
                 Assert.That(resolvedBindings, Has.Length.EqualTo(1));
                 Assert.That(resolvedBindings[0].SlotId, Is.EqualTo(childSlotId));
@@ -1358,6 +1358,185 @@ internal sealed class SceneAssetStoreTests
         var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(new AssetId(1));
 
         await AssertExpansionRejectedAsync(scene, prefab).ConfigureAwait(false);
+    }
+
+    [Test]
+    public async Task ResolvesInternalSlotTargetToExpandedEntity()
+    {
+        var outerEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var innerEntityId = new Guid("10000000-0000-4000-8000-000000000002");
+        var innerPlacementId = new Guid("20000000-0000-4000-8000-000000000064");
+        var outerPlacementId = new Guid("20000000-0000-4000-8000-000000000065");
+        var innerSlotId = new Guid("30000000-0000-4000-8000-000000000064");
+        var innerPrefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(2),
+            entityId: innerEntityId,
+            externalSlots: [
+                CreateExternalSlot(
+                    innerSlotId,
+                    required: true,
+                    allowNull: false,
+                    [CreateSchemaReference("scene/local-transform")]),
+            ]);
+        var outerPrefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(1),
+            entityId: outerEntityId,
+            placementId: innerPlacementId,
+            placementRootPoses: [
+                SceneAssetReaderTests.Fixtures.CreateRootPose(
+                    innerEntityId,
+                    includeRootPosition: false),
+            ],
+            slotBindings: [
+                SceneAssetReaderTests.Fixtures.CreatePlacementSlotBinding(
+                    innerSlotId,
+                    SceneAssetReaderTests.Fixtures.CreateReferenceTarget(
+                        SceneReferenceTargetKind.Internal,
+                        entityId: outerEntityId)),
+            ],
+            placementPrefabAssetId: new AssetId(2),
+            placementParentEntityId: outerEntityId);
+        var scene = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
+            new AssetId(3),
+            outerPlacementId,
+            rootPoses: [SceneAssetReaderTests.Fixtures.CreateRootPose(outerEntityId)]);
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var package = Package.CreatePackage(
+            new Package.Entry(1, Package.CreateEnvelope(1, outerPrefab)),
+            new Package.Entry(2, Package.CreateEnvelope(2, innerPrefab)),
+            new Package.Entry(3, Package.CreateEnvelope(3, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+            try
+            {
+                using var expansion = await ScenePrefabExpansionPlanner.PrepareAsync(
+                    store,
+                    new AssetId(3),
+                    SceneExpansionLimits.Default).ConfigureAwait(false);
+                Assert.That(expansion.ExternalSlotBindings, Has.Length.EqualTo(1));
+                Assert.That(expansion.ExternalSlotBindings[0].OccurrenceIndex, Is.EqualTo(2));
+                Assert.That(expansion.ExternalSlotBindings[0].SlotId, Is.EqualTo(innerSlotId));
+                Assert.That(expansion.ExternalSlotBindings[0].TargetExpandedEntityIndex, Is.Zero);
+                Assert.That(expansion.ExternalSlotBindings[0].RootExternalSlotId, Is.Null);
+            }
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task ResolvesNestedExternalSlotForwardingToRootSceneSlot()
+    {
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var componentSchema = CreateEntityReferenceComponentSchema();
+        var registeredSchemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var schemas = new CompiledContentSchemaRegistry([.. registeredSchemas.Schemas, componentSchema]);
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var outerPlacementId = new Guid("20000000-0000-4000-8000-000000000061");
+        var innerPlacementId = new Guid("20000000-0000-4000-8000-000000000062");
+        var innerSlotId = new Guid("30000000-0000-4000-8000-000000000061");
+        var outerSlotId = new Guid("30000000-0000-4000-8000-000000000062");
+        var rootSlotId = new Guid("30000000-0000-4000-8000-000000000063");
+        var innerPrefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(2),
+            entityId: rootEntityId,
+            references: [
+                CreateEntityReferenceBindingToExternalSlot(
+                    rootEntityId,
+                    componentSchema.Schema,
+                    innerSlotId),
+            ],
+            externalSlots: [
+                CreateExternalSlot(innerSlotId, required: false, allowNull: true, []),
+            ],
+            additionalEntityComponents: [
+                CreateEntityReferenceComponent(componentSchema.Schema.SchemaId, innerSlotId),
+            ]);
+        var outerPrefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(1),
+            placementId: innerPlacementId,
+            placementRootPoses: [SceneAssetReaderTests.Fixtures.CreateRootPose(rootEntityId)],
+            slotBindings: [
+                SceneAssetReaderTests.Fixtures.CreatePlacementSlotBinding(
+                    innerSlotId,
+                    SceneAssetReaderTests.Fixtures.CreateReferenceTarget(
+                        SceneReferenceTargetKind.ExternalSlot,
+                        externalSlotId: outerSlotId)),
+            ],
+            externalSlots: [
+                CreateExternalSlot(outerSlotId, required: false, allowNull: true, []),
+            ],
+            placementPrefabAssetId: new AssetId(2));
+        var scene = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
+            new AssetId(3),
+            outerPlacementId,
+            rootPoses: [
+                SceneAssetReaderTests.Fixtures.CreateRootPose(
+                    rootEntityId,
+                    placementPath: [innerPlacementId]),
+            ],
+            slotBindings: [
+                SceneAssetReaderTests.Fixtures.CreatePlacementSlotBinding(
+                    outerSlotId,
+                    SceneAssetReaderTests.Fixtures.CreateReferenceTarget(
+                        SceneReferenceTargetKind.ExternalSlot,
+                        externalSlotId: rootSlotId)),
+            ],
+            externalSlots: [
+                CreateExternalSlot(rootSlotId, required: false, allowNull: true, []),
+            ]);
+        var package = Package.CreatePackage(
+            new Package.Entry(1, Package.CreateEnvelope(1, outerPrefab)),
+            new Package.Entry(2, Package.CreateEnvelope(2, innerPrefab)),
+            new Package.Entry(3, Package.CreateEnvelope(3, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+            try
+            {
+                using var expansion = await ScenePrefabExpansionPlanner.PrepareAsync(
+                    store,
+                    new AssetId(3),
+                    SceneExpansionLimits.Default).ConfigureAwait(false);
+                Assert.That(expansion.ExternalSlotBindings, Has.Length.EqualTo(3));
+                Assert.That(expansion.ExternalSlotBindings[0].OccurrenceIndex, Is.Zero);
+                Assert.That(expansion.ExternalSlotBindings[0].SlotId, Is.EqualTo(rootSlotId));
+                Assert.That(expansion.ExternalSlotBindings[0].RootExternalSlotId, Is.EqualTo(rootSlotId));
+                Assert.That(expansion.ExternalSlotBindings[1].OccurrenceIndex, Is.EqualTo(1));
+                Assert.That(expansion.ExternalSlotBindings[1].SlotId, Is.EqualTo(outerSlotId));
+                Assert.That(expansion.ExternalSlotBindings[1].RootExternalSlotId, Is.EqualTo(rootSlotId));
+                Assert.That(expansion.ExternalSlotBindings[2].OccurrenceIndex, Is.EqualTo(2));
+                Assert.That(expansion.ExternalSlotBindings[2].SlotId, Is.EqualTo(innerSlotId));
+                Assert.That(expansion.ExternalSlotBindings[2].RootExternalSlotId, Is.EqualTo(rootSlotId));
+                Assert.That(expansion.ReferenceBindings, Has.Length.EqualTo(1));
+                Assert.That(expansion.ReferenceBindings[0].ResolvedExternalSlotBindingIndex, Is.EqualTo(2));
+                Assert.That(expansion.ReferenceBindings[0].ResolvedTargetExpandedEntityIndex, Is.Null);
+            }
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
     }
 
     private static class Package
