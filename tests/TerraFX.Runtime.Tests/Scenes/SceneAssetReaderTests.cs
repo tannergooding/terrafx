@@ -652,7 +652,8 @@ internal sealed class SceneAssetReaderTests
             AssetId assetId,
             bool includeRootPosition = true,
             float localPositionX = 0.0f,
-            byte[][]? externalSlots = null)
+            byte[][]? externalSlots = null,
+            byte[][]? overrides = null)
         {
             var localTransformSchema = new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId;
             var rootPositionSchema = new ContentSchemaIdentityAssignment("scene/root-position").SchemaId;
@@ -696,7 +697,7 @@ internal sealed class SceneAssetReaderTests
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(3, hierarchy),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(4),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(6),
-                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(7),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(7, overrides ?? []),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8, externalSlots ?? []));
         }
 

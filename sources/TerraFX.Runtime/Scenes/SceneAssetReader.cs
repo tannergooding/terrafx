@@ -160,7 +160,8 @@ internal static class SceneAssetReader
                 record.GetRecordArrayElement(4, placementIndex),
                 schemas,
                 limits,
-                allowInternalOverrideReferences: true);
+                allowInternalOverrideReferences: true,
+                allowInstanceAbsoluteOverrideTargets: false);
 
             if (previousPlacementId != Guid.Empty
                 && (FoundationCatalogue.CompareRfc(previousPlacementId, placement.PlacementId) >= 0))
@@ -194,12 +195,14 @@ internal static class SceneAssetReader
             referenceField,
             s_entityReferenceBindingSchemaId,
             maximumCount: 1_048_576);
-        var overrides = ReadAuthoredRecords(
+        var overrides = ReadPrefabOverrides(
             record,
             tag: 7,
             overrideField,
-            s_prefabOverrideSchemaId,
-            maximumCount: 65_536);
+            schemas,
+            limits,
+            allowInternalOverrideReferences: true,
+            allowInstanceAbsoluteOverrideTargets: true);
         var externalSlots = ReadExternalSlots(record, tag: 8, externalSlotField, schemas, limits);
 
         return new SceneAsset(
@@ -281,7 +284,8 @@ internal static class SceneAssetReader
                 record.GetRecordArrayElement(5, placementIndex),
                 schemas,
                 limits,
-                allowInternalOverrideReferences: false);
+                allowInternalOverrideReferences: false,
+                allowInstanceAbsoluteOverrideTargets: false);
 
             if (previousPlacementId != Guid.Empty
                 && (FoundationCatalogue.CompareRfc(previousPlacementId, placement.PlacementId) >= 0))
@@ -751,7 +755,8 @@ internal static class SceneAssetReader
         CompiledContentSchemaRegistry schemas,
         EbinReadLimits limits,
         ImmutableArray<ContentSchemaReference> fixedLiteralSchemas,
-        bool allowInternalOverrideReferences)
+        bool allowInternalOverrideReferences,
+        bool allowInstanceAbsoluteOverrideTargets)
     {
         var hasValue = record.TryGetField(4, out var valueField);
         var hasOperation = record.TryGetField(5, out var operationField);
@@ -761,7 +766,14 @@ internal static class SceneAssetReader
 
         var target = ReadEntitySelector(record.GetRecord(1), limits);
 
-        if (target.Scope is not SceneEntitySelectorScope.OccurrenceRelative)
+        if (target.Scope is not SceneEntitySelectorScope.OccurrenceRelative
+            and not SceneEntitySelectorScope.InstanceAbsolute)
+        {
+            throw new InvalidDataException("A Prefab override target has an undefined selector scope.");
+        }
+
+        if ((target.Scope == SceneEntitySelectorScope.InstanceAbsolute)
+            && !allowInstanceAbsoluteOverrideTargets)
         {
             throw new InvalidDataException("A PrefabPlacement override target must be occurrence-relative.");
         }
@@ -946,10 +958,12 @@ internal static class SceneAssetReader
 
     private static ImmutableArray<ScenePrefabOverride> ReadPrefabOverrides(
         EbinRecordReadView record,
+        uint tag,
         EbinFieldReadView field,
         CompiledContentSchemaRegistry schemas,
         EbinReadLimits limits,
-        bool allowInternalOverrideReferences)
+        bool allowInternalOverrideReferences,
+        bool allowInstanceAbsoluteOverrideTargets)
     {
         var count = checked((int)field.Count);
         var overrides = ImmutableArray.CreateBuilder<ScenePrefabOverride>(count);
@@ -965,11 +979,12 @@ internal static class SceneAssetReader
         for (var index = 0; index < count; index++)
         {
             var currentOverride = ReadPrefabOverride(
-                record.GetRecordArrayElement(5, index),
+                record.GetRecordArrayElement(tag, index),
                 schemas,
                 limits,
                 fixedLiteralSchemas,
-                allowInternalOverrideReferences);
+                allowInternalOverrideReferences,
+                allowInstanceAbsoluteOverrideTargets);
 
             if (previousOverride is not null)
             {
@@ -996,7 +1011,8 @@ internal static class SceneAssetReader
         EbinRecordReadView record,
         CompiledContentSchemaRegistry schemas,
         EbinReadLimits limits,
-        bool allowInternalOverrideReferences)
+        bool allowInternalOverrideReferences,
+        bool allowInstanceAbsoluteOverrideTargets)
     {
         var hasParent = record.TryGetField(3, out var parentField);
         ValidateHeader(record, s_prefabPlacementSchemaId, major: 1, fieldCount: hasParent ? 6 : 5);
@@ -1023,10 +1039,12 @@ internal static class SceneAssetReader
         var rootPoses = ReadPrefabRootPoses(record, rootPoseField, limits);
         var overrides = ReadPrefabOverrides(
             record,
+            tag: 5,
             overrideField,
             schemas,
             limits,
-            allowInternalOverrideReferences);
+            allowInternalOverrideReferences,
+            allowInstanceAbsoluteOverrideTargets);
         var slotBindings = ReadPlacementSlotBindings(record, slotBindingField, limits);
         var encodedRecord = ImmutableArray.CreateRange(record.EncodedBytes.ToArray());
         return new ScenePrefabPlacement(

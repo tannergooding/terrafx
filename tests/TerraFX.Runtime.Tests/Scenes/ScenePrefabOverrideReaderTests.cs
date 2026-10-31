@@ -44,12 +44,12 @@ internal sealed class ScenePrefabOverrideReaderTests
             [field]);
     }
 
-    private static byte[] CreateEntitySelector(Guid entityId)
+    private static byte[] CreateEntitySelector(Guid entityId, byte scope = 1)
         => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
             new ContentSchemaIdentityAssignment("native/entity-selector").SchemaId,
             1,
             0,
-            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(1, (byte)SceneEntitySelectorScope.OccurrenceRelative),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(1, scope),
             SceneHierarchyCodecTests.FixtureBuilder.CreateFixedGuidArrayField(2),
             SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(3, entityId));
 
@@ -74,16 +74,24 @@ internal sealed class ScenePrefabOverrideReaderTests
             0,
             new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(1, 12, 1, 0, []));
 
+    private static byte[] CreateLiteralVector3(float x, float y, float z)
+        => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("content/literal/vector3").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 15, x, y, z));
+
     private static byte[] CreatePrefabOverride(
         Guid componentSchemaId,
         byte[][] propertyPath,
         byte[]? value = null,
         byte? operation = null,
         byte[]? referenceValue = null,
-        Guid? targetEntityId = null)
+        Guid? targetEntityId = null,
+        byte targetScope = 1)
     {
         List<SceneHierarchyCodecTests.FixtureBuilder.FixtureField> fields = [
-            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(1, CreateEntitySelector(targetEntityId ?? SceneAssetReaderTests.Fixtures.RootEntityId)),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(1, CreateEntitySelector(targetEntityId ?? SceneAssetReaderTests.Fixtures.RootEntityId, targetScope)),
             SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(2, CreateSchemaReference(componentSchemaId)),
             SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(3, propertyPath),
         ];
@@ -156,6 +164,32 @@ internal sealed class ScenePrefabOverrideReaderTests
 
         return action.Result
             ?? throw new InvalidOperationException("The Prefab reader did not produce a value.");
+    }
+
+    private static SceneAsset ReadSceneAsset(
+        byte[] encoded,
+        AssetId assetId,
+        CompiledContentSchemaRegistry schemas)
+    {
+        var action = new SceneReadAction(
+            assetId,
+            schemas,
+            new SceneHierarchyValidationWorkspace(entityCount: 1, placementCount: 0));
+        var status = EbinStructuralReader.Read(
+            encoded,
+            EbinReadLimits.Foundation,
+            EbinReadPolicy.Canonical,
+            ref action,
+            out _,
+            out var diagnostic);
+
+        if (status != EbinReadStatus.Complete)
+        {
+            throw new InvalidOperationException($"The Scene reader failed: {diagnostic?.Category ?? status.ToString()}.");
+        }
+
+        return action.Result
+            ?? throw new InvalidOperationException("The Scene reader did not produce a value.");
     }
 
     [Test]
@@ -242,6 +276,24 @@ internal sealed class ScenePrefabOverrideReaderTests
     }
 
     [Test]
+    public void ReadsSceneRootOverrideWithInstanceAbsoluteTarget()
+    {
+        var schemas = CreateRegistry();
+        var assetId = new AssetId(3);
+        var overrideRecord = CreatePrefabOverride(
+            new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId,
+            [CreatePropertySegment((byte)ScenePropertyPathSegmentKind.FieldTag, 1)],
+            value: CreateLiteralVector3(1, 2, 3),
+            targetEntityId: SceneAssetReaderTests.Fixtures.RootEntityId,
+            targetScope: (byte)SceneEntitySelectorScope.InstanceAbsolute);
+        var encoded = SceneAssetReaderTests.Fixtures.CreateScene(assetId, overrides: [overrideRecord]);
+        var scene = ReadSceneAsset(encoded, assetId, schemas);
+
+        Assert.That(scene.Overrides, Has.Length.EqualTo(1));
+        Assert.That(scene.Overrides[0].Target.Scope, Is.EqualTo(SceneEntitySelectorScope.InstanceAbsolute));
+    }
+
+    [Test]
     public void ReadsSortedNonOverlappingPrefabPlacementOverrides()
     {
         var schemas = CreateRegistry();
@@ -320,6 +372,24 @@ internal sealed class ScenePrefabOverrideReaderTests
             assetId,
             placementId: new Guid("20000000-0000-4000-8000-000000000019"),
             overrides: [parentPath, childPath]);
+
+        Assert.That(() => ReadPrefabAsset(encoded, assetId, schemas), Throws.TypeOf<InvalidDataException>());
+    }
+
+    [Test]
+    public void RejectsPrefabAuthoredInstanceAbsoluteOverrideTarget()
+    {
+        var schemas = CreateRegistry();
+        var assetId = new AssetId(3);
+        var overrideRecord = CreatePrefabOverride(
+            new ContentSchemaIdentityAssignment("scene/camera").SchemaId,
+            [CreatePropertySegment((byte)ScenePropertyPathSegmentKind.FieldTag, 1)],
+            value: CreateLiteralUInt8(1),
+            targetScope: (byte)SceneEntitySelectorScope.InstanceAbsolute);
+        var encoded = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            assetId,
+            placementId: new Guid("20000000-0000-4000-8000-000000000021"),
+            overrides: [overrideRecord]);
 
         Assert.That(() => ReadPrefabAsset(encoded, assetId, schemas), Throws.TypeOf<InvalidDataException>());
     }
