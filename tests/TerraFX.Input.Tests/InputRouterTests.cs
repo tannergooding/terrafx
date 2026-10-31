@@ -28,6 +28,59 @@ internal sealed class InputRouterTests
         => new InputRouter(recipientKind, recipientId, Environment.CurrentManagedThreadId, new HostEventSequenceLease());
 
     [Test]
+    public void AppliesSharedHeadlessCaptureToEachRecipientAtItsOwnAssignedTick()
+    {
+        var firstRouter = CreateRouter(InputRecipientKind.SimulationTimeline, recipientId: 3);
+        var secondRouter = CreateRouter(InputRecipientKind.SimulationTimeline, recipientId: 4);
+        var mapId = Guid.NewGuid();
+        var action = new ActionDefinition(Guid.NewGuid(), "Move", InputActionKind.Digital);
+        var context = new ContextDefinition(Guid.NewGuid(), 0);
+        var binding = new BindingDefinition(Guid.NewGuid(), action.ActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(new KeyboardControl(7, 4)),
+        };
+        var map = new InputActionMapV1(1, mapId, 1, 1, [action], [context], [binding]);
+        var keyDown = new InputInjection(new KeyboardControl(7, 4), InputKeyEventKind.Down);
+        var keyUp = new InputInjection(new KeyboardControl(7, 4), InputKeyEventKind.Up);
+
+        Assert.That(firstRouter.RegisterMap(map).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(secondRouter.RegisterMap(map).Status, Is.EqualTo(InputMapStatus.Registered));
+
+        Assert.That(firstRouter.EnqueueHeadlessInjection(keyDown, 166_666, 1, 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(secondRouter.EnqueueHeadlessInjection(keyDown, 166_666, 1, 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(firstRouter.EnqueueHeadlessInjection(keyUp, 333_332, 2, 1).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(secondRouter.EnqueueHeadlessInjection(keyUp, 333_332, 2, 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+
+        var firstTick = firstRouter.PublishSimulationActionSnapshot(0);
+        var secondTick = secondRouter.PublishSimulationActionSnapshot(0);
+
+        Assert.That(firstTick.Actions[0].IsDownAtEnd, Is.True);
+        Assert.That(firstTick.Actions[0].PressedThisTick, Is.True);
+        Assert.That(firstTick.Actions[0].ReleasedThisTick, Is.False);
+        Assert.That(firstTick.Actions[0].Transitions, Has.Length.EqualTo(1));
+        Assert.That(firstTick.Actions[0].Transitions[0].HostSequence, Is.EqualTo(1));
+        Assert.That(firstTick.Actions[0].Transitions[0].AssignedTick, Is.EqualTo(0));
+
+        Assert.That(secondTick.Actions[0].IsDownAtEnd, Is.False);
+        Assert.That(secondTick.Actions[0].PressedThisTick, Is.True);
+        Assert.That(secondTick.Actions[0].ReleasedThisTick, Is.True);
+        Assert.That(secondTick.Actions[0].Transitions, Has.Length.EqualTo(2));
+        Assert.That(secondTick.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Pressed));
+        Assert.That(secondTick.Actions[0].Transitions[0].HostSequence, Is.EqualTo(1));
+        Assert.That(secondTick.Actions[0].Transitions[1].Kind, Is.EqualTo(InputTransitionKind.Released));
+        Assert.That(secondTick.Actions[0].Transitions[1].HostSequence, Is.EqualTo(2));
+
+        var nextFirstTick = firstRouter.PublishSimulationActionSnapshot(1);
+        Assert.That(nextFirstTick.Actions[0].IsDownAtEnd, Is.False);
+        Assert.That(nextFirstTick.Actions[0].PressedThisTick, Is.False);
+        Assert.That(nextFirstTick.Actions[0].ReleasedThisTick, Is.True);
+        Assert.That(nextFirstTick.Actions[0].Transitions, Has.Length.EqualTo(1));
+        Assert.That(nextFirstTick.Actions[0].Transitions[0].AssignedTick, Is.EqualTo(1));
+
+        firstRouter.Dispose();
+        secondRouter.Dispose();
+    }
+
+    [Test]
     public void DisposeIsIdempotentAndClosesRouterOperations()
     {
         var router = CreateRouter();
@@ -46,6 +99,62 @@ internal sealed class InputRouterTests
         var task = Task.Run(() => router.RegisterMap(map));
 
         _ = Assert.ThrowsAsync<InvalidOperationException>(async () => await task.ConfigureAwait(false));
+        router.Dispose();
+    }
+
+    [Test]
+    public void LatchesOverflowUntilASequencedHeadlessReconciliation()
+    {
+        var router = CreateRouter(InputRecipientKind.SimulationTimeline, recipientId: 5);
+        var action = new ActionDefinition(Guid.NewGuid(), "Move", InputActionKind.Digital);
+        var context = new ContextDefinition(Guid.NewGuid(), 0);
+        var binding = new BindingDefinition(Guid.NewGuid(), action.ActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(new KeyboardControl(7, 4)),
+        };
+        var map = new InputActionMapV1(1, Guid.NewGuid(), 1, 1, [action], [context], [binding]);
+        var keyboard = new KeyboardControl(7, 4);
+        var keyDown = new InputInjection(keyboard, InputKeyEventKind.Down);
+
+        Assert.That(router.RegisterMap(map).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.EnqueueHeadlessInjection(keyDown, 1, 1, 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.PublishSimulationActionSnapshot(0).Actions[0].IsDownAtEnd, Is.True);
+
+        for (var sequence = 2L; sequence <= 4097; sequence++)
+        {
+            var repeat = new InputInjection(keyboard, InputKeyEventKind.Repeat);
+            Assert.That(
+                router.EnqueueHeadlessInjection(repeat, sequence, sequence, 1).Status,
+                Is.EqualTo(InputRoutingStatus.Applied));
+        }
+
+        var overflow = router.EnqueueHeadlessInjection(
+            new InputInjection(keyboard, InputKeyEventKind.Repeat),
+            4098,
+            4098,
+            1);
+        Assert.That(overflow.Status, Is.EqualTo(InputRoutingStatus.CapacityExceeded));
+        Assert.That(overflow.RecipientId, Is.EqualTo(5));
+
+        var overflowResult = router.ServiceHostControlBoundary();
+        Assert.That(overflowResult, Is.Not.Null);
+        Assert.That(overflowResult!.FirstUnacceptedHostSequence, Is.EqualTo(4098));
+        Assert.That(overflowResult.LastUnacceptedHostSequence, Is.EqualTo(4098));
+        Assert.That(overflowResult.Transitions, Has.Length.EqualTo(1));
+        Assert.That(overflowResult.Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+        Assert.That(overflowResult.Transitions[0].CancellationReason, Is.EqualTo(InputCancellationReason.InputOverflow));
+        Assert.That(overflowResult.Transitions[0].HostSequence, Is.EqualTo(4098));
+        Assert.That(overflowResult.Transitions[0].AssignedTick, Is.Null);
+
+        var reconciliation = router.ReconcileHeadlessInputState([], 4099, 4099);
+        Assert.That(reconciliation.Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(reconciliation.AssignedTick, Is.Null);
+
+        Assert.That(router.EnqueueHeadlessInjection(keyDown, 4100, 4100, 1).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        var recoveredTick = router.PublishSimulationActionSnapshot(1);
+        Assert.That(recoveredTick.Actions[0].IsDownAtEnd, Is.True);
+        Assert.That(recoveredTick.Actions[0].Transitions, Has.Length.EqualTo(1));
+        Assert.That(recoveredTick.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Pressed));
+
         router.Dispose();
     }
 

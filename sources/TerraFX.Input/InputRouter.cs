@@ -10,7 +10,7 @@ using TerraFX;
 namespace TerraFX.Input;
 
 /// <summary>Owns isolated physical, context, and action state for one input recipient.</summary>
-public sealed class InputRouter
+public sealed partial class InputRouter
 {
     private const int MaximumActiveContexts = 256;
     private const int MaximumControlCommandsPerBoundary = 256;
@@ -340,7 +340,7 @@ public sealed class InputRouter
         }
 
         var hostSequence = _sequenceLease.Allocate();
-        _maps[mapId] = new InputActionMapState(current.Map, newMask, insertionSequences);
+        current.SetContextMask(newMask, insertionSequences);
         _lastInsertionSequence = lastInsertionSequence;
         _controlCommandsInBoundary++;
         PublishHostActionSnapshot();
@@ -376,6 +376,7 @@ public sealed class InputRouter
 
         _maps.Clear();
         _controlCommandsInBoundary = 0;
+        ClearInputState();
     }
 
     internal InputActionSnapshot PublishSimulationActionSnapshot(long assignedTick)
@@ -388,9 +389,7 @@ public sealed class InputRouter
             throw new InvalidOperationException("Only a simulation timeline can publish a tick snapshot.");
         }
 
-        var snapshot = CreateActionSnapshot(assignedTick);
-        Volatile.Write(ref _simulationActionSnapshot, snapshot);
-        return snapshot;
+        return ProcessSimulationInputStage(assignedTick);
     }
 
     private bool CanAdmitControlCommand() => _controlCommandsInBoundary < MaximumControlCommandsPerBoundary;
@@ -437,18 +436,19 @@ public sealed class InputRouter
         {
             foreach (var action in mapState.OrderedActions)
             {
+                var actionState = mapState.ActionStates[action.ActionId];
                 actions.Add(new InputActionState(
                     mapState.Map.MapId,
                     action.ActionId,
                     mapState.Map.Revision,
                     action.Kind,
-                    isDownAtEnd: false,
-                    pressedThisTick: false,
-                    releasedThisTick: false,
-                    valueChangedThisTick: false,
-                    axisX: 0.0f,
-                    axisY: 0.0f,
-                    transitions: []));
+                    actionState.IsDownAtEnd,
+                    actionState.PressedThisTick,
+                    actionState.ReleasedThisTick,
+                    actionState.ValueChangedThisTick,
+                    actionState.AxisX,
+                    actionState.AxisY,
+                    [.. actionState.Transitions]));
             }
         }
 
@@ -522,17 +522,39 @@ public sealed class InputRouter
         internal InputActionMapState(InputActionMapV1 map, ulong activeContextMask, long[] contextInsertionSequences)
         {
             ActiveContextMask = activeContextMask;
+            ActionStates = [];
+            BindingStates = [];
             ContextInsertionSequences = contextInsertionSequences;
             Map = map;
             OrderedActions = [.. map.Actions.OrderBy(static action => action.ActionId.ToString("D"), StringComparer.Ordinal)];
+
+            foreach (var action in OrderedActions)
+            {
+                ActionStates.Add(action.ActionId, new InputActionRuntimeState(action));
+            }
+
+            foreach (var binding in map.Bindings)
+            {
+                BindingStates.Add(binding.BindingId, new InputBindingRuntimeState(binding));
+            }
         }
 
-        internal ulong ActiveContextMask { get; }
+        internal Dictionary<Guid, InputActionRuntimeState> ActionStates { get; }
 
-        internal long[] ContextInsertionSequences { get; }
+        internal ulong ActiveContextMask { get; private set; }
+
+        internal Dictionary<Guid, InputBindingRuntimeState> BindingStates { get; }
+
+        internal long[] ContextInsertionSequences { get; private set; }
 
         internal InputActionMapV1 Map { get; }
 
         internal ImmutableArray<ActionDefinition> OrderedActions { get; }
+
+        internal void SetContextMask(ulong activeContextMask, long[] contextInsertionSequences)
+        {
+            ActiveContextMask = activeContextMask;
+            ContextInsertionSequences = contextInsertionSequences;
+        }
     }
 }
