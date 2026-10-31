@@ -12,6 +12,7 @@ namespace TerraFX.Scenes;
 internal static class SceneAssetReader
 {
     private static readonly Guid s_assetReferenceSchemaId = new ContentSchemaIdentityAssignment("native/asset-reference").SchemaId;
+    private static readonly Guid s_contentSchemaReferenceSchemaId = new ContentSchemaIdentityAssignment("content/schema-ref").SchemaId;
     private static readonly Guid s_entityReferenceBindingSchemaId = new ContentSchemaIdentityAssignment("native/entity-reference-binding").SchemaId;
     private static readonly Guid s_entitySelectorSchemaId = new ContentSchemaIdentityAssignment("native/entity-selector").SchemaId;
     private static readonly Guid s_externalSlotSchemaId = new ContentSchemaIdentityAssignment("native/external-slot").SchemaId;
@@ -20,6 +21,7 @@ internal static class SceneAssetReader
     private static readonly Guid s_prefabPlacementSchemaId = new ContentSchemaIdentityAssignment("native/prefab-placement").SchemaId;
     private static readonly Guid s_prefabRootPoseSchemaId = new ContentSchemaIdentityAssignment("native/prefab-root-pose").SchemaId;
     private static readonly Guid s_prefabSchemaId = new ContentSchemaIdentityAssignment("native/prefab").SchemaId;
+    private static readonly Guid s_propertySegmentSchemaId = new ContentSchemaIdentityAssignment("content/property-segment").SchemaId;
     private static readonly Guid s_referenceTargetSchemaId = new ContentSchemaIdentityAssignment("native/reference-target").SchemaId;
     private static readonly Guid s_rootPositionSchemaId = new ContentSchemaIdentityAssignment("scene/root-position").SchemaId;
     private static readonly Guid s_sceneSchemaId = new ContentSchemaIdentityAssignment("native/scene").SchemaId;
@@ -119,7 +121,11 @@ internal static class SceneAssetReader
 
         for (var placementIndex = 0; placementIndex < placementCount; placementIndex++)
         {
-            var placement = ReadPrefabPlacement(record.GetRecordArrayElement(4, placementIndex), limits);
+            var placement = ReadPrefabPlacement(
+                record.GetRecordArrayElement(4, placementIndex),
+                schemas,
+                limits,
+                allowInternalOverrideReferences: true);
 
             if (previousPlacementId != Guid.Empty
                 && (FoundationCatalogue.CompareRfc(previousPlacementId, placement.PlacementId) >= 0))
@@ -241,7 +247,11 @@ internal static class SceneAssetReader
 
         for (var placementIndex = 0; placementIndex < placementCount; placementIndex++)
         {
-            var placement = ReadPrefabPlacement(record.GetRecordArrayElement(5, placementIndex), limits);
+            var placement = ReadPrefabPlacement(
+                record.GetRecordArrayElement(5, placementIndex),
+                schemas,
+                limits,
+                allowInternalOverrideReferences: false);
 
             if (previousPlacementId != Guid.Empty
                 && (FoundationCatalogue.CompareRfc(previousPlacementId, placement.PlacementId) >= 0))
@@ -341,6 +351,40 @@ internal static class SceneAssetReader
         }
 
         return field;
+    }
+
+    private static ImmutableArray<ContentSchemaReference> GetPrefabOverrideLiteralSchemas(
+        CompiledContentSchemaRegistry schemas)
+    {
+        var prefabOverrideSchema = new ContentSchemaReference(
+            s_prefabOverrideSchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+
+        if (!schemas.TryGetSchema(prefabOverrideSchema, out var metadata)
+            || (metadata.Role != ContentSchemaRole.Auxiliary))
+        {
+            throw new NotSupportedException("The selected schema registry does not contain the native/prefab-override descriptor.");
+        }
+
+        foreach (var field in metadata.Fields)
+        {
+            if (field.Tag == 4)
+            {
+                if ((field.WireKind != 22)
+                    || field.IsRequired
+                    || field.NestedSchemas.IsEmpty
+                    || (field.NestedRoleMask != 0))
+                {
+                    throw new InvalidOperationException("The native/prefab-override Value field does not expose its fixed literal schema set.");
+                }
+
+                return field.NestedSchemas;
+            }
+        }
+
+        throw new InvalidOperationException("The native/prefab-override descriptor has no Value field.");
     }
 
     private static EbinFieldReadView GetRecordArrayField(
@@ -506,9 +550,239 @@ internal static class SceneAssetReader
         return bindings.MoveToImmutable();
     }
 
+    private static ScenePrefabOverride ReadPrefabOverride(
+        EbinRecordReadView record,
+        CompiledContentSchemaRegistry schemas,
+        EbinReadLimits limits,
+        ImmutableArray<ContentSchemaReference> fixedLiteralSchemas,
+        bool allowInternalOverrideReferences)
+    {
+        var hasValue = record.TryGetField(4, out var valueField);
+        var hasOperation = record.TryGetField(5, out var operationField);
+        var hasReferenceValue = record.TryGetField(6, out var referenceValueField);
+        var fieldCount = 3 + (hasValue ? 1 : 0) + (hasOperation ? 1 : 0) + (hasReferenceValue ? 1 : 0);
+        ValidateHeader(record, s_prefabOverrideSchemaId, major: 1, fieldCount);
+
+        var target = ReadEntitySelector(record.GetRecord(1), limits);
+
+        if (target.Scope is not SceneEntitySelectorScope.OccurrenceRelative)
+        {
+            throw new InvalidDataException("A PrefabPlacement override target must be occurrence-relative.");
+        }
+
+        var componentSchema = ReadSchemaReference(record.GetRecord(2));
+
+        if (componentSchema.Scope != ContentSchemaScope.Content)
+        {
+            throw new InvalidDataException("A PrefabPlacement override component schema must use Content scope.");
+        }
+
+        if (!schemas.TryGetSchema(componentSchema, out var componentMetadata))
+        {
+            throw new NotSupportedException($"The PrefabPlacement override component schema {componentSchema} is not registered.");
+        }
+
+        if (componentMetadata.Role != ContentSchemaRole.Component)
+        {
+            throw new InvalidDataException("A PrefabPlacement override schema does not identify a Component.");
+        }
+
+        var propertyPathField = GetRecordArrayField(record, tag: 3, maximumCount: 64, limits);
+
+        if (propertyPathField.Count == 0)
+        {
+            throw new InvalidDataException("A PrefabPlacement override property path cannot be empty.");
+        }
+
+        var propertyPath = ReadPropertyPath(record, tag: 3, propertyPathField);
+        var operation = ScenePrefabOverrideOperation.Set;
+
+        if (hasOperation)
+        {
+            if ((operationField.Kind != 1)
+                || operationField.IsRequired
+                || (operationField.Count != 1)
+                || (operationField.Payload.Length != sizeof(byte))
+                || (operationField.Payload[0] > (byte)ScenePrefabOverrideOperation.Omit))
+            {
+                throw new InvalidDataException("A PrefabPlacement override operation is not defined by the schema.");
+            }
+
+            operation = (ScenePrefabOverrideOperation)operationField.Payload[0];
+        }
+
+        SceneAuthoredRecord? value = null;
+        EbinRecordReadView valueRecord = default;
+
+        if (hasValue)
+        {
+            if ((valueField.Kind != 22)
+                || valueField.IsRequired
+                || (valueField.Count != 1))
+            {
+                throw new InvalidDataException("A PrefabPlacement override value is not an optional literal record.");
+            }
+
+            valueRecord = record.GetRecord(4);
+            var valueHeader = valueRecord.Header;
+            var valueSchema = new ContentSchemaReference(
+                valueHeader.SchemaId,
+                valueHeader.Major,
+                valueHeader.Minor,
+                ContentSchemaScope.Content);
+
+            var isFixedLiteralSchema = false;
+
+            for (var index = 0; index < fixedLiteralSchemas.Length; index++)
+            {
+                if (fixedLiteralSchemas[index] == valueSchema)
+                {
+                    isFixedLiteralSchema = true;
+                    break;
+                }
+            }
+
+            if (!schemas.TryGetSchema(valueSchema, out var valueMetadata))
+            {
+                throw new NotSupportedException($"The PrefabPlacement override value schema {valueSchema} is not registered.");
+            }
+
+            if (!isFixedLiteralSchema
+                || (valueMetadata.Owner != ContentSchemaOwner.Core)
+                || (valueMetadata.Role != ContentSchemaRole.Descriptor)
+                || !valueMetadata.IdentityAssignment.Name.StartsWith("content/literal/", StringComparison.Ordinal)
+                || (valueMetadata.Fields.Length != 1)
+                || (valueMetadata.Fields[0].Tag != 1)
+                || !valueMetadata.Fields[0].IsRequired
+                || (valueMetadata.Fields[0].WireKind is < 1 or > 21))
+            {
+                throw new InvalidDataException("A PrefabPlacement override value is not a fixed Core literal schema.");
+            }
+
+            ValidateHeader(valueRecord, valueSchema.SchemaId, major: 1, fieldCount: 1);
+            var literalField = valueMetadata.Fields[0];
+
+            if (!valueRecord.TryGetField(1, out var literalValueField)
+                || (literalValueField.Kind != literalField.WireKind)
+                || !literalValueField.IsRequired
+                || (literalValueField.Count < literalField.MinimumCount)
+                || (literalValueField.Count > literalField.MaximumCount))
+            {
+                throw new InvalidDataException("A PrefabPlacement override literal does not match its registered fixed field.");
+            }
+
+            value = new SceneAuthoredRecord(valueSchema, valueRecord.EncodedBytes);
+        }
+
+        SceneReferenceTarget? referenceValue = null;
+
+        if (hasReferenceValue)
+        {
+            if ((referenceValueField.Kind != 22)
+                || referenceValueField.IsRequired
+                || (referenceValueField.Count != 1))
+            {
+                throw new InvalidDataException("A PrefabPlacement override reference value is not an optional reference record.");
+            }
+
+            referenceValue = ReadReferenceTarget(record.GetRecord(6), limits);
+
+            if (value is null)
+            {
+                throw new InvalidDataException("A Prefab override ReferenceValue requires a literal Value.");
+            }
+
+            if ((referenceValue.Kind == SceneReferenceTargetKind.Internal)
+                && !allowInternalOverrideReferences)
+            {
+                throw new InvalidDataException("A reusable Prefab cannot contain an Internal Prefab override reference.");
+            }
+
+            if (!schemas.TryGetSchema(value.Schema, out var literalMetadata))
+            {
+                throw new InvalidDataException("The Prefab override literal schema is not registered.");
+            }
+
+            var literalField = literalMetadata.Fields[0];
+
+            if (literalField.WireKind != 11
+                || !valueRecord.TryGetField(1, out var referenceLiteralField)
+                || (referenceLiteralField.Kind != 11)
+                || !referenceLiteralField.IsRequired
+                || (referenceLiteralField.Count != 1)
+                || (referenceLiteralField.Payload.Length != 16))
+            {
+                throw new InvalidDataException("A Prefab override ReferenceValue requires a GUID literal Value.");
+            }
+
+            var symbolicValue = ReadGuidPayload(referenceLiteralField.Payload);
+            var expectedSymbol = referenceValue.Kind switch {
+                SceneReferenceTargetKind.Internal => referenceValue.Entity!.Value.AuthoredEntityId,
+                SceneReferenceTargetKind.ExternalSlot => referenceValue.ExternalSlotId!.Value,
+                _ => throw new InvalidDataException("A Prefab override reference kind is not defined."),
+            };
+
+            if (symbolicValue != expectedSymbol)
+            {
+                throw new InvalidDataException("A Prefab override GUID literal does not match its typed reference target.");
+            }
+        }
+
+        if ((operation == ScenePrefabOverrideOperation.Set) && (value is null))
+        {
+            throw new InvalidDataException("A Set PrefabPlacement override requires a value record.");
+        }
+
+        if ((operation == ScenePrefabOverrideOperation.Omit)
+            && ((value is not null) || (referenceValue is not null)))
+        {
+            throw new InvalidDataException("An Omit PrefabPlacement override cannot carry a value or reference target.");
+        }
+
+        return new ScenePrefabOverride(
+            target,
+            componentSchema,
+            propertyPath,
+            operation,
+            value,
+            referenceValue);
+    }
+
+    private static ImmutableArray<ScenePrefabOverride> ReadPrefabOverrides(
+        EbinRecordReadView record,
+        EbinFieldReadView field,
+        CompiledContentSchemaRegistry schemas,
+        EbinReadLimits limits,
+        bool allowInternalOverrideReferences)
+    {
+        var count = checked((int)field.Count);
+        var overrides = ImmutableArray.CreateBuilder<ScenePrefabOverride>(count);
+
+        if (count == 0)
+        {
+            return overrides.MoveToImmutable();
+        }
+
+        var fixedLiteralSchemas = GetPrefabOverrideLiteralSchemas(schemas);
+
+        for (var index = 0; index < count; index++)
+        {
+            overrides.Add(ReadPrefabOverride(
+                record.GetRecordArrayElement(5, index),
+                schemas,
+                limits,
+                fixedLiteralSchemas,
+                allowInternalOverrideReferences));
+        }
+
+        return overrides.MoveToImmutable();
+    }
+
     private static ScenePrefabPlacement ReadPrefabPlacement(
         EbinRecordReadView record,
-        EbinReadLimits limits)
+        CompiledContentSchemaRegistry schemas,
+        EbinReadLimits limits,
+        bool allowInternalOverrideReferences)
     {
         var hasParent = record.TryGetField(3, out var parentField);
         ValidateHeader(record, s_prefabPlacementSchemaId, major: 1, fieldCount: hasParent ? 6 : 5);
@@ -533,12 +807,12 @@ internal static class SceneAssetReader
         var overrideField = GetRecordArrayField(record, tag: 5, maximumCount: 65_536, limits);
         var slotBindingField = GetRecordArrayField(record, tag: 6, maximumCount: 65_536, limits);
         var rootPoses = ReadPrefabRootPoses(record, rootPoseField, limits);
-        var overrides = ReadAuthoredRecords(
+        var overrides = ReadPrefabOverrides(
             record,
-            tag: 5,
             overrideField,
-            s_prefabOverrideSchemaId,
-            maximumCount: 65_536);
+            schemas,
+            limits,
+            allowInternalOverrideReferences);
         var slotBindings = ReadPlacementSlotBindings(record, slotBindingField, limits);
         var encodedRecord = ImmutableArray.CreateRange(record.EncodedBytes.ToArray());
         return new ScenePrefabPlacement(
@@ -622,6 +896,43 @@ internal static class SceneAssetReader
         return rootPoses.MoveToImmutable();
     }
 
+    private static ImmutableArray<ScenePropertyPathSegment> ReadPropertyPath(
+        EbinRecordReadView record,
+        uint tag,
+        EbinFieldReadView field)
+    {
+        var count = checked((int)field.Count);
+        var segments = ImmutableArray.CreateBuilder<ScenePropertyPathSegment>(count);
+
+        for (var index = 0; index < count; index++)
+        {
+            var segmentRecord = record.GetRecordArrayElement(tag, index);
+            ValidateHeader(segmentRecord, s_propertySegmentSchemaId, major: 1, fieldCount: 2);
+            var kind = ReadUInt8(segmentRecord, tag: 1);
+            var value = ReadUInt32(segmentRecord, tag: 2);
+
+            if (kind == (byte)ScenePropertyPathSegmentKind.FieldTag)
+            {
+                if (value == 0)
+                {
+                    throw new InvalidDataException("A Prefab property FieldTag segment must be nonzero.");
+                }
+
+                segments.Add(new ScenePropertyPathSegment(ScenePropertyPathSegmentKind.FieldTag, value));
+            }
+            else if (kind == (byte)ScenePropertyPathSegmentKind.FixedArrayIndex)
+            {
+                segments.Add(new ScenePropertyPathSegment(ScenePropertyPathSegmentKind.FixedArrayIndex, value));
+            }
+            else
+            {
+                throw new InvalidDataException("A Prefab property path segment kind is not defined.");
+            }
+        }
+
+        return segments.MoveToImmutable();
+    }
+
     private static SceneReferenceTarget ReadReferenceTarget(EbinRecordReadView record, EbinReadLimits limits)
     {
         var hasEntity = record.TryGetField(2, out var entityField);
@@ -665,6 +976,28 @@ internal static class SceneAssetReader
         }
 
         throw new InvalidDataException("A reference-target kind is not defined by the schema.");
+    }
+
+    private static ContentSchemaReference ReadSchemaReference(EbinRecordReadView record)
+    {
+        ValidateHeader(record, s_contentSchemaReferenceSchemaId, major: 1, fieldCount: 4);
+        var schemaId = ReadGuid(record, tag: 1, isRequired: true);
+        var major = ReadUInt32(record, tag: 2);
+        var minor = ReadUInt32(record, tag: 3);
+        var scope = ReadUInt8(record, tag: 4);
+
+        if ((major is 0 or > int.MaxValue)
+            || (minor > int.MaxValue)
+            || (scope > (byte)ContentSchemaScope.Foundation))
+        {
+            throw new InvalidDataException("A content schema reference contains an invalid version or scope.");
+        }
+
+        return new ContentSchemaReference(
+            schemaId,
+            checked((int)major),
+            checked((int)minor),
+            (ContentSchemaScope)scope);
     }
 
     private static uint ReadUInt32(EbinRecordReadView record, uint tag)

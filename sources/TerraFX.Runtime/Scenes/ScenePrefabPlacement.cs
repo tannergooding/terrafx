@@ -13,7 +13,7 @@ internal sealed class ScenePrefabPlacement
         AssetId prefabAssetId,
         Guid? parentEntityId,
         ImmutableArray<ScenePrefabRootPose> rootPoses,
-        ImmutableArray<SceneAuthoredRecord> overrides,
+        ImmutableArray<ScenePrefabOverride> overrides,
         ImmutableArray<ScenePlacementSlotBinding> slotBindings,
         ImmutableArray<byte> encodedRecord)
     {
@@ -60,7 +60,7 @@ internal sealed class ScenePrefabPlacement
 
     internal ImmutableArray<byte> EncodedRecord { get; }
 
-    internal ImmutableArray<SceneAuthoredRecord> Overrides { get; }
+    internal ImmutableArray<ScenePrefabOverride> Overrides { get; }
 
     internal Guid? ParentEntityId { get; }
 

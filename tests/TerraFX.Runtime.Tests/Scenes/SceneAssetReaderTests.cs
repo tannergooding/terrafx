@@ -405,7 +405,11 @@ internal sealed class SceneAssetReaderTests
     {
         internal static Guid RootEntityId { get; } = new("10000000-0000-4000-8000-000000000001");
 
-        internal static byte[] CreateAssetReferenceScene(AssetId assetId, Guid placementId, byte[]? rootPose = null)
+        internal static byte[] CreateAssetReferenceScene(
+            AssetId assetId,
+            Guid placementId,
+            byte[]? rootPose = null,
+            byte[][]? overrides = null)
         {
             var prefabReference = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
                 new ContentSchemaIdentityAssignment("native/asset-reference").SchemaId,
@@ -424,7 +428,7 @@ internal sealed class SceneAssetReaderTests
                 SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(1, placementId),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(2, prefabReference),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(4, rootPoses),
-                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(5),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(5, overrides ?? []),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(6));
             var hierarchy = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
                 new ContentSchemaIdentityAssignment("native/hierarchy").SchemaId,
