@@ -1092,6 +1092,119 @@ internal sealed class InputRouterTests
     }
 
     [Test]
+    public void ReplacesActiveActionWithReboundCancellationAndRearmsHeldControls()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            20,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var mapId = new Guid("10000000-0000-0000-0000-000000000061");
+        var actionId = new Guid("20000000-0000-0000-0000-000000000061");
+        var context = new ContextDefinition(new Guid("30000000-0000-0000-0000-000000000061"), 0);
+        var key = new KeyboardControl(7, 4);
+        var originalAction = new ActionDefinition(actionId, "Move", InputActionKind.Digital);
+        var originalBinding = new BindingDefinition(new Guid("40000000-0000-0000-0000-000000000061"), actionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(key),
+        };
+        var originalMap = new InputActionMapV1(1, mapId, 1, 1, [originalAction], [context], [originalBinding]);
+        var replacementAction = new ActionDefinition(actionId, "Move", InputActionKind.Digital);
+        var replacementBinding = new BindingDefinition(new Guid("40000000-0000-0000-0000-000000000062"), actionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(key),
+        };
+        var replacementMap = new InputActionMapV1(1, mapId, 2, 1, [replacementAction], [context], [replacementBinding]);
+
+        Assert.That(router.RegisterMap(originalMap).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Down), 1, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.PublishSimulationActionSnapshot(0).Actions[0].IsDownAtEnd, Is.True);
+
+        router.BeginHostControlBoundary(1, 2);
+        var replacementResponse = router.ReplaceMap(replacementMap, expectedRevision: 1);
+        Assert.That(replacementResponse.Status, Is.EqualTo(InputMapStatus.Replaced));
+
+        var rebound = router.PublishSimulationActionSnapshot(1).Actions[0];
+        Assert.That(rebound.MapRevision, Is.EqualTo(2));
+        Assert.That(rebound.IsDownAtEnd, Is.False);
+        Assert.That(rebound.ReleasedThisTick, Is.False);
+        Assert.That(rebound.Transitions, Has.Length.EqualTo(1));
+        Assert.That(rebound.Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+        Assert.That(rebound.Transitions[0].CancellationReason, Is.EqualTo(InputCancellationReason.Rebound));
+        Assert.That(rebound.Transitions[0].HostSequence, Is.EqualTo(replacementResponse.HostSequence));
+        Assert.That(rebound.Transitions[0].AssignedTick, Is.EqualTo(1));
+
+        var unchanged = router.PublishSimulationActionSnapshot(2).Actions[0];
+        Assert.That(unchanged.Transitions, Is.Empty);
+        Assert.That(unchanged.IsDownAtEnd, Is.False);
+
+        router.BeginHostControlBoundary(3, 3);
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Up), 3, sequenceLease.Allocate(), 3).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.PublishSimulationActionSnapshot(3).Actions[0].Transitions, Is.Empty);
+        router.BeginHostControlBoundary(4, 4);
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Down), 4, sequenceLease.Allocate(), 4).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        var rearmed = router.PublishSimulationActionSnapshot(4).Actions[0];
+        Assert.That(rearmed.IsDownAtEnd, Is.True);
+        Assert.That(rearmed.Transitions, Has.Length.EqualTo(1));
+        Assert.That(rearmed.Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Pressed));
+
+        router.Dispose();
+    }
+
+    [Test]
+    public void ReplacesMapWhileContextCancellationIsPending()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            23,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var mapId = new Guid("10000000-0000-0000-0000-000000000091");
+        var actionId = new Guid("20000000-0000-0000-0000-000000000091");
+        var context = new ContextDefinition(new Guid("30000000-0000-0000-0000-000000000091"), 0);
+        var key = new KeyboardControl(7, 4);
+        var action = new ActionDefinition(actionId, "Move", InputActionKind.Digital);
+        var binding = new BindingDefinition(new Guid("40000000-0000-0000-0000-000000000091"), actionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(key),
+        };
+        var map = new InputActionMapV1(1, mapId, 1, 1, [action], [context], [binding]);
+        var replacementBinding = new BindingDefinition(new Guid("40000000-0000-0000-0000-000000000092"), actionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(key),
+        };
+        var replacement = new InputActionMapV1(1, mapId, 2, 1, [action], [context], [replacementBinding]);
+
+        Assert.That(router.RegisterMap(map).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Down), 1, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.PublishSimulationActionSnapshot(0).Actions[0].IsDownAtEnd, Is.True);
+
+        var maskingContext = new ContextDefinition(
+            new Guid("30000000-0000-0000-0000-000000000092"),
+            0,
+            priority: 10,
+            captureClasses: InputClass.Keyboard);
+        var maskingMap = new InputActionMapV1(
+            1,
+            new Guid("10000000-0000-0000-0000-000000000092"),
+            1,
+            1,
+            [],
+            [maskingContext],
+            []);
+        Assert.That(router.RegisterMap(maskingMap).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.ReplaceMap(replacement, expectedRevision: 1).Status, Is.EqualTo(InputMapStatus.Replaced));
+
+        var snapshot = router.PublishSimulationActionSnapshot(1);
+        var replacedAction = snapshot.Actions[0];
+        Assert.That(replacedAction.MapRevision, Is.EqualTo(2));
+        Assert.That(replacedAction.IsDownAtEnd, Is.False);
+        Assert.That(replacedAction.Transitions, Has.Length.EqualTo(1));
+        Assert.That(replacedAction.Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+        Assert.That(replacedAction.Transitions[0].CancellationReason, Is.EqualTo(InputCancellationReason.ContextMasked));
+
+        router.Dispose();
+    }
+
+    [Test]
     public void ReplacesOnlyTheExpectedMapRevision()
     {
         var router = CreateRouter();
@@ -1122,6 +1235,113 @@ internal sealed class InputRouterTests
         Assert.That(replacementSnapshot.Actions[0].MapRevision, Is.EqualTo(2));
         Assert.That(previousSnapshot.Actions[0].ActionId, Is.EqualTo(firstAction.ActionId));
         Assert.That(previousSnapshot.Actions[0].MapRevision, Is.EqualTo(1));
+        router.Dispose();
+    }
+
+    [Test]
+    public void ReplacesRemovedActiveActionWithOneSnapshotTerminalState()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            21,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var mapId = new Guid("10000000-0000-0000-0000-000000000071");
+        var oldActionId = new Guid("20000000-0000-0000-0000-000000000071");
+        var newActionId = new Guid("20000000-0000-0000-0000-000000000072");
+        var context = new ContextDefinition(new Guid("30000000-0000-0000-0000-000000000071"), 0);
+        var key = new KeyboardControl(7, 4);
+        var originalAction = new ActionDefinition(oldActionId, "Old", InputActionKind.Digital);
+        var originalBinding = new BindingDefinition(new Guid("40000000-0000-0000-0000-000000000071"), oldActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(key),
+        };
+        var originalMap = new InputActionMapV1(1, mapId, 1, 1, [originalAction], [context], [originalBinding]);
+        var replacementAction = new ActionDefinition(newActionId, "New", InputActionKind.Digital);
+        var replacementBinding = new BindingDefinition(new Guid("40000000-0000-0000-0000-000000000072"), newActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(key),
+        };
+        var replacementMap = new InputActionMapV1(1, mapId, 2, 1, [replacementAction], [context], [replacementBinding]);
+
+        Assert.That(router.RegisterMap(originalMap).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Down), 1, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.PublishSimulationActionSnapshot(0).Actions[0].IsDownAtEnd, Is.True);
+
+        router.BeginHostControlBoundary(1, 2);
+        Assert.That(router.ReplaceMap(replacementMap, expectedRevision: 1).Status, Is.EqualTo(InputMapStatus.Replaced));
+
+        var reboundSnapshot = router.PublishSimulationActionSnapshot(1);
+        Assert.That(reboundSnapshot.Actions, Has.Length.EqualTo(2));
+        Assert.That(reboundSnapshot.Actions[0].ActionId, Is.EqualTo(oldActionId));
+        Assert.That(reboundSnapshot.Actions[0].MapRevision, Is.EqualTo(1));
+        Assert.That(reboundSnapshot.Actions[0].IsDownAtEnd, Is.False);
+        Assert.That(reboundSnapshot.Actions[0].PressedThisTick, Is.False);
+        Assert.That(reboundSnapshot.Actions[0].ReleasedThisTick, Is.False);
+        Assert.That(reboundSnapshot.Actions[0].ValueChangedThisTick, Is.False);
+        Assert.That(reboundSnapshot.Actions[0].Transitions, Has.Length.EqualTo(1));
+        Assert.That(reboundSnapshot.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+        Assert.That(reboundSnapshot.Actions[0].Transitions[0].CancellationReason, Is.EqualTo(InputCancellationReason.Rebound));
+        Assert.That(reboundSnapshot.Actions[0].Transitions[0].AssignedTick, Is.EqualTo(1));
+        Assert.That(reboundSnapshot.Actions[1].ActionId, Is.EqualTo(newActionId));
+        Assert.That(reboundSnapshot.Actions[1].MapRevision, Is.EqualTo(2));
+        Assert.That(reboundSnapshot.Actions[1].Transitions, Is.Empty);
+
+        var followingSnapshot = router.PublishSimulationActionSnapshot(2);
+        Assert.That(followingSnapshot.Actions, Has.Length.EqualTo(1));
+        Assert.That(followingSnapshot.Actions[0].ActionId, Is.EqualTo(newActionId));
+
+        router.Dispose();
+    }
+
+    [Test]
+    public void ReplacesRemovedAndReintroducedActionWithoutDuplicateState()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            22,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var mapId = new Guid("10000000-0000-0000-0000-000000000081");
+        var originalActionId = new Guid("20000000-0000-0000-0000-000000000081");
+        var interimActionId = new Guid("20000000-0000-0000-0000-000000000082");
+        var context = new ContextDefinition(new Guid("30000000-0000-0000-0000-000000000081"), 0);
+        var key = new KeyboardControl(7, 4);
+        var originalAction = new ActionDefinition(originalActionId, "Original", InputActionKind.Digital);
+        var originalBinding = new BindingDefinition(new Guid("40000000-0000-0000-0000-000000000081"), originalActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(key),
+        };
+        var originalMap = new InputActionMapV1(1, mapId, 1, 1, [originalAction], [context], [originalBinding]);
+        var interimAction = new ActionDefinition(interimActionId, "Interim", InputActionKind.Digital);
+        var interimBinding = new BindingDefinition(new Guid("40000000-0000-0000-0000-000000000082"), interimActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(key),
+        };
+        var interimMap = new InputActionMapV1(1, mapId, 2, 1, [interimAction], [context], [interimBinding]);
+        var replacementAction = new ActionDefinition(originalActionId, "Original", InputActionKind.Digital);
+        var replacementBinding = new BindingDefinition(new Guid("40000000-0000-0000-0000-000000000083"), originalActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(key),
+        };
+        var replacementMap = new InputActionMapV1(1, mapId, 3, 1, [replacementAction], [context], [replacementBinding]);
+
+        Assert.That(router.RegisterMap(originalMap).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Down), 1, sequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.PublishSimulationActionSnapshot(0).Actions[0].IsDownAtEnd, Is.True);
+
+        router.BeginHostControlBoundary(1, 2);
+        var firstReplacement = router.ReplaceMap(interimMap, expectedRevision: 1);
+        Assert.That(firstReplacement.Status, Is.EqualTo(InputMapStatus.Replaced));
+        Assert.That(router.ReplaceMap(replacementMap, expectedRevision: 2).Status, Is.EqualTo(InputMapStatus.Replaced));
+
+        var snapshot = router.PublishSimulationActionSnapshot(1);
+        Assert.That(snapshot.Actions, Has.Length.EqualTo(1));
+        Assert.That(snapshot.Actions[0].ActionId, Is.EqualTo(originalActionId));
+        Assert.That(snapshot.Actions[0].MapRevision, Is.EqualTo(3));
+        Assert.That(snapshot.Actions[0].Transitions, Has.Length.EqualTo(1));
+        Assert.That(snapshot.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+        Assert.That(snapshot.Actions[0].Transitions[0].CancellationReason, Is.EqualTo(InputCancellationReason.Rebound));
+        Assert.That(snapshot.Actions[0].Transitions[0].HostSequence, Is.EqualTo(firstReplacement.HostSequence));
+        Assert.That(snapshot.Actions[0].Transitions[0].AssignedTick, Is.EqualTo(1));
+
         router.Dispose();
     }
 

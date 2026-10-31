@@ -290,6 +290,50 @@ public sealed partial class InputRouter
         InitializeMapState(replacementState);
         var hostSequence = _sequenceLease.Allocate();
         RecordHostControlSequence(hostSequence);
+        long? assignedTick = (_recipientKind == InputRecipientKind.SimulationTimeline) ? _nextOpenTick : null;
+        var reboundActions = new List<PendingReboundAction>();
+
+        foreach (var action in current.OrderedActions)
+        {
+            var actionState = current.ActionStates[action.ActionId];
+            var isDown = actionState.IsDownAtEnd;
+
+            if (replacementState.ActionStates.TryGetValue(action.ActionId, out var replacementActionState))
+            {
+                replacementActionState.PendingTransitions.AddRange(actionState.PendingTransitions);
+
+                if (isDown)
+                {
+                    reboundActions.Add(new PendingReboundAction(
+                        current.Map.MapId,
+                        action.ActionId,
+                        current.Map.Revision,
+                        action.Kind,
+                        actionState.AxisX,
+                        actionState.AxisY,
+                        [],
+                        isDown,
+                        hostSequence,
+                        assignedTick));
+                }
+            }
+            else if (isDown || (actionState.PendingTransitions.Count != 0))
+            {
+                reboundActions.Add(new PendingReboundAction(
+                    current.Map.MapId,
+                    action.ActionId,
+                    current.Map.Revision,
+                    action.Kind,
+                    actionState.AxisX,
+                    actionState.AxisY,
+                    [.. actionState.PendingTransitions],
+                    isDown,
+                    hostSequence,
+                    assignedTick));
+            }
+        }
+
+        _pendingReboundActions.AddRange(reboundActions);
         _maps[map.MapId] = replacementState;
         RebuildOrderedContexts();
         _ = RefreshContextEligibility(
@@ -497,7 +541,8 @@ public sealed partial class InputRouter
             actionCount += mapState.OrderedActions.Length;
         }
 
-        var actions = ImmutableArray.CreateBuilder<InputActionState>(actionCount);
+        actionCount += _terminalActionStates.Count;
+        var actions = new List<InputActionState>(actionCount);
 
         foreach (var mapState in _maps.Values.OrderBy(static state => state.Map.MapId.ToString("D"), StringComparer.Ordinal))
         {
@@ -519,7 +564,16 @@ public sealed partial class InputRouter
             }
         }
 
-        return new InputActionSnapshot(_recipientKind, _recipientId, assignedTick, actions.MoveToImmutable());
+        actions.AddRange(_terminalActionStates);
+        _terminalActionStates.Clear();
+        return new InputActionSnapshot(
+            _recipientKind,
+            _recipientId,
+            assignedTick,
+            [
+                .. actions.OrderBy(static state => state.MapId.ToString("D"), StringComparer.Ordinal)
+                    .ThenBy(static state => state.ActionId.ToString("D"), StringComparer.Ordinal),
+            ]);
     }
 
     private InputRoutingReceipt CreateRoutingCapacityFailure(string path)
@@ -550,6 +604,7 @@ public sealed partial class InputRouter
 
     private void PublishHostActionSnapshot()
     {
+        ApplyPendingReboundActions(assignedTick: null);
         Volatile.Write(ref _hostActionSnapshot, CreateActionSnapshot(assignedTick: null));
     }
 

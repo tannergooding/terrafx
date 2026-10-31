@@ -28,6 +28,8 @@ public sealed partial class InputRouter
     private bool _overflowServiced;
     private ImmutableArray<InputContextOrder> _orderedContexts = [];
     private ImmutableArray<InputBindingRuntimeState> _orderedConsumableBindings = [];
+    private readonly List<PendingReboundAction> _pendingReboundActions = [];
+    private readonly List<InputActionState> _terminalActionStates = [];
     private readonly Dictionary<InputControlKey, float> _scalarControlValues = [];
     private readonly Dictionary<InputControlKey, (float X, float Y)> _vectorControlValues = [];
 
@@ -772,6 +774,80 @@ public sealed partial class InputRouter
         }
     }
 
+    private void ApplyPendingReboundActions(long? assignedTick)
+    {
+        for (var index = 0; index < _pendingReboundActions.Count;)
+        {
+            var rebound = _pendingReboundActions[index];
+
+            if (rebound.AssignedTick is { } reboundTick)
+            {
+                if ((assignedTick is not { } currentTick) || (reboundTick > currentTick))
+                {
+                    index++;
+                    continue;
+                }
+            }
+            else if (assignedTick is not null)
+            {
+                index++;
+                continue;
+            }
+
+            var transitions = ImmutableArray.CreateBuilder<InputActionTransition>(
+                rebound.PendingTransitions.Length + (rebound.WasDown ? 1 : 0));
+            transitions.AddRange(rebound.PendingTransitions);
+
+            if (rebound.WasDown)
+            {
+                transitions.Add(new InputActionTransition(
+                    rebound.MapId,
+                    rebound.ActionId,
+                    InputTransitionKind.Canceled,
+                    InputCancellationReason.Rebound,
+                    rebound.HostSequence,
+                    rebound.AssignedTick,
+                    rebound.AxisX,
+                    rebound.AxisY));
+            }
+
+            var transitionArray = transitions.MoveToImmutable();
+
+            if (_maps.TryGetValue(rebound.MapId, out var mapState)
+                && mapState.ActionStates.TryGetValue(rebound.ActionId, out var actionState))
+            {
+                actionState.Transitions.AddRange(transitionArray);
+
+                foreach (var transition in transitionArray)
+                {
+                    actionState.PressedThisTick |= transition.Kind == InputTransitionKind.Pressed;
+                    actionState.ReleasedThisTick |= transition.Kind == InputTransitionKind.Released;
+                    actionState.ValueChangedThisTick |= transition.Kind == InputTransitionKind.ValueChanged;
+                }
+            }
+            else
+            {
+                var pressedThisTick = transitionArray.Any(static transition => transition.Kind == InputTransitionKind.Pressed);
+                var releasedThisTick = transitionArray.Any(static transition => transition.Kind == InputTransitionKind.Released);
+                var valueChangedThisTick = transitionArray.Any(static transition => transition.Kind == InputTransitionKind.ValueChanged);
+                _terminalActionStates.Add(new InputActionState(
+                    rebound.MapId,
+                    rebound.ActionId,
+                    rebound.MapRevision,
+                    rebound.Kind,
+                    isDownAtEnd: false,
+                    pressedThisTick,
+                    releasedThisTick,
+                    valueChangedThisTick,
+                    rebound.AxisX,
+                    rebound.AxisY,
+                    transitionArray));
+            }
+
+            _pendingReboundActions.RemoveAt(index);
+        }
+    }
+
     private Dictionary<InputBindingRuntimeState, bool> CaptureBindingEligibility()
     {
         var eligibility = new Dictionary<InputBindingRuntimeState, bool>();
@@ -804,8 +880,10 @@ public sealed partial class InputRouter
         _lastUnacceptedHostSequence = 0;
         _overflowServiced = false;
         _hostControlTimestamp = 0;
+        _pendingReboundActions.Clear();
         _orderedConsumableBindings = [];
         _orderedContexts = [];
+        _terminalActionStates.Clear();
     }
 
     private int CountPlannedActiveContexts(Guid excludedMapId, ulong replacementMask)
@@ -1160,6 +1238,8 @@ public sealed partial class InputRouter
                 actionState.ResetTick();
             }
         }
+
+        ApplyPendingReboundActions(assignedTick);
 
         if (_inputOverflowed)
         {
@@ -1950,4 +2030,16 @@ public sealed partial class InputRouter
 
         internal InputInjection Injection { get; } = injection;
     }
+
+    private readonly record struct PendingReboundAction(
+        Guid MapId,
+        Guid ActionId,
+        long MapRevision,
+        InputActionKind Kind,
+        float AxisX,
+        float AxisY,
+        ImmutableArray<InputActionTransition> PendingTransitions,
+        bool WasDown,
+        long HostSequence,
+        long? AssignedTick);
 }
