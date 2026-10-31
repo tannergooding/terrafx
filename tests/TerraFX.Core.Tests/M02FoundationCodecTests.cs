@@ -529,6 +529,44 @@ internal sealed class M02FoundationCodecTests
     }
 
     [Test]
+    public void PackageProfileReaderUsesRegisteredIdentityAndValidatesFoundationDigests()
+    {
+        var bytes = ProfileBytes();
+        Assert.That(
+            FoundationCodec.ReadPackageProfile(bytes, out var profileId, out var settings, out var consumed, out var diagnostic),
+            Is.EqualTo(EbinStatus.Complete),
+            diagnostic.ToString());
+        Assert.That(profileId, Is.EqualTo(s_defaultProfileId));
+        Assert.That(settings, Is.EqualTo(SpatialSettings.Default));
+        Assert.That(consumed, Is.EqualTo(bytes.Length));
+
+        var corruptedDigest = bytes.ToArray();
+        var view = new EbinRecordView(corruptedDigest);
+        var digestEntry = view.Entry(view.Find(6));
+        var digestOffset = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(digestEntry[8..]));
+        corruptedDigest[digestOffset] ^= 1;
+        Assert.That(
+            FoundationCodec.ReadPackageProfile(corruptedDigest, out _, out _, out consumed, out diagnostic),
+            Is.EqualTo(EbinStatus.InvalidRecord));
+        Assert.That(diagnostic.Category, Is.EqualTo("profile-digest-binding"));
+        Assert.That(consumed, Is.Zero);
+
+        var unknownProfile = bytes.ToArray();
+        view = new EbinRecordView(unknownProfile);
+        var identityEntry = view.Entry(view.Find(9));
+        var identityOffset = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(identityEntry[8..]));
+        _ = new Guid("11111111-2222-4333-8444-555555555555").TryWriteBytes(
+            unknownProfile.AsSpan(identityOffset, 16),
+            bigEndian: true,
+            out _);
+        Assert.That(
+            FoundationCodec.ReadPackageProfile(unknownProfile, out _, out _, out consumed, out diagnostic),
+            Is.EqualTo(EbinStatus.UnsupportedSchema));
+        Assert.That(diagnostic.Category, Is.EqualTo("unsupported-profile-identity"));
+        Assert.That(consumed, Is.Zero);
+    }
+
+    [Test]
     public void PackageTuplesAndOwnerExtentPolicyAreExplicitAdmissionInputs()
     {
         var profile = _defaultProfile;

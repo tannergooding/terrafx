@@ -135,6 +135,13 @@ at `long.MaxValue` without wrapping.
 The host revokes the lease only after capture and recipient consumers have stopped
 accepting work. Revocation does not roll back or reuse any sequence already issued.
 
+`TerraFX.Assets` has a separate strong-name-qualified Core friendship for package
+profile admission. The narrow `FoundationCodec.ReadPackageProfile` port validates
+the canonical `foundation/profile` record against an already registered spatial
+profile and the fixed M02 digests, returning only its `SpatialProfileId` and
+`SpatialSettings`; it does not expose a public Foundation codec or grant Assets
+authority to register profiles.
+
 #### Input router construction
 
 `TerraFX.Input.csproj` grants only `TerraFX.Runtime` a strong-name-qualified

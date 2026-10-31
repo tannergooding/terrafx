@@ -60,6 +60,106 @@ internal static class FoundationCodec
         return EbinStatus.Complete;
     }
 
+    internal static EbinStatus ReadPackageProfile(
+        scoped ReadOnlySpan<byte> source,
+        out SpatialProfileId profileId,
+        out SpatialSettings settings,
+        out int consumed,
+        out EbinDiagnostic diagnostic)
+    {
+        profileId = default;
+        settings = default;
+        consumed = 0;
+        diagnostic = default;
+
+        var structuralStatus = EbinStructuralReader.Validate(
+            source,
+            EbinReadLimits.Foundation,
+            EbinReadPolicy.Canonical,
+            out var structuralConsumed,
+            out var structuralDiagnostic);
+
+        if (structuralStatus != EbinReadStatus.Complete)
+        {
+            if (structuralDiagnostic is { } readDiagnostic)
+            {
+                diagnostic = new EbinDiagnostic(
+                    readDiagnostic.SchemaId,
+                    readDiagnostic.Tag,
+                    readDiagnostic.Category,
+                    readDiagnostic.Offset,
+                    readDiagnostic.Limit,
+                    readDiagnostic.Claim);
+            }
+
+            return structuralStatus switch {
+                EbinReadStatus.NeedMoreData => EbinStatus.NeedMoreData,
+                EbinReadStatus.UnsupportedSchema => EbinStatus.UnsupportedSchema,
+                _ => EbinStatus.InvalidRecord,
+            };
+        }
+
+        var view = new EbinRecordView(source[..structuralConsumed]);
+
+        if ((view.SchemaId != FoundationCatalogue.ProfileId) || (view.Major != 2) || (view.Minor != 0))
+        {
+            diagnostic = new EbinDiagnostic(view.SchemaId, 0, "unsupported-package-profile-schema");
+            return EbinStatus.UnsupportedSchema;
+        }
+
+        var profileIndex = view.Find(9);
+
+        if (profileIndex < 0)
+        {
+            diagnostic = new EbinDiagnostic(view.SchemaId, 9, "profile-required-field");
+            return EbinStatus.InvalidRecord;
+        }
+
+        var profileEntry = view.Entry(profileIndex);
+
+        if ((BinaryPrimitives.ReadUInt16LittleEndian(profileEntry[4..]) != 11)
+            || (BinaryPrimitives.ReadUInt64LittleEndian(profileEntry[16..]) != 16)
+            || (BinaryPrimitives.ReadUInt64LittleEndian(profileEntry[24..]) != 1))
+        {
+            diagnostic = new EbinDiagnostic(view.SchemaId, 9, "profile-identity-field-shape");
+            return EbinStatus.InvalidRecord;
+        }
+
+        var id = new Guid(view.Payload(profileIndex), bigEndian: true);
+
+        if ((id == Guid.Empty) || (id == FoundationCatalogue.LegacyProfileId))
+        {
+            diagnostic = new EbinDiagnostic(view.SchemaId, 9, "profile-identity");
+            return EbinStatus.InvalidRecord;
+        }
+
+        var selectedProfileId = new SpatialProfileId(id);
+
+        if (!SpatialProfiles.TryGetSettings(selectedProfileId, out var selectedSettings))
+        {
+            diagnostic = new EbinDiagnostic(view.SchemaId, 9, "unsupported-profile-identity");
+            return EbinStatus.UnsupportedSchema;
+        }
+
+        var selectedProfile = new FoundationProfileBinding(selectedProfileId, selectedSettings);
+        var status = Read(
+            source[..structuralConsumed],
+            new FoundationCodecContext([selectedProfile]),
+            out _,
+            out var foundationConsumed,
+            out diagnostic);
+
+        if ((status != EbinStatus.Complete) || (foundationConsumed != structuralConsumed))
+        {
+            return status == EbinStatus.Complete ? EbinStatus.InvalidRecord : status;
+        }
+
+        profileId = selectedProfileId;
+        settings = selectedSettings;
+        consumed = foundationConsumed;
+        return EbinStatus.Complete;
+    }
+
     internal static void RequirePersistence(Guid schemaId, FoundationCodecContext context)
     {
         if ((schemaId == FoundationCatalogue.Frame2Id || schemaId == FoundationCatalogue.Frame3Id) && context.Persistence is null)
