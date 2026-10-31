@@ -451,7 +451,8 @@ internal sealed class EntityArchetypeStorage
         int componentIndex,
         int chunkIndex,
         int row,
-        ComponentInitialization initialization)
+        ComponentInitialization initialization,
+        SpatialSettings spatialSettings)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(componentIndex);
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(componentIndex, _components.Length);
@@ -466,7 +467,7 @@ internal sealed class EntityArchetypeStorage
             throw new InvalidOperationException("An initial component value must target the next uncommitted archetype row.");
         }
 
-        _components[componentIndex].InitializeColumn(chunk._columns[componentIndex], row, initialization);
+        _components[componentIndex].InitializeColumn(chunk._columns[componentIndex], row, initialization, spatialSettings);
     }
 
     internal bool PrepareCapacity(int requiredEntityCount)
@@ -747,7 +748,8 @@ internal sealed class EntityArchetypeStorage
         int componentIndex,
         int chunkIndex,
         int row,
-        ComponentInitialization initialization)
+        ComponentInitialization initialization,
+        SpatialSettings spatialSettings)
     {
         ArgumentNullException.ThrowIfNull(initialization);
         ArgumentOutOfRangeException.ThrowIfNegative(componentIndex);
@@ -763,7 +765,11 @@ internal sealed class EntityArchetypeStorage
             throw new ArgumentException("Command playback requires a resolved explicit component value.", nameof(initialization));
         }
 
-        _components[componentIndex].InitializeColumn(_chunks[chunkIndex]._columns[componentIndex], row, initialization);
+        _components[componentIndex].InitializeColumn(
+            _chunks[chunkIndex]._columns[componentIndex],
+            row,
+            initialization,
+            spatialSettings);
     }
 
     private int FindAvailableChunkIndex()

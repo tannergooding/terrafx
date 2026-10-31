@@ -24,11 +24,11 @@ internal interface IComponentRegistration
 
     object CreateColumn(int capacity);
 
-    ComponentInitialization CreateInitializedValue(ComponentInitialization initialization);
+    ComponentInitialization CreateInitializedValue(ComponentInitialization initialization, SpatialSettings spatialSettings);
 
     long GetColumnArrayBytes(int capacity);
 
-    void InitializeColumn(object column, int row, ComponentInitialization initialization);
+    void InitializeColumn(object column, int row, ComponentInitialization initialization, SpatialSettings spatialSettings);
 
     bool IsEntityReferencePath(ComponentFieldPath path);
 

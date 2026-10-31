@@ -495,9 +495,15 @@ public sealed partial class World
 
                     if (component.ComponentType == changedComponent?.ComponentType && addComponent)
                     {
-                        var initialized = component.CreateInitializedValue(initialization
-                            ?? throw new InvalidOperationException("The added component has no initialization request."));
-                        targetArchetype.Storage.InitializeColumnRow(destinationIndex, targetChunkIndex, targetRow, initialized);
+                        var initialized = component.CreateInitializedValue(
+                            initialization ?? throw new InvalidOperationException("The added component has no initialization request."),
+                            _spatialSettings);
+                        targetArchetype.Storage.InitializeColumnRow(
+                            destinationIndex,
+                            targetChunkIndex,
+                            targetRow,
+                            initialized,
+                            _spatialSettings);
                     }
                     else
                     {
@@ -673,7 +679,8 @@ public sealed partial class World
                     sourceComponentIndex,
                     restoreChunkIndex,
                     restoreRow,
-                    removedComponentInitialization);
+                    removedComponentInitialization,
+                    _spatialSettings);
             }
             else
             {

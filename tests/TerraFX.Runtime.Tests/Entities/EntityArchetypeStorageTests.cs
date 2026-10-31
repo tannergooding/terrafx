@@ -330,12 +330,12 @@ internal sealed class EntityArchetypeStorageTests
 
         var firstValue = 73;
         var firstDescription = new EntityDescription(components: [ComponentInitialization.Value(in firstValue)]);
-        storage.InitializeColumnRow(0, 0, 0, firstDescription.Components[0]);
+        storage.InitializeColumnRow(0, 0, 0, firstDescription.Components[0], SpatialSettings.Default);
         storage.ClearUncommittedRow(0, 0);
 
         var value = 91;
         var description = new EntityDescription(components: [ComponentInitialization.Value(in value)]);
-        storage.InitializeColumnRow(0, 0, 0, description.Components[0]);
+        storage.InitializeColumnRow(0, 0, 0, description.Components[0], SpatialSettings.Default);
         var slots = new EntitySlotTable(1);
         Assert.That(slots.PrepareCapacity(1, 0), Is.True);
         Assert.That(slots.TryAllocate(out var entityIndex, out var generation), Is.True);
@@ -358,16 +358,16 @@ internal sealed class EntityArchetypeStorageTests
         Assert.That(slots.TryAllocate(out var entityIndex, out var generation), Is.True);
         var entity = new Entity(7, entityIndex, generation);
         var initialValue = 19;
-        storage.InitializeColumnRow(0, 0, 0, ComponentInitialization.Value(in initialValue));
+        storage.InitializeColumnRow(0, 0, 0, ComponentInitialization.Value(in initialValue), SpatialSettings.Default);
         var nextChunkOrdinal = 0L;
         Assert.That(storage.TryAppend(entity, slots, ref nextChunkOrdinal), Is.True);
 
         var replacementValue = 47;
-        storage.WriteColumnRow(0, 0, 0, ComponentInitialization.Value(in replacementValue));
+        storage.WriteColumnRow(0, 0, 0, ComponentInitialization.Value(in replacementValue), SpatialSettings.Default);
 
         Assert.That(storage.GetReadOnlyColumnSpan<int>(0, 0, 0, 1)[0], Is.EqualTo(47));
         Assert.That(
-            () => storage.WriteColumnRow(0, 0, 0, ComponentInitialization.Defaults<int>()),
+            () => storage.WriteColumnRow(0, 0, 0, ComponentInitialization.Defaults<int>(), SpatialSettings.Default),
             Throws.ArgumentException);
         Assert.That(storage.GetReadOnlyColumnSpan<int>(0, 0, 0, 1)[0], Is.EqualTo(47));
     }
@@ -402,7 +402,7 @@ internal sealed class EntityArchetypeStorageTests
 
         public object CreateColumn(int capacity) => new int[capacity];
 
-        public ComponentInitialization CreateInitializedValue(ComponentInitialization initialization)
+        public ComponentInitialization CreateInitializedValue(ComponentInitialization initialization, SpatialSettings spatialSettings)
         {
             ArgumentNullException.ThrowIfNull(initialization);
             return initialization.IsDefault
@@ -413,7 +413,7 @@ internal sealed class EntityArchetypeStorageTests
         public long GetColumnArrayBytes(int capacity)
             => checked(64L + ((checked((long)capacity * sizeof(int)) + 7L) & ~7L));
 
-        public void InitializeColumn(object column, int row, ComponentInitialization initialization)
+        public void InitializeColumn(object column, int row, ComponentInitialization initialization, SpatialSettings spatialSettings)
         {
             if (initialization.IsDefault)
             {

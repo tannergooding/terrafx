@@ -805,7 +805,7 @@ public sealed partial class World : IDisposable
                 {
                     var registration = archetype.Components[componentIndex];
                     var initialization = FindInitialization(description, registration.ComponentType);
-                    initializations[componentIndex] = registration.CreateInitializedValue(initialization);
+                    initializations[componentIndex] = registration.CreateInitializedValue(initialization, _spatialSettings);
                 }
 
                 var requiredSlotCapacity = _entitySlots.AllocatedSlotCount + ((_entitySlots.FreeSlotCount == 0) ? 1 : 0);
@@ -850,7 +850,12 @@ public sealed partial class World : IDisposable
 
                 for (var componentIndex = 0; componentIndex < componentCount; componentIndex++)
                 {
-                    archetype.Storage.InitializeColumnRow(componentIndex, chunkIndex, row, initializations[componentIndex]);
+                    archetype.Storage.InitializeColumnRow(
+                        componentIndex,
+                        chunkIndex,
+                        row,
+                        initializations[componentIndex],
+                        _spatialSettings);
                 }
 
                 for (var componentIndex = 0; componentIndex < componentCount; componentIndex++)

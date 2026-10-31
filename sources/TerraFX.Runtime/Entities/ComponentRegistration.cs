@@ -74,7 +74,7 @@ internal sealed class ComponentRegistration<T> : IComponentRegistration
         return new T[capacity];
     }
 
-    public ComponentInitialization CreateInitializedValue(ComponentInitialization initialization)
+    public ComponentInitialization CreateInitializedValue(ComponentInitialization initialization, SpatialSettings spatialSettings)
     {
         ArgumentNullException.ThrowIfNull(initialization);
 
@@ -93,7 +93,7 @@ internal sealed class ComponentRegistration<T> : IComponentRegistration
             throw new InvalidOperationException("The typed component initialization did not provide its registered value.");
         }
 
-        var value = CreateDefault();
+        var value = CreateDefault(spatialSettings);
         return ComponentInitialization.Value(in value);
     }
 
@@ -103,7 +103,11 @@ internal sealed class ComponentRegistration<T> : IComponentRegistration
         return checked(64L + ((checked((long)capacity * Unsafe.SizeOf<T>()) + 7L) & ~7L));
     }
 
-    public void InitializeColumn(object column, int row, ComponentInitialization initialization)
+    public void InitializeColumn(
+        object column,
+        int row,
+        ComponentInitialization initialization,
+        SpatialSettings spatialSettings)
     {
         ArgumentNullException.ThrowIfNull(column);
         ArgumentOutOfRangeException.ThrowIfNegative(row);
@@ -118,7 +122,7 @@ internal sealed class ComponentRegistration<T> : IComponentRegistration
 
         if (initialization.IsDefault)
         {
-            values[row] = CreateDefault();
+            values[row] = CreateDefault(spatialSettings);
         }
         else if (initialization.TryGetValue<T>(out var value))
         {
@@ -253,6 +257,6 @@ internal sealed class ComponentRegistration<T> : IComponentRegistration
         return Binding.Validate(in typedValue, cancellationToken);
     }
 
-    internal T CreateDefault()
-        => Binding.CreateDefault();
+    internal T CreateDefault(SpatialSettings spatialSettings)
+        => Binding.CreateDefault(spatialSettings);
 }

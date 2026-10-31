@@ -16,6 +16,15 @@ public sealed class ComponentDefaultBinding
         _context = context;
     }
 
+    internal SpatialSettings SpatialSettings
+    {
+        get
+        {
+            EnsureActive();
+            return _context.SpatialSettings;
+        }
+    }
+
     internal void EnsureActive()
     {
         if (!_isActive || !_context.IsActive)

@@ -1549,7 +1549,7 @@ internal sealed class WorldCreationTests
 
         public object CreateColumn(int capacity) => new OptionalEntityReferenceComponent[capacity];
 
-        public ComponentInitialization CreateInitializedValue(ComponentInitialization initialization)
+        public ComponentInitialization CreateInitializedValue(ComponentInitialization initialization, SpatialSettings spatialSettings)
         {
             ArgumentNullException.ThrowIfNull(initialization);
 
@@ -1570,7 +1570,7 @@ internal sealed class WorldCreationTests
         public long GetColumnArrayBytes(int capacity)
             => checked(64L + ((checked((long)capacity * Unsafe.SizeOf<OptionalEntityReferenceComponent>()) + 7L) & ~7L));
 
-        public void InitializeColumn(object column, int row, ComponentInitialization initialization)
+        public void InitializeColumn(object column, int row, ComponentInitialization initialization, SpatialSettings spatialSettings)
         {
             if (!initialization.TryGetValue<OptionalEntityReferenceComponent>(out var value))
             {
@@ -2322,7 +2322,7 @@ internal sealed class WorldCreationTests
 
         public object CreateColumn(int capacity) => new int[capacity];
 
-        public ComponentInitialization CreateInitializedValue(ComponentInitialization initialization)
+        public ComponentInitialization CreateInitializedValue(ComponentInitialization initialization, SpatialSettings spatialSettings)
         {
             ArgumentNullException.ThrowIfNull(initialization);
 
@@ -2342,7 +2342,7 @@ internal sealed class WorldCreationTests
         public long GetColumnArrayBytes(int capacity)
             => checked(64L + ((checked((long)capacity * sizeof(int)) + 7L) & ~7L));
 
-        public void InitializeColumn(object column, int row, ComponentInitialization initialization)
+        public void InitializeColumn(object column, int row, ComponentInitialization initialization, SpatialSettings spatialSettings)
         {
             _ = Interlocked.Increment(ref _initializeColumnCalls);
 
@@ -2463,7 +2463,7 @@ internal sealed class WorldCreationTests
 
         public object CreateColumn(int capacity) => new long[capacity];
 
-        public ComponentInitialization CreateInitializedValue(ComponentInitialization initialization)
+        public ComponentInitialization CreateInitializedValue(ComponentInitialization initialization, SpatialSettings spatialSettings)
         {
             ArgumentNullException.ThrowIfNull(initialization);
             return initialization.IsDefault
@@ -2474,7 +2474,7 @@ internal sealed class WorldCreationTests
         public long GetColumnArrayBytes(int capacity)
             => checked(64L + ((checked((long)capacity * sizeof(long)) + 7L) & ~7L));
 
-        public void InitializeColumn(object column, int row, ComponentInitialization initialization)
+        public void InitializeColumn(object column, int row, ComponentInitialization initialization, SpatialSettings spatialSettings)
         {
             if (initialization.IsDefault)
             {

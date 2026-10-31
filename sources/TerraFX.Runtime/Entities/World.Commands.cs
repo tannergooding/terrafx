@@ -619,7 +619,7 @@ public sealed partial class World
                     foreach (var requestedInitialization in description.Components)
                     {
                         var registration = FindComponentRegistration(requestedInitialization.ComponentType);
-                        var initialization = registration.CreateInitializedValue(requestedInitialization);
+                        var initialization = registration.CreateInitializedValue(requestedInitialization, _spatialSettings);
                         ValidateCommandInitialization(registration, initialization);
                         _ = components.Add(registration.ComponentType);
                         componentValues.Add(registration.ComponentType, initialization);
@@ -765,7 +765,7 @@ public sealed partial class World
 
                         var requestedInitialization = command.Initialization
                             ?? throw new InvalidOperationException("A staged component Add command has no explicit value.");
-                        var initialization = registration.CreateInitializedValue(requestedInitialization);
+                        var initialization = registration.CreateInitializedValue(requestedInitialization, _spatialSettings);
                         ValidateCommandInitialization(registration, initialization);
                         SetProjectedValue(projection, registration.ComponentType, initialization);
                         break;
@@ -1290,7 +1290,8 @@ public sealed partial class World
                         componentIndex,
                         targetChunkIndex,
                         targetRow,
-                        transition.Initializations[componentIndex]);
+                        transition.Initializations[componentIndex],
+                        _spatialSettings);
                 }
 
                 if (!transition.Target.Storage.TryAppend(transition.Projection.Entity, _entitySlots, ref _nextChunkOrdinal))
@@ -1336,7 +1337,7 @@ public sealed partial class World
                         throw new InvalidOperationException("A projected component write targets an Entity without its component.");
                     }
 
-                    archetype.Storage.WriteColumnRow(componentIndex, chunkIndex, row, initialization);
+                    archetype.Storage.WriteColumnRow(componentIndex, chunkIndex, row, initialization, _spatialSettings);
                 }
             }
 

@@ -240,14 +240,14 @@ public sealed class ComponentFactoryBinding<T>
         }
     }
 
-    internal T CreateDefault()
+    internal T CreateDefault(SpatialSettings spatialSettings)
     {
         if (_providerRoots is not IDefaultProviderRoot defaultRoot)
         {
             throw new InvalidOperationException("The captured component factory has no default-provider root.");
         }
 
-        var context = new DefaultContext();
+        var context = new DefaultContext(spatialSettings);
         var binding = new ComponentDefaultBinding(context);
 
         try
@@ -401,14 +401,17 @@ public sealed class ComponentFactoryBinding<T>
     {
         private bool _isActive = true;
 
-        internal DefaultContext()
+        internal DefaultContext(SpatialSettings spatialSettings)
         {
+            SpatialSettings = spatialSettings;
             OwnerThreadId = Environment.CurrentManagedThreadId;
         }
 
         public bool IsActive => Volatile.Read(ref _isActive);
 
         public int OwnerThreadId { get; }
+
+        public SpatialSettings SpatialSettings { get; }
 
         internal void Revoke() => Volatile.Write(ref _isActive, false);
     }

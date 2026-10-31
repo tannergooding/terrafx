@@ -4,4 +4,5 @@ namespace TerraFX.Entities;
 
 internal interface IComponentDefaultContext : IComponentProviderScope
 {
+    SpatialSettings SpatialSettings { get; }
 }
