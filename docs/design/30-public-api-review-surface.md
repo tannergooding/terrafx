@@ -30,6 +30,33 @@ Engine-issued `WindowHandle`/`MonitorHandle` values have internal constructors; 
 
 ## 3. Core geometry, spatial values, and buffers
 
+```csharp
+namespace TerraFX;
+
+public readonly struct SimulationClockSegment : IEquatable<SimulationClockSegment>
+{
+    internal SimulationClockSegment(long revision, long hostTimestampStartTicks, long hostSequenceStart, long simulationElapsedStartTicks, double fractionalSimulationTicks, int tickRate, long nextOpenTick, float timeScale, bool isPaused);
+    public double FractionalSimulationTicks { get; }
+    public long HostSequenceStart { get; }
+    public long HostTimestampStartTicks { get; }
+    public bool IsPaused { get; }
+    public bool IsValid { get; }
+    public long NextOpenTick { get; }
+    public long Revision { get; }
+    public long SimulationElapsedStartTicks { get; }
+    public int TickRate { get; }
+    public float TimeScale { get; }
+    public static bool operator !=(SimulationClockSegment left, SimulationClockSegment right);
+    public static bool operator ==(SimulationClockSegment left, SimulationClockSegment right);
+    public bool Equals(SimulationClockSegment other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
+    public bool TryGetTickIndexForHostEvent(long hostTimestampTicks, long hostSequence, out long assignedTick, out bool late);
+}
+```
+
+`SimulationClockSegment` is an immutable Core value, not a public clock service or a public construction/owner capability. Only the Runtime host/timeline adapter constructs it. Its host timestamps are normalized elapsed `TimeSpan` ticks; source frequency is private to the host. A default value is invalid and `IsValid` reports initialization. The mapping, late-event clamp, pause behavior, boundary ordering and fractional remainder are fixed by [03](03-shared-conventions-and-clocks.md#immutable-input-clock-segments); no consumer substitutes ambient `World`, `TimeProvider`, or a competing wall-clock conversion.
+
 ### Geometry
 
 The six `TerraFX.Numerics` types and their full arithmetic/equality/formatting contracts are owned by [06](06-owned-geometry-and-numerics-interchange.md), with the method and kernel revision in [08](08-binary32-kernels-and-predicates.md). Their storage/interchange profile is `EngineGeometryBinary32Rows2`, separate from coordinate profile `LeftHandedYUpForwardZ1`, spatial profile `FloatChunk32V2`, and runtime/ISA profile. `IsFinite()` returns component masks; the argumentless versus scalar-value `All`/`Any`/`None` overloads follow [06](06-owned-geometry-and-numerics-interchange.md#2-representation-and-defaults). The changed predicate signatures require an API-major/consumer rebuild, not a changed component layout.
@@ -1348,7 +1375,7 @@ public sealed class InputBindingReceipt
 }
 ```
 
-`EngineHost` has no public constructor; `StartAsync` owns startup and returns only a running host or a faulted task with startup context. `CpuWorkerCount` admits `[0, 64]`; zero runs stable parallel partitions inline. The host owns one Entities CPU worker pool shared by its Worlds and disposes it only after every World has joined. A host-created `WorldOptions.CpuWorkerCount` must be `null` (inherit the host pool) or equal the host's configured count; a mismatched explicit count rejects before World allocation. A standalone World's null count resolves to the documented default and it owns its pool. `Headless` requires an explicit headless platform and no graphics backend; `OffscreenNative` requires an explicit real D3D12 or Vulkan backend. No backend, display, endpoint, or physical-input fallback is inferred. The host owns its dedicated owner thread and keeps pumping native readiness and accepted owner-control operations while paused, minimized, or stopping. `EngineContext.CreateInputRouter` is owner-bound and creates one router for exactly one `HostLiveUI` or `SimulationTimeline` recipient. `BindGameplayInput` establishes [14](14-custom-input-actions-and-text.md)'s window/world/timeline route and returns `Bound` with a router only on success; `Rejected` returns a diagnostic and no router.
+`EngineHost` has no public constructor; `StartAsync` owns startup and returns only a running host or a faulted task with startup context. `CpuWorkerCount` admits `[0, 64]`; zero runs stable parallel partitions inline. The host owns one Entities CPU worker pool shared by its Worlds and disposes it only after every World has joined. A host-created `WorldOptions.CpuWorkerCount` must be `null` (inherit the host pool) or equal the host's configured count; a mismatched explicit count rejects before World allocation. A standalone World's null count resolves to the documented default and it owns its pool. `Headless` requires an explicit headless platform and no graphics backend; `OffscreenNative` requires an explicit real D3D12 or Vulkan backend. No backend, display, endpoint, or physical-input fallback is inferred. The host owns its dedicated owner thread and keeps pumping native readiness and accepted owner-control operations while paused, minimized, or stopping. The host assigns each `HostLiveUI` and `SimulationTimeline` router a fresh Core `OwnerId` through the private Runtime issuer path. `EngineContext.CreateInputRouter` is owner-bound and creates one router for exactly one recipient. `BindGameplayInput` establishes [14](14-custom-input-actions-and-text.md)'s focused-window/world/timeline route and returns `Bound` with a router only on success; `Rejected` returns a diagnostic and no router.
 
 `Assets`, `Diagnostics`, `Persistence`, `Platform`, and `Renderer` are initialized host-owned services available after `StartAsync` succeeds. `EngineHost` creates its `Assets` service through `AssetStore.CreateAsync` using the required immutable `EngineHostOptions.AssetStoreOptions`, then owns and disposes that instance during shutdown; standalone stores use the same factory and are owned/disposed by their callers. Host construction validates the Assets registration independently of each future `WorldRegistration`; `CreateWorld` checks their compatible compiled schema registrations and package schema tuples before allocating a World. `Renderer` is a CPU-capable extraction service in every host profile. `GraphicsDevice` and `GpuResidency` are both available when a graphics backend is selected and both `null` for `Headless`; no placeholder device is constructed. In `Headless`, `Renderer.Extract` validates and copies logical scene data only, while `BuildGraph` and `SubmitAsync` throw `InvalidOperationException` because no real graphics device exists; no GPU output is synthesized. Capture/extraction requires the World owner's current canonical mutation revision to match a committed/restored marker. `OffscreenNative` has a real device and no interactive surface. `CreateAudioMixerAsync` creates an independently owned mixer from explicit `AudioMixerOptions`; the selected physical or offline endpoint is required by those options and is never inferred. A pre-canceled token prevents creation; after admission the task completes with the created mixer or faults with initialization context, and the caller owns/disposes the returned mixer.
 
