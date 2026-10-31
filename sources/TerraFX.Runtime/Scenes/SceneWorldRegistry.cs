@@ -8,12 +8,23 @@ namespace TerraFX.Scenes;
 
 internal sealed class SceneWorldRegistry : IWorldSceneParticipant
 {
-    private const long StorageByteReservation = 256;
+    private const long ObjectStorageByteReservation = 512;
 
+    private int _activeInstanceCount;
+    private readonly SceneInstance?[] _activeInstances;
+    private int _activeOccurrenceCount;
+    private readonly Lock _instanceGate = new();
     private int _isDisposed;
     private readonly int _maximumActiveSceneInstances;
     private readonly int _maximumPendingOwnerRequests;
     private readonly int _maximumSceneOccurrences;
+    private int _pendingRequestCount;
+    private int _pendingRequestHead;
+    private readonly SceneActivationRequest?[] _pendingRequests;
+    private readonly Lock _requestGate = new();
+    private int _reservedInstanceCount;
+    private readonly bool[] _reservedInstanceSlots;
+    private int _reservedOccurrenceCount;
     private readonly World _world;
 
     internal SceneWorldRegistry(World world, WorldOptions options)
@@ -24,24 +35,129 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         _maximumActiveSceneInstances = options.MaximumActiveSceneInstances;
         _maximumPendingOwnerRequests = options.MaximumPendingOwnerRequests;
         _maximumSceneOccurrences = options.MaximumSceneOccurrences;
+        _pendingRequests = new SceneActivationRequest[options.MaximumPendingOwnerRequests];
+        _activeInstances = new SceneInstance[options.MaximumActiveSceneInstances];
+        _reservedInstanceSlots = new bool[options.MaximumActiveSceneInstances];
     }
 
-    public long OwnedByteReservation => StorageByteReservation;
-
-    internal int MaximumActiveSceneInstances => _maximumActiveSceneInstances;
-
-    internal int MaximumPendingOwnerRequests => _maximumPendingOwnerRequests;
-
-    internal int MaximumSceneOccurrences => _maximumSceneOccurrences;
+    public long OwnedByteReservation => GetStorageByteReservation(
+        _maximumActiveSceneInstances,
+        _maximumPendingOwnerRequests);
 
     internal static long GetWorldStorageByteReservation(WorldOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
-        return StorageByteReservation;
+        return GetStorageByteReservation(
+            options.MaximumActiveSceneInstances,
+            options.MaximumPendingOwnerRequests);
+    }
+
+    private static long ArrayBytes(int count, int elementSize)
+    {
+        var payloadBytes = checked((long)count * elementSize);
+        return checked(64L + ((payloadBytes + 7L) & ~7L));
+    }
+
+    private static long GetStorageByteReservation(
+        int maximumActiveSceneInstances,
+        int maximumPendingOwnerRequests)
+    {
+        var activeInstanceBytes = ArrayBytes(maximumActiveSceneInstances, IntPtr.Size);
+        var activeInstanceObjectBytes = ArrayBytes(maximumActiveSceneInstances, 256);
+        var reservedSlotBytes = ArrayBytes(maximumActiveSceneInstances, sizeof(bool));
+        var pendingRequestBytes = ArrayBytes(maximumPendingOwnerRequests, IntPtr.Size);
+        var pendingRequestObjectBytes = ArrayBytes(maximumPendingOwnerRequests, 256);
+        return checked(
+            ObjectStorageByteReservation
+            + activeInstanceBytes
+            + activeInstanceObjectBytes
+            + reservedSlotBytes
+            + pendingRequestBytes
+            + pendingRequestObjectBytes);
     }
 
     public void Dispose()
-        => _ = Interlocked.Exchange(ref _isDisposed, 1);
+    {
+        if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
+        {
+            return;
+        }
+
+        while (true)
+        {
+            SceneActivationRequest? request;
+
+            lock (_requestGate)
+            {
+                if (_pendingRequestCount == 0)
+                {
+                    break;
+                }
+
+                request = DequeueRequest();
+            }
+
+            request?.CancelFromRegistryDisposal();
+        }
+
+        for (var index = 0; index < _activeInstances.Length; index++)
+        {
+            SceneInstance? instance;
+
+            lock (_instanceGate)
+            {
+                instance = _activeInstances[index];
+                _activeInstances[index] = null;
+            }
+
+            instance?.RevokeFromWorld();
+        }
+    }
+
+    public void PumpControlBoundary()
+    {
+        while (true)
+        {
+            SceneActivationRequest? request;
+
+            lock (_requestGate)
+            {
+                if (_pendingRequestCount == 0)
+                {
+                    return;
+                }
+
+                request = DequeueRequest();
+            }
+
+            request?.Execute(_world, this);
+        }
+    }
+
+    internal void CommitReservation(SceneInstanceReservation reservation, SceneInstance instance)
+    {
+        ArgumentNullException.ThrowIfNull(reservation);
+        ArgumentNullException.ThrowIfNull(instance);
+
+        lock (_instanceGate)
+        {
+            if (!ReferenceEquals(reservation.Registry, this)
+                || !_reservedInstanceSlots[reservation.Slot]
+                || (_activeInstances[reservation.Slot] is not null)
+                || (instance.OccurrenceCount != reservation.OccurrenceCount)
+                || (instance.SceneInstanceId == Guid.Empty))
+            {
+                throw new InvalidOperationException("The Scene instance reservation no longer matches its prepared publication.");
+            }
+
+            _reservedInstanceSlots[reservation.Slot] = false;
+            _reservedInstanceCount--;
+            _reservedOccurrenceCount -= reservation.OccurrenceCount;
+            _activeInstances[reservation.Slot] = instance;
+            _activeInstanceCount++;
+            _activeOccurrenceCount = checked(_activeOccurrenceCount + reservation.OccurrenceCount);
+        }
+    }
 
     internal void EnsureBoundTo(World world)
     {
@@ -52,5 +168,131 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         {
             throw new ArgumentException("The Scene registry belongs to another exact World binding.", nameof(world));
         }
+    }
+
+    internal void ReleaseReservation(SceneInstanceReservation reservation)
+    {
+        ArgumentNullException.ThrowIfNull(reservation);
+
+        lock (_instanceGate)
+        {
+            if (!ReferenceEquals(reservation.Registry, this)
+                || !_reservedInstanceSlots[reservation.Slot])
+            {
+                return;
+            }
+
+            _reservedInstanceSlots[reservation.Slot] = false;
+            _reservedInstanceCount--;
+            _reservedOccurrenceCount -= reservation.OccurrenceCount;
+        }
+    }
+
+    internal void RemoveInstance(SceneInstance instance)
+    {
+        ArgumentNullException.ThrowIfNull(instance);
+
+        lock (_instanceGate)
+        {
+            for (var index = 0; index < _activeInstances.Length; index++)
+            {
+                if (!ReferenceEquals(_activeInstances[index], instance))
+                {
+                    continue;
+                }
+
+                _activeInstances[index] = null;
+                _activeInstanceCount--;
+                _activeOccurrenceCount -= instance.OccurrenceCount;
+                return;
+            }
+        }
+    }
+
+    internal bool TryEnqueue(SceneActivationRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
+
+        lock (_requestGate)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
+
+            if (_pendingRequestCount == _pendingRequests.Length)
+            {
+                return false;
+            }
+
+            request.Admit();
+            var tail = (_pendingRequestHead + _pendingRequestCount) % _pendingRequests.Length;
+            _pendingRequests[tail] = request;
+            _pendingRequestCount++;
+            return true;
+        }
+    }
+
+    internal bool TryGetInstance(Guid sceneInstanceId, out SceneInstance? instance)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(sceneInstanceId, Guid.Empty);
+
+        lock (_instanceGate)
+        {
+            for (var index = 0; index < _activeInstances.Length; index++)
+            {
+                var candidate = _activeInstances[index];
+
+                if (candidate?.SceneInstanceId == sceneInstanceId)
+                {
+                    instance = candidate;
+                    return true;
+                }
+            }
+        }
+
+        instance = null;
+        return false;
+    }
+
+    internal bool TryReserveInstance(int occurrenceCount, out SceneInstanceReservation? reservation)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(occurrenceCount);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
+
+        lock (_instanceGate)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
+
+            if ((_activeInstanceCount + _reservedInstanceCount) >= _maximumActiveSceneInstances
+                || occurrenceCount > (_maximumSceneOccurrences - _activeOccurrenceCount - _reservedOccurrenceCount))
+            {
+                reservation = null;
+                return false;
+            }
+
+            for (var index = 0; index < _activeInstances.Length; index++)
+            {
+                if ((_activeInstances[index] is not null) || _reservedInstanceSlots[index])
+                {
+                    continue;
+                }
+
+                _reservedInstanceSlots[index] = true;
+                _reservedInstanceCount++;
+                _reservedOccurrenceCount = checked(_reservedOccurrenceCount + occurrenceCount);
+                reservation = new SceneInstanceReservation(this, index, occurrenceCount);
+                return true;
+            }
+        }
+
+        throw new InvalidOperationException("The Scene registry has no free slot despite its active-instance capacity check.");
+    }
+
+    private SceneActivationRequest? DequeueRequest()
+    {
+        var request = _pendingRequests[_pendingRequestHead];
+        _pendingRequests[_pendingRequestHead] = null;
+        _pendingRequestHead = (_pendingRequestHead + 1) % _pendingRequests.Length;
+        _pendingRequestCount--;
+        return request;
     }
 }

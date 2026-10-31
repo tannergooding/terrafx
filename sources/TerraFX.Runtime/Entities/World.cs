@@ -1337,6 +1337,33 @@ public sealed partial class World : IDisposable
         return TryGetEntity(identity.EntityId, out entity);
     }
 
+    internal Diagnostic CreateDiagnostic(
+        string code,
+        DiagnosticSeverity severity,
+        string operation,
+        string message,
+        int? assetId = null)
+        => new(
+            code,
+            severity,
+            _diagnosticsCapability.GetTimestamp(),
+            null,
+            _worldGuid,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            assetId,
+            null,
+            operation,
+            null,
+            message,
+            []);
+
     internal IWorldSceneParticipant GetSceneParticipant(SceneSupportRegistration registration)
     {
         ArgumentNullException.ThrowIfNull(registration);
@@ -1349,6 +1376,33 @@ public sealed partial class World : IDisposable
 
         return _sceneParticipant
             ?? throw new InvalidOperationException("The World Scene participant has not been initialized.");
+    }
+
+    internal bool HasComponentFromScene(Entity entity, ContentSchemaReference schema)
+    {
+        var archetype = GetLiveArchetype(entity, out _, out _);
+        var registration = Registration.GetComponentRegistration(schema);
+        return archetype.GetComponentIndex(registration.ComponentType) >= 0;
+    }
+
+    internal bool TryGetEntityByIdentityOrdinal(uint ordinal, out Entity entity)
+    {
+        EnsureWorldReadAccess();
+
+        if (!_identityLedger.TryGetLiveLocatorByOrdinal(ordinal, IdentityKind.Entity, out var locator))
+        {
+            entity = default;
+            return false;
+        }
+
+        if (!_entitySlots.TryGetLive(locator, out var generation)
+            || !_entitySlots.TryGetLocation(locator, generation, out _, out _, out _))
+        {
+            throw new InvalidOperationException("The stable identity ledger references a non-live Entity slot.");
+        }
+
+        entity = new Entity(_ownerId, locator, generation);
+        return true;
     }
 
     internal void ValidateEntityReference(Entity target, Entity? excludedEntity, string? parameterName)

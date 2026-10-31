@@ -7,4 +7,6 @@ internal interface IWorldSceneParticipant
     long OwnedByteReservation { get; }
 
     void Dispose();
+
+    void PumpControlBoundary();
 }

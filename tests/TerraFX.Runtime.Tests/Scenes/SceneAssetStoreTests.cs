@@ -4,8 +4,10 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Security.Cryptography;
+using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
@@ -1572,6 +1574,66 @@ internal sealed class SceneAssetStoreTests
     }
 
     [Test]
+    [SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "ActivateAsync detaches the expansion plan before returning; the awaited request owns it independently of PreparedScene.")]
+    public async Task SceneLoaderActivatesAtTheWorldOwnerControlBoundary()
+    {
+        const int sceneAssetIdValue = 3;
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var scene = SceneAssetReaderTests.Fixtures.CreateScene(new AssetId(sceneAssetIdValue));
+        var package = Package.CreatePackage(new Package.Entry(
+            sceneAssetIdValue,
+            Package.CreateEnvelope(sceneAssetIdValue, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var storeRegistration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+            var assets = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), storeRegistration)).ConfigureAwait(false);
+
+            try
+            {
+                var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
+                _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+                using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
+                var loader = new SceneLoader(world, assets);
+                using var prepared = loader
+                    .PrepareAsync(new AssetId(sceneAssetIdValue), new SceneLoadOptions())
+                    .GetAwaiter()
+                    .GetResult();
+                var activation = loader.ActivateAsync(prepared);
+
+                Assert.That(activation.IsCompleted, Is.False);
+                world.PumpControlBoundary();
+                var receipt = await activation.ConfigureAwait(false);
+
+                Assert.That(receipt.Status, Is.EqualTo(SceneActivationStatus.Activated));
+                Assert.That(receipt.Instance, Is.Not.Null);
+                Assert.That(receipt.CommittedStructuralRevision, Is.Not.Null);
+                Assert.That(receipt.Diagnostics, Is.Empty);
+                var instance = receipt.Instance
+                    ?? throw new InvalidOperationException("An activated Scene receipt omitted its instance.");
+                Assert.That(instance.TryGetEntity(SceneAssetReaderTests.Fixtures.RootEntityId, out var entity), Is.True);
+                Assert.That(world.IdentityLedger.TryFind(instance.SceneInstanceId, out var sceneOrdinal), Is.True);
+                Assert.That(world.IdentityLedger.TryFind(world.GetEntityId(entity), out var entityOrdinal), Is.True);
+                Assert.That(sceneOrdinal, Is.EqualTo(1));
+                Assert.That(entityOrdinal, Is.EqualTo(2));
+            }
+            finally
+            {
+                await assets.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
     public async Task SceneLoaderAllowsExplicitNullForOptionalRootSlot()
     {
         const int sceneAssetIdValue = 3;
@@ -1618,6 +1680,59 @@ internal sealed class SceneAssetStoreTests
     }
 
     [Test]
+    [SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "The canceled request releases its detached plan at the owner boundary before PreparedScene disposal.")]
+    public async Task SceneLoaderCancelsBeforeOwnerBoundaryWithoutConsumingIdentity()
+    {
+        const int sceneAssetIdValue = 3;
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var scene = SceneAssetReaderTests.Fixtures.CreateScene(new AssetId(sceneAssetIdValue));
+        var package = Package.CreatePackage(new Package.Entry(
+            sceneAssetIdValue,
+            Package.CreateEnvelope(sceneAssetIdValue, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var storeRegistration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+            var assets = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), storeRegistration)).ConfigureAwait(false);
+
+            try
+            {
+                var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
+                _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+                using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
+                var loader = new SceneLoader(world, assets);
+                using var prepared = loader
+                    .PrepareAsync(new AssetId(sceneAssetIdValue), new SceneLoadOptions())
+                    .GetAwaiter()
+                    .GetResult();
+                using var cancellation = new CancellationTokenSource();
+                var activation = loader.ActivateAsync(prepared, cancellation.Token);
+                await cancellation.CancelAsync().ConfigureAwait(false);
+
+                world.PumpControlBoundary();
+
+                Assert.That(world.IdentityLedger.SceneInstanceCount, Is.Zero);
+                Assert.That(world.IdentityLedger.AssignmentCount, Is.Zero);
+                _ = Assert.ThrowsAsync<TaskCanceledException>(async () =>
+                    await activation.ConfigureAwait(false));
+            }
+            finally
+            {
+                await assets.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
     public async Task SceneLoaderPreparesAgainstExactWorldSchemaRegistry()
     {
         const int sceneAssetIdValue = 3;
@@ -1647,6 +1762,137 @@ internal sealed class SceneAssetStoreTests
                     .GetResult();
 
                 Assert.That(prepared.AssetId, Is.EqualTo(new AssetId(sceneAssetIdValue)));
+            }
+            finally
+            {
+                await assets.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    [SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "ActivateAsync detaches the expansion plan before returning; the awaited request owns it independently of PreparedScene.")]
+    public async Task SceneLoaderRejectsNonliveRootBindingsAtActivationBoundary()
+    {
+        const int sceneAssetIdValue = 3;
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var slotId = new Guid("30000000-0000-4000-8000-000000000093");
+        var scene = SceneAssetReaderTests.Fixtures.CreateScene(
+            new AssetId(sceneAssetIdValue),
+            externalSlots: [CreateExternalSlot(slotId, required: false, allowNull: false, [])]);
+        var package = Package.CreatePackage(new Package.Entry(
+            sceneAssetIdValue,
+            Package.CreateEnvelope(sceneAssetIdValue, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var storeRegistration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+            var assets = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), storeRegistration)).ConfigureAwait(false);
+
+            try
+            {
+                var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
+                _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+                using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
+                var staleTarget = world.CreateEntity(new EntityDescription());
+                world.DestroyEntity(staleTarget, HierarchyDestroyMode.DetachChildrenKeepWorld);
+                var initialAssignmentCount = world.IdentityLedger.AssignmentCount;
+                var loader = new SceneLoader(world, assets);
+                using var prepared = loader
+                    .PrepareAsync(
+                        new AssetId(sceneAssetIdValue),
+                        new SceneLoadOptions {
+                            ExternalBindings = [new SceneExternalBinding(slotId, staleTarget)],
+                        })
+                    .GetAwaiter()
+                    .GetResult();
+                var activation = loader.ActivateAsync(prepared);
+
+                world.PumpControlBoundary();
+                var receipt = await activation.ConfigureAwait(false);
+
+                Assert.That(receipt.Status, Is.EqualTo(SceneActivationStatus.Rejected));
+                Assert.That(receipt.Instance, Is.Null);
+                Assert.That(receipt.CommittedStructuralRevision, Is.Null);
+                Assert.That(receipt.Diagnostics, Is.Not.Empty);
+                Assert.That(world.IdentityLedger.SceneInstanceCount, Is.Zero);
+                Assert.That(world.IdentityLedger.AssignmentCount, Is.EqualTo(initialAssignmentCount));
+            }
+            finally
+            {
+                await assets.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    [SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "Accepted activation requests own detached plans; the rejected queue attempt retains its PreparedScene for retry.")]
+    public async Task SceneLoaderRejectsOwnerQueueFullWithoutConsumingPreparedScene()
+    {
+        const int sceneAssetIdValue = 3;
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var scene = SceneAssetReaderTests.Fixtures.CreateScene(new AssetId(sceneAssetIdValue));
+        var package = Package.CreatePackage(new Package.Entry(
+            sceneAssetIdValue,
+            Package.CreateEnvelope(sceneAssetIdValue, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var storeRegistration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+            var assets = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), storeRegistration)).ConfigureAwait(false);
+
+            try
+            {
+                var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
+                _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+                var worldOptions = new WorldOptions(worldRegistrationBuilder.Build()) {
+                    MaximumPendingOwnerRequests = 1,
+                };
+                using var world = World.Create(worldOptions);
+                var loader = new SceneLoader(world, assets);
+                using var first = loader
+                    .PrepareAsync(new AssetId(sceneAssetIdValue), new SceneLoadOptions())
+                    .GetAwaiter()
+                    .GetResult();
+                using var second = loader
+                    .PrepareAsync(new AssetId(sceneAssetIdValue), new SceneLoadOptions())
+                    .GetAwaiter()
+                    .GetResult();
+                var firstActivation = loader.ActivateAsync(first);
+                var refusedActivation = loader.ActivateAsync(second);
+                var refusedReceipt = await refusedActivation.ConfigureAwait(false);
+
+                Assert.That(refusedReceipt.Status, Is.EqualTo(SceneActivationStatus.Rejected));
+                Assert.That(refusedReceipt.Diagnostics, Is.Not.Empty);
+                Assert.That(firstActivation.IsCompleted, Is.False);
+
+                world.PumpControlBoundary();
+                var firstReceipt = firstActivation.GetAwaiter().GetResult();
+                Assert.That(firstReceipt.Status, Is.EqualTo(SceneActivationStatus.Activated));
+
+                var retriedActivation = loader.ActivateAsync(second);
+                world.PumpControlBoundary();
+                var retriedReceipt = retriedActivation.GetAwaiter().GetResult();
+                Assert.That(retriedReceipt.Status, Is.EqualTo(SceneActivationStatus.Activated));
+                Assert.That(world.IdentityLedger.SceneInstanceCount, Is.EqualTo(2));
             }
             finally
             {

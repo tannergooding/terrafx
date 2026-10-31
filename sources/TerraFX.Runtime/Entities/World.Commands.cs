@@ -375,8 +375,10 @@ public sealed partial class World
         Justification = "Command playback must release its preparation reservation before rethrowing the exact operation failure.")]
     private ImmutableArray<CommandReceipt> CommitCommandBatch(
         WorldCommandStaging staging,
-        IdentityAssignment? sceneInstanceAssignment = null)
+        IdentityAssignment? sceneInstanceAssignment = null,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var commands = staging.Seal();
 
         if (commands.IsEmpty && (sceneInstanceAssignment is null))
@@ -1286,6 +1288,7 @@ public sealed partial class World
             }
 
             var receipts = staging.CreateReceipts(resolvedTokens);
+            cancellationToken.ThrowIfCancellationRequested();
             identityChange?.ValidateForCommit();
 
             foreach (var transition in transitions)

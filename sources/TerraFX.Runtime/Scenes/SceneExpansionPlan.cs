@@ -238,6 +238,43 @@ internal sealed class SceneExpansionPlan : IDisposable
         Interlocked.Exchange(ref _sceneLease, null)?.Dispose();
     }
 
+    internal int GetEntityAssignmentOrdinal(int expandedEntityIndex)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfNegative(expandedEntityIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(expandedEntityIndex, _entities.Length);
+        var expandedEntityKey = _entities[expandedEntityIndex].ExpandedEntityKey;
+        var low = 0;
+        var high = _entityAssignmentKeys.Length - 1;
+
+        while (low <= high)
+        {
+            var middle = low + ((high - low) / 2);
+            var comparison = FoundationCatalogue.CompareRfc(_entityAssignmentKeys[middle], expandedEntityKey);
+
+            if (comparison == 0)
+            {
+                if (_entityIndicesByAssignmentOrdinal[middle] != expandedEntityIndex)
+                {
+                    throw new InvalidOperationException("The Scene expanded-Entity assignment map is inconsistent.");
+                }
+
+                return middle;
+            }
+
+            if (comparison < 0)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle - 1;
+            }
+        }
+
+        throw new InvalidOperationException("The Scene expanded Entity is missing from the assignment map.");
+    }
+
     internal ReadOnlySpan<int> GetRootEntityIndices(int occurrenceIndex)
     {
         ThrowIfDisposed();

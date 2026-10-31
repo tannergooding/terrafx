@@ -157,6 +157,8 @@ public sealed partial class World
         {
             _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
         }
+
+        _sceneParticipant?.PumpControlBoundary();
     }
 
     /// <summary>Installs one 2D frame candidate without advancing the simulation clock.</summary>

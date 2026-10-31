@@ -425,6 +425,24 @@ internal sealed class StableIdentityLedger
         return locator != 0;
     }
 
+    internal bool TryGetLiveLocatorByOrdinal(uint ordinal, IdentityKind kind, out uint locator)
+    {
+        ValidateKind(kind);
+        ValidateOrdinal(ordinal, _state.AssignmentCount);
+        var record = GetRecord(_state.LedgerPages, ordinal);
+        var value = BinaryPrimitives.ReadUInt32LittleEndian(record[16..]);
+
+        if ((GetKind(record) != kind)
+            || (value == 0))
+        {
+            locator = 0;
+            return false;
+        }
+
+        locator = value;
+        return true;
+    }
+
     private int GetTreeDirectoryCapacity(int total, int assignmentCount)
         => (int)Math.Min(IdentityGuidIndex.GetMaximumPages(total), _state.Index.PageCount + ((long)assignmentCount * 4));
 

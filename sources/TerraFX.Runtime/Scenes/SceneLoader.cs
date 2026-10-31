@@ -36,6 +36,39 @@ public sealed class SceneLoader
         _assets = assets;
     }
 
+    /// <summary>Queues one prepared Scene for atomic activation at the target World's next owner boundary.</summary>
+    /// <param name="preparedScene">The preparation bound to this exact World and AssetStore.</param>
+    /// <param name="cancellationToken">The token that cancels work before owner-boundary application.</param>
+    /// <returns>The activation receipt, or a faulted/canceled task for an unexpected failure or cancellation.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="preparedScene"/> is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="preparedScene"/> belongs to another World.</exception>
+    /// <exception cref="InvalidOperationException">The prepared Scene has already been admitted for activation.</exception>
+    public Task<SceneActivationReceipt> ActivateAsync(
+        PreparedScene preparedScene,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(preparedScene);
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromCanceled<SceneActivationReceipt>(cancellationToken);
+        }
+
+        var request = new SceneActivationRequest(preparedScene, _world, cancellationToken);
+
+        if (!_registry.TryEnqueue(request))
+        {
+            request.Reject(_world.CreateDiagnostic(
+                "SceneActivation.OwnerQueueFull",
+                DiagnosticSeverity.Warning,
+                "SceneLoader.ActivateAsync",
+                "The target World owner-control queue is full.",
+                preparedScene.AssetId.Value));
+        }
+
+        return request.Task;
+    }
+
     /// <summary>Loads and validates a Scene and its recursively selected Prefabs.</summary>
     /// <param name="sceneId">The positive AssetId of the root Scene.</param>
     /// <param name="options">The immutable Scene preparation limits and root external bindings.</param>

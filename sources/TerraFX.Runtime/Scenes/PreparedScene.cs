@@ -10,6 +10,7 @@ namespace TerraFX.Scenes;
 /// <summary>Owns one bounded Scene preparation for its exact target World and AssetStore.</summary>
 public sealed class PreparedScene : IDisposable
 {
+    private int _activationAttempted;
     private readonly AssetId _assetId;
     private readonly AssetStore _assets;
     private readonly SceneLoadOptionsSnapshot _options;
@@ -50,6 +51,11 @@ public sealed class PreparedScene : IDisposable
         if (!ReferenceEquals(_world, world))
         {
             throw new ArgumentException("The prepared Scene is bound to another exact World.", nameof(world));
+        }
+
+        if (Interlocked.CompareExchange(ref _activationAttempted, 1, 0) != 0)
+        {
+            throw new InvalidOperationException("A prepared Scene can be admitted for activation only once.");
         }
 
         return Interlocked.Exchange(ref _plan, null)

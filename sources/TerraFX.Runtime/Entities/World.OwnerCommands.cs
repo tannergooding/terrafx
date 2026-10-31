@@ -24,7 +24,8 @@ public sealed partial class World
                 createDescriptions,
                 sceneInstanceAssignment: null,
                 sceneInstanceLocator: 0,
-                entityIndicesByAssignmentOrdinal: []).Entities;
+                entityIndicesByAssignmentOrdinal: [],
+                cancellationToken: CancellationToken.None).Entities;
         }
         finally
         {
@@ -46,7 +47,8 @@ public sealed partial class World
         int entityCount,
         Guid? requestedSceneInstanceId,
         scoped ReadOnlySpan<int> entityIndicesByAssignmentOrdinal,
-        Func<ImmutableArray<Entity>, ImmutableArray<EntityDescription>> createDescriptions)
+        Func<ImmutableArray<Entity>, ImmutableArray<EntityDescription>> createDescriptions,
+        CancellationToken cancellationToken = default)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(entityCount);
         ArgumentNullException.ThrowIfNull(createDescriptions);
@@ -87,7 +89,8 @@ public sealed partial class World
                 createDescriptions,
                 sceneInstanceAssignment,
                 sceneInstanceLocator,
-                entityIndicesByAssignmentOrdinal);
+                entityIndicesByAssignmentOrdinal,
+                cancellationToken);
         }
         finally
         {
@@ -100,8 +103,11 @@ public sealed partial class World
         Func<ImmutableArray<Entity>, ImmutableArray<EntityDescription>> createDescriptions,
         IdentityAssignment? sceneInstanceAssignment,
         uint sceneInstanceLocator,
-        scoped ReadOnlySpan<int> entityIndicesByAssignmentOrdinal)
+        scoped ReadOnlySpan<int> entityIndicesByAssignmentOrdinal,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         if (entityCount > _maximumDeferredCommands)
         {
             throw new InvalidOperationException("The owner-control Entity batch exceeds the deferred-command limit.");
@@ -134,6 +140,7 @@ public sealed partial class World
         {
             var candidates = PreviewCandidateEntityHandles(entityCount, entityIndicesByAssignmentOrdinal, assignmentMapWordCount);
             var descriptions = createDescriptions(candidates);
+            cancellationToken.ThrowIfCancellationRequested();
 
             if (descriptions.IsDefault || (descriptions.Length != entityCount))
             {
@@ -149,24 +156,18 @@ public sealed partial class World
 
             for (var assignmentIndex = 0; assignmentIndex < entityCount; assignmentIndex++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var entityIndex = entityIndicesByAssignmentOrdinal.IsEmpty
                     ? assignmentIndex
                     : entityIndicesByAssignmentOrdinal[assignmentIndex];
                 tokens.Add(staging.AppendOwnerCreate(descriptions[entityIndex]));
             }
 
-            var receipts = CommitCommandBatch(staging, sceneInstanceAssignment);
+            var receipts = CommitCommandBatch(staging, sceneInstanceAssignment, cancellationToken);
 
             if ((entityCount != 0) && (receipts.Length != 1))
             {
                 throw new InvalidOperationException("An owner-control Entity batch did not produce exactly one receipt.");
-            }
-
-            var entities = ImmutableArray.CreateBuilder<Entity>(entityCount);
-
-            for (var index = 0; index < entityCount; index++)
-            {
-                entities.Add(default);
             }
 
             for (var assignmentIndex = 0; assignmentIndex < entityCount; assignmentIndex++)
@@ -181,16 +182,17 @@ public sealed partial class World
                 {
                     throw new InvalidOperationException("The owner-control batch resolved an unexpected Entity handle.");
                 }
-
-                entities[entityIndex] = entity;
             }
 
             return new WorldSceneEntityBatchCommit(
                 (sceneInstanceAssignment is null)
                     ? Guid.Empty
                     : _identityLedger.GetAssignedId(IdentityKind.SceneInstance, sceneInstanceLocator),
-                entities.MoveToImmutable(),
-                _canonicalMutationRevision);
+                candidates,
+                _canonicalMutationRevision,
+                (sceneInstanceAssignment is null || entityCount == 0)
+                    ? 0
+                    : checked(sceneInstanceLocator + 1));
         }
         finally
         {
@@ -257,5 +259,6 @@ public sealed partial class World
     internal readonly record struct WorldSceneEntityBatchCommit(
         Guid SceneInstanceId,
         ImmutableArray<Entity> Entities,
-        long StructuralRevision);
+        long StructuralRevision,
+        uint FirstEntityIdentityOrdinal);
 }
