@@ -1367,11 +1367,13 @@ public sealed class EngineContext
 {
     internal EngineContext();
     public World CreateWorld(WorldOptions options);
-    public InputRouter CreateInputRouter(InputRecipientKind recipientKind);
+    public InputRouter CreateInputRouter(InputRecipientKind recipientKind, WindowHandle? window = null);
     public InputBindingReceipt BindGameplayInput(WindowHandle window, World world);
     public InputBindingReceipt BindHeadlessGameplayInput(InputRouter router, World world);
     public ImmutableArray<InputRoutingReceipt> InjectHeadlessInput(ImmutableArray<InputRouter> recipients, InputInjection input);
 }
+
+`CreateInputRouter` requires `window` for `HostLiveUI` and rejects it for `SimulationTimeline`. The host validates that a supplied handle is a current window owned by this host. A timeline begins without a physical window; `BindGameplayInput` attaches it to one window and its exact World. Each router is permanently associated with at most one window route.
 
 public enum InputBindingStatus
 {
@@ -6115,22 +6117,95 @@ public sealed class TextInputSessionOptions
     public TextInputHints Hints { get; init; } = TextInputHints.None;
 }
 
+public enum TextInputChangeKind
+{
+    Invalid = 0,
+    CompositionStarted = 1,
+    CompositionUpdated = 2,
+    TextEditRequested = 3,
+    TextCommitted = 4,
+    CompositionEnded = 5,
+    CompositionCanceled = 6,
+    TextEditRejected = 7,
+    StaleMirror = 8
+}
+
+public enum TextCompositionCancelReason
+{
+    FocusLost = 0,
+    NativeCanceled = 1,
+    SessionDisposed = 2,
+    SessionReplaced = 3,
+    Overflow = 4
+}
+
+internal enum TextInputBatchPublishStatus
+{
+    Published,
+    StaleMirror,
+    CapacityExceeded
+}
+
+internal sealed class TextInputBatchBudget
+{
+    internal const int MaximumPendingChanges = 4096;
+    internal const int MaximumPendingTextBytes = 262144;
+    internal TextInputBatchBudget(int ownerThreadId);
+    internal bool TryReserve(ImmutableArray<TextInputChange> changes, out int textBytes);
+    internal void Release(TextInputBatch batch);
+}
+
+public readonly struct TextInputChange
+{
+    internal TextInputChange(TextInputChangeKind kind, string? text, int? selectionStart, int? selectionLength,
+        int? editStart, int? deleteLength, TextCompositionCancelReason? cancellationReason, Diagnostic? diagnostic);
+    public TextInputChangeKind Kind { get; }
+    public string? Text { get; }
+    public int? SelectionStart { get; }
+    public int? SelectionLength { get; }
+    public int? EditStart { get; }
+    public int? DeleteLength { get; }
+    public TextCompositionCancelReason? CancellationReason { get; }
+    public Diagnostic? Diagnostic { get; }
+}
+
+public sealed class TextInputBatch
+{
+    internal TextInputBatch(long sessionId, WindowHandle window, long hostTimestamp, long hostSequence, long baseDocumentRevision,
+        long resultDocumentRevision, ImmutableArray<TextInputChange> changes);
+    public long SessionId { get; }
+    public WindowHandle Window { get; }
+    public long HostTimestamp { get; }
+    public long HostSequence { get; }
+    public long BaseDocumentRevision { get; }
+    public long ResultDocumentRevision { get; }
+    public ImmutableArray<TextInputChange> Changes { get; }
+}
+
 public sealed class TextInputSession : IDisposable
 {
-    internal TextInputSession(HostEventSequenceLease sequenceLease, int ownerThreadId);
+    internal TextInputSession(InputRouter router, TextInputBatchBudget budget, HostEventSequenceLease sequenceLease,
+        int ownerThreadId, long sessionId, WindowHandle window, TextInputSessionOptions options);
+    public long SessionId { get; }
     public WindowHandle Window { get; }
     public long DocumentRevision { get; }
     public bool IsActive { get; }
     public Diagnostic? LastDiagnostic { get; }
+    public bool TryReadBatch([NotNullWhen(true)] out TextInputBatch? batch);
     public void Update(TextInputSessionOptions options);
     public void Dispose();
+    internal TextInputBatchPublishStatus PublishNativeBatch(long hostTimestamp, long hostSequence,
+        long baseDocumentRevision, ImmutableArray<TextInputChange> changes);
+    internal void EndForNativeControl(long hostSequence, long hostTimestamp, TextCompositionCancelReason reason);
 }
 
 public sealed class InputRouter
 {
-    internal InputRouter(InputRecipientKind recipientKind, uint recipientId, int ownerThreadId, HostEventSequenceLease sequenceLease);
+    internal InputRouter(InputRecipientKind recipientKind, uint recipientId, int ownerThreadId,
+        HostEventSequenceLease sequenceLease, WindowHandle? window = null);
     public InputRecipientKind RecipientKind { get; }
     public uint RecipientId { get; }
+    internal TextInputSession? ActiveTextSession { get; }
     public InputMapResponse RegisterMap(InputActionMapV1 map);
     public InputMapResponse ReplaceMap(InputActionMapV1 map, long expectedRevision);
     public InputRoutingReceipt SetActiveContextMask(Guid mapId, long expectedRevision, ulong newMask);
@@ -6140,6 +6215,8 @@ public sealed class InputRouter
 }
 }
 ```
+
+`HostLiveUI` InputRouters require the exact valid host-owned `WindowHandle`; `SimulationTimeline` routers have no window at creation and may be bound once through `BindGameplayInput`. `BeginTextSession` is valid only on a HostLiveUI router and requires the exact same handle. It rejects a second active session for that route. `DocumentRevision`, `IsActive`, `LastDiagnostic`, `Update`, `Dispose`, and `TryReadBatch` are owner-thread-only. `TryReadBatch` returns false only when its queue is empty; it remains usable after `Dispose` to drain already published batches. `TextInputChange` constructors are internal so applications cannot fabricate native text. A batch copies its changes, carries one positive host timestamp/sequence pair, and preserves their within-transaction order. The base/result revision and shared per-recipient 4,096-change/256-KiB output budget follow [14 section 6](14-custom-input-actions-and-text.md#6-text-sessions-and-native-ime-contracts).
 
 `AudioMixer` has no public constructor; `CreateAsync` is the sole creation path and returns only after options validation and endpoint initialization. `AudioOutputMode.Native` requires `AudioEndpointOptions`; `NotRequested` and `Offline` require a null endpoint. `AudioEndpointOptions.EndpointId = null` selects the default endpoint for its selected backend. A platform/backend mismatch, unsupported backend, unavailable endpoint, or native initialization failure faults creation with `AudioEndpointException`; no endpoint or backend fallback is selected. Recovery retries only the selected endpoint, beginning after 250 ms and doubling to a five-second maximum. The frozen internal format is 48-kHz interleaved stereo with a fixed 8192-frame native-buffer ceiling. Defaults are 256 voices, 32 streaming voices, 64 buses, 32 worlds, 4096 emitters per world, 32768 emitters across admitted snapshots, 256 frames per block, 1024 command credits, and 64-frame stop/steal fades. The 1024-credit command capacity, native-buffer ceiling, and internal format are fixed; configurable capacities may be reduced and are validated before allocation. `NotRequested` creates no endpoint and admits no playback/control command; task-returning command methods and `TrySubmit` throw `InvalidOperationException` synchronously rather than returning false or retaining work.
 

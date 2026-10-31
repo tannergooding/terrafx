@@ -26,7 +26,12 @@ internal sealed class InputRouterTests
         => new InputActionMapV1(1, mapId, revision, initialActiveContextMask, [], contexts, []);
 
     private static InputRouter CreateRouter(InputRecipientKind recipientKind = InputRecipientKind.HostLiveUI, uint recipientId = 1)
-        => new InputRouter(recipientKind, recipientId, Environment.CurrentManagedThreadId, new HostEventSequenceLease());
+        => new InputRouter(
+            recipientKind,
+            recipientId,
+            Environment.CurrentManagedThreadId,
+            new HostEventSequenceLease(),
+            recipientKind == InputRecipientKind.HostLiveUI ? new WindowHandle(1, 0, 1) : null);
 
     [Test]
     public void AppliesSharedHeadlessCaptureToEachRecipientAtItsOwnAssignedTick()

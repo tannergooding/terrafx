@@ -16,6 +16,7 @@ public sealed partial class InputRouter
     private const int MaximumControlCommandsPerBoundary = 256;
     private const int MaximumMaps = 16;
 
+    private TextInputSession? _activeTextSession;
     private int _controlCommandsInBoundary;
     private InputActionSnapshot _hostActionSnapshot;
     private int _isDisposed;
@@ -29,8 +30,15 @@ public sealed partial class InputRouter
     private readonly InputRecipientKind _recipientKind;
     private readonly HostEventSequenceLease _sequenceLease;
     private InputActionSnapshot _simulationActionSnapshot;
+    private readonly TextInputBatchBudget _textInputBatchBudget;
+    private readonly WindowHandle? _window;
 
-    internal InputRouter(InputRecipientKind recipientKind, uint recipientId, int ownerThreadId, HostEventSequenceLease sequenceLease)
+    internal InputRouter(
+        InputRecipientKind recipientKind,
+        uint recipientId,
+        int ownerThreadId,
+        HostEventSequenceLease sequenceLease,
+        WindowHandle? window = null)
     {
         if (!Enum.IsDefined(recipientKind))
         {
@@ -40,6 +48,18 @@ public sealed partial class InputRouter
         ArgumentOutOfRangeException.ThrowIfZero(recipientId);
         ArgumentOutOfRangeException.ThrowIfLessThan(ownerThreadId, 1);
         ArgumentNullException.ThrowIfNull(sequenceLease);
+
+        if (recipientKind == InputRecipientKind.HostLiveUI)
+        {
+            if (window is not { IsValid: true })
+            {
+                throw new ArgumentException("A HostLiveUI router requires its exact valid window route.", nameof(window));
+            }
+        }
+        else if (window.HasValue)
+        {
+            throw new ArgumentException("A SimulationTimeline router is not constructed with a physical window route.", nameof(window));
+        }
 
         if (ownerThreadId != Environment.CurrentManagedThreadId)
         {
@@ -51,6 +71,8 @@ public sealed partial class InputRouter
         _recipientId = recipientId;
         _recipientKind = recipientKind;
         _sequenceLease = sequenceLease;
+        _textInputBatchBudget = new TextInputBatchBudget(ownerThreadId);
+        _window = window;
         _hostActionSnapshot = new InputActionSnapshot(recipientKind, recipientId, null, []);
         _simulationActionSnapshot = new InputActionSnapshot(recipientKind, recipientId, null, []);
     }
@@ -486,6 +508,7 @@ public sealed partial class InputRouter
 
         var hostSequence = _sequenceLease.Allocate();
         RecordHostControlSequence(hostSequence);
+        _activeTextSession?.EndForRecipientDisposal(hostSequence, _hostControlTimestamp);
         _unreconciledControls.Clear();
         ClearInputValuesForScope(InputClass.Keyboard | InputClass.Pointing | InputClass.Gamepad, playerSlot: null);
         UpdateBindingsForScope(InputClass.Keyboard | InputClass.Pointing | InputClass.Gamepad, playerSlot: null);
