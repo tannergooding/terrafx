@@ -736,13 +736,17 @@ internal static class ScenePrefabExpansionPlanner
                         TargetAnchorOccurrenceIndex = expandedEntity.OccurrenceIndex,
                         Target = resolved.Value.ReferenceValue,
                         IsPresent = true,
+                        ResolvedTargetExpandedEntityIndex = null,
                     };
                 }
                 else if (resolved.Value.Operation is ScenePrefabOverrideOperation.Omit)
                 {
                     if (referenceBindingIndex >= 0)
                     {
-                        updatedReferenceBinding = _referenceBindings[referenceBindingIndex] with { IsPresent = false };
+                        updatedReferenceBinding = _referenceBindings[referenceBindingIndex] with {
+                            IsPresent = false,
+                            ResolvedTargetExpandedEntityIndex = null,
+                        };
                     }
                 }
                 else if (referenceBindingIndex >= 0)
@@ -888,7 +892,8 @@ internal static class ScenePrefabExpansionPlanner
                             occurrenceIndex,
                             occurrenceIndex,
                             binding.Target,
-                            IsPresent: true));
+                            IsPresent: true,
+                            ResolvedTargetExpandedEntityIndex: null));
                 }
             }
 
@@ -1835,10 +1840,11 @@ internal static class ScenePrefabExpansionPlanner
                 }
 
                 var ownerSource = GetSource(binding.OwnerOccurrenceIndex);
+                int? resolvedTargetExpandedEntityIndex = null;
 
                 if (binding.Target.Kind is SceneReferenceTargetKind.Internal)
                 {
-                    _ = ResolveEntity(
+                    resolvedTargetExpandedEntityIndex = ResolveEntity(
                         binding.Target.Entity
                             ?? throw new InvalidDataException("An Internal Entity-reference target has no EntitySelector."),
                         binding.TargetAnchorOccurrenceIndex,
@@ -1858,6 +1864,10 @@ internal static class ScenePrefabExpansionPlanner
                 {
                     throw new InvalidDataException("An Entity-reference binding has an unknown target kind.");
                 }
+
+                _referenceBindings[bindingIndex] = binding with {
+                    ResolvedTargetExpandedEntityIndex = resolvedTargetExpandedEntityIndex,
+                };
             }
 
             for (var entityIndex = 0; entityIndex < _entities.Count; entityIndex++)

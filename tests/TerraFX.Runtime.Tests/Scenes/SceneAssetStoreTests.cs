@@ -534,6 +534,9 @@ internal sealed class SceneAssetStoreTests
                 Assert.That(referenceBinding.TargetAnchorOccurrenceIndex, Is.EqualTo(2));
                 Assert.That(referenceBinding.Target.Kind, Is.EqualTo(SceneReferenceTargetKind.Internal));
                 Assert.That(referenceBinding.Target.Entity?.AuthoredEntityId, Is.EqualTo(rootEntityId));
+                Assert.That(referenceBinding.ResolvedTargetExpandedEntityIndex, Is.EqualTo(0));
+                Assert.That(expansion.Entities[0].OccurrenceIndex, Is.EqualTo(2));
+                Assert.That(expansion.Entities[0].AuthoredEntityId, Is.EqualTo(rootEntityId));
             }
             finally
             {
@@ -693,6 +696,7 @@ internal sealed class SceneAssetStoreTests
                 Assert.That(expansion.ReferenceBindings[0].TargetAnchorOccurrenceIndex, Is.EqualTo(1));
                 Assert.That(expansion.ReferenceBindings[0].Target.Kind, Is.EqualTo(SceneReferenceTargetKind.ExternalSlot));
                 Assert.That(expansion.ReferenceBindings[0].Target.ExternalSlotId, Is.EqualTo(replacementSlotId));
+                Assert.That(expansion.ReferenceBindings[0].ResolvedTargetExpandedEntityIndex, Is.Null);
                 Assert.That(
                     GetComponentRecord(expansion.Entities[0], componentSchema.Schema.SchemaId).EncodedRecord.ToArray(),
                     Is.EqualTo(CreateEntityReferenceComponent(componentSchema.Schema.SchemaId, replacementSlotId)));

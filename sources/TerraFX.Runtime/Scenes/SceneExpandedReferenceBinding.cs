@@ -13,4 +13,5 @@ internal readonly record struct SceneExpandedReferenceBinding(
     int OwnerOccurrenceIndex,
     int TargetAnchorOccurrenceIndex,
     SceneReferenceTarget Target,
-    bool IsPresent);
+    bool IsPresent,
+    int? ResolvedTargetExpandedEntityIndex);
