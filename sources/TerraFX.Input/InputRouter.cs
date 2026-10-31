@@ -84,6 +84,12 @@ public sealed partial class InputRouter
     /// <summary>Gets the recipient clock kind.</summary>
     public InputRecipientKind RecipientKind => _recipientKind;
 
+    internal bool IsPauseControlPending => _pauseControlPending;
+
+    internal bool IsPaused => _isPaused;
+
+    internal long NextOpenTick => _nextOpenTick;
+
     private static int CountSetBits(ulong mask)
     {
         var count = 0;

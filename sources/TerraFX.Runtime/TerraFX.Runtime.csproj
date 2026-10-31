@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\TerraFX.Core\TerraFX.Core.csproj" />
+    <ProjectReference Include="..\TerraFX.Input\TerraFX.Input.csproj" />
     <ProjectReference Include="..\TerraFX.Platform\TerraFX.Platform.csproj" />
     <ProjectReference Include="..\TerraFX.Graphics\TerraFX.Graphics.csproj" />
     <ProjectReference Include="..\TerraFX.Physics\TerraFX.Physics.csproj" />

@@ -19,6 +19,17 @@ public sealed partial class World
 
     internal float InitialTimeScale => _initialTimeScale;
 
+    internal long NextTickIndex
+    {
+        get
+        {
+            ThrowIfDisposed();
+            ThrowIfFaulted();
+            EnsureOwnerThread();
+            return _nextTickIndex;
+        }
+    }
+
     private static int GetExpandedControlCapacity(int currentCapacity, int requiredCapacity, int maximumCapacity)
     {
         if (requiredCapacity > maximumCapacity)
