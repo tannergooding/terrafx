@@ -1993,6 +1993,81 @@ internal sealed class InputRouterTests
     }
 
     [Test]
+    public void ReplacesTimelineClockSegmentAtOpenBoundaryWithoutResettingTick()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            40,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var key = new KeyboardControl(7, 4);
+        var action = new ActionDefinition(Guid.NewGuid(), "Move", InputActionKind.Digital);
+        var context = new ContextDefinition(Guid.NewGuid(), 0);
+        var binding = new BindingDefinition(Guid.NewGuid(), action.ActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(key),
+        };
+        var map = CreateMapWithContext(Guid.NewGuid(), 1, context, action);
+        map = new InputActionMapV1(
+            map.SchemaVersion,
+            map.MapId,
+            map.Revision,
+            map.InitialActiveContextMask,
+            map.Actions,
+            map.Contexts,
+            [binding]);
+        Assert.That(router.RegisterMap(map).Status, Is.EqualTo(InputMapStatus.Registered));
+
+        var firstSequence = sequenceLease.Allocate();
+        var firstSegment = new SimulationClockSegment(
+            1,
+            0,
+            firstSequence,
+            0,
+            0.0,
+            60,
+            0,
+            1.0f,
+            isPaused: false);
+        router.SetSimulationClockSegment(in firstSegment);
+
+        var downReceipt = router.EnqueueHeadlessInjection(
+            new InputInjection(key, InputKeyEventKind.Down),
+            166_666,
+            firstSequence);
+        Assert.That(downReceipt.AssignedTick, Is.EqualTo(0));
+        _ = router.PublishSimulationActionSnapshot(0);
+
+        var secondSequence = sequenceLease.Allocate();
+        router.BeginHostControlBoundary(1, 166_666);
+        var secondSegment = new SimulationClockSegment(
+            2,
+            166_666,
+            secondSequence,
+            166_666,
+            0.0,
+            60,
+            1,
+            1.0f,
+            isPaused: false);
+        router.SetSimulationClockSegment(in secondSegment);
+
+        var upReceipt = router.EnqueueHeadlessInjection(
+            new InputInjection(key, InputKeyEventKind.Up),
+            333_333,
+            secondSequence);
+        Assert.That(upReceipt.Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(upReceipt.AssignedTick, Is.EqualTo(1));
+        Assert.That(upReceipt.Late, Is.False);
+
+        var snapshot = router.PublishSimulationActionSnapshot(1);
+        Assert.That(snapshot.Actions[0].Transitions, Has.Length.EqualTo(1));
+        Assert.That(snapshot.Actions[0].Transitions[0].HostSequence, Is.EqualTo(secondSequence));
+        Assert.That(snapshot.Actions[0].Transitions[0].AssignedTick, Is.EqualTo(1));
+        router.Dispose();
+    }
+
+    [Test]
     public void SelectsAxisWinnersByPriorityThenCanonicalBindingId()
     {
         var router = CreateRouter(InputRecipientKind.SimulationTimeline, recipientId: 10);
