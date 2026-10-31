@@ -336,4 +336,28 @@ internal sealed class EntitySlotTableTests
         Assert.That(table.LiveEntityCount, Is.Zero);
         Assert.That(table.FreeSlotCount, Is.EqualTo(1));
     }
+
+    [Test]
+    public void ReleasingParentWithChildrenRejectsWithoutOrphaningTheHierarchy()
+    {
+        var table = new EntitySlotTable(2);
+        Assert.That(table.PrepareCapacity(2, 2), Is.True);
+        Assert.That(table.TryAllocate(out var parentIndex, out var parentGeneration), Is.True);
+        Assert.That(table.TryAllocate(out var childIndex, out var childGeneration), Is.True);
+        table.SetParent(childIndex, childGeneration, parentIndex, parentGeneration);
+
+        _ = Assert.Throws<InvalidOperationException>(() => table.Release(parentIndex, parentGeneration));
+        Assert.That(
+            table.TryGetParent(childIndex, childGeneration, out var actualParentIndex, out var actualParentGeneration),
+            Is.True);
+        Assert.That(actualParentIndex, Is.EqualTo(parentIndex));
+        Assert.That(actualParentGeneration, Is.EqualTo(parentGeneration));
+
+        table.SetParent(childIndex, childGeneration, parentIndex: 0, parentGeneration: 0);
+        table.Release(parentIndex, parentGeneration);
+        table.Release(childIndex, childGeneration);
+
+        Assert.That(table.LiveEntityCount, Is.Zero);
+        Assert.That(table.FreeSlotCount, Is.EqualTo(2));
+    }
 }
