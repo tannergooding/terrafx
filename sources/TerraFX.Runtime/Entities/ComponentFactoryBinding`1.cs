@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 
 namespace TerraFX.Entities;
@@ -97,7 +98,12 @@ public sealed class ComponentFactoryBinding<T>
             factoryVersion,
             descriptorFields.MoveToImmutable(),
             derivedDependencies);
-        var roots = new CapturedProviderRoots<TAuthor>(defaults, restorer, codec, ImmutableArrayCopy.Create(fields));
+        var roots = new CapturedProviderRoots<TAuthor>(
+            schema.Schema,
+            defaults,
+            restorer,
+            codec,
+            ImmutableArrayCopy.Create(fields));
         return new ComponentFactoryBinding<T>(descriptor, roots);
     }
 
@@ -273,6 +279,26 @@ public sealed class ComponentFactoryBinding<T>
         return defaultRoot.IsEntityReferencePath(path);
     }
 
+    internal ComponentRecordRestoreResult RestoreFromRecord(
+        scoped ReadOnlySpan<byte> source,
+        IComponentRestoreContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        if (!context.IsActive || (Environment.CurrentManagedThreadId != context.OwnerThreadId))
+        {
+            throw new InvalidOperationException("The component restore context is expired or used from another thread.");
+        }
+
+        if (_providerRoots is not IRestoreProviderRoot restoreRoot)
+        {
+            throw new InvalidOperationException("The captured component factory has no state-read root.");
+        }
+
+        return restoreRoot.RestoreFromRecord(source, context, cancellationToken);
+    }
+
     internal bool TrySetEntityReference(ref T value, ComponentFieldPath path, Entity? target)
     {
         ArgumentNullException.ThrowIfNull(path);
@@ -331,7 +357,7 @@ public sealed class ComponentFactoryBinding<T>
         defaultRoot.ValidateEntityReferences(in value, world, excludedEntity, parameterName);
     }
 
-    private sealed class CapturedProviderRoots<TAuthor> : IDefaultProviderRoot
+    private sealed class CapturedProviderRoots<TAuthor> : IDefaultProviderRoot, IRestoreProviderRoot
     {
         internal readonly IComponentStateCodec<T, TAuthor> Codec;
 
@@ -341,12 +367,16 @@ public sealed class ComponentFactoryBinding<T>
 
         internal readonly IComponentRestoreProvider<T, TAuthor> Restorer;
 
+        internal readonly ContentSchemaReference Schema;
+
         internal CapturedProviderRoots(
+            ContentSchemaReference schema,
             IComponentDefaultProvider<T> defaults,
             IComponentRestoreProvider<T, TAuthor> restorer,
             IComponentStateCodec<T, TAuthor> codec,
             ImmutableArray<ComponentFieldBinding<T, TAuthor>> fields)
         {
+            Schema = schema;
             Defaults = defaults;
             Restorer = restorer;
             Codec = codec;
@@ -367,6 +397,62 @@ public sealed class ComponentFactoryBinding<T>
             }
 
             return false;
+        }
+
+        public ComponentRecordRestoreResult RestoreFromRecord(
+            scoped ReadOnlySpan<byte> source,
+            IComponentRestoreContext context,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var readBinding = new ComponentReadBinding<TAuthor>(Schema, source.Length);
+            ComponentReadResult<TAuthor> result;
+
+            try
+            {
+                result = Codec.Read(source, readBinding, cancellationToken);
+            }
+            finally
+            {
+                readBinding.Revoke();
+            }
+
+            if (readBinding.Failure is { } failure)
+            {
+                ExceptionDispatchInfo.Capture(failure).Throw();
+            }
+
+            if ((result is null) || !ReferenceEquals(result, readBinding.IssuedResult))
+            {
+                throw new InvalidOperationException("The component state codec returned a result other than the one issued by its read binding.");
+            }
+
+            if (result.Status is ComponentReadStatus.Rejected)
+            {
+                return ComponentRecordRestoreResult.Rejected(result.Diagnostics);
+            }
+
+            if ((result.Status is not ComponentReadStatus.Read)
+                || (result.ConsumedBytes != source.Length)
+                || result.Diagnostics.IsDefault
+                || !result.Diagnostics.IsEmpty
+                || !result.TryGetAuthorValue(out var author))
+            {
+                throw new InvalidOperationException("The component state codec returned an incomplete Read result.");
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var restoreBinding = new WorldStateRestoreBinding(context);
+
+            try
+            {
+                var value = Restorer.Restore(in author, restoreBinding, cancellationToken);
+                return ComponentRecordRestoreResult.Read(ComponentInitialization.Value(in value));
+            }
+            finally
+            {
+                restoreBinding.Revoke();
+            }
         }
 
         public bool TrySetEntityReference(ref T value, ComponentFieldPath path, Entity? target)
@@ -427,6 +513,14 @@ public sealed class ComponentFactoryBinding<T>
         ImmutableArray<Diagnostic> Validate(in T value, ComponentValidationBinding binding, CancellationToken cancellationToken);
 
         void ValidateEntityReferences(in T value, World world, Entity? excludedEntity, string? parameterName);
+    }
+
+    private interface IRestoreProviderRoot
+    {
+        ComponentRecordRestoreResult RestoreFromRecord(
+            scoped ReadOnlySpan<byte> source,
+            IComponentRestoreContext context,
+            CancellationToken cancellationToken);
     }
 
     private sealed class ValidationContext : IComponentValidationContext

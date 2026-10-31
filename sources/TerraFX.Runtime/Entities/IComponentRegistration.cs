@@ -34,6 +34,11 @@ internal interface IComponentRegistration
 
     void MoveColumnRow(object column, int sourceRow, int destinationRow);
 
+    ComponentRecordRestoreResult RestoreFromRecord(
+        scoped ReadOnlySpan<byte> source,
+        IComponentRestoreContext context,
+        CancellationToken cancellationToken);
+
     ComponentInitialization SetEntityReference(
         ComponentInitialization current,
         ComponentFieldPath path,

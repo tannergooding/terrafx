@@ -437,6 +437,12 @@ internal sealed class EntityArchetypeStorageTests
             values[destinationRow] = values[sourceRow];
         }
 
+        public ComponentRecordRestoreResult RestoreFromRecord(
+            scoped ReadOnlySpan<byte> source,
+            IComponentRestoreContext context,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
         public ComponentInitialization SetEntityReference(
             ComponentInitialization current,
             ComponentFieldPath path,

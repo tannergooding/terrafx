@@ -169,4 +169,92 @@ internal sealed class SceneComponentDefinitionTests
         var receipt = world.Step();
         Assert.That(receipt.CompletedTick, Is.EqualTo(0));
     }
+
+    [Test]
+    public void ReadsAndRestoresLocalTransformFromItsCanonicalComponentRecord()
+    {
+        var schemas = new CompiledContentSchemaRegistry([
+            .. CoreContentSchemaCatalogue.PrimitiveSchemas,
+            .. CoreContentSchemaCatalogue.FoundationSchemas,
+            .. NativeAssetSchemaCatalogue.Schemas,
+            .. SceneSchemaCatalogue.Schemas,
+        ]);
+        var builder = new WorldRegistrationBuilder(schemas);
+        _ = builder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+        var registration = builder.Build();
+        var componentRegistration = registration.TryGetComponentType<SceneComponentDefinitions.LocalTransformComponent>(out var registered)
+            ? registered ?? throw new InvalidOperationException("The LocalTransform component was not registered.")
+            : throw new InvalidOperationException("The LocalTransform component was not registered.");
+        var encodedRecord = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 15, 2, 3, 4),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(2, 17, 0, 0, 0, 1),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(3, 15, 2, 2, 2));
+        var context = new RestoreContext();
+        var result = componentRegistration.RestoreFromRecord(
+            encodedRecord,
+            context,
+            CancellationToken.None);
+
+        Assert.That(result.Status, Is.EqualTo(ComponentReadStatus.Read));
+        Assert.That(result.TryGetInitialization(out var initialization), Is.True);
+        var restoredInitialization = initialization
+            ?? throw new InvalidOperationException("The successful component restore returned no initialization.");
+        Assert.That(restoredInitialization.TryGetValue<SceneComponentDefinitions.LocalTransformComponent>(out var value), Is.True);
+        Assert.That(value.Position, Is.EqualTo(new Vector3(2, 3, 4)));
+        Assert.That(value.Rotation, Is.EqualTo(Quaternion.Identity));
+        Assert.That(value.Scale, Is.EqualTo(new Vector3(2, 2, 2)));
+    }
+
+    [Test]
+    public void RejectsMalformedComponentRecordAndPreservesDiagnostics()
+    {
+        var schemas = new CompiledContentSchemaRegistry([
+            .. CoreContentSchemaCatalogue.PrimitiveSchemas,
+            .. CoreContentSchemaCatalogue.FoundationSchemas,
+            .. NativeAssetSchemaCatalogue.Schemas,
+            .. SceneSchemaCatalogue.Schemas,
+        ]);
+        var builder = new WorldRegistrationBuilder(schemas);
+        _ = builder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+        var registration = builder.Build();
+        var componentRegistration = registration.TryGetComponentType<SceneComponentDefinitions.LocalTransformComponent>(out var registered)
+            ? registered ?? throw new InvalidOperationException("The LocalTransform component was not registered.")
+            : throw new InvalidOperationException("The LocalTransform component was not registered.");
+        var malformedRecord = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(Guid.NewGuid(), 1, 0);
+
+        var result = componentRegistration.RestoreFromRecord(
+            malformedRecord,
+            new RestoreContext(),
+            CancellationToken.None);
+
+        Assert.That(result.Status, Is.EqualTo(ComponentReadStatus.Rejected));
+        Assert.That(result.TryGetInitialization(out _), Is.False);
+        Assert.That(result.Diagnostics, Has.Length.EqualTo(1));
+        Assert.That(result.Diagnostics[0].Code, Is.EqualTo("ComponentRead.SchemaMismatch"));
+    }
+
+    private sealed class RestoreContext : IComponentRestoreContext
+    {
+        internal RestoreContext()
+        {
+            OwnerThreadId = Environment.CurrentManagedThreadId;
+        }
+
+        public bool IsActive => true;
+
+        public int OwnerThreadId { get; }
+
+        public TDependency ReadSameEntity<TDependency>()
+            where TDependency : unmanaged
+            => throw new InvalidOperationException("The LocalTransform restore does not read same-entity dependencies.");
+
+        public Entity ResolveEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId)
+            => throw new InvalidOperationException("The LocalTransform restore does not resolve Entity references.");
+
+        public Entity ResolveEntity(WorldSystemFieldDescriptor referenceField, Guid targetEntityId)
+            => throw new InvalidOperationException("The LocalTransform restore does not resolve Entity references.");
+    }
 }

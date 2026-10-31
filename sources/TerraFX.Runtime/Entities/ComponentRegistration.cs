@@ -149,6 +149,12 @@ internal sealed class ComponentRegistration<T> : IComponentRegistration
         values[destinationRow] = values[sourceRow];
     }
 
+    public ComponentRecordRestoreResult RestoreFromRecord(
+        scoped ReadOnlySpan<byte> source,
+        IComponentRestoreContext context,
+        CancellationToken cancellationToken)
+        => Binding.RestoreFromRecord(source, context, cancellationToken);
+
     public ComponentInitialization SetEntityReference(
         ComponentInitialization current,
         ComponentFieldPath path,

@@ -17,6 +17,7 @@ public sealed class ComponentReadBinding<TAuthor>
 
     private Exception? _failure;
     private bool _isActive = true;
+    private ComponentReadResult<TAuthor>? _issuedResult;
     private readonly int _ownerThreadId;
     private bool _resultIssued;
     private readonly ContentSchemaReference _schema;
@@ -50,6 +51,8 @@ public sealed class ComponentReadBinding<TAuthor>
     public nint SourceByteLength => _sourceByteLength;
 
     internal Exception? Failure => _failure;
+
+    internal ComponentReadResult<TAuthor>? IssuedResult => _issuedResult;
 
     private static Diagnostic CreateDiagnostic(
         string code,
@@ -126,8 +129,10 @@ public sealed class ComponentReadBinding<TAuthor>
             throw RecordFailure(new InvalidOperationException("A component codec must consume the exact scoped record length."));
         }
 
+        var result = ComponentReadResult<TAuthor>.Read(author, consumedBytes);
+        _issuedResult = result;
         _resultIssued = true;
-        return ComponentReadResult<TAuthor>.Read(author, consumedBytes);
+        return result;
     }
 
     /// <summary>Rejects a known component-level read failure.</summary>
@@ -167,9 +172,11 @@ public sealed class ComponentReadBinding<TAuthor>
             context.Add(new DiagnosticContextEntry("FieldPath", FormatPath(path)));
         }
 
-        var diagnostic = CreateDiagnostic($"ComponentRead.{kind}", message, context.MoveToImmutable());
+        var diagnostic = CreateDiagnostic($"ComponentRead.{kind}", message, context.ToImmutable());
+        var result = ComponentReadResult<TAuthor>.Rejected([diagnostic]);
+        _issuedResult = result;
         _resultIssued = true;
-        return ComponentReadResult<TAuthor>.Rejected([diagnostic]);
+        return result;
     }
 
     /// <summary>Rejects a structural EBIN read failure while retaining its diagnostic facts.</summary>
@@ -209,8 +216,10 @@ public sealed class ComponentReadBinding<TAuthor>
 
         ValidateMessage(message);
         var resultDiagnostic = CreateDiagnostic($"EbinRead.{status}", message, context.MoveToImmutable());
+        var result = ComponentReadResult<TAuthor>.Rejected([resultDiagnostic]);
+        _issuedResult = result;
         _resultIssued = true;
-        return ComponentReadResult<TAuthor>.Rejected([resultDiagnostic]);
+        return result;
     }
 
     internal void Revoke() => _isActive = false;

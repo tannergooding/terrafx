@@ -76,13 +76,17 @@ public sealed class SceneLoader
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (!ReferenceEquals(plan.Schemas, _world.Registration.Schemas))
             {
                 throw new ArgumentException(
                     "The Scene AssetStore must use the exact compiled schema registry captured by the target World.");
             }
 
-            ValidateRootExternalBindings(plan, options.ExternalBindings);
+            ValidateComponentRegistrations(plan, cancellationToken);
+            ValidateRootExternalBindings(plan, options.ExternalBindings, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             return new PreparedScene(_world, _assets, options, plan);
         }
         catch
@@ -92,13 +96,50 @@ public sealed class SceneLoader
         }
     }
 
-    private void ValidateRequiredComponents(SceneExternalSlot slot)
+    private void ValidateComponentRegistrations(
+        SceneExpansionPlan plan,
+        CancellationToken cancellationToken)
+    {
+        var schemas = new HashSet<ContentSchemaReference>();
+
+        foreach (var entity in plan.Entities)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            foreach (var component in entity.Components)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!schemas.Add(component.Schema))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    _ = _world.Registration.GetComponentRegistration(component.Schema);
+                }
+                catch (KeyNotFoundException exception)
+                {
+                    throw new InvalidDataException(
+                        "A Scene entity contains a component schema that is not registered in the target World.",
+                        exception);
+                }
+            }
+        }
+    }
+
+    private void ValidateRequiredComponents(
+        SceneExternalSlot slot,
+        CancellationToken cancellationToken)
     {
         foreach (var schema in slot.RequiredComponents)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             try
             {
-                _ = _world.Registration.GetComponentBinding(schema);
+                _ = _world.Registration.GetComponentRegistration(schema);
             }
             catch (KeyNotFoundException exception)
             {
@@ -111,7 +152,8 @@ public sealed class SceneLoader
 
     private void ValidateRootExternalBindings(
         SceneExpansionPlan plan,
-        ImmutableArray<SceneExternalBinding> bindings)
+        ImmutableArray<SceneExternalBinding> bindings,
+        CancellationToken cancellationToken)
     {
         var slots = plan.RootExternalSlots;
         var slotIndex = 0;
@@ -119,6 +161,7 @@ public sealed class SceneLoader
 
         while ((slotIndex < slots.Length) && (bindingIndex < bindings.Length))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var slot = slots[slotIndex];
             var binding = bindings[bindingIndex];
             var comparison = FoundationCatalogue.CompareRfc(slot.SlotId, binding.SlotId);
@@ -146,7 +189,7 @@ public sealed class SceneLoader
 
             if (binding.Target is not null)
             {
-                ValidateRequiredComponents(slot);
+                ValidateRequiredComponents(slot, cancellationToken);
             }
 
             slotIndex++;
@@ -155,6 +198,8 @@ public sealed class SceneLoader
 
         while (slotIndex < slots.Length)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (slots[slotIndex].Required)
             {
                 throw new InvalidDataException("A required root Scene external slot has no supplied binding.");

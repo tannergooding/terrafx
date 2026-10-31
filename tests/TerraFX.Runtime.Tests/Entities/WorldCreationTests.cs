@@ -1589,6 +1589,12 @@ internal sealed class WorldCreationTests
             values[destinationRow] = values[sourceRow];
         }
 
+        public ComponentRecordRestoreResult RestoreFromRecord(
+            scoped ReadOnlySpan<byte> source,
+            IComponentRestoreContext context,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
         public ComponentInitialization SetEntityReference(
             ComponentInitialization current,
             ComponentFieldPath path,
@@ -2362,6 +2368,12 @@ internal sealed class WorldCreationTests
             values[destinationRow] = values[sourceRow];
         }
 
+        public ComponentRecordRestoreResult RestoreFromRecord(
+            scoped ReadOnlySpan<byte> source,
+            IComponentRestoreContext context,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
         public ComponentInitialization SetEntityReference(
             ComponentInitialization current,
             ComponentFieldPath path,
@@ -2497,6 +2509,12 @@ internal sealed class WorldCreationTests
             var values = (long[])column;
             values[destinationRow] = values[sourceRow];
         }
+
+        public ComponentRecordRestoreResult RestoreFromRecord(
+            scoped ReadOnlySpan<byte> source,
+            IComponentRestoreContext context,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
 
         public ComponentInitialization SetEntityReference(
             ComponentInitialization current,

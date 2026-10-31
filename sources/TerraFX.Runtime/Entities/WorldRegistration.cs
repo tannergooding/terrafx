@@ -253,6 +253,9 @@ public sealed class WorldRegistration
         throw new KeyNotFoundException("No resource with the supplied ID is registered.");
     }
 
+    internal IComponentRegistration GetComponentRegistration(ContentSchemaReference schema)
+        => FindComponent(schema);
+
     internal bool TryGetAttachment(AttachmentScope scope, Type valueType, out IWorldAttachmentRegistration? attachment)
     {
         ArgumentNullException.ThrowIfNull(valueType);
