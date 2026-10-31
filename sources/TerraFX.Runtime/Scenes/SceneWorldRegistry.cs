@@ -20,7 +20,7 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
     private readonly int _maximumSceneOccurrences;
     private int _pendingRequestCount;
     private int _pendingRequestHead;
-    private readonly SceneActivationRequest?[] _pendingRequests;
+    private readonly SceneOwnerRequest?[] _pendingRequests;
     private readonly Lock _requestGate = new();
     private int _reservedInstanceCount;
     private readonly bool[] _reservedInstanceSlots;
@@ -35,7 +35,7 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         _maximumActiveSceneInstances = options.MaximumActiveSceneInstances;
         _maximumPendingOwnerRequests = options.MaximumPendingOwnerRequests;
         _maximumSceneOccurrences = options.MaximumSceneOccurrences;
-        _pendingRequests = new SceneActivationRequest[options.MaximumPendingOwnerRequests];
+        _pendingRequests = new SceneOwnerRequest[options.MaximumPendingOwnerRequests];
         _activeInstances = new SceneInstance[options.MaximumActiveSceneInstances];
         _reservedInstanceSlots = new bool[options.MaximumActiveSceneInstances];
     }
@@ -85,7 +85,7 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
 
         while (true)
         {
-            SceneActivationRequest? request;
+            SceneOwnerRequest? request;
 
             lock (_requestGate)
             {
@@ -118,7 +118,7 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
     {
         while (true)
         {
-            SceneActivationRequest? request;
+            SceneOwnerRequest? request;
 
             lock (_requestGate)
             {
@@ -157,6 +157,24 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
             _activeInstanceCount++;
             _activeOccurrenceCount = checked(_activeOccurrenceCount + reservation.OccurrenceCount);
         }
+    }
+
+    internal bool ContainsInstance(SceneInstance instance)
+    {
+        ArgumentNullException.ThrowIfNull(instance);
+
+        lock (_instanceGate)
+        {
+            for (var index = 0; index < _activeInstances.Length; index++)
+            {
+                if (ReferenceEquals(_activeInstances[index], instance))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     internal void EnsureBoundTo(World world)
@@ -209,7 +227,7 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         }
     }
 
-    internal bool TryEnqueue(SceneActivationRequest request)
+    internal bool TryEnqueue(SceneOwnerRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
@@ -287,7 +305,7 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         throw new InvalidOperationException("The Scene registry has no free slot despite its active-instance capacity check.");
     }
 
-    private SceneActivationRequest? DequeueRequest()
+    private SceneOwnerRequest? DequeueRequest()
     {
         var request = _pendingRequests[_pendingRequestHead];
         _pendingRequests[_pendingRequestHead] = null;

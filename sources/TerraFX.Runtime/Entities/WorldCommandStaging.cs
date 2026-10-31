@@ -403,6 +403,80 @@ internal sealed class WorldCommandStaging : IDisposable
         }
     }
 
+    internal void AppendOwnerDestroy(Entity entity, HierarchyDestroyMode mode)
+    {
+        if (!_isOwnerControl)
+        {
+            throw new InvalidOperationException("Owner-control Destroy commands require owner-control staging.");
+        }
+
+        if (mode is not HierarchyDestroyMode.DetachChildrenKeepWorld and not HierarchyDestroyMode.DestroySubtree)
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode));
+        }
+
+        lock (_gate)
+        {
+            if (_isSealed)
+            {
+                throw new InvalidOperationException("The World command writer is no longer accepting appends.");
+            }
+
+            if (_records.Count >= _maximumCommands)
+            {
+                throw new InvalidOperationException("The World deferred-command count limit was reached.");
+            }
+
+            var prefix = _ownerControlPrefix
+                ?? new CommandPrefix(SimulationStage.Structural, int.MinValue, writerPartition: 0);
+            var sequence = prefix.NextSequence;
+            var nextSequence = checked(sequence + 1);
+            const long bytes = 192;
+
+            if (!_world.TryReserveCommandStagingBytes(bytes, _reservedBytes, _maximumBytes))
+            {
+                throw new InvalidOperationException("The World command-staging byte budget was reached.");
+            }
+
+            try
+            {
+                _ = _records.EnsureCapacity(checked(_records.Count + 1));
+
+                if (_ownerControlPrefix is null)
+                {
+                    _ = _prefixes.EnsureCapacity(checked(_prefixes.Count + 1));
+                }
+
+                var record = new CommandRecord(
+                    prefix,
+                    sequence,
+                    entity,
+                    registration: null,
+                    kind: CommandKind.DestroyEntity,
+                    initialization: null,
+                    path: null,
+                    target: null,
+                    schemaId: Guid.Empty,
+                    destroyMode: mode);
+
+                if (_ownerControlPrefix is null)
+                {
+                    _ownerControlPrefix = prefix;
+                    _prefixes.Add(prefix);
+                }
+
+                _records.Add(record);
+                prefix.NextSequence = nextSequence;
+                _reservedBytes = checked(_reservedBytes + bytes);
+            }
+            catch
+            {
+                _world.ReleaseCommandStagingBytes(bytes);
+                throw;
+            }
+        }
+    }
+
     internal void AppendRemove(
         WorldSystemInvocationDispatch dispatch,
         Entity entity,

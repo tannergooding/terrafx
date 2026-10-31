@@ -376,12 +376,15 @@ public sealed partial class World
     private ImmutableArray<CommandReceipt> CommitCommandBatch(
         WorldCommandStaging staging,
         IdentityAssignment? sceneInstanceAssignment = null,
+        uint? sceneInstanceRetirementOrdinal = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var commands = staging.Seal();
 
-        if (commands.IsEmpty && (sceneInstanceAssignment is null))
+        if (commands.IsEmpty
+            && (sceneInstanceAssignment is null)
+            && (sceneInstanceRetirementOrdinal is null))
         {
             return [];
         }
@@ -920,12 +923,14 @@ public sealed partial class World
 
             if ((createdProjections.Count != 0)
                 || (destroyedProjections.Count != 0)
-                || (sceneInstanceAssignment is not null))
+                || (sceneInstanceAssignment is not null)
+                || (sceneInstanceRetirementOrdinal is not null))
             {
                 var createCount = createdProjections.Count;
                 var destroyCount = destroyedProjections.Count;
                 var sceneAssignmentOffset = (sceneInstanceAssignment is null) ? 0 : 1;
                 var identityAssignmentCount = checked(createCount + sceneAssignmentOffset);
+                var identityRetirementCount = checked(destroyCount + ((sceneInstanceRetirementOrdinal is null) ? 0 : 1));
                 var liveEntityCountAfterDestroy = _entitySlots.LiveEntityCount - destroyCount;
 
                 if (createCount > (_maximumLiveEntities - liveEntityCountAfterDestroy))
@@ -952,11 +957,11 @@ public sealed partial class World
                     requiredFreeSlotCount);
                 var identityPreparationBytes = _identityLedger.GetPreparationByteReservation(
                     identityAssignmentCount,
-                    destroyCount);
+                    identityRetirementCount);
                 var identityGrowthBytes = checked(identityPreparationBytes - _identityLedger.OwnedByteReservation);
                 ReservePlanBytes(checked(slotPreparationBytes + identityGrowthBytes));
                 var assignments = new IdentityAssignment[identityAssignmentCount];
-                var retirements = new uint[destroyCount];
+                var retirements = new uint[identityRetirementCount];
 
                 if (sceneInstanceAssignment is { } sceneAssignment)
                 {
@@ -993,6 +998,11 @@ public sealed partial class World
                 for (var index = 0; index < destroyCount; index++)
                 {
                     retirements[index] = destroyedProjections[index].IdentityOrdinal;
+                }
+
+                if (sceneInstanceRetirementOrdinal is uint sceneRetirementOrdinal)
+                {
+                    retirements[destroyCount] = sceneRetirementOrdinal;
                 }
 
                 identityChange = _identityLedger.Prepare(assignments, retirements, _maximumOwnedStateBytes);

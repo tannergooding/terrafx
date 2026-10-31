@@ -98,6 +98,90 @@ public sealed partial class World
         }
     }
 
+    internal long DestroySceneEntitiesAtomically(
+        Guid sceneInstanceId,
+        uint firstEntityIdentityOrdinal,
+        int entityCount,
+        HierarchyDestroyMode mode,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(sceneInstanceId, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfNegative(entityCount);
+
+        if (mode is not HierarchyDestroyMode.DetachChildrenKeepWorld and not HierarchyDestroyMode.DestroySubtree)
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode));
+        }
+
+        if ((entityCount != 0) && (firstEntityIdentityOrdinal == 0))
+        {
+            throw new ArgumentOutOfRangeException(nameof(firstEntityIdentityOrdinal));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        EnterStructuralOperation();
+
+        try
+        {
+            if (!_identityLedger.TryGetLiveLocator(
+                    sceneInstanceId,
+                    IdentityKind.SceneInstance,
+                    out var sceneInstanceLocator))
+            {
+                throw new InvalidOperationException("The SceneInstance identity is not live in this World.");
+            }
+
+            var sceneInstanceOrdinal = _identityLedger.GetLiveOrdinal(
+                IdentityKind.SceneInstance,
+                sceneInstanceLocator);
+
+            if (sceneInstanceOrdinal == 0)
+            {
+                throw new InvalidOperationException("The live SceneInstance identity has no ledger ordinal.");
+            }
+
+            using var staging = new WorldCommandStaging(
+                this,
+                _maximumDeferredCommands,
+                _maximumCommandStagingBytes,
+                ownerControl: true);
+
+            for (var index = 0; index < entityCount; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var identityOrdinal = checked(firstEntityIdentityOrdinal + (uint)index);
+
+                if (!_identityLedger.TryGetLiveLocatorByOrdinal(
+                        identityOrdinal,
+                        IdentityKind.Entity,
+                        out var entityLocator))
+                {
+                    continue;
+                }
+
+                if (!_entitySlots.TryGetLive(entityLocator, out var generation)
+                    || !_entitySlots.TryGetLocation(entityLocator, generation, out _, out _, out _))
+                {
+                    throw new InvalidOperationException("A live Scene Entity identity references a non-live Entity slot.");
+                }
+
+                staging.AppendOwnerDestroy(
+                    new Entity(_ownerId, entityLocator, generation),
+                    mode);
+            }
+
+            _ = CommitCommandBatch(
+                staging,
+                cancellationToken: cancellationToken,
+                sceneInstanceRetirementOrdinal: sceneInstanceOrdinal);
+            return _canonicalMutationRevision;
+        }
+        finally
+        {
+            _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
+        }
+    }
+
     private WorldSceneEntityBatchCommit CreateEntitiesAtomicallyCore(
         int entityCount,
         Func<ImmutableArray<Entity>, ImmutableArray<EntityDescription>> createDescriptions,
@@ -163,7 +247,10 @@ public sealed partial class World
                 tokens.Add(staging.AppendOwnerCreate(descriptions[entityIndex]));
             }
 
-            var receipts = CommitCommandBatch(staging, sceneInstanceAssignment, cancellationToken);
+            var receipts = CommitCommandBatch(
+                staging,
+                sceneInstanceAssignment,
+                cancellationToken: cancellationToken);
 
             if ((entityCount != 0) && (receipts.Length != 1))
             {

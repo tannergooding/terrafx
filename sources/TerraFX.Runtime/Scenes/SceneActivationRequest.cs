@@ -8,7 +8,7 @@ using TerraFX.Entities;
 
 namespace TerraFX.Scenes;
 
-internal sealed class SceneActivationRequest
+internal sealed class SceneActivationRequest : SceneOwnerRequest
 {
     private readonly CancellationToken _cancellationToken;
     private readonly TaskCompletionSource<SceneActivationReceipt> _completion =
@@ -40,14 +40,14 @@ internal sealed class SceneActivationRequest
 
     internal Task<SceneActivationReceipt> Task => _completion.Task;
 
-    internal void Admit()
+    internal override void Admit()
     {
         var preparedScene = Interlocked.Exchange(ref _preparedScene, null)
             ?? throw new InvalidOperationException("The Scene activation request has already been admitted.");
         _plan = preparedScene.DetachPlan(_world);
     }
 
-    internal void CancelFromRegistryDisposal()
+    internal override void CancelFromRegistryDisposal()
     {
         Interlocked.Exchange(ref _plan, null)?.Dispose();
         _ = _completion.TrySetException(new ObjectDisposedException(nameof(SceneWorldRegistry)));
@@ -57,7 +57,7 @@ internal sealed class SceneActivationRequest
         "Usage",
         "CA1031:Do not catch general exception types",
         Justification = "An admitted owner request must fault its own task without aborting later requests at the World boundary.")]
-    internal void Execute(World world, SceneWorldRegistry registry)
+    internal override void Execute(World world, SceneWorldRegistry registry)
     {
         ArgumentNullException.ThrowIfNull(world);
         ArgumentNullException.ThrowIfNull(registry);

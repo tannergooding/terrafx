@@ -80,7 +80,7 @@ internal static class SceneActivationExecutor
                             candidates,
                             cancellationToken);
                         cancellationToken.ThrowIfCancellationRequested();
-                        candidateInstance = new SceneInstance(world, plan);
+                        candidateInstance = new SceneInstance(world, registry, plan);
                         return descriptions;
                     },
                     cancellationToken);

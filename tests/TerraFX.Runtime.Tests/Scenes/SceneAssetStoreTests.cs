@@ -1624,6 +1624,22 @@ internal sealed class SceneAssetStoreTests
                 Assert.That(world.TryGet<SceneComponentDefinitions.RootPositionComponent>(entity, out _), Is.True);
                 Assert.That(sceneOrdinal, Is.EqualTo(1));
                 Assert.That(entityOrdinal, Is.EqualTo(2));
+
+                var unload = instance.UnloadAsync(HierarchyDestroyMode.DestroySubtree);
+                Assert.That(unload.IsCompleted, Is.False);
+                world.PumpControlBoundary();
+                var unloadReceipt = unload.GetAwaiter().GetResult();
+                Assert.That(unloadReceipt.Status, Is.EqualTo(SceneUnloadStatus.Unloaded));
+                Assert.That(unloadReceipt.StructuralRevision, Is.Not.Null);
+                Assert.That(unloadReceipt.Diagnostics, Is.Empty);
+                Assert.That(world.IdentityLedger.SceneInstanceCount, Is.Zero);
+                Assert.That(instance.TryGetEntity(SceneAssetReaderTests.Fixtures.RootEntityId, out _), Is.False);
+
+                var alreadyUnloaded = instance.UnloadAsync(HierarchyDestroyMode.DetachChildrenKeepWorld);
+                world.PumpControlBoundary();
+                var alreadyUnloadedReceipt = alreadyUnloaded.GetAwaiter().GetResult();
+                Assert.That(alreadyUnloadedReceipt.Status, Is.EqualTo(SceneUnloadStatus.AlreadyUnloaded));
+                Assert.That(alreadyUnloadedReceipt.StructuralRevision, Is.Not.Null);
             }
             finally
             {

@@ -2,6 +2,8 @@
 
 using System;
 using System.Threading;
+using System.Threading.Tasks;
+using TerraFX;
 using TerraFX.Assets;
 using TerraFX.Entities;
 
@@ -14,14 +16,17 @@ public sealed class SceneInstance
     private int _isActive;
     private readonly int _occurrenceCount;
     private SceneExpansionPlan? _plan;
+    private readonly SceneWorldRegistry _registry;
     private Guid _sceneInstanceId;
     private readonly World _world;
 
-    internal SceneInstance(World world, SceneExpansionPlan plan)
+    internal SceneInstance(World world, SceneWorldRegistry registry, SceneExpansionPlan plan)
     {
         ArgumentNullException.ThrowIfNull(world);
+        ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(plan);
         _world = world;
+        _registry = registry;
         _plan = plan;
         _occurrenceCount = plan.Occurrences.Length;
         AssetId = plan.SceneAssetId;
@@ -32,6 +37,10 @@ public sealed class SceneInstance
 
     /// <summary>Gets the stable identity assigned to this Scene instance.</summary>
     public Guid SceneInstanceId => _sceneInstanceId;
+
+    internal int EntityCount => _plan?.Entities.Length ?? 0;
+
+    internal uint FirstEntityIdentityOrdinal => _firstEntityIdentityOrdinal;
 
     internal int OccurrenceCount => _occurrenceCount;
 
@@ -45,7 +54,7 @@ public sealed class SceneInstance
     {
         ArgumentOutOfRangeException.ThrowIfEqual(stableEntityId, Guid.Empty);
 
-        if ((Volatile.Read(ref _isActive) == 0)
+        if ((Volatile.Read(ref _isActive) != 1)
             || (_plan is not { } plan)
             || !plan.TryResolveRootEntity(stableEntityId, out var expandedEntityIndex))
         {
@@ -63,6 +72,40 @@ public sealed class SceneInstance
         }
 
         return true;
+    }
+
+    /// <summary>Queues atomic destruction of this Scene instance at the World owner boundary.</summary>
+    /// <param name="mode">The explicit hierarchy-destruction policy applied to its live entities.</param>
+    /// <param name="cancellationToken">The token that cancels the request before owner-boundary application.</param>
+    /// <returns>The unload result, including whether the instance was already unloaded.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="mode"/> is undefined.</exception>
+    public Task<SceneUnloadReceipt> UnloadAsync(
+        HierarchyDestroyMode mode,
+        CancellationToken cancellationToken = default)
+    {
+        if (mode is not HierarchyDestroyMode.DetachChildrenKeepWorld and not HierarchyDestroyMode.DestroySubtree)
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode));
+        }
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromCanceled<SceneUnloadReceipt>(cancellationToken);
+        }
+
+        var request = new SceneUnloadRequest(this, mode, cancellationToken);
+
+        if (!_registry.TryEnqueue(request))
+        {
+            request.Reject(_world.CreateDiagnostic(
+                "SceneUnload.OwnerQueueFull",
+                DiagnosticSeverity.Warning,
+                "SceneInstance.UnloadAsync",
+                "The target World owner-control queue is full.",
+                AssetId.Value));
+        }
+
+        return request.Task;
     }
 
     internal void Activate(Guid sceneInstanceId, uint firstEntityIdentityOrdinal)

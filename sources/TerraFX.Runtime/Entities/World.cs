@@ -322,6 +322,8 @@ public sealed partial class World : IDisposable
     /// <summary>Gets the persistent identity of this logical World.</summary>
     public Guid WorldGuid => _worldGuid;
 
+    internal long CanonicalMutationRevision => _canonicalMutationRevision;
+
     internal Guid ExecutionSessionId => _executionSessionId;
 
     internal StableIdentityLedger IdentityLedger => _identityLedger;
