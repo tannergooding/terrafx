@@ -256,5 +256,8 @@ internal sealed class SceneComponentDefinitionTests
 
         public Entity ResolveEntity(WorldSystemFieldDescriptor referenceField, Guid targetEntityId)
             => throw new InvalidOperationException("The LocalTransform restore does not resolve Entity references.");
+
+        public Entity? ResolveOptionalEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId)
+            => throw new InvalidOperationException("The LocalTransform restore does not resolve optional Entity references.");
     }
 }

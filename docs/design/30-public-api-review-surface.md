@@ -2231,8 +2231,11 @@ public sealed class WorldStateRestoreBinding
     internal WorldStateRestoreBinding();
     public Entity ResolveEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId);
     public Entity ResolveEntity(WorldSystemFieldDescriptor referenceField, Guid targetEntityId);
+    public Entity? ResolveOptionalEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId);
     public TDependency ReadSameEntity<TDependency>() where TDependency : unmanaged;
 }
+
+`ResolveOptionalEntity` accepts only a declared optional Entity-reference field. For example, when optional field `f` contains root slot `S`, `ResolveOptionalEntity(f, S)` returns null if the exact Scene input binds `S` to null; the same call for a required field rejects, while an absent optional source field skips resolution. Unresolved symbols reject rather than becoming null.
 
 public sealed class ComponentCaptureBinding
 {

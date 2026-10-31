@@ -89,6 +89,39 @@ public sealed class WorldStateRestoreBinding
         return entity;
     }
 
+    /// <summary>Resolves an optional Entity-reference field, including an explicitly absent target.</summary>
+    /// <param name="referenceField">The selected optional Entity-reference field descriptor.</param>
+    /// <param name="targetEntityId">The nonempty authored Entity or external-slot identity.</param>
+    /// <returns>The candidate Entity, or null when the exact binding admits an absent target.</returns>
+    /// <exception cref="ArgumentException">The field is not an optional Entity reference, or the identity is empty.</exception>
+    /// <exception cref="InvalidOperationException">The binding is expired, used from another thread, or the candidate map is inconsistent.</exception>
+    public Entity? ResolveOptionalEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId)
+    {
+        EnsureActive();
+        ArgumentNullException.ThrowIfNull(referenceField);
+
+        if ((referenceField.Field.WireKind != 11)
+            || (referenceField.Field.Reference != ContentReferenceKind.Entity)
+            || referenceField.Field.IsRequired)
+        {
+            throw new ArgumentException("The selected field is not an optional Entity reference.", nameof(referenceField));
+        }
+
+        if (targetEntityId == Guid.Empty)
+        {
+            throw new ArgumentException("A stable Entity identity must be nonempty.", nameof(targetEntityId));
+        }
+
+        var entity = _context.ResolveOptionalEntity(referenceField, targetEntityId);
+
+        if (entity is { IsValid: false })
+        {
+            throw new InvalidOperationException("The restore map returned a default Entity handle for an optional reference.");
+        }
+
+        return entity;
+    }
+
     internal void Revoke() => _isActive = false;
 
     private void EnsureActive()

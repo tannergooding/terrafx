@@ -12,4 +12,6 @@ internal interface IComponentRestoreContext : IComponentProviderScope
     Entity ResolveEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId);
 
     Entity ResolveEntity(WorldSystemFieldDescriptor referenceField, Guid targetEntityId);
+
+    Entity? ResolveOptionalEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId);
 }
