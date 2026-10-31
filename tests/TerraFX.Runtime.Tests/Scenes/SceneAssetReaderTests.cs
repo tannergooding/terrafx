@@ -480,7 +480,8 @@ internal sealed class SceneAssetReaderTests
             byte[][]? overrides = null,
             byte[][]? slotBindings = null,
             byte[][]? externalSlots = null,
-            byte[][]? references = null)
+            byte[][]? references = null,
+            AssetId? placementPrefabAssetId = null)
         {
             var entities = entityId is Guid authoredEntityId
                 ? new[] { CreateRootEntity(authoredEntityId) }
@@ -491,7 +492,8 @@ internal sealed class SceneAssetReaderTests
                         authoredPlacementId,
                         placementRootPoses ?? [],
                         overrides ?? [],
-                        slotBindings ?? []),
+                        slotBindings ?? [],
+                        placementPrefabAssetId ?? new AssetId(1)),
                 }
                 : [];
             var nodes = entityId is Guid nodeEntityId
@@ -537,13 +539,14 @@ internal sealed class SceneAssetReaderTests
             Guid placementId,
             byte[][] rootPoses,
             byte[][] overrides,
-            byte[][] slotBindings)
+            byte[][] slotBindings,
+            AssetId prefabAssetId)
         {
             var prefabReference = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
                 new ContentSchemaIdentityAssignment("native/asset-reference").SchemaId,
                 1,
                 0,
-                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(1, 1),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(1, checked((uint)prefabAssetId.Value)),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(
                     2,
                     new ContentSchemaIdentityAssignment("native/prefab").SchemaId),

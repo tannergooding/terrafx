@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Assets;
+using TerraFX.Entities;
 using TerraFX.Scenes;
 
 namespace TerraFX.Runtime.Tests.Scenes;
@@ -30,6 +31,39 @@ internal sealed class SceneAssetStoreTests
             new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(3, 9, 1, 1, [allowNull ? (byte)1 : (byte)0]),
             SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(4, requiredComponents));
 
+    private static byte[] CreateNestedExpansionPackage(
+        Guid outerPlacementId,
+        Guid innerPlacementId,
+        Guid entityId,
+        AssetId innerTargetAssetId,
+        bool includeInnerEntity = true,
+        bool includeOuterEntity = false)
+    {
+        var outerPrefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(1),
+            entityId: includeOuterEntity ? entityId : null,
+            placementId: innerPlacementId,
+            placementPrefabAssetId: innerTargetAssetId);
+        var scene = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
+            new AssetId(3),
+            outerPlacementId);
+        var outerEntry = new Package.Entry(1, Package.CreateEnvelope(1, outerPrefab));
+        var sceneEntry = new Package.Entry(3, Package.CreateEnvelope(3, scene));
+
+        if (innerTargetAssetId == new AssetId(1))
+        {
+            return Package.CreatePackage(outerEntry, sceneEntry);
+        }
+
+        var innerPrefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(2),
+            entityId: includeInnerEntity ? entityId : null);
+        return Package.CreatePackage(
+            outerEntry,
+            new Package.Entry(2, Package.CreateEnvelope(2, innerPrefab)),
+            sceneEntry);
+    }
+
     private static byte[] CreateSchemaReference(string schemaName)
         => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
             new ContentSchemaIdentityAssignment("content/schema-ref").SchemaId,
@@ -39,6 +73,123 @@ internal sealed class SceneAssetStoreTests
             SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(2, 1),
             SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(3, 0),
             SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(4, (byte)ContentSchemaScope.Content));
+
+    [Test]
+    public async Task ExpandsEmptyPrefabPlacementsAsOccurrences()
+    {
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var package = CreateNestedExpansionPackage(
+            new Guid("20000000-0000-4000-8000-000000000043"),
+            new Guid("20000000-0000-4000-8000-000000000044"),
+            SceneAssetReaderTests.Fixtures.RootEntityId,
+            new AssetId(2),
+            includeInnerEntity: false);
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+            try
+            {
+                using var expansion = await ScenePrefabExpansionPlanner.PrepareAsync(
+                    store,
+                    new AssetId(3),
+                    SceneExpansionLimits.Default).ConfigureAwait(false);
+
+                Assert.That(expansion.Occurrences, Has.Length.EqualTo(3));
+                Assert.That(expansion.Entities, Is.Empty);
+                Assert.That(expansion.GetRootEntityIndices(0).Length, Is.Zero);
+            }
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task ExpandsNestedPrefabsWithAssetStoreLeasesAndStableOccurrences()
+    {
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var outerPlacementId = new Guid("20000000-0000-4000-8000-000000000041");
+        var innerPlacementId = new Guid("20000000-0000-4000-8000-000000000042");
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var sceneRecord = SceneAssetReaderTests.Fixtures.CreateAssetReferenceScene(
+            new AssetId(3),
+            outerPlacementId);
+        var outerPrefabRecord = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(1),
+            entityId: rootEntityId,
+            placementId: innerPlacementId,
+            placementPrefabAssetId: new AssetId(2));
+        var innerPrefabRecord = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(2),
+            entityId: rootEntityId);
+        var package = Package.CreatePackage(
+            new Package.Entry(1, Package.CreateEnvelope(1, outerPrefabRecord)),
+            new Package.Entry(2, Package.CreateEnvelope(2, innerPrefabRecord)),
+            new Package.Entry(3, Package.CreateEnvelope(3, sceneRecord)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+            try
+            {
+                using var expansion = await ScenePrefabExpansionPlanner.PrepareAsync(
+                    store,
+                    new AssetId(3),
+                    SceneExpansionLimits.Default).ConfigureAwait(false);
+
+                var rootOccurrenceId = SceneOccurrenceIdentity.CreateRootOccurrence(new AssetId(3));
+                var outerOccurrenceId = SceneOccurrenceIdentity.CreatePrefabOccurrence(
+                    rootOccurrenceId,
+                    outerPlacementId,
+                    new AssetId(1));
+                var innerOccurrenceId = SceneOccurrenceIdentity.CreatePrefabOccurrence(
+                    outerOccurrenceId,
+                    innerPlacementId,
+                    new AssetId(2));
+
+                Assert.That(expansion.Occurrences, Has.Length.EqualTo(3));
+                Assert.That(expansion.Entities, Has.Length.EqualTo(2));
+                Assert.That(expansion.Occurrences[0].OccurrenceId, Is.EqualTo(rootOccurrenceId));
+                Assert.That(expansion.Occurrences[1].OccurrenceId, Is.EqualTo(outerOccurrenceId));
+                Assert.That(expansion.Occurrences[2].OccurrenceId, Is.EqualTo(innerOccurrenceId));
+                Assert.That(expansion.Entities[0].ExpandedEntityKey, Is.EqualTo(
+                    SceneOccurrenceIdentity.CreateExpandedEntityKey(outerOccurrenceId, rootEntityId)));
+                Assert.That(expansion.Entities[1].ExpandedEntityKey, Is.EqualTo(
+                    SceneOccurrenceIdentity.CreateExpandedEntityKey(innerOccurrenceId, rootEntityId)));
+                Assert.That(expansion.GetRootEntityIndices(0).Length, Is.EqualTo(2));
+                Assert.That(expansion.GetSourceEntity(0).AuthoredEntityId, Is.EqualTo(rootEntityId));
+                Assert.That(expansion.GetSourceEntity(1).AuthoredEntityId, Is.EqualTo(rootEntityId));
+
+                var selector = new SceneEntitySelector(
+                    SceneEntitySelectorScope.OccurrenceRelative,
+                    [outerPlacementId, innerPlacementId],
+                    rootEntityId);
+                Assert.That(expansion.ResolveEntity(selector, relativeAnchorOccurrenceIndex: 0), Is.EqualTo(1));
+            }
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
 
     [Test]
     public async Task LoadsSceneAndPrefabThroughRegisteredCodecs()
@@ -104,6 +255,204 @@ internal sealed class SceneAssetStoreTests
                 Assert.That(resolvedBindings[0].SlotId, Is.EqualTo(childSlotId));
                 Assert.That(resolvedBindings[0].Target?.Kind, Is.EqualTo(SceneReferenceTargetKind.ExternalSlot));
                 Assert.That(resolvedBindings[0].Target?.ExternalSlotId, Is.EqualTo(containingSlotId));
+            }
+
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task RejectsExpandedEntityLimitBeforePublishingAPlan()
+    {
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var package = CreateNestedExpansionPackage(
+            new Guid("20000000-0000-4000-8000-000000000057"),
+            new Guid("20000000-0000-4000-8000-000000000058"),
+            SceneAssetReaderTests.Fixtures.RootEntityId,
+            new AssetId(2),
+            includeOuterEntity: true);
+        var packagePath = Package.WritePackage(package);
+        var limits = new SceneExpansionLimits(
+            maximumExpandedEntities: 1,
+            maximumPrefabEntities: 65_536,
+            maximumExpandedOccurrences: 1_048_576,
+            maximumPrefabDepth: 32,
+            maximumHierarchyDepth: 256,
+            maximumExpandedBytes: WorldSchedulingLimits.Default.MaximumOwnedStateBytes);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+            try
+            {
+                _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
+                    await ScenePrefabExpansionPlanner.PrepareAsync(store, new AssetId(3), limits).ConfigureAwait(false));
+            }
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task RejectsExpandedOccurrenceLimitBeforePublishingAPlan()
+    {
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var package = CreateNestedExpansionPackage(
+            new Guid("20000000-0000-4000-8000-000000000053"),
+            new Guid("20000000-0000-4000-8000-000000000054"),
+            SceneAssetReaderTests.Fixtures.RootEntityId,
+            new AssetId(2));
+        var packagePath = Package.WritePackage(package);
+        var limits = new SceneExpansionLimits(
+            maximumExpandedEntities: 1_048_576,
+            maximumPrefabEntities: 65_536,
+            maximumExpandedOccurrences: 2,
+            maximumPrefabDepth: 32,
+            maximumHierarchyDepth: 256,
+            maximumExpandedBytes: WorldSchedulingLimits.Default.MaximumOwnedStateBytes);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+            try
+            {
+                _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
+                    await ScenePrefabExpansionPlanner.PrepareAsync(store, new AssetId(3), limits).ConfigureAwait(false));
+            }
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task RejectsExpansionByteReservationBeforePublishingAPlan()
+    {
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var package = CreateNestedExpansionPackage(
+            new Guid("20000000-0000-4000-8000-000000000055"),
+            new Guid("20000000-0000-4000-8000-000000000056"),
+            SceneAssetReaderTests.Fixtures.RootEntityId,
+            new AssetId(2));
+        var packagePath = Package.WritePackage(package);
+        var limits = new SceneExpansionLimits(
+            maximumExpandedEntities: 1_048_576,
+            maximumPrefabEntities: 65_536,
+            maximumExpandedOccurrences: 1_048_576,
+            maximumPrefabDepth: 32,
+            maximumHierarchyDepth: 256,
+            maximumExpandedBytes: 1024);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+            try
+            {
+                _ = Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                    await ScenePrefabExpansionPlanner.PrepareAsync(store, new AssetId(3), limits).ConfigureAwait(false));
+            }
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task RejectsPrefabCycleDuringExpansion()
+    {
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var package = CreateNestedExpansionPackage(
+            new Guid("20000000-0000-4000-8000-000000000051"),
+            new Guid("20000000-0000-4000-8000-000000000052"),
+            SceneAssetReaderTests.Fixtures.RootEntityId,
+            new AssetId(1));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+            try
+            {
+                _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
+                    await ScenePrefabExpansionPlanner.PrepareAsync(
+                        store,
+                        new AssetId(3),
+                        SceneExpansionLimits.Default).ConfigureAwait(false));
+            }
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task RejectsPrefabDepthAboveSelectedLimit()
+    {
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var registration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+        var package = CreateNestedExpansionPackage(
+            new Guid("20000000-0000-4000-8000-000000000059"),
+            new Guid("20000000-0000-4000-8000-00000000005a"),
+            SceneAssetReaderTests.Fixtures.RootEntityId,
+            new AssetId(2));
+        var packagePath = Package.WritePackage(package);
+        var limits = new SceneExpansionLimits(
+            maximumExpandedEntities: 1_048_576,
+            maximumPrefabEntities: 65_536,
+            maximumExpandedOccurrences: 1_048_576,
+            maximumPrefabDepth: 1,
+            maximumHierarchyDepth: 256,
+            maximumExpandedBytes: WorldSchedulingLimits.Default.MaximumOwnedStateBytes);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), registration)).ConfigureAwait(false);
+
+            try
+            {
+                _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
+                    await ScenePrefabExpansionPlanner.PrepareAsync(store, new AssetId(3), limits).ConfigureAwait(false));
             }
             finally
             {
