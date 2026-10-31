@@ -305,6 +305,52 @@ internal sealed class InputRouterTests
     }
 
     [Test]
+    public void CoalescesAdjacentAnalogEventsToTheLatestValueAndSequence()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            29,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var action = new ActionDefinition(Guid.NewGuid(), "Move", InputActionKind.Axis1);
+        var context = new ContextDefinition(Guid.NewGuid(), 0);
+        var map = new InputActionMapV1(
+            1,
+            Guid.NewGuid(),
+            1,
+            1,
+            [action],
+            [context],
+            [
+                new BindingDefinition(Guid.NewGuid(), action.ActionId, 1, BindingKind.GamepadAxis1) {
+                    Axis1Source = new GamepadAxis1Source(1, GamepadAxis.RightX, deadzone: 0.0f),
+                },
+            ]);
+        Assert.That(router.RegisterMap(map).Status, Is.EqualTo(InputMapStatus.Registered));
+        var firstSequence = sequenceLease.Allocate();
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(1, GamepadAxis.RightX, 0.1f), 1, firstSequence, 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        var lastSequence = sequenceLease.Allocate();
+        Assert.That(router.EnqueueHeadlessInjection(new InputInjection(1, GamepadAxis.RightX, 0.2f), 2, lastSequence, 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+
+        for (var index = 0; index < 4096; index++)
+        {
+            lastSequence = sequenceLease.Allocate();
+            var value = 0.2f + (index * 0.00001f);
+            Assert.That(router.EnqueueHeadlessInjection(new InputInjection(1, GamepadAxis.RightX, value), index + 3, lastSequence, 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        }
+
+        var snapshot = router.PublishSimulationActionSnapshot(0);
+        Assert.That(snapshot.Actions[0].AxisX, Is.EqualTo(0.24095f).Within(1e-6f));
+        Assert.That(snapshot.Actions[0].Transitions, Has.Length.EqualTo(1));
+        Assert.That(snapshot.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.ValueChanged));
+        Assert.That(snapshot.Actions[0].Transitions[0].HostSequence, Is.EqualTo(lastSequence));
+        Assert.That(snapshot.Actions[0].IsDownAtEnd, Is.False);
+
+        router.Dispose();
+    }
+
+    [Test]
     public void CombinesDigitalBindingsWithOrAcrossOneTick()
     {
         var router = CreateRouter(InputRecipientKind.SimulationTimeline, recipientId: 8);
@@ -767,6 +813,77 @@ internal sealed class InputRouterTests
         Assert.That(transitions[0].HostSequence, Is.GreaterThan(downSequence));
         Assert.That(transitions[0].AssignedTick, Is.Null);
         Assert.That(router.DisposeAndGetTransitions(), Is.Empty);
+    }
+
+    [Test]
+    public void DoesNotCoalesceAnalogEventsAcrossDiscreteOrControlBoundaries()
+    {
+        static InputRouter CreateAxisRouter(HostEventSequenceLease sequenceLease, Guid mapId, bool withContextControl)
+        {
+            var router = new InputRouter(
+                InputRecipientKind.SimulationTimeline,
+                withContextControl ? 31U : 30U,
+                Environment.CurrentManagedThreadId,
+                sequenceLease);
+            var action = new ActionDefinition(Guid.NewGuid(), "Move", InputActionKind.Axis1);
+            ImmutableArray<ContextDefinition> contexts = withContextControl
+                ? [
+                    new ContextDefinition(new Guid("30000000-0000-0000-0000-000000000131"), 0),
+                    new ContextDefinition(new Guid("30000000-0000-0000-0000-000000000132"), 1),
+                ]
+                : [new ContextDefinition(Guid.NewGuid(), 0)];
+            var map = new InputActionMapV1(
+                1,
+                mapId,
+                1,
+                1,
+                [action],
+                contexts,
+                [
+                    new BindingDefinition(Guid.NewGuid(), action.ActionId, 1, BindingKind.GamepadAxis1) {
+                        Axis1Source = new GamepadAxis1Source(1, GamepadAxis.RightX, deadzone: 0.0f),
+                    },
+                ]);
+            Assert.That(router.RegisterMap(map).Status, Is.EqualTo(InputMapStatus.Registered));
+            return router;
+        }
+
+        var discreteSequenceLease = new HostEventSequenceLease();
+        var discreteRouter = CreateAxisRouter(
+            discreteSequenceLease,
+            new Guid("10000000-0000-0000-0000-000000000131"),
+            withContextControl: false);
+        var firstDiscreteAxisSequence = discreteSequenceLease.Allocate();
+        Assert.That(discreteRouter.EnqueueHeadlessInjection(new InputInjection(1, GamepadAxis.RightX, 0.1f), 1, firstDiscreteAxisSequence, 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(discreteRouter.EnqueueHeadlessInjection(new InputInjection(new KeyboardControl(7, 4), InputKeyEventKind.Down), 2, discreteSequenceLease.Allocate(), 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        var lastDiscreteAxisSequence = discreteSequenceLease.Allocate();
+        Assert.That(discreteRouter.EnqueueHeadlessInjection(new InputInjection(1, GamepadAxis.RightX, 0.8f), 3, lastDiscreteAxisSequence, 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+
+        var discreteSnapshot = discreteRouter.PublishSimulationActionSnapshot(0);
+        Assert.That(discreteSnapshot.Actions[0].Transitions, Has.Length.EqualTo(3));
+        Assert.That(discreteSnapshot.Actions[0].Transitions[0].HostSequence, Is.EqualTo(firstDiscreteAxisSequence));
+        Assert.That(discreteSnapshot.Actions[0].Transitions[1].HostSequence, Is.EqualTo(lastDiscreteAxisSequence));
+        Assert.That(discreteSnapshot.Actions[0].Transitions[2].HostSequence, Is.EqualTo(lastDiscreteAxisSequence));
+        discreteRouter.Dispose();
+
+        var controlSequenceLease = new HostEventSequenceLease();
+        var controlRouter = CreateAxisRouter(
+            controlSequenceLease,
+            new Guid("10000000-0000-0000-0000-000000000132"),
+            withContextControl: true);
+        var firstControlAxisSequence = controlSequenceLease.Allocate();
+        Assert.That(controlRouter.EnqueueHeadlessInjection(new InputInjection(1, GamepadAxis.RightX, 0.1f), 1, firstControlAxisSequence, 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        controlRouter.BeginHostControlBoundary(0, 2);
+        Assert.That(controlRouter.SetActiveContextMask(new Guid("10000000-0000-0000-0000-000000000132"), 1, 3).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        var lastControlAxisSequence = controlSequenceLease.Allocate();
+        Assert.That(controlRouter.EnqueueHeadlessInjection(new InputInjection(1, GamepadAxis.RightX, 0.8f), 3, lastControlAxisSequence, 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+
+        var controlSnapshot = controlRouter.PublishSimulationActionSnapshot(0);
+        Assert.That(controlSnapshot.Actions[0].Transitions, Has.Length.EqualTo(3));
+        Assert.That(controlSnapshot.Actions[0].Transitions[0].HostSequence, Is.EqualTo(firstControlAxisSequence));
+        Assert.That(controlSnapshot.Actions[0].Transitions[1].HostSequence, Is.EqualTo(lastControlAxisSequence));
+        Assert.That(controlSnapshot.Actions[0].Transitions[2].HostSequence, Is.EqualTo(lastControlAxisSequence));
+        controlRouter.Dispose();
     }
 
     [Test]

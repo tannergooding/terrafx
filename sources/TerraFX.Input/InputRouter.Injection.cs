@@ -21,6 +21,7 @@ public sealed partial class InputRouter
     private readonly Queue<InputControlEnvelope> _inputControlInbox = [];
     private readonly Queue<InputEnvelope> _inputInbox = [];
     private long _hostControlTimestamp;
+    private InputEnvelope? _inputInboxTail;
     private bool _inputOverflowed;
     private long _lastAssignedInputTick = -1;
     private long _lastSeenHostSequence;
@@ -48,6 +49,35 @@ public sealed partial class InputRouter
             AxisThresholdDirection.Negative => MathF.Max(0.0f, -value),
             AxisThresholdDirection.Positive => MathF.Max(0.0f, value),
             AxisThresholdDirection.Magnitude => MathF.Abs(value),
+            _ => 0.0f,
+        };
+    }
+
+    private static float GetAxisThresholdMetric(BindingDefinition binding, InputInjection injection)
+    {
+        var value = (binding.ThresholdAxisSource is { } axisSource)
+            ? GetProcessedAxis1Value(axisSource, injection.AxisValue.GetValueOrDefault())
+            : GetProcessedTriggerValue(binding.ThresholdTriggerSource!, injection.TriggerValue.GetValueOrDefault());
+
+        return binding.ThresholdDirection switch {
+            AxisThresholdDirection.Negative => MathF.Max(0.0f, -value),
+            AxisThresholdDirection.Positive => MathF.Max(0.0f, value),
+            AxisThresholdDirection.Magnitude => MathF.Abs(value),
+            _ => 0.0f,
+        };
+    }
+
+    private static float GetBindingAxisMagnitude(BindingDefinition binding, InputInjection injection)
+    {
+        return binding.Kind switch {
+            BindingKind.GamepadAxis1 => MathF.Abs(
+                GetProcessedAxis1Value(binding.Axis1Source!, injection.AxisValue.GetValueOrDefault())),
+            BindingKind.GamepadStick2 => GetProcessedStick2Magnitude(
+                binding.Stick2Source!,
+                injection.StickValue.GetValueOrDefault()),
+            BindingKind.GamepadTrigger => GetProcessedTriggerValue(
+                binding.TriggerSource!,
+                injection.TriggerValue.GetValueOrDefault()),
             _ => 0.0f,
         };
     }
@@ -173,7 +203,12 @@ public sealed partial class InputRouter
         GamepadAxis1Source source,
         Dictionary<InputControlKey, float> scalarControlValues)
     {
-        var value = Math.Clamp(GetScalarControlValue(GetControlKey(source), scalarControlValues), -1.0f, 1.0f);
+        return GetProcessedAxis1Value(source, GetScalarControlValue(GetControlKey(source), scalarControlValues));
+    }
+
+    private static float GetProcessedAxis1Value(GamepadAxis1Source source, float rawValue)
+    {
+        var value = Math.Clamp(rawValue, -1.0f, 1.0f);
         var magnitude = MathF.Abs(value);
 
         if (magnitude <= source.Deadzone)
@@ -193,11 +228,22 @@ public sealed partial class InputRouter
         return NormalizeZero(value);
     }
 
+    private static float GetProcessedStick2Magnitude(GamepadStick2Source source, Vector2 rawValue)
+    {
+        var (x, y) = GetProcessedStick2Value(source, (rawValue.X, rawValue.Y));
+        return MathF.Sqrt((x * x) + (y * y));
+    }
+
     private static (float X, float Y) GetProcessedStick2Value(
         GamepadStick2Source source,
         Dictionary<InputControlKey, (float X, float Y)> vectorControlValues)
     {
-        var (rawX, rawY) = GetVectorControlValue(GetControlKey(source), vectorControlValues);
+        return GetProcessedStick2Value(source, GetVectorControlValue(GetControlKey(source), vectorControlValues));
+    }
+
+    private static (float X, float Y) GetProcessedStick2Value(GamepadStick2Source source, (float X, float Y) rawValue)
+    {
+        var (rawX, rawY) = rawValue;
         var value = NormalizeStick(new Vector2(Math.Clamp(rawX, -1.0f, 1.0f), Math.Clamp(rawY, -1.0f, 1.0f)));
         var radius = MathF.Sqrt(Vector2.LengthSquared(value));
 
@@ -223,7 +269,12 @@ public sealed partial class InputRouter
         GamepadTriggerSource source,
         Dictionary<InputControlKey, float> scalarControlValues)
     {
-        var value = Math.Clamp(GetScalarControlValue(GetControlKey(source), scalarControlValues), 0.0f, 1.0f);
+        return GetProcessedTriggerValue(source, GetScalarControlValue(GetControlKey(source), scalarControlValues));
+    }
+
+    private static float GetProcessedTriggerValue(GamepadTriggerSource source, float rawValue)
+    {
+        var value = Math.Clamp(rawValue, 0.0f, 1.0f);
         return NormalizeZero(MathF.Max(0.0f, (value - source.Deadzone) / (1.0f - source.Deadzone)));
     }
 
@@ -231,6 +282,15 @@ public sealed partial class InputRouter
         InputControlKey control,
         Dictionary<InputControlKey, float> scalarControlValues)
         => scalarControlValues.TryGetValue(control, out var value) ? value : 0.0f;
+
+    private static bool GetThresholdBindingDown(InputBindingRuntimeState bindingState, InputInjection injection)
+    {
+        var binding = bindingState.Definition;
+        var metric = GetAxisThresholdMetric(binding, injection);
+        var pressThreshold = binding.PressThreshold ?? 0.55f;
+        var releaseThreshold = binding.ReleaseThreshold ?? 0.45f;
+        return bindingState.IsDown ? metric > releaseThreshold : metric >= pressThreshold;
+    }
 
     private static (float X, float Y) GetVectorControlValue(
         InputControlKey control,
@@ -543,7 +603,7 @@ public sealed partial class InputRouter
         ushort? playerSlot,
         long hostTimestamp,
         long hostSequence,
-        out int discardedInputCount)
+        out long discardedInputCount)
     {
         EnsureOwnerThread();
         ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
@@ -648,13 +708,6 @@ public sealed partial class InputRouter
             return CreateInputCapacityFailure(hostSequence, Math.Max(assignedTick, _nextOpenTick));
         }
 
-        if (_inputInbox.Count >= MaximumPendingInputEvents)
-        {
-            _inputOverflowed = true;
-            RecordUnacceptedSequence(hostSequence);
-            return CreateInputCapacityFailure(hostSequence, Math.Max(assignedTick, _nextOpenTick));
-        }
-
         var effectiveTick = Math.Max(assignedTick, _nextOpenTick);
 
         if (effectiveTick < _lastAssignedInputTick)
@@ -664,7 +717,24 @@ public sealed partial class InputRouter
 
         var control = GetControlKey(injection);
         var envelope = new InputEnvelope(injection, control, hostTimestamp, hostSequence, effectiveTick);
+
+        if ((_inputInboxTail is { } tail)
+            && CanCoalesceInputEnvelope(tail, envelope)
+            && tail.TryCoalesceWith(envelope))
+        {
+            _lastAssignedInputTick = effectiveTick;
+            return new InputRoutingReceipt(InputRoutingStatus.Applied, _recipientId, hostSequence, effectiveTick, null);
+        }
+
+        if (_inputInbox.Count >= MaximumPendingInputEvents)
+        {
+            _inputOverflowed = true;
+            RecordUnacceptedSequence(hostSequence);
+            return CreateInputCapacityFailure(hostSequence, Math.Max(assignedTick, _nextOpenTick));
+        }
+
         _inputInbox.Enqueue(envelope);
+        _inputInboxTail = envelope;
         _lastAssignedInputTick = effectiveTick;
 
         return new InputRoutingReceipt(InputRoutingStatus.Applied, _recipientId, hostSequence, effectiveTick, null);
@@ -760,6 +830,7 @@ public sealed partial class InputRouter
         }
 
         _inputInbox.Clear();
+        _inputInboxTail = null;
         _inputOverflowed = false;
         _overflowServiced = false;
         _isPaused = false;
@@ -798,7 +869,7 @@ public sealed partial class InputRouter
         ushort? playerSlot,
         long hostTimestamp,
         long hostSequence,
-        out int discardedInputCount)
+        out long discardedInputCount)
     {
         EnsureOwnerThread();
         ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
@@ -1222,6 +1293,80 @@ public sealed partial class InputRouter
         }
     }
 
+    private bool CanCoalesceInputEnvelope(InputEnvelope previous, InputEnvelope next)
+    {
+        if ((_inputInbox.Count != 1)
+            || (_inputControlInbox.Count != 0)
+            || !previous.CanCoalesceWith(next))
+        {
+            return false;
+        }
+
+        foreach (var mapState in _maps.Values)
+        {
+            if (!mapState.BindingsByControl.TryGetValue(previous.Control, out var bindings))
+            {
+                continue;
+            }
+
+            foreach (var bindingState in bindings)
+            {
+                var binding = bindingState.Definition;
+
+                if (!binding.Enabled || !bindingState.IsContextEligible)
+                {
+                    continue;
+                }
+
+                if (bindingState.IsDisarmed || _unreconciledControls.Contains(previous.Control))
+                {
+                    return false;
+                }
+
+                if (IsBindingSuppressedByConsumption(bindingState, _consumptionLeases))
+                {
+                    continue;
+                }
+
+                if ((binding.Flags & InputBindingBehavior.ConsumePhysicalEvent) != 0)
+                {
+                    return false;
+                }
+
+                if (binding.Kind == BindingKind.AxisThreshold)
+                {
+                    if (GetThresholdBindingDown(bindingState, previous.Injection) != bindingState.IsDown
+                        || GetThresholdBindingDown(bindingState, next.Injection) != bindingState.IsDown)
+                    {
+                        return false;
+                    }
+
+                    continue;
+                }
+
+                if (binding.Kind is not (BindingKind.GamepadAxis1 or BindingKind.GamepadStick2 or BindingKind.GamepadTrigger))
+                {
+                    continue;
+                }
+
+                var actionState = mapState.ActionStates[binding.ActionId];
+                var previousMagnitude = GetBindingAxisMagnitude(binding, previous.Injection);
+                var nextMagnitude = GetBindingAxisMagnitude(binding, next.Injection);
+                var pressThreshold = actionState.Definition.DownPressThreshold ?? 0.55f;
+                var releaseThreshold = actionState.Definition.DownReleaseThreshold ?? 0.45f;
+
+                if (actionState.IsDownAtEnd
+                    ? ((previousMagnitude <= releaseThreshold) || (nextMagnitude <= releaseThreshold))
+                    : ((previousMagnitude >= pressThreshold) || (nextMagnitude >= pressThreshold)))
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
     private Dictionary<InputBindingRuntimeState, bool> CaptureBindingEligibility()
     {
         var eligibility = new Dictionary<InputBindingRuntimeState, bool>();
@@ -1244,6 +1389,7 @@ public sealed partial class InputRouter
         _digitalControlStates.Clear();
         _inputControlInbox.Clear();
         _inputInbox.Clear();
+        _inputInboxTail = null;
         _scalarControlValues.Clear();
         _vectorControlValues.Clear();
         _inputOverflowed = false;
@@ -1375,16 +1521,16 @@ public sealed partial class InputRouter
         }
     }
 
-    private int DiscardPendingInputCopies(InputClass inputClasses, ushort? playerSlot)
+    private long DiscardPendingInputCopies(InputClass inputClasses, ushort? playerSlot)
     {
         var retainedInputs = new Queue<InputEnvelope>(_inputInbox.Count);
-        var discardedInputCount = 0;
+        long discardedInputCount = 0;
 
         while (_inputInbox.TryDequeue(out var envelope))
         {
             if (MatchesInputScope(envelope.Control, inputClasses, playerSlot))
             {
-                discardedInputCount++;
+                discardedInputCount = checked(discardedInputCount + envelope.ReplacementCount + 1);
             }
             else
             {
@@ -1392,9 +1538,12 @@ public sealed partial class InputRouter
             }
         }
 
+        _inputInboxTail = null;
+
         while (retainedInputs.TryDequeue(out var envelope))
         {
             _inputInbox.Enqueue(envelope);
+            _inputInboxTail = envelope;
         }
 
         return discardedInputCount;
@@ -1523,6 +1672,7 @@ public sealed partial class InputRouter
     {
         _digitalControlDownTimestamps.Clear();
         _inputInbox.Clear();
+        _inputInboxTail = null;
         _digitalControlStates.Clear();
         _scalarControlValues.Clear();
         _vectorControlValues.Clear();
@@ -1745,8 +1895,14 @@ public sealed partial class InputRouter
                 }
                 else
                 {
-                    _ = _inputInbox.Dequeue();
-                    ApplyInputEnvelope(envelope!);
+                    var dequeuedInput = _inputInbox.Dequeue();
+
+                    if (ReferenceEquals(_inputInboxTail, dequeuedInput))
+                    {
+                        _inputInboxTail = null;
+                    }
+
+                    ApplyInputEnvelope(dequeuedInput);
                 }
             }
         }
@@ -2561,15 +2717,55 @@ public sealed partial class InputRouter
         long hostSequence,
         long assignedTick)
     {
+        private InputInjection _injection = injection;
+        private long _lastHostSequence = hostSequence;
+        private long _lastHostTimestamp = hostTimestamp;
+        private long _replacementCount;
+
         internal long AssignedTick { get; } = assignedTick;
 
         internal InputControlKey Control { get; } = control;
 
-        internal long HostSequence { get; } = hostSequence;
+        internal long FirstHostSequence { get; } = hostSequence;
 
-        internal long HostTimestamp { get; } = hostTimestamp;
+        internal long FirstHostTimestamp { get; } = hostTimestamp;
 
-        internal InputInjection Injection { get; } = injection;
+        internal long HostSequence => _lastHostSequence;
+
+        internal long HostTimestamp => _lastHostTimestamp;
+
+        internal InputInjection Injection => _injection;
+
+        internal long LastHostSequence => _lastHostSequence;
+
+        internal long LastHostTimestamp => _lastHostTimestamp;
+
+        internal long ReplacementCount => _replacementCount;
+
+        internal bool CanCoalesceWith(InputEnvelope next)
+        {
+            return (Control == next.Control)
+                && (AssignedTick == next.AssignedTick)
+                && (Injection.Kind == next.Injection.Kind)
+                && (Injection.Kind is InputInjectionKind.GamepadAxis
+                    or InputInjectionKind.GamepadStick
+                    or InputInjectionKind.GamepadTrigger);
+        }
+
+        internal bool TryCoalesceWith(InputEnvelope next)
+        {
+            if (!CanCoalesceWith(next))
+            {
+                return false;
+            }
+
+            var replacementCount = checked(_replacementCount + next.ReplacementCount + 1);
+            _injection = next.Injection;
+            _lastHostSequence = next.LastHostSequence;
+            _lastHostTimestamp = next.LastHostTimestamp;
+            _replacementCount = replacementCount;
+            return true;
+        }
     }
 
     private readonly record struct PendingReboundAction(
