@@ -123,11 +123,17 @@ path separately. Keep the private counter, BCL-only Core runtime closure, ordina
 reference-assembly/package flow, and selected single-Core identity requirement.
 
 Core also owns the independent `TerraFX.HostEventSequenceAllocator.Allocate(): long`
-issuer for process-wide input/host-control ordering. The existing Core-to-Runtime
-friend grant is its only caller path: the dedicated Runtime host owner obtains one
-sequence per capture/control observation before fanout, and Platform adapters never
-mint or rewrite it. This sequence does not issue owner IDs, timeline ticks, or
-segment revisions and refuses at `long.MaxValue` without wrapping.
+issuer for process-wide input/host-control ordering. Through the existing
+Core-to-Runtime friend grant, the dedicated Runtime host owner creates one
+`HostEventSequenceLease` per host and supplies it to each internal `InputRouter`
+construction. The host broker and router mutations allocate from that shared issuer
+before fanout or publication; Platform adapters never mint or rewrite host identity.
+The lease constructor is internal and no public owner-fabrication path exists. This
+sequence does not issue owner IDs, timeline ticks, or segment revisions and refuses
+at `long.MaxValue` without wrapping.
+
+The host revokes the lease only after capture and recipient consumers have stopped
+accepting work. Revocation does not roll back or reuse any sequence already issued.
 
 Semantic issuance is narrower than CLR access. `World..ctor(WorldConstructionPlan)` is
 the only Runtime caller of `Allocate`; it consumes the exact Entities-owned admitted

@@ -57,6 +57,19 @@ public readonly struct SimulationClockSegment : IEquatable<SimulationClockSegmen
 
 `SimulationClockSegment` is an immutable Core value, not a public clock service or a public construction/owner capability. Only the Runtime host/timeline adapter constructs it. Its host timestamps are normalized elapsed `TimeSpan` ticks; source frequency is private to the host. A default value is invalid and `IsValid` reports initialization. The mapping, late-event clamp, pause behavior, boundary ordering and fractional remainder are fixed by [03](03-shared-conventions-and-clocks.md#immutable-input-clock-segments); no consumer substitutes ambient `World`, `TimeProvider`, or a competing wall-clock conversion.
 
+```csharp
+namespace TerraFX;
+
+public sealed class HostEventSequenceLease
+{
+    internal HostEventSequenceLease();
+    public long Allocate();
+    internal void Revoke();
+}
+```
+
+Core issues one process-wide sequence domain per selected loaded assembly identity. Only the Runtime host owner constructs a `HostEventSequenceLease` through the existing friend grant; it passes that capability into the internal `InputRouter` and `TextInputSession` construction paths and retains it for its capture broker. `Allocate` throws `ObjectDisposedException` after the host revokes the lease; revocation is internal and occurs only after capture and recipient consumers stop accepting work. The lease constructor is not public, and the lease is not exposed by `EngineContext`, `InputRouter`, or any public host property.
+
 ### Geometry
 
 The six `TerraFX.Numerics` types and their full arithmetic/equality/formatting contracts are owned by [06](06-owned-geometry-and-numerics-interchange.md), with the method and kernel revision in [08](08-binary32-kernels-and-predicates.md). Their storage/interchange profile is `EngineGeometryBinary32Rows2`, separate from coordinate profile `LeftHandedYUpForwardZ1`, spatial profile `FloatChunk32V2`, and runtime/ISA profile. `IsFinite()` returns component masks; the argumentless versus scalar-value `All`/`Any`/`None` overloads follow [06](06-owned-geometry-and-numerics-interchange.md#2-representation-and-defaults). The changed predicate signatures require an API-major/consumer rebuild, not a changed component layout.
@@ -5876,7 +5889,8 @@ public enum InputMapStatus
 {
     Registered,
     Replaced,
-    Rejected
+    Rejected,
+    CapacityExceeded
 }
 
 public sealed class ValidationIssue
@@ -5888,7 +5902,8 @@ public sealed class ValidationIssue
 
 public sealed class InputMapResponse
 {
-    internal InputMapResponse(InputMapStatus status, long? publishedRevision, ValidationIssue? rejection);
+    internal InputMapResponse(InputMapStatus status, long? hostSequence, long? publishedRevision, ValidationIssue? rejection);
+    public long? HostSequence { get; }
     public InputMapStatus Status { get; }
     public long? PublishedRevision { get; }
     public ValidationIssue? Rejection { get; }
@@ -6043,7 +6058,7 @@ public sealed class TextInputSessionOptions
 
 public sealed class TextInputSession : IDisposable
 {
-    internal TextInputSession();
+    internal TextInputSession(HostEventSequenceLease sequenceLease, int ownerThreadId);
     public WindowHandle Window { get; }
     public long DocumentRevision { get; }
     public bool IsActive { get; }
@@ -6054,7 +6069,7 @@ public sealed class TextInputSession : IDisposable
 
 public sealed class InputRouter
 {
-    internal InputRouter(InputRecipientKind recipientKind, uint recipientId);
+    internal InputRouter(InputRecipientKind recipientKind, uint recipientId, int ownerThreadId, HostEventSequenceLease sequenceLease);
     public InputRecipientKind RecipientKind { get; }
     public uint RecipientId { get; }
     public InputMapResponse RegisterMap(InputActionMapV1 map);
