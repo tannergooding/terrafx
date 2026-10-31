@@ -3398,11 +3398,20 @@ namespace TerraFX.Scenes
 public sealed class SceneLoadOptions
 {
     public SceneLoadOptions();
-    public AssetLoadOptions AssetLoadOptions { get; init; } = AssetLoadOptions.Default;
+    public ImmutableArray<SceneExternalBinding> ExternalBindings { get; init; } = [];
     public int MaximumExpandedEntities { get; init; } = 1048576;
+    public int MaximumExpandedOccurrences { get; init; } = 1048576;
     public int MaximumPrefabEntities { get; init; } = 65536;
     public int MaximumPrefabDepth { get; init; } = 32;
     public int MaximumHierarchyDepth { get; init; } = 256;
+    public Guid? SceneInstanceId { get; init; }
+}
+
+public sealed class SceneExternalBinding
+{
+    public SceneExternalBinding(Guid slotId, Entity? target);
+    public Guid SlotId { get; }
+    public Entity? Target { get; }
 }
 
 public sealed class SceneLoader
@@ -3571,6 +3580,7 @@ public static class CameraMath
 ```
 
 `SceneLoader` belongs to `TerraFX.Scenes`, binds to its target `World` and `AssetStore` at construction, and depends on neither `EngineContext` nor `TerraFX.Hosting`; this keeps the dependency graph acyclic. Preparation is asynchronous and owns validated asset/package/spatial reservations. `PreparedScene` is bound to that exact target World and one successful activation attempt. `ActivateAsync` queues one owner-control structural intent and completes only after the atomic boundary accepts or rejects it. `Activated` has a non-null instance, committed structural revision, and empty diagnostics; `Rejected` has no instance or committed revision and a nonempty diagnostic array. It never exposes a partially active scene. Disposal before admission prevents activation; after admission the operation owns independent credits and disposal cannot revoke it. `SceneValidationResponse` uses `Valid` with no diagnostics or `Rejected` with diagnostics and always reports its base structural revision, but is only a preview, not a reservation. `CommitAsync` queues the retained intent, revalidates it against state at the boundary, and completes with `Committed` and a committed revision/no diagnostics or `Rejected` with no committed revision and diagnostics. Intents are applied sequentially against current state; `KeepWorld` recomputes the child's current world pose immediately before that operation, including earlier accepted operations in the transaction. Cycles, stale/foreign entities, invalid parent chains, overflow, depth exhaustion, or any partial-capacity failure reject the complete transaction with no observable mutation. `SceneInstance.TryGetEntity` resolves stable authored IDs only while those entities remain live. `SceneUnloadReceipt` includes a revision only for `Unloaded` or `AlreadyUnloaded`; `Rejected` includes diagnostics. Unload is a queued structural request: its task completes when the world transaction and the instance's own package-backed asset leases retire; render/audio snapshots retain their independent package-backed leases until their actual consumers complete.
+`SceneLoader.PrepareAsync` consumes `SceneLoadOptions.ExternalBindings`. `SceneExternalBinding` requires a nonempty `SlotId` and rejects a default `Entity` target at construction; stale, dead, and foreign targets are validated against the exact target World at activation. The options array must be initialized; preparation defensively copies it and sorts by unsigned RFC `SlotId` before asynchronous work. An omitted optional binding means no target was supplied; `new SceneExternalBinding(slotId, null)` is an explicit null and is admitted only when that slot permits null. A null result removes an optional nullable Entity leaf; a required Entity leaf rejects. `SceneLoader` uses the exact `AssetStore` supplied at construction, whose immutable `AssetStoreOptions`, compiled registrations, package digest, and decode budgets remain authoritative; there is no per-call `AssetLoadOptions`.
 
 `SceneTransaction` stages typed hierarchy/root edits, validates and preflights them as one unit, and commits at the structural boundary. `Reparent` always names `KeepLocal` or `KeepWorld`. `SetRootPosition` accepts a `SpatialPosition3`; each root stores that spatial position separately and its `LocalTransform.Position` is `Vector3.Zero`. Descendant translations remain parent-local `Vector3` values. A frame change replaces derived transform/camera/render/physics/audio caches only; it does not shift root positions or child-local transforms. The default entity destroy mode is `DetachChildrenKeepWorld`, but every public call passes its selected `HierarchyDestroyMode`. Camera records and `CameraSnapshot` are chapter [16](16-scenes-transforms-and-cameras.md) contracts. `TryWorldToScreen` returns false only when a perspective point lies on the camera plane (`clip.W = 0`); its output is unusable on false. Behind/near/far/outside flags otherwise remain meaningful. `ScreenToRay` validates the physical pixel and camera snapshot and returns a normalized `SpatialRay3`.
 
@@ -3630,7 +3640,7 @@ public sealed class AnimationCommandReceipt
 
 | Owner / public surface | Exact amendment contract |
 |---|---|
-| Scenes: options, addresses and slots | Add optional non-v8 `SceneLoadOptions.SceneInstanceId` (null requests automatic shared issuance), MaximumExpandedOccurrences default1048576 and immutable `SceneExternalBinding(Guid slotId,Entity? target)` input. `SceneEntityAddress` copies a bounded root-relative placement path/authored ID; `TryGetEntity(SceneEntityAddress,out Entity)` preserves root-only existing shorthand. `TryGetProvenance(Entity,out SceneEntityProvenance)` returns immutable source occurrence/path/AssetId/expanded key/qualified identity only for exact live instance membership. No caller occurrence namespace or ambient Guid lookup. |
+| Scenes: options, addresses and slots | `SceneLoadOptions.SceneInstanceId` is optional non-v8 identity (null requests automatic shared issuance); `MaximumExpandedOccurrences` defaults to 1048576. `ExternalBindings` is an immutable array of `SceneExternalBinding(Guid slotId, Entity? target)`, default empty; preparation defensively copies and RFC-sorts it, rejects duplicates/extra/unknown IDs, and distinguishes omission from explicit null. `SceneEntityAddress` copies a bounded root-relative placement path/authored ID; `TryGetEntity(SceneEntityAddress,out Entity)` preserves root-only existing shorthand. `TryGetProvenance(Entity,out SceneEntityProvenance)` returns immutable source occurrence/path/AssetId/expanded key/qualified identity only for exact live instance membership. No caller occurrence namespace or ambient Guid lookup. |
 | Scenes: registry enlistment | `WorldRegistrationBuilder.RegisterSceneSupport(SceneSupportRegistration)` enlists one closed Scenes factory before freeze through the lower Entities-owned participant/retirement interface. `SceneSupport.CreateRegistration()` is the sole producer of the sealed immutable opaque registration, whose constructor is internal. SceneLoader obtains only that exact registry; none can register late or construct a second registry for the same World binding. Candidate restore fills its new registry before publication; old loaders/instances revoke and retained source-asset references/package leases retire under their owners. |
 
 ```csharp
