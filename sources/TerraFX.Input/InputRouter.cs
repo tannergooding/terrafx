@@ -211,6 +211,11 @@ public sealed partial class InputRouter
             return CreateMapCapacityFailure("/InputControl");
         }
 
+        if ((_inputInbox.Count != 0) || (_inputControlInbox.Count != 0))
+        {
+            return CreateMapCapacityFailure("/InputControl");
+        }
+
         var hostSequence = _sequenceLease.Allocate();
         RecordHostControlSequence(hostSequence);
         var mapState = new InputActionMapState(map, map.InitialActiveContextMask, insertionSequences);
@@ -269,6 +274,11 @@ public sealed partial class InputRouter
             return CreateMapCapacityFailure("/InputControl");
         }
 
+        if ((_inputInbox.Count != 0) || (_inputControlInbox.Count != 0))
+        {
+            return CreateMapCapacityFailure("/InputControl");
+        }
+
         InitializeMapState(replacementState);
         var hostSequence = _sequenceLease.Allocate();
         RecordHostControlSequence(hostSequence);
@@ -306,28 +316,34 @@ public sealed partial class InputRouter
             return CreateRoutingRejection("InvalidContextMask", "/NewMask");
         }
 
-        var activeContextCount = CountActiveContexts(mapId) + CountSetBits(newMask);
+        var (plannedMask, plannedInsertionSequences, plannedLastInsertionSequence) = GetPlannedContextState(current);
+        var activeContextCount = CountPlannedActiveContexts(mapId, newMask);
 
         if (activeContextCount > MaximumActiveContexts)
         {
             return CreateRoutingCapacityFailure("/NewMask");
         }
 
-        var newlyActivatedBits = newMask & ~current.ActiveContextMask;
+        var newlyActivatedBits = newMask & ~plannedMask;
         var newlyActivatedCount = CountSetBits(newlyActivatedBits);
 
-        if (newlyActivatedCount > (long.MaxValue - _lastInsertionSequence))
+        if (newlyActivatedCount > (long.MaxValue - plannedLastInsertionSequence))
         {
             return CreateRoutingCapacityFailure("/InsertionSequence");
         }
 
-        if (!CanAdmitControlCommand())
+        if (!CanAdmitControlCommand() || (_inputControlInbox.Count >= MaximumControlCommandsPerBoundary))
         {
             return CreateRoutingCapacityFailure("/InputControl");
         }
 
-        var insertionSequences = (long[])current.ContextInsertionSequences.Clone();
-        var lastInsertionSequence = _lastInsertionSequence;
+        if (_hostControlTimestamp < _lastSeenHostTimestamp)
+        {
+            return CreateRoutingRejection("InvalidEventOrder", "/HostTimestamp");
+        }
+
+        var insertionSequences = (long[])plannedInsertionSequences.Clone();
+        var lastInsertionSequence = plannedLastInsertionSequence;
 
         for (var bit = 0; bit < insertionSequences.Length; bit++)
         {
@@ -345,10 +361,17 @@ public sealed partial class InputRouter
 
         var hostSequence = _sequenceLease.Allocate();
         RecordHostControlSequence(hostSequence);
-        current.SetContextMask(newMask, insertionSequences);
-        _lastInsertionSequence = lastInsertionSequence;
+        _lastSeenHostTimestamp = _hostControlTimestamp;
+        _inputControlInbox.Enqueue(new InputControlEnvelope(
+            mapId,
+            expectedRevision,
+            newMask,
+            insertionSequences,
+            lastInsertionSequence,
+            _hostControlTimestamp,
+            hostSequence,
+            (_recipientKind == InputRecipientKind.SimulationTimeline) ? _nextOpenTick : null));
         _controlCommandsInBoundary++;
-        PublishHostActionSnapshot();
 
         return new InputRoutingReceipt(
             InputRoutingStatus.Applied,
@@ -358,12 +381,24 @@ public sealed partial class InputRouter
             null);
     }
 
-    internal void BeginHostControlBoundary(long nextOpenTick)
+    internal void BeginHostControlBoundary(long nextOpenTick, long hostTimestamp)
     {
         EnsureOwnerThread();
         ArgumentOutOfRangeException.ThrowIfNegative(nextOpenTick);
+        ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
+
+        if (nextOpenTick < _nextOpenTick)
+        {
+            throw new InvalidOperationException("The next open input tick cannot regress.");
+        }
+
+        if (hostTimestamp < _lastSeenHostTimestamp)
+        {
+            throw new InvalidOperationException("The host input timestamp cannot regress.");
+        }
 
         _controlCommandsInBoundary = 0;
+        _hostControlTimestamp = hostTimestamp;
         _nextOpenTick = nextOpenTick;
     }
 
@@ -395,6 +430,19 @@ public sealed partial class InputRouter
         }
 
         return ProcessSimulationInputStage(assignedTick);
+    }
+
+    internal void UpdateHostControlTimestamp(long hostTimestamp)
+    {
+        EnsureOwnerThread();
+        ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
+
+        if ((hostTimestamp < _hostControlTimestamp) || (hostTimestamp < _lastSeenHostTimestamp))
+        {
+            throw new InvalidOperationException("The host input timestamp cannot regress.");
+        }
+
+        _hostControlTimestamp = hostTimestamp;
     }
 
     private bool CanAdmitControlCommand() => _controlCommandsInBoundary < MaximumControlCommandsPerBoundary;

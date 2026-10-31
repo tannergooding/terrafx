@@ -215,6 +215,92 @@ internal sealed class InputRouterTests
     }
 
     [Test]
+    public void OrdersContextMaskChangesWithPhysicalInputByTimestampAndSequence()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            12,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var action = new ActionDefinition(Guid.NewGuid(), "Move", InputActionKind.Digital);
+        var lowerContext = new ContextDefinition(Guid.NewGuid(), 0);
+        var otherContext = new ContextDefinition(Guid.NewGuid(), 1);
+        var key = new KeyboardControl(7, 4);
+        var binding = new BindingDefinition(Guid.NewGuid(), action.ActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(key),
+        };
+        var map = new InputActionMapV1(
+            1,
+            Guid.NewGuid(),
+            1,
+            1,
+            [action],
+            [lowerContext, otherContext],
+            [binding]);
+
+        Assert.That(router.RegisterMap(map).Status, Is.EqualTo(InputMapStatus.Registered));
+        router.BeginHostControlBoundary(0, 100);
+        var downSequence = sequenceLease.Allocate();
+        Assert.That(
+            router.EnqueueHeadlessInjection(
+                new InputInjection(key, InputKeyEventKind.Down),
+                100,
+                downSequence,
+                0).Status,
+            Is.EqualTo(InputRoutingStatus.Applied));
+
+        var contextChange = router.SetActiveContextMask(map.MapId, 1, 2);
+        Assert.That(contextChange.Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(contextChange.HostSequence, Is.GreaterThan(downSequence));
+        Assert.That(contextChange.AssignedTick, Is.Zero);
+
+        var snapshot = router.PublishSimulationActionSnapshot(0);
+        Assert.That(snapshot.Actions[0].IsDownAtEnd, Is.False);
+        Assert.That(snapshot.Actions[0].PressedThisTick, Is.True);
+        Assert.That(snapshot.Actions[0].ReleasedThisTick, Is.False);
+        Assert.That(snapshot.Actions[0].Transitions, Has.Length.EqualTo(2));
+        Assert.That(snapshot.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Pressed));
+        Assert.That(snapshot.Actions[0].Transitions[0].HostSequence, Is.EqualTo(downSequence));
+        Assert.That(snapshot.Actions[0].Transitions[1].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+        Assert.That(snapshot.Actions[0].Transitions[1].CancellationReason, Is.EqualTo(InputCancellationReason.ContextMasked));
+        Assert.That(snapshot.Actions[0].Transitions[1].HostSequence, Is.EqualTo(contextChange.HostSequence));
+
+        router.BeginHostControlBoundary(1, 101);
+        var reactivate = router.SetActiveContextMask(map.MapId, 1, 1);
+        Assert.That(reactivate.Status, Is.EqualTo(InputRoutingStatus.Applied));
+        var stillHeld = router.PublishSimulationActionSnapshot(1);
+        Assert.That(stillHeld.Actions[0].IsDownAtEnd, Is.False);
+        Assert.That(stillHeld.Actions[0].Transitions, Is.Empty);
+
+        var upSequence = sequenceLease.Allocate();
+        Assert.That(
+            router.EnqueueHeadlessInjection(
+                new InputInjection(key, InputKeyEventKind.Up),
+                102,
+                upSequence,
+                2).Status,
+            Is.EqualTo(InputRoutingStatus.Applied));
+        var released = router.PublishSimulationActionSnapshot(2);
+        Assert.That(released.Actions[0].IsDownAtEnd, Is.False);
+        Assert.That(released.Actions[0].Transitions, Is.Empty);
+
+        var repressSequence = sequenceLease.Allocate();
+        Assert.That(
+            router.EnqueueHeadlessInjection(
+                new InputInjection(key, InputKeyEventKind.Down),
+                103,
+                repressSequence,
+                3).Status,
+            Is.EqualTo(InputRoutingStatus.Applied));
+        var repressed = router.PublishSimulationActionSnapshot(3);
+        Assert.That(repressed.Actions[0].IsDownAtEnd, Is.True);
+        Assert.That(repressed.Actions[0].PressedThisTick, Is.True);
+
+        router.Dispose();
+    }
+
+    [Test]
     public void ProcessesAnalogBindingsAndThresholdHysteresis()
     {
         var router = CreateRouter(InputRecipientKind.SimulationTimeline, recipientId: 6);
@@ -619,12 +705,54 @@ internal sealed class InputRouterTests
     }
 
     [Test]
+    public void ServicesContextCancellationWithoutAWorldTick()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            13,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var action = new ActionDefinition(Guid.NewGuid(), "Move", InputActionKind.Digital);
+        var context = new ContextDefinition(Guid.NewGuid(), 0);
+        var key = new KeyboardControl(7, 4);
+        var binding = new BindingDefinition(Guid.NewGuid(), action.ActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(key),
+        };
+        var map = new InputActionMapV1(1, Guid.NewGuid(), 1, 1, [action], [context], [binding]);
+        var registration = router.RegisterMap(map);
+        Assert.That(registration.Status, Is.EqualTo(InputMapStatus.Registered));
+
+        router.BeginHostControlBoundary(0, 100);
+        var downSequence = sequenceLease.Allocate();
+        Assert.That(
+            router.EnqueueHeadlessInjection(
+                new InputInjection(key, InputKeyEventKind.Down),
+                100,
+                downSequence,
+                0).Status,
+            Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.PublishSimulationActionSnapshot(0).Actions[0].IsDownAtEnd, Is.True);
+
+        router.BeginHostControlBoundary(1, 101);
+        Assert.That(router.SetActiveContextMask(map.MapId, 1, 0).Status, Is.EqualTo(InputRoutingStatus.Applied));
+
+        var boundaryTransitions = router.ServiceInputControlBoundary();
+        Assert.That(boundaryTransitions, Has.Length.EqualTo(1));
+        Assert.That(boundaryTransitions[0].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+        Assert.That(boundaryTransitions[0].CancellationReason, Is.EqualTo(InputCancellationReason.ContextMasked));
+        Assert.That(boundaryTransitions[0].AssignedTick, Is.Null);
+
+        router.Dispose();
+    }
+
+    [Test]
     public void SetActiveContextMaskUsesHostSequenceAndBoundaryCapacity()
     {
         var router = CreateRouter(InputRecipientKind.SimulationTimeline, recipientId: 2);
         var mapId = Guid.NewGuid();
         var mapResponse = router.RegisterMap(CreateMap(mapId, 1));
-        router.BeginHostControlBoundary(7);
+        router.BeginHostControlBoundary(7, 0);
 
         var response = router.SetActiveContextMask(mapId, 1, 0);
 
@@ -649,7 +777,8 @@ internal sealed class InputRouterTests
         Assert.That(capacityResponse.Status, Is.EqualTo(InputRoutingStatus.CapacityExceeded));
         Assert.That(capacityResponse.HostSequence, Is.Null);
 
-        router.BeginHostControlBoundary(8);
+        router.BeginHostControlBoundary(8, 1);
+        _ = router.ServiceInputControlBoundary();
         Assert.That(router.SetActiveContextMask(mapId, 1, 1).Status, Is.EqualTo(InputRoutingStatus.Applied));
         router.Dispose();
     }

@@ -16,7 +16,9 @@ public sealed partial class InputRouter
     private readonly Dictionary<InputControlKey, long> _digitalControlDownTimestamps = [];
     private readonly Dictionary<InputControlKey, bool> _digitalControlStates = [];
     private long _firstUnacceptedHostSequence;
+    private readonly Queue<InputControlEnvelope> _inputControlInbox = [];
     private readonly Queue<InputEnvelope> _inputInbox = [];
+    private long _hostControlTimestamp;
     private bool _inputOverflowed;
     private long _lastAssignedInputTick = -1;
     private long _lastSeenHostSequence;
@@ -226,6 +228,10 @@ public sealed partial class InputRouter
             _ => false,
         };
 
+    private static bool IsInputEnvelopeBeforeControl(InputEnvelope input, InputControlEnvelope control)
+        => (input.HostTimestamp < control.HostTimestamp)
+            || ((input.HostTimestamp == control.HostTimestamp) && (input.HostSequence < control.HostSequence));
+
     private static Vector2 NormalizeStick(Vector2 value)
     {
         var lengthSquared = Vector2.LengthSquared(value);
@@ -245,7 +251,8 @@ public sealed partial class InputRouter
         InputActionMapState mapState,
         ActionDefinition action,
         long hostSequence,
-        long assignedTick)
+        long? assignedTick,
+        InputCancellationReason? cancellationReason = null)
     {
         var actionState = mapState.ActionStates[action.ActionId];
 
@@ -270,13 +277,32 @@ public sealed partial class InputRouter
 
             if (actionState.IsDownAtEnd != isDown)
             {
+                var wasDown = actionState.IsDownAtEnd;
                 actionState.IsDownAtEnd = isDown;
+                var transitionKind = (wasDown && !isDown && (cancellationReason is not null))
+                    ? InputTransitionKind.Canceled
+                    : isDown ? InputTransitionKind.Pressed : InputTransitionKind.Released;
+
+                if (transitionKind == InputTransitionKind.Canceled)
+                {
+                    actionState.Transitions.Add(new InputActionTransition(
+                        mapState.Map.MapId,
+                        action.ActionId,
+                        transitionKind,
+                        cancellationReason,
+                        hostSequence,
+                        assignedTick,
+                        0.0f,
+                        0.0f));
+                    return;
+                }
+
                 actionState.PressedThisTick |= isDown;
                 actionState.ReleasedThisTick |= !isDown;
                 actionState.Transitions.Add(new InputActionTransition(
                     mapState.Map.MapId,
                     action.ActionId,
-                    isDown ? InputTransitionKind.Pressed : InputTransitionKind.Released,
+                    transitionKind,
                     null,
                     hostSequence,
                     assignedTick,
@@ -332,16 +358,17 @@ public sealed partial class InputRouter
             }
         }
 
-        UpdateAxisActionState(mapState.Map.MapId, actionState, hostSequence, assignedTick, axisX, axisY);
+        UpdateAxisActionState(mapState.Map.MapId, actionState, hostSequence, assignedTick, axisX, axisY, cancellationReason);
     }
 
     private static void UpdateAxisActionState(
         Guid mapId,
         InputActionRuntimeState actionState,
         long hostSequence,
-        long assignedTick,
+        long? assignedTick,
         float axisX,
-        float axisY)
+        float axisY,
+        InputCancellationReason? cancellationReason = null)
     {
         axisX = NormalizeZero(axisX);
         axisY = (actionState.Definition.Kind == InputActionKind.Axis2) ? NormalizeZero(axisY) : 0.0f;
@@ -369,7 +396,23 @@ public sealed partial class InputRouter
 
         if (actionState.IsDownAtEnd != isDown)
         {
+            var wasDown = actionState.IsDownAtEnd;
             actionState.IsDownAtEnd = isDown;
+
+            if (wasDown && !isDown && (cancellationReason is not null))
+            {
+                actionState.Transitions.Add(new InputActionTransition(
+                    mapId,
+                    actionState.Definition.ActionId,
+                    InputTransitionKind.Canceled,
+                    cancellationReason,
+                    hostSequence,
+                    assignedTick,
+                    axisX,
+                    axisY));
+                return;
+            }
+
             actionState.PressedThisTick |= isDown;
             actionState.ReleasedThisTick |= !isDown;
             actionState.Transitions.Add(new InputActionTransition(
@@ -564,6 +607,90 @@ public sealed partial class InputRouter
         return HandleInputOverflow(assignedTick: null);
     }
 
+    internal ImmutableArray<InputActionTransition> ServiceInputControlBoundary()
+    {
+        EnsureOwnerThread();
+        var transitions = ImmutableArray.CreateBuilder<InputActionTransition>();
+        var appliedCommand = false;
+
+        if ((_recipientKind == InputRecipientKind.HostLiveUI) && (_inputControlInbox.Count != 0))
+        {
+            foreach (var mapState in _maps.Values)
+            {
+                foreach (var actionState in mapState.ActionStates.Values)
+                {
+                    actionState.ResetTick();
+                }
+            }
+        }
+
+        while (_inputControlInbox.TryPeek(out var control))
+        {
+            if (_inputInbox.TryPeek(out var input) && IsInputEnvelopeBeforeControl(input, control))
+            {
+                break;
+            }
+
+            _ = _inputControlInbox.Dequeue();
+            transitions.AddRange(ApplyInputControlEnvelope(control, assignedTick: null));
+            appliedCommand = true;
+        }
+
+        if (appliedCommand && (_recipientKind == InputRecipientKind.HostLiveUI))
+        {
+            PublishHostActionSnapshot();
+        }
+
+        return transitions.ToImmutable();
+    }
+
+    private ImmutableArray<InputActionTransition> ApplyInputControlEnvelope(
+        InputControlEnvelope control,
+        long? assignedTick)
+    {
+        if (!_maps.TryGetValue(control.MapId, out var mapState)
+            || (mapState.Map.Revision != control.ExpectedRevision))
+        {
+            throw new InvalidOperationException("An admitted input-control command no longer matches its map revision.");
+        }
+
+        var oldMask = mapState.ActiveContextMask;
+
+        foreach (var bindingState in mapState.BindingStates.Values)
+        {
+            var wasEligible = (bindingState.Definition.ContextMask & oldMask) != 0;
+            var isEligible = (bindingState.Definition.ContextMask & control.NewMask) != 0;
+
+            if ((wasEligible != isEligible) && !IsBindingNeutral(bindingState))
+            {
+                bindingState.IsDisarmed = true;
+            }
+        }
+
+        mapState.SetContextMask(control.NewMask, control.ContextInsertionSequences);
+        _lastInsertionSequence = control.LastInsertionSequence;
+        var transitions = ImmutableArray.CreateBuilder<InputActionTransition>();
+
+        foreach (var action in mapState.OrderedActions)
+        {
+            var actionState = mapState.ActionStates[action.ActionId];
+            var firstTransitionIndex = actionState.Transitions.Count;
+            ProcessActionEvent(
+                mapState,
+                action,
+                control.HostSequence,
+                assignedTick,
+                InputCancellationReason.ContextMasked);
+
+            for (var index = firstTransitionIndex; index < actionState.Transitions.Count; index++)
+            {
+                transitions.Add(actionState.Transitions[index]);
+            }
+        }
+
+        return transitions.ToImmutable();
+    }
+
     private void ApplyInputEnvelope(InputEnvelope envelope)
     {
         var changed = false;
@@ -622,6 +749,7 @@ public sealed partial class InputRouter
     {
         _digitalControlDownTimestamps.Clear();
         _digitalControlStates.Clear();
+        _inputControlInbox.Clear();
         _inputInbox.Clear();
         _scalarControlValues.Clear();
         _vectorControlValues.Clear();
@@ -632,6 +760,34 @@ public sealed partial class InputRouter
         _lastSeenHostTimestamp = 0;
         _lastUnacceptedHostSequence = 0;
         _overflowServiced = false;
+        _hostControlTimestamp = 0;
+    }
+
+    private int CountPlannedActiveContexts(Guid excludedMapId, ulong replacementMask)
+    {
+        var count = CountSetBits(replacementMask);
+
+        foreach (var mapState in _maps.Values)
+        {
+            if (mapState.Map.MapId == excludedMapId)
+            {
+                continue;
+            }
+
+            var activeMask = mapState.ActiveContextMask;
+
+            foreach (var control in _inputControlInbox)
+            {
+                if (control.MapId == mapState.Map.MapId)
+                {
+                    activeMask = control.NewMask;
+                }
+            }
+
+            count += CountSetBits(activeMask);
+        }
+
+        return count;
     }
 
     private InputRoutingReceipt CreateInputCapacityFailure(long hostSequence, long assignedTick)
@@ -649,6 +805,26 @@ public sealed partial class InputRouter
             null,
             null,
             new ValidationIssue(code, path));
+
+    private (ulong ActiveMask, long[] InsertionSequences, long LastInsertionSequence) GetPlannedContextState(InputActionMapState mapState)
+    {
+        var activeMask = mapState.ActiveContextMask;
+        var insertionSequences = mapState.ContextInsertionSequences;
+        var lastInsertionSequence = _lastInsertionSequence;
+
+        foreach (var control in _inputControlInbox)
+        {
+            lastInsertionSequence = control.LastInsertionSequence;
+
+            if (control.MapId == mapState.Map.MapId)
+            {
+                activeMask = control.NewMask;
+                insertionSequences = control.ContextInsertionSequences;
+            }
+        }
+
+        return (activeMask, insertionSequences, lastInsertionSequence);
+    }
 
     private InputOverflowResult HandleInputOverflow(long? assignedTick)
     {
@@ -804,10 +980,28 @@ public sealed partial class InputRouter
         }
         else
         {
-            while (_inputInbox.TryPeek(out var envelope) && (envelope.AssignedTick <= assignedTick))
+            while (true)
             {
-                _ = _inputInbox.Dequeue();
-                ApplyInputEnvelope(envelope);
+                var inputReady = _inputInbox.TryPeek(out var envelope) && (envelope.AssignedTick <= assignedTick);
+                var controlReady = _inputControlInbox.TryPeek(out var control)
+                    && (control.AssignedTick is { } controlTick)
+                    && (controlTick <= assignedTick);
+
+                if (!inputReady && !controlReady)
+                {
+                    break;
+                }
+
+                if (controlReady && (!inputReady || !IsInputEnvelopeBeforeControl(envelope!, control!)))
+                {
+                    _ = _inputControlInbox.Dequeue();
+                    _ = ApplyInputControlEnvelope(control!, control!.AssignedTick);
+                }
+                else
+                {
+                    _ = _inputInbox.Dequeue();
+                    ApplyInputEnvelope(envelope!);
+                }
             }
         }
 
@@ -1209,6 +1403,33 @@ public sealed partial class InputRouter
         internal bool IsDisarmed { get; set; }
 
         internal bool IsDown { get; set; }
+    }
+
+    private sealed class InputControlEnvelope(
+        Guid mapId,
+        long expectedRevision,
+        ulong newMask,
+        long[] contextInsertionSequences,
+        long lastInsertionSequence,
+        long hostTimestamp,
+        long hostSequence,
+        long? assignedTick)
+    {
+        internal long? AssignedTick { get; } = assignedTick;
+
+        internal long[] ContextInsertionSequences { get; } = contextInsertionSequences;
+
+        internal long ExpectedRevision { get; } = expectedRevision;
+
+        internal long HostSequence { get; } = hostSequence;
+
+        internal long HostTimestamp { get; } = hostTimestamp;
+
+        internal long LastInsertionSequence { get; } = lastInsertionSequence;
+
+        internal Guid MapId { get; } = mapId;
+
+        internal ulong NewMask { get; } = newMask;
     }
 
     private readonly record struct InputControlKey(
