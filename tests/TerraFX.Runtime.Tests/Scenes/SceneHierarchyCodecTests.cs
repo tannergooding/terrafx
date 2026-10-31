@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Buffers.Binary;
 using System.Collections.Immutable;
 using System.IO;
 using NUnit.Framework;
@@ -120,8 +121,22 @@ internal sealed class SceneHierarchyCodecTests
             Throws.TypeOf<InvalidDataException>());
     }
 
-    private static class FixtureBuilder
+    internal static class FixtureBuilder
     {
+        public static FixtureField CreateFloatGeometryField(uint tag, ushort kind, params float[] values)
+        {
+            var payload = new byte[checked(values.Length * sizeof(float))];
+
+            for (var index = 0; index < values.Length; index++)
+            {
+                BinaryPrimitives.WriteInt32LittleEndian(
+                    payload.AsSpan(index * sizeof(float)),
+                    BitConverter.SingleToInt32Bits(values[index]));
+            }
+
+            return new FixtureField(tag, kind, 1, 1, payload);
+        }
+
         public static FixtureField CreateGuidField(uint tag, Guid value, bool isRequired = true)
             => new(tag, 11, isRequired ? (ushort)1 : (ushort)0, 1, GetGuidBytes(value));
 
