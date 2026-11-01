@@ -23,7 +23,7 @@ public sealed partial class Renderer
     /// <returns>The headless Renderer service.</returns>
     public static Renderer CreateHeadless() => new();
 
-    /// <summary>Registers the built-in native Texture and Atlas asset codecs with an Assets builder.</summary>
+    /// <summary>Registers the built-in native Texture, Atlas, and Material asset codecs with an Assets builder.</summary>
     /// <param name="builder">The asset-store builder whose schema registry contains the Rendering schemas.</param>
     /// <returns>The builder with the supported rendering asset codecs registered.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="builder"/> is null.</exception>
@@ -32,7 +32,8 @@ public sealed partial class Renderer
     {
         ArgumentNullException.ThrowIfNull(builder);
         _ = builder.RegisterCodec(new RenderTextureAssetCodec());
-        return builder.RegisterCodec(new RenderAtlasAssetCodec());
+        _ = builder.RegisterCodec(new RenderAtlasAssetCodec());
+        return builder.RegisterCodec(new RenderMaterialAssetCodec());
     }
 
     private sealed class BuiltInCpuExtractionSupportRegistration : IWorldCpuExtractionSupportRegistration

@@ -99,6 +99,15 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~AtlasPageSet"
 ```
 
+### Rendering Material profiles and texture dependencies
+
+Run the package-backed Sprite/PBR Material tests for profile tuples, parameter and render-state constraints, typed texture bindings, slot semantics, and same-package dependency loading across replacement:
+
+```powershell
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~MaterialAssetCodec|FullyQualifiedName~MaterialTextureLoader"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~MaterialAssetCodec|FullyQualifiedName~MaterialTextureLoader"
+```
+
 ### Public structural EBIN and schema metadata
 
 Core exposes bounded schema-agnostic EBIN reader/writer and scalar/array payload helpers. These validate wire structure and preserve canonical byte layout; they do not activate or validate an owner schema. `CompiledContentSchemaRegistry` contains immutable schema/profile metadata only. Typed owner codecs and their roots are separately compiled with the selected application registrations.
