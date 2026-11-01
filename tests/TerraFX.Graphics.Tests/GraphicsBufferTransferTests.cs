@@ -435,6 +435,32 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task TextureAllocationBudgetIsReleasedWhenBackendCreationFails()
+    {
+        var backendDevice = new FakeBackendDevice(
+            textureAllocationSizeBytes: 300L * 1024 * 1024,
+            failNextTextureCreation: true);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        GpuTexture? texture = null;
+
+        try
+        {
+            _ = Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await graphicsDevice.CreateTextureAsync(CreateTextureDescription()).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+
+            texture = await graphicsDevice.CreateTextureAsync(CreateTextureDescription()).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.That(backendDevice.TextureCreationCount, Is.EqualTo(2));
+        }
+        finally
+        {
+            texture?.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+
+        Assert.That(backendDevice.TextureDisposalCount, Is.EqualTo(1));
+    }
+
+    [Test]
     public async Task TextureAllocationBudgetRejectsBeforeBackendCreationAndLeavesDeviceUsable()
     {
         var backendDevice = new FakeBackendDevice();
@@ -688,24 +714,37 @@ internal sealed class GraphicsBufferTransferTests
         private int _bufferDisposalCount;
         private long _completedFence;
         private int _effectiveSamplerAnisotropyBits;
+        private int _failNextTextureCreation;
         private byte[]? _lastBufferBytes;
         private int _samplerCreationCount;
         private int _samplerDisposalCount;
+        private readonly long? _textureAllocationSizeBytes;
         private readonly long _textureBudgetBytes;
         private int _textureCreationCount;
         private int _textureDisposalCount;
+
+        internal FakeBackendDevice(
+            long textureBudgetBytes = 3L * 1024 * 1024 * 1024,
+            long? textureAllocationSizeBytes = null,
+            bool failNextTextureCreation = false)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(textureBudgetBytes);
+
+            if (textureAllocationSizeBytes is <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(textureAllocationSizeBytes));
+            }
+
+            _textureBudgetBytes = textureBudgetBytes;
+            _textureAllocationSizeBytes = textureAllocationSizeBytes;
+            _failNextTextureCreation = failNextTextureCreation ? 1 : 0;
+        }
 
         internal FakeBackendDevice(ManualResetEventSlim uploadEntered, ManualResetEventSlim continueUpload)
         {
             _uploadEntered = uploadEntered;
             _continueUpload = continueUpload;
             _textureBudgetBytes = 3L * 1024 * 1024 * 1024;
-        }
-
-        internal FakeBackendDevice(long textureBudgetBytes = 3L * 1024 * 1024 * 1024)
-        {
-            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(textureBudgetBytes);
-            _textureBudgetBytes = textureBudgetBytes;
         }
 
         public GraphicsCapabilities Capabilities => _capabilities;
@@ -764,6 +803,12 @@ internal sealed class GraphicsBufferTransferTests
         public IGraphicsBackendTexture CreateTexture(TextureDescription description)
         {
             _ = Interlocked.Increment(ref _textureCreationCount);
+
+            if (Interlocked.Exchange(ref _failNextTextureCreation, 0) != 0)
+            {
+                throw new InvalidOperationException("The fake texture backend rejected its first creation attempt.");
+            }
+
             return new FakeBackendTexture(this, description);
         }
 
@@ -793,7 +838,11 @@ internal sealed class GraphicsBufferTransferTests
                 }
             }
 
-            return new GraphicsResourceAllocationInfo(sizeBytes, alignment: 1, heapIndex: 0, budgetBytes: _textureBudgetBytes);
+            return new GraphicsResourceAllocationInfo(
+                _textureAllocationSizeBytes ?? sizeBytes,
+                alignment: 1,
+                heapIndex: 0,
+                budgetBytes: _textureBudgetBytes);
         }
 
         public OwnedBuffer<byte> ReadbackBuffer(IGraphicsBackendBuffer source, long sourceOffset, nint byteLength)
