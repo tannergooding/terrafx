@@ -7,7 +7,7 @@ namespace TerraFX.Graphics;
 
 internal sealed class GraphicsResourceOwner : IDisposable
 {
-    private readonly GraphicsResourceAllocationInfo _allocationInfo;
+    private readonly GraphicsResourceAllocationInfo? _allocationInfo;
     private readonly IGraphicsBackendResource _backendResource;
     private readonly GraphicsDevice _device;
     private readonly GraphicsOwnerRequestQueue.GraphicsRetirementReservation _retirementReservation;
@@ -16,7 +16,7 @@ internal sealed class GraphicsResourceOwner : IDisposable
 
     internal GraphicsResourceOwner(
         GraphicsDevice device,
-        GraphicsResourceAllocationInfo allocationInfo,
+        GraphicsResourceAllocationInfo? allocationInfo,
         IGraphicsBackendResource backendResource,
         GraphicsOwnerRequestQueue.GraphicsRetirementReservation retirementReservation)
     {
@@ -30,7 +30,7 @@ internal sealed class GraphicsResourceOwner : IDisposable
         _retirementReservation = retirementReservation;
     }
 
-    internal GraphicsResourceAllocationInfo AllocationInfo => _allocationInfo;
+    internal GraphicsResourceAllocationInfo? AllocationInfo => _allocationInfo;
 
     internal IGraphicsBackendResource BackendResource => _backendResource;
 

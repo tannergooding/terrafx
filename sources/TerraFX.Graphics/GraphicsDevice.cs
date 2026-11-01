@@ -3,9 +3,11 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using System.Threading.Tasks;
+using TerraFX.Buffers;
 
 namespace TerraFX.Graphics;
 
@@ -30,6 +32,7 @@ public sealed class GraphicsDevice
     private readonly GraphicsCapabilities _capabilities;
     private bool _hasQuarantinedResources;
     private ulong _nextBufferIndex;
+    private ulong _nextPipelineIndex;
     private ulong _nextTextureIndex;
     private readonly uint _ownerId;
     private readonly GraphicsOwnerRequestQueue _ownerQueue = new();
@@ -145,6 +148,57 @@ public sealed class GraphicsDevice
         }
     }
 
+    private static ImmutableArray<ShaderBytecodeInput> GetPipelineShaderInputs(PipelineDescription description)
+        => description switch {
+            GraphicsPipelineDescription graphicsDescription => graphicsDescription.Shaders,
+            ComputePipelineDescription computeDescription => [computeDescription.Shader],
+            _ => throw new ArgumentOutOfRangeException(nameof(description)),
+        };
+
+    private static void ReleaseShaderBytecode(BufferReadLease<byte>[]? bytecodeLeases)
+    {
+        if (bytecodeLeases is null)
+        {
+            return;
+        }
+
+        for (var index = 0; index < bytecodeLeases.Length; index++)
+        {
+            bytecodeLeases[index].Dispose();
+        }
+    }
+
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "The returned independent bytecode credits are transferred to the admitted pipeline request; partial acquisitions are released here.")]
+    private static BufferReadLease<byte>[] RetainShaderBytecode(PipelineDescription description)
+    {
+        var shaderInputs = GetPipelineShaderInputs(description);
+        var bytecodeLeases = new BufferReadLease<byte>[shaderInputs.Length];
+        var retainedCount = 0;
+
+        try
+        {
+            for (var index = 0; index < shaderInputs.Length; index++)
+            {
+                bytecodeLeases[index] = shaderInputs[index].Bytecode.Retain();
+                retainedCount++;
+            }
+
+            return bytecodeLeases;
+        }
+        catch
+        {
+            for (var index = 0; index < retainedCount; index++)
+            {
+                bytecodeLeases[index].Dispose();
+            }
+
+            throw;
+        }
+    }
+
     private static async Task WaitForShutdownAndOwnerExitAsync(Task shutdownTask, Thread ownerThread)
     {
         try
@@ -190,6 +244,66 @@ public sealed class GraphicsDevice
         }
 
         return await request.Task.ConfigureAwait(false);
+    }
+
+    /// <summary>Creates one owned GPU pipeline on the dedicated graphics owner.</summary>
+    /// <param name="description">The validated graphics or compute pipeline description.</param>
+    /// <param name="cancellationToken">A token that cancels admission or observation before completion.</param>
+    /// <returns>The owned pipeline after native creation succeeds.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="description"/> is <see langword="null"/>.</exception>
+    /// <exception cref="InvalidOperationException">The device is not accepting pipeline requests.</exception>
+    /// <exception cref="NotSupportedException">The device does not support a shader format, capability, target, or work-group size.</exception>
+    /// <exception cref="ObjectDisposedException">A shader bytecode lease is disposed before its independent read credit is acquired.</exception>
+    /// <exception cref="GraphicsDeviceLostException">The selected device is lost during pipeline creation.</exception>
+    public async Task<GpuPipeline> CreatePipelineAsync(PipelineDescription description, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(description);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (Status != GraphicsDeviceStatus.Ready)
+        {
+            throw new InvalidOperationException("The GraphicsDevice is not accepting pipeline requests.");
+        }
+
+        ValidatePipelineDescriptionForDevice(description);
+
+        var bytecodeLeases = RetainShaderBytecode(description);
+        var bytecodeLeasesTransferred = false;
+        GraphicsOwnerRequestQueue.GraphicsRetirementReservation? retirementReservation = null;
+
+        try
+        {
+            retirementReservation = await _ownerQueue.ReserveRetirementAsync(cancellationToken).ConfigureAwait(false);
+            var request = new CreatePipelineRequest(
+                this,
+                description,
+                bytecodeLeases,
+                retirementReservation,
+                cancellationToken);
+            bytecodeLeasesTransferred = true;
+            retirementReservation = null;
+
+            try
+            {
+                await _ownerQueue.WriteRequestAsync(request, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                request.AdmissionFailed();
+                throw;
+            }
+
+            return await request.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            if (!bytecodeLeasesTransferred)
+            {
+                ReleaseShaderBytecode(bytecodeLeases);
+            }
+
+            retirementReservation?.Dispose();
+        }
     }
 
     /// <summary>Creates one owned GPU texture on the dedicated graphics owner.</summary>
@@ -313,6 +427,55 @@ public sealed class GraphicsDevice
         }
     }
 
+    private GpuPipeline CreatePipelineOnOwner(
+        PipelineDescription description,
+        ReadOnlySpan<BufferReadLease<byte>> bytecodeLeases,
+        GraphicsOwnerRequestQueue.GraphicsRetirementReservation retirementReservation)
+    {
+        var backendDevice = _backendDevice
+            ?? throw new InvalidOperationException("The GraphicsDevice has no live backend owner.");
+
+        if (Status != GraphicsDeviceStatus.Ready)
+        {
+            throw new InvalidOperationException("The GraphicsDevice stopped before the pipeline request was executed.");
+        }
+
+        IGraphicsBackendPipeline? backendPipeline = null;
+
+        try
+        {
+            backendPipeline = backendDevice.CreatePipeline(description, bytecodeLeases);
+            var handle = new GpuPipelineHandle(_ownerId, DeviceEpoch, GetNextPipelineIndex(), generation: 1);
+            var resourceOwner = new GraphicsResourceOwner(this, allocationInfo: null, backendPipeline, retirementReservation);
+            var pipeline = new GpuPipeline(handle, DeviceEpoch, resourceOwner);
+
+            if (!_resources.Add(resourceOwner))
+            {
+                throw new InvalidOperationException("The newly created Graphics pipeline already exists in its owner registry.");
+            }
+
+            backendPipeline = null;
+            return pipeline;
+        }
+        catch (Exception exception)
+        {
+            if (backendPipeline is not null)
+            {
+                try
+                {
+                    backendPipeline.Dispose();
+                }
+                catch (Exception cleanupException)
+                {
+                    QuarantineBackendResource(backendPipeline, new AggregateException(exception, cleanupException));
+                    throw new AggregateException(exception, cleanupException);
+                }
+            }
+
+            throw;
+        }
+    }
+
     private GpuTexture CreateTextureOnOwner(
         TextureDescription description,
         GraphicsOwnerRequestQueue.GraphicsRetirementReservation retirementReservation)
@@ -373,6 +536,16 @@ public sealed class GraphicsDevice
         }
 
         return (uint)_nextBufferIndex++;
+    }
+
+    private uint GetNextPipelineIndex()
+    {
+        if (_nextPipelineIndex > uint.MaxValue)
+        {
+            throw new InvalidOperationException("The GraphicsDevice exhausted its pipeline handle slots.");
+        }
+
+        return (uint)_nextPipelineIndex++;
     }
 
     private uint GetNextTextureIndex()
@@ -480,7 +653,7 @@ public sealed class GraphicsDevice
         if (!_allocatedBytesByHeap.TryGetValue(allocationInfo.HeapIndex, out var heapBytes)
             || (heapBytes < allocationInfo.SizeBytes))
         {
-            throw new InvalidOperationException("The Graphics buffer allocation budget was released inconsistently.");
+            throw new InvalidOperationException("The Graphics resource allocation budget was released inconsistently.");
         }
 
         var remainingTotalBytes = checked(_allocatedResourceBytes - allocationInfo.SizeBytes);
@@ -563,7 +736,11 @@ public sealed class GraphicsDevice
             throw new InvalidOperationException("A retired Graphics resource was not registered with its owner.");
         }
 
-        ReleaseResourceAllocation(resource.AllocationInfo);
+        if (resource.AllocationInfo is GraphicsResourceAllocationInfo allocationInfo)
+        {
+            ReleaseResourceAllocation(allocationInfo);
+        }
+
         resource.RetirementReservation.Dispose();
         resource.MarkRetired();
     }
@@ -669,6 +846,106 @@ public sealed class GraphicsDevice
         {
             _ownerQueue.Dispose();
         }
+    }
+
+    private void ValidatePipelineDescriptionForDevice(PipelineDescription description)
+    {
+        var requiredShaderFormat = Capabilities.Backend switch {
+            GraphicsBackend.D3D12 => ShaderBinaryFormat.Dxil,
+            GraphicsBackend.Vulkan => ShaderBinaryFormat.SpirV,
+            _ => throw new NotSupportedException($"The Graphics backend {Capabilities.Backend} cannot create pipelines."),
+        };
+        var shaderInputs = GetPipelineShaderInputs(description);
+
+        for (var index = 0; index < shaderInputs.Length; index++)
+        {
+            var shader = shaderInputs[index];
+
+            if (shader.Format != requiredShaderFormat)
+            {
+                throw new NotSupportedException(
+                    $"The {Capabilities.Backend} backend requires {requiredShaderFormat} bytecode for {shader.Stage} shaders.");
+            }
+
+            if (!shader.Reflection.RequiredCapabilities.IsEmpty)
+            {
+                throw new NotSupportedException(
+                    $"The {Capabilities.Backend} backend has no qualified mapping for shader capabilities {shader.Reflection.RequiredCapabilities}.");
+            }
+        }
+
+        if (description is ComputePipelineDescription computeDescription)
+        {
+            var limits = Capabilities.Limits;
+            var reflection = computeDescription.Shader.Reflection;
+
+            if ((reflection.GroupSizeX > limits.MaximumComputeWorkGroupSizeX)
+                || (reflection.GroupSizeY > limits.MaximumComputeWorkGroupSizeY)
+                || (reflection.GroupSizeZ > limits.MaximumComputeWorkGroupSizeZ)
+                || ((long)reflection.GroupSizeX * reflection.GroupSizeY * reflection.GroupSizeZ > limits.MaximumComputeWorkGroupInvocations))
+            {
+                throw new NotSupportedException("The compute shader work-group size exceeds the selected device limits.");
+            }
+
+            return;
+        }
+
+        var graphicsDescription = (GraphicsPipelineDescription)description;
+
+        if (graphicsDescription.VertexElements.Length > Capabilities.Limits.MaximumVertexInputAttributes)
+        {
+            throw new NotSupportedException("The graphics pipeline vertex layout exceeds the selected device attribute limit.");
+        }
+
+        if (graphicsDescription.ColorTargetFormats.Length > Capabilities.Limits.MaximumColorAttachments)
+        {
+            throw new NotSupportedException("The graphics pipeline exceeds the selected device color-attachment limit.");
+        }
+
+        for (var index = 0; index < graphicsDescription.ColorTargetFormats.Length; index++)
+        {
+            ValidatePipelineTargetFormat(
+                graphicsDescription.ColorTargetFormats[index],
+                TextureUsage.ColorAttachment);
+        }
+
+        if (graphicsDescription.DepthTargetFormat is TextureFormat depthTargetFormat)
+        {
+            ValidatePipelineTargetFormat(depthTargetFormat, TextureUsage.DepthAttachment);
+        }
+    }
+
+    private void ValidatePipelineTargetFormat(TextureFormat format, TextureUsage requiredUsage)
+    {
+        for (var index = 0; index < Capabilities.Formats.Length; index++)
+        {
+            var formatCapabilities = Capabilities.Formats[index];
+
+            if (formatCapabilities.Format != format)
+            {
+                continue;
+            }
+
+            var supportsSingleSample = false;
+
+            for (var sampleIndex = 0; sampleIndex < formatCapabilities.SampleCounts.Length; sampleIndex++)
+            {
+                if (formatCapabilities.SampleCounts[sampleIndex] == 1)
+                {
+                    supportsSingleSample = true;
+                    break;
+                }
+            }
+
+            if ((formatCapabilities.SupportedUsages & requiredUsage) != requiredUsage || !supportsSingleSample)
+            {
+                throw new NotSupportedException($"The selected device does not support {requiredUsage} for {format}.");
+            }
+
+            return;
+        }
+
+        throw new NotSupportedException($"The selected device does not support texture format {format}.");
     }
 
     private void ValidateTextureCapabilities(TextureDescription description)
@@ -818,6 +1095,159 @@ public sealed class GraphicsDevice
             {
                 _ = _completion.TrySetCanceled(_cancellationToken);
             }
+        }
+
+        private void ReleaseReservation()
+        {
+            var reservation = Interlocked.Exchange(ref _retirementReservation, null);
+            reservation?.Dispose();
+        }
+    }
+
+    private sealed class CreatePipelineRequest : IGraphicsDeviceWork
+    {
+        private BufferReadLease<byte>[]? _bytecodeLeases;
+        private readonly CancellationTokenRegistration _cancellationRegistration;
+        private readonly CancellationToken _cancellationToken;
+        private readonly TaskCompletionSource<GpuPipeline> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private GpuPipeline? _createdPipeline;
+        private readonly PipelineDescription _description;
+        private readonly GraphicsDevice _device;
+        private int _nativeCreationStarted;
+        private GraphicsOwnerRequestQueue.GraphicsRetirementReservation? _retirementReservation;
+        // 0 is pending, 1 is canceled observation, and 2 is terminal.
+        private int _state;
+
+        internal CreatePipelineRequest(
+            GraphicsDevice device,
+            PipelineDescription description,
+            BufferReadLease<byte>[] bytecodeLeases,
+            GraphicsOwnerRequestQueue.GraphicsRetirementReservation retirementReservation,
+            CancellationToken cancellationToken)
+        {
+            _bytecodeLeases = bytecodeLeases;
+            _description = description;
+            _device = device;
+            _retirementReservation = retirementReservation;
+            _cancellationToken = cancellationToken;
+            _cancellationRegistration = cancellationToken.Register(
+                static state => ((CreatePipelineRequest)state!).Cancel(),
+                this);
+        }
+
+        internal Task<GpuPipeline> Task => _completion.Task;
+
+        public void Execute(GraphicsDevice device)
+        {
+            if (Volatile.Read(ref _state) == 1)
+            {
+                ReleaseBytecodeLeases();
+                ReleaseReservation();
+                CompleteCanceled();
+                _cancellationRegistration.Dispose();
+                return;
+            }
+
+            GpuPipeline? completedPipeline = null;
+            var completeCanceled = false;
+
+            try
+            {
+                var reservation = _retirementReservation
+                    ?? throw new InvalidOperationException("The pipeline request has no retirement reservation.");
+                var bytecodeLeases = _bytecodeLeases
+                    ?? throw new InvalidOperationException("The pipeline request has no bytecode leases.");
+                Volatile.Write(ref _nativeCreationStarted, 1);
+                var pipeline = device.CreatePipelineOnOwner(_description, bytecodeLeases, reservation);
+                _createdPipeline = pipeline;
+                _retirementReservation = null;
+
+                if (Interlocked.CompareExchange(ref _state, 2, 0) == 0)
+                {
+                    completedPipeline = pipeline;
+                }
+                else
+                {
+                    device.RetireResourceOnOwner(pipeline.ResourceOwner);
+                    completeCanceled = true;
+                }
+            }
+            finally
+            {
+                ReleaseBytecodeLeases();
+
+                if (completedPipeline is not null)
+                {
+                    _ = _completion.TrySetResult(completedPipeline);
+                }
+                else if (completeCanceled)
+                {
+                    CompleteCanceled();
+                }
+
+                _cancellationRegistration.Dispose();
+            }
+        }
+
+        public void Fail(Exception exception)
+        {
+            if (exception is GraphicsDeviceLostException)
+            {
+                _device.MarkDeviceLost();
+            }
+
+            if (_createdPipeline is not null)
+            {
+                _device.QuarantineResource(_createdPipeline.ResourceOwner, exception);
+            }
+
+            var previousState = Interlocked.Exchange(ref _state, 2);
+            ReleaseBytecodeLeases();
+            ReleaseReservation();
+
+            if ((previousState == 1) && (Volatile.Read(ref _nativeCreationStarted) == 0))
+            {
+                _ = _completion.TrySetCanceled(_cancellationToken);
+            }
+            else
+            {
+                _ = _completion.TrySetException(exception);
+            }
+
+            _cancellationRegistration.Dispose();
+        }
+
+        internal void AdmissionFailed()
+        {
+            _ = Interlocked.Exchange(ref _state, 2);
+            ReleaseBytecodeLeases();
+            ReleaseReservation();
+            _cancellationRegistration.Dispose();
+        }
+
+        private void Cancel()
+        {
+            _ = Interlocked.CompareExchange(ref _state, 1, 0);
+        }
+
+        private void CompleteCanceled()
+        {
+            if (Interlocked.CompareExchange(ref _state, 2, 1) == 1)
+            {
+                _ = _completion.TrySetCanceled(_cancellationToken);
+            }
+        }
+
+        private void ReleaseBytecodeLeases()
+        {
+            var bytecodeLeases = Interlocked.Exchange(ref _bytecodeLeases, null);
+
+            if (bytecodeLeases is null)
+            {
+                return;
+            }
+
+            ReleaseShaderBytecode(bytecodeLeases);
         }
 
         private void ReleaseReservation()

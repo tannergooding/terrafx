@@ -5,6 +5,8 @@ using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.Versioning;
+using System.Threading;
+using System.Threading.Tasks;
 using TerraFX.Graphics;
 using TerraFX.Graphics.D3D12;
 
@@ -36,6 +38,20 @@ internal static class Program
         if (typeof(GpuTexture).GetConstructors(BindingFlags.Instance | BindingFlags.Public).Length != 0)
         {
             throw new InvalidOperationException("GpuTexture must not expose public resource construction.");
+        }
+
+        if (typeof(GpuPipeline).GetConstructors(BindingFlags.Instance | BindingFlags.Public).Length != 0)
+        {
+            throw new InvalidOperationException("GpuPipeline must not expose public resource construction.");
+        }
+
+        var createPipelineMethod = typeof(GraphicsDevice).GetMethod(
+            nameof(GraphicsDevice.CreatePipelineAsync),
+            [typeof(PipelineDescription), typeof(CancellationToken)]);
+
+        if ((createPipelineMethod is null) || (createPipelineMethod.ReturnType != typeof(Task<GpuPipeline>)))
+        {
+            throw new InvalidOperationException("The public CreatePipelineAsync contract is unavailable to nonfriend consumers.");
         }
 
         if (typeof(GraphicsPipelineDescription).GetConstructor([
@@ -72,6 +88,6 @@ internal static class Program
             throw new InvalidOperationException("The public VertexElementDescription contract is unavailable to nonfriend consumers.");
         }
 
-        Console.WriteLine("D3D12 public registration consumer passed with unsafe disabled, public pipeline-description signatures, no public owner/resource construction, and no native device activation.");
+        Console.WriteLine("D3D12 public registration consumer passed with unsafe disabled, public pipeline creation and description signatures, no public owner/resource construction, and no native device activation.");
     }
 }

@@ -4,9 +4,12 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Threading;
+using TerraFX;
+using TerraFX.Buffers;
 using TerraFX.Graphics;
 using TerraFX.Interop.DirectX;
 using TerraFX.Interop.Windows;
@@ -700,6 +703,11 @@ public static unsafe class D3D12GraphicsBackend
                 }
             }
 
+            public IGraphicsBackendPipeline CreatePipeline(
+                PipelineDescription description,
+                ReadOnlySpan<BufferReadLease<byte>> bytecodeLeases)
+                => D3D12BackendFactory.D3D12PipelineBuilder.Create(_device, description, bytecodeLeases);
+
             public IGraphicsBackendTexture CreateTexture(TextureDescription description)
             {
                 ArgumentNullException.ThrowIfNull(description);
@@ -843,6 +851,510 @@ public static unsafe class D3D12GraphicsBackend
                 internal D3D12BackendTexture(ID3D12Resource* resource)
                     : base(resource)
                 {
+                }
+            }
+        }
+
+        private unsafe class D3D12PipelineBuilder
+        {
+            internal static IGraphicsBackendPipeline Create(
+                ID3D12Device* device,
+                PipelineDescription description,
+                ReadOnlySpan<BufferReadLease<byte>> bytecodeLeases)
+            {
+                if (device is null)
+                {
+                    throw new ArgumentNullException(nameof(device));
+                }
+
+                ArgumentNullException.ThrowIfNull(description);
+
+                var shaderInputs = description switch {
+                    GraphicsPipelineDescription graphicsDescription => graphicsDescription.Shaders,
+                    ComputePipelineDescription computeDescription => [computeDescription.Shader],
+                    _ => throw new ArgumentOutOfRangeException(nameof(description)),
+                };
+
+                if (bytecodeLeases.Length != shaderInputs.Length)
+                {
+                    throw new ArgumentException("The retained bytecode leases must match the pipeline shader stages.", nameof(bytecodeLeases));
+                }
+
+                for (var index = 0; index < shaderInputs.Length; index++)
+                {
+                    if (shaderInputs[index].Format != ShaderBinaryFormat.Dxil)
+                    {
+                        throw new NotSupportedException("The D3D12 backend requires DXIL shader bytecode.");
+                    }
+
+                    if (!shaderInputs[index].Reflection.Resources.IsEmpty)
+                    {
+                        throw new NotSupportedException("D3D12 pipelines with shader resource bindings are not implemented.");
+                    }
+
+                    if (!shaderInputs[index].Reflection.RequiredCapabilities.IsEmpty)
+                    {
+                        throw new NotSupportedException("D3D12 shader capability requirements are not yet qualified.");
+                    }
+                }
+
+                var shaderBytecode = stackalloc void*[bytecodeLeases.Length];
+                var shaderBytecodeLengths = stackalloc nuint[bytecodeLeases.Length];
+                NativeMemory.Clear(shaderBytecode, checked((nuint)bytecodeLeases.Length * (nuint)sizeof(void*)));
+
+                ID3D12RootSignature* rootSignature = null;
+                ID3D12PipelineState* pipelineState = null;
+
+                try
+                {
+                    for (var index = 0; index < bytecodeLeases.Length; index++)
+                    {
+                        shaderBytecode[index] = CopyShaderBytecode(bytecodeLeases[index], out shaderBytecodeLengths[index]);
+                    }
+
+                    rootSignature = CreateEmptyRootSignature(device);
+
+                    if (description is GraphicsPipelineDescription selectedGraphicsDescription)
+                    {
+                        pipelineState = CreateGraphicsPipelineState(
+                            device,
+                            rootSignature,
+                            selectedGraphicsDescription,
+                            shaderBytecode[0],
+                            shaderBytecodeLengths[0],
+                            shaderBytecode[1],
+                            shaderBytecodeLengths[1]);
+                    }
+                    else if (description is ComputePipelineDescription)
+                    {
+                        pipelineState = CreateComputePipelineState(
+                            device,
+                            rootSignature,
+                            shaderBytecode[0],
+                            shaderBytecodeLengths[0]);
+                    }
+                    else
+                    {
+                        throw new ArgumentOutOfRangeException(nameof(description));
+                    }
+
+                    if ((rootSignature is null) || (pipelineState is null))
+                    {
+                        throw new InvalidOperationException("D3D12 pipeline creation returned an incomplete native owner.");
+                    }
+
+                    var result = new D3D12BackendPipeline(pipelineState, rootSignature);
+                    pipelineState = null;
+                    rootSignature = null;
+                    return result;
+                }
+                catch
+                {
+                    if (pipelineState is not null)
+                    {
+                        _ = pipelineState->Release();
+                    }
+
+                    if (rootSignature is not null)
+                    {
+                        _ = rootSignature->Release();
+                    }
+
+                    throw;
+                }
+                finally
+                {
+                    for (var index = 0; index < bytecodeLeases.Length; index++)
+                    {
+                        NativeMemory.Free(shaderBytecode[index]);
+                    }
+                }
+            }
+
+            [SuppressMessage(
+                "Usage",
+                "CA2201:Do not raise reserved exception types",
+                Justification = "Native staging memory allocation failure is reported as an allocation failure, not successful shader creation.")]
+            private static void* CopyShaderBytecode(BufferReadLease<byte> bytecode, out nuint byteLength)
+            {
+                ArgumentNullException.ThrowIfNull(bytecode);
+                var sourceLength = bytecode.Length;
+                ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sourceLength);
+                byteLength = checked((nuint)sourceLength);
+
+                var destination = (byte*)NativeMemory.Alloc(byteLength);
+
+                if (destination is null)
+                {
+                    throw new OutOfMemoryException("D3D12 shader-bytecode copy storage could not be allocated.");
+                }
+
+                try
+                {
+                    nint sourceOffset = 0;
+
+                    while (sourceOffset < sourceLength)
+                    {
+                        var remaining = sourceLength - sourceOffset;
+                        var copyLength = remaining > int.MaxValue
+                            ? int.MaxValue
+                            : checked((int)remaining);
+                        var copyAction = new BytecodeCopyAction(destination + sourceOffset);
+                        bytecode.UseWindow(sourceOffset, copyLength, ref copyAction);
+                        sourceOffset = checked(sourceOffset + copyLength);
+                    }
+
+                    return destination;
+                }
+                catch
+                {
+                    NativeMemory.Free(destination);
+                    throw;
+                }
+            }
+
+            private static D3D12_BLEND_DESC CreateBlendState(PipelineBlendMode blendMode)
+            {
+                var blendEnable = blendMode == PipelineBlendMode.PremultipliedAlpha;
+                var renderTarget = new D3D12_RENDER_TARGET_BLEND_DESC {
+                    BlendEnable = blendEnable,
+                    LogicOpEnable = false,
+                    SrcBlend = D3D12_BLEND.D3D12_BLEND_ONE,
+                    DestBlend = blendEnable
+                        ? D3D12_BLEND.D3D12_BLEND_INV_SRC_ALPHA
+                        : D3D12_BLEND.D3D12_BLEND_ZERO,
+                    BlendOp = D3D12_BLEND_OP.D3D12_BLEND_OP_ADD,
+                    SrcBlendAlpha = D3D12_BLEND.D3D12_BLEND_ONE,
+                    DestBlendAlpha = blendEnable
+                        ? D3D12_BLEND.D3D12_BLEND_INV_SRC_ALPHA
+                        : D3D12_BLEND.D3D12_BLEND_ZERO,
+                    BlendOpAlpha = D3D12_BLEND_OP.D3D12_BLEND_OP_ADD,
+                    LogicOp = D3D12_LOGIC_OP.D3D12_LOGIC_OP_NOOP,
+                    RenderTargetWriteMask = (byte)D3D12_COLOR_WRITE_ENABLE.D3D12_COLOR_WRITE_ENABLE_ALL,
+                };
+                var blendState = new D3D12_BLEND_DESC {
+                    AlphaToCoverageEnable = false,
+                    IndependentBlendEnable = false,
+                };
+                blendState.RenderTarget.e0 = renderTarget;
+                return blendState;
+            }
+
+            private static ID3D12PipelineState* CreateComputePipelineState(
+                ID3D12Device* device,
+                ID3D12RootSignature* rootSignature,
+                void* bytecode,
+                nuint bytecodeLength)
+            {
+                var nativeDescription = new D3D12_COMPUTE_PIPELINE_STATE_DESC {
+                    pRootSignature = rootSignature,
+                    CS = new D3D12_SHADER_BYTECODE {
+                        pShaderBytecode = bytecode,
+                        BytecodeLength = bytecodeLength,
+                    },
+                    Flags = D3D12_PIPELINE_STATE_FLAGS.D3D12_PIPELINE_STATE_FLAG_NONE,
+                };
+                var pipelineId = typeof(ID3D12PipelineState).GUID;
+                ID3D12PipelineState* pipelineState = null;
+
+                ThrowIfFailed(device->CreateComputePipelineState(&nativeDescription, &pipelineId, (void**)&pipelineState));
+
+                if (pipelineState is null)
+                {
+                    throw new InvalidOperationException("D3D12 compute-pipeline creation returned no pipeline state.");
+                }
+
+                return pipelineState;
+            }
+
+            private static D3D12_DEPTH_STENCIL_DESC CreateDepthStencilState(GraphicsPipelineDescription description)
+            {
+                var depthEnabled = description.DepthMode != PipelineDepthMode.Disabled;
+                var stencilOperation = new D3D12_DEPTH_STENCILOP_DESC {
+                    StencilFailOp = D3D12_STENCIL_OP.D3D12_STENCIL_OP_KEEP,
+                    StencilDepthFailOp = D3D12_STENCIL_OP.D3D12_STENCIL_OP_KEEP,
+                    StencilPassOp = D3D12_STENCIL_OP.D3D12_STENCIL_OP_KEEP,
+                    StencilFunc = D3D12_COMPARISON_FUNC.D3D12_COMPARISON_FUNC_ALWAYS,
+                };
+
+                return new D3D12_DEPTH_STENCIL_DESC {
+                    DepthEnable = depthEnabled,
+                    DepthWriteMask = description.DepthMode == PipelineDepthMode.ReversedGreaterEqualWrite
+                        ? D3D12_DEPTH_WRITE_MASK.D3D12_DEPTH_WRITE_MASK_ALL
+                        : D3D12_DEPTH_WRITE_MASK.D3D12_DEPTH_WRITE_MASK_ZERO,
+                    DepthFunc = depthEnabled
+                        ? D3D12_COMPARISON_FUNC.D3D12_COMPARISON_FUNC_GREATER_EQUAL
+                        : D3D12_COMPARISON_FUNC.D3D12_COMPARISON_FUNC_ALWAYS,
+                    StencilEnable = false,
+                    StencilReadMask = byte.MaxValue,
+                    StencilWriteMask = byte.MaxValue,
+                    FrontFace = stencilOperation,
+                    BackFace = stencilOperation,
+                };
+            }
+
+            private static ID3D12RootSignature* CreateEmptyRootSignature(ID3D12Device* device)
+            {
+                var rootSignatureDescription = new D3D12_ROOT_SIGNATURE_DESC {
+                    Flags = D3D12_ROOT_SIGNATURE_FLAGS.D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+                };
+                ID3DBlob* signatureBlob = null;
+                ID3DBlob* errorBlob = null;
+                ID3D12RootSignature* rootSignature = null;
+
+                try
+                {
+                    ThrowIfFailed(DirectX.D3D12SerializeRootSignature(
+                        &rootSignatureDescription,
+                        D3D_ROOT_SIGNATURE_VERSION.D3D_ROOT_SIGNATURE_VERSION_1,
+                        &signatureBlob,
+                        &errorBlob));
+
+                    if (signatureBlob is null)
+                    {
+                        throw new InvalidOperationException("D3D12 root-signature serialization returned no signature blob.");
+                    }
+
+                    var rootSignatureId = typeof(ID3D12RootSignature).GUID;
+                    ThrowIfFailed(device->CreateRootSignature(
+                        0,
+                        signatureBlob->GetBufferPointer(),
+                        signatureBlob->GetBufferSize(),
+                        &rootSignatureId,
+                        (void**)&rootSignature));
+
+                    if (rootSignature is null)
+                    {
+                        throw new InvalidOperationException("D3D12 root-signature creation returned no root signature.");
+                    }
+
+                    return rootSignature;
+                }
+                catch
+                {
+                    if (rootSignature is not null)
+                    {
+                        _ = rootSignature->Release();
+                    }
+
+                    throw;
+                }
+                finally
+                {
+                    if (errorBlob is not null)
+                    {
+                        _ = errorBlob->Release();
+                    }
+
+                    if (signatureBlob is not null)
+                    {
+                        _ = signatureBlob->Release();
+                    }
+                }
+            }
+
+            [SuppressMessage(
+                "Usage",
+                "CA2201:Do not raise reserved exception types",
+                Justification = "Native vertex-input allocation exhaustion is reported as an allocation failure, not successful pipeline creation.")]
+            private static ID3D12PipelineState* CreateGraphicsPipelineState(
+                ID3D12Device* device,
+                ID3D12RootSignature* rootSignature,
+                GraphicsPipelineDescription description,
+                void* vertexBytecode,
+                nuint vertexBytecodeLength,
+                void* pixelBytecode,
+                nuint pixelBytecodeLength)
+            {
+                var inputElementCount = description.VertexElements.Length;
+                var semanticNamePointers = new IntPtr[inputElementCount];
+                var inputElements = inputElementCount == 0
+                    ? null
+                    : (D3D12_INPUT_ELEMENT_DESC*)NativeMemory.Alloc(
+                        checked((nuint)inputElementCount),
+                        (nuint)sizeof(D3D12_INPUT_ELEMENT_DESC));
+
+                if ((inputElementCount != 0) && (inputElements is null))
+                {
+                    throw new OutOfMemoryException("D3D12 vertex-input descriptor storage could not be allocated.");
+                }
+
+                try
+                {
+                    var vertexInputs = description.Shaders[0].Reflection.Inputs;
+                    var elementIndex = 0;
+
+                    for (var inputIndex = 0; inputIndex < vertexInputs.Length; inputIndex++)
+                    {
+                        var input = vertexInputs[inputIndex];
+
+                        if (input.Location is null)
+                        {
+                            continue;
+                        }
+
+                        var element = description.VertexElements[elementIndex];
+                        var semanticName = Marshal.StringToCoTaskMemUTF8(input.SemanticName);
+                        semanticNamePointers[elementIndex] = semanticName;
+                        inputElements[elementIndex] = new D3D12_INPUT_ELEMENT_DESC {
+                            SemanticName = (sbyte*)semanticName,
+                            SemanticIndex = checked((uint)input.SemanticIndex),
+                            Format = GetNativeVertexFormat(element.Format),
+                            InputSlot = 0,
+                            AlignedByteOffset = checked((uint)element.ByteOffset),
+                            InputSlotClass = D3D12_INPUT_CLASSIFICATION.D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+                            InstanceDataStepRate = 0,
+                        };
+                        elementIndex++;
+                    }
+
+                    var nativeDescription = new D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+                        pRootSignature = rootSignature,
+                        VS = new D3D12_SHADER_BYTECODE {
+                            pShaderBytecode = vertexBytecode,
+                            BytecodeLength = vertexBytecodeLength,
+                        },
+                        PS = new D3D12_SHADER_BYTECODE {
+                            pShaderBytecode = pixelBytecode,
+                            BytecodeLength = pixelBytecodeLength,
+                        },
+                        BlendState = CreateBlendState(description.BlendMode),
+                        SampleMask = uint.MaxValue,
+                        RasterizerState = CreateRasterizerState(description),
+                        DepthStencilState = CreateDepthStencilState(description),
+                        InputLayout = new D3D12_INPUT_LAYOUT_DESC {
+                            pInputElementDescs = inputElements,
+                            NumElements = checked((uint)inputElementCount),
+                        },
+                        PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE.D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+                        NumRenderTargets = checked((uint)description.ColorTargetFormats.Length),
+                        DSVFormat = description.DepthTargetFormat is TextureFormat depthFormat
+                            ? GetNativeFormat(depthFormat)
+                            : DXGI_FORMAT.DXGI_FORMAT_UNKNOWN,
+                        SampleDesc = new DXGI_SAMPLE_DESC {
+                            Count = 1,
+                            Quality = 0,
+                        },
+                        Flags = D3D12_PIPELINE_STATE_FLAGS.D3D12_PIPELINE_STATE_FLAG_NONE,
+                    };
+                    var nativeTargetFormats = &nativeDescription.RTVFormats.e0;
+
+                    for (var targetIndex = 0; targetIndex < description.ColorTargetFormats.Length; targetIndex++)
+                    {
+                        nativeTargetFormats[targetIndex] = GetNativeFormat(description.ColorTargetFormats[targetIndex]);
+                    }
+
+                    var pipelineId = typeof(ID3D12PipelineState).GUID;
+                    ID3D12PipelineState* pipelineState = null;
+                    ThrowIfFailed(device->CreateGraphicsPipelineState(
+                        &nativeDescription,
+                        &pipelineId,
+                        (void**)&pipelineState));
+
+                    if (pipelineState is null)
+                    {
+                        throw new InvalidOperationException("D3D12 graphics-pipeline creation returned no pipeline state.");
+                    }
+
+                    return pipelineState;
+                }
+                finally
+                {
+                    for (var index = 0; index < semanticNamePointers.Length; index++)
+                    {
+                        if (semanticNamePointers[index] != IntPtr.Zero)
+                        {
+                            Marshal.FreeCoTaskMem(semanticNamePointers[index]);
+                        }
+                    }
+
+                    NativeMemory.Free(inputElements);
+                }
+            }
+
+            private static D3D12_RASTERIZER_DESC CreateRasterizerState(GraphicsPipelineDescription description)
+                => new() {
+                    FillMode = D3D12_FILL_MODE.D3D12_FILL_MODE_SOLID,
+                    CullMode = description.CullMode switch {
+                        PipelineCullMode.None => D3D12_CULL_MODE.D3D12_CULL_MODE_NONE,
+                        PipelineCullMode.Front => D3D12_CULL_MODE.D3D12_CULL_MODE_FRONT,
+                        PipelineCullMode.Back => D3D12_CULL_MODE.D3D12_CULL_MODE_BACK,
+                        _ => throw new ArgumentOutOfRangeException(nameof(description)),
+                    },
+                    FrontCounterClockwise = !description.FrontFaceClockwise,
+                    DepthBias = 0,
+                    DepthBiasClamp = 0.0f,
+                    SlopeScaledDepthBias = 0.0f,
+                    DepthClipEnable = true,
+                    MultisampleEnable = false,
+                    AntialiasedLineEnable = false,
+                    ForcedSampleCount = 0,
+                    ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE.D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
+                };
+
+            private static DXGI_FORMAT GetNativeVertexFormat(VertexElementFormat format)
+                => format switch {
+                    VertexElementFormat.Float2 => DXGI_FORMAT.DXGI_FORMAT_R32G32_FLOAT,
+                    VertexElementFormat.Float3 => DXGI_FORMAT.DXGI_FORMAT_R32G32B32_FLOAT,
+                    VertexElementFormat.Float4 => DXGI_FORMAT.DXGI_FORMAT_R32G32B32A32_FLOAT,
+                    VertexElementFormat.Half2 => DXGI_FORMAT.DXGI_FORMAT_R16G16_FLOAT,
+                    VertexElementFormat.Half4 => DXGI_FORMAT.DXGI_FORMAT_R16G16B16A16_FLOAT,
+                    VertexElementFormat.UNorm8x4 => DXGI_FORMAT.DXGI_FORMAT_R8G8B8A8_UNORM,
+                    _ => throw new ArgumentOutOfRangeException(nameof(format)),
+                };
+
+            private readonly unsafe struct BytecodeCopyAction : IAction<ReadOnlySpan<byte>>
+            {
+                private readonly byte* _destination;
+
+                internal BytecodeCopyAction(byte* destination)
+                {
+                    _destination = destination;
+                }
+
+                public readonly void Invoke(scoped ReadOnlySpan<byte> argument)
+                    => argument.CopyTo(new Span<byte>(_destination, argument.Length));
+            }
+
+            private sealed unsafe class D3D12BackendPipeline : IGraphicsBackendPipeline
+            {
+                private ID3D12PipelineState* _pipelineState;
+                private ID3D12RootSignature* _rootSignature;
+
+                internal D3D12BackendPipeline(
+                    ID3D12PipelineState* pipelineState,
+                    ID3D12RootSignature* rootSignature)
+                {
+                    if (pipelineState is null)
+                    {
+                        throw new ArgumentNullException(nameof(pipelineState));
+                    }
+
+                    if (rootSignature is null)
+                    {
+                        throw new ArgumentNullException(nameof(rootSignature));
+                    }
+
+                    _pipelineState = pipelineState;
+                    _rootSignature = rootSignature;
+                }
+
+                public void Dispose()
+                {
+                    var pipelineState = _pipelineState;
+                    var rootSignature = _rootSignature;
+                    _pipelineState = null;
+                    _rootSignature = null;
+
+                    if (pipelineState is not null)
+                    {
+                        _ = pipelineState->Release();
+                    }
+
+                    if (rootSignature is not null)
+                    {
+                        _ = rootSignature->Release();
+                    }
                 }
             }
         }

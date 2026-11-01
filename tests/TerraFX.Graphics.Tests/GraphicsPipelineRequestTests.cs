@@ -1,0 +1,370 @@
+// Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
+
+using System;
+using System.Collections.Immutable;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
+using NUnit.Framework;
+using TerraFX;
+using TerraFX.Buffers;
+using TerraFX.Graphics;
+
+namespace TerraFX.Graphics.Tests;
+
+[TestFixture]
+internal sealed class GraphicsPipelineRequestTests
+{
+    private static GraphicsCapabilities CreateCapabilities()
+    {
+        var features = ImmutableArray.Create(
+            GraphicsFeature.Direct3DFeatureLevel12,
+            GraphicsFeature.ShaderModel6);
+
+        return new GraphicsCapabilities(
+            GraphicsBackend.D3D12,
+            GraphicsDeviceProfile.OffscreenNative,
+            new GraphicsAdapterId(GraphicsBackend.D3D12, [0, 1, 2, 3, 4, 5, 6, 7]),
+            vendorId: 1,
+            deviceId: 1,
+            adapterName: "Pipeline request test adapter",
+            driverName: "Pipeline request test driver",
+            driverVersion: "1",
+            new GraphicsApiVersion(12, 0, 0, 0),
+            features,
+            features,
+            CreateLimits(),
+            CreateFormats(),
+            [new GraphicsMemoryHeapCapabilities(
+                0,
+                GraphicsMemoryHeapProperties.DeviceLocal,
+                4L * 1024 * 1024 * 1024,
+                3L * 1024 * 1024 * 1024)]);
+    }
+
+    private static ShaderCompilerIdentity CreateCompilerIdentity()
+    {
+        var digest = new byte[32];
+        Array.Fill(digest, (byte)0xA5);
+
+        return new ShaderCompilerIdentity(
+            "Microsoft.Direct3D.DXC",
+            "1.8.2505.1",
+            "1.8.2505.32",
+            "win-x64",
+            ImmutableCollectionsMarshal.AsImmutableArray(digest));
+    }
+
+    private static ImmutableArray<GraphicsFormatCapabilities> CreateFormats()
+        => [
+            new GraphicsFormatCapabilities(TextureFormat.Rgba8Unorm, TextureUsage.Sampled | TextureUsage.ColorAttachment, [1]),
+            new GraphicsFormatCapabilities(TextureFormat.Rgba8Srgb, TextureUsage.Sampled | TextureUsage.ColorAttachment, [1]),
+            new GraphicsFormatCapabilities(TextureFormat.Rgba16Float, TextureUsage.Sampled | TextureUsage.Storage | TextureUsage.ColorAttachment, [1]),
+            new GraphicsFormatCapabilities(TextureFormat.R8Unorm, TextureUsage.Sampled, [1]),
+            new GraphicsFormatCapabilities(TextureFormat.R32Float, TextureUsage.Sampled | TextureUsage.Storage, [1]),
+            new GraphicsFormatCapabilities(TextureFormat.R32UInt, TextureUsage.Storage | TextureUsage.ColorAttachment, [1]),
+            new GraphicsFormatCapabilities(TextureFormat.D32Float, TextureUsage.DepthAttachment | TextureUsage.Sampled, [1]),
+        ];
+
+    private static GraphicsLimits CreateLimits()
+        => new(
+            maximumTextureDimension2D: 16384,
+            maximumTextureDimension3D: 2048,
+            maximumArrayLayers: 2048,
+            maximumColorAttachments: 8,
+            maximumSampledImagesPerStage: 128,
+            maximumSamplersPerStage: 32,
+            maximumSamplerAnisotropy: 1.0f,
+            maximumUniformBuffersPerStage: 16,
+            maximumUniformBufferRangeBytes: 65536,
+            uniformBufferOffsetAlignment: 256,
+            storageBufferOffsetAlignment: 16,
+            bufferCopyOffsetAlignment: 16,
+            textureRowPitchAlignment: 256,
+            texturePlacementAlignment: 512,
+            maximumComputeWorkGroupSizeX: 1024,
+            maximumComputeWorkGroupSizeY: 1024,
+            maximumComputeWorkGroupSizeZ: 64,
+            maximumComputeWorkGroupInvocations: 1024,
+            maximumVertexInputAttributes: 32,
+            maximumVertexInputBindings: 32,
+            maximumBufferByteLength: 1L << 40);
+
+    private static GraphicsPipelineDescription CreatePipelineDescription(BufferReadLease<byte> bytecode)
+    {
+        var compilerIdentity = CreateCompilerIdentity();
+        var vertexReflection = new ShaderReflection(
+            ShaderStage.Vertex,
+            "VSMain",
+            compilerIdentity,
+            [new ShaderIoSignature("SV_VertexID", 0, null, ShaderValueType.UInt1, ShaderInterpolation.Flat)],
+            [new ShaderIoSignature("SV_Position", 0, null, ShaderValueType.Float4, ShaderInterpolation.Smooth)],
+            [],
+            [],
+            [],
+            bindingLayoutVersion: 1,
+            groupSizeX: 0,
+            groupSizeY: 0,
+            groupSizeZ: 0);
+        var pixelReflection = new ShaderReflection(
+            ShaderStage.Pixel,
+            "PSMain",
+            compilerIdentity,
+            [],
+            [new ShaderIoSignature("SV_Target", 0, null, ShaderValueType.Float4, ShaderInterpolation.Smooth)],
+            [],
+            [],
+            [],
+            bindingLayoutVersion: 1,
+            groupSizeX: 0,
+            groupSizeY: 0,
+            groupSizeZ: 0);
+        var vertexShader = new ShaderBytecodeInput(ShaderStage.Vertex, ShaderBinaryFormat.Dxil, bytecode, vertexReflection);
+        var pixelShader = new ShaderBytecodeInput(ShaderStage.Pixel, ShaderBinaryFormat.Dxil, bytecode, pixelReflection);
+
+        return new GraphicsPipelineDescription(
+            [vertexShader, pixelShader],
+            [],
+            vertexStride: 0,
+            [TextureFormat.Rgba8Unorm],
+            depthTargetFormat: null,
+            PrimitiveTopology.TriangleList,
+            PipelineBlendMode.Opaque,
+            PipelineDepthMode.Disabled,
+            PipelineCullMode.None,
+            frontFaceClockwise: false,
+            bindingLayoutVersion: 1);
+    }
+
+    [Test]
+    public async Task PipelineCancellationWaitsForBackendCreationAndRetiresThePipeline()
+    {
+        using var cancellationSource = new CancellationTokenSource();
+        using var continuePipelineCreation = new ManualResetEventSlim(initialState: false);
+        using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
+        var backendDevice = new FakeBackendDevice(
+            CreateCapabilities(),
+            pipelineCreationEntered,
+            continuePipelineCreation);
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var graphicsDevice = await GraphicsDevice.CreateAsync(
+            ownerId: 18,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        var bufferOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        var callerBytecodeLease = bufferOwner.AcquireRead(0, 4);
+        var callerLeaseDisposed = false;
+        var bufferOwnerDisposed = false;
+
+        try
+        {
+            var description = CreatePipelineDescription(callerBytecodeLease);
+            var pipelineTask = graphicsDevice.CreatePipelineAsync(description, cancellationSource.Token);
+
+            Assert.That(pipelineCreationEntered.Wait(TimeSpan.FromSeconds(5)), Is.True);
+            await cancellationSource.CancelAsync().ConfigureAwait(false);
+            Assert.That(pipelineTask.IsCompleted, Is.False);
+
+            continuePipelineCreation.Set();
+            _ = Assert.ThrowsAsync<TaskCanceledException>(
+                async () => _ = await pipelineTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+            Assert.That(backendDevice.PipelineDisposalCount, Is.EqualTo(1));
+        }
+        finally
+        {
+            continuePipelineCreation.Set();
+
+            if (!callerLeaseDisposed)
+            {
+                callerBytecodeLease.Dispose();
+            }
+
+            if (!bufferOwnerDisposed)
+            {
+                bufferOwner.Dispose();
+            }
+
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task PipelineRequestRetainsBytecodeUntilBackendCreationCompletes()
+    {
+        using var continuePipelineCreation = new ManualResetEventSlim(initialState: false);
+        using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
+        var backendDevice = new FakeBackendDevice(
+            CreateCapabilities(),
+            pipelineCreationEntered,
+            continuePipelineCreation);
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var graphicsDevice = await GraphicsDevice.CreateAsync(
+            ownerId: 17,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        var bufferOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        var callerBytecodeLease = bufferOwner.AcquireRead(0, 4);
+        var callerLeaseDisposed = false;
+        var bufferOwnerDisposed = false;
+        GpuPipeline? pipeline = null;
+
+        try
+        {
+            var description = CreatePipelineDescription(callerBytecodeLease);
+            var pipelineTask = graphicsDevice.CreatePipelineAsync(description);
+
+            Assert.That(pipelineCreationEntered.Wait(TimeSpan.FromSeconds(5)), Is.True);
+            callerBytecodeLease.Dispose();
+            callerLeaseDisposed = true;
+            bufferOwner.Dispose();
+            bufferOwnerDisposed = true;
+            Assert.That(pipelineTask.IsCompleted, Is.False);
+
+            continuePipelineCreation.Set();
+            pipeline = await pipelineTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            Assert.That(backendDevice.ObservedBytecodeLength, Is.EqualTo(4));
+            Assert.That(pipeline.Handle.IsValid, Is.True);
+            Assert.That(pipeline.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
+
+            pipeline.Dispose();
+            pipeline = null;
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            Assert.That(backendDevice.PipelineDisposalCount, Is.EqualTo(1));
+        }
+        finally
+        {
+            continuePipelineCreation.Set();
+            pipeline?.Dispose();
+
+            if (!callerLeaseDisposed)
+            {
+                callerBytecodeLease.Dispose();
+            }
+
+            if (!bufferOwnerDisposed)
+            {
+                bufferOwner.Dispose();
+            }
+
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    private sealed class FakeBackendDevice : IGraphicsBackendDevice
+    {
+        private readonly GraphicsCapabilities _capabilities;
+        private readonly ManualResetEventSlim _continuePipelineCreation;
+        private long _observedBytecodeLength;
+        private readonly ManualResetEventSlim _pipelineCreationEntered;
+        private int _pipelineDisposalCount;
+
+        internal FakeBackendDevice(
+            GraphicsCapabilities capabilities,
+            ManualResetEventSlim pipelineCreationEntered,
+            ManualResetEventSlim continuePipelineCreation)
+        {
+            _capabilities = capabilities;
+            _pipelineCreationEntered = pipelineCreationEntered;
+            _continuePipelineCreation = continuePipelineCreation;
+        }
+
+        public GraphicsCapabilities Capabilities => _capabilities;
+
+        internal long ObservedBytecodeLength => Interlocked.Read(ref _observedBytecodeLength);
+
+        internal int PipelineDisposalCount => Volatile.Read(ref _pipelineDisposalCount);
+
+        public IGraphicsBackendBuffer CreateBuffer(BufferDescription description)
+            => throw new NotSupportedException();
+
+        public IGraphicsBackendPipeline CreatePipeline(
+            PipelineDescription description,
+            ReadOnlySpan<BufferReadLease<byte>> bytecodeLeases)
+        {
+            if (bytecodeLeases.Length == 0)
+            {
+                throw new ArgumentException("Pipeline creation requires at least one shader lease.", nameof(bytecodeLeases));
+            }
+
+            _pipelineCreationEntered.Set();
+
+            if (!_continuePipelineCreation.Wait(TimeSpan.FromSeconds(10)))
+            {
+                throw new TimeoutException("The pipeline request test did not release its backend creation gate.");
+            }
+
+            _ = Interlocked.Exchange(ref _observedBytecodeLength, bytecodeLeases[0].Length);
+            return new FakeBackendPipeline(this);
+        }
+
+        public IGraphicsBackendTexture CreateTexture(TextureDescription description)
+            => throw new NotSupportedException();
+
+        public void Dispose()
+        {
+        }
+
+        public GraphicsResourceAllocationInfo GetBufferAllocationInfo(BufferDescription description)
+            => throw new NotSupportedException();
+
+        public GraphicsResourceAllocationInfo GetTextureAllocationInfo(TextureDescription description)
+            => throw new NotSupportedException();
+
+        internal void PipelineDisposed()
+            => _ = Interlocked.Increment(ref _pipelineDisposalCount);
+    }
+
+    private sealed class FakeBackendFactory : IGraphicsBackendFactory
+    {
+        private readonly FakeBackendDevice _device;
+
+        internal FakeBackendFactory(FakeBackendDevice device)
+        {
+            _device = device;
+        }
+
+        public GraphicsBackend Backend => GraphicsBackend.D3D12;
+
+        public IGraphicsBackendDevice Create(
+            uint ownerId,
+            GraphicsDeviceProfile profile,
+            GraphicsPlatformKind platformKind,
+            CancellationToken cancellationToken)
+        {
+            ArgumentOutOfRangeException.ThrowIfZero(ownerId);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if ((profile != GraphicsDeviceProfile.OffscreenNative) || (platformKind != GraphicsPlatformKind.None))
+            {
+                throw new ArgumentException("The test backend supports only OffscreenNative without a platform.");
+            }
+
+            return _device;
+        }
+    }
+
+    private sealed class FakeBackendPipeline : IGraphicsBackendPipeline
+    {
+        private readonly FakeBackendDevice _device;
+        private int _isDisposed;
+
+        internal FakeBackendPipeline(FakeBackendDevice device)
+        {
+            _device = device;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _isDisposed, 1) == 0)
+            {
+                _device.PipelineDisposed();
+            }
+        }
+    }
+}
