@@ -167,12 +167,12 @@ public sealed class WorldRegistrationBuilder
         return this;
     }
 
-    /// <summary>Registers the headless-capable CPU extraction participant before the World is constructed.</summary>
+    /// <summary>Registers CPU render-source components and extraction support before the World is constructed.</summary>
     /// <param name="support">The opaque registration produced by <see cref="TerraFX.Rendering.Renderer.CreateCpuExtractionSupportRegistration"/>.</param>
     /// <returns>This builder.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="support"/> is null.</exception>
     /// <exception cref="ArgumentException">CPU extraction support is already registered.</exception>
-    /// <exception cref="InvalidOperationException">The World registration builder has already been frozen.</exception>
+    /// <exception cref="InvalidOperationException">The builder is frozen, the compiled registry omits the render-source schema, or the support factory returns an invalid component set.</exception>
     public WorldRegistrationBuilder RegisterCpuExtractionSupport(CpuExtractionSupportRegistration support)
     {
         EnsureMutable();
@@ -183,6 +183,54 @@ public sealed class WorldRegistrationBuilder
             throw new ArgumentException("CPU extraction support can be registered only once.", nameof(support));
         }
 
+        var staging = new WorldRegistrationBuilder(_schemas);
+        support.RegisterComponents(staging, _schemas);
+
+        if ((staging._components.Count == 0)
+            || (staging._attachments.Count != 0)
+            || (staging._resources.Count != 0)
+            || (staging._systems.Count != 0)
+            || (staging._tags.Count != 0))
+        {
+            throw new InvalidOperationException("CPU extraction support must register a nonempty component set only.");
+        }
+
+        var schemaIds = new HashSet<Guid>();
+        var componentTypes = new HashSet<Type>();
+        var registeredTypeCount = _components.Count + _tags.Count;
+
+        foreach (var registration in staging._components)
+        {
+            var schema = registration.SchemaReference;
+            var descriptor = registration.Descriptor;
+
+            if (ContainsSchemaId(schema.SchemaId)
+                || !schemaIds.Add(schema.SchemaId)
+                || ContainsComponentType(registration.ComponentType)
+                || !componentTypes.Add(registration.ComponentType))
+            {
+                throw new ArgumentException("A CPU render-source component schema or CLR type is already registered.", nameof(support));
+            }
+
+            if ((descriptor.Schema != schema)
+                || (descriptor.Layout.LayoutId != registration.Layout.LayoutId)
+                || (descriptor.Layout.LogicalBytes != registration.Layout.LogicalBytes)
+                || !_schemas.TryGetSchema(schema, out var metadata)
+                || (metadata.Role != ContentSchemaRole.Component)
+                || (descriptor.Fields.Length != metadata.Fields.Length))
+            {
+                throw new InvalidOperationException("The CPU render-source component registration does not match this compiled schema registry.");
+            }
+
+            if (registeredTypeCount >= 256)
+            {
+                throw new ArgumentOutOfRangeException(nameof(support), "The registration cannot exceed 256 component and tag identities.");
+            }
+
+            registeredTypeCount++;
+        }
+
+        _components.AddRange(staging._components);
         _cpuExtractionSupport = support;
         return this;
     }

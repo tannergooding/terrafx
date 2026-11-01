@@ -10,6 +10,7 @@ using NUnit.Framework;
 using TerraFX;
 using TerraFX.Assets;
 using TerraFX.Entities;
+using TerraFX.Graphics;
 using TerraFX.Numerics;
 using TerraFX.Rendering;
 using TerraFX.Scenes;
@@ -75,10 +76,33 @@ internal sealed partial class SceneAssetStoreTests
             new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(12, 7, 1, 1, orderBytes));
     }
 
+    private static byte[] CreatePointLightRecord(ulong layerMask)
+    {
+        var layerMaskBytes = new byte[sizeof(ulong)];
+        BinaryPrimitives.WriteUInt64LittleEndian(layerMaskBytes, layerMask);
+        return SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("render/point-light").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 15, 0.25f, 0.5f, 1.0f),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(2, 10, 750.0f),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(3, 10, 12.0f),
+            new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(4, 4, 1, 1, layerMaskBytes));
+    }
+
+    private static CompiledContentSchemaRegistry CreateRendererRegistry()
+        => new([
+            .. CoreContentSchemaCatalogue.PrimitiveSchemas,
+            .. CoreContentSchemaCatalogue.FoundationSchemas,
+            .. NativeAssetSchemaCatalogue.Schemas,
+            .. SceneSchemaCatalogue.Schemas,
+            .. RenderingSchemaCatalogue.Schemas,
+        ]);
+
     [Test]
     public void CpuExtractionSupportRequiresSceneSupportAndRejectsDuplicateRegistration()
     {
-        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var schemas = CreateRendererRegistry();
         var registrationBuilder = new WorldRegistrationBuilder(schemas);
         _ = registrationBuilder.RegisterCpuExtractionSupport(Renderer.CreateCpuExtractionSupportRegistration());
 
@@ -101,12 +125,12 @@ internal sealed partial class SceneAssetStoreTests
         const int prefabAssetId = 1;
         const int firstSceneAssetId = 3;
         const int secondSceneAssetId = 4;
-        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var schemas = CreateRendererRegistry();
         var childCamera = CreateCameraRecord(order: 5);
         var childPrefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
             new AssetId(prefabAssetId),
             entityId: s_childEntityId,
-            additionalEntityComponents: [childCamera]);
+            additionalEntityComponents: [childCamera, CreatePointLightRecord(ulong.MaxValue)]);
         var firstScene = SceneAssetReaderTests.Fixtures.CreateSceneWithChildPlacement(
             new AssetId(firstSceneAssetId),
             s_sceneRootEntityId,
@@ -117,7 +141,10 @@ internal sealed partial class SceneAssetStoreTests
                 includeRootPosition: false));
         var secondScene = SceneAssetReaderTests.Fixtures.CreateScene(
             new AssetId(secondSceneAssetId),
-            additionalEntityComponents: [CreateCameraRecord(order: -1)]);
+            additionalEntityComponents: [
+                CreateCameraRecord(order: -1),
+                CreatePointLightRecord(layerMask: 0),
+            ]);
         var package = Package.CreatePackage(
             new Package.Entry(prefabAssetId, Package.CreateEnvelope(prefabAssetId, childPrefab)),
             new Package.Entry(firstSceneAssetId, Package.CreateEnvelope(firstSceneAssetId, firstScene)),
@@ -191,6 +218,14 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(snapshot.Cameras[1].Position.Chunk.Z, Is.Zero);
             Assert.That(float.Abs(snapshot.Cameras[1].Position.Offset.X - 5.0f), Is.LessThan(1.0e-5f));
             Assert.That(float.Abs(snapshot.Cameras[1].Position.Offset.Y - 4.0f), Is.LessThan(1.0e-5f));
+            Assert.That(snapshot.PointLightIds, Has.Length.EqualTo(1));
+            Assert.That(snapshot.PointLightIds[0], Is.Not.EqualTo(Guid.Empty));
+            Assert.That(snapshot.PointLights[0].LightId, Is.EqualTo(snapshot.PointLightIds[0]));
+            Assert.That(snapshot.PointLights, Has.Length.EqualTo(1));
+            Assert.That(snapshot.PointLights[0].EntityId, Is.EqualTo(childCameraId));
+            Assert.That(snapshot.PointLights[0].LuminousFlux, Is.EqualTo(750.0f));
+            Assert.That(snapshot.PointLights[0].Range, Is.EqualTo(12.0f));
+            Assert.That(snapshot.PointLights[0].Position, Is.EqualTo(snapshot.Cameras[1].Position));
 
             var cameraRight = Vector3.TransformDirection(
                 Vector3.UnitX,
@@ -210,6 +245,9 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(snapshot2D.FrameDimension, Is.EqualTo(RenderFrameDimension.TwoDimensional));
             Assert.That(snapshot2D.FrameRevision, Is.EqualTo(frame2.Revision));
             Assert.That(snapshot2D.Cameras[1].Position, Is.EqualTo(snapshot.Cameras[1].Position));
+            Assert.That(snapshot2D.PointLightIds, Is.EqualTo(snapshot.PointLightIds));
+            Assert.That(snapshot2D.PointLights[0].Position, Is.EqualTo(snapshot.PointLights[0].Position));
+            Assert.That(snapshot2D.PointLights[0].LuminousFlux, Is.EqualTo(snapshot.PointLights[0].LuminousFlux));
             snapshot2D.Dispose();
 
             snapshot.Dispose();
@@ -228,6 +266,9 @@ internal sealed partial class SceneAssetStoreTests
             var currentResponse = renderer.Extract(world, currentOptions);
             Assert.That(currentResponse.Status, Is.EqualTo(RenderExtractionStatus.Extracted));
             Assert.That(currentResponse.Snapshot?.TickIndex, Is.EqualTo(nextPublication.CompletedTick));
+            var currentSnapshot = (RenderSnapshot3D)(currentResponse.Snapshot
+                ?? throw new InvalidOperationException("The successful current 3D extraction omitted its snapshot."));
+            Assert.That(currentSnapshot.PointLights[0].LightId, Is.EqualTo(snapshot.PointLights[0].LightId));
             var nextFrame2 = nextPublication.Frame2
                 ?? throw new InvalidOperationException("The enabled 2D frame was omitted from the next committed publication.");
             var currentOptions2D = new RenderExtractionOptions2D(
@@ -237,13 +278,119 @@ internal sealed partial class SceneAssetStoreTests
             var currentResponse2D = renderer.Extract(world, currentOptions2D);
             Assert.That(currentResponse2D.Status, Is.EqualTo(RenderExtractionStatus.Extracted));
             Assert.That(currentResponse2D.Snapshot?.TickIndex, Is.EqualTo(nextPublication.CompletedTick));
+            Assert.That(
+                currentSnapshot.PointLights[0].Position.Offset,
+                Is.EqualTo(new Vector3(7.0f, 0.0f, 0.0f)));
             currentResponse.Snapshot?.Dispose();
             currentResponse2D.Snapshot?.Dispose();
+
+            var lightTransform = new SceneComponentDefinitions.LocalTransformComponent(
+                Vector3.Zero,
+                Quaternion.Identity,
+                Vector3.One);
+            var lightRootPosition = new SceneComponentDefinitions.RootPositionComponent(default);
+            var capacityLight = new RenderComponentDefinitions.PointLightComponent(
+                Vector3.One,
+                1000.0f,
+                10.0f,
+                ulong.MaxValue);
+            ImmutableArray<ComponentInitialization> lightComponents = [
+                ComponentInitialization.Value(in lightTransform),
+                ComponentInitialization.Value(in lightRootPosition),
+                ComponentInitialization.Value(in capacityLight),
+            ];
+
+            for (var index = 0; index < 256; index++)
+            {
+                _ = world.CreateEntity(new EntityDescription(components: lightComponents));
+            }
+
+            var capacityPublication = world.Step().Publication;
+            var capacityOptions3D = new RenderExtractionOptions3D(
+                capacityPublication.Frame3,
+                options.TargetExtent,
+                options.CameraIds);
+            var capacityResponse3D = renderer.Extract(world, capacityOptions3D);
+            Assert.That(capacityResponse3D.Status, Is.EqualTo(RenderExtractionStatus.CapacityExceeded));
+            Assert.That(capacityResponse3D.Snapshot, Is.Null);
+            Assert.That(capacityResponse3D.LimitDiagnostic?.LimitKind, Is.EqualTo(RenderExtractionLimitKind.Lights));
+            Assert.That(capacityResponse3D.LimitDiagnostic?.Requested, Is.EqualTo(257));
+            Assert.That(capacityResponse3D.LimitDiagnostic?.Limit, Is.EqualTo(256));
+            Assert.That(capacityResponse3D.Diagnostics, Is.Empty);
+
+            var capacityFrame2 = capacityPublication.Frame2
+                ?? throw new InvalidOperationException("The enabled 2D frame was omitted from the capacity publication.");
+            var capacityOptions2D = new RenderExtractionOptions2D(
+                capacityFrame2,
+                options.TargetExtent,
+                options.CameraIds);
+            var capacityResponse2D = renderer.Extract(world, capacityOptions2D);
+            Assert.That(capacityResponse2D.Status, Is.EqualTo(RenderExtractionStatus.CapacityExceeded));
+            Assert.That(capacityResponse2D.Snapshot, Is.Null);
+            Assert.That(capacityResponse2D.LimitDiagnostic?.LimitKind, Is.EqualTo(RenderExtractionLimitKind.Lights));
+            Assert.That(capacityResponse2D.LimitDiagnostic?.Requested, Is.EqualTo(257));
+            Assert.That(capacityResponse2D.LimitDiagnostic?.Limit, Is.EqualTo(256));
         }
         finally
         {
             assets.DisposeAsync().AsTask().GetAwaiter().GetResult();
             File.Delete(packagePath);
         }
+    }
+
+    [Test]
+    public void PointLightUsesWorldDefaultsAndRejectsInvalidMutation()
+    {
+        var schemas = CreateRendererRegistry();
+        var registrationBuilder = new WorldRegistrationBuilder(schemas);
+        _ = registrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+        _ = registrationBuilder.RegisterCpuExtractionSupport(Renderer.CreateCpuExtractionSupportRegistration());
+        using var world = World.Create(new WorldOptions(registrationBuilder.Build()));
+        var entity = world.CreateEntity(new EntityDescription());
+        world.Add<RenderComponentDefinitions.PointLightComponent>(entity);
+
+        Assert.That(
+            world.TryGet<RenderComponentDefinitions.PointLightComponent>(entity, out var light),
+            Is.True);
+        Assert.That(light.Color, Is.EqualTo(Vector3.One));
+        Assert.That(light.LuminousFlux, Is.EqualTo(1000.0f));
+        Assert.That(
+            light.Range,
+            Is.EqualTo(SpatialMath.ConvertQuantity(
+                10,
+                1,
+                0,
+                world.SpatialSettings.MetersPerUnitExponent,
+                1)));
+        Assert.That(light.LayerMask, Is.EqualTo(ulong.MaxValue));
+
+        var invalidLights = new[]
+        {
+            new RenderComponentDefinitions.PointLightComponent(
+                new Vector3(1.0f, -1.0f, 1.0f),
+                1000.0f,
+                light.Range,
+                ulong.MaxValue),
+            new RenderComponentDefinitions.PointLightComponent(
+                Vector3.One,
+                float.NaN,
+                light.Range,
+                ulong.MaxValue),
+            new RenderComponentDefinitions.PointLightComponent(
+                Vector3.One,
+                1000.0f,
+                0.0f,
+                ulong.MaxValue),
+        };
+
+        foreach (var invalidLight in invalidLights)
+        {
+            Assert.That(() => world.Set(entity, invalidLight), Throws.ArgumentException);
+        }
+
+        Assert.That(
+            world.TryGet<RenderComponentDefinitions.PointLightComponent>(entity, out var unchangedLight),
+            Is.True);
+        Assert.That(unchangedLight, Is.EqualTo(light));
     }
 }

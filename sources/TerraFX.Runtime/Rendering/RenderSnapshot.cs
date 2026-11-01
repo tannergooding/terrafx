@@ -14,6 +14,8 @@ public abstract class RenderSnapshot : IDisposable
     private readonly ImmutableArray<Guid> _cameraIds;
     private readonly ImmutableArray<CameraSnapshot> _cameras;
     private int _isDisposed;
+    private readonly ImmutableArray<Guid> _pointLightIds;
+    private readonly ImmutableArray<RenderPointLightSnapshot> _pointLights;
 
     internal RenderSnapshot(
         Guid snapshotId,
@@ -21,20 +23,22 @@ public abstract class RenderSnapshot : IDisposable
         long tickIndex,
         ImmutableArray<Guid> cameraIds,
         ImmutableArray<CameraSnapshot> cameras,
+        ImmutableArray<Guid> pointLightIds,
+        ImmutableArray<RenderPointLightSnapshot> pointLights,
         PixelSize targetExtent)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(snapshotId, Guid.Empty);
         ArgumentOutOfRangeException.ThrowIfEqual(worldGuid, Guid.Empty);
         ArgumentOutOfRangeException.ThrowIfNegative(tickIndex);
 
-        if (cameraIds.IsDefault || cameras.IsDefault)
+        if (cameraIds.IsDefault || cameras.IsDefault || pointLightIds.IsDefault || pointLights.IsDefault)
         {
-            throw new ArgumentException("Render snapshot camera arrays must be initialized.");
+            throw new ArgumentException("Render snapshot identity/value arrays must be initialized.");
         }
 
-        if (cameraIds.Length != cameras.Length)
+        if ((cameraIds.Length != cameras.Length) || (pointLightIds.Length != pointLights.Length))
         {
-            throw new ArgumentException("The render snapshot camera IDs and camera values must have equal cardinality.");
+            throw new ArgumentException("Each render snapshot identity array must align with its value array.");
         }
 
         RenderExtractionValidation.ValidateTargetExtent(targetExtent, nameof(targetExtent));
@@ -57,6 +61,41 @@ public abstract class RenderSnapshot : IDisposable
             {
                 throw new ArgumentException("The render snapshot camera values do not match its captured identity and target.");
             }
+
+            if ((index > 0) && !RenderExtractionValidation.MatchesFrame(camera.Frame3, cameras[0].Frame3))
+            {
+                throw new ArgumentException("The render snapshot cameras must use one exact committed 3D frame.");
+            }
+        }
+
+        var uniquePointLightIds = new HashSet<Guid>();
+
+        for (var index = 0; index < pointLightIds.Length; index++)
+        {
+            var lightId = pointLightIds[index];
+            var light = pointLights[index];
+
+            if (lightId == Guid.Empty || !uniquePointLightIds.Add(lightId))
+            {
+                throw new ArgumentException("The render snapshot point-light IDs must be nonempty and unique.", nameof(pointLightIds));
+            }
+
+            if ((light.LightId != lightId)
+                || (light.SnapshotId != snapshotId)
+                || (light.WorldGuid != worldGuid))
+            {
+                throw new ArgumentException("The point-light values do not match their captured identity and World.");
+            }
+
+            if (cameras.IsEmpty || !RenderExtractionValidation.MatchesFrame(light.Frame3, cameras[0].Frame3))
+            {
+                throw new ArgumentException("The point-light value does not match the snapshot's committed World frame.");
+            }
+
+            if (index > 0 && FoundationCatalogue.CompareRfc(pointLightIds[index - 1], lightId) >= 0)
+            {
+                throw new ArgumentException("The render snapshot point lights must be in canonical light-ID order.", nameof(pointLightIds));
+            }
         }
 
         SnapshotId = snapshotId;
@@ -64,6 +103,8 @@ public abstract class RenderSnapshot : IDisposable
         TickIndex = tickIndex;
         _cameraIds = [.. cameraIds];
         _cameras = [.. cameras];
+        _pointLightIds = [.. pointLightIds];
+        _pointLights = [.. pointLights];
         TargetExtent = targetExtent;
     }
 
@@ -78,6 +119,12 @@ public abstract class RenderSnapshot : IDisposable
 
     /// <summary>Gets the exact spatial frame revision represented by this snapshot.</summary>
     public abstract long FrameRevision { get; }
+
+    /// <summary>Gets the copied point-light identities in canonical RFC-byte order.</summary>
+    public ImmutableArray<Guid> PointLightIds => _pointLightIds;
+
+    /// <summary>Gets the copied point-light values in canonical RFC-byte order.</summary>
+    public ImmutableArray<RenderPointLightSnapshot> PointLights => _pointLights;
 
     /// <summary>Gets the exact spatial profile represented by this snapshot.</summary>
     public abstract SpatialProfileId ProfileId { get; }

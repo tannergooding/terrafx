@@ -4,7 +4,7 @@ using System;
 
 namespace TerraFX.Entities;
 
-/// <summary>Captures the headless-capable CPU extraction participant before World construction.</summary>
+/// <summary>Captures CPU extraction adapters and render-source components before World construction.</summary>
 public sealed class CpuExtractionSupportRegistration
 {
     private readonly IWorldCpuExtractionSupportRegistration _registration;
@@ -30,5 +30,14 @@ public sealed class CpuExtractionSupportRegistration
     {
         ArgumentNullException.ThrowIfNull(options);
         return _registration.GetWorldStorageByteReservation(options);
+    }
+
+    internal void RegisterComponents(
+        WorldRegistrationBuilder builder,
+        CompiledContentSchemaRegistry schemas)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(schemas);
+        _registration.RegisterComponents(builder, schemas);
     }
 }

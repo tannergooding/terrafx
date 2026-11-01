@@ -17,15 +17,21 @@ public sealed class RenderSnapshot2D : RenderSnapshot
         long tickIndex,
         ImmutableArray<Guid> cameraIds,
         ImmutableArray<CameraSnapshot> cameras,
+        ImmutableArray<Guid> pointLightIds,
+        ImmutableArray<RenderPointLightSnapshot> pointLights,
         PixelSize targetExtent,
         SpatialFrame2 frame)
-        : base(snapshotId, worldGuid, tickIndex, cameraIds, cameras, targetExtent)
+        : base(snapshotId, worldGuid, tickIndex, cameraIds, cameras, pointLightIds, pointLights, targetExtent)
     {
         RenderExtractionValidation.ValidateFrame(frame, nameof(frame));
 
-        if (cameras.Length != 0 && (cameras[0].WorldGuid != worldGuid))
+        if (cameras.Length != 0
+            && ((cameras[0].WorldGuid != worldGuid)
+                || (cameras[0].Frame3.OwnerId != frame.OwnerId)
+                || (cameras[0].Frame3.ProfileId != frame.ProfileId)
+                || !cameras[0].Frame3.Settings.Equals(frame.Settings)))
         {
-            throw new ArgumentException("The 2D snapshot cameras must belong to its exact World.", nameof(cameras));
+            throw new ArgumentException("The 2D snapshot cameras must belong to its exact World and spatial profile.", nameof(cameras));
         }
 
         _frame = frame;

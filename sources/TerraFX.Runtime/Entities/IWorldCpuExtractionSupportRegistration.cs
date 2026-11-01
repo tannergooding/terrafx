@@ -10,4 +10,6 @@ internal interface IWorldCpuExtractionSupportRegistration
         IWorldSceneParticipant sceneParticipant);
 
     long GetWorldStorageByteReservation(WorldOptions options);
+
+    void RegisterComponents(WorldRegistrationBuilder builder, CompiledContentSchemaRegistry schemas);
 }

@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Immutable;
+using TerraFX.Numerics;
 
 namespace TerraFX.Entities;
 
@@ -20,4 +21,11 @@ internal interface IWorldSceneParticipant
         ReadOnlyMemory<WorldHierarchyNodeSnapshot> nodes);
 
     void PumpControlBoundary();
+
+    (SpatialPosition3 Position, Quaternion Rotation) ResolveEntityPose(
+        World world,
+        SpatialFrame3 frame,
+        Entity entity);
+
+    bool TryGetCameraData(World world, Entity entity, out WorldCameraData camera);
 }

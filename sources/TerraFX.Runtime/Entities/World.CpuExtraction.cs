@@ -2,6 +2,7 @@
 
 using System;
 using System.Threading;
+using TerraFX.Numerics;
 
 namespace TerraFX.Entities;
 
@@ -82,12 +83,45 @@ public sealed partial class World
         return participant.AcquireFrameReadLease(sceneParticipant);
     }
 
+    internal ComponentSnapshotEnumerator<T> ReadComponentSnapshot<T>(in WorldFrameReadLease lease)
+        where T : unmanaged
+    {
+        if (!lease.IsBoundTo(this))
+        {
+            throw new ArgumentException("The frame read lease belongs to another World.", nameof(lease));
+        }
+
+        lease.ValidateCurrent();
+        return new ComponentSnapshotEnumerator<T>(this, in lease);
+    }
+
     internal void ReleaseFrameReadLease(WorldFrameReadLease lease)
     {
         ValidateFrameReadLease(lease);
         _activeFrameReadLeaseSequence = 0;
         _isFrameReadLeaseActive = false;
         _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
+    }
+
+    internal (SpatialPosition3 Position, Quaternion Rotation) ResolveSceneEntityPose(
+        in WorldFrameReadLease lease,
+        Entity entity)
+    {
+        ValidateSceneReadLease(in lease);
+        var participant = _sceneParticipant
+            ?? throw new InvalidOperationException("The World Scene participant has not been initialized.");
+        return participant.ResolveEntityPose(this, lease.Frame3, entity);
+    }
+
+    internal bool TryGetCameraData(
+        in WorldFrameReadLease lease,
+        Entity entity,
+        out WorldCameraData camera)
+    {
+        ValidateSceneReadLease(in lease);
+        return (_sceneParticipant
+            ?? throw new InvalidOperationException("The World Scene participant has not been initialized."))
+            .TryGetCameraData(this, entity, out camera);
     }
 
     internal void ValidateFrameReadLease(WorldFrameReadLease lease)
@@ -140,5 +174,141 @@ public sealed partial class World
         }
 
         _cpuExtractionParticipant = participant;
+    }
+
+    private void ValidateSceneReadLease(in WorldFrameReadLease lease)
+    {
+        if (!lease.IsBoundTo(this))
+        {
+            throw new ArgumentException("The frame read lease belongs to another World.", nameof(lease));
+        }
+
+        lease.ValidateCurrent();
+    }
+
+    internal ref struct ComponentSnapshotEnumerator<T>
+        where T : unmanaged
+    {
+        private readonly World _world;
+        private readonly WorldFrameReadLease _lease;
+        private readonly Type _componentType;
+        private WorldArchetype? _currentArchetype;
+        private int _archetypeIndex;
+        private int _chunkIndex;
+        private int _componentIndex;
+        private ReadOnlySpan<Entity> _entities;
+        private ReadOnlySpan<T> _values;
+        private int _rowIndex;
+        private bool _hasCurrent;
+        private Entity _currentEntity;
+        private T _currentValue;
+
+        internal ComponentSnapshotEnumerator(World world, in WorldFrameReadLease lease)
+        {
+            ArgumentNullException.ThrowIfNull(world);
+            _world = world;
+            _lease = lease;
+            _componentType = world.GetComponentRegistration<T>().ComponentType;
+            _currentArchetype = null;
+            _archetypeIndex = -1;
+            _chunkIndex = -1;
+            _componentIndex = -1;
+            _entities = default;
+            _values = default;
+            _rowIndex = 0;
+            _hasCurrent = false;
+            _currentEntity = default;
+            _currentValue = default;
+        }
+
+        internal readonly Entity CurrentEntity
+        {
+            get
+            {
+                _lease.ValidateCurrent();
+                return _hasCurrent
+                    ? _currentEntity
+                    : throw new InvalidOperationException("The component snapshot enumerator has no current Entity.");
+            }
+        }
+
+        internal readonly T CurrentValue
+        {
+            get
+            {
+                _lease.ValidateCurrent();
+                return _hasCurrent
+                    ? _currentValue
+                    : throw new InvalidOperationException("The component snapshot enumerator has no current value.");
+            }
+        }
+
+        internal bool MoveNext()
+        {
+            _lease.ValidateCurrent();
+            _hasCurrent = false;
+
+            while (true)
+            {
+                if (_rowIndex < _entities.Length)
+                {
+                    _currentEntity = _entities[_rowIndex];
+                    _currentValue = _values[_rowIndex];
+                    _rowIndex++;
+                    _hasCurrent = true;
+                    return true;
+                }
+
+                _rowIndex = 0;
+
+                if (_currentArchetype is not null)
+                {
+                    var nextChunkIndex = _chunkIndex + 1;
+
+                    if (nextChunkIndex < _currentArchetype.Storage.ChunkCount)
+                    {
+                        _chunkIndex = nextChunkIndex;
+                        LoadChunk();
+                        continue;
+                    }
+
+                    _currentArchetype = null;
+                }
+
+                while (++_archetypeIndex < _world._archetypeCount)
+                {
+                    var archetype = _world._archetypes[_archetypeIndex]
+                        ?? throw new InvalidOperationException("The World archetype directory contains an empty active slot.");
+                    var componentIndex = archetype.GetComponentIndex(_componentType);
+
+                    if ((componentIndex < 0) || (archetype.Storage.ChunkCount == 0))
+                    {
+                        continue;
+                    }
+
+                    _currentArchetype = archetype;
+                    _componentIndex = componentIndex;
+                    _chunkIndex = 0;
+                    LoadChunk();
+                    break;
+                }
+
+                if (_currentArchetype is null)
+                {
+                    return false;
+                }
+            }
+        }
+
+        private void LoadChunk()
+        {
+            _entities = _currentArchetype!.Storage.GetEntities(_chunkIndex);
+            _values = _currentArchetype.Storage.GetReadOnlyColumnSpan<T>(
+                _componentIndex,
+                _chunkIndex,
+                0,
+                _entities.Length);
+            _rowIndex = 0;
+        }
     }
 }

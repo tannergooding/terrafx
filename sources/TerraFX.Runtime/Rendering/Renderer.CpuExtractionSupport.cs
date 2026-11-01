@@ -45,6 +45,15 @@ public sealed partial class Renderer
             ArgumentNullException.ThrowIfNull(options);
             return ObjectStorageByteReservation;
         }
+
+        public void RegisterComponents(
+            WorldRegistrationBuilder builder,
+            CompiledContentSchemaRegistry schemas)
+        {
+            ArgumentNullException.ThrowIfNull(builder);
+            ArgumentNullException.ThrowIfNull(schemas);
+            _ = RenderComponentDefinitions.RegisterPointLight(builder, schemas);
+        }
     }
 
     private sealed class CpuExtractionWorldParticipant : IWorldCpuExtractionParticipant

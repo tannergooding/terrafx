@@ -14,11 +14,11 @@ internal ref struct WorldFrameReadLease
     private readonly long _completedTick;
     private readonly SpatialFrame2? _frame2;
     private readonly SpatialFrame3 _frame3;
+    private bool _isDisposed;
     private readonly long _publicationSequence;
     private readonly long _sequence;
     private readonly World _world;
     private readonly Guid _worldGuid;
-    private bool _isDisposed;
 
     internal WorldFrameReadLease(
         World world,
@@ -83,6 +83,9 @@ internal ref struct WorldFrameReadLease
         _world.ReleaseFrameReadLease(this);
         _isDisposed = true;
     }
+
+    internal readonly bool IsBoundTo(World world)
+        => ReferenceEquals(_world, world);
 
     internal readonly void ValidateCurrent()
     {

@@ -13,14 +13,21 @@ namespace TerraFX.Rendering;
 /// <summary>Extracts immutable CPU render snapshots from committed World state.</summary>
 public sealed partial class Renderer
 {
-    private static ImmutableArray<CameraSnapshot> CaptureCameras(
+    private const int MaximumLightCount = 256;
+    private static readonly Guid s_pointLightSchemaId = new ContentSchemaIdentityAssignment("render/point-light").SchemaId;
+
+    private static int CaptureCameras(
         World world,
         in WorldFrameReadLease frameReadLease,
         ImmutableArray<Guid> cameraIds,
         PixelSize targetExtent,
-        Guid snapshotId)
+        Guid snapshotId,
+        Span<CameraSnapshot> cameras)
     {
-        var cameras = new CameraSnapshot[cameraIds.Length];
+        if (cameras.Length < cameraIds.Length)
+        {
+            throw new ArgumentException("The camera scratch span is smaller than the selected camera set.", nameof(cameras));
+        }
 
         for (var index = 0; index < cameraIds.Length; index++)
         {
@@ -31,15 +38,12 @@ public sealed partial class Renderer
                 throw new ArgumentException("A requested camera identity is not live in this exact World.", nameof(cameraIds));
             }
 
-            if (!world.TryGet<SceneComponentDefinitions.CameraComponent>(cameraEntity, out var camera))
+            if (!world.TryGetCameraData(in frameReadLease, cameraEntity, out var camera))
             {
                 throw new ArgumentException("A requested camera Entity has no registered Camera component.", nameof(cameraIds));
             }
 
-            var (position, rotation) = SceneHierarchyTransform.ResolveCameraPose(
-                world,
-                frameReadLease.Frame3,
-                cameraEntity);
+            var (position, rotation) = world.ResolveSceneEntityPose(in frameReadLease, cameraEntity);
             cameras[index] = new CameraSnapshot(
                 snapshotId,
                 frameReadLease.WorldGuid,
@@ -62,17 +66,80 @@ public sealed partial class Renderer
                 camera.LayerMask);
         }
 
-        Array.Sort(cameras, static (left, right) => {
-            var comparison = left.Order.CompareTo(right.Order);
-            return (comparison != 0)
-                ? comparison
-                : FoundationCatalogue.CompareRfc(left.CameraId, right.CameraId);
-        });
+        for (var index = 1; index < cameraIds.Length; index++)
+        {
+            var camera = cameras[index];
+            var insertionIndex = index;
 
-        return [.. cameras];
+            while (insertionIndex > 0 && CompareCameras(camera, cameras[insertionIndex - 1]) < 0)
+            {
+                cameras[insertionIndex] = cameras[insertionIndex - 1];
+                insertionIndex--;
+            }
+
+            cameras[insertionIndex] = camera;
+        }
+
+        return cameraIds.Length;
     }
 
-    private static ImmutableArray<Guid> CopyCameraIds(ImmutableArray<CameraSnapshot> cameras)
+    private static ImmutableArray<RenderPointLightSnapshot> CapturePointLights(
+        World world,
+        in WorldFrameReadLease frameReadLease,
+        ReadOnlySpan<CameraSnapshot> cameras,
+        Guid snapshotId,
+        int pointLightCount)
+    {
+        var pointLights = new RenderPointLightSnapshot[pointLightCount];
+        var pointLightIndex = 0;
+        var pointLightComponents = world.ReadComponentSnapshot<RenderComponentDefinitions.PointLightComponent>(in frameReadLease);
+
+        while (pointLightComponents.MoveNext())
+        {
+            var component = pointLightComponents.CurrentValue;
+
+            if (!IsSelectedByAnyCamera(component.LayerMask, cameras))
+            {
+                continue;
+            }
+
+            var entity = pointLightComponents.CurrentEntity;
+            var (position, _) = world.ResolveSceneEntityPose(in frameReadLease, entity);
+            var entityId = world.GetEntityId(entity);
+            var lightId = FoundationNameUuid.Create(
+                entityId,
+                "light/" + s_pointLightSchemaId.ToString("N"));
+            pointLights[pointLightIndex++] = new RenderPointLightSnapshot(
+                snapshotId,
+                frameReadLease.WorldGuid,
+                lightId,
+                entityId,
+                frameReadLease.Frame3,
+                position,
+                component.Color,
+                component.LuminousFlux,
+                component.Range,
+                component.LayerMask);
+        }
+
+        if (pointLightIndex != pointLightCount)
+        {
+            throw new InvalidOperationException("The selected point-light count changed during the committed frame read lease.");
+        }
+
+        Array.Sort(pointLights, static (left, right) => FoundationCatalogue.CompareRfc(left.LightId, right.LightId));
+        return [.. pointLights];
+    }
+
+    private static int CompareCameras(CameraSnapshot left, CameraSnapshot right)
+    {
+        var comparison = left.Order.CompareTo(right.Order);
+        return (comparison != 0)
+            ? comparison
+            : FoundationCatalogue.CompareRfc(left.CameraId, right.CameraId);
+    }
+
+    private static ImmutableArray<Guid> CopyCameraIds(ReadOnlySpan<CameraSnapshot> cameras)
     {
         var cameraIds = ImmutableArray.CreateBuilder<Guid>(cameras.Length);
 
@@ -82,6 +149,53 @@ public sealed partial class Renderer
         }
 
         return cameraIds.MoveToImmutable();
+    }
+
+    private static ImmutableArray<CameraSnapshot> CopyCameras(ReadOnlySpan<CameraSnapshot> cameras)
+        => [.. cameras];
+
+    private static ImmutableArray<Guid> CopyPointLightIds(ImmutableArray<RenderPointLightSnapshot> pointLights)
+    {
+        var pointLightIds = ImmutableArray.CreateBuilder<Guid>(pointLights.Length);
+
+        foreach (var pointLight in pointLights)
+        {
+            pointLightIds.Add(pointLight.LightId);
+        }
+
+        return pointLightIds.MoveToImmutable();
+    }
+
+    private static int CountSelectedPointLights(
+        World world,
+        in WorldFrameReadLease frameReadLease,
+        ReadOnlySpan<CameraSnapshot> cameras)
+    {
+        var count = 0;
+        var pointLights = world.ReadComponentSnapshot<RenderComponentDefinitions.PointLightComponent>(in frameReadLease);
+
+        while (pointLights.MoveNext())
+        {
+            if (IsSelectedByAnyCamera(pointLights.CurrentValue.LayerMask, cameras))
+            {
+                count = checked(count + 1);
+            }
+        }
+
+        return count;
+    }
+
+    private static bool IsSelectedByAnyCamera(ulong layerMask, ReadOnlySpan<CameraSnapshot> cameras)
+    {
+        foreach (var camera in cameras)
+        {
+            if ((layerMask & camera.LayerMask) != 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Extracts a copied 2D snapshot from the exact committed World frame.</summary>
@@ -108,13 +222,35 @@ public sealed partial class Renderer
         }
 
         var snapshotId = Guid.NewGuid();
-        var cameras = CaptureCameras(
+        Span<CameraSnapshot> cameraScratch = stackalloc CameraSnapshot[options.CameraIds.Length];
+        var cameraCount = CaptureCameras(
             world,
             in frameReadLease,
             options.CameraIds,
             options.TargetExtent,
-            snapshotId);
-        var cameraIds = CopyCameraIds(cameras);
+            snapshotId,
+            cameraScratch);
+        var cameraSpan = cameraScratch[..cameraCount];
+        var pointLightCount = CountSelectedPointLights(world, in frameReadLease, cameraSpan);
+
+        if (pointLightCount > MaximumLightCount)
+        {
+            return new RenderExtractionResponse(
+                RenderExtractionStatus.CapacityExceeded,
+                snapshot: null,
+                new RenderExtractionLimitDiagnostic(RenderExtractionLimitKind.Lights, pointLightCount, MaximumLightCount),
+                []);
+        }
+
+        var cameras = CopyCameras(cameraSpan);
+        var cameraIds = CopyCameraIds(cameraSpan);
+        var pointLights = CapturePointLights(
+            world,
+            in frameReadLease,
+            cameraSpan,
+            snapshotId,
+            pointLightCount);
+        var pointLightIds = CopyPointLightIds(pointLights);
         RenderSnapshot2D? snapshot = null;
 
         try
@@ -125,6 +261,8 @@ public sealed partial class Renderer
                 frameReadLease.CompletedTick,
                 cameraIds,
                 cameras,
+                pointLightIds,
+                pointLights,
                 options.TargetExtent,
                 frame);
             frameReadLease.ValidateCurrent();
@@ -165,13 +303,35 @@ public sealed partial class Renderer
         }
 
         var snapshotId = Guid.NewGuid();
-        var cameras = CaptureCameras(
+        Span<CameraSnapshot> cameraScratch = stackalloc CameraSnapshot[options.CameraIds.Length];
+        var cameraCount = CaptureCameras(
             world,
             in frameReadLease,
             options.CameraIds,
             options.TargetExtent,
-            snapshotId);
-        var cameraIds = CopyCameraIds(cameras);
+            snapshotId,
+            cameraScratch);
+        var cameraSpan = cameraScratch[..cameraCount];
+        var pointLightCount = CountSelectedPointLights(world, in frameReadLease, cameraSpan);
+
+        if (pointLightCount > MaximumLightCount)
+        {
+            return new RenderExtractionResponse(
+                RenderExtractionStatus.CapacityExceeded,
+                snapshot: null,
+                new RenderExtractionLimitDiagnostic(RenderExtractionLimitKind.Lights, pointLightCount, MaximumLightCount),
+                []);
+        }
+
+        var cameras = CopyCameras(cameraSpan);
+        var cameraIds = CopyCameraIds(cameraSpan);
+        var pointLights = CapturePointLights(
+            world,
+            in frameReadLease,
+            cameraSpan,
+            snapshotId,
+            pointLightCount);
+        var pointLightIds = CopyPointLightIds(pointLights);
         RenderSnapshot3D? snapshot = null;
 
         try
@@ -182,6 +342,8 @@ public sealed partial class Renderer
                 frameReadLease.CompletedTick,
                 cameraIds,
                 cameras,
+                pointLightIds,
+                pointLights,
                 options.TargetExtent,
                 frameReadLease.Frame3);
             frameReadLease.ValidateCurrent();

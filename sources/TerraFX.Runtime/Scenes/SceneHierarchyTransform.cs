@@ -157,14 +157,14 @@ internal static class SceneHierarchyTransform
         {
             if (ancestorCount == ancestorPath.Length)
             {
-                throw new InvalidOperationException("The camera ancestor path exceeds the World depth bound.");
+                throw new InvalidOperationException("The renderable Entity ancestor path exceeds the World depth bound.");
             }
 
             for (var index = 0; index < ancestorCount; index++)
             {
                 if (ancestorPath[index] == current)
                 {
-                    throw new InvalidOperationException("The camera ancestor path contains a cycle.");
+                    throw new InvalidOperationException("The renderable Entity ancestor path contains a cycle.");
                 }
             }
 
@@ -189,7 +189,7 @@ internal static class SceneHierarchyTransform
 
             if (!world.TryGet<SceneComponentDefinitions.LocalTransformComponent>(entity, out var localTransform))
             {
-                throw new InvalidOperationException("A camera or its ancestor has no LocalTransform component.");
+                throw new InvalidOperationException("A renderable Entity or its ancestor has no LocalTransform component.");
             }
 
             _ = SceneComponentDefinitions.CreateAssignedLocalTransform(
@@ -201,7 +201,7 @@ internal static class SceneHierarchyTransform
                 || (localTransform.Scale.Y <= 0.0f)
                 || (localTransform.Scale.Z <= 0.0f))
             {
-                throw new InvalidOperationException("Camera and ancestor scales must be positive.");
+                throw new InvalidOperationException("Renderable Entity and ancestor scales must be positive.");
             }
 
             var localLinearTransform = CreateLinearTransform(localTransform);
@@ -212,7 +212,7 @@ internal static class SceneHierarchyTransform
                 if (!world.TryGet<SceneComponentDefinitions.RootPositionComponent>(entity, out var rootPosition)
                     || (localTransform.Position != Vector3.Zero))
                 {
-                    throw new InvalidOperationException("The camera ancestor path does not begin at a valid Scene root.");
+                    throw new InvalidOperationException("The renderable Entity ancestor path does not begin at a valid Scene root.");
                 }
 
                 worldPosition = SpatialMath.Normalize(rootPosition.Position, settings);
@@ -223,7 +223,7 @@ internal static class SceneHierarchyTransform
             {
                 if (world.TryGet<SceneComponentDefinitions.RootPositionComponent>(entity, out _))
                 {
-                    throw new InvalidOperationException("A camera child cannot also carry RootPosition.");
+                    throw new InvalidOperationException("A renderable Entity child cannot also carry RootPosition.");
                 }
 
                 var displacement = Vector3.TransformDirection(
@@ -238,14 +238,14 @@ internal static class SceneHierarchyTransform
                 || !worldLinearTransform.IsFinite().All()
                 || !worldRotationTransform.IsFinite().All())
             {
-                throw new InvalidOperationException("The camera world pose is outside the current frame or nonfinite.");
+                throw new InvalidOperationException("The renderable Entity world pose is outside the current frame or nonfinite.");
             }
         }
 
         if (!Matrix4x4.TryDecompose(worldRotationTransform, out _, out var worldRotation, out var translation)
             || (translation != Vector3.Zero))
         {
-            throw new InvalidOperationException("The camera rigid orientation is not representable.");
+            throw new InvalidOperationException("The renderable Entity rigid orientation is not representable.");
         }
 
         return (worldPosition, Quaternion.Normalize(worldRotation));

@@ -4,6 +4,7 @@ using System;
 using System.Collections.Immutable;
 using System.Threading;
 using TerraFX.Entities;
+using TerraFX.Numerics;
 
 namespace TerraFX.Scenes;
 
@@ -146,6 +147,41 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
 
             request?.Execute(_world, this);
         }
+    }
+
+    public (SpatialPosition3 Position, Quaternion Rotation) ResolveEntityPose(
+        World world,
+        SpatialFrame3 frame,
+        Entity entity)
+    {
+        EnsureBoundTo(world);
+        return SceneHierarchyTransform.ResolveCameraPose(world, frame, entity);
+    }
+
+    public bool TryGetCameraData(World world, Entity entity, out WorldCameraData camera)
+    {
+        EnsureBoundTo(world);
+
+        if (!world.TryGet<SceneComponentDefinitions.CameraComponent>(entity, out var component))
+        {
+            camera = default;
+            return false;
+        }
+
+        camera = new WorldCameraData(
+            component.ProjectionKind,
+            component.VerticalFieldOfView,
+            component.OrthographicHeight,
+            component.Near,
+            component.FarMode,
+            component.Far.HasValue ? component.Far.Value : null,
+            component.AspectRatioOverride.HasValue ? component.AspectRatioOverride.Value : null,
+            component.Viewport,
+            component.ClearFlags,
+            component.ClearColor,
+            component.LayerMask,
+            component.Order);
+        return true;
     }
 
     internal void CommitReservation(SceneInstanceReservation reservation, SceneInstance instance)

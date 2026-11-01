@@ -17,15 +17,19 @@ public sealed class RenderSnapshot3D : RenderSnapshot
         long tickIndex,
         ImmutableArray<Guid> cameraIds,
         ImmutableArray<CameraSnapshot> cameras,
+        ImmutableArray<Guid> pointLightIds,
+        ImmutableArray<RenderPointLightSnapshot> pointLights,
         PixelSize targetExtent,
         SpatialFrame3 frame)
-        : base(snapshotId, worldGuid, tickIndex, cameraIds, cameras, targetExtent)
+        : base(snapshotId, worldGuid, tickIndex, cameraIds, cameras, pointLightIds, pointLights, targetExtent)
     {
         RenderExtractionValidation.ValidateFrame(frame, nameof(frame));
 
-        if (cameras.Length != 0 && (cameras[0].WorldGuid != worldGuid))
+        if (cameras.Length != 0
+            && ((cameras[0].WorldGuid != worldGuid)
+                || !RenderExtractionValidation.MatchesFrame(cameras[0].Frame3, frame)))
         {
-            throw new ArgumentException("The 3D snapshot cameras must belong to its exact World.", nameof(cameras));
+            throw new ArgumentException("The 3D snapshot cameras must belong to its exact World frame.", nameof(cameras));
         }
 
         _frame = frame;

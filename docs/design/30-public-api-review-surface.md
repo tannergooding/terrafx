@@ -4572,14 +4572,33 @@ public sealed class RenderExtractionResponse
     public ImmutableArray<Diagnostic> Diagnostics { get; }
 }
 
+`RenderPointLightSnapshot.Range` is expressed in the exact source World engine-distance units; its `Frame3.Settings` identifies those units. Snapshot point lights are unique, filtered by the union of selected camera layer masks, and ordered by RFC-byte `LightId`.
+
+public readonly struct RenderPointLightSnapshot
+{
+    internal RenderPointLightSnapshot(Guid snapshotId, Guid worldGuid, Guid lightId, Guid entityId, SpatialFrame3 frame3, SpatialPosition3 position, TerraFX.Numerics.Vector3 color, float luminousFlux, float range, ulong layerMask);
+    public TerraFX.Numerics.Vector3 Color { get; }
+    public Guid EntityId { get; }
+    public SpatialFrame3 Frame3 { get; }
+    public ulong LayerMask { get; }
+    public Guid LightId { get; }
+    public float LuminousFlux { get; }
+    public SpatialPosition3 Position { get; }
+    public float Range { get; }
+    public Guid SnapshotId { get; }
+    public Guid WorldGuid { get; }
+}
+
 public abstract class RenderSnapshot : IDisposable
 {
-    internal RenderSnapshot(Guid snapshotId, Guid worldGuid, long tickIndex, ImmutableArray<Guid> cameraIds, ImmutableArray<CameraSnapshot> cameras, PixelSize targetExtent);
+    internal RenderSnapshot(Guid snapshotId, Guid worldGuid, long tickIndex, ImmutableArray<Guid> cameraIds, ImmutableArray<CameraSnapshot> cameras, ImmutableArray<Guid> pointLightIds, ImmutableArray<RenderPointLightSnapshot> pointLights, PixelSize targetExtent);
     public Guid SnapshotId { get; }
     public Guid WorldGuid { get; }
     public long TickIndex { get; }
     public ImmutableArray<Guid> CameraIds { get; }
     public ImmutableArray<CameraSnapshot> Cameras { get; }
+    public ImmutableArray<Guid> PointLightIds { get; }
+    public ImmutableArray<RenderPointLightSnapshot> PointLights { get; }
     public PixelSize TargetExtent { get; }
     public abstract RenderFrameDimension FrameDimension { get; }
     public abstract SpatialProfileId ProfileId { get; }
@@ -4589,7 +4608,7 @@ public abstract class RenderSnapshot : IDisposable
 
 public sealed class RenderSnapshot2D : RenderSnapshot
 {
-    internal RenderSnapshot2D(Guid snapshotId, Guid worldGuid, long tickIndex, ImmutableArray<Guid> cameraIds, ImmutableArray<CameraSnapshot> cameras, PixelSize targetExtent, SpatialFrame2 frame);
+    internal RenderSnapshot2D(Guid snapshotId, Guid worldGuid, long tickIndex, ImmutableArray<Guid> cameraIds, ImmutableArray<CameraSnapshot> cameras, ImmutableArray<Guid> pointLightIds, ImmutableArray<RenderPointLightSnapshot> pointLights, PixelSize targetExtent, SpatialFrame2 frame);
     public SpatialFrame2 Frame { get; }
     public override RenderFrameDimension FrameDimension { get; }
     public override SpatialProfileId ProfileId { get; }
@@ -4598,7 +4617,7 @@ public sealed class RenderSnapshot2D : RenderSnapshot
 
 public sealed class RenderSnapshot3D : RenderSnapshot
 {
-    internal RenderSnapshot3D(Guid snapshotId, Guid worldGuid, long tickIndex, ImmutableArray<Guid> cameraIds, ImmutableArray<CameraSnapshot> cameras, PixelSize targetExtent, SpatialFrame3 frame);
+    internal RenderSnapshot3D(Guid snapshotId, Guid worldGuid, long tickIndex, ImmutableArray<Guid> cameraIds, ImmutableArray<CameraSnapshot> cameras, ImmutableArray<Guid> pointLightIds, ImmutableArray<RenderPointLightSnapshot> pointLights, PixelSize targetExtent, SpatialFrame3 frame);
     public SpatialFrame3 Frame { get; }
     public override RenderFrameDimension FrameDimension { get; }
     public override SpatialProfileId ProfileId { get; }
@@ -4653,7 +4672,7 @@ The `ReadOnlySpan<byte>` buffer upload copies its bytes synchronously before ret
 
 | Owner / public surface | Exact amendment contract |
 |---|---|
-| Rendering/Integration/Hosting | `WorldRegistrationBuilder.RegisterCpuExtractionSupport(CpuExtractionSupportRegistration)` enlists the closed CPU extraction adapters before World construction. `Renderer.CreateCpuExtractionSupportRegistration()` produces the separate sealed immutable opaque registration and declares its Scenes prerequisites; `Renderer.CreateHeadless` and receipt/frame access above use real CPU extraction. Physics-owned native codec bridges are emitted/registered in Integration (or permitted offline tools), not in Physics with an Assets reference. Hosting coordinates save/asset/source participants; Entities/Scenes/Assets codecs never call Hosting. Stage-9 publication and atomic swaps remain callback/allocation-free after preparation. |
+| Rendering/Integration/Hosting | `WorldRegistrationBuilder.RegisterCpuExtractionSupport(CpuExtractionSupportRegistration)` enlists the closed CPU extraction adapters and their selected render-source component factories before World construction. `Renderer.CreateCpuExtractionSupportRegistration()` produces the separate sealed immutable opaque registration and declares its Scenes prerequisites; `Renderer.CreateHeadless` and receipt/frame access above use real CPU extraction. Physics-owned native codec bridges are emitted/registered in Integration (or permitted offline tools), not in Physics with an Assets reference. Hosting coordinates save/asset/source participants; Entities/Scenes/Assets codecs never call Hosting. Stage-9 publication and atomic swaps remain callback/allocation-free after preparation. |
 
 ```csharp
 namespace TerraFX.Entities;
