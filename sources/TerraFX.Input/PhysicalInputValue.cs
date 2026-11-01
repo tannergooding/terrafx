@@ -16,8 +16,6 @@ public readonly record struct PhysicalInputValue
             DigitalControlKind.KeyboardHid or DigitalControlKind.LogicalKey =>
                 digitalControl.Keyboard is not null && InputActionMapValidator.IsValidKeyboardControl(digitalControl.Keyboard),
             DigitalControlKind.MouseButton => digitalControl.MouseButton is { } mouseButton && Enum.IsDefined(mouseButton),
-            DigitalControlKind.GamepadButton =>
-                digitalControl.GamepadButton is { } button && Enum.IsDefined(button),
             _ => false,
         };
 
@@ -46,6 +44,18 @@ public readonly record struct PhysicalInputValue
         Kind = PhysicalInputValueKind.GamepadAxis;
         Axis = axis;
         AxisValue = axisValue;
+    }
+
+    internal PhysicalInputValue(GamepadButtonValue gamepadButton, bool isDown)
+    {
+        if (!Enum.IsDefined(gamepadButton))
+        {
+            throw new ArgumentOutOfRangeException(nameof(gamepadButton));
+        }
+
+        Kind = PhysicalInputValueKind.GamepadButton;
+        GamepadButton = gamepadButton;
+        IsDown = isDown;
     }
 
     internal PhysicalInputValue(GamepadStick stick, Vector2 stickValue)
@@ -95,6 +105,9 @@ public readonly record struct PhysicalInputValue
 
     /// <summary>Gets the digital control, when this is a digital value.</summary>
     public DigitalControl? DigitalControl { get; }
+
+    /// <summary>Gets the gamepad button, when this is a gamepad button value.</summary>
+    public GamepadButtonValue? GamepadButton { get; }
 
     /// <summary>Gets whether the digital control is down.</summary>
     public bool? IsDown { get; }

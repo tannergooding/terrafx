@@ -6664,19 +6664,22 @@ public enum PhysicalInputValueKind
 {
     None = 0,
     Digital = 1,
-    GamepadAxis = 2,
-    GamepadStick = 3,
-    GamepadTrigger = 4
+    GamepadButton = 2,
+    GamepadAxis = 3,
+    GamepadStick = 4,
+    GamepadTrigger = 5
 }
 
 public readonly record struct PhysicalInputValue
 {
     internal PhysicalInputValue(DigitalControl digitalControl, bool isDown);
     internal PhysicalInputValue(GamepadAxis axis, float axisValue);
+    internal PhysicalInputValue(GamepadButtonValue gamepadButton, bool isDown);
     internal PhysicalInputValue(GamepadStick stick, Vector2 stickValue);
     internal PhysicalInputValue(GamepadTrigger trigger, float triggerValue);
     public PhysicalInputValueKind Kind { get; }
     public DigitalControl? DigitalControl { get; }
+    public GamepadButtonValue? GamepadButton { get; }
     public bool? IsDown { get; }
     public GamepadAxis? Axis { get; }
     public float? AxisValue { get; }

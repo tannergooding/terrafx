@@ -262,8 +262,7 @@ public sealed class PhysicalInputEvent
             case PhysicalInputEventKind.GamepadButtonUp:
             {
                 Ensure(device is not null && window is null, kind);
-                Ensure(value is { Kind: PhysicalInputValueKind.Digital }
-                    && value.Value.DigitalControl is { Kind: DigitalControlKind.GamepadButton }
+                Ensure(value is { Kind: PhysicalInputValueKind.GamepadButton }
                     && (value.Value.IsDown == (kind == PhysicalInputEventKind.GamepadButtonDown)), kind);
                 Ensure(!hasNativeKeyboardCode, kind);
                 EnsureNoOtherPayload(pointerPosition, pointerDelta, pointerContentScale, scrollValue, scrollUnit, playerSlot, reconciliationState, kind);

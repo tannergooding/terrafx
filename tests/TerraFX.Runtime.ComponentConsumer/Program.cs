@@ -39,6 +39,17 @@ internal static partial class Program
         Check(default(PhysicalInputValue).Kind == PhysicalInputValueKind.None);
         Check((int)PhysicalInputEventKind.None == 0);
         Check((int)PhysicalInputEventKind.StateReconciliation == 22);
+        Check((int)PhysicalInputValueKind.None == 0);
+        Check((int)PhysicalInputValueKind.Digital == 1);
+        Check((int)PhysicalInputValueKind.GamepadButton == 2);
+        Check((int)PhysicalInputValueKind.GamepadAxis == 3);
+        Check((int)PhysicalInputValueKind.GamepadStick == 4);
+        Check((int)PhysicalInputValueKind.GamepadTrigger == 5);
+        Check((int)PhysicalInputEventDiagnostic.None == 0);
+        Check((int)PhysicalInputEventDiagnostic.TimestampUncertain == 1);
+        Check((int)PointerScrollUnit.None == 0);
+        Check((int)PointerScrollUnit.Detents == 1);
+        Check((int)PointerScrollUnit.SurfaceScale == 2);
 
         Check(
             ((byte)CameraProjectionKind.Perspective == 0)

@@ -39,6 +39,12 @@ internal sealed class PhysicalInputEventTests
         Assert.That((int)PhysicalInputEventKind.StateReconciliation, Is.EqualTo(22));
         Assert.That((int)PhysicalInputEventDiagnostic.None, Is.EqualTo(0));
         Assert.That((int)PhysicalInputEventDiagnostic.TimestampUncertain, Is.EqualTo(1));
+        Assert.That((int)PhysicalInputValueKind.None, Is.EqualTo(0));
+        Assert.That((int)PhysicalInputValueKind.Digital, Is.EqualTo(1));
+        Assert.That((int)PhysicalInputValueKind.GamepadButton, Is.EqualTo(2));
+        Assert.That((int)PhysicalInputValueKind.GamepadAxis, Is.EqualTo(3));
+        Assert.That((int)PhysicalInputValueKind.GamepadStick, Is.EqualTo(4));
+        Assert.That((int)PhysicalInputValueKind.GamepadTrigger, Is.EqualTo(5));
         Assert.That((int)PointerScrollUnit.None, Is.EqualTo(0));
         Assert.That((int)PointerScrollUnit.Detents, Is.EqualTo(1));
         Assert.That((int)PointerScrollUnit.SurfaceScale, Is.EqualTo(2));
@@ -54,15 +60,23 @@ internal sealed class PhysicalInputEventTests
             5,
             device,
             value: new PhysicalInputValue(GamepadAxis.LeftX, 0.75f));
+        var button = new PhysicalInputEvent(
+            PhysicalInputEventKind.GamepadButtonDown,
+            5,
+            6,
+            device,
+            value: new PhysicalInputValue(GamepadButtonValue.South, isDown: true));
         var assignment = new PhysicalInputEvent(
             PhysicalInputEventKind.DeviceAssigned,
-            6,
             7,
+            8,
             device,
             playerSlot: 2);
 
         Assert.That(axis.Value?.Axis, Is.EqualTo(GamepadAxis.LeftX));
         Assert.That(axis.Value?.AxisValue, Is.EqualTo(0.75f));
+        Assert.That(button.Value?.GamepadButton, Is.EqualTo(GamepadButtonValue.South));
+        Assert.That(button.PlayerSlot, Is.Null);
         Assert.That(assignment.Device, Is.EqualTo(device));
         Assert.That(assignment.PlayerSlot, Is.EqualTo(2));
     }

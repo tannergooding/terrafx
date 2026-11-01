@@ -11,12 +11,15 @@ public enum PhysicalInputValueKind
     /// <summary>A digital control state.</summary>
     Digital = 1,
 
+    /// <summary>A gamepad button state without recipient-specific player assignment.</summary>
+    GamepadButton = 2,
+
     /// <summary>A scalar gamepad axis.</summary>
-    GamepadAxis = 2,
+    GamepadAxis = 3,
 
     /// <summary>A two-dimensional gamepad stick.</summary>
-    GamepadStick = 3,
+    GamepadStick = 4,
 
     /// <summary>A gamepad trigger.</summary>
-    GamepadTrigger = 4,
+    GamepadTrigger = 5,
 }
