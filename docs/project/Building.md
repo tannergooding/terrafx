@@ -137,7 +137,7 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 
 ### Sprite snapshot extraction and retained pins
 
-Run the 2D/3D extraction regression for stable per-camera Sprite ordering, real committed-frame transforms, and Atlas/Material/page pins that remain valid after Scene unload and release with snapshot disposal:
+Run the 2D/3D extraction regression for stable per-camera Sprite ordering, empty camera-mask selection without asset pins, real committed-frame transforms, and Atlas/Material/page pins that remain valid after Scene unload and release with snapshot disposal:
 
 ```powershell
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SpriteSnapshotsOrderDrawsAndRetainAssetsAfterSceneUnload"

@@ -184,6 +184,32 @@ internal sealed partial class SceneAssetStoreTests
 
             snapshot2D.Dispose();
 
+            var zeroMaskCamera = new SceneComponentDefinitions.CameraComponent(
+                (byte)CameraProjectionKind.Perspective,
+                float.Pi / 3.0f,
+                10.0f,
+                0.1f,
+                (byte)CameraFarMode.Finite,
+                new SceneComponentDefinitions.OptionalSingle(1000.0f),
+                default,
+                new Vector4(0.0f, 0.0f, 1.0f, 1.0f),
+                (byte)(CameraClearFlags.Color | CameraClearFlags.Depth),
+                new Vector4(0.0f, 0.0f, 0.0f, 1.0f),
+                layerMask: 0,
+                order: 0);
+            world.Set(sceneEntities[0], in zeroMaskCamera);
+            var zeroMaskPublication = world.Step().Publication;
+            using var zeroMaskSnapshot = (RenderSnapshot3D)(renderer.Extract(
+                world,
+                new RenderExtractionOptions3D(
+                    zeroMaskPublication.Frame3,
+                    options.TargetExtent,
+                    options.CameraIds)).Snapshot
+                ?? throw new InvalidOperationException("The successful zero-mask extraction omitted its snapshot."));
+            Assert.That(zeroMaskSnapshot.SpriteDraws, Is.Empty);
+            Assert.That(zeroMaskSnapshot.SpriteCameraOrders[0].DrawIndices, Is.Empty);
+            Assert.That(zeroMaskSnapshot.AssetPins, Is.Null);
+
             var retainedSceneInstanceId = sceneInstances[0].SceneInstanceId;
             var assetPins = snapshot.AssetPins
                 ?? throw new InvalidOperationException("The Sprite snapshot did not retain its Scene asset pins.");
