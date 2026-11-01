@@ -3827,6 +3827,7 @@ namespace TerraFX.Graphics
 {
 public enum GraphicsBackend
 {
+    None = 0,
     D3D12 = 1,
     Vulkan = 2
 }
@@ -3845,6 +3846,20 @@ public sealed class BufferDescription
     public GpuMemoryKind MemoryKind { get; }
     public int? StructuredStride { get; }
     public string DebugName { get; }
+}
+
+public enum TextureFormat
+{
+    None = 0,
+    R8Unorm = 1,
+    Rgba8Unorm = 2,
+    Rgba8Srgb = 3,
+    Bgra8Unorm = 4,
+    Bgra8Srgb = 5,
+    Rgba16Float = 6,
+    R32Float = 7,
+    R32UInt = 8,
+    D32Float = 9
 }
 
 public sealed class TextureDescription
@@ -4127,6 +4142,144 @@ public sealed class GraphicsDevice
     public Task<UploadReceipt> UploadTextureAsync(GpuTexture destination, TextureSubresource subresource, BufferReadLease<byte> source, nint sourceOffset, TextureDataLayout sourceLayout, CancellationToken cancellationToken = default);
     public Task<OwnedBuffer<byte>> ReadbackBufferAsync(GpuBuffer source, long sourceOffset, nint byteLength, CancellationToken cancellationToken = default);
     public Task<TextureReadback> ReadbackTextureAsync(GpuTexture source, TextureSubresource subresource, CancellationToken cancellationToken = default);
+}
+
+public enum GraphicsDeviceProfile
+{
+    None = 0,
+    OffscreenNative = 1,
+    Interactive = 2
+}
+
+public enum GraphicsFeature
+{
+    None = 0,
+    Direct3DFeatureLevel12 = 1,
+    ShaderModel6 = 2,
+    TimelineSemaphore = 3,
+    Synchronization2 = 4,
+    DynamicRendering = 5,
+    SwapchainMaintenance1 = 6,
+    SamplerAnisotropy = 7
+}
+
+public readonly struct GraphicsApiVersion : IEquatable<GraphicsApiVersion>
+{
+    internal GraphicsApiVersion(uint major, uint minor, uint patch, uint variant);
+    public uint Major { get; }
+    public uint Minor { get; }
+    public uint Patch { get; }
+    public uint Variant { get; }
+    public static bool operator !=(GraphicsApiVersion left, GraphicsApiVersion right);
+    public static bool operator ==(GraphicsApiVersion left, GraphicsApiVersion right);
+    public bool Equals(GraphicsApiVersion other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
+}
+
+public sealed class GraphicsLimits
+{
+    internal GraphicsLimits(
+        int maximumTextureDimension2D,
+        int maximumTextureDimension3D,
+        int maximumArrayLayers,
+        int maximumColorAttachments,
+        int maximumSampledImagesPerStage,
+        int maximumSamplersPerStage,
+        int maximumUniformBuffersPerStage,
+        long maximumUniformBufferRangeBytes,
+        long uniformBufferOffsetAlignment,
+        long storageBufferOffsetAlignment,
+        long bufferCopyOffsetAlignment,
+        long textureRowPitchAlignment,
+        long texturePlacementAlignment,
+        int maximumComputeWorkGroupSizeX,
+        int maximumComputeWorkGroupSizeY,
+        int maximumComputeWorkGroupSizeZ,
+        int maximumComputeWorkGroupInvocations,
+        int maximumVertexInputAttributes,
+        int maximumVertexInputBindings,
+        long maximumBufferByteLength);
+    public long BufferCopyOffsetAlignment { get; }
+    public int MaximumArrayLayers { get; }
+    public long MaximumBufferByteLength { get; }
+    public int MaximumColorAttachments { get; }
+    public int MaximumComputeWorkGroupInvocations { get; }
+    public int MaximumComputeWorkGroupSizeX { get; }
+    public int MaximumComputeWorkGroupSizeY { get; }
+    public int MaximumComputeWorkGroupSizeZ { get; }
+    public int MaximumSampledImagesPerStage { get; }
+    public int MaximumSamplersPerStage { get; }
+    public int MaximumTextureDimension2D { get; }
+    public int MaximumTextureDimension3D { get; }
+    public long MaximumUniformBufferRangeBytes { get; }
+    public int MaximumUniformBuffersPerStage { get; }
+    public int MaximumVertexInputAttributes { get; }
+    public int MaximumVertexInputBindings { get; }
+    public long StorageBufferOffsetAlignment { get; }
+    public long TexturePlacementAlignment { get; }
+    public long TextureRowPitchAlignment { get; }
+    public long UniformBufferOffsetAlignment { get; }
+}
+
+public sealed class GraphicsFormatCapabilities
+{
+    internal GraphicsFormatCapabilities(TextureFormat format, TextureUsage supportedUsages, ImmutableArray<int> sampleCounts);
+    public TextureFormat Format { get; }
+    public ImmutableArray<int> SampleCounts { get; }
+    public TextureUsage SupportedUsages { get; }
+}
+
+[Flags]
+public enum GraphicsMemoryHeapProperties
+{
+    None = 0,
+    DeviceLocal = 1,
+    HostVisible = 2,
+    HostCoherent = 4,
+    HostCached = 8
+}
+
+public sealed class GraphicsMemoryHeapCapabilities
+{
+    internal GraphicsMemoryHeapCapabilities(int index, GraphicsMemoryHeapProperties properties, long sizeBytes, long? budgetBytes);
+    public long? BudgetBytes { get; }
+    public int Index { get; }
+    public GraphicsMemoryHeapProperties Properties { get; }
+    public long SizeBytes { get; }
+}
+
+public sealed class GraphicsCapabilities
+{
+    internal GraphicsCapabilities(
+        GraphicsBackend backend,
+        GraphicsDeviceProfile profile,
+        Guid adapterId,
+        uint vendorId,
+        uint deviceId,
+        string adapterName,
+        string driverName,
+        string driverVersion,
+        GraphicsApiVersion apiVersion,
+        ImmutableArray<GraphicsFeature> hardwareFeatures,
+        ImmutableArray<GraphicsFeature> implementedFeatures,
+        GraphicsLimits limits,
+        ImmutableArray<GraphicsFormatCapabilities> formats,
+        ImmutableArray<GraphicsMemoryHeapCapabilities> memoryHeaps);
+    public Guid AdapterId { get; }
+    public string AdapterName { get; }
+    public GraphicsApiVersion ApiVersion { get; }
+    public GraphicsBackend Backend { get; }
+    public uint DeviceId { get; }
+    public string DriverName { get; }
+    public string DriverVersion { get; }
+    public ImmutableArray<GraphicsFormatCapabilities> Formats { get; }
+    public ImmutableArray<GraphicsFeature> HardwareFeatures { get; }
+    public ImmutableArray<GraphicsFeature> ImplementedFeatures { get; }
+    public GraphicsLimits Limits { get; }
+    public ImmutableArray<GraphicsMemoryHeapCapabilities> MemoryHeaps { get; }
+    public GraphicsDeviceProfile Profile { get; }
+    public uint VendorId { get; }
 }
 
 public enum UploadStatus
@@ -4490,6 +4643,7 @@ public sealed class Surface
 
 public enum GraphicsPresentMode
 {
+    None = 0,
     Fifo = 1,
     Mailbox = 2,
     Immediate = 3
@@ -4497,14 +4651,20 @@ public enum GraphicsPresentMode
 
 public enum SurfaceColorSpace
 {
+    None = 0,
     SrgbNonlinear = 1
 }
 
-public readonly struct SurfaceFormat
+public readonly struct SurfaceFormat : IEquatable<SurfaceFormat>
 {
     internal SurfaceFormat(TextureFormat format, SurfaceColorSpace colorSpace);
-    public TextureFormat Format { get; }
     public SurfaceColorSpace ColorSpace { get; }
+    public TextureFormat Format { get; }
+    public static bool operator !=(SurfaceFormat left, SurfaceFormat right);
+    public static bool operator ==(SurfaceFormat left, SurfaceFormat right);
+    public bool Equals(SurfaceFormat other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
 }
 
 public sealed class SurfaceCapabilities
@@ -4769,7 +4929,7 @@ public static class VulkanGraphicsBackend
 }
 ```
 
-`HostProfile` selects `Headless`, `OffscreenNative`, or `Interactive`; `PlatformBackend` independently selects `Headless`, `WindowsNative`, `WaylandOnly`, `WaylandThenX11`, or `X11Only`. These enums are API selectors, not wire values. `GraphicsBackend` is owned by `TerraFX.Graphics`; its only values are the explicitly selected D3D12 and Vulkan backends. `D3D12GraphicsBackend.CreateRegistration()` and `VulkanGraphicsBackend.CreateRegistration()` return immutable opaque registrations without creating native resources. The application references the selected backend package and passes its registration alongside the matching enum in `EngineHostOptions`; the host rejects missing or mismatched registration and performs no assembly scanning, implicit loading, or backend fallback. `GraphicsBackendRegistration` has no public constructor; the stored factory is internal, and the two backend-package `CreateRegistration()` methods are its only public creation paths. `GraphicsDevice` is host-created and has no public native/backend constructor. `EngineHost` obtains its `OwnerId` through the existing Runtime-to-Core issuer path and supplies it to the internal Graphics startup port; Graphics does not receive a Core allocator capability. The internal Graphics factory runs on the dedicated graphics owner thread and returns only after capability/profile admission and native device initialization succeed. The host owns the resulting facade and its deterministic shutdown.
+`HostProfile` selects `Headless`, `OffscreenNative`, or `Interactive`; `PlatformBackend` independently selects `Headless`, `WindowsNative`, `WaylandOnly`, `WaylandThenX11`, or `X11Only`. These enums are API selectors, not wire values. `GraphicsBackend` is owned by `TerraFX.Graphics`; `None = 0` is an invalid unselected sentinel, and D3D12/Vulkan are the only selectable backends. `GraphicsDeviceProfile.None` is likewise invalid; a profile is selected through `HostProfile`, not directly by applications. `TextureFormat.None`, `GraphicsPresentMode.None`, and `SurfaceColorSpace.None` are invalid sentinels. `D3D12GraphicsBackend.CreateRegistration()` and `VulkanGraphicsBackend.CreateRegistration()` return immutable opaque registrations without creating native resources. The application references the selected backend package and passes its registration alongside the matching enum in `EngineHostOptions`; the host rejects missing or mismatched registration and performs no assembly scanning, implicit loading, or backend fallback. `GraphicsBackendRegistration` has no public constructor; the stored factory is internal, and the two backend-package `CreateRegistration()` methods are its only public creation paths. `GraphicsDevice` is host-created and has no public native/backend constructor. `EngineHost` obtains its `OwnerId` through the existing Runtime-to-Core issuer path and supplies it to the internal Graphics startup port; Graphics does not receive a Core allocator capability. The internal Graphics factory runs on the dedicated graphics owner thread and returns only after capability/profile admission and native device initialization succeed. The host owns the resulting facade and its deterministic shutdown.
 
 The public resource/pipeline methods enqueue bounded render-owner requests; native creation, command recording, submit, and presentation stay on that owner thread. `Renderer.BuildGraph`, graph imports/resource/pass declarations, and `RenderGraph.Compile` are synchronous and confined to the graph-creator thread; they inspect only the immutable snapshot and copied resource descriptions/state. `Renderer.SubmitAsync` transfers the immutable plan to the graphics owner, where each `RenderPassCallback` runs synchronously through its scoped `CommandRecorder`; callbacks cannot escape, await, perform file I/O/ECS access, or retain mutable world/snapshot state. Descriptor constructors have no optional values. Texture sample count is fixed at one in this profile. Resource-creation tasks fault with typed/native context for unsupported usage, format, capability, or allocation failures; they never return invalid handles. `CreatePipelineAsync` accepts exactly one typed graphics or compute description; shader stage, backend bytecode format, reflected stage/layout, device capabilities, target formats, and binding-layout version must agree before creation. Graphics pipelines require one vertex and one pixel stage; compute pipelines require exactly one compute stage. An empty vertex layout is valid only when reflection uses system-value inputs and no vertex buffer. A graphics layout has one `VertexElementDescription` per reflected non-system input; offsets/stride must fit the vertex record, color formats are nondefault and device-supported, and depth mode/format agree. The fixed first-profile topology is `TriangleList`; blend, reversed-Z depth, cull, and front-face choices are explicit. A compute reflection group size is nonzero and within the device limits; graphics group sizes are zero. Invalid descriptions throw before request admission; unsupported device capabilities fault the task with the missing capability context.
 `ShaderBytecodeInput.Bytecode` is a nonempty caller-owned read lease over the complete bytecode blob; its stage must equal `ShaderReflection.Stage`. The immutable reflection constructor rejects default arrays, duplicate stage locations/bindings/field names, invalid field ranges/strides, and group-size values inconsistent with its stage. `ShaderIoSignature.Location` is null only for a reflected system-value semantic. `ShaderReflection` describes stage I/O, resource bindings, record layouts, required capabilities, layout version, and compute group size. Reflection is checked against the native DXIL/SPIR-V bytes and the selected backend; caller metadata never substitutes for native validation. `CreatePipelineAsync` takes an independent internal bytecode sublease for every stage before request acceptance and retains those credits until backend pipeline creation actually terminates. A pre-canceled token returns a canceled task before admission; cancellation after admission cannot release bytes or make the task terminal before native creation/cancellation is complete. Success returns a `GpuPipeline` for the current device epoch, while unsupported/mismatched input faults the task; there is no GPU-ready fallback. Graphics owns these bytecode/reflection records directly through `TerraFX.Buffers` and has no `TerraFX.Assets` dependency.

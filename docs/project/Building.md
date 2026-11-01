@@ -63,6 +63,15 @@ With a compatible SDK installed, `dotnet build` also restores dependencies autom
 
 Test filtering uses the runner's existing `FullyQualifiedName` support, as in the foundation-codec commands below. For implemented cases, confirm nonzero selected and executed counts and inspect current-run TRX results under `artifacts\tst`. A successful command with no selected tests is not validation.
 
+### Graphics capability contracts
+
+Run the focused owning-project tests for immutable device/surface capability values and invalid boundary rejection:
+
+```powershell
+dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Debug
+dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Release
+```
+
 ### Retained AssetLease lifetime
 
 Run the focused retained-handle, lease-capacity, package-replacement, and store-disposal regressions:
