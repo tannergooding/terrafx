@@ -65,7 +65,7 @@ Test filtering uses the runner's existing `FullyQualifiedName` support, as in th
 
 ### Graphics capability contracts
 
-Run the owning-project tests for immutable device/surface capability values, profile admission, and invalid boundary rejection:
+Run the owning-project tests for immutable device/surface capabilities, profile admission, resource-description validation, and invalid boundary rejection:
 
 ```powershell
 dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Debug

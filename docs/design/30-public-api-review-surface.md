@@ -3838,6 +3838,26 @@ public sealed class GraphicsBackendRegistration
     public GraphicsBackend Backend { get; }
 }
 
+[Flags]
+public enum BufferUsage
+{
+    None = 0,
+    Vertex = 1,
+    Index = 2,
+    Uniform = 4,
+    Storage = 8,
+    CopySource = 16,
+    CopyDestination = 32
+}
+
+public enum GpuMemoryKind
+{
+    None = 0,
+    DeviceLocal = 1,
+    Upload = 2,
+    Readback = 3
+}
+
 public sealed class BufferDescription
 {
     public BufferDescription(long byteLength, BufferUsage usage, GpuMemoryKind memoryKind, int? structuredStride, string debugName);
@@ -3846,6 +3866,13 @@ public sealed class BufferDescription
     public GpuMemoryKind MemoryKind { get; }
     public int? StructuredStride { get; }
     public string DebugName { get; }
+}
+
+public enum TextureDimension
+{
+    None = 0,
+    Dimension2D = 1,
+    Dimension3D = 2
 }
 
 public enum TextureFormat
