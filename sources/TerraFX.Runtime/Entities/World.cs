@@ -330,6 +330,8 @@ public sealed partial class World : IDisposable
 
     internal StableIdentityLedger IdentityLedger => _identityLedger;
 
+    internal int MaximumDeferredCommands => _maximumDeferredCommands;
+
     internal long MaximumOwnedStateBytes => _maximumOwnedStateBytes;
 
     internal uint OwnerId => _ownerId;

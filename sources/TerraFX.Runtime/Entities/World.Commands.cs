@@ -377,6 +377,7 @@ public sealed partial class World
         WorldCommandStaging staging,
         IdentityAssignment? sceneInstanceAssignment = null,
         uint? sceneInstanceRetirementOrdinal = null,
+        ImmutableArray<WorldHierarchyParentMutation> hierarchyParentMutations = default,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -384,7 +385,8 @@ public sealed partial class World
 
         if (commands.IsEmpty
             && (sceneInstanceAssignment is null)
-            && (sceneInstanceRetirementOrdinal is null))
+            && (sceneInstanceRetirementOrdinal is null)
+            && hierarchyParentMutations.IsDefaultOrEmpty)
         {
             return [];
         }
@@ -410,6 +412,131 @@ public sealed partial class World
         try
         {
             ReservePlanBytes(checked(4096L + ((long)commands.Length * 256L)));
+            var parentMutations = hierarchyParentMutations.IsDefault
+                ? []
+                : hierarchyParentMutations;
+            var hierarchyParentMutationCount = parentMutations.Length;
+            var hierarchyParentMutationByChild = hierarchyParentMutationCount == 0
+                ? null
+                : new Dictionary<Entity, WorldHierarchyParentMutation>(hierarchyParentMutationCount);
+
+            if (hierarchyParentMutationCount != 0)
+            {
+                ReservePlanBytes(checked(
+                    GetArrayByteReservation(hierarchyParentMutationCount, Unsafe.SizeOf<WorldHierarchyParentMutation>())
+                    + GetArrayByteReservation(hierarchyParentMutationCount, 128)));
+                var parentMutationMap = hierarchyParentMutationByChild
+                    ?? throw new InvalidOperationException("The hierarchy parent mutation map was not allocated.");
+                var previousFinalDepth = -1;
+
+                foreach (var mutation in parentMutations)
+                {
+                    if (!mutation.Child.IsValid || (mutation.Child.OwnerId != _ownerId))
+                    {
+                        throw new ArgumentException("A hierarchy parent mutation requires a live child in this exact World.", nameof(hierarchyParentMutations));
+                    }
+
+                    _ = GetLiveArchetype(mutation.Child, out _, out _);
+
+                    if (mutation.Parent is Entity parent)
+                    {
+                        if (parent.OwnerId != _ownerId)
+                        {
+                            throw new ArgumentException("A hierarchy parent mutation cannot target another World.", nameof(hierarchyParentMutations));
+                        }
+
+                        _ = GetLiveArchetype(parent, out _, out _);
+
+                        if ((mutation.FinalDepth == 0) || (parent == mutation.Child))
+                        {
+                            throw new ArgumentException("A non-root hierarchy mutation requires a distinct parent and positive depth.", nameof(hierarchyParentMutations));
+                        }
+                    }
+                    else if (mutation.FinalDepth != 0)
+                    {
+                        throw new ArgumentException("A root hierarchy mutation must have depth zero.", nameof(hierarchyParentMutations));
+                    }
+
+                    if (mutation.FinalDepth < 0
+                        || (mutation.FinalDepth > EntitySlotTable.MaximumHierarchyDepth)
+                        || mutation.FinalSubtreeHeight < 0
+                        || (checked(mutation.FinalDepth + mutation.FinalSubtreeHeight) > EntitySlotTable.MaximumHierarchyDepth))
+                    {
+                        throw new InvalidOperationException("The hierarchy parent mutation exceeds the World depth bound.");
+                    }
+
+                    if (mutation.FinalDepth < previousFinalDepth)
+                    {
+                        throw new ArgumentException("Hierarchy parent mutations must be ordered by final depth.", nameof(hierarchyParentMutations));
+                    }
+
+                    if (!parentMutationMap.TryAdd(mutation.Child, mutation))
+                    {
+                        throw new ArgumentException("The hierarchy parent mutation plan repeats a child.", nameof(hierarchyParentMutations));
+                    }
+
+                    previousFinalDepth = mutation.FinalDepth;
+                }
+            }
+
+            int GetFinalHierarchyDepth(Entity entity)
+            {
+                Span<Entity> ancestorStack = stackalloc Entity[EntitySlotTable.MaximumHierarchyDepth + 1];
+                var ancestorCount = 0;
+                var current = entity;
+
+                while (true)
+                {
+                    if (ancestorCount == ancestorStack.Length)
+                    {
+                        throw new InvalidOperationException("The final hierarchy exceeds the World depth bound.");
+                    }
+
+                    for (var index = 0; index < ancestorCount; index++)
+                    {
+                        if (ancestorStack[index] == current)
+                        {
+                            throw new InvalidOperationException("The hierarchy parent mutations would create a cycle.");
+                        }
+                    }
+
+                    ancestorStack[ancestorCount++] = current;
+                    Entity? parent;
+
+                    if (hierarchyParentMutationByChild is { } parentMutationMap
+                        && parentMutationMap.TryGetValue(current, out var mutation))
+                    {
+                        parent = mutation.Parent;
+                    }
+                    else if (_entitySlots.TryGetParent(
+                                 current.Index,
+                                 current.Generation,
+                                 out var parentIndex,
+                                 out var parentGeneration))
+                    {
+                        parent = new Entity(_ownerId, parentIndex, parentGeneration);
+                    }
+                    else
+                    {
+                        parent = null;
+                    }
+
+                    if (parent is not Entity parentEntity)
+                    {
+                        return ancestorCount - 1;
+                    }
+
+                    current = parentEntity;
+                }
+            }
+
+            foreach (var mutation in parentMutations)
+            {
+                if (GetFinalHierarchyDepth(mutation.Child) != mutation.FinalDepth)
+                {
+                    throw new InvalidOperationException("The hierarchy parent mutation depth does not match its final parent chain.");
+                }
+            }
 
             var projectionsByEntity = new Dictionary<Entity, ProjectedCommandEntity>(commands.Length);
             var projectionsByToken = new Dictionary<EntityToken, ProjectedCommandEntity>(commands.Length);
@@ -1690,6 +1817,29 @@ public sealed partial class World
             var receipts = staging.CreateReceipts(resolvedTokens);
             cancellationToken.ThrowIfCancellationRequested();
             identityChange?.ValidateForCommit();
+
+            foreach (var mutation in parentMutations)
+            {
+                _entitySlots.SetParent(
+                    mutation.Child.Index,
+                    mutation.Child.Generation,
+                    parentIndex: 0,
+                    parentGeneration: 0);
+            }
+
+            foreach (var mutation in parentMutations)
+            {
+                if (mutation.Parent is not Entity parent)
+                {
+                    continue;
+                }
+
+                _entitySlots.SetParent(
+                    mutation.Child.Index,
+                    mutation.Child.Generation,
+                    parent.Index,
+                    parent.Generation);
+            }
 
             foreach (var child in detachedHierarchyChildren)
             {

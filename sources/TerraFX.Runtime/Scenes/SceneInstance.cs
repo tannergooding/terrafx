@@ -45,6 +45,34 @@ public sealed class SceneInstance
 
     internal int OccurrenceCount => _occurrenceCount;
 
+    /// <summary>Begins a typed hierarchy transaction scoped to this exact Scene instance.</summary>
+    /// <returns>The unsubmitted transaction.</returns>
+    /// <exception cref="InvalidOperationException">This Scene instance is not active in its World.</exception>
+    public SceneTransaction BeginTransaction()
+    {
+        var plan = Volatile.Read(ref _plan);
+
+        if ((Volatile.Read(ref _isActive) != 1) || (plan is null))
+        {
+            throw new InvalidOperationException("A Scene transaction requires an active Scene instance.");
+        }
+
+        _registry.EnsureBoundTo(_world);
+
+        if (!_registry.ContainsInstance(this))
+        {
+            throw new InvalidOperationException("A Scene transaction requires an active Scene instance.");
+        }
+
+        return new SceneTransaction(
+            this,
+            _world,
+            _registry,
+            _sceneInstanceId,
+            _firstEntityIdentityOrdinal,
+            plan.Entities.Length);
+    }
+
     /// <summary>Looks up a live root-authored Entity by its stable authored identity.</summary>
     /// <param name="stableEntityId">The nonempty authored Entity identity.</param>
     /// <param name="entity">The live Entity, or default when the identity is absent or no longer live.</param>

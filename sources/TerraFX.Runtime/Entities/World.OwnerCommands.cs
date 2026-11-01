@@ -51,6 +51,121 @@ public sealed partial class World
         }
     }
 
+    internal long ApplySceneHierarchyTransaction(
+        IWorldSceneParticipant participant,
+        Guid sceneInstanceId,
+        uint firstEntityIdentityOrdinal,
+        int entityCount,
+        ImmutableArray<WorldHierarchyComponentMutation> componentMutations,
+        ImmutableArray<WorldHierarchyParentMutation> parentMutations,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(participant);
+        ArgumentOutOfRangeException.ThrowIfEqual(sceneInstanceId, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfNegative(entityCount);
+
+        if (componentMutations.IsDefault || parentMutations.IsDefault)
+        {
+            throw new ArgumentException("The hierarchy transaction mutation arrays must be initialized.");
+        }
+
+        if ((entityCount != 0) && (firstEntityIdentityOrdinal == 0))
+        {
+            throw new ArgumentOutOfRangeException(nameof(firstEntityIdentityOrdinal));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        EnterStructuralOperation();
+
+        try
+        {
+            if (!ReferenceEquals(_sceneParticipant, participant))
+            {
+                throw new ArgumentException("The Scene participant is not owned by this exact World.", nameof(participant));
+            }
+
+            if (!_identityLedger.TryGetLiveLocator(
+                    sceneInstanceId,
+                    IdentityKind.SceneInstance,
+                    out var sceneInstanceLocator)
+                || (_identityLedger.GetLiveOrdinal(IdentityKind.SceneInstance, sceneInstanceLocator) == 0))
+            {
+                throw new InvalidOperationException("The transaction's SceneInstance identity is not live in this World.");
+            }
+
+            var lastEntityIdentityOrdinalExclusive = checked(firstEntityIdentityOrdinal + (uint)entityCount);
+            using var staging = new WorldCommandStaging(
+                this,
+                _maximumDeferredCommands,
+                _maximumCommandStagingBytes,
+                ownerControl: true);
+
+            foreach (var mutation in componentMutations)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                EnsureSceneTransactionMember(
+                    mutation.Entity,
+                    firstEntityIdentityOrdinal,
+                    lastEntityIdentityOrdinalExclusive);
+
+                if ((mutation.ComponentType != participant.HierarchyLocalTransformComponentType)
+                    && (mutation.ComponentType != participant.HierarchyRootPositionComponentType))
+                {
+                    throw new ArgumentException("Scene hierarchy transactions may change only LocalTransform and RootPosition.", nameof(componentMutations));
+                }
+
+                staging.AppendOwnerComponentMutation(
+                    mutation,
+                    FindComponentRegistration(mutation.ComponentType));
+            }
+
+            foreach (var mutation in parentMutations)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                EnsureSceneTransactionMember(
+                    mutation.Child,
+                    firstEntityIdentityOrdinal,
+                    lastEntityIdentityOrdinalExclusive);
+
+                if (mutation.Parent is Entity parent)
+                {
+                    _ = GetLiveArchetype(parent, out _, out _);
+                }
+            }
+
+            _ = CommitCommandBatch(
+                staging,
+                hierarchyParentMutations: parentMutations,
+                cancellationToken: cancellationToken);
+            return _canonicalMutationRevision;
+        }
+        finally
+        {
+            _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
+        }
+
+        void EnsureSceneTransactionMember(
+            Entity entity,
+            uint firstIdentityOrdinal,
+            uint lastIdentityOrdinalExclusive)
+        {
+            if (!entity.IsValid
+                || (entity.OwnerId != _ownerId)
+                || !_entitySlots.TryGetLocation(entity.Index, entity.Generation, out _, out _, out _))
+            {
+                throw new InvalidOperationException("A Scene hierarchy transaction target is not a live Entity in this exact World.");
+            }
+
+            var identityOrdinal = _identityLedger.GetLiveOrdinal(IdentityKind.Entity, entity.Index);
+
+            if ((identityOrdinal < firstIdentityOrdinal)
+                || (identityOrdinal >= lastIdentityOrdinalExclusive))
+            {
+                throw new InvalidOperationException("A Scene hierarchy transaction child is no longer a live member of its exact SceneInstance.");
+            }
+        }
+    }
+
     internal ImmutableArray<Entity> CreateEntitiesAtomically(
         int entityCount,
         Func<ImmutableArray<Entity>, ImmutableArray<EntityDescription>> createDescriptions)

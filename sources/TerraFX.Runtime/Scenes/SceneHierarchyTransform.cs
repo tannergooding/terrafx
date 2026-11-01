@@ -10,6 +10,12 @@ namespace TerraFX.Scenes;
 
 internal static class SceneHierarchyTransform
 {
+    internal static Matrix4x4 CreateLinearTransform(SceneComponentDefinitions.LocalTransformComponent value)
+    {
+        var rotation = Quaternion.Normalize(value.Rotation);
+        return Matrix4x4.CreateScale(value.Scale) * Matrix4x4.CreateFromQuaternion(rotation);
+    }
+
     internal static ImmutableArray<WorldHierarchyDetachUpdate> PrepareHierarchyDetachment(
         World world,
         SpatialFrame3 frame,
@@ -136,10 +142,19 @@ internal static class SceneHierarchyTransform
         return updates.MoveToImmutable();
     }
 
-    private static Matrix4x4 CreateLinearTransform(SceneComponentDefinitions.LocalTransformComponent value)
+    internal static SpatialPosition3 Translate(
+        SpatialPosition3 position,
+        Vector3 displacement,
+        SpatialSettings settings)
     {
-        var rotation = Quaternion.Normalize(value.Rotation);
-        return Matrix4x4.CreateScale(value.Scale) * Matrix4x4.CreateFromQuaternion(rotation);
+        if (!displacement.IsFinite().All())
+        {
+            throw new InvalidOperationException("A Scene hierarchy displacement is not finite.");
+        }
+
+        return SpatialMath.Normalize(
+            new SpatialPosition3(position.Chunk, position.Offset + displacement),
+            settings);
     }
 
     private static SceneComponentDefinitions.LocalTransformComponent ReadLocalTransform(
@@ -153,20 +168,5 @@ internal static class SceneHierarchyTransform
 
         _ = SceneComponentDefinitions.CreateAssignedLocalTransform(value.Position, value.Rotation, value.Scale);
         return value;
-    }
-
-    private static SpatialPosition3 Translate(
-        SpatialPosition3 position,
-        Vector3 displacement,
-        SpatialSettings settings)
-    {
-        if (!displacement.IsFinite().All())
-        {
-            throw new InvalidOperationException("A Scene hierarchy displacement is not finite.");
-        }
-
-        return SpatialMath.Normalize(
-            new SpatialPosition3(position.Chunk, position.Offset + displacement),
-            settings);
     }
 }

@@ -324,6 +324,98 @@ internal sealed class WorldCommandStaging : IDisposable
         }
     }
 
+    internal void AppendOwnerComponentMutation(
+        WorldHierarchyComponentMutation mutation,
+        IComponentRegistration registration)
+    {
+        if (!_isOwnerControl)
+        {
+            throw new InvalidOperationException("Owner-control component commands require owner-control staging.");
+        }
+
+        ArgumentNullException.ThrowIfNull(registration);
+
+        if (!mutation.Entity.IsValid || (mutation.ComponentType != registration.ComponentType))
+        {
+            throw new ArgumentException("The hierarchy component mutation does not match its live owner and registration.", nameof(mutation));
+        }
+
+        var (kind, initialization) = mutation.Kind switch {
+            WorldHierarchyComponentMutationKind.Set
+                when mutation.Initialization is { IsDefault: false } value => (CommandKind.Set, value),
+            WorldHierarchyComponentMutationKind.Add
+                when mutation.Initialization is { IsDefault: false } value => (CommandKind.AddComponent, value),
+            WorldHierarchyComponentMutationKind.Remove
+                when mutation.Initialization is null => (CommandKind.RemoveComponent, null),
+            _ => throw new ArgumentException("The hierarchy component mutation has an inconsistent value payload.", nameof(mutation)),
+        };
+
+        if (initialization is not null && (initialization.ComponentType != mutation.ComponentType))
+        {
+            throw new ArgumentException("The hierarchy component mutation value does not match its selected component type.", nameof(mutation));
+        }
+
+        lock (_gate)
+        {
+            if (_isSealed)
+            {
+                throw new InvalidOperationException("The World command writer is no longer accepting appends.");
+            }
+
+            if (_records.Count >= _maximumCommands)
+            {
+                throw new InvalidOperationException("The World deferred-command count limit was reached.");
+            }
+
+            var prefix = _ownerControlPrefix
+                ?? new CommandPrefix(SimulationStage.Structural, int.MinValue, writerPartition: 0);
+            var sequence = prefix.NextSequence;
+            var nextSequence = checked(sequence + 1);
+            const long bytes = 320;
+
+            if (!_world.TryReserveCommandStagingBytes(bytes, _reservedBytes, _maximumBytes))
+            {
+                throw new InvalidOperationException("The World command-staging byte budget was reached.");
+            }
+
+            try
+            {
+                _ = _records.EnsureCapacity(checked(_records.Count + 1));
+
+                if (_ownerControlPrefix is null)
+                {
+                    _ = _prefixes.EnsureCapacity(checked(_prefixes.Count + 1));
+                }
+
+                var record = new CommandRecord(
+                    prefix,
+                    sequence,
+                    mutation.Entity,
+                    registration,
+                    kind,
+                    initialization,
+                    path: null,
+                    target: null,
+                    schemaId: Guid.Empty);
+
+                if (_ownerControlPrefix is null)
+                {
+                    _ownerControlPrefix = prefix;
+                    _prefixes.Add(prefix);
+                }
+
+                _records.Add(record);
+                prefix.NextSequence = nextSequence;
+                _reservedBytes = checked(_reservedBytes + bytes);
+            }
+            catch
+            {
+                _world.ReleaseCommandStagingBytes(bytes);
+                throw;
+            }
+        }
+    }
+
     internal EntityToken AppendOwnerCreate(EntityDescription description)
     {
         if (!_isOwnerControl)
