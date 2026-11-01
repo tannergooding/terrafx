@@ -61,7 +61,9 @@ internal sealed class HeadlessPlatformBackendTests
     public void UnimplementedNativeBackendFailsWithoutHeadlessFallback()
     {
         _ = Assert.Throws<PlatformNotSupportedException>(
-            () => PlatformBackendFactory.Create(PlatformBackend.WindowsNative, 1, ClipboardServicePolicy.NotRequested));
+            () => PlatformBackendFactory.Create(PlatformBackend.WaylandOnly, 1, ClipboardServicePolicy.NotRequested));
+        _ = Assert.Throws<PlatformNotSupportedException>(
+            () => PlatformBackendFactory.Create(PlatformBackend.X11Only, 1, ClipboardServicePolicy.NotRequested));
         _ = Assert.Throws<ArgumentOutOfRangeException>(
             () => PlatformBackendFactory.Create(PlatformBackend.None, 1, ClipboardServicePolicy.NotRequested));
     }

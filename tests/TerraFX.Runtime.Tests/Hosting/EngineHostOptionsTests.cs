@@ -1,7 +1,11 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
@@ -224,5 +228,93 @@ internal sealed class EngineHostOptionsTests
                 GraphicsBackend.D3D12,
                 registration,
                 assetStoreOptions));
+    }
+
+    [Test]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "The dedicated STA test thread must transfer native failures after owner cleanup.")]
+    public async Task WindowsPlatformOwnerIssuesHandlesForEnumeratedMonitors()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)
+            || (RuntimeInformation.ProcessArchitecture != Architecture.X64))
+        {
+            Assert.Ignore("The Windows Platform backend requires Windows 11 x64.");
+            return;
+        }
+
+        var options = new EngineHostOptions(
+            HostProfile.Interactive,
+            PlatformBackend.WindowsNative,
+            GraphicsBackend.D3D12,
+            D3D12GraphicsBackend.CreateRegistration(),
+            CreateAssetStoreOptions());
+        var completion = new TaskCompletionSource<(uint OwnerId, ImmutableArray<MonitorHandle> Monitors)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() => {
+            PlatformHostOwner? owner = null;
+            var ownerId = 0U;
+            var monitors = ImmutableArray<MonitorHandle>.Empty;
+            Exception? failure = null;
+
+            try
+            {
+                owner = PlatformHostOwner.Create(options);
+                ownerId = owner.OwnerId;
+                monitors = owner.Platform.GetMonitorHandles();
+                owner.Pump();
+
+                foreach (var monitor in monitors)
+                {
+                    _ = owner.GetNativeMonitorHandle(monitor);
+                }
+            }
+            catch (Exception exception)
+            {
+                failure = exception;
+            }
+
+            try
+            {
+                owner?.DisposeFromOwner();
+            }
+            catch (Exception cleanupException)
+            {
+                failure = failure is null
+                    ? cleanupException
+                    : new AggregateException(failure, cleanupException);
+            }
+
+            if (failure is null)
+            {
+                _ = completion.TrySetResult((ownerId, monitors));
+            }
+            else
+            {
+                _ = completion.TrySetException(failure);
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+
+        var (completedOwnerId, monitorHandles) = await completion.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        Assert.That(thread.Join(TimeSpan.FromSeconds(5)), Is.True);
+
+        if (monitorHandles.IsDefaultOrEmpty)
+        {
+            Assert.Ignore("The Windows test host has no active display monitors.");
+            return;
+        }
+
+        Assert.That(completedOwnerId, Is.GreaterThan(0));
+        var indices = new HashSet<uint>();
+
+        foreach (var monitor in monitorHandles)
+        {
+            Assert.That(monitor.IsValid, Is.True);
+            Assert.That(monitor.OwnerId, Is.EqualTo(completedOwnerId));
+            Assert.That(indices.Add(monitor.Index), Is.True);
+        }
     }
 }

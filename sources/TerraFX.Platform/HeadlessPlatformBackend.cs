@@ -96,9 +96,33 @@ internal sealed class HeadlessPlatformBackend : IPlatformBackend
         return [];
     }
 
+    public ImmutableArray<PlatformMonitorInfo> GetMonitorInfo()
+    {
+        EnsureOwnerThread();
+        return [];
+    }
+
     public void Pump()
     {
         EnsureOwnerThread();
+    }
+
+    public void SetMonitorHandles(ImmutableArray<MonitorHandle> monitorHandles)
+    {
+        EnsureOwnerThread();
+
+        if (monitorHandles.IsDefaultOrEmpty)
+        {
+            return;
+        }
+
+        throw new ArgumentException("The Headless platform has no monitor handles.", nameof(monitorHandles));
+    }
+
+    public bool TakeMonitorTopologyChanged()
+    {
+        EnsureOwnerThread();
+        return false;
     }
 
     private void EnsureOwnerThread()

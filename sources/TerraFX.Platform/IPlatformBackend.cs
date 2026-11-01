@@ -22,5 +22,11 @@ internal interface IPlatformBackend : IDisposable
 
     ImmutableArray<MonitorHandle> GetMonitorHandles();
 
+    ImmutableArray<PlatformMonitorInfo> GetMonitorInfo();
+
     void Pump();
+
+    void SetMonitorHandles(ImmutableArray<MonitorHandle> monitorHandles);
+
+    bool TakeMonitorTopologyChanged();
 }

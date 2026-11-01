@@ -12,8 +12,11 @@ internal static class PlatformBackendFactory
         ClipboardServicePolicy clipboardPolicy)
         => backend switch {
             PlatformBackend.Headless => new HeadlessPlatformBackend(ownerId, clipboardPolicy),
+            PlatformBackend.WindowsNative when OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)
+                => new WindowsPlatformBackend(ownerId, clipboardPolicy),
             PlatformBackend.WindowsNative
-                or PlatformBackend.WaylandOnly
+                => throw new PlatformNotSupportedException("The Windows Platform backend requires Windows 11."),
+            PlatformBackend.WaylandOnly
                 or PlatformBackend.WaylandThenX11
                 or PlatformBackend.X11Only
                 => throw new PlatformNotSupportedException($"The platform backend {backend} has no implementation."),

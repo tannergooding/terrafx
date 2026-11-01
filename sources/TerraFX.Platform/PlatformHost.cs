@@ -29,5 +29,14 @@ public sealed class PlatformHost
 
     internal void DisposeFromOwner() => _backend.Dispose();
 
+    internal ImmutableArray<PlatformMonitorInfo> GetMonitorInfo()
+        => _backend.GetMonitorInfo();
+
     internal void Pump() => _backend.Pump();
+
+    internal void SetMonitorHandles(ImmutableArray<MonitorHandle> monitorHandles)
+        => _backend.SetMonitorHandles(monitorHandles);
+
+    internal bool TakeMonitorTopologyChanged()
+        => _backend.TakeMonitorTopologyChanged();
 }
