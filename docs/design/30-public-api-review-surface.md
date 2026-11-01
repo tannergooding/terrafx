@@ -3932,120 +3932,159 @@ public sealed class SamplerDescription
 
 public enum ShaderStage
 {
-    Vertex,
-    Pixel,
-    Compute
+    None = 0,
+    Vertex = 1,
+    Pixel = 2,
+    Compute = 3
 }
 
 public enum ShaderBinaryFormat
 {
-    Dxil,
-    SpirV
+    None = 0,
+    Dxil = 1,
+    SpirV = 2
 }
 
 public enum ShaderValueType
 {
-    Float,
-    Float2,
-    Float3,
-    Float4,
-    Float4x4,
-    Int,
-    Int2,
-    Int3,
-    Int4,
-    UInt,
-    UInt2,
-    UInt3,
-    UInt4
+    None = 0,
+    Float1 = 1,
+    Float2 = 2,
+    Float3 = 3,
+    Float4 = 4,
+    Float4x4 = 5,
+    Int1 = 6,
+    Int2 = 7,
+    Int3 = 8,
+    Int4 = 9,
+    UInt1 = 10,
+    UInt2 = 11,
+    UInt3 = 12,
+    UInt4 = 13
 }
 
 public enum ShaderInterpolation
 {
-    Smooth,
-    NoPerspective,
-    Flat
+    None = 0,
+    Smooth = 1,
+    NoPerspective = 2,
+    Flat = 3
 }
 
 public enum ShaderBindingGroup
 {
-    Frame,
-    Material,
-    Object,
-    Pass
+    None = 0,
+    Frame = 1,
+    Material = 2,
+    ObjectData = 3,
+    Pass = 4
 }
 
 public enum ShaderResourceKind
 {
-    UniformBuffer,
-    SampledImage,
-    StorageImage,
-    StorageBuffer,
-    Sampler
+    None = 0,
+    UniformBuffer = 1,
+    SampledImage = 2,
+    StorageImage = 3,
+    StorageBuffer = 4,
+    Sampler = 5
 }
 
 public enum ShaderCapability
 {
-    Float16,
-    Float64,
-    WaveOperations,
-    DescriptorIndexing,
-    ScalarBlockLayout,
-    GeometryShader,
-    Tessellation
+    None = 0,
+    Float16 = 1,
+    DoublePrecision = 2,
+    WaveOperations = 3,
+    DescriptorIndexing = 4,
+    ScalarBlockLayout = 5,
+    GeometryShader = 6,
+    Tessellation = 7
 }
 
-public readonly struct ShaderIoSignature
+public readonly struct ShaderIoSignature : IEquatable<ShaderIoSignature>
 {
     public ShaderIoSignature(string semanticName, int semanticIndex, int? location, ShaderValueType valueType, ShaderInterpolation interpolation);
-    public string SemanticName { get; }
-    public int SemanticIndex { get; }
-    public int? Location { get; }
-    public ShaderValueType ValueType { get; }
     public ShaderInterpolation Interpolation { get; }
+    public int? Location { get; }
+    public int SemanticIndex { get; }
+    public string SemanticName { get; }
+    public ShaderValueType ValueType { get; }
+    public static bool operator !=(ShaderIoSignature left, ShaderIoSignature right);
+    public static bool operator ==(ShaderIoSignature left, ShaderIoSignature right);
+    public bool Equals(ShaderIoSignature other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
 }
 
-public readonly struct ShaderResourceSignature
+public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignature>
 {
     public ShaderResourceSignature(ShaderBindingGroup group, int binding, ShaderResourceKind kind, int arrayCount);
-    public ShaderBindingGroup Group { get; }
-    public int Binding { get; }
-    public ShaderResourceKind Kind { get; }
     public int ArrayCount { get; }
+    public int Binding { get; }
+    public ShaderBindingGroup Group { get; }
+    public ShaderResourceKind Kind { get; }
+    public static bool operator !=(ShaderResourceSignature left, ShaderResourceSignature right);
+    public static bool operator ==(ShaderResourceSignature left, ShaderResourceSignature right);
+    public bool Equals(ShaderResourceSignature other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
 }
 
-public readonly struct ShaderFieldLayout
+public readonly struct ShaderFieldLayout : IEquatable<ShaderFieldLayout>
 {
     public ShaderFieldLayout(string name, ShaderValueType valueType, int byteOffset, int byteLength, int arrayCount, int arrayStride);
-    public string Name { get; }
-    public ShaderValueType ValueType { get; }
-    public int ByteOffset { get; }
-    public int ByteLength { get; }
     public int ArrayCount { get; }
     public int ArrayStride { get; }
+    public int ByteLength { get; }
+    public int ByteOffset { get; }
+    public string Name { get; }
+    public ShaderValueType ValueType { get; }
+    public static bool operator !=(ShaderFieldLayout left, ShaderFieldLayout right);
+    public static bool operator ==(ShaderFieldLayout left, ShaderFieldLayout right);
+    public bool Equals(ShaderFieldLayout other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
 }
 
 public sealed class ShaderRecordLayout
 {
     public ShaderRecordLayout(string name, int byteLength, ImmutableArray<ShaderFieldLayout> fields);
-    public string Name { get; }
     public int ByteLength { get; }
     public ImmutableArray<ShaderFieldLayout> Fields { get; }
+    public string Name { get; }
+}
+
+public readonly struct ShaderCompilerIdentity : IEquatable<ShaderCompilerIdentity>
+{
+    public ShaderCompilerIdentity(string packageId, string releaseVersion, string packageVersion, ImmutableArray<byte> packageSha256);
+    public bool IsValid { get; }
+    public string PackageId { get; }
+    public ImmutableArray<byte> PackageSha256 { get; }
+    public string PackageVersion { get; }
+    public string ReleaseVersion { get; }
+    public static bool operator !=(ShaderCompilerIdentity left, ShaderCompilerIdentity right);
+    public static bool operator ==(ShaderCompilerIdentity left, ShaderCompilerIdentity right);
+    public bool Equals(ShaderCompilerIdentity other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
 }
 
 public sealed class ShaderReflection
 {
-    public ShaderReflection(ShaderStage stage, ImmutableArray<ShaderIoSignature> inputs, ImmutableArray<ShaderIoSignature> outputs, ImmutableArray<ShaderResourceSignature> resources, ImmutableArray<ShaderRecordLayout> recordLayouts, ImmutableArray<ShaderCapability> requiredCapabilities, int bindingLayoutVersion, int groupSizeX, int groupSizeY, int groupSizeZ);
-    public ShaderStage Stage { get; }
-    public ImmutableArray<ShaderIoSignature> Inputs { get; }
-    public ImmutableArray<ShaderIoSignature> Outputs { get; }
-    public ImmutableArray<ShaderResourceSignature> Resources { get; }
-    public ImmutableArray<ShaderRecordLayout> RecordLayouts { get; }
-    public ImmutableArray<ShaderCapability> RequiredCapabilities { get; }
+    public ShaderReflection(ShaderStage stage, string entryPoint, ShaderCompilerIdentity compilerIdentity, ImmutableArray<ShaderIoSignature> inputs, ImmutableArray<ShaderIoSignature> outputs, ImmutableArray<ShaderResourceSignature> resources, ImmutableArray<ShaderRecordLayout> recordLayouts, ImmutableArray<ShaderCapability> requiredCapabilities, int bindingLayoutVersion, int groupSizeX, int groupSizeY, int groupSizeZ);
     public int BindingLayoutVersion { get; }
+    public ShaderCompilerIdentity CompilerIdentity { get; }
+    public string EntryPoint { get; }
     public int GroupSizeX { get; }
     public int GroupSizeY { get; }
     public int GroupSizeZ { get; }
+    public ImmutableArray<ShaderIoSignature> Inputs { get; }
+    public ImmutableArray<ShaderIoSignature> Outputs { get; }
+    public ImmutableArray<ShaderRecordLayout> RecordLayouts { get; }
+    public ImmutableArray<ShaderCapability> RequiredCapabilities { get; }
+    public ImmutableArray<ShaderResourceSignature> Resources { get; }
+    public ShaderStage Stage { get; }
 }
 
 public sealed class ShaderBytecodeInput
@@ -4992,7 +5031,7 @@ public static class VulkanGraphicsBackend
 `HostProfile` selects `Headless`, `OffscreenNative`, or `Interactive`; `PlatformBackend` independently selects `Headless`, `WindowsNative`, `WaylandOnly`, `WaylandThenX11`, or `X11Only`. These enums are API selectors, not wire values. `GraphicsBackend` is owned by `TerraFX.Graphics`; `None = 0` is an invalid unselected sentinel, and D3D12/Vulkan are the only selectable backends. `GraphicsDeviceProfile.None` is likewise invalid; a profile is selected through `HostProfile`, not directly by applications. `TextureFormat.None`, `GraphicsPresentMode.None`, and `SurfaceColorSpace.None` are invalid sentinels. `D3D12GraphicsBackend.CreateRegistration()` and `VulkanGraphicsBackend.CreateRegistration()` return immutable opaque registrations without creating native resources. The application references the selected backend package and passes its registration alongside the matching enum in `EngineHostOptions`; the host rejects missing or mismatched registration and performs no assembly scanning, implicit loading, or backend fallback. `GraphicsBackendRegistration` has no public constructor; the stored factory is internal, and the two backend-package `CreateRegistration()` methods are its only public creation paths. `GraphicsDevice` is host-created and has no public native/backend constructor. `EngineHost` obtains its `OwnerId` through the existing Runtime-to-Core issuer path and supplies it to the internal Graphics startup port; Graphics does not receive a Core allocator capability. The internal Graphics factory runs on the dedicated graphics owner thread and returns only after capability/profile admission and native device initialization succeed. The host owns the resulting facade and its deterministic shutdown.
 
 The public resource/pipeline methods enqueue bounded render-owner requests; native creation, command recording, submit, and presentation stay on that owner thread. `Renderer.BuildGraph`, graph imports/resource/pass declarations, and `RenderGraph.Compile` are synchronous and confined to the graph-creator thread; they inspect only the immutable snapshot and copied resource descriptions/state. `Renderer.SubmitAsync` transfers the immutable plan to the graphics owner, where each `RenderPassCallback` runs synchronously through its scoped `CommandRecorder`; callbacks cannot escape, await, perform file I/O/ECS access, or retain mutable world/snapshot state. Descriptor constructors have no optional values. Texture sample count is fixed at one in this profile. Resource-creation tasks fault with typed/native context for unsupported usage, format, capability, or allocation failures; they never return invalid handles. `CreatePipelineAsync` accepts exactly one typed graphics or compute description; shader stage, backend bytecode format, reflected stage/layout, device capabilities, target formats, and binding-layout version must agree before creation. Graphics pipelines require one vertex and one pixel stage; compute pipelines require exactly one compute stage. An empty vertex layout is valid only when reflection uses system-value inputs and no vertex buffer. A graphics layout has one `VertexElementDescription` per reflected non-system input; offsets/stride must fit the vertex record, color formats are nondefault and device-supported, and depth mode/format agree. The fixed first-profile topology is `TriangleList`; blend, reversed-Z depth, cull, and front-face choices are explicit. A compute reflection group size is nonzero and within the device limits; graphics group sizes are zero. Invalid descriptions throw before request admission; unsupported device capabilities fault the task with the missing capability context.
-`ShaderBytecodeInput.Bytecode` is a nonempty caller-owned read lease over the complete bytecode blob; its stage must equal `ShaderReflection.Stage`. The immutable reflection constructor rejects default arrays, duplicate stage locations/bindings/field names, invalid field ranges/strides, and group-size values inconsistent with its stage. `ShaderIoSignature.Location` is null only for a reflected system-value semantic. `ShaderReflection` describes stage I/O, resource bindings, record layouts, required capabilities, layout version, and compute group size. Reflection is checked against the native DXIL/SPIR-V bytes and the selected backend; caller metadata never substitutes for native validation. `CreatePipelineAsync` takes an independent internal bytecode sublease for every stage before request acceptance and retains those credits until backend pipeline creation actually terminates. A pre-canceled token returns a canceled task before admission; cancellation after admission cannot release bytes or make the task terminal before native creation/cancellation is complete. Success returns a `GpuPipeline` for the current device epoch, while unsupported/mismatched input faults the task; there is no GPU-ready fallback. Graphics owns these bytecode/reflection records directly through `TerraFX.Buffers` and has no `TerraFX.Assets` dependency.
+`ShaderCompilerIdentity` identifies the package ID, source-release version, package version, and exactly 32 package SHA-256 bytes; its constructor copies the digest, rejects default/wrong-length data, and the default identity is invalid. All shader enums use explicit values with `None = 0`, which is invalid input. `ShaderReflection` requires a nonempty entry point and positive binding-layout version; all immutable arrays must be initialized and are copied into canonical order: user locations then null system-value locations for stage I/O, group/register-class/local-binding for resources, ordinal record names with fields by byte offset/name, and numeric capability order. Empty stage arrays are allowed only where stage semantics permit them. A null `ShaderIoSignature.Location` is permitted only when `SemanticName` begins with `SV_` under ordinal-ignore-case comparison. Non-null locations are unique per input/output array; null system-value semantic/index pairs are unique by ordinal name and numeric index. `ShaderResourceSignature.Binding` is a register index local to its kind class: uniform buffers use 0–3, sampled images 0–15, storage images/buffers 0–7 in the shared UAV class, and samplers 0–7; duplicate `(group, class, binding)` identities reject, and array counts are positive and fixed. `ShaderRecordLayout` requires positive record size and initialized nonempty fields; field names are unique ordinally, field extents are checked/nonoverlapping/in-range, `ArrayCount` is positive, and `ArrayStride` is zero for one element or at least `ByteLength` and 16-byte aligned for arrays. Compute reflection has no stage I/O and a nonzero group size whose product is at most 256; graphics reflection has zero group-size fields. Nondefault input/output arrays may be empty for graphics stages; compute-stage I/O arrays must be empty. `ShaderBytecodeInput.Bytecode` is a nonempty caller-owned read lease over the complete blob; construction checks the lease is live, its stage matches the reflection, and its binary format is defined, but does not retain or dispose it. `GraphicsDevice.CreatePipelineAsync` acquires an independent bytecode sublease before request acceptance, retaining it until backend creation actually terminates. Reflection is checked against actual DXIL/SPIR-V bytes and the selected backend; caller metadata never substitutes for native validation. A pre-canceled token returns a canceled task before admission; cancellation after admission cannot release bytes or make the task terminal before native creation/cancellation is complete. Success returns a `GpuPipeline` for the current device epoch, while unsupported/mismatched input faults the task; there is no GPU-ready fallback. Graphics owns these bytecode/reflection records directly through `TerraFX.Buffers` and has no `TerraFX.Assets` dependency.
 
 The `ReadOnlySpan<byte>` buffer upload copies its bytes synchronously before returning the task. Buffer and texture lease uploads take independent range subleases before acceptance; those tasks become terminal only after the copy/transition fence has actually completed and the sublease is released. `UploadTextureAsync` transfers one complete mip/layer/aspect, never a partial region. `TextureSubresource` accepts only `Color` or `Depth`; its mip and array-layer indices are checked against the resource, 3D textures require array layer zero, and 2D/3D mip extents are clamped to at least one texel per axis. `TextureDataLayout` rejects zero pitches in its constructor. `RowPitch` and `SlicePitch` are byte pitches for the caller's rows and depth slices; both must cover the checked texel extent without overlap, and the inferred source byte range from `sourceOffset` must fit the lease. The implementation repacks rows into the backend's native staging footprint and honors native pitch/alignment requirements. Unsupported format/aspect/usage combinations fault with capability context. Upload validates destination `TextureUsage.CopyDestination`, device epoch, residency, budget, checked pitch arithmetic and range before acceptance. `ReadbackBufferAsync` requires a resident same-device source with `CopySource` usage and a positive in-range byte extent, and returns only after its actual copy fence and CPU ownership transfer complete. `ReadbackTextureAsync` validates the same-device source, `CopySource` texture usage, aspect/mip/layer, copy-capable format and required residency/budget; it returns only after the copy fence, mapping, and CPU copy complete. Both readback operations acquire independent source and staging/map credits through actual transfer and CPU-copy completion. Unsupported transfer formats/usages fault; neither readback returns a zero-filled success. Cancellation before admission prevents work; after acceptance it cannot release transfer/source credits or make the task terminal before native work and mapping/copy have actually stopped. `OwnedBuffer<T>` is a sealed disposable CPU owner backed by `UnmanagedBuffer<T>`; its read lease remains valid independently until that lease is disposed. `TextureReadback` owns the full selected subresource's copied bytes, exposes immutable format/extent/subresource and row/slice pitches, and its `ByteLength` is exactly `SlicePitch * Depth`; padding in every exposed row/slice, including trailing padding, is zero. `AcquireReadLease` leases the entire readback byte range. Disposing a GPU owner revokes logical use immediately; physical resource/descriptor/allocation release waits for every last-use submission fence. A `GpuPipeline` follows the same rule: disposal blocks later recording, while already recorded pipeline use retains native state through its actual submission fence. A residency lease pins the version/device-epoch mapping through its consumers and retirement fence. A submission fence is not a presentation fence.
 

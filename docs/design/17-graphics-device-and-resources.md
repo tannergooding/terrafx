@@ -105,7 +105,7 @@ Upload `Ready` means all required copy/transition work completed. A graph may co
 
 ## 4. Descriptors and pipeline binding
 
-No bindless baseline. The four semantic groups are Frame 0, Material 1, Object 2, and Pass 3; they map to D3D12 register spaces and Vulkan descriptor sets. Within each group, D3D12 registers are `b0` through `b3`, `t0` through `t15`, `u0` through `u7`, and `s0` through `s7`; Vulkan binding numbers are 0 through 3 for b, 16 through 31 for t, 32 through 39 for u, and 40 through 47 for s. Only statically declared bindings count; shader reflection checks cumulative per-stage/device limits.
+No bindless baseline. The four semantic groups map to D3D12 register spaces and Vulkan descriptor sets in order: Frame, Material, ObjectData, and Pass map to native indices 0 through 3; these are not the public `ShaderBindingGroup` enum values. Within each group, D3D12 registers are `b0` through `b3`, `t0` through `t15`, `u0` through `u7`, and `s0` through `s7`; Vulkan binding numbers are 0 through 3 for b, 16 through 31 for t, 32 through 39 for u, and 40 through 47 for s. `ShaderResourceSignature.Binding` is the index local to its register class; storage images and buffers share the u-class. Only statically declared bindings count; shader reflection checks cumulative per-stage/device limits.
 
 D3D12 root signature has descriptor tables per nonempty category/group, at most 16 table DWORDs, no giant inline root constant payload. Vulkan equivalent set layouts. Descriptor sets/heap ranges are immutable after submission; update by allocate-copy-new-version and retire old ranges with fence. Shader-visible heap growth creates a new heap/version and binding identity; never relocate submitted descriptor addresses.
 
