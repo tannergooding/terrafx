@@ -3,6 +3,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <InternalsVisibleTo Include="TerraFX.Runtime" Key="$(AssemblyOriginatorPublicKey)" />
+    <InternalsVisibleTo Include="TerraFX.Graphics.D3D12" Key="$(AssemblyOriginatorPublicKey)" />
+    <InternalsVisibleTo Include="TerraFX.Graphics.Vulkan" Key="$(AssemblyOriginatorPublicKey)" />
     <ProjectReference Include="..\TerraFX.Core\TerraFX.Core.csproj" />
   </ItemGroup>
 
