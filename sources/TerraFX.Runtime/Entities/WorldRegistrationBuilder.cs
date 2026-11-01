@@ -6,11 +6,12 @@ using System.Collections.Immutable;
 
 namespace TerraFX.Entities;
 
-/// <summary>Builds the immutable component, tag, resource, and optional Scene registrations for a World.</summary>
+/// <summary>Builds the immutable component, tag, resource, Scene, and CPU extraction registrations for a World.</summary>
 public sealed class WorldRegistrationBuilder
 {
     private readonly List<IWorldAttachmentRegistration> _attachments = [];
     private readonly List<IComponentRegistration> _components = [];
+    private CpuExtractionSupportRegistration? _cpuExtractionSupport;
     private bool _isBuilt;
     private readonly List<IWorldResourceRegistration> _resources = [];
     private SceneSupportRegistration? _sceneSupport;
@@ -29,11 +30,17 @@ public sealed class WorldRegistrationBuilder
 
     /// <summary>Freezes the registered components, tags, resources, and optional Scene support.</summary>
     /// <returns>The immutable World registration.</returns>
-    /// <exception cref="InvalidOperationException">The builder has already been frozen.</exception>
+    /// <exception cref="InvalidOperationException">The builder has already been frozen or CPU extraction support has no Scene support.</exception>
     public WorldRegistration Build()
     {
         EnsureMutable();
         ValidateDerivedDependencies();
+
+        if ((_cpuExtractionSupport is not null) && (_sceneSupport is null))
+        {
+            throw new InvalidOperationException("CPU extraction support requires Scene support in the same World registration.");
+        }
+
         var systems = ImmutableArray.CreateBuilder<SystemDescription>(_systems.Count);
 
         foreach (var system in _systems)
@@ -60,7 +67,8 @@ public sealed class WorldRegistrationBuilder
             [.. _systems],
             schedule,
             [.. _attachments],
-            sceneSupport: _sceneSupport);
+            sceneSupport: _sceneSupport,
+            cpuExtractionSupport: _cpuExtractionSupport);
         _isBuilt = true;
         return registration;
     }
@@ -156,6 +164,26 @@ public sealed class WorldRegistrationBuilder
         }
 
         _components.Add(new ComponentRegistration<T>(schema, binding));
+        return this;
+    }
+
+    /// <summary>Registers the headless-capable CPU extraction participant before the World is constructed.</summary>
+    /// <param name="support">The opaque registration produced by <see cref="TerraFX.Rendering.Renderer.CreateCpuExtractionSupportRegistration"/>.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="support"/> is null.</exception>
+    /// <exception cref="ArgumentException">CPU extraction support is already registered.</exception>
+    /// <exception cref="InvalidOperationException">The World registration builder has already been frozen.</exception>
+    public WorldRegistrationBuilder RegisterCpuExtractionSupport(CpuExtractionSupportRegistration support)
+    {
+        EnsureMutable();
+        ArgumentNullException.ThrowIfNull(support);
+
+        if (_cpuExtractionSupport is not null)
+        {
+            throw new ArgumentException("CPU extraction support can be registered only once.", nameof(support));
+        }
+
+        _cpuExtractionSupport = support;
         return this;
     }
 

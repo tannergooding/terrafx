@@ -144,7 +144,7 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SceneLoaderActivationHandlesExplicitNullEntityReference"
 ```
 
-By default, these focused tests run the handwritten consumer through JIT. They do not complete Scene hierarchy transactions, CPU extraction, or native qualification.
+By default, these focused tests run the handwritten consumer through JIT. They do not complete Scene hierarchy transactions or full CPU extraction/native qualification.
 
 The Scene owner-boundary regression also checks that the estimated expansion bytes are reserved before materialization, remain charged after activation, and are released on unload or when a prepared plan is abandoned. The admission-domain case checks the per-World ceiling under concurrent reservation attempts:
 
@@ -163,6 +163,15 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 ```
 
 These managed transaction cases do not qualify CPU extraction, NativeAOT, or native execution.
+
+The headless camera extraction cases exercise package-backed Scene and nested-Prefab activation, exact committed-frame selection, canonical camera ordering, hierarchical camera-pose composition, copied snapshot lifetime, and stale-revision rejection. They also verify that CPU extraction registration requires Scene support and is admitted only once:
+
+```powershell
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~HeadlessRendererExtractsNestedSceneCamerasFromOneCommittedFrame|FullyQualifiedName~CpuExtractionSupportRequiresSceneSupportAndRejectsDuplicateRegistration"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~HeadlessRendererExtractsNestedSceneCamerasFromOneCommittedFrame|FullyQualifiedName~CpuExtractionSupportRequiresSceneSupportAndRejectsDuplicateRegistration"
+```
+
+This is the camera-snapshot slice only. Draw/light/bone sources, extraction capacity precedence, asset-lease retention, and the complete frame-cohort lifecycle remain unimplemented; these managed tests do not qualify NativeAOT or native rendering.
 
 For Windows NativeAOT qualification, each executable project enables `PublishAot` locally when `TerraFXPublishAot=true`; the generated project's analyzer reference removes that switch. Publish and execute the artifacts separately:
 

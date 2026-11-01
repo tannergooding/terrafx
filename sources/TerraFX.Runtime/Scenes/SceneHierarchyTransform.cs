@@ -142,6 +142,115 @@ internal static class SceneHierarchyTransform
         return updates.MoveToImmutable();
     }
 
+    internal static (SpatialPosition3 Position, Quaternion Rotation) ResolveCameraPose(
+        World world,
+        SpatialFrame3 frame,
+        Entity cameraEntity)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+
+        Span<Entity> ancestorPath = stackalloc Entity[EntitySlotTable.MaximumHierarchyDepth + 1];
+        var ancestorCount = 0;
+        var current = cameraEntity;
+
+        while (true)
+        {
+            if (ancestorCount == ancestorPath.Length)
+            {
+                throw new InvalidOperationException("The camera ancestor path exceeds the World depth bound.");
+            }
+
+            for (var index = 0; index < ancestorCount; index++)
+            {
+                if (ancestorPath[index] == current)
+                {
+                    throw new InvalidOperationException("The camera ancestor path contains a cycle.");
+                }
+            }
+
+            ancestorPath[ancestorCount++] = current;
+
+            if (!world.TryGetHierarchyParent(current, out var parent))
+            {
+                break;
+            }
+
+            current = parent;
+        }
+
+        var settings = world.SpatialSettings;
+        var worldPosition = default(SpatialPosition3);
+        var worldLinearTransform = Matrix4x4.Identity;
+        var worldRotationTransform = Matrix4x4.Identity;
+
+        for (var index = ancestorCount - 1; index >= 0; index--)
+        {
+            var entity = ancestorPath[index];
+
+            if (!world.TryGet<SceneComponentDefinitions.LocalTransformComponent>(entity, out var localTransform))
+            {
+                throw new InvalidOperationException("A camera or its ancestor has no LocalTransform component.");
+            }
+
+            _ = SceneComponentDefinitions.CreateAssignedLocalTransform(
+                localTransform.Position,
+                localTransform.Rotation,
+                localTransform.Scale);
+
+            if ((localTransform.Scale.X <= 0.0f)
+                || (localTransform.Scale.Y <= 0.0f)
+                || (localTransform.Scale.Z <= 0.0f))
+            {
+                throw new InvalidOperationException("Camera and ancestor scales must be positive.");
+            }
+
+            var localLinearTransform = CreateLinearTransform(localTransform);
+            var localRotationTransform = Matrix4x4.CreateFromQuaternion(Quaternion.Normalize(localTransform.Rotation));
+
+            if (index == (ancestorCount - 1))
+            {
+                if (!world.TryGet<SceneComponentDefinitions.RootPositionComponent>(entity, out var rootPosition)
+                    || (localTransform.Position != Vector3.Zero))
+                {
+                    throw new InvalidOperationException("The camera ancestor path does not begin at a valid Scene root.");
+                }
+
+                worldPosition = SpatialMath.Normalize(rootPosition.Position, settings);
+                worldLinearTransform = localLinearTransform;
+                worldRotationTransform = localRotationTransform;
+            }
+            else
+            {
+                if (world.TryGet<SceneComponentDefinitions.RootPositionComponent>(entity, out _))
+                {
+                    throw new InvalidOperationException("A camera child cannot also carry RootPosition.");
+                }
+
+                var displacement = Vector3.TransformDirection(
+                    localTransform.Position,
+                    worldLinearTransform);
+                worldPosition = Translate(worldPosition, displacement, settings);
+                worldLinearTransform = localLinearTransform * worldLinearTransform;
+                worldRotationTransform = localRotationTransform * worldRotationTransform;
+            }
+
+            if (!SpatialMath.TryToFrameRelative(worldPosition, frame, out _)
+                || !worldLinearTransform.IsFinite().All()
+                || !worldRotationTransform.IsFinite().All())
+            {
+                throw new InvalidOperationException("The camera world pose is outside the current frame or nonfinite.");
+            }
+        }
+
+        if (!Matrix4x4.TryDecompose(worldRotationTransform, out _, out var worldRotation, out var translation)
+            || (translation != Vector3.Zero))
+        {
+            throw new InvalidOperationException("The camera rigid orientation is not representable.");
+        }
+
+        return (worldPosition, Quaternion.Normalize(worldRotation));
+    }
+
     internal static SpatialPosition3 Translate(
         SpatialPosition3 position,
         Vector3 displacement,

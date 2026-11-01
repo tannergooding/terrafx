@@ -192,6 +192,8 @@ public sealed partial class World : IDisposable
         _worldGuid = constructionPlan.WorldGuid;
         _systemCleanupPreparation = new WorldSystemCleanupPreparation(_worldGuid, systems.Length);
         _sceneSupportByteReservation = options.Registration.SceneSupport?.GetWorldStorageByteReservation(options) ?? 0;
+        _cpuExtractionSupportByteReservation =
+            options.Registration.CpuExtractionSupport?.GetWorldStorageByteReservation(options) ?? 0;
         _systemQuarantineReservation = systemQuarantineReservation;
         _workerPool = workerPool;
         Registration = options.Registration;
@@ -401,6 +403,8 @@ public sealed partial class World : IDisposable
 
             var resourceAndSystemStateBytes = checked(resourceBytes + systemBytes);
             var sceneSupportBytes = options.Registration.SceneSupport?.GetWorldStorageByteReservation(options) ?? 0;
+            var cpuExtractionSupportBytes =
+                options.Registration.CpuExtractionSupport?.GetWorldStorageByteReservation(options) ?? 0;
 
             if (resourceAndSystemStateBytes > options.SchedulingLimits.MaximumResourceAndSystemStateBytes)
             {
@@ -413,6 +417,7 @@ public sealed partial class World : IDisposable
                 + diagnosticBytes
                 + resourceAndSystemStateBytes
                 + sceneSupportBytes
+                + cpuExtractionSupportBytes
                 + CalculateSubscriptionStorageByteReservation());
 
             if (!admissionDomain.TryReserveWorld(worldOwnedBytes, out domainReservation)
@@ -475,6 +480,7 @@ public sealed partial class World : IDisposable
             try
             {
                 world.InitializeSceneSupport(options);
+                world.InitializeCpuExtractionSupport(options);
                 world.InitializeSystemInstances();
 
                 for (var index = 0; index < options.Registration.Resources.Length; index++)
@@ -501,6 +507,7 @@ public sealed partial class World : IDisposable
             }
             catch (Exception exception)
             {
+                world._cpuExtractionParticipant?.Dispose();
                 world._sceneParticipant?.Dispose();
                 var cleanupReport = world.ReleaseSystemInstances(
                     WorldSystemCleanupOperation.ConstructionUnwind,
@@ -1075,6 +1082,8 @@ public sealed partial class World : IDisposable
             }
 
             _workerPool.Dispose();
+            _cpuExtractionParticipant?.Dispose();
+            _cpuExtractionParticipant = null;
             _sceneParticipant?.Dispose();
             _sceneParticipant = null;
             ClearSubscriptionsForDisposal();
@@ -1472,6 +1481,7 @@ public sealed partial class World : IDisposable
             + Interlocked.Read(ref _scenePlanStorageByteReservation)
             + _componentTagWorkPlanByteReservation
             + _controlStorageByteReservation
+            + _cpuExtractionSupportByteReservation
             + _subscriptionStorageByteReservation
             + _ownerCommandPreparationByteReservation);
 
@@ -1777,7 +1787,9 @@ public sealed partial class World : IDisposable
         ThrowIfFaulted();
         EnsureOwnerThread();
 
-        if (Volatile.Read(ref _isStructuralOperationActive) != 0)
+        if (Volatile.Read(ref _isStructuralOperationActive) != 0
+            && (!_isFrameReadLeaseActive
+                || Environment.CurrentManagedThreadId != _ownerThreadId))
         {
             throw new InvalidOperationException("World reads are unavailable during a structural operation.");
         }

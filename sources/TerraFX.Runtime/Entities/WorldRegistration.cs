@@ -12,6 +12,7 @@ public sealed class WorldRegistration
 {
     private readonly ImmutableArray<IWorldAttachmentRegistration> _attachments;
     private readonly ImmutableArray<IComponentRegistration> _components;
+    private readonly CpuExtractionSupportRegistration? _cpuExtractionSupport;
     private readonly ImmutableArray<IWorldResourceRegistration> _resources;
     private readonly SceneSupportRegistration? _sceneSupport;
     private readonly SystemExecutionSchedule _schedule;
@@ -26,7 +27,8 @@ public sealed class WorldRegistration
         ImmutableArray<SystemRegistration> systems = default,
         SystemExecutionSchedule? schedule = null,
         ImmutableArray<IWorldAttachmentRegistration> attachments = default,
-        SceneSupportRegistration? sceneSupport = null)
+        SceneSupportRegistration? sceneSupport = null,
+        CpuExtractionSupportRegistration? cpuExtractionSupport = null)
     {
         ArgumentNullException.ThrowIfNull(schemas);
 
@@ -115,6 +117,7 @@ public sealed class WorldRegistration
         _resources = [.. sortedResources];
         _systems = [.. sortedSystems];
         _attachments = [.. sortedAttachments];
+        _cpuExtractionSupport = cpuExtractionSupport;
         _sceneSupport = sceneSupport;
         _schedule = schedule ?? SystemExecutionSchedule.Compile(
             [],
@@ -132,6 +135,8 @@ public sealed class WorldRegistration
     internal ImmutableArray<IWorldAttachmentRegistration> Attachments => _attachments;
 
     internal ImmutableArray<IComponentRegistration> Components => _components;
+
+    internal CpuExtractionSupportRegistration? CpuExtractionSupport => _cpuExtractionSupport;
 
     internal int RegisteredTypeCount => checked(_components.Length + _tags.Length);
 
