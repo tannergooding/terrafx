@@ -21,9 +21,9 @@ public sealed class GraphicsDevice
     private IGraphicsBackendDevice? _backendDevice;
     private readonly GraphicsCapabilities _capabilities;
     private readonly uint _ownerId;
+    private readonly GraphicsOwnerRequestQueue _ownerQueue = new();
     private readonly Thread _ownerThread;
     private readonly TaskCompletionSource _shutdownCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly AutoResetEvent _shutdownRequested = new(initialState: false);
     private readonly Task _shutdownTask;
     private int _status;
 
@@ -116,6 +116,22 @@ public sealed class GraphicsDevice
         }
     }
 
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "A work-item failure is delivered through that operation's task without terminating the dedicated owner loop.")]
+    private static void ExecuteOwnerWork(IGraphicsDeviceWork work, GraphicsDevice device)
+    {
+        try
+        {
+            work.Execute(device);
+        }
+        catch (Exception exception)
+        {
+            work.Fail(exception);
+        }
+    }
+
     private static async Task WaitForShutdownAndOwnerExitAsync(Task shutdownTask, Thread ownerThread)
     {
         try
@@ -147,7 +163,7 @@ public sealed class GraphicsDevice
 
             if (Interlocked.CompareExchange(ref _status, (int)GraphicsDeviceStatus.Stopping, currentStatus) == currentStatus)
             {
-                _ = _shutdownRequested.Set();
+                _ownerQueue.CompleteRequests();
                 return _shutdownTask;
             }
         }
@@ -161,25 +177,40 @@ public sealed class GraphicsDevice
     {
         try
         {
-            _ = _shutdownRequested.WaitOne();
-        }
-        catch (Exception exception)
-        {
-            Volatile.Write(ref _status, (int)GraphicsDeviceStatus.Stopping);
-
-            if (_backendDevice is not null)
+            while (true)
             {
-                s_quarantinedBackendDevices.Add(_backendDevice);
-                _backendDevice = null;
+                var didWork = false;
+
+                if (_ownerQueue.TryReadRetirement(out var retirement))
+                {
+                    ExecuteOwnerWork(retirement, this);
+                    didWork = true;
+                }
+
+                if (_ownerQueue.TryReadRequest(out var request))
+                {
+                    ExecuteOwnerWork(request, this);
+                    didWork = true;
+                }
+
+                if (_ownerQueue.RequestsCompleted)
+                {
+                    _ownerQueue.CompleteRetirements();
+
+                    while (_ownerQueue.TryReadRetirement(out retirement))
+                    {
+                        ExecuteOwnerWork(retirement, this);
+                    }
+
+                    break;
+                }
+
+                if (!didWork)
+                {
+                    _ownerQueue.WaitForWork();
+                }
             }
 
-            _ = _shutdownCompletion.TrySetException(exception);
-            _shutdownRequested.Dispose();
-            return;
-        }
-
-        try
-        {
             var backendDevice = _backendDevice
                 ?? throw new InvalidOperationException("A ready GraphicsDevice must own its backend device.");
             backendDevice.Dispose();
@@ -197,11 +228,12 @@ public sealed class GraphicsDevice
                 _backendDevice = null;
             }
 
+            Volatile.Write(ref _status, (int)GraphicsDeviceStatus.Stopping);
             _ = _shutdownCompletion.TrySetException(exception);
         }
         finally
         {
-            _shutdownRequested.Dispose();
+            _ownerQueue.Dispose();
         }
     }
 
