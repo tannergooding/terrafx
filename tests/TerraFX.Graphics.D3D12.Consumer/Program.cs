@@ -64,12 +64,27 @@ internal static class Program
         var readbackBufferMethod = typeof(GraphicsDevice).GetMethod(
             nameof(GraphicsDevice.ReadbackBufferAsync),
             [typeof(GpuBuffer), typeof(long), typeof(nint), typeof(CancellationToken)]);
+        var uploadTextureMethod = typeof(GraphicsDevice).GetMethod(
+            nameof(GraphicsDevice.UploadTextureAsync),
+            [
+                typeof(GpuTexture),
+                typeof(TextureSubresource),
+                typeof(BufferReadLease<byte>),
+                typeof(nint),
+                typeof(TextureDataLayout),
+                typeof(CancellationToken),
+            ]);
+        var readbackTextureMethod = typeof(GraphicsDevice).GetMethod(
+            nameof(GraphicsDevice.ReadbackTextureAsync),
+            [typeof(GpuTexture), typeof(TextureSubresource), typeof(CancellationToken)]);
 
         if ((uploadSpanMethod?.ReturnType != typeof(Task<UploadReceipt>))
             || (uploadLeaseMethod?.ReturnType != typeof(Task<UploadReceipt>))
-            || (readbackBufferMethod?.ReturnType != typeof(Task<OwnedBuffer<byte>>)))
+            || (readbackBufferMethod?.ReturnType != typeof(Task<OwnedBuffer<byte>>))
+            || (uploadTextureMethod?.ReturnType != typeof(Task<UploadReceipt>))
+            || (readbackTextureMethod?.ReturnType != typeof(Task<TextureReadback>)))
         {
-            throw new InvalidOperationException("The public buffer upload/readback contracts are unavailable to nonfriend consumers.");
+            throw new InvalidOperationException("The public buffer and texture transfer contracts are unavailable to nonfriend consumers.");
         }
 
         if (typeof(GraphicsPipelineDescription).GetConstructor([

@@ -23,6 +23,8 @@ internal interface IGraphicsBackendDevice : IDisposable
 
     OwnedBuffer<byte> ReadbackBuffer(IGraphicsBackendBuffer source, long sourceOffset, nint byteLength);
 
+    TextureReadback ReadbackTexture(IGraphicsBackendTexture source, TextureSubresource subresource);
+
     long UploadBuffer(
         IGraphicsBackendBuffer destination,
         long destinationOffset,
@@ -31,4 +33,11 @@ internal interface IGraphicsBackendDevice : IDisposable
         nint byteLength);
 
     long UploadBuffer(IGraphicsBackendBuffer destination, long destinationOffset, ReadOnlySpan<byte> source);
+
+    long UploadTexture(
+        IGraphicsBackendTexture destination,
+        TextureSubresource subresource,
+        BufferReadLease<byte> source,
+        nint sourceOffset,
+        TextureDataLayout sourceLayout);
 }

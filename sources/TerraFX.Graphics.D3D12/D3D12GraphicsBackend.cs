@@ -745,6 +745,123 @@ public static unsafe class D3D12GraphicsBackend
                 }
             }
 
+            private static TextureReadback CopyTextureFootprintToReadback(
+                byte* source,
+                TextureFormat format,
+                TextureSubresource subresource,
+                (int Width, int Height, int Depth) extent,
+                (D3D12_PLACED_SUBRESOURCE_FOOTPRINT Layout, uint RowCount, ulong RowSizeBytes, ulong TotalBytes) footprint)
+            {
+                var rowByteLength = checked((int)footprint.RowSizeBytes);
+                var rowPitch = checked((nint)footprint.Layout.Footprint.RowPitch);
+                var slicePitch = checked(rowPitch * extent.Height);
+                var byteLength = checked(slicePitch * extent.Depth);
+                var nativeSlicePitch = checked(rowPitch * extent.Height);
+                var footprintOffset = checked((nint)footprint.Layout.Offset);
+                var storage = UnmanagedBuffer<byte>.Allocate(byteLength, new BufferAllocationOptions(byteLength, alignment: 1));
+                var transferred = false;
+
+                try
+                {
+                    for (var depth = 0; depth < extent.Depth; depth++)
+                    {
+                        for (var row = 0; row < extent.Height; row++)
+                        {
+                            var sourceRowOffset = checked(
+                                footprintOffset
+                                + (checked((nint)depth) * nativeSlicePitch)
+                                + (checked((nint)row) * rowPitch));
+                            var destinationRowOffset = checked(
+                                (checked((nint)depth) * slicePitch)
+                                + (checked((nint)row) * rowPitch));
+                            storage.CopyFrom(new ReadOnlySpan<byte>(source + sourceRowOffset, rowByteLength), destinationRowOffset);
+                        }
+                    }
+
+                    var ownedStorage = storage.TransferToOwnedBuffer();
+                    transferred = true;
+
+                    try
+                    {
+                        return new TextureReadback(
+                            format,
+                            subresource,
+                            extent.Width,
+                            extent.Height,
+                            extent.Depth,
+                            rowPitch,
+                            slicePitch,
+                            ownedStorage);
+                    }
+                    catch
+                    {
+                        ownedStorage.Dispose();
+                        throw;
+                    }
+                }
+                finally
+                {
+                    if (!transferred)
+                    {
+                        storage.Dispose();
+                    }
+                }
+            }
+
+            private static void CopyTextureSourceToFootprint(
+                BufferReadLease<byte> source,
+                nint sourceOffset,
+                TextureDataLayout sourceLayout,
+                (int Width, int Height, int Depth) extent,
+                (D3D12_PLACED_SUBRESOURCE_FOOTPRINT Layout, uint RowCount, ulong RowSizeBytes, ulong TotalBytes) footprint,
+                byte* destination)
+            {
+                var rowByteLength = checked((int)footprint.RowSizeBytes);
+                var nativeRowPitch = checked((nint)footprint.Layout.Footprint.RowPitch);
+                var nativeSlicePitch = checked(nativeRowPitch * extent.Height);
+                var footprintOffset = checked((nint)footprint.Layout.Offset);
+
+                for (var depth = 0; depth < extent.Depth; depth++)
+                {
+                    for (var row = 0; row < extent.Height; row++)
+                    {
+                        var sourceRowOffset = checked(
+                            sourceOffset
+                            + (checked((nint)depth) * sourceLayout.SlicePitch)
+                            + (checked((nint)row) * sourceLayout.RowPitch));
+                        var destinationRowOffset = checked(
+                            footprintOffset
+                            + (checked((nint)depth) * nativeSlicePitch)
+                            + (checked((nint)row) * nativeRowPitch));
+                        var copyAction = new BufferUploadCopyAction(destination + destinationRowOffset);
+                        source.UseWindow(sourceRowOffset, rowByteLength, ref copyAction);
+                    }
+                }
+            }
+
+            private static D3D12_TEXTURE_COPY_LOCATION CreateFootprintLocation(
+                ID3D12Resource* resource,
+                D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint)
+            {
+                var location = default(D3D12_TEXTURE_COPY_LOCATION);
+                location.pResource = resource;
+                location.Type = D3D12_TEXTURE_COPY_TYPE.D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                location.Anonymous.PlacedFootprint = footprint;
+                return location;
+            }
+
+            private static D3D12_TEXTURE_COPY_LOCATION CreateSubresourceLocation(ID3D12Resource* resource, uint subresourceIndex)
+            {
+                var location = default(D3D12_TEXTURE_COPY_LOCATION);
+                location.pResource = resource;
+                location.Type = D3D12_TEXTURE_COPY_TYPE.D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                location.Anonymous.SubresourceIndex = subresourceIndex;
+                return location;
+            }
+
+            private static uint GetTextureSubresourceIndex(TextureDescription description, TextureSubresource subresource)
+                => checked((uint)(subresource.MipLevel + (subresource.ArrayLayer * description.MipLevels)));
+
             private static D3D12BackendBuffer GetTransferBuffer(
                 IGraphicsBackendBuffer buffer,
                 BufferUsage requiredUsage,
@@ -763,6 +880,26 @@ public static unsafe class D3D12GraphicsBackend
                 }
 
                 return selectedBuffer;
+            }
+
+            private static D3D12BackendTexture GetTransferTexture(
+                IGraphicsBackendTexture texture,
+                TextureUsage requiredUsage,
+                string parameterName)
+            {
+                ArgumentNullException.ThrowIfNull(texture, parameterName);
+
+                if (texture is not D3D12BackendTexture selectedTexture)
+                {
+                    throw new ArgumentException("The texture belongs to a different graphics backend.", parameterName);
+                }
+
+                if ((selectedTexture.Description.Usage & requiredUsage) != requiredUsage)
+                {
+                    throw new ArgumentException($"The texture does not declare {requiredUsage} usage.", parameterName);
+                }
+
+                return selectedTexture;
             }
 
             private static void ValidateTransferRange(
@@ -816,7 +953,7 @@ public static unsafe class D3D12GraphicsBackend
 
                 try
                 {
-                    return new D3D12BackendTexture(resource);
+                    return new D3D12BackendTexture(resource, description);
                 }
                 catch
                 {
@@ -997,6 +1134,101 @@ public static unsafe class D3D12GraphicsBackend
             [SuppressMessage(
                 "Usage",
                 "CA1031:Do not catch general exception types",
+                Justification = "A failed texture readback closes an unsubmitted command list before releasing its staging owner.")]
+            public TextureReadback ReadbackTexture(IGraphicsBackendTexture source, TextureSubresource subresource)
+            {
+                var sourceTexture = GetTransferTexture(source, TextureUsage.CopySource, nameof(source));
+                var extent = GraphicsDevice.GetTextureSubresourceExtent(sourceTexture.Description, subresource);
+                var footprint = GetTextureCopyFootprint(sourceTexture.Description, subresource, extent);
+                var byteLength = checked((nint)footprint.TotalBytes);
+                var transferQueue = GetTransferQueue();
+                var stagingResource = GetReadbackStaging(byteLength, out var isDedicated);
+                var isMapped = false;
+
+                try
+                {
+                    var commandList = transferQueue.BeginRecording();
+                    var sourceResource = sourceTexture.GetResource();
+                    var subresourceIndex = GetTextureSubresourceIndex(sourceTexture.Description, subresource);
+                    var toCopySource = D3D12_RESOURCE_BARRIER.InitTransition(
+                        sourceResource,
+                        D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON,
+                        D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_SOURCE,
+                        subresourceIndex,
+                        D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                    commandList->ResourceBarrier(1, &toCopySource);
+
+                    var sourceLocation = CreateSubresourceLocation(sourceResource, subresourceIndex);
+                    var destinationLocation = CreateFootprintLocation(stagingResource, footprint.Layout);
+                    commandList->CopyTextureRegion(&destinationLocation, 0, 0, 0, &sourceLocation, null);
+
+                    var toCommon = D3D12_RESOURCE_BARRIER.InitTransition(
+                        sourceResource,
+                        D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_SOURCE,
+                        D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON,
+                        subresourceIndex,
+                        D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                    commandList->ResourceBarrier(1, &toCommon);
+                    _ = transferQueue.SubmitAndWait();
+
+                    var readRange = new D3D12_RANGE {
+                        Begin = checked((nuint)footprint.Layout.Offset),
+                        End = checked((nuint)footprint.TotalBytes),
+                    };
+                    void* mapped = null;
+                    ThrowIfFailed(stagingResource->Map(0, &readRange, &mapped));
+
+                    if (mapped is null)
+                    {
+                        throw new InvalidOperationException("D3D12 texture readback staging returned no mapped storage.");
+                    }
+
+                    isMapped = true;
+                    return CopyTextureFootprintToReadback(
+                        (byte*)mapped,
+                        sourceTexture.Description.Format,
+                        subresource,
+                        extent,
+                        footprint);
+                }
+                catch (Exception exception)
+                {
+                    try
+                    {
+                        transferQueue.StopRecording();
+                    }
+                    catch (Exception stopException)
+                    {
+                        throw new AggregateException(exception, stopException);
+                    }
+
+                    throw;
+                }
+                finally
+                {
+                    if (isMapped)
+                    {
+                        var readRange = new D3D12_RANGE {
+                            Begin = 0,
+                            End = 0,
+                        };
+                        stagingResource->Unmap(0, &readRange);
+                    }
+
+                    if (isDedicated)
+                    {
+                        ReleaseDedicatedStagingResource(
+                            stagingResource,
+                            isMapped: false,
+                            writtenByteLength: 0,
+                            transferQueue);
+                    }
+                }
+            }
+
+            [SuppressMessage(
+                "Usage",
+                "CA1031:Do not catch general exception types",
                 Justification = "A failed upload closes an unsubmitted command list before releasing its staging owner.")]
             public long UploadBuffer(
                 IGraphicsBackendBuffer destination,
@@ -1127,6 +1359,94 @@ public static unsafe class D3D12GraphicsBackend
                         D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_DEST,
                         D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON,
                         0,
+                        D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                    commandList->ResourceBarrier(1, &toCommon);
+                    return transferQueue.SubmitAndWait();
+                }
+                catch (Exception exception)
+                {
+                    try
+                    {
+                        transferQueue.StopRecording();
+                    }
+                    catch (Exception stopException)
+                    {
+                        throw new AggregateException(exception, stopException);
+                    }
+
+                    throw;
+                }
+                finally
+                {
+                    if (isDedicated)
+                    {
+                        ReleaseDedicatedStagingResource(
+                            stagingResource,
+                            isMapped: true,
+                            byteLength,
+                            transferQueue);
+                    }
+                }
+            }
+
+            [SuppressMessage(
+                "Usage",
+                "CA1031:Do not catch general exception types",
+                Justification = "A failed texture upload closes an unsubmitted command list before releasing its staging owner.")]
+            public long UploadTexture(
+                IGraphicsBackendTexture destination,
+                TextureSubresource subresource,
+                BufferReadLease<byte> source,
+                nint sourceOffset,
+                TextureDataLayout sourceLayout)
+            {
+                ArgumentNullException.ThrowIfNull(source);
+                var destinationTexture = GetTransferTexture(destination, TextureUsage.CopyDestination, nameof(destination));
+                var extent = GraphicsDevice.GetTextureSubresourceExtent(destinationTexture.Description, subresource);
+                _ = GraphicsDevice.ValidateTextureUploadSource(
+                    source,
+                    sourceOffset,
+                    sourceLayout,
+                    extent.Width,
+                    extent.Height,
+                    extent.Depth,
+                    destinationTexture.Description.Format);
+                var footprint = GetTextureCopyFootprint(destinationTexture.Description, subresource, extent);
+                var byteLength = checked((nint)footprint.TotalBytes);
+                var transferQueue = GetTransferQueue();
+                var mapped = GetUploadStaging(byteLength, out var stagingResource, out var isDedicated);
+
+                try
+                {
+                    new Span<byte>(mapped, checked((int)byteLength)).Clear();
+                    CopyTextureSourceToFootprint(
+                        source,
+                        sourceOffset,
+                        sourceLayout,
+                        extent,
+                        footprint,
+                        mapped);
+
+                    var commandList = transferQueue.BeginRecording();
+                    var destinationResource = destinationTexture.GetResource();
+                    var subresourceIndex = GetTextureSubresourceIndex(destinationTexture.Description, subresource);
+                    var toCopyDestination = D3D12_RESOURCE_BARRIER.InitTransition(
+                        destinationResource,
+                        D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON,
+                        D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_DEST,
+                        subresourceIndex,
+                        D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                    commandList->ResourceBarrier(1, &toCopyDestination);
+
+                    var sourceLocation = CreateFootprintLocation(stagingResource, footprint.Layout);
+                    var destinationLocation = CreateSubresourceLocation(destinationResource, subresourceIndex);
+                    commandList->CopyTextureRegion(&destinationLocation, 0, 0, 0, &sourceLocation, null);
+
+                    var toCommon = D3D12_RESOURCE_BARRIER.InitTransition(
+                        destinationResource,
+                        D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_DEST,
+                        D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON,
+                        subresourceIndex,
                         D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
                     commandList->ResourceBarrier(1, &toCommon);
                     return transferQueue.SubmitAndWait();
@@ -1310,6 +1630,53 @@ public static unsafe class D3D12GraphicsBackend
                 return CreateStagingResource(GpuMemoryKind.Readback, checked((long)byteLength), "TerraFX D3D12 dedicated readback");
             }
 
+            private (D3D12_PLACED_SUBRESOURCE_FOOTPRINT Layout, uint RowCount, ulong RowSizeBytes, ulong TotalBytes) GetTextureCopyFootprint(
+                TextureDescription description,
+                TextureSubresource subresource,
+                (int Width, int Height, int Depth) extent)
+            {
+                var nativeDescription = CreateNativeTextureDescription(description);
+                var subresourceIndex = GetTextureSubresourceIndex(description, subresource);
+                var layout = default(D3D12_PLACED_SUBRESOURCE_FOOTPRINT);
+                uint rowCount = 0;
+                ulong rowSizeBytes = 0;
+                ulong totalBytes = 0;
+                _device->GetCopyableFootprints(
+                    &nativeDescription,
+                    subresourceIndex,
+                    1,
+                    0,
+                    &layout,
+                    &rowCount,
+                    &rowSizeBytes,
+                    &totalBytes);
+
+                var expectedRowSizeBytes = checked((ulong)extent.Width * (ulong)TextureReadback.GetBytesPerTexel(description.Format));
+                var footprint = layout.Footprint;
+
+                if ((rowCount != (uint)extent.Height)
+                    || (rowSizeBytes != expectedRowSizeBytes)
+                    || (footprint.Width != (uint)extent.Width)
+                    || (footprint.Height != (uint)extent.Height)
+                    || (footprint.Depth != (uint)extent.Depth)
+                    || (footprint.RowPitch < rowSizeBytes)
+                    || (totalBytes == 0)
+                    || (totalBytes == ulong.MaxValue))
+                {
+                    throw new NotSupportedException("D3D12 returned an unsupported texture-copy footprint.");
+                }
+
+                var footprintByteLength = checked((ulong)footprint.RowPitch * rowCount * footprint.Depth);
+                var footprintEnd = checked(layout.Offset + footprintByteLength);
+
+                if (footprintEnd > totalBytes)
+                {
+                    throw new InvalidOperationException("D3D12 returned an incomplete texture-copy footprint extent.");
+                }
+
+                return (layout, rowCount, rowSizeBytes, totalBytes);
+            }
+
             private D3D12BackendFactory.D3D12TransferQueue GetTransferQueue()
             {
                 _transferQueue ??= new D3D12BackendFactory.D3D12TransferQueue(_device);
@@ -1440,10 +1807,14 @@ public static unsafe class D3D12GraphicsBackend
 
             private sealed class D3D12BackendTexture : D3D12BackendResource, IGraphicsBackendTexture
             {
-                internal D3D12BackendTexture(ID3D12Resource* resource)
+                internal D3D12BackendTexture(ID3D12Resource* resource, TextureDescription description)
                     : base(resource)
                 {
+                    ArgumentNullException.ThrowIfNull(description);
+                    Description = description;
                 }
+
+                internal TextureDescription Description { get; }
             }
         }
 

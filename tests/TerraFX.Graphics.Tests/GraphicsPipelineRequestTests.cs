@@ -319,6 +319,9 @@ internal sealed class GraphicsPipelineRequestTests
         public OwnedBuffer<byte> ReadbackBuffer(IGraphicsBackendBuffer source, long sourceOffset, nint byteLength)
             => throw new NotSupportedException();
 
+        public TextureReadback ReadbackTexture(IGraphicsBackendTexture source, TextureSubresource subresource)
+            => throw new NotSupportedException();
+
         public long UploadBuffer(
             IGraphicsBackendBuffer destination,
             long destinationOffset,
@@ -328,6 +331,14 @@ internal sealed class GraphicsPipelineRequestTests
             => throw new NotSupportedException();
 
         public long UploadBuffer(IGraphicsBackendBuffer destination, long destinationOffset, ReadOnlySpan<byte> source)
+            => throw new NotSupportedException();
+
+        public long UploadTexture(
+            IGraphicsBackendTexture destination,
+            TextureSubresource subresource,
+            BufferReadLease<byte> source,
+            nint sourceOffset,
+            TextureDataLayout sourceLayout)
             => throw new NotSupportedException();
 
         internal void PipelineDisposed()

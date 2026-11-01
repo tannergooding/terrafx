@@ -99,7 +99,7 @@ public sealed class TextureReadback : IDisposable
     /// <summary>Gets the positive width extent.</summary>
     public int Width { get; }
 
-    private static int GetBytesPerTexel(TextureFormat format)
+    internal static int GetBytesPerTexel(TextureFormat format)
         => format switch {
             TextureFormat.R8Unorm => 1,
             TextureFormat.Rgba8Unorm or TextureFormat.Rgba8Srgb or TextureFormat.Bgra8Unorm or TextureFormat.Bgra8Srgb => 4,

@@ -30,14 +30,15 @@ internal sealed class GraphicsBufferTransferTests
         var features = ImmutableArray.Create(
             GraphicsFeature.Direct3DFeatureLevel12,
             GraphicsFeature.ShaderModel6);
+        const TextureUsage CopyUsages = TextureUsage.CopySource | TextureUsage.CopyDestination;
         var formats = ImmutableArray.Create(
-            new GraphicsFormatCapabilities(TextureFormat.Rgba8Unorm, TextureUsage.Sampled | TextureUsage.ColorAttachment, [1]),
-            new GraphicsFormatCapabilities(TextureFormat.Rgba8Srgb, TextureUsage.Sampled | TextureUsage.ColorAttachment, [1]),
-            new GraphicsFormatCapabilities(TextureFormat.Rgba16Float, TextureUsage.Sampled | TextureUsage.Storage | TextureUsage.ColorAttachment, [1]),
-            new GraphicsFormatCapabilities(TextureFormat.R8Unorm, TextureUsage.Sampled, [1]),
-            new GraphicsFormatCapabilities(TextureFormat.R32Float, TextureUsage.Sampled | TextureUsage.Storage, [1]),
-            new GraphicsFormatCapabilities(TextureFormat.R32UInt, TextureUsage.Storage | TextureUsage.ColorAttachment, [1]),
-            new GraphicsFormatCapabilities(TextureFormat.D32Float, TextureUsage.DepthAttachment | TextureUsage.Sampled, [1]));
+            new GraphicsFormatCapabilities(TextureFormat.Rgba8Unorm, TextureUsage.Sampled | TextureUsage.ColorAttachment | CopyUsages, [1]),
+            new GraphicsFormatCapabilities(TextureFormat.Rgba8Srgb, TextureUsage.Sampled | TextureUsage.ColorAttachment | CopyUsages, [1]),
+            new GraphicsFormatCapabilities(TextureFormat.Rgba16Float, TextureUsage.Sampled | TextureUsage.Storage | TextureUsage.ColorAttachment | CopyUsages, [1]),
+            new GraphicsFormatCapabilities(TextureFormat.R8Unorm, TextureUsage.Sampled | CopyUsages, [1]),
+            new GraphicsFormatCapabilities(TextureFormat.R32Float, TextureUsage.Sampled | TextureUsage.Storage | CopyUsages, [1]),
+            new GraphicsFormatCapabilities(TextureFormat.R32UInt, TextureUsage.Storage | TextureUsage.ColorAttachment | CopyUsages, [1]),
+            new GraphicsFormatCapabilities(TextureFormat.D32Float, TextureUsage.DepthAttachment | TextureUsage.Sampled | CopyUsages, [1]));
         var limits = new GraphicsLimits(
             maximumTextureDimension2D: 16384,
             maximumTextureDimension3D: 2048,
@@ -89,6 +90,94 @@ internal sealed class GraphicsBufferTransferTests
             GraphicsDeviceProfile.OffscreenNative,
             GraphicsPlatformKind.None,
             CancellationToken.None).ConfigureAwait(false);
+
+    private static TextureDescription CreateTextureDescription()
+        => new(
+            TextureDimension.Dimension2D,
+            width: 3,
+            height: 2,
+            depth: 1,
+            arrayLayers: 1,
+            mipLevels: 1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.Sampled | TextureUsage.CopySource | TextureUsage.CopyDestination,
+            debugName: "Texture transfer test");
+
+    private static TextureDescription CreateVolumeTextureDescription()
+        => new(
+            TextureDimension.Dimension3D,
+            width: 2,
+            height: 2,
+            depth: 2,
+            arrayLayers: 1,
+            mipLevels: 1,
+            TextureFormat.R8Unorm,
+            TextureUsage.CopySource | TextureUsage.CopyDestination,
+            debugName: "Volume texture transfer test");
+
+    [Test]
+    [SuppressMessage(
+        "Usage",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "This test disposes caller owners while an admitted texture transfer is blocked to verify its independent credits.")]
+    public async Task AdmittedTextureUploadRetainsSourceAndDestinationUntilBackendCompletion()
+    {
+        using var continueUpload = new ManualResetEventSlim(initialState: false);
+        using var uploadEntered = new ManualResetEventSlim(initialState: false);
+        using var cancellationSource = new CancellationTokenSource();
+        var backendDevice = new FakeBackendDevice(uploadEntered, continueUpload);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var texture = await graphicsDevice.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+        var sourceOwner = UnmanagedBuffer<byte>.Allocate(32, new BufferAllocationOptions(32, 1));
+        sourceOwner.CopyFrom(new byte[32], 0);
+        var sourceLease = sourceOwner.AcquireRead(0, 32);
+        var sourceLeaseDisposed = false;
+        var sourceOwnerDisposed = false;
+        var uploadTask = graphicsDevice.UploadTextureAsync(
+            texture,
+            new TextureSubresource(0, 0, TextureAspect.Color),
+            sourceLease,
+            sourceOffset: 0,
+            new TextureDataLayout(rowPitch: 12, slicePitch: 24),
+            cancellationSource.Token);
+
+        try
+        {
+            Assert.That(uploadEntered.Wait(TimeSpan.FromSeconds(5)), Is.True);
+            sourceLease.Dispose();
+            sourceLeaseDisposed = true;
+            sourceOwner.Dispose();
+            sourceOwnerDisposed = true;
+            texture.Dispose();
+            await cancellationSource.CancelAsync().ConfigureAwait(false);
+
+            Assert.That(uploadTask.IsCompleted, Is.False);
+            Assert.That(backendDevice.TextureDisposalCount, Is.Zero);
+
+            continueUpload.Set();
+            _ = Assert.ThrowsAsync<TaskCanceledException>(
+                async () => await uploadTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.That(backendDevice.TextureDisposalCount, Is.EqualTo(1));
+        }
+        finally
+        {
+            continueUpload.Set();
+
+            if (!sourceLeaseDisposed)
+            {
+                sourceLease.Dispose();
+            }
+
+            if (!sourceOwnerDisposed)
+            {
+                sourceOwner.Dispose();
+            }
+
+            texture.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
 
     [Test]
     [SuppressMessage(
@@ -255,6 +344,171 @@ internal sealed class GraphicsBufferTransferTests
         }
     }
 
+    [Test]
+    public async Task TextureUploadRepackagesRowsAndReadbackZeroesExposedPadding()
+    {
+        var backendDevice = new FakeBackendDevice();
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var texture = await graphicsDevice.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+        var sourceBytes = new byte[40];
+        Array.Fill(sourceBytes, (byte)0xEE);
+
+        for (var row = 0; row < 2; row++)
+        {
+            for (var index = 0; index < 12; index++)
+            {
+                sourceBytes[2 + (row * 16) + index] = checked((byte)((row * 12) + index + 1));
+            }
+        }
+
+        var sourceOwner = UnmanagedBuffer<byte>.Allocate(40, new BufferAllocationOptions(40, 1));
+        sourceOwner.CopyFrom(sourceBytes, 0);
+        var sourceLease = sourceOwner.AcquireRead(0, 40);
+        var sourceLeaseDisposed = false;
+        var sourceOwnerDisposed = false;
+
+        try
+        {
+            var receipt = await graphicsDevice.UploadTextureAsync(
+                texture,
+                new TextureSubresource(0, 0, TextureAspect.Color),
+                sourceLease,
+                sourceOffset: 2,
+                new TextureDataLayout(rowPitch: 16, slicePitch: 32)).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            Assert.That(receipt.Status, Is.EqualTo(UploadStatus.Ready));
+            Assert.That(receipt.CompletedFence, Is.EqualTo(1));
+
+            sourceLease.Dispose();
+            sourceLeaseDisposed = true;
+            sourceOwner.Dispose();
+            sourceOwnerDisposed = true;
+
+            using var readback = await graphicsDevice.ReadbackTextureAsync(
+                texture,
+                new TextureSubresource(0, 0, TextureAspect.Color)).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            using var readbackLease = readback.AcquireReadLease();
+            var actual = new byte[32];
+            var copyAction = new ReadbackCopyAction(actual);
+            readbackLease.UseWindow(0, actual.Length, ref copyAction);
+            var expected = new byte[32];
+
+            for (var row = 0; row < 2; row++)
+            {
+                for (var index = 0; index < 12; index++)
+                {
+                    expected[(row * 16) + index] = checked((byte)((row * 12) + index + 1));
+                }
+            }
+
+            Assert.That(readback.Format, Is.EqualTo(TextureFormat.Rgba8Unorm));
+            Assert.That(readback.Width, Is.EqualTo(3));
+            Assert.That(readback.Height, Is.EqualTo(2));
+            Assert.That(readback.Depth, Is.EqualTo(1));
+            Assert.That(readback.RowPitch, Is.EqualTo((nint)16));
+            Assert.That(readback.SlicePitch, Is.EqualTo((nint)32));
+            Assert.That(readback.ByteLength, Is.EqualTo((nint)32));
+            Assert.That(actual, Is.EqualTo(expected));
+
+            texture.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.That(backendDevice.TextureDisposalCount, Is.EqualTo(1));
+        }
+        finally
+        {
+            if (!sourceLeaseDisposed)
+            {
+                sourceLease.Dispose();
+            }
+
+            if (!sourceOwnerDisposed)
+            {
+                sourceOwner.Dispose();
+            }
+
+            texture.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task VolumeTextureTransferHonorsDepthSlicePitchAndZeroesPadding()
+    {
+        var backendDevice = new FakeBackendDevice();
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var texture = await graphicsDevice.CreateTextureAsync(CreateVolumeTextureDescription()).ConfigureAwait(false);
+        var sourceBytes = new byte[16];
+        Array.Fill(sourceBytes, (byte)0xEE);
+        sourceBytes[1] = 1;
+        sourceBytes[2] = 2;
+        sourceBytes[5] = 3;
+        sourceBytes[6] = 4;
+        sourceBytes[9] = 5;
+        sourceBytes[10] = 6;
+        sourceBytes[13] = 7;
+        sourceBytes[14] = 8;
+        var sourceOwner = UnmanagedBuffer<byte>.Allocate(16, new BufferAllocationOptions(16, 1));
+        sourceOwner.CopyFrom(sourceBytes, 0);
+        var sourceLease = sourceOwner.AcquireRead(0, 16);
+        var sourceLeaseDisposed = false;
+        var sourceOwnerDisposed = false;
+
+        try
+        {
+            _ = await graphicsDevice.UploadTextureAsync(
+                texture,
+                new TextureSubresource(0, 0, TextureAspect.Color),
+                sourceLease,
+                sourceOffset: 1,
+                new TextureDataLayout(rowPitch: 4, slicePitch: 8)).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            sourceLease.Dispose();
+            sourceLeaseDisposed = true;
+            sourceOwner.Dispose();
+            sourceOwnerDisposed = true;
+
+            using var readback = await graphicsDevice.ReadbackTextureAsync(
+                texture,
+                new TextureSubresource(0, 0, TextureAspect.Color)).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            using var readbackLease = readback.AcquireReadLease();
+            var actual = new byte[24];
+            var copyAction = new ReadbackCopyAction(actual);
+            readbackLease.UseWindow(0, actual.Length, ref copyAction);
+            var expected = new byte[24];
+            expected[0] = 1;
+            expected[1] = 2;
+            expected[6] = 3;
+            expected[7] = 4;
+            expected[12] = 5;
+            expected[13] = 6;
+            expected[18] = 7;
+            expected[19] = 8;
+
+            Assert.That(readback.Width, Is.EqualTo(2));
+            Assert.That(readback.Height, Is.EqualTo(2));
+            Assert.That(readback.Depth, Is.EqualTo(2));
+            Assert.That(readback.RowPitch, Is.EqualTo((nint)6));
+            Assert.That(readback.SlicePitch, Is.EqualTo((nint)12));
+            Assert.That(readback.ByteLength, Is.EqualTo((nint)24));
+            Assert.That(actual, Is.EqualTo(expected));
+        }
+        finally
+        {
+            if (!sourceLeaseDisposed)
+            {
+                sourceLease.Dispose();
+            }
+
+            if (!sourceOwnerDisposed)
+            {
+                sourceOwner.Dispose();
+            }
+
+            texture.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
     private sealed class FakeBackendBuffer : IGraphicsBackendBuffer
     {
         private readonly FakeBackendDevice _device;
@@ -286,6 +540,7 @@ internal sealed class GraphicsBufferTransferTests
         private int _bufferDisposalCount;
         private long _completedFence;
         private byte[]? _lastBufferBytes;
+        private int _textureDisposalCount;
 
         internal FakeBackendDevice()
         {
@@ -303,9 +558,15 @@ internal sealed class GraphicsBufferTransferTests
 
         internal byte[]? LastBufferBytes => _lastBufferBytes;
 
+        internal int TextureDisposalCount => Volatile.Read(ref _textureDisposalCount);
+
         private static FakeBackendBuffer GetBuffer(IGraphicsBackendBuffer buffer)
             => buffer as FakeBackendBuffer
                 ?? throw new ArgumentException("The buffer belongs to a different fake backend.", nameof(buffer));
+
+        private static FakeBackendTexture GetTexture(IGraphicsBackendTexture texture)
+            => texture as FakeBackendTexture
+                ?? throw new ArgumentException("The texture belongs to a different fake backend.", nameof(texture));
 
         public IGraphicsBackendBuffer CreateBuffer(BufferDescription description)
         {
@@ -321,7 +582,7 @@ internal sealed class GraphicsBufferTransferTests
             => throw new NotSupportedException();
 
         public IGraphicsBackendTexture CreateTexture(TextureDescription description)
-            => throw new NotSupportedException();
+            => new FakeBackendTexture(this, description);
 
         public void Dispose()
         {
@@ -331,7 +592,26 @@ internal sealed class GraphicsBufferTransferTests
             => new(description.ByteLength, alignment: 1, heapIndex: 0, budgetBytes: 3L * 1024 * 1024 * 1024);
 
         public GraphicsResourceAllocationInfo GetTextureAllocationInfo(TextureDescription description)
-            => throw new NotSupportedException();
+        {
+            long sizeBytes = 0;
+
+            for (var layer = 0; layer < description.ArrayLayers; layer++)
+            {
+                for (var mipLevel = 0; mipLevel < description.MipLevels; mipLevel++)
+                {
+                    var width = Math.Max(description.Width >> mipLevel, 1);
+                    var height = Math.Max(description.Height >> mipLevel, 1);
+                    var depth = description.Dimension == TextureDimension.Dimension2D
+                        ? 1
+                        : Math.Max(description.Depth >> mipLevel, 1);
+                    sizeBytes = checked(
+                        sizeBytes
+                        + ((long)width * height * depth * TextureReadback.GetBytesPerTexel(description.Format)));
+                }
+            }
+
+            return new GraphicsResourceAllocationInfo(sizeBytes, alignment: 1, heapIndex: 0, budgetBytes: 3L * 1024 * 1024 * 1024);
+        }
 
         public OwnedBuffer<byte> ReadbackBuffer(IGraphicsBackendBuffer source, long sourceOffset, nint byteLength)
         {
@@ -339,6 +619,65 @@ internal sealed class GraphicsBufferTransferTests
             var storage = UnmanagedBuffer<byte>.Allocate(byteLength, new BufferAllocationOptions(byteLength, 1));
             storage.CopyFrom(buffer.Bytes.AsSpan(checked((int)sourceOffset), checked((int)byteLength)), 0);
             return storage.TransferToOwnedBuffer();
+        }
+
+        public TextureReadback ReadbackTexture(IGraphicsBackendTexture source, TextureSubresource subresource)
+        {
+            var texture = GetTexture(source);
+            var width = Math.Max(texture.Description.Width >> subresource.MipLevel, 1);
+            var height = Math.Max(texture.Description.Height >> subresource.MipLevel, 1);
+            var depth = texture.Description.Dimension == TextureDimension.Dimension2D
+                ? 1
+                : Math.Max(texture.Description.Depth >> subresource.MipLevel, 1);
+            var rowByteLength = checked(width * TextureReadback.GetBytesPerTexel(texture.Description.Format));
+            var rowPitch = checked((nint)(rowByteLength + 4));
+            var slicePitch = checked(rowPitch * height);
+            var byteLength = checked(slicePitch * depth);
+            var storage = UnmanagedBuffer<byte>.Allocate(byteLength, new BufferAllocationOptions(byteLength, 1));
+            var transferred = false;
+
+            try
+            {
+                var sourceBytes = texture.GetSubresource(subresource);
+
+                for (var depthIndex = 0; depthIndex < depth; depthIndex++)
+                {
+                    for (var row = 0; row < height; row++)
+                    {
+                        var sourceOffset = checked((depthIndex * height * rowByteLength) + (row * rowByteLength));
+                        var destinationOffset = checked((depthIndex * slicePitch) + (row * rowPitch));
+                        storage.CopyFrom(sourceBytes.AsSpan(sourceOffset, rowByteLength), destinationOffset);
+                    }
+                }
+
+                var ownedStorage = storage.TransferToOwnedBuffer();
+                transferred = true;
+
+                try
+                {
+                    return new TextureReadback(
+                        texture.Description.Format,
+                        subresource,
+                        width,
+                        height,
+                        depth,
+                        rowPitch,
+                        slicePitch,
+                        ownedStorage);
+                }
+                catch
+                {
+                    ownedStorage.Dispose();
+                    throw;
+                }
+            }
+            finally
+            {
+                if (!transferred)
+                {
+                    storage.Dispose();
+                }
+            }
         }
 
         public long UploadBuffer(
@@ -375,6 +714,40 @@ internal sealed class GraphicsBufferTransferTests
             return Interlocked.Increment(ref _completedFence);
         }
 
+        public long UploadTexture(
+            IGraphicsBackendTexture destination,
+            TextureSubresource subresource,
+            BufferReadLease<byte> source,
+            nint sourceOffset,
+            TextureDataLayout sourceLayout)
+        {
+            WaitForUpload();
+            var texture = GetTexture(destination);
+            var width = Math.Max(texture.Description.Width >> subresource.MipLevel, 1);
+            var height = Math.Max(texture.Description.Height >> subresource.MipLevel, 1);
+            var depth = texture.Description.Dimension == TextureDimension.Dimension2D
+                ? 1
+                : Math.Max(texture.Description.Depth >> subresource.MipLevel, 1);
+            var rowByteLength = checked(width * TextureReadback.GetBytesPerTexel(texture.Description.Format));
+            var destinationBytes = texture.GetSubresource(subresource);
+
+            for (var depthIndex = 0; depthIndex < depth; depthIndex++)
+            {
+                for (var row = 0; row < height; row++)
+                {
+                    var sourceRowOffset = checked(
+                        sourceOffset
+                        + (checked((nint)depthIndex) * sourceLayout.SlicePitch)
+                        + (checked((nint)row) * sourceLayout.RowPitch));
+                    var destinationRowOffset = checked((depthIndex * height * rowByteLength) + (row * rowByteLength));
+                    var action = new BufferUploadCopyAction(destinationBytes, destinationRowOffset);
+                    source.UseWindow(sourceRowOffset, rowByteLength, ref action);
+                }
+            }
+
+            return Interlocked.Increment(ref _completedFence);
+        }
+
         internal void BufferDisposed(FakeBackendBuffer buffer)
         {
             _ = Interlocked.Increment(ref _bufferDisposalCount);
@@ -384,6 +757,9 @@ internal sealed class GraphicsBufferTransferTests
                 throw new InvalidOperationException("The test backend disposed an unknown buffer.");
             }
         }
+
+        internal void TextureDisposed(FakeBackendTexture texture)
+            => _ = Interlocked.Increment(ref _textureDisposalCount);
 
         private void WaitForUpload()
         {
@@ -443,6 +819,50 @@ internal sealed class GraphicsBufferTransferTests
 
             return _device;
         }
+    }
+
+    private sealed class FakeBackendTexture : IGraphicsBackendTexture
+    {
+        private readonly FakeBackendDevice _device;
+        private int _isDisposed;
+        private readonly byte[][] _subresources;
+
+        internal FakeBackendTexture(FakeBackendDevice device, TextureDescription description)
+        {
+            _device = device;
+            Description = description;
+            _subresources = new byte[checked(description.ArrayLayers * description.MipLevels)][];
+
+            for (var layer = 0; layer < description.ArrayLayers; layer++)
+            {
+                for (var mipLevel = 0; mipLevel < description.MipLevels; mipLevel++)
+                {
+                    var width = GetMipExtent(description.Width, mipLevel);
+                    var height = GetMipExtent(description.Height, mipLevel);
+                    var depth = description.Dimension == TextureDimension.Dimension2D
+                        ? 1
+                        : GetMipExtent(description.Depth, mipLevel);
+                    var byteLength = checked(width * height * depth * TextureReadback.GetBytesPerTexel(description.Format));
+                    _subresources[(layer * description.MipLevels) + mipLevel] = new byte[byteLength];
+                }
+            }
+        }
+
+        internal TextureDescription Description { get; }
+
+        private static int GetMipExtent(int extent, int mipLevel)
+            => Math.Max(extent >> mipLevel, 1);
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _isDisposed, 1) == 0)
+            {
+                _device.TextureDisposed(this);
+            }
+        }
+
+        internal byte[] GetSubresource(TextureSubresource subresource)
+            => _subresources[(subresource.ArrayLayer * Description.MipLevels) + subresource.MipLevel];
     }
 
     private readonly struct ReadbackCopyAction : IAction<ReadOnlySpan<byte>>

@@ -92,6 +92,38 @@ public sealed class GraphicsDevice
             cancellationToken).Start();
     }
 
+    internal static (int Width, int Height, int Depth) GetTextureSubresourceExtent(
+        TextureDescription description,
+        TextureSubresource subresource)
+    {
+        if (!Enum.IsDefined(subresource.Aspect))
+        {
+            throw new ArgumentOutOfRangeException(nameof(subresource));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(subresource.MipLevel, description.MipLevels, nameof(subresource));
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(subresource.ArrayLayer, description.ArrayLayers, nameof(subresource));
+
+        if ((description.Dimension == TextureDimension.Dimension3D) && (subresource.ArrayLayer != 0))
+        {
+            throw new ArgumentOutOfRangeException(nameof(subresource), "A 3D texture has array layer zero.");
+        }
+
+        var isDepthFormat = description.Format == TextureFormat.D32Float;
+
+        if (isDepthFormat ? subresource.Aspect != TextureAspect.Depth : subresource.Aspect != TextureAspect.Color)
+        {
+            throw new ArgumentException("The selected aspect is incompatible with the texture format.", nameof(subresource));
+        }
+
+        return (
+            GetTextureMipExtent(description.Width, subresource.MipLevel),
+            GetTextureMipExtent(description.Height, subresource.MipLevel),
+            description.Dimension == TextureDimension.Dimension2D
+                ? 1
+                : GetTextureMipExtent(description.Depth, subresource.MipLevel));
+    }
+
     internal static void ValidateStartupProfile(
         GraphicsBackend backend,
         GraphicsDeviceProfile profile,
@@ -133,6 +165,28 @@ public sealed class GraphicsDevice
         }
     }
 
+    internal static nint ValidateTextureUploadSource(
+        BufferReadLease<byte> source,
+        nint sourceOffset,
+        TextureDataLayout sourceLayout,
+        int width,
+        int height,
+        int depth,
+        TextureFormat format)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(sourceOffset);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sourceLayout.RowPitch, nameof(sourceLayout));
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sourceLayout.SlicePitch, nameof(sourceLayout));
+        var rowByteLength = checked((nint)width * TextureReadback.GetBytesPerTexel(format));
+        ArgumentOutOfRangeException.ThrowIfLessThan(sourceLayout.RowPitch, rowByteLength, nameof(sourceLayout));
+        var minimumSlicePitch = checked((sourceLayout.RowPitch * (height - 1)) + rowByteLength);
+        ArgumentOutOfRangeException.ThrowIfLessThan(sourceLayout.SlicePitch, minimumSlicePitch, nameof(sourceLayout));
+        var sourceByteLength = checked((sourceLayout.SlicePitch * (depth - 1)) + minimumSlicePitch);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(sourceOffset, source.Length);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(sourceByteLength, source.Length - sourceOffset, nameof(source));
+        return sourceByteLength;
+    }
+
     [SuppressMessage(
         "Usage",
         "CA1031:Do not catch general exception types",
@@ -155,6 +209,9 @@ public sealed class GraphicsDevice
             ComputePipelineDescription computeDescription => [computeDescription.Shader],
             _ => throw new ArgumentOutOfRangeException(nameof(description)),
         };
+
+    private static int GetTextureMipExtent(int extent, int mipLevel)
+        => Math.Max(extent >> mipLevel, 1);
 
     private static void ReleaseShaderBytecode(BufferReadLease<byte>[]? bytecodeLeases)
     {
@@ -257,6 +314,61 @@ public sealed class GraphicsDevice
         }
     }
 
+    private static async Task<UploadReceipt> UploadTextureAsyncCore(
+        GraphicsDevice device,
+        GpuTexture destination,
+        TextureSubresource subresource,
+        BufferReadLease<byte> sourceLease,
+        nint sourceOffset,
+        TextureDataLayout sourceLayout,
+        CancellationToken cancellationToken)
+    {
+        var sourceLeaseTransferred = false;
+        GraphicsResourceOwner.UseLease? destinationUse = null;
+
+        try
+        {
+            if (device.Status != GraphicsDeviceStatus.Ready)
+            {
+                throw new InvalidOperationException("The GraphicsDevice is not accepting texture uploads.");
+            }
+
+            destinationUse = destination.ResourceOwner.AcquireUse(nameof(destination));
+            var request = new UploadTextureRequest(
+                device,
+                destination,
+                destinationUse,
+                subresource,
+                sourceLease,
+                sourceOffset,
+                sourceLayout,
+                cancellationToken);
+            destinationUse = null;
+            sourceLeaseTransferred = true;
+
+            try
+            {
+                await device._ownerQueue.WriteRequestAsync(request, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                request.AdmissionFailed();
+                throw;
+            }
+
+            return await request.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            if (!sourceLeaseTransferred)
+            {
+                sourceLease.Dispose();
+            }
+
+            destinationUse?.Dispose();
+        }
+    }
+
     private static void ValidateBufferForTransfer(
         GraphicsDevice device,
         GpuBuffer buffer,
@@ -292,6 +404,34 @@ public sealed class GraphicsDevice
         var checkedLength = checked((long)byteLength);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(offset, bufferLength, offsetName);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(checkedLength, bufferLength - offset, lengthName);
+    }
+
+    private static void ValidateTextureForTransfer(
+        GraphicsDevice device,
+        GpuTexture texture,
+        TextureUsage requiredUsage,
+        string parameterName,
+        bool allowRetiring = false)
+    {
+        ArgumentNullException.ThrowIfNull(texture, parameterName);
+
+        if (!texture.Handle.IsValid
+            || (texture.Handle.OwnerId != device.OwnerId)
+            || (texture.DeviceEpoch != device.DeviceEpoch)
+            || !ReferenceEquals(texture.ResourceOwner.Device, device))
+        {
+            throw new ArgumentException("The texture must belong to this GraphicsDevice generation.", parameterName);
+        }
+
+        if (!allowRetiring && !texture.ResourceOwner.IsLiveForNewWork)
+        {
+            throw new ObjectDisposedException(parameterName, "The texture no longer accepts new transfer work.");
+        }
+
+        if ((texture.Description.Usage & requiredUsage) != requiredUsage)
+        {
+            throw new ArgumentException($"The texture does not declare {requiredUsage} usage.", parameterName);
+        }
     }
 
     private static async Task WaitForShutdownAndOwnerExitAsync(Task shutdownTask, Thread ownerThread)
@@ -489,6 +629,55 @@ public sealed class GraphicsDevice
         }
     }
 
+    /// <summary>Reads one complete same-device texture subresource into owned CPU storage.</summary>
+    /// <param name="source">The GPU source texture.</param>
+    /// <param name="subresource">The complete mip, array layer and aspect to copy.</param>
+    /// <param name="cancellationToken">A token that cancels admission or observation before completion.</param>
+    /// <returns>The owned copy after its graphics fence and CPU transfer complete.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="source"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">The texture belongs to another device, lacks copy-source usage, or the selected aspect is incompatible.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The selected mip or array layer is outside the texture.</exception>
+    /// <exception cref="InvalidOperationException">The device is not accepting readback requests.</exception>
+    public async Task<TextureReadback> ReadbackTextureAsync(
+        GpuTexture source,
+        TextureSubresource subresource,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        cancellationToken.ThrowIfCancellationRequested();
+        ValidateTextureForTransfer(this, source, TextureUsage.CopySource, nameof(source));
+        _ = GetTextureSubresourceExtent(source.Description, subresource);
+
+        if (Status != GraphicsDeviceStatus.Ready)
+        {
+            throw new InvalidOperationException("The GraphicsDevice is not accepting texture readbacks.");
+        }
+
+        var sourceUse = source.ResourceOwner.AcquireUse(nameof(source));
+
+        try
+        {
+            var request = new ReadbackTextureRequest(this, source, sourceUse, subresource, cancellationToken);
+            sourceUse = null;
+
+            try
+            {
+                await _ownerQueue.WriteRequestAsync(request, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                request.AdmissionFailed();
+                throw;
+            }
+
+            return await request.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            sourceUse?.Dispose();
+        }
+    }
+
     /// <summary>Uploads bytes from an independent read credit into a same-device copy-destination buffer.</summary>
     /// <param name="destination">The GPU destination buffer.</param>
     /// <param name="destinationOffset">The nonnegative destination byte offset.</param>
@@ -580,6 +769,52 @@ public sealed class GraphicsDevice
             sourceOffset: 0,
             byteLength: sourceBytes.Length,
             cancellationToken);
+    }
+
+    /// <summary>Uploads one complete texture subresource from an independent source read credit.</summary>
+    /// <param name="destination">The GPU destination texture.</param>
+    /// <param name="subresource">The complete mip, array layer and aspect to copy.</param>
+    /// <param name="source">The caller-owned source lease.</param>
+    /// <param name="sourceOffset">The nonnegative source offset relative to the lease.</param>
+    /// <param name="sourceLayout">The positive row and slice pitches in the source lease.</param>
+    /// <param name="cancellationToken">A token that cancels admission or observation before completion.</param>
+    /// <returns>An upload receipt after the native copy fence completes.</returns>
+    /// <exception cref="ArgumentNullException">The destination texture or source lease is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">The destination belongs to another device, lacks copy-destination usage, or the selected aspect is incompatible.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The source offset, pitches, mip, layer, or source extent is invalid.</exception>
+    /// <exception cref="ObjectDisposedException">The source lease or destination texture has been disposed.</exception>
+    /// <exception cref="NotSupportedException">The selected device does not support this texture transfer.</exception>
+    public async Task<UploadReceipt> UploadTextureAsync(
+        GpuTexture destination,
+        TextureSubresource subresource,
+        BufferReadLease<byte> source,
+        nint sourceOffset,
+        TextureDataLayout sourceLayout,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        ArgumentNullException.ThrowIfNull(source);
+        cancellationToken.ThrowIfCancellationRequested();
+        ValidateTextureForTransfer(this, destination, TextureUsage.CopyDestination, nameof(destination));
+        var (Width, Height, Depth) = GetTextureSubresourceExtent(destination.Description, subresource);
+        _ = ValidateTextureUploadSource(
+            source,
+            sourceOffset,
+            sourceLayout,
+            Width,
+            Height,
+            Depth,
+            destination.Description.Format);
+
+        var sourceLease = source.Retain();
+        return await UploadTextureAsyncCore(
+            this,
+            destination,
+            subresource,
+            sourceLease,
+            sourceOffset,
+            sourceLayout,
+            cancellationToken).ConfigureAwait(false);
     }
 
     internal void EnqueueResourceRetirement(GraphicsResourceOwner resource)
@@ -912,6 +1147,27 @@ public sealed class GraphicsDevice
         return backendDevice.ReadbackBuffer(backendBuffer, sourceOffset, byteLength);
     }
 
+    private TextureReadback ReadbackTextureOnOwner(GpuTexture source, TextureSubresource subresource)
+    {
+        var backendDevice = _backendDevice
+            ?? throw new InvalidOperationException("The GraphicsDevice has no live backend owner.");
+
+        if (Status != GraphicsDeviceStatus.Ready)
+        {
+            throw new InvalidOperationException("The GraphicsDevice stopped before the texture readback request was executed.");
+        }
+
+        ValidateTextureForTransfer(this, source, TextureUsage.CopySource, nameof(source), allowRetiring: true);
+        _ = GetTextureSubresourceExtent(source.Description, subresource);
+
+        if (source.ResourceOwner.BackendResource is not IGraphicsBackendTexture backendTexture)
+        {
+            throw new InvalidOperationException("The source texture has no backend texture owner.");
+        }
+
+        return backendDevice.ReadbackTexture(backendTexture, subresource);
+    }
+
     private void ReleaseResourceAllocation(GraphicsResourceAllocationInfo allocationInfo)
     {
         if (!_allocatedBytesByHeap.TryGetValue(allocationInfo.HeapIndex, out var heapBytes)
@@ -1219,6 +1475,40 @@ public sealed class GraphicsDevice
         }
 
         return backendDevice.UploadBuffer(backendBuffer, destinationOffset, source);
+    }
+
+    private long UploadTextureOnOwner(
+        GpuTexture destination,
+        TextureSubresource subresource,
+        BufferReadLease<byte> source,
+        nint sourceOffset,
+        TextureDataLayout sourceLayout)
+    {
+        var backendDevice = _backendDevice
+            ?? throw new InvalidOperationException("The GraphicsDevice has no live backend owner.");
+
+        if (Status != GraphicsDeviceStatus.Ready)
+        {
+            throw new InvalidOperationException("The GraphicsDevice stopped before the texture upload request was executed.");
+        }
+
+        ValidateTextureForTransfer(this, destination, TextureUsage.CopyDestination, nameof(destination), allowRetiring: true);
+        var (Width, Height, Depth) = GetTextureSubresourceExtent(destination.Description, subresource);
+        _ = ValidateTextureUploadSource(
+            source,
+            sourceOffset,
+            sourceLayout,
+            Width,
+            Height,
+            Depth,
+            destination.Description.Format);
+
+        if (destination.ResourceOwner.BackendResource is not IGraphicsBackendTexture backendTexture)
+        {
+            throw new InvalidOperationException("The destination texture has no backend texture owner.");
+        }
+
+        return backendDevice.UploadTexture(backendTexture, subresource, source, sourceOffset, sourceLayout);
     }
 
     private void ValidatePipelineDescriptionForDevice(PipelineDescription description)
@@ -1970,6 +2260,137 @@ public sealed class GraphicsDevice
         }
     }
 
+    private sealed class ReadbackTextureRequest : IGraphicsDeviceWork
+    {
+        private readonly CancellationTokenRegistration _cancellationRegistration;
+        private readonly CancellationToken _cancellationToken;
+        private readonly TaskCompletionSource<TextureReadback> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly GraphicsDevice _device;
+        private int _nativeWorkStarted;
+        private readonly GpuTexture _source;
+        private GraphicsResourceOwner.UseLease? _sourceUse;
+        private int _state;
+        private readonly TextureSubresource _subresource;
+
+        internal ReadbackTextureRequest(
+            GraphicsDevice device,
+            GpuTexture source,
+            GraphicsResourceOwner.UseLease sourceUse,
+            TextureSubresource subresource,
+            CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(sourceUse);
+            _cancellationToken = cancellationToken;
+            _device = device;
+            _source = source;
+            _subresource = subresource;
+            _sourceUse = sourceUse;
+            _cancellationRegistration = cancellationToken.Register(
+                static state => ((ReadbackTextureRequest)state!).Cancel(),
+                this);
+        }
+
+        internal Task<TextureReadback> Task => _completion.Task;
+
+        public void Execute(GraphicsDevice device)
+        {
+            if (Volatile.Read(ref _state) == 1)
+            {
+                ReleaseSourceUse();
+                CompleteCanceled();
+                _cancellationRegistration.Dispose();
+                return;
+            }
+
+            TextureReadback? readback = null;
+            TextureReadback? completedReadback = null;
+            var completeCanceled = false;
+
+            try
+            {
+                Volatile.Write(ref _nativeWorkStarted, 1);
+                readback = device.ReadbackTextureOnOwner(_source, _subresource);
+
+                if (Interlocked.CompareExchange(ref _state, 2, 0) == 0)
+                {
+                    completedReadback = readback;
+                    readback = null;
+                }
+                else
+                {
+                    readback.Dispose();
+                    readback = null;
+                    completeCanceled = true;
+                }
+            }
+            finally
+            {
+                readback?.Dispose();
+                ReleaseSourceUse();
+
+                if (completedReadback is not null)
+                {
+                    if (!_completion.TrySetResult(completedReadback))
+                    {
+                        completedReadback.Dispose();
+                    }
+                }
+                else if (completeCanceled)
+                {
+                    CompleteCanceled();
+                }
+
+                _cancellationRegistration.Dispose();
+            }
+        }
+
+        public void Fail(Exception exception)
+        {
+            if (exception is GraphicsDeviceLostException)
+            {
+                _device.MarkDeviceLost();
+            }
+
+            var previousState = Interlocked.Exchange(ref _state, 2);
+            ReleaseSourceUse();
+
+            if ((previousState == 1) && (Volatile.Read(ref _nativeWorkStarted) == 0))
+            {
+                _ = _completion.TrySetCanceled(_cancellationToken);
+            }
+            else
+            {
+                _ = _completion.TrySetException(exception);
+            }
+
+            _cancellationRegistration.Dispose();
+        }
+
+        internal void AdmissionFailed()
+        {
+            _ = Interlocked.Exchange(ref _state, 2);
+            ReleaseSourceUse();
+            _cancellationRegistration.Dispose();
+        }
+
+        private void Cancel()
+            => _ = Interlocked.CompareExchange(ref _state, 1, 0);
+
+        private void CompleteCanceled()
+        {
+            if (Interlocked.CompareExchange(ref _state, 2, 1) == 1)
+            {
+                _ = _completion.TrySetCanceled(_cancellationToken);
+            }
+        }
+
+        private void ReleaseSourceUse()
+        {
+            var sourceUse = Interlocked.Exchange(ref _sourceUse, null);
+            sourceUse?.Dispose();
+        }
+    }
+
     private sealed class RetireResourceRequest : IGraphicsDeviceWork
     {
         private readonly GraphicsDevice _device;
@@ -2063,6 +2484,152 @@ public sealed class GraphicsDevice
                         _sourceLease ?? throw new InvalidOperationException("The upload request has no retained source lease."),
                         _sourceOffset,
                         _byteLength);
+                receipt = new UploadReceipt(UploadStatus.Ready, device.DeviceEpoch, completedFence, rejection: null);
+
+                if (Interlocked.CompareExchange(ref _state, 2, 0) != 0)
+                {
+                    completeCanceled = true;
+                    receipt = null;
+                }
+            }
+            finally
+            {
+                ReleaseSourceLease();
+                ReleaseDestinationUse();
+
+                if (receipt is not null)
+                {
+                    _ = _completion.TrySetResult(receipt);
+                }
+                else if (completeCanceled)
+                {
+                    CompleteCanceled();
+                }
+
+                _cancellationRegistration.Dispose();
+            }
+        }
+
+        public void Fail(Exception exception)
+        {
+            if (exception is GraphicsDeviceLostException)
+            {
+                _device.MarkDeviceLost();
+            }
+
+            var previousState = Interlocked.Exchange(ref _state, 2);
+            ReleaseSourceLease();
+            ReleaseDestinationUse();
+
+            if ((previousState == 1) && (Volatile.Read(ref _nativeWorkStarted) == 0))
+            {
+                _ = _completion.TrySetCanceled(_cancellationToken);
+            }
+            else
+            {
+                _ = _completion.TrySetException(exception);
+            }
+
+            _cancellationRegistration.Dispose();
+        }
+
+        internal void AdmissionFailed()
+        {
+            _ = Interlocked.Exchange(ref _state, 2);
+            ReleaseSourceLease();
+            ReleaseDestinationUse();
+            _cancellationRegistration.Dispose();
+        }
+
+        private void Cancel()
+            => _ = Interlocked.CompareExchange(ref _state, 1, 0);
+
+        private void CompleteCanceled()
+        {
+            if (Interlocked.CompareExchange(ref _state, 2, 1) == 1)
+            {
+                _ = _completion.TrySetCanceled(_cancellationToken);
+            }
+        }
+
+        private void ReleaseDestinationUse()
+        {
+            var destinationUse = Interlocked.Exchange(ref _destinationUse, null);
+            destinationUse?.Dispose();
+        }
+
+        private void ReleaseSourceLease()
+        {
+            var sourceLease = Interlocked.Exchange(ref _sourceLease, null);
+            sourceLease?.Dispose();
+        }
+    }
+
+    private sealed class UploadTextureRequest : IGraphicsDeviceWork
+    {
+        private readonly CancellationTokenRegistration _cancellationRegistration;
+        private readonly CancellationToken _cancellationToken;
+        private readonly TextureDataLayout _sourceLayout;
+        private readonly nint _sourceOffset;
+        private readonly TaskCompletionSource<UploadReceipt> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly GpuTexture _destination;
+        private GraphicsResourceOwner.UseLease? _destinationUse;
+        private readonly GraphicsDevice _device;
+        private int _nativeWorkStarted;
+        private BufferReadLease<byte>? _sourceLease;
+        private int _state;
+        private readonly TextureSubresource _subresource;
+
+        internal UploadTextureRequest(
+            GraphicsDevice device,
+            GpuTexture destination,
+            GraphicsResourceOwner.UseLease destinationUse,
+            TextureSubresource subresource,
+            BufferReadLease<byte> sourceLease,
+            nint sourceOffset,
+            TextureDataLayout sourceLayout,
+            CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(destinationUse);
+            ArgumentNullException.ThrowIfNull(sourceLease);
+            _cancellationToken = cancellationToken;
+            _destination = destination;
+            _destinationUse = destinationUse;
+            _device = device;
+            _sourceLease = sourceLease;
+            _sourceLayout = sourceLayout;
+            _sourceOffset = sourceOffset;
+            _subresource = subresource;
+            _cancellationRegistration = cancellationToken.Register(
+                static state => ((UploadTextureRequest)state!).Cancel(),
+                this);
+        }
+
+        internal Task<UploadReceipt> Task => _completion.Task;
+
+        public void Execute(GraphicsDevice device)
+        {
+            if (Volatile.Read(ref _state) == 1)
+            {
+                ReleaseSourceLease();
+                ReleaseDestinationUse();
+                CompleteCanceled();
+                _cancellationRegistration.Dispose();
+                return;
+            }
+
+            UploadReceipt? receipt = null;
+            var completeCanceled = false;
+
+            try
+            {
+                Volatile.Write(ref _nativeWorkStarted, 1);
+                var completedFence = device.UploadTextureOnOwner(
+                    _destination,
+                    _subresource,
+                    _sourceLease ?? throw new InvalidOperationException("The texture upload request has no retained source lease."),
+                    _sourceOffset,
+                    _sourceLayout);
                 receipt = new UploadReceipt(UploadStatus.Ready, device.DeviceEpoch, completedFence, rejection: null);
 
                 if (Interlocked.CompareExchange(ref _state, 2, 0) != 0)
