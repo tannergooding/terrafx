@@ -6464,6 +6464,20 @@ public enum InputRecipientKind
     SimulationTimeline = 1
 }
 
+public readonly struct InputDeviceHandle : IEquatable<InputDeviceHandle>
+{
+    internal InputDeviceHandle(uint ownerId, uint index, uint generation);
+    public uint Generation { get; }
+    public uint Index { get; }
+    public bool IsValid { get; }
+    public uint OwnerId { get; }
+    public static bool operator !=(InputDeviceHandle left, InputDeviceHandle right);
+    public static bool operator ==(InputDeviceHandle left, InputDeviceHandle right);
+    public bool Equals(InputDeviceHandle other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
+}
+
 public sealed class ValidationIssue
 {
     internal ValidationIssue(string code, string schemaPath);
@@ -6878,7 +6892,7 @@ public sealed class PlatformHost
     public ClipboardServiceStatus ClipboardStatus { get; }
     public ClipboardTextService? ClipboardText { get; }
     public ImmutableArray<MonitorHandle> GetMonitorHandles();
-    public Task<InputRoutingReceipt> AssignDeviceAsync(InputDeviceHandle device, uint simulationRecipientId, PlayerSlot playerSlot, CancellationToken cancellationToken = default);
+    public Task<InputRoutingReceipt> AssignDeviceAsync(InputDeviceHandle device, uint simulationRecipientId, ushort playerSlot, CancellationToken cancellationToken = default);
     public Task<WindowCommandReceipt> SetTitleAsync(WindowHandle window, string title, CancellationToken cancellationToken = default);
     public Task<WindowCommandReceipt> SetModeAsync(WindowHandle window, WindowMode mode, CancellationToken cancellationToken = default);
     public Task<WindowCommandReceipt> CloseWindowAsync(WindowHandle window, CancellationToken cancellationToken = default);

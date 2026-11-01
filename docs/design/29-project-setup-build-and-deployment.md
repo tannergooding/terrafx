@@ -132,6 +132,17 @@ The lease constructor is internal and no public owner-fabrication path exists. T
 sequence does not issue owner IDs, timeline ticks, or segment revisions and refuses
 at `long.MaxValue` without wrapping.
 
+#### Runtime input-device handle issuer
+
+`TerraFX.Input.InputDeviceHandle` has the public value shape `(OwnerId, Index,
+Generation)` and an internal constructor. The Runtime host owner maintains its
+host-local device-slot generations and constructs a handle from the `OwnerId` it
+already issued through Core. Platform adapters report native device lifecycle and
+normalized samples but do not allocate Core owner IDs, host event sequences, or
+public input handles; operating-system paths are not slot identities. A disconnect
+retires the exact generation before that slot can be reused. No additional Core or
+Input friend grant is needed for Platform.
+
 The host revokes the lease only after capture and recipient consumers have stopped
 accepting work. Revocation does not roll back or reuse any sequence already issued.
 
