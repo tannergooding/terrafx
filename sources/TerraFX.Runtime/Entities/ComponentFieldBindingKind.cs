@@ -14,4 +14,6 @@ internal enum ComponentFieldBindingKind
     OptionalStableGuidReference = 7,
     Scalar = 8,
     StableGuidReference = 9,
+    AssetReference = 10,
+    OptionalAssetReference = 11,
 }

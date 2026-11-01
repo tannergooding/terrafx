@@ -305,6 +305,30 @@ public sealed class ComponentFieldBinding<T, TAuthor>
         return Create(ComponentFieldBindingKind.StableGuidReference, field, storagePaths, runtime, author);
     }
 
+    internal static ComponentFieldBinding<T, TAuthor> AssetReference<TRuntime, TAuthorReader>(
+        ComponentFieldDescriptor field,
+        ImmutableArray<ComponentStoragePath> storagePaths,
+        TRuntime runtime,
+        TAuthorReader author)
+        where TRuntime : struct, IComponentValueAccessor<T, int>
+        where TAuthorReader : struct, IComponentValueReader<TAuthor, int>
+    {
+        ValidateAssetReferenceField(field, storagePaths, isRequired: true);
+        return Create(ComponentFieldBindingKind.AssetReference, field, storagePaths, runtime, author);
+    }
+
+    internal static ComponentFieldBinding<T, TAuthor> OptionalAssetReference<TRuntime, TAuthorReader>(
+        ComponentFieldDescriptor field,
+        ImmutableArray<ComponentStoragePath> storagePaths,
+        TRuntime runtime,
+        TAuthorReader author)
+        where TRuntime : struct, IComponentOptionalAccessor<T, int>
+        where TAuthorReader : struct, IComponentOptionalReader<TAuthor, int>
+    {
+        ValidateAssetReferenceField(field, storagePaths, isRequired: false);
+        return Create(ComponentFieldBindingKind.OptionalAssetReference, field, storagePaths, runtime, author);
+    }
+
     private static ImmutableArray<ComponentStoragePath> CopyStoragePaths(
         ImmutableArray<ComponentStoragePath> storagePaths,
         bool allowEmpty)
@@ -528,6 +552,30 @@ public sealed class ComponentFieldBinding<T, TAuthor>
                 throw new ArgumentException("Aggregate children must bind every direct nested field in schema order.", nameof(children));
             }
         }
+    }
+
+    private static void ValidateAssetReferenceField(
+        ComponentFieldDescriptor field,
+        ImmutableArray<ComponentStoragePath> storagePaths,
+        bool isRequired)
+    {
+        ArgumentNullException.ThrowIfNull(field);
+        var expectedSchema = new ContentSchemaReference(
+            new ContentSchemaIdentityAssignment("native/asset-reference").SchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+
+        if ((field.Field.WireKind != 22)
+            || (field.Field.IsRequired != isRequired)
+            || (field.Field.Reference != ContentReferenceKind.Asset)
+            || !TryResolveNestedSchema(field, out var nestedSchema)
+            || (nestedSchema.Schema != expectedSchema))
+        {
+            throw new ArgumentException("The field is not an Asset reference record with the selected presence and schema.", nameof(field));
+        }
+
+        ValidateStoragePaths(storagePaths, allowEmpty: false);
     }
 
     private static void ValidateField(

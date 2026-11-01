@@ -124,9 +124,11 @@ public sealed class ComponentFactoryBinding<T>
 
     private static ComponentStorageKind GetStorageKind(ComponentFieldBindingKind kind) => kind switch {
         ComponentFieldBindingKind.Aggregate or ComponentFieldBindingKind.OptionalAggregate => ComponentStorageKind.Composite,
+        ComponentFieldBindingKind.AssetReference => ComponentStorageKind.Value,
         ComponentFieldBindingKind.EntityReference => ComponentStorageKind.EntityHandle,
         ComponentFieldBindingKind.FixedArray => ComponentStorageKind.InlineArray,
         ComponentFieldBindingKind.Optional => ComponentStorageKind.OptionalValue,
+        ComponentFieldBindingKind.OptionalAssetReference => ComponentStorageKind.OptionalValue,
         ComponentFieldBindingKind.OptionalEntityReference => ComponentStorageKind.OptionalEntityHandle,
         ComponentFieldBindingKind.OptionalStableGuidReference => ComponentStorageKind.OptionalValue,
         ComponentFieldBindingKind.Scalar or ComponentFieldBindingKind.StableGuidReference => ComponentStorageKind.Value,
