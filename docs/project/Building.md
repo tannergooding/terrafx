@@ -72,6 +72,15 @@ dotnet test .\tests\TerraFX.Assets.Tests\TerraFX.Assets.Tests.csproj --configura
 dotnet test .\tests\TerraFX.Assets.Tests\TerraFX.Assets.Tests.csproj --configuration Release --filter "FullyQualifiedName~AssetStoreRetain"
 ```
 
+### Package-bound AssetLease loading
+
+Run the regression proving referenced assets are loaded from the lease's original package after replacement:
+
+```powershell
+dotnet test .\tests\TerraFX.Assets.Tests\TerraFX.Assets.Tests.csproj --configuration Debug --filter "FullyQualifiedName~AssetStoreLoadsAssetFromPackageLease"
+dotnet test .\tests\TerraFX.Assets.Tests\TerraFX.Assets.Tests.csproj --configuration Release --filter "FullyQualifiedName~AssetStoreLoadsAssetFromPackageLease"
+```
+
 ### Rendering texture asset codec
 
 Run the package-backed RGBA8 texture codec regressions for exact BaseOnly/FullChain mips and semantic validation:

@@ -225,6 +225,64 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    public async Task AssetStoreLoadsAssetFromPackageLeaseAfterPackageReplacement()
+    {
+        var registration = CreateRegistration();
+        var originalPackage = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(
+                1,
+                CreateAssetEnvelope(1, CreateAssetRecordWithReference(10, 2, s_assetSchema.SchemaId, 1))),
+            new AssetPackageReaderTests.TestEntry(2, CreateAssetEnvelope(2, 20)));
+        var replacementPackage = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 11)),
+            new AssetPackageReaderTests.TestEntry(2, CreateAssetEnvelope(2, 21)));
+        var originalPath = AssetPackageReaderTests.WritePackage(originalPackage);
+        var replacementPath = AssetPackageReaderTests.WritePackage(replacementPackage);
+        var store = await AssetStore.CreateAsync(
+            CreateOptions(originalPath, originalPackage, registration),
+            CancellationToken.None).ConfigureAwait(false);
+        AssetLease<TestAssetValue>? sourceLease = null;
+        AssetLease<TestAssetValue>? referencedLease = null;
+
+        try
+        {
+            var source = await store.LoadAsync<TestAssetValue>(new AssetId(1), CancellationToken.None).ConfigureAwait(false);
+            sourceLease = source;
+            Assert.That(source.Value.Marker, Is.EqualTo(10));
+
+            await store.ReplacePackageAsync(
+                CreateOptions(replacementPath, replacementPackage, registration),
+                CancellationToken.None).ConfigureAwait(false);
+
+            using (var currentLease = await store.LoadAsync<TestAssetValue>(new AssetId(2), CancellationToken.None).ConfigureAwait(false))
+            {
+                Assert.That(currentLease.Value.Marker, Is.EqualTo(21));
+            }
+
+            var referenced = await source.LoadFromPackageAsync<TestAssetValue>(
+                new AssetId(2),
+                CancellationToken.None).ConfigureAwait(false);
+            referencedLease = referenced;
+            Assert.That(referenced.Value.Marker, Is.EqualTo(20));
+
+            await store.DisposeAsync().ConfigureAwait(false);
+            Assert.That(referenced.Value.Marker, Is.EqualTo(20));
+            _ = Assert.ThrowsAsync<ObjectDisposedException>(
+                async () => await source.LoadFromPackageAsync<TestAssetValue>(
+                    new AssetId(2),
+                    CancellationToken.None).ConfigureAwait(false));
+        }
+        finally
+        {
+            sourceLease?.Dispose();
+            referencedLease?.Dispose();
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(originalPath);
+            File.Delete(replacementPath);
+        }
+    }
+
+    [Test]
     public async Task AssetStoreLoadsBrotliPayloadsWithinDeclaredDecodedLength()
     {
         var registration = CreateRegistration();

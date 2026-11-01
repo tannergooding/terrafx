@@ -19,6 +19,15 @@ internal sealed class AssetLeaseLifetime
         _decodedBytes = decodedBytes;
     }
 
+    internal (AssetStore Store, AssetPackageBacking Backing) AcquirePackageBackingReference()
+    {
+        var store = Volatile.Read(ref _store);
+        var backing = Volatile.Read(ref _backing);
+        ObjectDisposedException.ThrowIf(store is null || backing is null, this);
+        ObjectDisposedException.ThrowIf(!backing.TryAcquireReference(), this);
+        return (store, backing);
+    }
+
     internal void AddReference()
     {
         var store = Volatile.Read(ref _store);

@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 namespace TerraFX.Assets;
 
 /// <summary>Loads immutable typed assets from one selected content-set package.</summary>
-public sealed class AssetStore : IAsyncDisposable
+public sealed partial class AssetStore : IAsyncDisposable
 {
     private readonly Lock _gate = new();
     private long _activeDecodeBytes;
@@ -121,72 +121,15 @@ public sealed class AssetStore : IAsyncDisposable
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        AcquireLoad<T>(assetId, out var backing, out var entry, out var codec, out var decodedBytes);
-        var leaseCreated = false;
-        var decodeBudgetReserved = true;
-
-        try
-        {
-            var encodedEnvelope = await AssetPayloadReader.ReadAsync(backing, entry, cancellationToken).ConfigureAwait(false);
-            cancellationToken.ThrowIfCancellationRequested();
-            var context = new AssetCodecContext(
-                assetId,
-                backing.Registration.Schemas,
-                backing.ProfileId,
-                backing.SpatialSettings,
-                backing.ReadLimits);
-            var status = AssetEnvelopeDecoder.Decode(
-                encodedEnvelope,
-                assetId,
-                codec,
-                context,
-                backing.ReadLimits,
-                out var value,
-                out var assetReferences,
-                out var schemaDiagnostic,
-                out var packageDiagnostic);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (status is not BinaryRecordStatus.Complete)
-            {
-                if (status is BinaryRecordStatus.UnsupportedSchema)
-                {
-                    throw new NotSupportedException(
-                        $"Asset {assetId} uses an unsupported schema: {packageDiagnostic ?? schemaDiagnostic?.Category ?? status.ToString()}.");
-                }
-
-                throw new InvalidDataException(
-                    $"Asset {assetId} was not decoded: {packageDiagnostic ?? schemaDiagnostic?.Category ?? status.ToString()}.");
-            }
-
-            if (value is null)
-            {
-                throw new InvalidDataException($"The codec returned no value for asset {assetId}.");
-            }
-
-            encodedEnvelope = [];
-            ReleaseDecodeBudget(decodedBytes);
-            decodeBudgetReserved = false;
-            await ValidateAssetReferencesAsync(backing, assetReferences, cancellationToken).ConfigureAwait(false);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var lease = CreateLease(this, assetId, value, backing, decodedBytes, out leaseCreated);
-            return lease;
-        }
-        finally
-        {
-            if (decodeBudgetReserved)
-            {
-                ReleaseDecodeBudget(decodedBytes);
-            }
-
-            CompleteLoad(decodedBytes, leaseCreated);
-
-            if (!leaseCreated)
-            {
-                backing.ReleaseReference();
-            }
-        }
+        AcquireLoad<T>(
+            assetId,
+            packageBacking: null,
+            backingReferenceAlreadyHeld: false,
+            out var backing,
+            out var entry,
+            out var codec,
+            out var decodedBytes);
+        return await LoadAssetAsync(assetId, backing, entry, codec, decodedBytes, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Validates and atomically selects a replacement content-set package.</summary>
@@ -262,15 +205,22 @@ public sealed class AssetStore : IAsyncDisposable
 
     private void AcquireLoad<T>(
         AssetId assetId,
+        AssetPackageBacking? packageBacking,
+        bool backingReferenceAlreadyHeld,
         out AssetPackageBacking backing,
         out AssetPackageEntry entry,
         out AssetStoreRegistration.IAssetCodec<T> codec,
         out long decodedBytes)
     {
+        if (backingReferenceAlreadyHeld && (packageBacking is null))
+        {
+            throw new ArgumentNullException(nameof(packageBacking));
+        }
+
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            backing = _currentBacking
+            backing = packageBacking ?? _currentBacking
                 ?? throw new InvalidOperationException("The asset store has no selected package.");
 
             if (!backing.TryGetEntry(assetId, out entry))
@@ -300,7 +250,10 @@ public sealed class AssetStore : IAsyncDisposable
                 throw new InvalidOperationException("The concurrent asset decode budget is exhausted.");
             }
 
-            ObjectDisposedException.ThrowIf(!backing.TryAcquireReference(), backing);
+            if (!backingReferenceAlreadyHeld)
+            {
+                ObjectDisposedException.ThrowIf(!backing.TryAcquireReference(), backing);
+            }
 
             _liveAssetBytes += decodedBytes;
             _liveAssetLeases++;
