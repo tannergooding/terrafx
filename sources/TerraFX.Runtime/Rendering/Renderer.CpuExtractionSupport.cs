@@ -2,6 +2,7 @@
 
 using System;
 using System.Threading;
+using TerraFX.Assets;
 using TerraFX.Entities;
 
 namespace TerraFX.Rendering;
@@ -21,6 +22,17 @@ public sealed partial class Renderer
     /// <summary>Creates a Renderer that performs CPU extraction without activating a graphics device.</summary>
     /// <returns>The headless Renderer service.</returns>
     public static Renderer CreateHeadless() => new();
+
+    /// <summary>Registers the built-in native Texture asset codec with an Assets builder.</summary>
+    /// <param name="builder">The asset-store builder whose schema registry contains the native/texture and native/texture-mip schemas.</param>
+    /// <returns>The builder with the native Texture asset codec registered.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="builder"/> is null.</exception>
+    /// <exception cref="ArgumentException">The builder does not contain the exact compiled texture schema tuple or registration conflicts.</exception>
+    public static AssetStoreRegistrationBuilder RegisterAssetCodecs(AssetStoreRegistrationBuilder builder)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        return builder.RegisterCodec(new RenderTextureAssetCodec());
+    }
 
     private sealed class BuiltInCpuExtractionSupportRegistration : IWorldCpuExtractionSupportRegistration
     {
