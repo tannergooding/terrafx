@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Immutable;
 using System.Threading;
 using TerraFX.Entities;
 
@@ -39,6 +40,10 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         _activeInstances = new SceneInstance[options.MaximumActiveSceneInstances];
         _reservedInstanceSlots = new bool[options.MaximumActiveSceneInstances];
     }
+
+    public Type HierarchyLocalTransformComponentType => typeof(SceneComponentDefinitions.LocalTransformComponent);
+
+    public Type HierarchyRootPositionComponentType => typeof(SceneComponentDefinitions.RootPositionComponent);
 
     public long OwnedByteReservation => GetStorageByteReservation(
         _maximumActiveSceneInstances,
@@ -113,6 +118,15 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
             instance?.RevokeFromWorld();
         }
     }
+
+    public ImmutableArray<WorldHierarchyDetachUpdate> PrepareHierarchyDetachment(
+        int ancestorNodeCount,
+        ReadOnlyMemory<WorldHierarchyNodeSnapshot> nodes)
+        => SceneHierarchyTransform.PrepareHierarchyDetachment(
+            _world,
+            _world.GetCurrentSceneHierarchyFrame(this),
+            ancestorNodeCount,
+            nodes);
 
     public void PumpControlBoundary()
     {

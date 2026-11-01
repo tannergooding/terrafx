@@ -419,6 +419,7 @@ public sealed partial class World
             var createdEntityHandles = new HashSet<Entity>(commands.Length);
             var destroyedEntityHandles = new HashSet<Entity>(commands.Length);
             var destroyedOwnerIds = new HashSet<Guid>(commands.Length);
+            var detachedHierarchyChildren = new HashSet<Entity>(commands.Length);
 
             void ValidateCommandInitialization(
                 IComponentRegistration registration,
@@ -547,6 +548,288 @@ public sealed partial class World
                 return projection;
             }
 
+            bool TryGetCurrentHierarchyParent(Entity child, out Entity parent)
+            {
+                if (detachedHierarchyChildren.Contains(child)
+                    || !_entitySlots.TryGetParent(
+                        child.Index,
+                        child.Generation,
+                        out var parentIndex,
+                        out var parentGeneration))
+                {
+                    parent = default;
+                    return false;
+                }
+
+                parent = new Entity(_ownerId, parentIndex, parentGeneration);
+                return true;
+            }
+
+            Entity[] CaptureCurrentHierarchyChildren(Entity parent)
+            {
+                var childCount = 0;
+
+                if (_entitySlots.TryGetFirstChild(
+                        parent.Index,
+                        parent.Generation,
+                        out var childIndex,
+                        out var childGeneration))
+                {
+                    while (true)
+                    {
+                        var child = new Entity(_ownerId, childIndex, childGeneration);
+
+                        if (!detachedHierarchyChildren.Contains(child)
+                            && (!projectionsByEntity.TryGetValue(child, out var projection) || !projection.IsDestroyed))
+                        {
+                            childCount++;
+                        }
+
+                        if (!_entitySlots.TryGetNextSibling(
+                                childIndex,
+                                childGeneration,
+                                out childIndex,
+                                out childGeneration))
+                        {
+                            break;
+                        }
+                    }
+                }
+
+                ReservePlanBytes(GetArrayByteReservation(childCount, Unsafe.SizeOf<Entity>()));
+                var children = new Entity[childCount];
+                var childOrdinal = 0;
+
+                if (_entitySlots.TryGetFirstChild(
+                        parent.Index,
+                        parent.Generation,
+                        out var currentChildIndex,
+                        out var currentChildGeneration))
+                {
+                    while (true)
+                    {
+                        var child = new Entity(_ownerId, currentChildIndex, currentChildGeneration);
+
+                        if (!detachedHierarchyChildren.Contains(child))
+                        {
+                            var projection = GetLiveProjection(child);
+
+                            if (!projection.IsDestroyed)
+                            {
+                                children[childOrdinal++] = child;
+                            }
+                        }
+
+                        if (!_entitySlots.TryGetNextSibling(
+                                currentChildIndex,
+                                currentChildGeneration,
+                                out currentChildIndex,
+                                out currentChildGeneration))
+                        {
+                            break;
+                        }
+                    }
+                }
+
+                if (childOrdinal != childCount)
+                {
+                    throw new InvalidOperationException("The live hierarchy child set changed during command preflight.");
+                }
+
+                return children;
+            }
+
+            ComponentInitialization ReadCurrentComponent(
+                ProjectedCommandEntity projection,
+                Type componentType)
+            {
+                if (!projection.Components.Contains(componentType))
+                {
+                    throw new InvalidOperationException("A hierarchy transform component is absent from the projected Entity.");
+                }
+
+                if (TryGetProjectedValue(projection, componentType, out var initialization)
+                    && (initialization is not null))
+                {
+                    return initialization;
+                }
+
+                var source = projection.Source
+                    ?? throw new InvalidOperationException("A projected hierarchy component has no source row.");
+                var componentIndex = source.GetComponentIndex(componentType);
+
+                if (componentIndex < 0)
+                {
+                    throw new InvalidOperationException("A projected hierarchy component has no source column.");
+                }
+
+                return source.Storage.CaptureColumnRow(
+                    componentIndex,
+                    projection.SourceChunkIndex,
+                    projection.SourceRow);
+            }
+
+            WorldHierarchyNodeSnapshot[] CaptureHierarchyTransformPath(
+                Entity parent,
+                Entity[] directChildren,
+                out int ancestorNodeCount)
+            {
+                Span<Entity> ancestorStack = stackalloc Entity[EntitySlotTable.MaximumHierarchyDepth + 1];
+                ancestorNodeCount = 0;
+                var currentEntity = parent;
+
+                while (true)
+                {
+                    if (ancestorNodeCount == ancestorStack.Length)
+                    {
+                        throw new InvalidOperationException("The hierarchy ancestor path exceeds the World depth bound.");
+                    }
+
+                    ancestorStack[ancestorNodeCount++] = currentEntity;
+
+                    if (!TryGetCurrentHierarchyParent(currentEntity, out var currentParent))
+                    {
+                        break;
+                    }
+
+                    currentEntity = currentParent;
+                }
+
+                var nodeCount = checked(ancestorNodeCount + directChildren.Length);
+                ReservePlanBytes(checked(
+                    GetArrayByteReservation(nodeCount, Unsafe.SizeOf<WorldHierarchyNodeSnapshot>())
+                    + GetArrayByteReservation(checked(nodeCount + 1), 128)));
+                var nodes = new WorldHierarchyNodeSnapshot[nodeCount];
+                var participant = _sceneParticipant
+                    ?? throw new InvalidOperationException("The World was not constructed with Scene support.");
+                var localTransformType = participant.HierarchyLocalTransformComponentType;
+                var rootPositionType = participant.HierarchyRootPositionComponentType;
+
+                for (var index = 0; index < ancestorNodeCount; index++)
+                {
+                    var stackIndex = ancestorNodeCount - 1 - index;
+                    var entity = ancestorStack[stackIndex];
+                    var projection = GetLiveProjection(entity);
+
+                    if (projection.IsDestroyed)
+                    {
+                        throw new InvalidOperationException("A hierarchy transform path contains an Entity already destroyed in this batch.");
+                    }
+
+                    var parentEntity = (index == 0)
+                        ? (Entity?)null
+                        : ancestorStack[ancestorNodeCount - index];
+                    var localTransform = ReadCurrentComponent(projection, localTransformType);
+                    var rootPosition = projection.Components.Contains(rootPositionType)
+                        ? ReadCurrentComponent(projection, rootPositionType)
+                        : null;
+                    nodes[index] = new WorldHierarchyNodeSnapshot(
+                        entity,
+                        parentEntity,
+                        localTransform,
+                        rootPosition);
+                }
+
+                var hierarchyParent = ancestorStack[0];
+
+                for (var index = 0; index < directChildren.Length; index++)
+                {
+                    var child = directChildren[index];
+                    var projection = GetLiveProjection(child);
+
+                    if (projection.IsDestroyed)
+                    {
+                        throw new InvalidOperationException("A hierarchy detach child was already destroyed in this batch.");
+                    }
+
+                    nodes[ancestorNodeCount + index] = new WorldHierarchyNodeSnapshot(
+                        child,
+                        hierarchyParent,
+                        ReadCurrentComponent(projection, localTransformType),
+                        projection.Components.Contains(rootPositionType)
+                            ? ReadCurrentComponent(projection, rootPositionType)
+                            : null);
+                }
+
+                return nodes;
+            }
+
+            void PrepareKeepWorldChildDetachment(Entity parent, Entity[] directChildren)
+            {
+                if (directChildren.Length == 0)
+                {
+                    return;
+                }
+
+                var participant = _sceneParticipant
+                    ?? throw new InvalidOperationException("The World was not constructed with Scene support.");
+                var nodes = CaptureHierarchyTransformPath(parent, directChildren, out var ancestorNodeCount);
+                ReservePlanBytes(checked(
+                    GetArrayByteReservation(
+                        directChildren.Length,
+                        Unsafe.SizeOf<WorldHierarchyDetachUpdate>())
+                    + GetArrayByteReservation(directChildren.Length, 2 * 128)));
+                var updates = participant.PrepareHierarchyDetachment(ancestorNodeCount, nodes);
+
+                if (updates.IsDefault || (updates.Length != directChildren.Length))
+                {
+                    throw new InvalidOperationException("The Scene participant returned an incomplete hierarchy-detachment preparation.");
+                }
+
+                var localTransformType = participant.HierarchyLocalTransformComponentType;
+                var rootPositionType = participant.HierarchyRootPositionComponentType;
+                var requiredDetachedChildCapacity = checked(detachedHierarchyChildren.Count + directChildren.Length);
+                ReservePlanBytes(GetArrayByteReservation(
+                    requiredDetachedChildCapacity,
+                    Unsafe.SizeOf<Entity>() + (2 * IntPtr.Size)));
+                _ = detachedHierarchyChildren.EnsureCapacity(requiredDetachedChildCapacity);
+
+                for (var index = 0; index < updates.Length; index++)
+                {
+                    var update = updates[index];
+                    var child = directChildren[index];
+
+                    if (update.Entity != child
+                        || update.LocalTransform is null
+                        || update.RootPosition is null
+                        || update.LocalTransform.IsDefault
+                        || update.RootPosition.IsDefault
+                        || (update.LocalTransform.ComponentType != localTransformType)
+                        || (update.RootPosition.ComponentType != rootPositionType))
+                    {
+                        throw new InvalidOperationException("The Scene participant returned an invalid hierarchy-detachment value.");
+                    }
+
+                    var projection = GetLiveProjection(child);
+
+                    if (!projection.Components.Contains(localTransformType)
+                        || projection.Components.Contains(rootPositionType))
+                    {
+                        throw new InvalidOperationException("A KeepWorld detach child does not have the required non-root transform membership.");
+                    }
+
+                    var localRegistration = FindComponentRegistration(localTransformType);
+                    ValidateCommandInitialization(localRegistration, update.LocalTransform);
+                    SetProjectedValue(projection, localTransformType, update.LocalTransform);
+
+                    var rootRegistration = FindComponentRegistration(rootPositionType);
+                    var rootInitialization = rootRegistration.CreateInitializedValue(update.RootPosition, _spatialSettings);
+                    ValidateCommandInitialization(rootRegistration, rootInitialization);
+
+                    if (!projection.Components.Add(rootPositionType))
+                    {
+                        throw new InvalidOperationException("A KeepWorld detach child already has RootPosition membership.");
+                    }
+
+                    SetProjectedValue(projection, rootPositionType, rootInitialization);
+
+                    if (!detachedHierarchyChildren.Add(child))
+                    {
+                        throw new InvalidOperationException("A hierarchy child is detached more than once in one command batch.");
+                    }
+                }
+            }
+
             int CountLiveSubtree(ProjectedCommandEntity projection)
             {
                 if (projection.IsDestroyed)
@@ -566,8 +849,11 @@ public sealed partial class World
                     while (true)
                     {
                         var child = new Entity(_ownerId, childIndex, childGeneration);
-                        var childProjection = GetLiveProjection(child);
-                        count = checked(count + CountLiveSubtree(childProjection));
+
+                        if (!detachedHierarchyChildren.Contains(child))
+                        {
+                            count = checked(count + CountLiveSubtree(GetLiveProjection(child)));
+                        }
 
                         if (!_entitySlots.TryGetNextSibling(
                                 childIndex,
@@ -603,7 +889,11 @@ public sealed partial class World
                     while (true)
                     {
                         var child = new Entity(_ownerId, childIndex, childGeneration);
-                        AppendDestroyedSubtree(GetLiveProjection(child), destroyedIdentities);
+
+                        if (!detachedHierarchyChildren.Contains(child))
+                        {
+                            AppendDestroyedSubtree(GetLiveProjection(child), destroyedIdentities);
+                        }
 
                         if (!_entitySlots.TryGetNextSibling(
                                 childIndex,
@@ -864,15 +1154,11 @@ public sealed partial class World
                 {
                     var destroyMode = command.DestroyMode
                         ?? throw new InvalidOperationException("A staged Entity destruction command has no hierarchy mode.");
-                    var hasChildren = _entitySlots.TryGetFirstChild(
-                        projection.Entity.Index,
-                        projection.Entity.Generation,
-                        out _,
-                        out _);
+                    var directChildren = CaptureCurrentHierarchyChildren(projection.Entity);
 
-                    if ((destroyMode == HierarchyDestroyMode.DetachChildrenKeepWorld) && hasChildren)
+                    if (destroyMode == HierarchyDestroyMode.DetachChildrenKeepWorld)
                     {
-                        throw new InvalidOperationException("KeepWorld hierarchy detachment requires the Scenes owner transform preparation.");
+                        PrepareKeepWorldChildDetachment(projection.Entity, directChildren);
                     }
 
                     var destroyedIdentityCount = (destroyMode == HierarchyDestroyMode.DestroySubtree)
@@ -1404,6 +1690,15 @@ public sealed partial class World
             var receipts = staging.CreateReceipts(resolvedTokens);
             cancellationToken.ThrowIfCancellationRequested();
             identityChange?.ValidateForCommit();
+
+            foreach (var child in detachedHierarchyChildren)
+            {
+                _entitySlots.SetParent(
+                    child.Index,
+                    child.Generation,
+                    parentIndex: 0,
+                    parentGeneration: 0);
+            }
 
             foreach (var transition in transitions)
             {

@@ -203,47 +203,156 @@ public sealed partial class World
                 _maximumCommandStagingBytes,
                 ownerControl: true);
 
-            for (var index = 0; index < entityCount; index++)
+            if (mode == HierarchyDestroyMode.DetachChildrenKeepWorld)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var identityOrdinal = checked(firstEntityIdentityOrdinal + (uint)index);
+                var liveSceneEntityCount = 0;
 
-                if (!_identityLedger.TryGetLiveLocatorByOrdinal(
-                        identityOrdinal,
-                        IdentityKind.Entity,
-                        out var entityLocator))
+                for (var index = 0; index < entityCount; index++)
                 {
-                    continue;
-                }
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var identityOrdinal = checked(firstEntityIdentityOrdinal + (uint)index);
 
-                if (!_entitySlots.TryGetLive(entityLocator, out var generation)
-                    || !_entitySlots.TryGetLocation(entityLocator, generation, out _, out _, out _))
-                {
-                    throw new InvalidOperationException("A live Scene Entity identity references a non-live Entity slot.");
-                }
-
-                var entity = new Entity(_ownerId, entityLocator, generation);
-
-                if (mode == HierarchyDestroyMode.DestroySubtree
-                    && _entitySlots.TryGetParent(
-                        entityLocator,
-                        generation,
-                        out var parentLocator,
-                        out var parentGeneration)
-                    && _entitySlots.IsLive(parentLocator, parentGeneration))
-                {
-                    var parentIdentityOrdinal = _identityLedger.GetLiveOrdinal(IdentityKind.Entity, parentLocator);
-
-                    if ((parentIdentityOrdinal >= firstEntityIdentityOrdinal)
-                        && (parentIdentityOrdinal < lastEntityIdentityOrdinalExclusive))
+                    if (!_identityLedger.TryGetLiveLocatorByOrdinal(
+                            identityOrdinal,
+                            IdentityKind.Entity,
+                            out var entityLocator))
                     {
                         continue;
                     }
+
+                    if (!_entitySlots.TryGetLive(entityLocator, out var generation)
+                        || !_entitySlots.TryGetLocation(entityLocator, generation, out _, out _, out _))
+                    {
+                        throw new InvalidOperationException("A live Scene Entity identity references a non-live Entity slot.");
+                    }
+
+                    liveSceneEntityCount++;
                 }
 
-                staging.AppendOwnerDestroy(
-                    entity,
-                    mode);
+                var stagedSceneEntityCount = 0;
+
+                void AppendSceneSubtree(Entity entity)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    if (_entitySlots.TryGetFirstChild(
+                            entity.Index,
+                            entity.Generation,
+                            out var childIndex,
+                            out var childGeneration))
+                    {
+                        while (true)
+                        {
+                            var childIdentityOrdinal = _identityLedger.GetLiveOrdinal(
+                                IdentityKind.Entity,
+                                childIndex);
+
+                            if ((childIdentityOrdinal >= firstEntityIdentityOrdinal)
+                                && (childIdentityOrdinal < lastEntityIdentityOrdinalExclusive))
+                            {
+                                AppendSceneSubtree(new Entity(_ownerId, childIndex, childGeneration));
+                            }
+
+                            if (!_entitySlots.TryGetNextSibling(
+                                    childIndex,
+                                    childGeneration,
+                                    out childIndex,
+                                    out childGeneration))
+                            {
+                                break;
+                            }
+                        }
+                    }
+
+                    staging.AppendOwnerDestroy(entity, mode);
+                    stagedSceneEntityCount++;
+                }
+
+                for (var index = 0; index < entityCount; index++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var identityOrdinal = checked(firstEntityIdentityOrdinal + (uint)index);
+
+                    if (!_identityLedger.TryGetLiveLocatorByOrdinal(
+                            identityOrdinal,
+                            IdentityKind.Entity,
+                            out var entityLocator))
+                    {
+                        continue;
+                    }
+
+                    if (!_entitySlots.TryGetLive(entityLocator, out var generation))
+                    {
+                        throw new InvalidOperationException("A live Scene Entity identity references a non-live Entity slot.");
+                    }
+
+                    var entity = new Entity(_ownerId, entityLocator, generation);
+                    var parentIsSceneEntity = false;
+
+                    if (_entitySlots.TryGetParent(
+                            entityLocator,
+                            generation,
+                            out var parentLocator,
+                            out var parentGeneration)
+                        && _entitySlots.IsLive(parentLocator, parentGeneration))
+                    {
+                        var parentIdentityOrdinal = _identityLedger.GetLiveOrdinal(IdentityKind.Entity, parentLocator);
+                        parentIsSceneEntity = (parentIdentityOrdinal >= firstEntityIdentityOrdinal)
+                            && (parentIdentityOrdinal < lastEntityIdentityOrdinalExclusive);
+                    }
+
+                    if (!parentIsSceneEntity)
+                    {
+                        AppendSceneSubtree(entity);
+                    }
+                }
+
+                if (stagedSceneEntityCount != liveSceneEntityCount)
+                {
+                    throw new InvalidOperationException("The live Scene hierarchy did not produce a complete descendant-first unload order.");
+                }
+            }
+            else
+            {
+                for (var index = 0; index < entityCount; index++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var identityOrdinal = checked(firstEntityIdentityOrdinal + (uint)index);
+
+                    if (!_identityLedger.TryGetLiveLocatorByOrdinal(
+                            identityOrdinal,
+                            IdentityKind.Entity,
+                            out var entityLocator))
+                    {
+                        continue;
+                    }
+
+                    if (!_entitySlots.TryGetLive(entityLocator, out var generation)
+                        || !_entitySlots.TryGetLocation(entityLocator, generation, out _, out _, out _))
+                    {
+                        throw new InvalidOperationException("A live Scene Entity identity references a non-live Entity slot.");
+                    }
+
+                    var entity = new Entity(_ownerId, entityLocator, generation);
+
+                    if (_entitySlots.TryGetParent(
+                            entityLocator,
+                            generation,
+                            out var parentLocator,
+                            out var parentGeneration)
+                        && _entitySlots.IsLive(parentLocator, parentGeneration))
+                    {
+                        var parentIdentityOrdinal = _identityLedger.GetLiveOrdinal(IdentityKind.Entity, parentLocator);
+
+                        if ((parentIdentityOrdinal >= firstEntityIdentityOrdinal)
+                            && (parentIdentityOrdinal < lastEntityIdentityOrdinalExclusive))
+                        {
+                            continue;
+                        }
+                    }
+
+                    staging.AppendOwnerDestroy(entity, mode);
+                }
             }
 
             _ = CommitCommandBatch(

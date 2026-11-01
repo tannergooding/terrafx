@@ -1430,6 +1430,19 @@ public sealed partial class World : IDisposable
             message,
             []);
 
+    internal SpatialFrame3 GetCurrentSceneHierarchyFrame(IWorldSceneParticipant participant)
+    {
+        ArgumentNullException.ThrowIfNull(participant);
+        ThrowIfDisposed();
+
+        if (!ReferenceEquals(_sceneParticipant, participant))
+        {
+            throw new ArgumentException("The Scene participant is not owned by this exact World.", nameof(participant));
+        }
+
+        return _currentFrameCohort.Frame3;
+    }
+
     internal IWorldSceneParticipant GetSceneParticipant(SceneSupportRegistration registration)
     {
         ArgumentNullException.ThrowIfNull(registration);

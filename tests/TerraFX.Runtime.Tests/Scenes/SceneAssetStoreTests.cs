@@ -2242,7 +2242,8 @@ internal sealed partial class SceneAssetStoreTests
             try
             {
                 var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
-                _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+                var sceneSupport = SceneSupport.CreateRegistration();
+                _ = worldRegistrationBuilder.RegisterSceneSupport(sceneSupport);
                 using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
                 var loader = new SceneLoader(world, assets);
                 using var prepared = loader
@@ -2264,6 +2265,14 @@ internal sealed partial class SceneAssetStoreTests
                 Assert.That(world.TryGetHierarchyParent(root, out _), Is.False);
                 Assert.That(world.TryGetHierarchyParent(child, out var parent), Is.True);
                 Assert.That(parent, Is.EqualTo(root));
+                var externalTransform = new SceneComponentDefinitions.LocalTransformComponent(
+                    new TerraFX.Numerics.Vector3(3.0f, 0.0f, 0.0f),
+                    TerraFX.Numerics.Quaternion.Identity,
+                    TerraFX.Numerics.Vector3.One);
+                var external = world.CreateEntity(new EntityDescription(
+                    components: [ComponentInitialization.Value(in externalTransform)]));
+                var externalIdentity = world.GetEntityId(external);
+                world.ApplyHierarchyParentChange(world.GetSceneParticipant(sceneSupport), external, root);
 
                 var childProvenance = provenance
                     ?? throw new InvalidOperationException("The nested Scene Entity has no provenance.");
@@ -2286,13 +2295,20 @@ internal sealed partial class SceneAssetStoreTests
 
                 var rootIdentity = world.GetEntityId(root);
                 var childIdentity = world.GetEntityId(child);
-                var unload = instance.UnloadAsync(HierarchyDestroyMode.DestroySubtree);
+                var unload = instance.UnloadAsync(HierarchyDestroyMode.DetachChildrenKeepWorld);
                 world.PumpControlBoundary();
                 var unloadReceipt = await unload.ConfigureAwait(false);
 
                 Assert.That(unloadReceipt.Status, Is.EqualTo(SceneUnloadStatus.Unloaded));
                 Assert.That(world.TryGetEntity(rootIdentity, out _), Is.False);
                 Assert.That(world.TryGetEntity(childIdentity, out _), Is.False);
+                Assert.That(world.TryGetEntity(externalIdentity, out var liveExternal), Is.True);
+                Assert.That(liveExternal, Is.EqualTo(external));
+                Assert.That(world.TryGetHierarchyParent(external, out _), Is.False);
+                Assert.That(
+                    world.TryGet<SceneComponentDefinitions.RootPositionComponent>(external, out var externalPosition),
+                    Is.True);
+                Assert.That(externalPosition.Position.Offset, Is.EqualTo(new TerraFX.Numerics.Vector3(3.0f, 0.0f, 0.0f)));
             }
             finally
             {
