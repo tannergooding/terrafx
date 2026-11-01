@@ -91,6 +91,16 @@ internal sealed class GraphicsBufferTransferTests
             GraphicsPlatformKind.None,
             CancellationToken.None).ConfigureAwait(false);
 
+    private static SamplerDescription CreateSamplerDescription()
+        => new(
+            SamplerFilter.Linear,
+            SamplerFilter.Linear,
+            SamplerFilter.Linear,
+            SamplerAddressMode.Repeat,
+            SamplerAddressMode.Clamp,
+            SamplerAddressMode.Clamp,
+            maximumAnisotropy: 8.0f);
+
     private static TextureDescription CreateTextureDescription()
         => new(
             TextureDimension.Dimension2D,
@@ -297,19 +307,44 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task SamplerCreationCancellationRetiresAfterBackendCreation()
+    {
+        using var cancellationSource = new CancellationTokenSource();
+        using var samplerCreationEntered = new ManualResetEventSlim(initialState: false);
+        using var continueSamplerCreation = new ManualResetEventSlim(initialState: false);
+        using var samplerDisposed = new ManualResetEventSlim(initialState: false);
+        var backendDevice = new FakeBackendDevice();
+        backendDevice.ConfigureSamplerCreationGate(samplerCreationEntered, continueSamplerCreation, samplerDisposed);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+
+        try
+        {
+            var samplerTask = graphicsDevice.CreateSamplerAsync(CreateSamplerDescription(), cancellationSource.Token);
+            Assert.That(samplerCreationEntered.Wait(TimeSpan.FromSeconds(5)), Is.True);
+
+            await cancellationSource.CancelAsync().ConfigureAwait(false);
+            Assert.That(backendDevice.SamplerDisposalCount, Is.Zero);
+
+            continueSamplerCreation.Set();
+            _ = Assert.ThrowsAsync<TaskCanceledException>(
+                async () => _ = await samplerTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+            Assert.That(samplerDisposed.Wait(TimeSpan.FromSeconds(5)), Is.True);
+            Assert.That(backendDevice.SamplerDisposalCount, Is.EqualTo(1));
+        }
+        finally
+        {
+            continueSamplerCreation.Set();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task SamplerCreationClampsAnisotropyAndRetiresOnOwner()
     {
         var backendDevice = new FakeBackendDevice();
         var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
-        var sampler = await graphicsDevice.CreateSamplerAsync(
-            new SamplerDescription(
-                SamplerFilter.Linear,
-                SamplerFilter.Linear,
-                SamplerFilter.Linear,
-                SamplerAddressMode.Repeat,
-                SamplerAddressMode.Clamp,
-                SamplerAddressMode.Clamp,
-                maximumAnisotropy: 8.0f)).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        var sampler = await graphicsDevice.CreateSamplerAsync(CreateSamplerDescription())
+            .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
         try
         {
@@ -326,6 +361,27 @@ internal sealed class GraphicsBufferTransferTests
         finally
         {
             sampler?.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task SamplerCreationPreCancellationDoesNotReachBackend()
+    {
+        using var cancellationSource = new CancellationTokenSource();
+        var backendDevice = new FakeBackendDevice();
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+
+        try
+        {
+            await cancellationSource.CancelAsync().ConfigureAwait(false);
+            var samplerTask = graphicsDevice.CreateSamplerAsync(CreateSamplerDescription(), cancellationSource.Token);
+            _ = Assert.ThrowsAsync<OperationCanceledException>(
+                async () => _ = await samplerTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+            Assert.That(backendDevice.SamplerCreationCount, Is.Zero);
+        }
+        finally
+        {
             await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
     }
@@ -567,7 +623,10 @@ internal sealed class GraphicsBufferTransferTests
 
     private sealed class FakeBackendDevice : IGraphicsBackendDevice
     {
+        private ManualResetEventSlim? _continueSamplerCreation;
         private readonly ManualResetEventSlim? _continueUpload;
+        private ManualResetEventSlim? _samplerCreationEntered;
+        private ManualResetEventSlim? _samplerDisposed;
         private readonly ManualResetEventSlim? _uploadEntered;
         private readonly GraphicsCapabilities _capabilities = CreateCapabilities();
         private readonly List<byte[]> _buffers = [];
@@ -575,6 +634,7 @@ internal sealed class GraphicsBufferTransferTests
         private long _completedFence;
         private int _effectiveSamplerAnisotropyBits;
         private byte[]? _lastBufferBytes;
+        private int _samplerCreationCount;
         private int _samplerDisposalCount;
         private int _textureDisposalCount;
 
@@ -596,6 +656,8 @@ internal sealed class GraphicsBufferTransferTests
             => BitConverter.Int32BitsToSingle(Volatile.Read(ref _effectiveSamplerAnisotropyBits));
 
         internal byte[]? LastBufferBytes => _lastBufferBytes;
+
+        internal int SamplerCreationCount => Volatile.Read(ref _samplerCreationCount);
 
         internal int SamplerDisposalCount => Volatile.Read(ref _samplerDisposalCount);
 
@@ -624,7 +686,16 @@ internal sealed class GraphicsBufferTransferTests
 
         public IGraphicsBackendSampler CreateSampler(SamplerDescription description, float effectiveMaximumAnisotropy)
         {
+            _ = Interlocked.Increment(ref _samplerCreationCount);
             _ = Interlocked.Exchange(ref _effectiveSamplerAnisotropyBits, BitConverter.SingleToInt32Bits(effectiveMaximumAnisotropy));
+            _samplerCreationEntered?.Set();
+
+            if ((_continueSamplerCreation is ManualResetEventSlim continueSamplerCreation)
+                && !continueSamplerCreation.Wait(TimeSpan.FromSeconds(5)))
+            {
+                throw new TimeoutException("The fake sampler creation gate was not released.");
+            }
+
             return new FakeBackendSampler(this);
         }
 
@@ -805,8 +876,21 @@ internal sealed class GraphicsBufferTransferTests
             }
         }
 
+        internal void ConfigureSamplerCreationGate(
+            ManualResetEventSlim samplerCreationEntered,
+            ManualResetEventSlim continueSamplerCreation,
+            ManualResetEventSlim samplerDisposed)
+        {
+            _samplerCreationEntered = samplerCreationEntered;
+            _continueSamplerCreation = continueSamplerCreation;
+            _samplerDisposed = samplerDisposed;
+        }
+
         internal void SamplerDisposed()
-            => _ = Interlocked.Increment(ref _samplerDisposalCount);
+        {
+            _ = Interlocked.Increment(ref _samplerDisposalCount);
+            _samplerDisposed?.Set();
+        }
 
         internal void TextureDisposed(FakeBackendTexture texture)
             => _ = Interlocked.Increment(ref _textureDisposalCount);
