@@ -13,11 +13,13 @@ namespace TerraFX.Content.Tools;
 [SuppressMessage("Globalization", "CA1303", Justification = "Content.Tools is a repository-only developer CLI and its diagnostic and usage text is not localized.")]
 internal static class Program
 {
+    private const string CompileDxilCommand = "compile-m04-dxil";
     private const string CompileShaderCommand = "compile-m04-shader";
     private const string VerifyDxcCommand = "verify-dxc";
     private static readonly string[] s_usageLines = [
         "Usage:",
         "  TerraFX.Content.Tools verify-dxc",
+        "  TerraFX.Content.Tools compile-m04-dxil <new-output-directory>",
         "  TerraFX.Content.Tools compile-m04-shader <new-output-directory>",
         "  TerraFX.Content.Tools --help",
     ];
@@ -30,7 +32,9 @@ internal static class Program
             return 0;
         }
 
-        if (((arguments.Length == 2) && StringComparer.Ordinal.Equals(arguments[0], CompileShaderCommand))
+        if (((arguments.Length == 2)
+                && (StringComparer.Ordinal.Equals(arguments[0], CompileShaderCommand)
+                    || StringComparer.Ordinal.Equals(arguments[0], CompileDxilCommand)))
             || ((arguments.Length == 1) && StringComparer.Ordinal.Equals(arguments[0], VerifyDxcCommand)))
         {
             using var cancellationSource = new CancellationTokenSource();
@@ -49,6 +53,11 @@ internal static class Program
                 {
                     await M04ShaderFixtureCompiler.CompileAsync(arguments[1], cancellationSource.Token).ConfigureAwait(false);
                     await Console.Out.WriteLineAsync($"Compiled and validated the M04 offscreen triangle shader fixture to '{Path.GetFullPath(arguments[1])}'.").ConfigureAwait(false);
+                }
+                else if (StringComparer.Ordinal.Equals(arguments[0], CompileDxilCommand))
+                {
+                    await M04ShaderFixtureCompiler.CompileDxilAsync(arguments[1], cancellationSource.Token).ConfigureAwait(false);
+                    await Console.Out.WriteLineAsync($"Compiled and reflected the M04 DXIL fixture to '{Path.GetFullPath(arguments[1])}'.").ConfigureAwait(false);
                 }
                 else
                 {

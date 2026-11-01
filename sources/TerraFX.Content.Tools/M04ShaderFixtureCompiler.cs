@@ -100,6 +100,77 @@ internal static class M04ShaderFixtureCompiler
         }
     }
 
+    internal static async Task CompileDxilAsync(string outputDirectory, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
+        EnsureSupportedPlatform();
+
+        var applicationDirectory = AppContext.BaseDirectory;
+        var manifest = LoadManifest(applicationDirectory);
+        manifest.ValidateCompilerFiles(applicationDirectory);
+
+        var dxcExecutable = manifest.ResolveDxcExecutable(applicationDirectory);
+        await VerifyCompilerVersionAsync(manifest, dxcExecutable, cancellationToken).ConfigureAwait(false);
+
+        var shaderPath = Path.Combine(applicationDirectory, "Shaders", ShaderFileName);
+
+        if (!File.Exists(shaderPath))
+        {
+            throw new FileNotFoundException("The selected M04 shader fixture is missing.", shaderPath);
+        }
+
+        var finalOutputDirectory = Path.GetFullPath(outputDirectory);
+
+        if (Directory.Exists(finalOutputDirectory) || File.Exists(finalOutputDirectory))
+        {
+            throw new IOException("The DXIL fixture output directory must not already exist.");
+        }
+
+        var parentDirectory = Path.GetDirectoryName(finalOutputDirectory);
+
+        if (string.IsNullOrWhiteSpace(parentDirectory))
+        {
+            throw new ArgumentException("The DXIL fixture output directory must have a parent directory.", nameof(outputDirectory));
+        }
+
+        _ = Directory.CreateDirectory(parentDirectory);
+
+        var stagingDirectory = Path.Combine(parentDirectory, $".{Path.GetFileName(finalOutputDirectory)}-{Guid.NewGuid():N}.tmp");
+        _ = Directory.CreateDirectory(stagingDirectory);
+
+        try
+        {
+            await CompileDxilStageAsync(
+                manifest,
+                dxcExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointVertex,
+                "vs_6_0",
+                "vertex",
+                cancellationToken).ConfigureAwait(false);
+            await CompileDxilStageAsync(
+                manifest,
+                dxcExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointPixel,
+                "ps_6_0",
+                "pixel",
+                cancellationToken).ConfigureAwait(false);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            Directory.Move(stagingDirectory, finalOutputDirectory);
+        }
+        finally
+        {
+            if (Directory.Exists(stagingDirectory))
+            {
+                Directory.Delete(stagingDirectory, recursive: true);
+            }
+        }
+    }
+
     internal static async Task VerifyDxcAsync(CancellationToken cancellationToken)
     {
         EnsureSupportedPlatform();
@@ -112,11 +183,9 @@ internal static class M04ShaderFixtureCompiler
         await VerifyCompilerVersionAsync(manifest, executablePath, cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task CompileStageAsync(
+    private static async Task CompileDxilStageAsync(
         ShaderToolchainManifest manifest,
         string dxcExecutable,
-        string spirvCrossExecutable,
-        string spirvValidationExecutable,
         string shaderPath,
         string outputDirectory,
         string entryPoint,
@@ -126,8 +195,6 @@ internal static class M04ShaderFixtureCompiler
     {
         var dxilPath = Path.Combine(outputDirectory, $"M04OffscreenTriangle.{stageName}.dxil");
         var dxilReflectionPath = Path.Combine(outputDirectory, $"M04OffscreenTriangle.{stageName}.dxil-reflection.txt");
-        var spirvPath = Path.Combine(outputDirectory, $"M04OffscreenTriangle.{stageName}.spv");
-        var reflectionPath = Path.Combine(outputDirectory, $"M04OffscreenTriangle.{stageName}.reflection.json");
 
         await RunDxcAsync(
             manifest,
@@ -151,6 +218,32 @@ internal static class M04ShaderFixtureCompiler
         ValidateDxilReflection(dxilReflection.StandardOutput, entryPoint, stageName);
         await File.WriteAllTextAsync(dxilReflectionPath, dxilReflection.StandardOutput, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), cancellationToken).ConfigureAwait(false);
         EnsureOutputExists(dxilReflectionPath);
+    }
+
+    private static async Task CompileStageAsync(
+        ShaderToolchainManifest manifest,
+        string dxcExecutable,
+        string spirvCrossExecutable,
+        string spirvValidationExecutable,
+        string shaderPath,
+        string outputDirectory,
+        string entryPoint,
+        string targetProfile,
+        string stageName,
+        CancellationToken cancellationToken)
+    {
+        var spirvPath = Path.Combine(outputDirectory, $"M04OffscreenTriangle.{stageName}.spv");
+        var reflectionPath = Path.Combine(outputDirectory, $"M04OffscreenTriangle.{stageName}.reflection.json");
+
+        await CompileDxilStageAsync(
+            manifest,
+            dxcExecutable,
+            shaderPath,
+            outputDirectory,
+            entryPoint,
+            targetProfile,
+            stageName,
+            cancellationToken).ConfigureAwait(false);
 
         await RunDxcAsync(
             manifest,

@@ -95,6 +95,14 @@ dotnet build .\sources\TerraFX.Content.Tools\TerraFX.Content.Tools.csproj --conf
 dotnet .\artifacts\bin\sources\TerraFX.Content.Tools\Debug\net11.0\TerraFX.Content.Tools.dll verify-dxc
 ```
 
+To compile the pinned Windows x64 DXIL fixture and capture `dxc -dumpbin` reflection without the Vulkan SDK:
+
+```powershell
+dotnet .\artifacts\bin\sources\TerraFX.Content.Tools\Debug\net11.0\TerraFX.Content.Tools.dll compile-m04-dxil .\artifacts\shader-fixtures\m04-offscreen-triangle-dxil
+```
+
+This command emits per-stage `.dxil` files and matching `.dxil-reflection.txt` files. It does not validate SPIR-V or make Content.Tools a player runtime dependency.
+
 To compile the M04 offscreen triangle, set `VULKAN_SDK` to the exact Vulkan SDK 1.4.328.1 root containing `Bin\spirv-cross.exe` and `Bin\spirv-val.exe`, then choose a new output directory:
 
 ```powershell
