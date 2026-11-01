@@ -4,7 +4,7 @@ using System;
 
 namespace TerraFX.Graphics;
 
-/// <summary>Contains actual size and memory properties for one native graphics heap.</summary>
+/// <summary>Contains actual size and memory properties for one backend-native memory domain.</summary>
 public sealed class GraphicsMemoryHeapCapabilities
 {
     internal GraphicsMemoryHeapCapabilities(
@@ -47,7 +47,7 @@ public sealed class GraphicsMemoryHeapCapabilities
     /// <summary>Gets the optional current budget estimate in bytes.</summary>
     public long? BudgetBytes { get; }
 
-    /// <summary>Gets the native heap index.</summary>
+    /// <summary>Gets the native heap or memory-segment index.</summary>
     public int Index { get; }
 
     /// <summary>Gets the heap's memory properties.</summary>

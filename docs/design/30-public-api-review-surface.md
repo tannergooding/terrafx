@@ -4341,6 +4341,8 @@ public sealed class GraphicsMemoryHeapCapabilities
     public long SizeBytes { get; }
 }
 
+`GraphicsMemoryHeapCapabilities.Index` identifies a backend-native memory domain: D3D12 uses the DXGI local/non-local memory segment group, and Vulkan uses a `VkPhysicalDeviceMemoryProperties.memoryHeaps` index. The index is meaningful only with the containing `GraphicsCapabilities.Backend`.
+
 public readonly struct GraphicsAdapterId : IEquatable<GraphicsAdapterId>
 {
     internal GraphicsAdapterId(GraphicsBackend backend, ReadOnlySpan<byte> nativeIdentifier);

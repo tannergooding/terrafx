@@ -131,7 +131,7 @@ public sealed class GraphicsCapabilities
     /// <summary>Gets the actual device limits and alignments.</summary>
     public GraphicsLimits Limits { get; }
 
-    /// <summary>Gets the supported memory heaps in native heap-index order.</summary>
+    /// <summary>Gets the reported native memory domains in backend index order.</summary>
     public ImmutableArray<GraphicsMemoryHeapCapabilities> MemoryHeaps => _memoryHeaps;
 
     /// <summary>Gets the profile admitted for this device.</summary>

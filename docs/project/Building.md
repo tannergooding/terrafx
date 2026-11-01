@@ -72,6 +72,13 @@ dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --confi
 dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Release
 ```
 
+Build the D3D12 package to compile its adapter enumeration and capability reporting path. This does not initialize a device or qualify native startup:
+
+```powershell
+dotnet build .\sources\TerraFX.Graphics.D3D12\TerraFX.Graphics.D3D12.csproj --configuration Debug
+dotnet build .\sources\TerraFX.Graphics.D3D12\TerraFX.Graphics.D3D12.csproj --configuration Release
+```
+
 ### Offline M04 shader fixture
 
 Run the bounded process and toolchain-manifest regressions:
