@@ -153,7 +153,16 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~WorldReservationGrowthCannotExceedItsOwnedStateCeiling|FullyQualifiedName~SceneLoaderActivatesAtTheWorldOwnerControlBoundary|FullyQualifiedName~SceneStorageReservationsAreThreadSafeAndRespectTheWorldBudget"
 ```
 
-These managed regressions do not qualify Scene hierarchy transactions, NativeAOT, or native execution.
+These reservation and activation regressions do not qualify NativeAOT or native execution.
+
+The SceneInstance transaction regressions cover preview and owner-boundary revalidation, same-World cross-instance parents, foreign/stale targets, sequential root transitions, atomic cycle rejection, KeepWorld residual refusal, cancellation, and queue-capacity refusal:
+
+```powershell
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SceneAssetStoreTests.SceneTransaction"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SceneAssetStoreTests.SceneTransaction"
+```
+
+These managed transaction cases do not qualify CPU extraction, NativeAOT, or native execution.
 
 For Windows NativeAOT qualification, each executable project enables `PublishAot` locally when `TerraFXPublishAot=true`; the generated project's analyzer reference removes that switch. Publish and execute the artifacts separately:
 
