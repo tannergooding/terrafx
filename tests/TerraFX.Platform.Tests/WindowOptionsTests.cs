@@ -13,7 +13,6 @@ internal sealed class WindowOptionsTests
     public void DefaultsMatchTheWindowContract()
     {
         var options = new WindowOptions(string.Empty);
-        options.ValidateForCreation();
 
         Assert.That((int)WindowMode.Windowed, Is.EqualTo(0));
         Assert.That((int)WindowMode.BorderlessFullscreen, Is.EqualTo(1));
@@ -38,12 +37,12 @@ internal sealed class WindowOptionsTests
     public void ValidatesClientExtentsModeAndMonitorBeforeNativeAdmission()
     {
         _ = Assert.Throws<System.ArgumentOutOfRangeException>(
-            () => new WindowOptions("invalid") { ClientSize = new Vector2(0, 1) }.ValidateForCreation());
+            () => _ = new WindowOptions("invalid") { ClientSize = new Vector2(0, 1) });
         _ = Assert.Throws<System.ArgumentOutOfRangeException>(
-            () => new WindowOptions("invalid") { MinimumClientSize = new Vector2(float.NaN, 1) }.ValidateForCreation());
+            () => _ = new WindowOptions("invalid") { MinimumClientSize = new Vector2(float.NaN, 1) });
         _ = Assert.Throws<System.ArgumentOutOfRangeException>(
-            () => new WindowOptions("invalid") { Mode = (WindowMode)int.MaxValue }.ValidateForCreation());
+            () => _ = new WindowOptions("invalid") { Mode = (WindowMode)int.MaxValue });
         _ = Assert.Throws<System.ArgumentException>(
-            () => new WindowOptions("invalid") { Monitor = default(MonitorHandle) }.ValidateForCreation());
+            () => _ = new WindowOptions("invalid") { Monitor = default(MonitorHandle) });
     }
 }
