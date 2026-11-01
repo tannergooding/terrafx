@@ -24,7 +24,7 @@ public sealed class GraphicsDevice
     private static readonly ConcurrentBag<GpuBuffer> s_quarantinedGpuBuffers = [];
     private static readonly ConcurrentBag<GraphicsDevice> s_quarantinedGraphicsDevices = [];
 
-    private long _allocatedBufferBytes;
+    private long _allocatedResourceBytes;
     private readonly Dictionary<int, long> _allocatedBytesByHeap = [];
     private IGraphicsBackendDevice? _backendDevice;
     private readonly HashSet<GpuBuffer> _buffers = [];
@@ -236,7 +236,7 @@ public sealed class GraphicsDevice
         }
 
         var allocationInfo = backendDevice.GetBufferAllocationInfo(description);
-        ReserveBufferAllocation(description, allocationInfo);
+        ReserveResourceAllocation(description.MemoryKind, allocationInfo);
 
         IGraphicsBackendBuffer? backendBuffer = null;
 
@@ -276,7 +276,7 @@ public sealed class GraphicsDevice
                 }
             }
 
-            ReleaseBufferAllocation(allocationInfo);
+            ReleaseResourceAllocation(allocationInfo);
             throw;
         }
     }
@@ -381,7 +381,7 @@ public sealed class GraphicsDevice
         return exception;
     }
 
-    private void ReleaseBufferAllocation(GraphicsBufferAllocationInfo allocationInfo)
+    private void ReleaseResourceAllocation(GraphicsBufferAllocationInfo allocationInfo)
     {
         if (!_allocatedBytesByHeap.TryGetValue(allocationInfo.HeapIndex, out var heapBytes)
             || (heapBytes < allocationInfo.SizeBytes))
@@ -389,7 +389,7 @@ public sealed class GraphicsDevice
             throw new InvalidOperationException("The Graphics buffer allocation budget was released inconsistently.");
         }
 
-        var remainingTotalBytes = checked(_allocatedBufferBytes - allocationInfo.SizeBytes);
+        var remainingTotalBytes = checked(_allocatedResourceBytes - allocationInfo.SizeBytes);
         var remainingBytes = heapBytes - allocationInfo.SizeBytes;
 
         if (remainingBytes == 0)
@@ -401,16 +401,16 @@ public sealed class GraphicsDevice
             _allocatedBytesByHeap[allocationInfo.HeapIndex] = remainingBytes;
         }
 
-        _allocatedBufferBytes = remainingTotalBytes;
+        _allocatedResourceBytes = remainingTotalBytes;
     }
 
     [SuppressMessage(
         "Usage",
         "CA2201:Do not raise reserved exception types",
         Justification = "The Graphics allocation contract uses contextual OutOfMemoryException for exhausted resource budgets.")]
-    private void ReserveBufferAllocation(BufferDescription description, GraphicsBufferAllocationInfo allocationInfo)
+    private void ReserveResourceAllocation(GpuMemoryKind memoryKind, GraphicsBufferAllocationInfo allocationInfo)
     {
-        if (allocationInfo.SizeBytes > (DefaultOwnedAllocationBudgetBytes - _allocatedBufferBytes))
+        if (allocationInfo.SizeBytes > (DefaultOwnedAllocationBudgetBytes - _allocatedResourceBytes))
         {
             throw new OutOfMemoryException("The GraphicsDevice's persistent allocation budget is exhausted.");
         }
@@ -431,7 +431,7 @@ public sealed class GraphicsDevice
             throw new NotSupportedException($"The backend selected unreported memory heap {allocationInfo.HeapIndex}.");
         }
 
-        var requiredHeapProperties = description.MemoryKind == GpuMemoryKind.DeviceLocal
+        var requiredHeapProperties = memoryKind == GpuMemoryKind.DeviceLocal
             ? GraphicsMemoryHeapProperties.DeviceLocal
             : GraphicsMemoryHeapProperties.HostVisible;
 
@@ -449,10 +449,10 @@ public sealed class GraphicsDevice
             throw new OutOfMemoryException($"The GraphicsDevice's native memory heap {allocationInfo.HeapIndex} budget is exhausted.");
         }
 
-        var totalBytes = checked(_allocatedBufferBytes + allocationInfo.SizeBytes);
+        var totalBytes = checked(_allocatedResourceBytes + allocationInfo.SizeBytes);
         var heapBytes = checked(allocatedOnHeap + allocationInfo.SizeBytes);
         _allocatedBytesByHeap[allocationInfo.HeapIndex] = heapBytes;
-        _allocatedBufferBytes = totalBytes;
+        _allocatedResourceBytes = totalBytes;
     }
 
     private void RetireBufferOnOwner(GpuBuffer buffer)
@@ -469,7 +469,7 @@ public sealed class GraphicsDevice
             throw new InvalidOperationException("A retired Graphics buffer was not registered with its owner.");
         }
 
-        ReleaseBufferAllocation(buffer.AllocationInfo);
+        ReleaseResourceAllocation(buffer.AllocationInfo);
         buffer.RetirementReservation.Dispose();
         buffer.MarkRetired();
     }
