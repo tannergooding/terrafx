@@ -127,6 +127,22 @@ public sealed class SceneLoader
 
             ValidateComponentRegistrations(plan, cancellationToken);
             ValidateRootExternalBindings(plan, options.ExternalBindings, cancellationToken);
+
+            var resourcePreparer = _world.GetCpuExtractionParticipant<ISceneExpansionResourcePreparer>();
+
+            if (resourcePreparer is not null)
+            {
+                var preparedAssets = await resourcePreparer.PrepareAsync(
+                    plan,
+                    bytes => _world.TryReserveSceneStorage(_registry, bytes),
+                    cancellationToken).ConfigureAwait(false);
+
+                if (preparedAssets is not null)
+                {
+                    plan.AttachPreparedAssets(preparedAssets);
+                }
+            }
+
             cancellationToken.ThrowIfCancellationRequested();
             return new PreparedScene(_world, _assets, options, plan);
         }

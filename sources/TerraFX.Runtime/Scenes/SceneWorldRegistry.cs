@@ -321,6 +321,41 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         return false;
     }
 
+    internal bool TryGetInstanceForEntity(World world, Entity entity, out SceneInstance? instance)
+    {
+        EnsureBoundTo(world);
+
+        if (!_world.TryGetLiveEntityIdentityOrdinal(entity, out var identityOrdinal))
+        {
+            instance = null;
+            return false;
+        }
+
+        lock (_instanceGate)
+        {
+            foreach (var candidate in _activeInstances)
+            {
+                if (candidate is null)
+                {
+                    continue;
+                }
+
+                var firstEntityIdentityOrdinal = candidate.FirstEntityIdentityOrdinal;
+
+                if ((candidate.EntityCount > 0)
+                    && (identityOrdinal >= firstEntityIdentityOrdinal)
+                    && ((identityOrdinal - firstEntityIdentityOrdinal) < (uint)candidate.EntityCount))
+                {
+                    instance = candidate;
+                    return true;
+                }
+            }
+        }
+
+        instance = null;
+        return false;
+    }
+
     internal bool TryReserveInstance(int occurrenceCount, out SceneInstanceReservation? reservation)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(occurrenceCount);

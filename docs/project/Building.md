@@ -126,6 +126,15 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SceneActivationRestoresSpriteAssetReferencesAndRejectsInvalidMutation"
 ```
 
+### Prepared Sprite resource ownership
+
+Run the package-backed Sprite resource tests for exact root-Scene package loading, page validation, SceneInstance ownership, and package replacement:
+
+```powershell
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SpriteAssetPreparationUsesTheRootScenePackageAfterStoreReplacement|FullyQualifiedName~SceneActivationRestoresSpriteAssetReferencesAndRejectsInvalidMutation"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SpriteAssetPreparationUsesTheRootScenePackageAfterStoreReplacement|FullyQualifiedName~SceneActivationRestoresSpriteAssetReferencesAndRejectsInvalidMutation"
+```
+
 ### Public structural EBIN and schema metadata
 
 Core exposes bounded schema-agnostic EBIN reader/writer and scalar/array payload helpers. These validate wire structure and preserve canonical byte layout; they do not activate or validate an owner schema. `CompiledContentSchemaRegistry` contains immutable schema/profile metadata only. Typed owner codecs and their roots are separately compiled with the selected application registrations.

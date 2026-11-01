@@ -19,6 +19,30 @@ internal static partial class RenderComponentDefinitions
     private static readonly Guid s_assetReferenceSchemaId = new ContentSchemaIdentityAssignment("native/asset-reference").SchemaId;
     private static readonly Guid s_atlasSchemaId = new ContentSchemaIdentityAssignment("native/atlas").SchemaId;
     private static readonly Guid s_materialSchemaId = new ContentSchemaIdentityAssignment("native/material").SchemaId;
+    private static readonly Guid s_spriteSchemaId = new ContentSchemaIdentityAssignment("render/sprite").SchemaId;
+
+    internal static SpriteAssetReferences GetSpriteAssetReferences(scoped ReadOnlySpan<byte> source)
+    {
+        var action = new SpriteAssetReferenceReadAction();
+        var status = EbinStructuralReader.Read(
+            source,
+            EbinReadLimits.Foundation,
+            EbinReadPolicy.Canonical,
+            ref action,
+            out var bytesConsumed,
+            out var diagnostic);
+
+        if ((status is not EbinReadStatus.Complete)
+            || (bytesConsumed != source.Length)
+            || (action.Value is not SpriteAssetReferences references))
+        {
+            throw new InvalidDataException(
+                $"The Sprite asset references could not be read: {diagnostic?.Category ?? status.ToString()}.");
+        }
+
+        return references;
+    }
+
     internal static WorldRegistrationBuilder RegisterSprite(
         WorldRegistrationBuilder builder,
         CompiledContentSchemaRegistry schemas)
@@ -26,8 +50,7 @@ internal static partial class RenderComponentDefinitions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(schemas);
 
-        var assignment = new ContentSchemaIdentityAssignment("render/sprite");
-        var schemaReference = new ContentSchemaReference(assignment.SchemaId, 1, 0, ContentSchemaScope.Content);
+        var schemaReference = new ContentSchemaReference(s_spriteSchemaId, 1, 0, ContentSchemaScope.Content);
         var componentLayout = new ComponentLayout(
             new ContentSchemaIdentityAssignment("render/sprite/layout/v1").SchemaId,
             Unsafe.SizeOf<SpriteComponent>());
@@ -220,6 +243,50 @@ internal static partial class RenderComponentDefinitions
             message,
             [new DiagnosticContextEntry("Field", field)]);
 
+    private static bool IsSpriteField(EbinFieldReadView field, ushort kind, int payloadBytes)
+        => field.IsRequired
+        && (field.Kind == kind)
+        && (field.Count == 1)
+        && (field.Payload.Length == payloadBytes);
+
+    private static bool TryReadAssetReference(
+        EbinRecordReadView record,
+        Guid expectedSchemaId,
+        out int assetId)
+    {
+        var header = record.Header;
+
+        if ((header.SchemaId != s_assetReferenceSchemaId)
+            || (header.Major != 1)
+            || (header.Minor != 0)
+            || (header.FieldCount != 3)
+            || !record.TryGetField(1, out var assetIdField)
+            || !IsSpriteField(assetIdField, kind: 3, payloadBytes: sizeof(uint))
+            || !record.TryGetField(2, out var schemaIdField)
+            || !IsSpriteField(schemaIdField, kind: 11, payloadBytes: 16)
+            || !record.TryGetField(3, out var schemaMajorField)
+            || !IsSpriteField(schemaMajorField, kind: 3, payloadBytes: sizeof(uint)))
+        {
+            assetId = 0;
+            return false;
+        }
+
+        var assetIdValue = BinaryPrimitives.ReadUInt32LittleEndian(assetIdField.Payload);
+        var schemaId = new Guid(schemaIdField.Payload, bigEndian: true);
+        var schemaMajor = BinaryPrimitives.ReadUInt32LittleEndian(schemaMajorField.Payload);
+
+        if ((assetIdValue is 0 or > int.MaxValue)
+            || (schemaId != expectedSchemaId)
+            || (schemaMajor != 1))
+        {
+            assetId = 0;
+            return false;
+        }
+
+        assetId = checked((int)assetIdValue);
+        return true;
+    }
+
     internal readonly struct OptionalAssetId
     {
         private readonly byte _hasValue;
@@ -247,6 +314,8 @@ internal static partial class RenderComponentDefinitions
             }
         }
     }
+
+    internal readonly record struct SpriteAssetReferences(int AtlasAssetId, Guid FrameId, int? MaterialAssetId);
 
     internal readonly record struct SpriteAuthor(
         int AtlasAssetId,
@@ -351,6 +420,60 @@ internal static partial class RenderComponentDefinitions
         internal readonly int SortingOrder => _sortingOrder;
 
         internal readonly Vector4 Tint => _tint;
+    }
+
+    private struct SpriteAssetReferenceReadAction : IAction<EbinRecordReadView>
+    {
+        internal SpriteAssetReferences? Value { get; private set; }
+
+        public void Invoke(scoped EbinRecordReadView record)
+        {
+            var header = record.Header;
+
+            if ((header.SchemaId != s_spriteSchemaId)
+                || (header.Major != 1)
+                || (header.Minor != 0)
+                || (header.FieldCount is not 9 and not 10)
+                || !record.TryGetField(1, out var atlasAsset)
+                || !atlasAsset.IsRequired
+                || (atlasAsset.Kind != 22)
+                || (atlasAsset.Count != 1)
+                || !record.TryGetField(2, out var frameIdField)
+                || !IsSpriteField(frameIdField, kind: 11, payloadBytes: 16))
+            {
+                throw new InvalidDataException("A Sprite reference record has an invalid header or required field shape.");
+            }
+
+            var hasMaterial = record.TryGetField(9, out var materialAsset);
+
+            if ((header.FieldCount != (hasMaterial ? 10 : 9))
+                || (hasMaterial && (materialAsset.IsRequired || (materialAsset.Kind != 22) || (materialAsset.Count != 1))))
+            {
+                throw new InvalidDataException("A Sprite optional Material field has an invalid presence or wire shape.");
+            }
+
+            var frameId = new Guid(frameIdField.Payload, bigEndian: true);
+
+            if (frameId == Guid.Empty
+                || !TryReadAssetReference(record.GetRecord(1), s_atlasSchemaId, out var atlasAssetId))
+            {
+                throw new InvalidDataException("A Sprite must reference a nonempty frame in a native/atlas 1 asset.");
+            }
+
+            int? materialAssetId = null;
+
+            if (hasMaterial)
+            {
+                if (!TryReadAssetReference(record.GetRecord(9), s_materialSchemaId, out var materialId))
+                {
+                    throw new InvalidDataException("A Sprite Material reference must select a native/material 1 asset.");
+                }
+
+                materialAssetId = materialId;
+            }
+
+            Value = new SpriteAssetReferences(atlasAssetId, frameId, materialAssetId);
+        }
     }
 
     private sealed class SpriteDefaultProvider : IComponentDefaultProvider<SpriteComponent>
@@ -596,44 +719,6 @@ internal static partial class RenderComponentDefinitions
             return false;
         }
 
-        private static bool TryReadAssetReference(
-            EbinRecordReadView record,
-            Guid expectedSchemaId,
-            out int assetId)
-        {
-            var header = record.Header;
-
-            if ((header.SchemaId != s_assetReferenceSchemaId)
-                || (header.Major != 1)
-                || (header.Minor != 0)
-                || (header.FieldCount != 3)
-                || !record.TryGetField(1, out var assetIdField)
-                || !IsField(assetIdField, 3, sizeof(uint))
-                || !record.TryGetField(2, out var schemaIdField)
-                || !IsField(schemaIdField, 11, 16)
-                || !record.TryGetField(3, out var schemaMajorField)
-                || !IsField(schemaMajorField, 3, sizeof(uint)))
-            {
-                assetId = 0;
-                return false;
-            }
-
-            var assetIdValue = BinaryPrimitives.ReadUInt32LittleEndian(assetIdField.Payload);
-            var schemaId = new Guid(schemaIdField.Payload, bigEndian: true);
-            var schemaMajor = BinaryPrimitives.ReadUInt32LittleEndian(schemaMajorField.Payload);
-
-            if ((assetIdValue is 0 or > int.MaxValue)
-                || (schemaId != expectedSchemaId)
-                || (schemaMajor != 1))
-            {
-                assetId = 0;
-                return false;
-            }
-
-            assetId = checked((int)assetIdValue);
-            return true;
-        }
-
         public nint Count(
             in SpriteComponent value,
             ComponentCaptureBinding binding,
@@ -773,7 +858,10 @@ internal static partial class RenderComponentDefinitions
                     return;
                 }
 
-                if (!TryReadAssetReference(record.GetRecord(1), s_atlasSchemaId, out var atlasAssetId))
+                if (!RenderComponentDefinitions.TryReadAssetReference(
+                    record.GetRecord(1),
+                    s_atlasSchemaId,
+                    out var atlasAssetId))
                 {
                     _result = _binding.Reject(
                         ComponentReadFailureKind.InvalidField,
@@ -799,7 +887,10 @@ internal static partial class RenderComponentDefinitions
                         return;
                     }
 
-                    if (!TryReadAssetReference(record.GetRecord(9), s_materialSchemaId, out var materialAssetIdValue))
+                    if (!RenderComponentDefinitions.TryReadAssetReference(
+                        record.GetRecord(9),
+                        s_materialSchemaId,
+                        out var materialAssetIdValue))
                     {
                         _result = _binding.Reject(
                             ComponentReadFailureKind.InvalidField,

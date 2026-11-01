@@ -83,6 +83,10 @@ public sealed partial class World
         return participant.AcquireFrameReadLease(sceneParticipant);
     }
 
+    internal TParticipant? GetCpuExtractionParticipant<TParticipant>()
+        where TParticipant : class
+        => Volatile.Read(ref _cpuExtractionParticipant) as TParticipant;
+
     internal ComponentSnapshotEnumerator<T> ReadComponentSnapshot<T>(in WorldFrameReadLease lease)
         where T : unmanaged
     {

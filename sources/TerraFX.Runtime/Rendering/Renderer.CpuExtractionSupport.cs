@@ -2,8 +2,10 @@
 
 using System;
 using System.Threading;
+using System.Threading.Tasks;
 using TerraFX.Assets;
 using TerraFX.Entities;
+using TerraFX.Scenes;
 
 namespace TerraFX.Rendering;
 
@@ -73,7 +75,9 @@ public sealed partial class Renderer
         }
     }
 
-    private sealed class CpuExtractionWorldParticipant : IWorldCpuExtractionParticipant
+    private sealed class CpuExtractionWorldParticipant :
+        ISceneExpansionResourcePreparer,
+        IWorldCpuExtractionParticipant
     {
         private int _isDisposed;
         private readonly long _ownedByteReservation;
@@ -111,5 +115,14 @@ public sealed partial class Renderer
         {
             _ = Interlocked.Exchange(ref _isDisposed, 1);
         }
+
+        async Task<IDisposable?> ISceneExpansionResourcePreparer.PrepareAsync(
+            SceneExpansionPlan plan,
+            Func<long, WorldSceneStorageReservation?> reserveStorage,
+            CancellationToken cancellationToken)
+            => await RenderSceneAssetBundle.PrepareAsync(
+                plan,
+                reserveStorage,
+                cancellationToken).ConfigureAwait(false);
     }
 }

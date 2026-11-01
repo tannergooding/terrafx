@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.IO;
 using System.Threading;
+using System.Threading.Tasks;
 using TerraFX.Assets;
 using TerraFX.Entities;
 
@@ -23,6 +24,7 @@ internal sealed class SceneExpansionPlan : IDisposable
     private readonly Guid[] _occurrenceIds;
     private readonly ImmutableArray<SceneExpandedOccurrence> _occurrences;
     private Dictionary<AssetId, AssetLease<ScenePrefabAsset>>? _prefabLeases;
+    private IDisposable? _preparedAssets;
     private readonly ImmutableArray<SceneExpandedReferenceBinding> _referenceBindings;
     private readonly ImmutableArray<int> _rootEntityIndicesByOccurrence;
     private readonly AssetId _sceneAssetId;
@@ -274,6 +276,7 @@ internal sealed class SceneExpansionPlan : IDisposable
 
         try
         {
+            Interlocked.Exchange(ref _preparedAssets, null)?.Dispose();
             var prefabLeases = Interlocked.Exchange(ref _prefabLeases, null);
 
             if (prefabLeases is not null)
@@ -289,6 +292,31 @@ internal sealed class SceneExpansionPlan : IDisposable
         finally
         {
             Interlocked.Exchange(ref _storageReservation, null)?.Dispose();
+        }
+    }
+
+    internal void AttachPreparedAssets(IDisposable preparedAssets)
+    {
+        ArgumentNullException.ThrowIfNull(preparedAssets);
+        var transferred = false;
+
+        try
+        {
+            ThrowIfDisposed();
+
+            if (Interlocked.CompareExchange(ref _preparedAssets, preparedAssets, null) is not null)
+            {
+                throw new InvalidOperationException("The Scene expansion plan already owns prepared asset resources.");
+            }
+
+            transferred = true;
+        }
+        finally
+        {
+            if (!transferred)
+            {
+                preparedAssets.Dispose();
+            }
         }
     }
 
@@ -361,6 +389,13 @@ internal sealed class SceneExpansionPlan : IDisposable
         return [.. placementPath];
     }
 
+    internal TResource? GetPreparedAssets<TResource>()
+        where TResource : class
+    {
+        ThrowIfDisposed();
+        return Volatile.Read(ref _preparedAssets) as TResource;
+    }
+
     internal ReadOnlySpan<int> GetRootEntityIndices(int occurrenceIndex)
     {
         ThrowIfDisposed();
@@ -389,6 +424,16 @@ internal sealed class SceneExpansionPlan : IDisposable
         var occurrence = _occurrences[entity.OccurrenceIndex];
         var source = GetAssetSource(occurrence.AssetId);
         return source.Entities[entity.SourceEntityIndex];
+    }
+
+    internal Task<AssetLease<TAsset>> LoadFromPackageAsync<TAsset>(
+        AssetId assetId,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        var sceneLease = Volatile.Read(ref _sceneLease)
+            ?? throw new ObjectDisposedException(nameof(SceneExpansionPlan));
+        return sceneLease.LoadFromPackageAsync<TAsset>(assetId, cancellationToken);
     }
 
     internal int ResolveEntity(SceneEntitySelector selector, int relativeAnchorOccurrenceIndex)

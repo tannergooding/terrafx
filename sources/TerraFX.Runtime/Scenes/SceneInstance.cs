@@ -224,10 +224,42 @@ public sealed class SceneInstance
         Volatile.Write(ref _isActive, 1);
     }
 
+    internal TResource? GetPreparedAssets<TResource>()
+        where TResource : class
+    {
+        var plan = Volatile.Read(ref _plan);
+        return (Volatile.Read(ref _isActive) == 1) ? plan?.GetPreparedAssets<TResource>() : null;
+    }
+
     internal void RevokeFromWorld()
     {
         _ = Interlocked.Exchange(ref _isActive, 0);
         Interlocked.Exchange(ref _plan, null)?.Dispose();
+    }
+
+    internal bool TryGetExpandedEntityIndex(Entity entity, out int expandedEntityIndex)
+    {
+        var plan = Volatile.Read(ref _plan);
+
+        if ((Volatile.Read(ref _isActive) != 1)
+            || (plan is null)
+            || !_world.TryGetLiveEntityIdentityOrdinal(entity, out var identityOrdinal)
+            || (identityOrdinal < _firstEntityIdentityOrdinal))
+        {
+            expandedEntityIndex = -1;
+            return false;
+        }
+
+        var assignmentIndex = identityOrdinal - _firstEntityIdentityOrdinal;
+
+        if (assignmentIndex >= (uint)plan.Entities.Length)
+        {
+            expandedEntityIndex = -1;
+            return false;
+        }
+
+        expandedEntityIndex = plan.EntityIndicesByAssignmentOrdinal[checked((int)assignmentIndex)];
+        return true;
     }
 
     private bool TryGetLiveEntity(SceneExpansionPlan plan, int expandedEntityIndex, out Entity entity)

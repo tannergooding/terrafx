@@ -2,6 +2,7 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
@@ -79,14 +80,7 @@ internal sealed partial class SceneAssetStoreTests
     {
         var schemas = CreateRendererRegistry();
         var frameId = new Guid("30000000-0000-4000-8000-000000000001");
-        var textureRecord = CreateRenderTextureAssetRecord(
-            1,
-            1,
-            RenderTextureColorSpace.Linear,
-            RenderTextureAlphaMode.Premultiplied,
-            RenderTextureSemantic.Color,
-            RenderTextureMipPolicy.BaseOnly,
-            CreateRenderTextureMipRecord(0, 1, 1, [17, 18, 19, 255]));
+        var textureRecord = CreateRenderAtlasPageTextureRecord(17);
         var atlasRecord = CreateRenderAtlasRecord(
             1,
             CreateRenderAtlasFrameRecord(frameId, page: 0, x: 4, y: 4, width: 4, height: 4));
@@ -147,6 +141,10 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(first.PixelSnap, Is.True);
             Assert.That(world.TryGet<RenderComponentDefinitions.SpriteComponent>(secondEntity, out var second), Is.True);
             Assert.That(second.MaterialAssetId.HasValue, Is.False);
+            var preparedSpriteAssets = withMaterial.GetPreparedAssets<RenderSceneAssetBundle>()
+                ?? throw new InvalidOperationException("The activated Scene did not retain its prepared Sprite assets.");
+            Assert.That(preparedSpriteAssets.GetAtlasPageSet(2).GetPage(0).Mips[0].Pixels[0], Is.EqualTo(17));
+            Assert.That(preparedSpriteAssets.GetMaterial(3).IsSprite, Is.True);
 
             var entityWithoutSprite = world.CreateEntity(new EntityDescription());
             Assert.That(
@@ -198,6 +196,108 @@ internal sealed partial class SceneAssetStoreTests
         {
             await assets.DisposeAsync().ConfigureAwait(false);
             File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    [SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "The synchronous waits complete exact package preloading before the Scene plan, World, or AssetStore is disposed.")]
+    public async Task SpriteAssetPreparationUsesTheRootScenePackageAfterStoreReplacement()
+    {
+        var schemas = CreateRendererRegistry();
+        var frameId = new Guid("30000000-0000-0000-0000-000000000001");
+        var textureRecord = CreateRenderAtlasPageTextureRecord(17);
+        var atlasRecord = CreateRenderAtlasRecord(
+            1,
+            CreateRenderAtlasFrameRecord(frameId, page: 0, x: 4, y: 4, width: 4, height: 4));
+        var materialRecord = CreateRenderMaterialAssetRecord(
+            isSprite: true,
+            CreateRenderMaterialSpriteParametersRecord(),
+            alphaMode: 2,
+            doubleSided: false,
+            depthTest: false,
+            depthWrite: false,
+            cullMode: 0,
+            outputAlpha: 1,
+            requiredCapabilities: 0x009);
+        var sceneRecord = SceneAssetReaderTests.Fixtures.CreateScene(
+            new AssetId(4),
+            additionalEntityComponents: [CreateRenderSpriteRecord(2, frameId, materialAssetId: 3)]);
+        var originalPackage = Package.CreatePackage(
+            new Package.Entry(1, Package.CreateEnvelope(1, textureRecord)),
+            new Package.Entry(2, Package.CreateEnvelope(2, atlasRecord)),
+            new Package.Entry(3, Package.CreateEnvelope(3, materialRecord)),
+            new Package.Entry(4, Package.CreateEnvelope(4, sceneRecord)));
+        var replacementPackage = Package.CreatePackage(
+            new Package.Entry(1, Package.CreateEnvelope(1, CreateRenderAtlasPageTextureRecord(29))),
+            new Package.Entry(2, Package.CreateEnvelope(2, atlasRecord)),
+            new Package.Entry(3, Package.CreateEnvelope(3, materialRecord)),
+            new Package.Entry(4, Package.CreateEnvelope(4, sceneRecord)));
+        var originalPath = Package.WritePackage(originalPackage);
+        var replacementPath = Package.WritePackage(replacementPackage);
+        var assetRegistrationBuilder = new AssetStoreRegistrationBuilder(schemas);
+        _ = SceneSupport.RegisterAssetCodecs(assetRegistrationBuilder);
+        _ = Renderer.RegisterAssetCodecs(assetRegistrationBuilder);
+        var registration = assetRegistrationBuilder.Build();
+        var assets = await AssetStore.CreateAsync(
+            new AssetStoreOptions(originalPath, SHA256.HashData(originalPackage), registration)).ConfigureAwait(false);
+        AssetLease<SceneAsset>? sceneLease = null;
+        SceneExpansionPlan? plan = null;
+        World? world = null;
+
+        try
+        {
+            sceneLease = await assets.LoadAsync<SceneAsset>(new AssetId(4)).ConfigureAwait(false);
+            await assets.ReplacePackageAsync(
+                new AssetStoreOptions(replacementPath, SHA256.HashData(replacementPackage), registration),
+                System.Threading.CancellationToken.None).ConfigureAwait(false);
+
+            var sceneSupport = SceneSupport.CreateRegistration();
+            var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
+            _ = worldRegistrationBuilder.RegisterSceneSupport(sceneSupport);
+            _ = worldRegistrationBuilder.RegisterCpuExtractionSupport(Renderer.CreateCpuExtractionSupportRegistration());
+            world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
+            var sceneRegistry = world.GetSceneParticipant(sceneSupport);
+            var transferredSceneLease = sceneLease;
+            sceneLease = null;
+            var limits = new SceneExpansionLimits(
+                maximumExpandedEntities: 1_048_576,
+                maximumPrefabEntities: 65_536,
+                maximumExpandedOccurrences: 1_048_576,
+                maximumPrefabDepth: 32,
+                maximumHierarchyDepth: 256,
+                maximumExpandedBytes: world.MaximumOwnedStateBytes,
+                reserveStorage: bytes => world.TryReserveSceneStorage(sceneRegistry, bytes));
+            plan = ScenePrefabExpansionPlanner.PrepareTakingLeaseAsync(
+                transferredSceneLease,
+                limits).GetAwaiter().GetResult();
+            var resourcePreparer = world.GetCpuExtractionParticipant<ISceneExpansionResourcePreparer>()
+                ?? throw new InvalidOperationException("The Renderer did not register its Scene asset preparer.");
+            var preparedAssets = resourcePreparer.PrepareAsync(
+                plan,
+                bytes => world.TryReserveSceneStorage(sceneRegistry, bytes),
+                System.Threading.CancellationToken.None).GetAwaiter().GetResult();
+            plan.AttachPreparedAssets(
+                preparedAssets ?? throw new InvalidOperationException("The Sprite asset references produced no prepared bundle."));
+
+            var bundle = plan.GetPreparedAssets<RenderSceneAssetBundle>()
+                ?? throw new InvalidOperationException("The Scene plan did not retain its prepared Sprite bundle.");
+            Assert.That(bundle.GetAtlasPageSet(2).GetPage(0).Mips[0].Pixels[0], Is.EqualTo(17));
+            Assert.That(bundle.GetMaterial(3).IsSprite, Is.True);
+
+            using var currentTexture = assets.LoadAsync<RenderTextureAsset>(new AssetId(1)).GetAwaiter().GetResult();
+            Assert.That(currentTexture.Value.Mips[0].Pixels[0], Is.EqualTo(29));
+        }
+        finally
+        {
+            plan?.Dispose();
+            sceneLease?.Dispose();
+            world?.Dispose();
+            await assets.DisposeAsync().ConfigureAwait(false);
+            File.Delete(originalPath);
+            File.Delete(replacementPath);
         }
     }
 }
