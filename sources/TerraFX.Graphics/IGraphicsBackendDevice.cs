@@ -7,4 +7,8 @@ namespace TerraFX.Graphics;
 internal interface IGraphicsBackendDevice : IDisposable
 {
     GraphicsCapabilities Capabilities { get; }
+
+    IGraphicsBackendBuffer CreateBuffer(BufferDescription description);
+
+    GraphicsBufferAllocationInfo GetBufferAllocationInfo(BufferDescription description);
 }

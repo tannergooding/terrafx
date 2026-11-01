@@ -62,12 +62,33 @@ internal interface IGraphicsBackendFactory
 internal interface IGraphicsBackendDevice : IDisposable
 {
     GraphicsCapabilities Capabilities { get; }
+
+    IGraphicsBackendBuffer CreateBuffer(BufferDescription description);
+
+    GraphicsBufferAllocationInfo GetBufferAllocationInfo(BufferDescription description);
+}
+
+internal readonly struct GraphicsBufferAllocationInfo
+{
+    internal GraphicsBufferAllocationInfo(long sizeBytes, long alignment, int heapIndex, long? budgetBytes);
+    internal long Alignment { get; }
+    internal long? BudgetBytes { get; }
+    internal int HeapIndex { get; }
+    internal long SizeBytes { get; }
+}
+
+internal interface IGraphicsBackendBuffer : IDisposable
+{
 }
 ```
 
 `GraphicsDevice.CreateAsync` starts its dedicated graphics owner thread, invokes the selected factory there, and returns only after `IGraphicsBackendDevice` has created a real native device and passed profile admission. Backend packages implement `IGraphicsBackendFactory` and return their live native owner; they never create or return the public facade. The factory checks cancellation between native operations and unwinds every successfully acquired native object on cancellation/failure; it does not pretend an in-progress native call was canceled. `IGraphicsBackendDevice` is an internal owner port, not a feature-success façade: every public Graphics operation admitted by the selected profile must be implemented by that backend or reject with its typed/native failure. The bounded request channel and last-use retirement remain owned by `GraphicsDevice`, not by the registration token.
 
-`GraphicsDevice.Status` reports `None = 0`, `Ready = 1`, `Lost = 2`, `Stopping = 3`, or `Disposed = 4`; `None` is invalid and is never observable from a successfully created facade. `CreateAsync` returns only in `Ready`. An actual native device-loss result closes request admission and transitions the device to `Lost`; the device is not automatically rebuilt and old handles are never rebound. Host shutdown transitions `Ready` or `Lost` to `Stopping` before joining admitted GPU/presentation consumers, and reaches `Disposed` only after native ownership is released. Startup failure faults `CreateAsync` and publishes no facade. A request failure that does not indicate device loss faults that request without changing a healthy device's status.
+`IGraphicsBackendDevice.GetBufferAllocationInfo` queries actual resource size, alignment, native memory-heap identity, and a current nullable heap budget estimate before reservation; `CreateBuffer` runs only on the graphics owner. D3D12 uses `GetResourceAllocationInfo` and `IDXGIAdapter3.QueryVideoMemoryInfo` followed by a committed resource in the heap selected by `GpuMemoryKind`. `GraphicsDevice` reserves the persistent allocation budget and reported native-heap budget before creation, then releases those credits only after owner-thread resource release. `GpuBuffer.Dispose` revokes new use immediately and queues retirement with its pre-reserved retirement credit. During host shutdown, accepted requests drain before all remaining buffers retire and the backend device is released. Uncertain resource release quarantines and roots the buffer/device and faults shutdown rather than releasing storage by assumption.
+
+`GraphicsOwnerRequestQueue` keeps ordinary requests and retirements in separate capacity-256 channels. Ordinary admission waits for capacity and honors cancellation before acceptance. A queue-issued, internal `GraphicsOwnerRequestQueue.GraphicsRetirementReservation` is acquired before a resource-creating request is accepted and remains held until native retirement or quarantine; dequeuing retirement work alone does not release the reserved capacity. Closing retirement-reservation admission does not prevent already reserved resources from entering the retirement channel. These channels do not reuse host-mailbox, World-control, or Input-control failure semantics.
+
+`GraphicsDevice.Status` reports `None = 0`, `Ready = 1`, `Lost = 2`, `Stopping = 3`, or `Disposed = 4`; `None` is invalid and is never observable from a successfully created facade. `CreateAsync` returns only in `Ready`. An actual native device-loss result closes ordinary request and new retirement-reservation admission and transitions the device to `Lost`, while already reserved resource retirements remain admissible. D3D12 maps `DXGI_ERROR_DEVICE_HUNG` (`0x887A0006`), `DXGI_ERROR_DEVICE_REMOVED` (`0x887A0005`), `DXGI_ERROR_DEVICE_RESET` (`0x887A0007`), and `DXGI_ERROR_DRIVER_INTERNAL_ERROR` (`0x887A0020`) to the owner’s device-loss signal and a `COMException`-derived request failure. The device is not automatically rebuilt and old handles are never rebound. Host shutdown transitions `Ready` or `Lost` to `Stopping` before joining admitted GPU/presentation consumers, and reaches `Disposed` only after native ownership is released. Startup failure faults `CreateAsync` and publishes no facade. A request failure that does not indicate device loss faults that request without changing a healthy device's status.
 
 ## 2. Typed resources and memory
 

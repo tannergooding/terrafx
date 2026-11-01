@@ -27,6 +27,11 @@ internal static class Program
             throw new InvalidOperationException("GraphicsDevice must not expose public owner construction.");
         }
 
-        Console.WriteLine("D3D12 public registration consumer passed with unsafe disabled and no native device activation.");
+        if (typeof(GpuBuffer).GetConstructors(BindingFlags.Instance | BindingFlags.Public).Length != 0)
+        {
+            throw new InvalidOperationException("GpuBuffer must not expose public resource construction.");
+        }
+
+        Console.WriteLine("D3D12 public registration consumer passed with unsafe disabled, no public owner/resource construction, and no native device activation.");
     }
 }

@@ -35,6 +35,35 @@ internal sealed class GraphicsOwnerRequestQueueTests
     }
 
     [Test]
+    public async Task RetirementAdmissionClosesWithoutClosingReservedRetirements()
+    {
+        using var queue = new GraphicsOwnerRequestQueue();
+        var reservations = new List<GraphicsOwnerRequestQueue.GraphicsRetirementReservation>();
+
+        try
+        {
+            for (var index = 0; index < 256; index++)
+            {
+                reservations.Add(await queue.ReserveRetirementAsync(CancellationToken.None).ConfigureAwait(false));
+            }
+
+            var pendingReservation = queue.ReserveRetirementAsync(CancellationToken.None).AsTask();
+            queue.CompleteRetirementReservations();
+            _ = Assert.ThrowsAsync<ObjectDisposedException>(async () => await pendingReservation.ConfigureAwait(false));
+
+            Assert.That(queue.TryEnqueueRetirement(new TestWork(), reservations[0]), Is.True);
+            Assert.That(queue.TryReadRetirement(out _), Is.True);
+        }
+        finally
+        {
+            foreach (var reservation in reservations)
+            {
+                reservation.Dispose();
+            }
+        }
+    }
+
+    [Test]
     public async Task RetirementCapacityRemainsReservedUntilRetirementCompletes()
     {
         using var queue = new GraphicsOwnerRequestQueue();

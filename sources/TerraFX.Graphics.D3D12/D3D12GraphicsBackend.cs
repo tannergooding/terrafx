@@ -23,6 +23,10 @@ public static unsafe class D3D12GraphicsBackend
 
     private sealed unsafe class D3D12BackendFactory : IGraphicsBackendFactory
     {
+        private const int DxgiErrorDeviceHung = unchecked((int)0x887A0006);
+        private const int DxgiErrorDeviceRemoved = unchecked((int)0x887A0005);
+        private const int DxgiErrorDeviceReset = unchecked((int)0x887A0007);
+        private const int DxgiErrorDriverInternalError = unchecked((int)0x887A0020);
         private const int DxgiErrorNotFound = unchecked((int)0x887A0002);
 
         internal D3D12BackendFactory()
@@ -116,6 +120,31 @@ public static unsafe class D3D12GraphicsBackend
                 heapCapabilities);
         }
 
+        private static D3D12_RESOURCE_DESC CreateNativeBufferDescription(BufferDescription description)
+        {
+            ArgumentNullException.ThrowIfNull(description);
+
+            var flags = (description.Usage & BufferUsage.Storage) != 0
+                ? D3D12_RESOURCE_FLAGS.D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+                : D3D12_RESOURCE_FLAGS.D3D12_RESOURCE_FLAG_NONE;
+
+            return new D3D12_RESOURCE_DESC {
+                Dimension = D3D12_RESOURCE_DIMENSION.D3D12_RESOURCE_DIMENSION_BUFFER,
+                Alignment = 0,
+                Width = checked((ulong)description.ByteLength),
+                Height = 1,
+                DepthOrArraySize = 1,
+                MipLevels = 1,
+                Format = DXGI_FORMAT.DXGI_FORMAT_UNKNOWN,
+                SampleDesc = new DXGI_SAMPLE_DESC {
+                    Count = 1,
+                    Quality = 0,
+                },
+                Layout = D3D12_TEXTURE_LAYOUT.D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+                Flags = flags,
+            };
+        }
+
         private static string GetAdapterName(DXGI_ADAPTER_DESC1* description)
         {
             var name = (char*)&description->Description;
@@ -148,6 +177,13 @@ public static unsafe class D3D12GraphicsBackend
             ThrowIfFailed(result);
             return checked((long)memoryInfo.Budget);
         }
+
+        private static int GetBufferHeapIndex(GpuMemoryKind memoryKind)
+            => memoryKind switch {
+                GpuMemoryKind.DeviceLocal => (int)DXGI_MEMORY_SEGMENT_GROUP.DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
+                GpuMemoryKind.Upload or GpuMemoryKind.Readback => (int)DXGI_MEMORY_SEGMENT_GROUP.DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL,
+                _ => throw new ArgumentOutOfRangeException(nameof(memoryKind)),
+            };
 
         private static string GetDriverVersion(IDXGIAdapter1* adapter)
         {
@@ -231,6 +267,32 @@ public static unsafe class D3D12GraphicsBackend
 
             return formats.ToImmutable();
         }
+
+        private static D3D12_HEAP_PROPERTIES GetHeapProperties(GpuMemoryKind memoryKind)
+        {
+            var heapType = memoryKind switch {
+                GpuMemoryKind.DeviceLocal => D3D12_HEAP_TYPE.D3D12_HEAP_TYPE_DEFAULT,
+                GpuMemoryKind.Upload => D3D12_HEAP_TYPE.D3D12_HEAP_TYPE_UPLOAD,
+                GpuMemoryKind.Readback => D3D12_HEAP_TYPE.D3D12_HEAP_TYPE_READBACK,
+                _ => throw new ArgumentOutOfRangeException(nameof(memoryKind)),
+            };
+
+            return new D3D12_HEAP_PROPERTIES {
+                Type = heapType,
+                CPUPageProperty = D3D12_CPU_PAGE_PROPERTY.D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+                MemoryPoolPreference = D3D12_MEMORY_POOL.D3D12_MEMORY_POOL_UNKNOWN,
+                CreationNodeMask = 1,
+                VisibleNodeMask = 1,
+            };
+        }
+
+        private static D3D12_RESOURCE_STATES GetInitialResourceState(GpuMemoryKind memoryKind)
+            => memoryKind switch {
+                GpuMemoryKind.DeviceLocal => D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON,
+                GpuMemoryKind.Upload => D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_GENERIC_READ,
+                GpuMemoryKind.Readback => D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_DEST,
+                _ => throw new ArgumentOutOfRangeException(nameof(memoryKind)),
+            };
 
         private static ImmutableArray<GraphicsMemoryHeapCapabilities> GetMemoryHeaps(
             IDXGIAdapter1* adapter,
@@ -344,6 +406,11 @@ public static unsafe class D3D12GraphicsBackend
         {
             if (result.FAILED)
             {
+                if (result.Value is DxgiErrorDeviceHung or DxgiErrorDeviceRemoved or DxgiErrorDeviceReset or DxgiErrorDriverInternalError)
+                {
+                    throw new GraphicsDeviceLostException(result.Value);
+                }
+
                 Marshal.ThrowExceptionForHR(result.Value);
             }
         }
@@ -389,6 +456,7 @@ public static unsafe class D3D12GraphicsBackend
                         }
 
                         ID3D12Device* device = null;
+                        IDXGIAdapter3* adapter3 = null;
 
                         try
                         {
@@ -405,6 +473,13 @@ public static unsafe class D3D12GraphicsBackend
                                 continue;
                             }
 
+                            var adapter3Id = typeof(IDXGIAdapter3).GUID;
+
+                            if (adapter->QueryInterface(&adapter3Id, (void**)&adapter3).FAILED)
+                            {
+                                adapter3 = null;
+                            }
+
                             cancellationToken.ThrowIfCancellationRequested();
                             var capabilities = CreateCapabilities(adapter, device, profile);
                             var missingRequirements = GraphicsCapabilityAdmission.GetMissingRequirements(capabilities, profile);
@@ -415,12 +490,18 @@ public static unsafe class D3D12GraphicsBackend
                                 continue;
                             }
 
-                            var backendDevice = new D3D12BackendDevice(device, capabilities);
+                            var backendDevice = new D3D12BackendDevice(device, adapter3, capabilities);
                             device = null;
+                            adapter3 = null;
                             return backendDevice;
                         }
                         finally
                         {
+                            if (adapter3 is not null)
+                            {
+                                _ = adapter3->Release();
+                            }
+
                             if (device is not null)
                             {
                                 _ = device->Release();
@@ -452,9 +533,10 @@ public static unsafe class D3D12GraphicsBackend
 
         private sealed unsafe class D3D12BackendDevice : IGraphicsBackendDevice
         {
+            private IDXGIAdapter3* _adapter;
             private ID3D12Device* _device;
 
-            internal D3D12BackendDevice(ID3D12Device* device, GraphicsCapabilities capabilities)
+            internal D3D12BackendDevice(ID3D12Device* device, IDXGIAdapter3* adapter, GraphicsCapabilities capabilities)
             {
                 ArgumentNullException.ThrowIfNull(capabilities);
 
@@ -463,20 +545,135 @@ public static unsafe class D3D12GraphicsBackend
                     throw new ArgumentNullException(nameof(device));
                 }
 
+                _adapter = adapter;
                 _device = device;
                 Capabilities = capabilities;
             }
 
             public GraphicsCapabilities Capabilities { get; }
 
+            public IGraphicsBackendBuffer CreateBuffer(BufferDescription description)
+            {
+                ArgumentNullException.ThrowIfNull(description);
+
+                var nativeDescription = CreateNativeBufferDescription(description);
+                var heapProperties = GetHeapProperties(description.MemoryKind);
+                var initialState = GetInitialResourceState(description.MemoryKind);
+                var resourceId = typeof(ID3D12Resource).GUID;
+                ID3D12Resource* resource = null;
+
+                try
+                {
+                    ThrowIfFailed(_device->CreateCommittedResource(
+                        &heapProperties,
+                        D3D12_HEAP_FLAGS.D3D12_HEAP_FLAG_NONE,
+                        &nativeDescription,
+                        initialState,
+                        null,
+                        &resourceId,
+                        (void**)&resource));
+
+                    if (resource is null)
+                    {
+                        throw new InvalidOperationException("D3D12 committed buffer creation returned no resource.");
+                    }
+
+                    if (description.DebugName.Length > 0)
+                    {
+                        fixed (char* name = description.DebugName)
+                        {
+                            ThrowIfFailed(resource->SetName(name));
+                        }
+                    }
+
+                    return new D3D12BackendBuffer(resource);
+                }
+                catch
+                {
+                    if (resource is not null)
+                    {
+                        _ = resource->Release();
+                    }
+
+                    throw;
+                }
+            }
+
             public void Dispose()
             {
                 var device = _device;
+                var adapter = _adapter;
                 _device = null;
+                _adapter = null;
 
                 if (device is not null)
                 {
                     _ = device->Release();
+                }
+
+                if (adapter is not null)
+                {
+                    _ = adapter->Release();
+                }
+            }
+
+            public GraphicsBufferAllocationInfo GetBufferAllocationInfo(BufferDescription description)
+            {
+                ArgumentNullException.ThrowIfNull(description);
+                var nativeDescription = CreateNativeBufferDescription(description);
+                var allocationInfo = _device->GetResourceAllocationInfo(0, 1, &nativeDescription);
+
+                if (allocationInfo.SizeInBytes == ulong.MaxValue)
+                {
+                    ThrowIfFailed(_device->GetDeviceRemovedReason());
+                    throw new InvalidOperationException("D3D12 returned an invalid buffer allocation size.");
+                }
+
+                if (allocationInfo.SizeInBytes == 0)
+                {
+                    throw new InvalidOperationException("D3D12 returned an invalid buffer allocation size.");
+                }
+
+                long? budgetBytes = null;
+
+                if (_adapter is not null)
+                {
+                    var memoryInfo = default(DXGI_QUERY_VIDEO_MEMORY_INFO);
+                    var memorySegment = (DXGI_MEMORY_SEGMENT_GROUP)GetBufferHeapIndex(description.MemoryKind);
+                    ThrowIfFailed(_adapter->QueryVideoMemoryInfo(0, memorySegment, &memoryInfo));
+                    budgetBytes = checked((long)memoryInfo.Budget);
+                }
+
+                return new GraphicsBufferAllocationInfo(
+                    checked((long)allocationInfo.SizeInBytes),
+                    checked((long)allocationInfo.Alignment),
+                    GetBufferHeapIndex(description.MemoryKind),
+                    budgetBytes);
+            }
+
+            private sealed unsafe class D3D12BackendBuffer : IGraphicsBackendBuffer
+            {
+                private ID3D12Resource* _resource;
+
+                internal D3D12BackendBuffer(ID3D12Resource* resource)
+                {
+                    if (resource is null)
+                    {
+                        throw new ArgumentNullException(nameof(resource));
+                    }
+
+                    _resource = resource;
+                }
+
+                public void Dispose()
+                {
+                    var resource = _resource;
+                    _resource = null;
+
+                    if (resource is not null)
+                    {
+                        _ = resource->Release();
+                    }
                 }
             }
         }

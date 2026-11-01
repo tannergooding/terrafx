@@ -27,6 +27,7 @@ internal sealed class GraphicsOwnerRequestQueue : IDisposable
         SingleWriter = false,
         AllowSynchronousContinuations = false,
     });
+    private bool _retirementReservationsClosed;
     private readonly Channel<IGraphicsDeviceWork> _retirements = Channel.CreateBounded<IGraphicsDeviceWork>(new BoundedChannelOptions(RetirementCapacity) {
         FullMode = BoundedChannelFullMode.Wait,
         SingleReader = true,
@@ -61,7 +62,9 @@ internal sealed class GraphicsOwnerRequestQueue : IDisposable
             }
 
             _isDisposed = true;
+            _retirementReservationsClosed = true;
             _retirementsClosed = true;
+            _ = _retirementReservations.Writer.TryComplete();
             _ = _retirements.Writer.TryComplete();
             _workAvailable.Dispose();
         }
@@ -73,6 +76,14 @@ internal sealed class GraphicsOwnerRequestQueue : IDisposable
         SignalWork();
     }
 
+    internal void CompleteRetirementReservations()
+    {
+        lock (_retirementGate)
+        {
+            CloseRetirementReservationsUnderLock();
+        }
+    }
+
     internal void CompleteRetirements()
     {
         lock (_retirementGate)
@@ -81,6 +92,7 @@ internal sealed class GraphicsOwnerRequestQueue : IDisposable
             {
                 _retirementsClosed = true;
                 _ = _retirements.Writer.TryComplete();
+                CloseRetirementReservationsUnderLock();
                 SignalWorkUnderLock();
             }
         }
@@ -90,22 +102,26 @@ internal sealed class GraphicsOwnerRequestQueue : IDisposable
     {
         lock (_retirementGate)
         {
-            ObjectDisposedException.ThrowIf(_retirementsClosed, this);
+            ObjectDisposedException.ThrowIf(_retirementReservationsClosed, this);
         }
 
-        _ = await _retirementReservations.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            _ = await _retirementReservations.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (ChannelClosedException)
+        {
+            lock (_retirementGate)
+            {
+                ObjectDisposedException.ThrowIf(_retirementReservationsClosed, this);
+            }
+
+            throw;
+        }
 
         lock (_retirementGate)
         {
-            if (_retirementsClosed)
-            {
-                if (!_retirementReservations.Writer.TryWrite(0))
-                {
-                    throw new InvalidOperationException("Reserved Graphics retirement capacity could not be restored.");
-                }
-
-                throw new ObjectDisposedException(nameof(GraphicsOwnerRequestQueue));
-            }
+            ObjectDisposedException.ThrowIf(_retirementReservationsClosed, this);
 
             return new GraphicsRetirementReservation(this);
         }
@@ -159,11 +175,26 @@ internal sealed class GraphicsOwnerRequestQueue : IDisposable
         SignalWork();
     }
 
+    private void CloseRetirementReservationsUnderLock()
+    {
+        if (!_retirementReservationsClosed)
+        {
+            _retirementReservationsClosed = true;
+            _ = _retirementReservations.Writer.TryComplete();
+            SignalWorkUnderLock();
+        }
+    }
+
     private void ReleaseRetirementReservation(GraphicsRetirementReservation reservation)
     {
         lock (_retirementGate)
         {
             if (!reservation.TryMarkReleased())
+            {
+                return;
+            }
+
+            if (_retirementReservationsClosed)
             {
                 return;
             }
@@ -194,6 +225,7 @@ internal sealed class GraphicsOwnerRequestQueue : IDisposable
     internal sealed class GraphicsRetirementReservation : IDisposable
     {
         private readonly GraphicsOwnerRequestQueue _queue;
+        // 0 is reserved, 1 is queued, and 2 is released.
         private int _state;
 
         internal GraphicsRetirementReservation(GraphicsOwnerRequestQueue queue)
