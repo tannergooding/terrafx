@@ -66,6 +66,7 @@ internal sealed class GraphicsCapabilityAdmissionTests
         int maximumColorAttachments = 8,
         int maximumSampledImagesPerStage = 128,
         int maximumSamplersPerStage = 32,
+        float maximumSamplerAnisotropy = 1.0f,
         int maximumUniformBuffersPerStage = 16,
         long maximumUniformBufferRangeBytes = 65536)
         => new(
@@ -75,6 +76,7 @@ internal sealed class GraphicsCapabilityAdmissionTests
             maximumColorAttachments,
             maximumSampledImagesPerStage,
             maximumSamplersPerStage,
+            maximumSamplerAnisotropy,
             maximumUniformBuffersPerStage,
             maximumUniformBufferRangeBytes,
             uniformBufferOffsetAlignment: 256,

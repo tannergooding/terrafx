@@ -14,6 +14,7 @@ public sealed class GraphicsLimits
         int maximumColorAttachments,
         int maximumSampledImagesPerStage,
         int maximumSamplersPerStage,
+        float maximumSamplerAnisotropy,
         int maximumUniformBuffersPerStage,
         long maximumUniformBufferRangeBytes,
         long uniformBufferOffsetAlignment,
@@ -35,6 +36,12 @@ public sealed class GraphicsLimits
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumColorAttachments);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSampledImagesPerStage);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSamplersPerStage);
+
+        if (!float.IsFinite(maximumSamplerAnisotropy) || (maximumSamplerAnisotropy < 1.0f))
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumSamplerAnisotropy));
+        }
+
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumUniformBuffersPerStage);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumUniformBufferRangeBytes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(uniformBufferOffsetAlignment);
@@ -56,6 +63,7 @@ public sealed class GraphicsLimits
         MaximumColorAttachments = maximumColorAttachments;
         MaximumSampledImagesPerStage = maximumSampledImagesPerStage;
         MaximumSamplersPerStage = maximumSamplersPerStage;
+        MaximumSamplerAnisotropy = maximumSamplerAnisotropy;
         MaximumUniformBuffersPerStage = maximumUniformBuffersPerStage;
         MaximumUniformBufferRangeBytes = maximumUniformBufferRangeBytes;
         UniformBufferOffsetAlignment = uniformBufferOffsetAlignment;
@@ -98,6 +106,9 @@ public sealed class GraphicsLimits
 
     /// <summary>Gets the maximum sampled image count per shader stage.</summary>
     public int MaximumSampledImagesPerStage { get; }
+
+    /// <summary>Gets the maximum anisotropy factor implemented by the selected backend; one means isotropic sampling only.</summary>
+    public float MaximumSamplerAnisotropy { get; }
 
     /// <summary>Gets the maximum sampler count per shader stage.</summary>
     public int MaximumSamplersPerStage { get; }

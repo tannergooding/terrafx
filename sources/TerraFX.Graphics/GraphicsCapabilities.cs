@@ -71,6 +71,13 @@ public sealed class GraphicsCapabilities
         ValidateUniqueMemoryHeaps(sortedMemoryHeaps);
         ValidateImplementedFeatures(sortedHardwareFeatures, sortedImplementedFeatures);
 
+        var samplerAnisotropyImplemented = Array.IndexOf(sortedImplementedFeatures, GraphicsFeature.SamplerAnisotropy) >= 0;
+
+        if (samplerAnisotropyImplemented != (limits.MaximumSamplerAnisotropy > 1.0f))
+        {
+            throw new ArgumentException("The sampler-anisotropy limit must match the backend's implemented feature state.", nameof(limits));
+        }
+
         Backend = backend;
         Profile = profile;
         AdapterId = adapterId;

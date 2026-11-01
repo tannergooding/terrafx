@@ -17,7 +17,8 @@ internal sealed class GraphicsCapabilitiesTests
         ImmutableArray<GraphicsFeature>? hardwareFeatures = null,
         ImmutableArray<GraphicsFeature>? implementedFeatures = null,
         ImmutableArray<GraphicsFormatCapabilities>? formats = null,
-        ImmutableArray<GraphicsMemoryHeapCapabilities>? memoryHeaps = null)
+        ImmutableArray<GraphicsMemoryHeapCapabilities>? memoryHeaps = null,
+        float maximumSamplerAnisotropy = 1.0f)
     {
         return new GraphicsCapabilities(
             GraphicsBackend.D3D12,
@@ -31,7 +32,7 @@ internal sealed class GraphicsCapabilitiesTests
             new GraphicsApiVersion(12, 0, 0, 0),
             hardwareFeatures ?? [GraphicsFeature.Direct3DFeatureLevel12, GraphicsFeature.ShaderModel6],
             implementedFeatures ?? [GraphicsFeature.Direct3DFeatureLevel12, GraphicsFeature.ShaderModel6],
-            CreateLimits(),
+            CreateLimits(maximumSamplerAnisotropy: maximumSamplerAnisotropy),
             formats ??
             [
                 new GraphicsFormatCapabilities(
@@ -52,7 +53,8 @@ internal sealed class GraphicsCapabilitiesTests
 
     private static GraphicsLimits CreateLimits(
         long uniformBufferOffsetAlignment = 256,
-        long maximumBufferByteLength = 1L << 40)
+        long maximumBufferByteLength = 1L << 40,
+        float maximumSamplerAnisotropy = 1.0f)
         => new(
             maximumTextureDimension2D: 16384,
             maximumTextureDimension3D: 2048,
@@ -60,6 +62,7 @@ internal sealed class GraphicsCapabilitiesTests
             maximumColorAttachments: 8,
             maximumSampledImagesPerStage: 128,
             maximumSamplersPerStage: 32,
+            maximumSamplerAnisotropy: maximumSamplerAnisotropy,
             maximumUniformBuffersPerStage: 16,
             maximumUniformBufferRangeBytes: 65536,
             uniformBufferOffsetAlignment,
@@ -158,6 +161,27 @@ internal sealed class GraphicsCapabilitiesTests
     }
 
     [Test]
+    public void GraphicsCapabilitiesRequiresAnisotropyLimitToMatchImplementation()
+    {
+        var features = ImmutableArray.Create(
+            GraphicsFeature.Direct3DFeatureLevel12,
+            GraphicsFeature.ShaderModel6,
+            GraphicsFeature.SamplerAnisotropy);
+
+        _ = Assert.Throws<ArgumentException>(() => CreateCapabilities(
+            hardwareFeatures: features,
+            implementedFeatures: features));
+
+        var capabilities = CreateCapabilities(
+            hardwareFeatures: features,
+            implementedFeatures: features,
+            maximumSamplerAnisotropy: 4.0f);
+
+        Assert.That(capabilities.Limits.MaximumSamplerAnisotropy, Is.EqualTo(4.0f));
+        _ = Assert.Throws<ArgumentException>(() => CreateCapabilities(maximumSamplerAnisotropy: 4.0f));
+    }
+
+    [Test]
     public void GraphicsFormatCapabilitiesSortsCountsAndRejectsUnsupportedCounts()
     {
         var sampleCounts = new[] { 4, 1, 2 };
@@ -187,10 +211,14 @@ internal sealed class GraphicsCapabilitiesTests
     }
 
     [Test]
-    public void GraphicsLimitsRejectZeroAlignmentAndPreserveWideRanges()
+    public void GraphicsLimitsValidatesAnisotropyAlignmentAndWideRanges()
     {
         Assert.That(CreateLimits(maximumBufferByteLength: long.MaxValue).MaximumBufferByteLength, Is.EqualTo(long.MaxValue));
+        Assert.That(CreateLimits(maximumSamplerAnisotropy: 4.5f).MaximumSamplerAnisotropy, Is.EqualTo(4.5f));
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => CreateLimits(uniformBufferOffsetAlignment: 0));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => CreateLimits(maximumSamplerAnisotropy: 0.5f));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => CreateLimits(maximumSamplerAnisotropy: float.NaN));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => CreateLimits(maximumSamplerAnisotropy: float.PositiveInfinity));
     }
 
     [Test]

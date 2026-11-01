@@ -3945,6 +3945,19 @@ public sealed class TextureReadback : IDisposable
     public void Dispose();
 }
 
+public enum SamplerFilter
+{
+    None = 0,
+    Nearest = 1,
+    Linear = 2
+}
+
+public enum SamplerAddressMode
+{
+    Clamp = 0,
+    Repeat = 1
+}
+
 public sealed class SamplerDescription
 {
     public SamplerDescription(SamplerFilter minification, SamplerFilter magnification, SamplerFilter mip, SamplerAddressMode addressU, SamplerAddressMode addressV, SamplerAddressMode addressW, float maximumAnisotropy);
@@ -4262,6 +4275,7 @@ public sealed class GraphicsLimits
         int maximumColorAttachments,
         int maximumSampledImagesPerStage,
         int maximumSamplersPerStage,
+        float maximumSamplerAnisotropy,
         int maximumUniformBuffersPerStage,
         long maximumUniformBufferRangeBytes,
         long uniformBufferOffsetAlignment,
@@ -4285,6 +4299,7 @@ public sealed class GraphicsLimits
     public int MaximumComputeWorkGroupSizeY { get; }
     public int MaximumComputeWorkGroupSizeZ { get; }
     public int MaximumSampledImagesPerStage { get; }
+    public float MaximumSamplerAnisotropy { get; }
     public int MaximumSamplersPerStage { get; }
     public int MaximumTextureDimension2D { get; }
     public int MaximumTextureDimension3D { get; }
