@@ -40,7 +40,9 @@ internal sealed partial class SceneAssetStoreTests
         Guid frameId,
         int? materialAssetId,
         byte flipMask = 0,
-        bool pixelSnap = false)
+        bool pixelSnap = false,
+        int sortingLayer = 2,
+        int sortingOrder = -3)
     {
         var fields = new System.Collections.Generic.List<SceneHierarchyCodecTests.FixtureBuilder.FixtureField> {
             SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(
@@ -53,8 +55,8 @@ internal sealed partial class SceneAssetStoreTests
             SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(4, 14, 2.0f, 3.0f),
             SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(5, 16, 1.0f, 0.5f, 0.25f, 1.0f),
             SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(6, flipMask),
-            CreateRenderSpriteInt32Field(7, 2),
-            CreateRenderSpriteInt32Field(8, -3),
+            CreateRenderSpriteInt32Field(7, sortingLayer),
+            CreateRenderSpriteInt32Field(8, sortingOrder),
         };
 
         if (materialAssetId is int materialId)

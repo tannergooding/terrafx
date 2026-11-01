@@ -19,26 +19,22 @@ internal sealed class RenderSceneAssetBundle : IDisposable
     private readonly AtlasEntry[] _atlasEntries;
     private int _isDisposed;
     private readonly MaterialEntry[] _materialEntries;
-    private readonly SpriteBinding[] _spriteBindings;
     private WorldSceneStorageReservation? _storageReservation;
 
     private RenderSceneAssetBundle(
-        SpriteBinding[] spriteBindings,
         AtlasEntry[] atlasEntries,
         MaterialEntry[] materialEntries,
         WorldSceneStorageReservation storageReservation)
     {
-        ArgumentNullException.ThrowIfNull(spriteBindings);
         ArgumentNullException.ThrowIfNull(atlasEntries);
         ArgumentNullException.ThrowIfNull(materialEntries);
         ArgumentNullException.ThrowIfNull(storageReservation);
 
-        if (spriteBindings.Length == 0)
+        if (atlasEntries.Length == 0)
         {
-            throw new ArgumentException("A Sprite asset bundle requires at least one prepared Sprite.", nameof(spriteBindings));
+            throw new ArgumentException("A Sprite asset bundle requires at least one prepared Atlas.", nameof(atlasEntries));
         }
 
-        _spriteBindings = spriteBindings;
         _atlasEntries = atlasEntries;
         _materialEntries = materialEntries;
         _storageReservation = storageReservation;
@@ -77,15 +73,10 @@ internal sealed class RenderSceneAssetBundle : IDisposable
             Array.Sort(materialIds, 0, materialIdCount);
             var atlasCount = CompactDistinct(atlasIds, atlasIds.Length);
             var materialCount = CompactDistinct(materialIds, materialIdCount);
-            finalReservation = reserveStorage(GetRequiredByteReservation(
-                spriteCount,
-                atlasCount,
-                materialCount))
+            finalReservation = reserveStorage(GetRequiredByteReservation(atlasCount, materialCount))
                 ?? throw new InvalidOperationException("The World cannot reserve retained Sprite asset-bundle storage.");
-            var spriteBindings = new SpriteBinding[spriteCount];
             atlasEntries = new AtlasEntry[atlasCount];
             materialEntries = new MaterialEntry[materialCount];
-            FillSpriteBindings(plan, spriteBindings, cancellationToken);
 
             for (var index = 0; index < atlasCount; index++)
             {
@@ -165,9 +156,8 @@ internal sealed class RenderSceneAssetBundle : IDisposable
                 }
             }
 
-            ValidateSpriteBindings(spriteBindings, atlasEntries, materialEntries);
+            ValidateSpriteBindings(plan, atlasEntries, materialEntries, cancellationToken);
             var bundle = new RenderSceneAssetBundle(
-                spriteBindings,
                 atlasEntries,
                 materialEntries,
                 finalReservation);
@@ -291,40 +281,6 @@ internal sealed class RenderSceneAssetBundle : IDisposable
         }
     }
 
-    private static void FillSpriteBindings(
-        SceneExpansionPlan plan,
-        SpriteBinding[] spriteBindings,
-        CancellationToken cancellationToken)
-    {
-        var spriteIndex = 0;
-
-        for (var entityIndex = 0; entityIndex < plan.Entities.Length; entityIndex++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var entity = plan.Entities[entityIndex];
-
-            foreach (var component in entity.Components)
-            {
-                if (component.Schema.SchemaId != s_spriteSchemaId)
-                {
-                    continue;
-                }
-
-                var references = RenderComponentDefinitions.GetSpriteAssetReferences(component.EncodedRecord);
-                spriteBindings[spriteIndex++] = new SpriteBinding(
-                    entityIndex,
-                    references.AtlasAssetId,
-                    references.FrameId,
-                    references.MaterialAssetId);
-            }
-        }
-
-        if (spriteIndex != spriteBindings.Length)
-        {
-            throw new InvalidOperationException("The expanded Sprite count changed while filling its asset bundle.");
-        }
-    }
-
     private static AtlasEntry FindAtlasEntry(int atlasAssetId, AtlasEntry[] atlasEntries)
     {
         var low = 0;
@@ -409,10 +365,9 @@ internal sealed class RenderSceneAssetBundle : IDisposable
         throw new InvalidOperationException("A prepared Sprite Material is absent from its bundle.");
     }
 
-    private static long GetRequiredByteReservation(int spriteCount, int atlasCount, int materialCount)
+    private static long GetRequiredByteReservation(int atlasCount, int materialCount)
         => checked(
             256L
-            + ArrayBytes(spriteCount, Unsafe.SizeOf<SpriteBinding>())
             + ArrayBytes(atlasCount, Unsafe.SizeOf<AtlasEntry>())
             + ArrayBytes(materialCount, Unsafe.SizeOf<MaterialEntry>()));
 
@@ -420,31 +375,43 @@ internal sealed class RenderSceneAssetBundle : IDisposable
         => checked(128L + (2L * ArrayBytes(spriteCount, sizeof(int))));
 
     private static void ValidateSpriteBindings(
-        SpriteBinding[] spriteBindings,
+        SceneExpansionPlan plan,
         AtlasEntry[] atlasEntries,
-        MaterialEntry[] materialEntries)
+        MaterialEntry[] materialEntries,
+        CancellationToken cancellationToken)
     {
-        foreach (var sprite in spriteBindings)
+        foreach (var entity in plan.Entities)
         {
-            var atlasEntry = FindAtlasEntry(sprite.AtlasAssetId, atlasEntries);
-            var frame = FindFrame(atlasEntry.PageSet.Atlas.Frames, sprite.FrameId);
+            cancellationToken.ThrowIfCancellationRequested();
 
-            if (sprite.MaterialAssetId is not int materialAssetId)
+            foreach (var component in entity.Components)
             {
-                continue;
-            }
+                if (component.Schema.SchemaId != s_spriteSchemaId)
+                {
+                    continue;
+                }
 
-            var material = FindMaterialEntry(materialAssetId, materialEntries).Lease.Value;
+                var sprite = RenderComponentDefinitions.GetSpriteAssetReferences(component.EncodedRecord);
+                var atlasEntry = FindAtlasEntry(sprite.AtlasAssetId, atlasEntries);
+                var frame = FindFrame(atlasEntry.PageSet.Atlas.Frames, sprite.FrameId);
 
-            if (!material.IsSprite)
-            {
-                throw new InvalidDataException("A render/sprite Material must select the exact Sprite profile.");
-            }
+                if (sprite.MaterialAssetId is not int materialAssetId)
+                {
+                    continue;
+                }
 
-            if (material.Parameters.SpriteTexture is { } texture
-                && (texture.TextureAssetId.Value != atlasEntry.PageSet.Atlas.Pages[frame.Page].Value))
-            {
-                throw new InvalidDataException("A Sprite Material texture must be the exact Atlas page selected by its FrameId.");
+                var material = FindMaterialEntry(materialAssetId, materialEntries).Lease.Value;
+
+                if (!material.IsSprite)
+                {
+                    throw new InvalidDataException("A render/sprite Material must select the exact Sprite profile.");
+                }
+
+                if (material.Parameters.SpriteTexture is { } texture
+                    && (texture.TextureAssetId.Value != atlasEntry.PageSet.Atlas.Pages[frame.Page].Value))
+                {
+                    throw new InvalidDataException("A Sprite Material texture must be the exact Atlas page selected by its FrameId.");
+                }
             }
         }
     }
@@ -491,45 +458,97 @@ internal sealed class RenderSceneAssetBundle : IDisposable
         return FindMaterialEntry(materialAssetId, _materialEntries).Lease.Value;
     }
 
-    internal bool TryGetSpriteBinding(int expandedEntityIndex, out SpriteBinding spriteBinding)
+    internal RenderSnapshotAssetPins.SceneAssetPins RetainForSnapshot(Guid sceneInstanceId)
     {
         ThrowIfDisposed();
-        var low = 0;
-        var high = _spriteBindings.Length - 1;
+        ArgumentOutOfRangeException.ThrowIfEqual(sceneInstanceId, Guid.Empty);
+        var atlasPages = ImmutableArray.CreateBuilder<RenderSnapshotAssetPins.SceneAssetPins.AtlasPin>(_atlasEntries.Length);
+        var materials = ImmutableArray.CreateBuilder<RenderSnapshotAssetPins.SceneAssetPins.MaterialPin>(_materialEntries.Length);
 
-        while (low <= high)
+        try
         {
-            var middle = low + ((high - low) / 2);
-            var comparison = _spriteBindings[middle].ExpandedEntityIndex.CompareTo(expandedEntityIndex);
+            foreach (var atlasEntry in _atlasEntries)
+            {
+                var retainedPageSet = (RenderAtlasPageSet?)atlasEntry.PageSet.Retain();
 
-            if (comparison == 0)
-            {
-                spriteBinding = _spriteBindings[middle];
-                return true;
+                try
+                {
+                    var pageSet = retainedPageSet
+                        ?? throw new InvalidOperationException("The Atlas page set could not be retained.");
+                    atlasPages.Add(new RenderSnapshotAssetPins.SceneAssetPins.AtlasPin(atlasEntry.AssetId, pageSet));
+                    retainedPageSet = null;
+                }
+                finally
+                {
+                    retainedPageSet?.Dispose();
+                }
             }
 
-            if (comparison < 0)
+            foreach (var materialEntry in _materialEntries)
             {
-                low = middle + 1;
+                var retainedMaterial = (AssetLease<RenderMaterialAsset>?)materialEntry.Lease.Retain();
+
+                try
+                {
+                    var material = retainedMaterial
+                        ?? throw new InvalidOperationException("The Material lease could not be retained.");
+                    materials.Add(new RenderSnapshotAssetPins.SceneAssetPins.MaterialPin(materialEntry.AssetId, material));
+                    retainedMaterial = null;
+                }
+                finally
+                {
+                    retainedMaterial?.Dispose();
+                }
             }
-            else
+
+            return new RenderSnapshotAssetPins.SceneAssetPins(
+                sceneInstanceId,
+                atlasPages.MoveToImmutable(),
+                materials.MoveToImmutable());
+        }
+        catch
+        {
+            foreach (var atlasPage in atlasPages)
             {
-                high = middle - 1;
+                atlasPage.PageSet.Dispose();
             }
+
+            foreach (var material in materials)
+            {
+                material.Lease.Dispose();
+            }
+
+            throw;
+        }
+    }
+
+    internal void ValidateSpriteReferences(int atlasAssetId, Guid frameId, int? materialAssetId)
+    {
+        ThrowIfDisposed();
+        var atlasEntry = FindAtlasEntry(atlasAssetId, _atlasEntries);
+        var frame = FindFrame(atlasEntry.PageSet.Atlas.Frames, frameId);
+
+        if (materialAssetId is not int selectedMaterialId)
+        {
+            return;
         }
 
-        spriteBinding = default;
-        return false;
+        var material = FindMaterialEntry(selectedMaterialId, _materialEntries).Lease.Value;
+
+        if (!material.IsSprite)
+        {
+            throw new InvalidDataException("A render/sprite Material must select the exact Sprite profile.");
+        }
+
+        if (material.Parameters.SpriteTexture is { } texture
+            && (texture.TextureAssetId.Value != atlasEntry.PageSet.Atlas.Pages[frame.Page].Value))
+        {
+            throw new InvalidDataException("A Sprite Material texture must be the exact Atlas page selected by its FrameId.");
+        }
     }
 
     private void ThrowIfDisposed()
         => ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
-
-    internal readonly record struct SpriteBinding(
-        int ExpandedEntityIndex,
-        int AtlasAssetId,
-        Guid FrameId,
-        int? MaterialAssetId);
 
     private readonly record struct AtlasEntry(int AssetId, RenderAtlasPageSet PageSet);
 

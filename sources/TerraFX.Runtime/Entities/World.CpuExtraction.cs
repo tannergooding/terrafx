@@ -117,6 +117,16 @@ public sealed partial class World
         return participant.ResolveEntityPose(this, lease.Frame3, entity);
     }
 
+    internal (SpatialPosition3 Position, Matrix4x4 LinearTransform, Quaternion Rotation) ResolveSceneEntityTransform(
+        in WorldFrameReadLease lease,
+        Entity entity)
+    {
+        ValidateSceneReadLease(in lease);
+        var participant = _sceneParticipant
+            ?? throw new InvalidOperationException("The World Scene participant has not been initialized.");
+        return participant.ResolveEntityTransform(this, lease.Frame3, entity);
+    }
+
     internal bool TryGetCameraData(
         in WorldFrameReadLease lease,
         Entity entity,

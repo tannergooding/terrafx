@@ -237,31 +237,6 @@ public sealed class SceneInstance
         Interlocked.Exchange(ref _plan, null)?.Dispose();
     }
 
-    internal bool TryGetExpandedEntityIndex(Entity entity, out int expandedEntityIndex)
-    {
-        var plan = Volatile.Read(ref _plan);
-
-        if ((Volatile.Read(ref _isActive) != 1)
-            || (plan is null)
-            || !_world.TryGetLiveEntityIdentityOrdinal(entity, out var identityOrdinal)
-            || (identityOrdinal < _firstEntityIdentityOrdinal))
-        {
-            expandedEntityIndex = -1;
-            return false;
-        }
-
-        var assignmentIndex = identityOrdinal - _firstEntityIdentityOrdinal;
-
-        if (assignmentIndex >= (uint)plan.Entities.Length)
-        {
-            expandedEntityIndex = -1;
-            return false;
-        }
-
-        expandedEntityIndex = plan.EntityIndicesByAssignmentOrdinal[checked((int)assignmentIndex)];
-        return true;
-    }
-
     private bool TryGetLiveEntity(SceneExpansionPlan plan, int expandedEntityIndex, out Entity entity)
     {
         var assignmentOrdinal = checked(

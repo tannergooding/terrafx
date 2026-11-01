@@ -147,11 +147,20 @@ internal static class SceneHierarchyTransform
         SpatialFrame3 frame,
         Entity cameraEntity)
     {
+        var (position, _, rotation) = ResolveEntityTransform(world, frame, cameraEntity);
+        return (position, rotation);
+    }
+
+    internal static (SpatialPosition3 Position, Matrix4x4 LinearTransform, Quaternion Rotation) ResolveEntityTransform(
+        World world,
+        SpatialFrame3 frame,
+        Entity renderableEntity)
+    {
         ArgumentNullException.ThrowIfNull(world);
 
         Span<Entity> ancestorPath = stackalloc Entity[EntitySlotTable.MaximumHierarchyDepth + 1];
         var ancestorCount = 0;
-        var current = cameraEntity;
+        var current = renderableEntity;
 
         while (true)
         {
@@ -248,7 +257,7 @@ internal static class SceneHierarchyTransform
             throw new InvalidOperationException("The renderable Entity rigid orientation is not representable.");
         }
 
-        return (worldPosition, Quaternion.Normalize(worldRotation));
+        return (worldPosition, worldLinearTransform, Quaternion.Normalize(worldRotation));
     }
 
     internal static SpatialPosition3 Translate(

@@ -27,5 +27,10 @@ internal interface IWorldSceneParticipant
         SpatialFrame3 frame,
         Entity entity);
 
+    (SpatialPosition3 Position, Matrix4x4 LinearTransform, Quaternion Rotation) ResolveEntityTransform(
+        World world,
+        SpatialFrame3 frame,
+        Entity entity);
+
     bool TryGetCameraData(World world, Entity entity, out WorldCameraData camera);
 }

@@ -23,6 +23,9 @@ public sealed class RenderSnapshot3D : RenderSnapshot
         ImmutableArray<RenderPointLightSnapshot> pointLights,
         ImmutableArray<Guid> spotLightIds,
         ImmutableArray<RenderSpotLightSnapshot> spotLights,
+        ImmutableArray<RenderSpriteSnapshot> spriteDraws,
+        ImmutableArray<RenderSpriteCameraOrder> spriteCameraOrders,
+        RenderSnapshotAssetPins? assetPins,
         PixelSize targetExtent,
         SpatialFrame3 frame)
         : base(
@@ -37,6 +40,9 @@ public sealed class RenderSnapshot3D : RenderSnapshot
             pointLights,
             spotLightIds,
             spotLights,
+            spriteDraws,
+            spriteCameraOrders,
+            assetPins,
             targetExtent)
     {
         RenderExtractionValidation.ValidateFrame(frame, nameof(frame));

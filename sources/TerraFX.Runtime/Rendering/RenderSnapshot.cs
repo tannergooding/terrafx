@@ -5,12 +5,14 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Threading;
 using TerraFX;
+using TerraFX.Numerics;
 
 namespace TerraFX.Rendering;
 
 /// <summary>Contains copied immutable render inputs from one committed World generation.</summary>
 public abstract class RenderSnapshot : IDisposable
 {
+    private RenderSnapshotAssetPins? _assetPins;
     private readonly ImmutableArray<Guid> _cameraIds;
     private readonly ImmutableArray<CameraSnapshot> _cameras;
     private readonly ImmutableArray<Guid> _directionalLightIds;
@@ -20,6 +22,8 @@ public abstract class RenderSnapshot : IDisposable
     private readonly ImmutableArray<RenderPointLightSnapshot> _pointLights;
     private readonly ImmutableArray<Guid> _spotLightIds;
     private readonly ImmutableArray<RenderSpotLightSnapshot> _spotLights;
+    private readonly ImmutableArray<RenderSpriteCameraOrder> _spriteCameraOrders;
+    private readonly ImmutableArray<RenderSpriteSnapshot> _spriteDraws;
 
     internal RenderSnapshot(
         Guid snapshotId,
@@ -33,6 +37,9 @@ public abstract class RenderSnapshot : IDisposable
         ImmutableArray<RenderPointLightSnapshot> pointLights,
         ImmutableArray<Guid> spotLightIds,
         ImmutableArray<RenderSpotLightSnapshot> spotLights,
+        ImmutableArray<RenderSpriteSnapshot> spriteDraws,
+        ImmutableArray<RenderSpriteCameraOrder> spriteCameraOrders,
+        RenderSnapshotAssetPins? assetPins,
         PixelSize targetExtent)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(snapshotId, Guid.Empty);
@@ -46,7 +53,9 @@ public abstract class RenderSnapshot : IDisposable
             || pointLightIds.IsDefault
             || pointLights.IsDefault
             || spotLightIds.IsDefault
-            || spotLights.IsDefault)
+            || spotLights.IsDefault
+            || spriteDraws.IsDefault
+            || spriteCameraOrders.IsDefault)
         {
             throw new ArgumentException("Render snapshot identity/value arrays must be initialized.");
         }
@@ -54,7 +63,8 @@ public abstract class RenderSnapshot : IDisposable
         if ((cameraIds.Length != cameras.Length)
             || (directionalLightIds.Length != directionalLights.Length)
             || (pointLightIds.Length != pointLights.Length)
-            || (spotLightIds.Length != spotLights.Length))
+            || (spotLightIds.Length != spotLights.Length)
+            || (spriteCameraOrders.Length != cameras.Length))
         {
             throw new ArgumentException("Each render snapshot identity array must align with its value array.");
         }
@@ -163,6 +173,73 @@ public abstract class RenderSnapshot : IDisposable
             }
         }
 
+        if (!spriteDraws.IsEmpty && (assetPins is null))
+        {
+            throw new ArgumentException("Sprite snapshots require independently retained package asset pins.", nameof(assetPins));
+        }
+
+        var uniqueDrawIds = new HashSet<Guid>();
+
+        for (var index = 0; index < spriteDraws.Length; index++)
+        {
+            var sprite = spriteDraws[index];
+
+            if (cameras.IsEmpty
+                || (sprite.SnapshotId != snapshotId)
+                || (sprite.WorldGuid != worldGuid)
+                || (sprite.SceneInstanceId == Guid.Empty)
+                || (sprite.DrawId == Guid.Empty)
+                || (sprite.EntityId == Guid.Empty)
+                || (sprite.FrameId == Guid.Empty)
+                || (sprite.AtlasAssetId <= 0)
+                || (sprite.MaterialAssetId is <= 0)
+                || !uniqueDrawIds.Add(sprite.DrawId)
+                || !sprite.LinearTransform.IsFinite().All()
+                || !RenderExtractionValidation.MatchesFrame(sprite.Frame3, cameras[0].Frame3))
+            {
+                throw new ArgumentException("A Sprite draw does not match the captured snapshot identity or frame.", nameof(spriteDraws));
+            }
+
+            if (assetPins is null)
+            {
+                throw new ArgumentException("A Sprite draw has no retained Scene asset pins.", nameof(assetPins));
+            }
+
+            var sceneAssets = assetPins.GetSceneAssets(sprite.SceneInstanceId);
+            _ = sceneAssets.GetAtlasPageSet(sprite.AtlasAssetId);
+
+            if (sprite.MaterialAssetId is int materialAssetId)
+            {
+                _ = sceneAssets.GetMaterial(materialAssetId);
+            }
+        }
+
+        for (var cameraIndex = 0; cameraIndex < spriteCameraOrders.Length; cameraIndex++)
+        {
+            var cameraOrder = spriteCameraOrders[cameraIndex];
+
+            if ((cameraOrder.CameraId != cameraIds[cameraIndex])
+                || cameraOrder.DrawIndices.IsDefault
+                || (cameraOrder.DrawIndices.Length != spriteDraws.Length))
+            {
+                throw new ArgumentException("A Sprite camera order does not match its camera or complete draw set.", nameof(spriteCameraOrders));
+            }
+
+            var seenIndices = new bool[spriteDraws.Length];
+
+            foreach (var drawIndex in cameraOrder.DrawIndices)
+            {
+                if ((drawIndex < 0)
+                    || (drawIndex >= spriteDraws.Length)
+                    || seenIndices[drawIndex])
+                {
+                    throw new ArgumentException("A Sprite camera order contains a duplicate or out-of-range draw index.", nameof(spriteCameraOrders));
+                }
+
+                seenIndices[drawIndex] = true;
+            }
+        }
+
         SnapshotId = snapshotId;
         WorldGuid = worldGuid;
         TickIndex = tickIndex;
@@ -174,6 +251,9 @@ public abstract class RenderSnapshot : IDisposable
         _pointLights = [.. pointLights];
         _spotLightIds = [.. spotLightIds];
         _spotLights = [.. spotLights];
+        _spriteDraws = [.. spriteDraws];
+        _spriteCameraOrders = [.. spriteCameraOrders];
+        _assetPins = assetPins;
         TargetExtent = targetExtent;
     }
 
@@ -222,7 +302,13 @@ public abstract class RenderSnapshot : IDisposable
     /// <summary>Gets the persistent identity of the source World.</summary>
     public Guid WorldGuid { get; }
 
+    internal RenderSnapshotAssetPins? AssetPins => Volatile.Read(ref _assetPins);
+
     internal bool IsDisposed => Volatile.Read(ref _isDisposed) != 0;
+
+    internal ImmutableArray<RenderSpriteCameraOrder> SpriteCameraOrders => _spriteCameraOrders;
+
+    internal ImmutableArray<RenderSpriteSnapshot> SpriteDraws => _spriteDraws;
 
     /// <summary>Releases snapshot-owned CPU asset leases while preserving its copied values.</summary>
     public void Dispose()
@@ -237,7 +323,10 @@ public abstract class RenderSnapshot : IDisposable
     {
         if (disposing)
         {
-            _ = Interlocked.Exchange(ref _isDisposed, 1);
+            if (Interlocked.Exchange(ref _isDisposed, 1) == 0)
+            {
+                Interlocked.Exchange(ref _assetPins, null)?.Dispose();
+            }
         }
     }
 }

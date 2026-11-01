@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using TerraFX;
@@ -13,6 +14,8 @@ namespace TerraFX.Rendering;
 /// <summary>Extracts immutable CPU render snapshots from committed World state.</summary>
 public sealed partial class Renderer
 {
+    private const ulong DefaultSpriteLayerMask = ulong.MaxValue;
+    private const int MaximumDrawInstanceCount = 131072;
     private const int MaximumLightCount = 256;
     private static readonly Guid s_directionalLightSchemaId = new ContentSchemaIdentityAssignment("render/directional-light").SchemaId;
     private static readonly Guid s_pointLightSchemaId = new ContentSchemaIdentityAssignment("render/point-light").SchemaId;
@@ -235,12 +238,138 @@ public sealed partial class Renderer
         return [.. spotLights];
     }
 
+    private static ImmutableArray<RenderSpriteCameraOrder> CaptureSpriteCameraOrders(
+        ImmutableArray<CameraSnapshot> cameras,
+        ImmutableArray<RenderSpriteSnapshot> sprites)
+    {
+        var cameraOrders = ImmutableArray.CreateBuilder<RenderSpriteCameraOrder>(cameras.Length);
+
+        for (var cameraIndex = 0; cameraIndex < cameras.Length; cameraIndex++)
+        {
+            var camera = cameras[cameraIndex];
+            var sortKeys = new SpriteSortKey[sprites.Length];
+
+            for (var spriteIndex = 0; spriteIndex < sprites.Length; spriteIndex++)
+            {
+                var sprite = sprites[spriteIndex];
+                var cameraViewZ = GetCameraViewZ(camera, sprite.Position);
+                sortKeys[spriteIndex] = new SpriteSortKey(
+                    spriteIndex,
+                    sprite.SortingLayer,
+                    sprite.SortingOrder,
+                    cameraViewZ,
+                    sprite.DrawId);
+            }
+
+            Array.Sort(sortKeys, CompareSpriteSortKeys);
+            var drawIndices = ImmutableArray.CreateBuilder<int>(sortKeys.Length);
+
+            foreach (var sortKey in sortKeys)
+            {
+                drawIndices.Add(sortKey.DrawIndex);
+            }
+
+            cameraOrders.Add(new RenderSpriteCameraOrder(camera.CameraId, drawIndices.MoveToImmutable()));
+        }
+
+        return cameraOrders.MoveToImmutable();
+    }
+
+    private static ImmutableArray<RenderSpriteSnapshot> CaptureSprites(
+        World world,
+        in WorldFrameReadLease frameReadLease,
+        CpuExtractionWorldParticipant extractionParticipant,
+        Guid snapshotId,
+        int spriteCount)
+    {
+        if (spriteCount == 0)
+        {
+            return [];
+        }
+
+        var sprites = new RenderSpriteSnapshot[spriteCount];
+        var spriteIndex = 0;
+        var spriteComponents = world.ReadComponentSnapshot<RenderComponentDefinitions.SpriteComponent>(in frameReadLease);
+
+        while (spriteComponents.MoveNext())
+        {
+            var component = spriteComponents.CurrentValue;
+            var entity = spriteComponents.CurrentEntity;
+
+            if (!extractionParticipant.TryGetSceneInstance(world, entity, out var sceneInstance)
+                || sceneInstance is null)
+            {
+                throw new InvalidOperationException("A render/sprite Entity is not owned by an active SceneInstance.");
+            }
+
+            var sceneAssets = sceneInstance.GetPreparedAssets<RenderSceneAssetBundle>()
+                ?? throw new InvalidOperationException("A render/sprite Entity has no Scene-prepared Atlas and Material resources.");
+            var materialAssetId = component.MaterialAssetId.HasValue
+                ? component.MaterialAssetId.Value
+                : (int?)null;
+            sceneAssets.ValidateSpriteReferences(
+                component.AtlasAssetId,
+                component.FrameId,
+                materialAssetId);
+
+            var (position, linearTransform, _) = world.ResolveSceneEntityTransform(in frameReadLease, entity);
+            var entityId = world.GetEntityId(entity);
+            sprites[spriteIndex++] = new RenderSpriteSnapshot(
+                snapshotId,
+                frameReadLease.WorldGuid,
+                sceneInstance.SceneInstanceId,
+                CreateSpriteDrawId(entityId),
+                entityId,
+                frameReadLease.Frame3,
+                position,
+                linearTransform,
+                component.AtlasAssetId,
+                component.FrameId,
+                component.Pivot,
+                component.Size,
+                component.Tint,
+                component.FlipMask,
+                component.SortingLayer,
+                component.SortingOrder,
+                component.PixelSnap,
+                materialAssetId,
+                HasPreviousTransform: false);
+        }
+
+        if (spriteIndex != spriteCount)
+        {
+            throw new InvalidOperationException("The selected Sprite count changed during the committed frame read lease.");
+        }
+
+        Array.Sort(sprites, static (left, right) => FoundationCatalogue.CompareRfc(left.DrawId, right.DrawId));
+        return [.. sprites];
+    }
+
     private static int CompareCameras(CameraSnapshot left, CameraSnapshot right)
     {
         var comparison = left.Order.CompareTo(right.Order);
         return (comparison != 0)
             ? comparison
             : FoundationCatalogue.CompareRfc(left.CameraId, right.CameraId);
+    }
+
+    private static int CompareSpriteSortKeys(SpriteSortKey left, SpriteSortKey right)
+    {
+        var comparison = left.SortingLayer.CompareTo(right.SortingLayer);
+
+        if (comparison == 0)
+        {
+            comparison = left.SortingOrder.CompareTo(right.SortingOrder);
+        }
+
+        if (comparison == 0)
+        {
+            comparison = right.CameraViewZ.CompareTo(left.CameraViewZ);
+        }
+
+        return (comparison != 0)
+            ? comparison
+            : FoundationCatalogue.CompareRfc(left.DrawId, right.DrawId);
     }
 
     private static ImmutableArray<Guid> CopyCameraIds(ReadOnlySpan<CameraSnapshot> cameras)
@@ -356,8 +485,125 @@ public sealed partial class Renderer
         return count;
     }
 
+    private static int CountSpriteDraws(
+        World world,
+        in WorldFrameReadLease frameReadLease,
+        ReadOnlySpan<CameraSnapshot> cameras)
+    {
+        if (!IsSelectedByAnyCamera(DefaultSpriteLayerMask, cameras))
+        {
+            return 0;
+        }
+
+        var count = 0;
+        var sprites = world.ReadComponentSnapshot<RenderComponentDefinitions.SpriteComponent>(in frameReadLease);
+
+        while (sprites.MoveNext())
+        {
+            count = checked(count + 1);
+        }
+
+        return count;
+    }
+
     private static Guid CreateLightId(Guid entityId, Guid schemaId)
         => FoundationNameUuid.Create(entityId, "light/" + schemaId.ToString("N"));
+
+    private static RenderSnapshotAssetPins? CreateSnapshotAssetPins(
+        World world,
+        CpuExtractionWorldParticipant extractionParticipant,
+        ImmutableArray<RenderSpriteSnapshot> sprites)
+    {
+        if (sprites.IsEmpty)
+        {
+            return null;
+        }
+
+        var sceneInstanceIds = new Guid[sprites.Length];
+
+        for (var index = 0; index < sprites.Length; index++)
+        {
+            sceneInstanceIds[index] = sprites[index].SceneInstanceId;
+        }
+
+        Array.Sort(sceneInstanceIds, FoundationCatalogue.CompareRfc);
+        var uniqueSceneInstanceCount = 1;
+
+        for (var index = 1; index < sceneInstanceIds.Length; index++)
+        {
+            if (sceneInstanceIds[index] != sceneInstanceIds[index - 1])
+            {
+                uniqueSceneInstanceCount++;
+            }
+        }
+
+        var retainedSceneAssets = new List<RenderSnapshotAssetPins.SceneAssetPins>(uniqueSceneInstanceCount);
+
+        try
+        {
+            var previousSceneInstanceId = Guid.Empty;
+
+            foreach (var sceneInstanceId in sceneInstanceIds)
+            {
+                if (sceneInstanceId == previousSceneInstanceId)
+                {
+                    continue;
+                }
+
+                if (!extractionParticipant.TryGetSceneInstance(world, sceneInstanceId, out var sceneInstance)
+                    || sceneInstance is null)
+                {
+                    throw new InvalidOperationException("A Sprite snapshot refers to a SceneInstance that is no longer active.");
+                }
+
+                var sceneAssets = sceneInstance.GetPreparedAssets<RenderSceneAssetBundle>()
+                    ?? throw new InvalidOperationException("A Sprite snapshot has no Scene-prepared asset bundle.");
+                retainedSceneAssets.Add(sceneAssets.RetainForSnapshot(sceneInstanceId));
+                previousSceneInstanceId = sceneInstanceId;
+            }
+
+            var assetPins = new RenderSnapshotAssetPins([.. retainedSceneAssets]);
+            retainedSceneAssets.Clear();
+            return assetPins;
+        }
+        catch
+        {
+            foreach (var sceneAssets in retainedSceneAssets)
+            {
+                sceneAssets.Dispose();
+            }
+
+            throw;
+        }
+    }
+
+    private static Guid CreateSpriteDrawId(Guid entityId)
+        => FoundationNameUuid.Create(entityId, "sprite/0");
+
+    private static float GetCameraViewZ(CameraSnapshot camera, SpatialPosition3 position)
+    {
+        if (!SpatialMath.TryToFrameRelative(camera.Position, camera.Frame3, out var cameraRelative)
+            || !SpatialMath.TryToFrameRelative(position, camera.Frame3, out var positionRelative))
+        {
+            throw new InvalidOperationException("Sprite and camera positions must be representable in their captured spatial frame.");
+        }
+
+        var cameraRotation = Matrix4x4.CreateFromQuaternion(camera.Rotation);
+
+        if (!Matrix4x4.TryInvert(cameraRotation, out var worldToCamera))
+        {
+            throw new InvalidOperationException("The captured camera rotation cannot be inverted.");
+        }
+
+        var cameraSpacePosition = Vector3.TransformDirection(positionRelative - cameraRelative, worldToCamera);
+
+        if (!float.IsFinite(cameraSpacePosition.Z))
+        {
+            throw new InvalidOperationException("The captured Sprite camera-space depth must be finite.");
+        }
+
+        return cameraSpacePosition.Z;
+    }
 
     private static bool IsSelectedByAnyCamera(ulong layerMask, ReadOnlySpan<CameraSnapshot> cameras)
     {
@@ -405,6 +651,20 @@ public sealed partial class Renderer
             snapshotId,
             cameraScratch);
         var cameraSpan = cameraScratch[..cameraCount];
+        var spriteCount = CountSpriteDraws(world, in frameReadLease, cameraSpan);
+
+        if (spriteCount > MaximumDrawInstanceCount)
+        {
+            return new RenderExtractionResponse(
+                RenderExtractionStatus.CapacityExceeded,
+                snapshot: null,
+                new RenderExtractionLimitDiagnostic(
+                    RenderExtractionLimitKind.DrawInstances,
+                    spriteCount,
+                    MaximumDrawInstanceCount),
+                []);
+        }
+
         var directionalLightCount = CountSelectedDirectionalLights(world, in frameReadLease, cameraSpan);
         var pointLightCount = CountSelectedPointLights(world, in frameReadLease, cameraSpan);
         var spotLightCount = CountSelectedSpotLights(world, in frameReadLease, cameraSpan);
@@ -442,10 +702,21 @@ public sealed partial class Renderer
             snapshotId,
             spotLightCount);
         var spotLightIds = CopySpotLightIds(spotLights);
+        var extractionParticipant = world.GetCpuExtractionParticipant<CpuExtractionWorldParticipant>()
+            ?? throw new InvalidOperationException("The built-in Renderer CPU extraction participant is not registered.");
+        var spriteDraws = CaptureSprites(
+            world,
+            in frameReadLease,
+            extractionParticipant,
+            snapshotId,
+            spriteCount);
+        var spriteCameraOrders = CaptureSpriteCameraOrders(cameras, spriteDraws);
         RenderSnapshot2D? snapshot = null;
+        RenderSnapshotAssetPins? assetPins = null;
 
         try
         {
+            assetPins = CreateSnapshotAssetPins(world, extractionParticipant, spriteDraws);
             snapshot = new RenderSnapshot2D(
                 snapshotId,
                 frameReadLease.WorldGuid,
@@ -458,8 +729,12 @@ public sealed partial class Renderer
                 pointLights,
                 spotLightIds,
                 spotLights,
+                spriteDraws,
+                spriteCameraOrders,
+                assetPins,
                 options.TargetExtent,
                 frame);
+            assetPins = null;
             frameReadLease.ValidateCurrent();
             var response = new RenderExtractionResponse(
                 RenderExtractionStatus.Extracted,
@@ -472,6 +747,7 @@ public sealed partial class Renderer
         finally
         {
             snapshot?.Dispose();
+            assetPins?.Dispose();
         }
     }
 
@@ -507,6 +783,20 @@ public sealed partial class Renderer
             snapshotId,
             cameraScratch);
         var cameraSpan = cameraScratch[..cameraCount];
+        var spriteCount = CountSpriteDraws(world, in frameReadLease, cameraSpan);
+
+        if (spriteCount > MaximumDrawInstanceCount)
+        {
+            return new RenderExtractionResponse(
+                RenderExtractionStatus.CapacityExceeded,
+                snapshot: null,
+                new RenderExtractionLimitDiagnostic(
+                    RenderExtractionLimitKind.DrawInstances,
+                    spriteCount,
+                    MaximumDrawInstanceCount),
+                []);
+        }
+
         var directionalLightCount = CountSelectedDirectionalLights(world, in frameReadLease, cameraSpan);
         var pointLightCount = CountSelectedPointLights(world, in frameReadLease, cameraSpan);
         var spotLightCount = CountSelectedSpotLights(world, in frameReadLease, cameraSpan);
@@ -544,10 +834,21 @@ public sealed partial class Renderer
             snapshotId,
             spotLightCount);
         var spotLightIds = CopySpotLightIds(spotLights);
+        var extractionParticipant = world.GetCpuExtractionParticipant<CpuExtractionWorldParticipant>()
+            ?? throw new InvalidOperationException("The built-in Renderer CPU extraction participant is not registered.");
+        var spriteDraws = CaptureSprites(
+            world,
+            in frameReadLease,
+            extractionParticipant,
+            snapshotId,
+            spriteCount);
+        var spriteCameraOrders = CaptureSpriteCameraOrders(cameras, spriteDraws);
         RenderSnapshot3D? snapshot = null;
+        RenderSnapshotAssetPins? assetPins = null;
 
         try
         {
+            assetPins = CreateSnapshotAssetPins(world, extractionParticipant, spriteDraws);
             snapshot = new RenderSnapshot3D(
                 snapshotId,
                 frameReadLease.WorldGuid,
@@ -560,8 +861,12 @@ public sealed partial class Renderer
                 pointLights,
                 spotLightIds,
                 spotLights,
+                spriteDraws,
+                spriteCameraOrders,
+                assetPins,
                 options.TargetExtent,
                 frameReadLease.Frame3);
+            assetPins = null;
             frameReadLease.ValidateCurrent();
             var response = new RenderExtractionResponse(
                 RenderExtractionStatus.Extracted,
@@ -574,6 +879,14 @@ public sealed partial class Renderer
         finally
         {
             snapshot?.Dispose();
+            assetPins?.Dispose();
         }
     }
+
+    private readonly record struct SpriteSortKey(
+        int DrawIndex,
+        int SortingLayer,
+        int SortingOrder,
+        float CameraViewZ,
+        Guid DrawId);
 }

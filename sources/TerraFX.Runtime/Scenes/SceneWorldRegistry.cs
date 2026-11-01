@@ -158,6 +158,15 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         return SceneHierarchyTransform.ResolveCameraPose(world, frame, entity);
     }
 
+    public (SpatialPosition3 Position, Matrix4x4 LinearTransform, Quaternion Rotation) ResolveEntityTransform(
+        World world,
+        SpatialFrame3 frame,
+        Entity entity)
+    {
+        EnsureBoundTo(world);
+        return SceneHierarchyTransform.ResolveEntityTransform(world, frame, entity);
+    }
+
     public bool TryGetCameraData(World world, Entity entity, out WorldCameraData camera)
     {
         EnsureBoundTo(world);

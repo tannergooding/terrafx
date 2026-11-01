@@ -82,6 +82,7 @@ public sealed partial class Renderer
         private int _isDisposed;
         private readonly long _ownedByteReservation;
         private readonly IWorldSceneParticipant _sceneParticipant;
+        private readonly SceneWorldRegistry _sceneRegistry;
         private readonly World _world;
 
         internal CpuExtractionWorldParticipant(
@@ -92,8 +93,15 @@ public sealed partial class Renderer
             ArgumentNullException.ThrowIfNull(world);
             ArgumentNullException.ThrowIfNull(sceneParticipant);
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(ownedByteReservation);
+
+            if (sceneParticipant is not SceneWorldRegistry sceneRegistry)
+            {
+                throw new ArgumentException("CPU extraction requires the exact built-in Scene registry.", nameof(sceneParticipant));
+            }
+
             _world = world;
             _sceneParticipant = sceneParticipant;
+            _sceneRegistry = sceneRegistry;
             _ownedByteReservation = ownedByteReservation;
         }
 
@@ -114,6 +122,30 @@ public sealed partial class Renderer
         public void Dispose()
         {
             _ = Interlocked.Exchange(ref _isDisposed, 1);
+        }
+
+        internal bool TryGetSceneInstance(World world, Entity entity, out SceneInstance? instance)
+        {
+            ArgumentNullException.ThrowIfNull(world);
+
+            if (!ReferenceEquals(world, _world))
+            {
+                throw new ArgumentException("The CPU extraction participant belongs to another World.", nameof(world));
+            }
+
+            return _sceneRegistry.TryGetInstanceForEntity(world, entity, out instance);
+        }
+
+        internal bool TryGetSceneInstance(World world, Guid sceneInstanceId, out SceneInstance? instance)
+        {
+            ArgumentNullException.ThrowIfNull(world);
+
+            if (!ReferenceEquals(world, _world))
+            {
+                throw new ArgumentException("The CPU extraction participant belongs to another World.", nameof(world));
+            }
+
+            return _sceneRegistry.TryGetInstance(sceneInstanceId, out instance);
         }
 
         async Task<IDisposable?> ISceneExpansionResourcePreparer.PrepareAsync(
