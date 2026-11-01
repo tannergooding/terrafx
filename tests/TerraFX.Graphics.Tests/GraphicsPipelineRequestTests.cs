@@ -90,7 +90,9 @@ internal sealed class GraphicsPipelineRequestTests
             maximumVertexInputBindings: 32,
             maximumBufferByteLength: 1L << 40);
 
-    private static GraphicsPipelineDescription CreatePipelineDescription(BufferReadLease<byte> bytecode)
+    private static GraphicsPipelineDescription CreatePipelineDescription(
+        BufferReadLease<byte> bytecode,
+        ImmutableArray<ShaderResourceSignature> vertexResources = default)
     {
         var compilerIdentity = CreateCompilerIdentity();
         var vertexReflection = new ShaderReflection(
@@ -99,7 +101,7 @@ internal sealed class GraphicsPipelineRequestTests
             compilerIdentity,
             [new ShaderIoSignature("SV_VertexID", 0, null, ShaderValueType.UInt1, ShaderInterpolation.Flat)],
             [new ShaderIoSignature("SV_Position", 0, null, ShaderValueType.Float4, ShaderInterpolation.Smooth)],
-            [],
+            vertexResources.IsDefault ? [] : vertexResources,
             [],
             [],
             bindingLayoutVersion: 1,
@@ -256,11 +258,77 @@ internal sealed class GraphicsPipelineRequestTests
         }
     }
 
+    [TestCase(ShaderResourceKind.SampledImage, 128)]
+    [TestCase(ShaderResourceKind.Sampler, 32)]
+    [TestCase(ShaderResourceKind.UniformBuffer, 16)]
+    public async Task PipelineResourceArraysRespectPerStageDeviceLimits(ShaderResourceKind kind, int maximumCount)
+    {
+        using var continuePipelineCreation = new ManualResetEventSlim(initialState: true);
+        using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
+        var backendDevice = new FakeBackendDevice(
+            CreateCapabilities(),
+            pipelineCreationEntered,
+            continuePipelineCreation);
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var graphicsDevice = await GraphicsDevice.CreateAsync(
+            ownerId: 19,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        var bufferOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        var callerBytecodeLease = bufferOwner.AcquireRead(0, 4);
+        GpuPipeline? pipeline = null;
+
+        try
+        {
+            var validResource = new ShaderResourceSignature(
+                ShaderBindingGroup.Material,
+                binding: 0,
+                kind,
+                maximumCount);
+            pipeline = await graphicsDevice.CreatePipelineAsync(
+                CreatePipelineDescription(callerBytecodeLease, [validResource]))
+                .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.That(pipeline.Handle.IsValid, Is.True);
+            Assert.That(backendDevice.PipelineCreationCount, Is.EqualTo(1));
+
+            pipeline.Dispose();
+            pipeline = null;
+
+            var firstArrayCount = maximumCount / 2;
+            var overLimitResources = ImmutableArray.Create(
+                new ShaderResourceSignature(
+                    ShaderBindingGroup.Material,
+                    binding: 0,
+                    kind,
+                    firstArrayCount),
+                new ShaderResourceSignature(
+                    ShaderBindingGroup.Material,
+                    binding: 1,
+                    kind,
+                    checked(maximumCount - firstArrayCount + 1)));
+            _ = Assert.ThrowsAsync<NotSupportedException>(
+                async () => _ = await graphicsDevice.CreatePipelineAsync(
+                    CreatePipelineDescription(callerBytecodeLease, overLimitResources))
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+            Assert.That(backendDevice.PipelineCreationCount, Is.EqualTo(1));
+        }
+        finally
+        {
+            pipeline?.Dispose();
+            callerBytecodeLease.Dispose();
+            bufferOwner.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
     private sealed class FakeBackendDevice : IGraphicsBackendDevice
     {
         private readonly GraphicsCapabilities _capabilities;
         private readonly ManualResetEventSlim _continuePipelineCreation;
         private long _observedBytecodeLength;
+        private int _pipelineCreationCount;
         private readonly ManualResetEventSlim _pipelineCreationEntered;
         private int _pipelineDisposalCount;
 
@@ -278,6 +346,8 @@ internal sealed class GraphicsPipelineRequestTests
 
         internal long ObservedBytecodeLength => Interlocked.Read(ref _observedBytecodeLength);
 
+        internal int PipelineCreationCount => Volatile.Read(ref _pipelineCreationCount);
+
         internal int PipelineDisposalCount => Volatile.Read(ref _pipelineDisposalCount);
 
         public IGraphicsBackendBuffer CreateBuffer(BufferDescription description)
@@ -292,6 +362,7 @@ internal sealed class GraphicsPipelineRequestTests
                 throw new ArgumentException("Pipeline creation requires at least one shader lease.", nameof(bytecodeLeases));
             }
 
+            _ = Interlocked.Increment(ref _pipelineCreationCount);
             _pipelineCreationEntered.Set();
 
             if (!_continuePipelineCreation.Wait(TimeSpan.FromSeconds(10)))

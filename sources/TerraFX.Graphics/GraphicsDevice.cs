@@ -1636,6 +1636,8 @@ public sealed class GraphicsDevice
                 throw new NotSupportedException(
                     $"The {Capabilities.Backend} backend has no qualified mapping for shader capabilities {shader.Reflection.RequiredCapabilities}.");
             }
+
+            ValidatePipelineResourceLimits(shader.Reflection);
         }
 
         if (description is ComputePipelineDescription computeDescription)
@@ -1676,6 +1678,69 @@ public sealed class GraphicsDevice
         if (graphicsDescription.DepthTargetFormat is TextureFormat depthTargetFormat)
         {
             ValidatePipelineTargetFormat(depthTargetFormat, TextureUsage.DepthAttachment);
+        }
+    }
+
+    private void ValidatePipelineResourceLimits(ShaderReflection reflection)
+    {
+        var limits = Capabilities.Limits;
+        var sampledImageCount = 0;
+        var samplerCount = 0;
+        var uniformBufferCount = 0;
+
+        for (var index = 0; index < reflection.Resources.Length; index++)
+        {
+            var resource = reflection.Resources[index];
+
+            switch (resource.Kind)
+            {
+                case ShaderResourceKind.SampledImage:
+                {
+                    sampledImageCount = checked(sampledImageCount + resource.ArrayCount);
+                    break;
+                }
+
+                case ShaderResourceKind.Sampler:
+                {
+                    samplerCount = checked(samplerCount + resource.ArrayCount);
+                    break;
+                }
+
+                case ShaderResourceKind.UniformBuffer:
+                {
+                    uniformBufferCount = checked(uniformBufferCount + resource.ArrayCount);
+                    break;
+                }
+
+                case ShaderResourceKind.StorageImage:
+                case ShaderResourceKind.StorageBuffer:
+                {
+                    break;
+                }
+
+                default:
+                {
+                    throw new ArgumentOutOfRangeException(nameof(reflection), "Shader reflection contains an undefined resource kind.");
+                }
+            }
+        }
+
+        if (sampledImageCount > limits.MaximumSampledImagesPerStage)
+        {
+            throw new NotSupportedException(
+                $"The {reflection.Stage} shader uses {sampledImageCount} sampled images, exceeding the device limit of {limits.MaximumSampledImagesPerStage}.");
+        }
+
+        if (samplerCount > limits.MaximumSamplersPerStage)
+        {
+            throw new NotSupportedException(
+                $"The {reflection.Stage} shader uses {samplerCount} samplers, exceeding the device limit of {limits.MaximumSamplersPerStage}.");
+        }
+
+        if (uniformBufferCount > limits.MaximumUniformBuffersPerStage)
+        {
+            throw new NotSupportedException(
+                $"The {reflection.Stage} shader uses {uniformBufferCount} uniform buffers, exceeding the device limit of {limits.MaximumUniformBuffersPerStage}.");
         }
     }
 
