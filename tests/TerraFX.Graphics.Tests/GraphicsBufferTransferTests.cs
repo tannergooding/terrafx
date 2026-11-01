@@ -465,6 +465,27 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task TextureAllocationBudgetAcceptsExactPerDeviceLimit()
+    {
+        var backendDevice = new FakeBackendDevice(textureAllocationSizeBytes: 512L * 1024 * 1024);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        GpuTexture? texture = null;
+
+        try
+        {
+            texture = await graphicsDevice.CreateTextureAsync(CreateTextureDescription()).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.That(backendDevice.TextureCreationCount, Is.EqualTo(1));
+        }
+        finally
+        {
+            texture?.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+
+        Assert.That(backendDevice.TextureDisposalCount, Is.EqualTo(1));
+    }
+
+    [Test]
     public async Task TextureAllocationBudgetRejectsBeforeBackendCreationAndLeavesDeviceUsable()
     {
         var backendDevice = new FakeBackendDevice();
@@ -489,6 +510,27 @@ internal sealed class GraphicsBufferTransferTests
             Assert.That(backendDevice.TextureCreationCount, Is.Zero);
 
             texture = await graphicsDevice.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+            Assert.That(backendDevice.TextureCreationCount, Is.EqualTo(1));
+        }
+        finally
+        {
+            texture?.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+
+        Assert.That(backendDevice.TextureDisposalCount, Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task TextureNativeHeapBudgetAcceptsExactAllocationSize()
+    {
+        var backendDevice = new FakeBackendDevice(textureBudgetBytes: 24);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        GpuTexture? texture = null;
+
+        try
+        {
+            texture = await graphicsDevice.CreateTextureAsync(CreateTextureDescription()).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             Assert.That(backendDevice.TextureCreationCount, Is.EqualTo(1));
         }
         finally

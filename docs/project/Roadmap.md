@@ -59,7 +59,7 @@ Commit `b727b302` adds the internal `PlatformHostOwner.Create(EngineHostOptions)
 
 ### Current Graphics texture-allocation admission status
 
-Texture allocation regressions show that the 512-MiB per-device budget and a backend-reported native-heap budget reject allocation before backend texture creation; 257 consecutive backend creation failures also release allocation and retirement credits so the next in-budget texture succeeds. `Graphics.Tests` pass 78/78 in Debug and Release, zero skipped; fresh TRX: `artifacts\\tst\\Debug\\tagoo_GOODING-ZEN4_2026-11-01_11_44_53_net11.0.trx` and `artifacts\\tst\\Release\\tagoo_GOODING-ZEN4_2026-11-01_11_45_10_net11.0.trx`. The D3D12 project builds in Debug and Release with zero warnings and errors. This is fake-backend admission and compilation evidence only; no native D3D12 device or texture was created, and the public EngineHost/Persistence startup path remains absent.
+Texture allocation regressions show that the 512-MiB per-device and backend-reported native-heap budgets admit exact-limit allocations, reject over-budget work before backend texture creation, and recover allocation and retirement credits after 257 consecutive backend creation failures. `Graphics.Tests` pass 80/80 in Debug and Release, zero skipped; fresh TRX: `artifacts\\tst\\Debug\\tagoo_GOODING-ZEN4_2026-11-01_11_46_59_net11.0.trx` and `artifacts\\tst\\Release\\tagoo_GOODING-ZEN4_2026-11-01_11_47_14_net11.0.trx`. The D3D12 project builds in Debug and Release with zero warnings and errors. This is fake-backend admission and compilation evidence only; no native D3D12 device or texture was created, and the public EngineHost/Persistence startup path remains absent.
 
 ## Validation boundaries
 
