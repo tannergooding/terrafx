@@ -2,6 +2,7 @@
 
 using System;
 using System.IO;
+using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Assets;
@@ -79,6 +80,34 @@ internal sealed class EngineHostOptionsTests
         Assert.That(offscreen.GraphicsBackendRegistration, Is.SameAs(registration));
         Assert.That(interactive.Platform, Is.EqualTo(PlatformBackend.WindowsNative));
         Assert.That(registration.Backend, Is.EqualTo(GraphicsBackend.D3D12));
+    }
+
+    [Test]
+    public void CreatesAndRetiresHeadlessPlatformOwnerUsingCoreIssuedIdentity()
+    {
+        var options = CreateHeadlessOptions(CreateAssetStoreOptions());
+        var owner = PlatformHostOwner.Create(options);
+
+        try
+        {
+            Assert.That(owner.OwnerId, Is.GreaterThan(0));
+            Assert.That(owner.Platform.ClipboardStatus, Is.EqualTo(ClipboardServiceStatus.NotRequested));
+            Assert.That(owner.Platform.GetMonitorHandles(), Is.Empty);
+            owner.Pump();
+
+            _ = Assert.Throws<InvalidOperationException>(
+                () => Task.Run(owner.Pump).GetAwaiter().GetResult());
+            _ = Assert.Throws<InvalidOperationException>(
+                () => Task.Run(owner.DisposeFromOwner).GetAwaiter().GetResult());
+
+            owner.DisposeFromOwner();
+            owner.DisposeFromOwner();
+            _ = Assert.Throws<ObjectDisposedException>(owner.Pump);
+        }
+        finally
+        {
+            owner.DisposeFromOwner();
+        }
     }
 
     [Test]

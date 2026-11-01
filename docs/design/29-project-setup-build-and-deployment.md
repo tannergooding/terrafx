@@ -122,11 +122,12 @@ actual owner is implemented; then review the implementing assembly and exact iss
 path separately. Keep the private counter, BCL-only Core runtime closure, ordinary
 reference-assembly/package flow, and selected single-Core identity requirement.
 
-The Runtime host owner allocates one Core `OwnerId` for its `PlatformHost` and passes
-that value with the explicit platform and clipboard policy to Platform's internal
-constructor. `PlatformHost` and its backend bind to the constructing owner thread but
-never allocate Core identities; future window handles use the same host `OwnerId`
-through Runtime's internal `WindowHandle` constructor.
+On the dedicated Runtime host-owner thread, `PlatformHostOwner.Create(EngineHostOptions)`
+allocates one Core `OwnerId` for the `PlatformHost` and passes that value, the
+explicit platform, and clipboard policy to Platform's internal constructor.
+`PlatformHost` and its backend bind to that thread but never allocate Core identities;
+future window handles use the PlatformHost's host `OwnerId` through Runtime's
+internal `WindowHandle` constructor.
 
 Core also owns the independent `TerraFX.HostEventSequenceAllocator.Allocate(): long`
 issuer for process-wide input/host-control ordering. Through the existing
