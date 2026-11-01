@@ -3,6 +3,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <InternalsVisibleTo Include="TerraFX.Runtime" Key="$(AssemblyOriginatorPublicKey)" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\TerraFX.Input\TerraFX.Input.csproj" />
     <PackageReference Include="TerraFX.Interop.Windows" />
   </ItemGroup>

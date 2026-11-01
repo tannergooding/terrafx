@@ -79,6 +79,15 @@ dotnet build .\sources\TerraFX.Graphics.D3D12\TerraFX.Graphics.D3D12.csproj --co
 dotnet build .\sources\TerraFX.Graphics.D3D12\TerraFX.Graphics.D3D12.csproj --configuration Release
 ```
 
+### Platform owner contracts
+
+Run the owning-project tests for explicit platform selection and the Headless owner/capability path:
+
+```powershell
+dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Debug
+dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Release
+```
+
 ### Offline M04 shader fixture
 
 Run the bounded process and toolchain-manifest regressions:
