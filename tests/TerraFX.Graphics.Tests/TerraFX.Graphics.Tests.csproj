@@ -3,7 +3,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\..\sources\TerraFX.Graphics.D3D12\TerraFX.Graphics.D3D12.csproj" />
+    <ProjectReference Include="..\TerraFX.Graphics.D3D12.Consumer\TerraFX.Graphics.D3D12.Consumer.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\sources\TerraFX.Graphics\TerraFX.Graphics.csproj" />
   </ItemGroup>
 
