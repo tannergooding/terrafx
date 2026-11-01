@@ -1,13 +1,15 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Immutable;
 using System.Threading;
+using TerraFX;
 
 namespace TerraFX.Platform;
 
 internal sealed class HeadlessPlatformBackend : IPlatformBackend
 {
-    private readonly PlatformServiceStatus _clipboardStatus;
+    private readonly ClipboardServiceStatus _clipboardStatus;
     private int _isDisposed;
     private readonly uint _ownerId;
     private readonly int _ownerThreadId;
@@ -26,8 +28,8 @@ internal sealed class HeadlessPlatformBackend : IPlatformBackend
         _ownerId = ownerId;
         _ownerThreadId = Environment.CurrentManagedThreadId;
         _clipboardStatus = clipboardPolicy == ClipboardServicePolicy.Optional
-            ? PlatformServiceStatus.Unsupported
-            : PlatformServiceStatus.NotRequested;
+            ? ClipboardServiceStatus.Unsupported
+            : ClipboardServiceStatus.NotRequested;
     }
 
     public PlatformServiceStatus AudioStatus
@@ -48,7 +50,7 @@ internal sealed class HeadlessPlatformBackend : IPlatformBackend
         }
     }
 
-    public PlatformServiceStatus ClipboardStatus
+    public ClipboardServiceStatus ClipboardStatus
     {
         get
         {
@@ -86,6 +88,12 @@ internal sealed class HeadlessPlatformBackend : IPlatformBackend
 
         EnsureOwnerThread();
         _ = Interlocked.Exchange(ref _isDisposed, 1);
+    }
+
+    public ImmutableArray<MonitorHandle> GetMonitorHandles()
+    {
+        EnsureOwnerThread();
+        return [];
     }
 
     public void Pump()

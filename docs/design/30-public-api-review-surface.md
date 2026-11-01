@@ -6885,9 +6885,9 @@ public enum ClipboardServicePolicy
 
 public enum ClipboardServiceStatus
 {
-    NotRequested,
-    Ready,
-    Unsupported
+    NotRequested = 0,
+    Ready = 1,
+    Unsupported = 2
 }
 
 public enum WindowMode
@@ -6925,7 +6925,7 @@ public sealed class WindowCreationReceipt
 
 public sealed class PlatformHost
 {
-    internal PlatformHost();
+    internal PlatformHost(uint ownerId, PlatformBackend backend, ClipboardServicePolicy clipboardPolicy);
     public ClipboardServiceStatus ClipboardStatus { get; }
     public ClipboardTextService? ClipboardText { get; }
     public ImmutableArray<MonitorHandle> GetMonitorHandles();

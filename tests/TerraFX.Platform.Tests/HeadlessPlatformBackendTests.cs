@@ -19,8 +19,8 @@ internal sealed class HeadlessPlatformBackendTests
         Assert.That(headless.DisplayStatus, Is.EqualTo(PlatformServiceStatus.NotRequested));
         Assert.That(headless.PhysicalInputStatus, Is.EqualTo(PlatformServiceStatus.NotRequested));
         Assert.That(headless.AudioStatus, Is.EqualTo(PlatformServiceStatus.NotRequested));
-        Assert.That(headless.ClipboardStatus, Is.EqualTo(PlatformServiceStatus.NotRequested));
-        Assert.That(optionalClipboard.ClipboardStatus, Is.EqualTo(PlatformServiceStatus.Unsupported));
+        Assert.That(headless.ClipboardStatus, Is.EqualTo(ClipboardServiceStatus.NotRequested));
+        Assert.That(optionalClipboard.ClipboardStatus, Is.EqualTo(ClipboardServiceStatus.Unsupported));
         Assert.That(
             () => PlatformBackendFactory.Create(PlatformBackend.Headless, 3, ClipboardServicePolicy.Required),
             Throws.TypeOf<NotSupportedException>());
