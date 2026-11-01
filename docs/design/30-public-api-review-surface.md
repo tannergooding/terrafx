@@ -6861,6 +6861,13 @@ public enum ClipboardServiceStatus
     Unsupported
 }
 
+public enum WindowMode
+{
+    Windowed = 0,
+    BorderlessFullscreen = 1,
+    ExclusiveFullscreen = 2
+}
+
 public sealed class WindowOptions
 {
     public WindowOptions(string title);

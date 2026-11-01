@@ -117,7 +117,7 @@ Owner-thread `PlatformHost.GetMonitorHandles()` returns a copied immutable array
 
 ### Fullscreen and monitor policy
 
-`WindowMode` is `Windowed`, `BorderlessFullscreen`, or `ExclusiveFullscreen`. Borderless is the portable fullscreen mode. `ExclusiveFullscreen` is a separately requested Windows/DXGI mode only; D3D12 may request DXGI exclusive state, and Vulkan may use it only if the relevant optional Win32 extension is present. It is not a Linux capability and is not inferred from a full-screen compositor state.
+`WindowMode` uses stable values `Windowed = 0`, `BorderlessFullscreen = 1`, and `ExclusiveFullscreen = 2`. Borderless is the portable fullscreen mode. `ExclusiveFullscreen` is a separately requested Windows/DXGI mode only; D3D12 may request DXGI exclusive state, and Vulkan may use it only if the relevant optional Win32 extension is present. It is not a Linux capability and is not inferred from a full-screen compositor state.
 
 On Wayland, fullscreen is an `xdg_toplevel.set_fullscreen` request; the compositor selects/announces the actual state and output. The engine never changes display mode or claims exclusive ownership. X11 sends an EWMH fullscreen request and reports the state observed from the window manager; it does not change the monitor mode by default. `Unsupported` mode requests return `Unsupported`. Denied, unconfirmed, or failed transitions preserve both requested and observed state, emit a diagnostic, and do not claim success. A transition awaiting external confirmation times out after five host seconds with `Unconfirmed`; a later compositor response still updates actual state.
 
