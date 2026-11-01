@@ -9,6 +9,7 @@ namespace TerraFX.Platform;
 /// <summary>Provides owner-thread platform services owned by an engine host.</summary>
 public sealed class PlatformHost
 {
+    internal const int MaximumWindowCount = 32;
     private readonly IPlatformBackend _backend;
 
     /// <summary>Creates one platform owner from a Runtime-issued identity and explicit service policy.</summary>
@@ -27,7 +28,16 @@ public sealed class PlatformHost
     public ImmutableArray<MonitorHandle> GetMonitorHandles()
         => _backend.GetMonitorHandles();
 
+    internal void CloseWindow(WindowHandle window)
+        => _backend.CloseWindow(window);
+
+    internal void CreateWindow(WindowHandle window, WindowOptions options, nint nativeMonitorHandle)
+        => _backend.CreateWindow(window, options, nativeMonitorHandle);
+
     internal void DisposeFromOwner() => _backend.Dispose();
+
+    internal ImmutableArray<WindowHandle> DrainWindowCloseRequests()
+        => _backend.DrainWindowCloseRequests();
 
     internal ImmutableArray<PlatformMonitorInfo> GetMonitorInfo()
         => _backend.GetMonitorInfo();
@@ -39,4 +49,7 @@ public sealed class PlatformHost
 
     internal bool TakeMonitorTopologyChanged()
         => _backend.TakeMonitorTopologyChanged();
+
+    internal bool TryGetNativeWindowBinding(WindowHandle window, out PlatformNativeWindowBinding binding)
+        => _backend.TryGetNativeWindowBinding(window, out binding);
 }

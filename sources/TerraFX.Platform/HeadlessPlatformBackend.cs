@@ -79,6 +79,22 @@ internal sealed class HeadlessPlatformBackend : IPlatformBackend
         }
     }
 
+    public void CloseWindow(WindowHandle window)
+    {
+        EnsureOwnerThread();
+        _ = window;
+        throw new NotSupportedException("The Headless platform does not create windows.");
+    }
+
+    public void CreateWindow(WindowHandle window, WindowOptions options, nint nativeMonitorHandle)
+    {
+        EnsureOwnerThread();
+        _ = window;
+        _ = options;
+        _ = nativeMonitorHandle;
+        throw new NotSupportedException("The Headless platform does not create windows.");
+    }
+
     public void Dispose()
     {
         if (Volatile.Read(ref _isDisposed) != 0)
@@ -88,6 +104,12 @@ internal sealed class HeadlessPlatformBackend : IPlatformBackend
 
         EnsureOwnerThread();
         _ = Interlocked.Exchange(ref _isDisposed, 1);
+    }
+
+    public ImmutableArray<WindowHandle> DrainWindowCloseRequests()
+    {
+        EnsureOwnerThread();
+        return [];
     }
 
     public ImmutableArray<MonitorHandle> GetMonitorHandles()
@@ -122,6 +144,14 @@ internal sealed class HeadlessPlatformBackend : IPlatformBackend
     public bool TakeMonitorTopologyChanged()
     {
         EnsureOwnerThread();
+        return false;
+    }
+
+    public bool TryGetNativeWindowBinding(WindowHandle window, out PlatformNativeWindowBinding binding)
+    {
+        EnsureOwnerThread();
+        _ = window;
+        binding = default;
         return false;
     }
 

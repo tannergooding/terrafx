@@ -12,19 +12,25 @@ namespace TerraFX.Hosting;
 internal sealed class PlatformHostOwner
 {
     private Dictionary<string, MonitorHandle> _activeMonitorHandles;
+    private readonly HashSet<WindowHandle> _activeWindowHandles;
     private bool _isDisposed;
+    private bool _isStopping;
     private Dictionary<MonitorHandle, nint> _nativeMonitorHandles;
     private ulong _nextMonitorIndex;
+    private ulong _nextWindowIndex;
     private readonly uint _ownerId;
     private readonly int _ownerThreadId;
     private readonly PlatformHost _platform;
+    private readonly HostProfile _profile;
 
-    private PlatformHostOwner(uint ownerId, PlatformHost platform)
+    private PlatformHostOwner(uint ownerId, HostProfile profile, PlatformHost platform)
     {
         _ownerId = ownerId;
         _platform = platform;
+        _profile = profile;
         _ownerThreadId = Environment.CurrentManagedThreadId;
         _activeMonitorHandles = [];
+        _activeWindowHandles = [];
         _nativeMonitorHandles = [];
     }
 
@@ -49,7 +55,7 @@ internal sealed class PlatformHostOwner
         ArgumentNullException.ThrowIfNull(options);
         var ownerId = OwnerIdAllocator.Allocate();
         var platform = new PlatformHost(ownerId, options.Platform, options.ClipboardServicePolicy);
-        var owner = new PlatformHostOwner(ownerId, platform);
+        var owner = new PlatformHostOwner(ownerId, options.Profile, platform);
 
         try
         {
@@ -71,6 +77,75 @@ internal sealed class PlatformHostOwner
         }
     }
 
+    internal void CloseWindow(WindowHandle window)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        ThrowIfStopping();
+
+        if (!window.IsValid || (window.OwnerId != _ownerId))
+        {
+            throw new ArgumentException("The window handle belongs to another platform owner.", nameof(window));
+        }
+
+        if (!_activeWindowHandles.Remove(window))
+        {
+            throw new InvalidOperationException("The window handle is stale or no longer active.");
+        }
+
+        _platform.CloseWindow(window);
+    }
+
+    internal WindowHandle CreateWindow(WindowOptions options)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        ThrowIfStopping();
+        ArgumentNullException.ThrowIfNull(options);
+
+        if (_profile != HostProfile.Interactive)
+        {
+            throw new NotSupportedException("Headless and OffscreenNative hosts do not create windows.");
+        }
+
+        if (_activeWindowHandles.Count >= PlatformHost.MaximumWindowCount)
+        {
+            throw new InvalidOperationException($"A platform host supports at most {PlatformHost.MaximumWindowCount} windows.");
+        }
+
+        var nativeMonitorHandle = options.Monitor is MonitorHandle monitor
+            ? GetNativeMonitorHandle(monitor)
+            : 0;
+
+        if (_nextWindowIndex > uint.MaxValue)
+        {
+            throw new InvalidOperationException("The PlatformHost exhausted its window handle slots.");
+        }
+
+        var window = new WindowHandle(_ownerId, checked((uint)_nextWindowIndex++), generation: 1);
+
+        if (!_activeWindowHandles.Add(window))
+        {
+            throw new InvalidOperationException("The PlatformHost issued a duplicate window identity.");
+        }
+
+        var created = false;
+
+        try
+        {
+            _platform.CreateWindow(window, options, nativeMonitorHandle);
+            created = true;
+            return window;
+        }
+        finally
+        {
+            if (!created)
+            {
+                _ = _activeWindowHandles.Remove(window);
+            }
+        }
+    }
+
     internal void DisposeFromOwner()
     {
         EnsureOwnerThread();
@@ -80,8 +155,29 @@ internal sealed class PlatformHostOwner
             return;
         }
 
+        _isStopping = true;
+        _activeWindowHandles.Clear();
         _platform.DisposeFromOwner();
         _isDisposed = true;
+    }
+
+    internal ImmutableArray<WindowHandle> DrainWindowCloseRequests()
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        ThrowIfStopping();
+        var requestedWindows = _platform.DrainWindowCloseRequests();
+        var activeRequests = ImmutableArray.CreateBuilder<WindowHandle>(requestedWindows.Length);
+
+        foreach (var window in requestedWindows)
+        {
+            if (_activeWindowHandles.Contains(window))
+            {
+                activeRequests.Add(window);
+            }
+        }
+
+        return activeRequests.MoveToImmutable();
     }
 
     internal nint GetNativeMonitorHandle(MonitorHandle monitor)
@@ -102,10 +198,35 @@ internal sealed class PlatformHostOwner
         return nativeHandle;
     }
 
+    internal PlatformNativeWindowBinding GetNativeWindowBinding(WindowHandle window)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        ThrowIfStopping();
+
+        if (!window.IsValid || (window.OwnerId != _ownerId))
+        {
+            throw new ArgumentException("The window handle belongs to another platform owner.", nameof(window));
+        }
+
+        if (!_activeWindowHandles.Contains(window))
+        {
+            throw new InvalidOperationException("The window handle is stale or no longer active.");
+        }
+
+        if (!_platform.TryGetNativeWindowBinding(window, out var binding))
+        {
+            throw new InvalidOperationException("The platform has no native binding for the live window.");
+        }
+
+        return binding;
+    }
+
     internal void Pump()
     {
         EnsureOwnerThread();
         ThrowIfDisposed();
+        ThrowIfStopping();
         _platform.Pump();
 
         if (_platform.TakeMonitorTopologyChanged())
@@ -170,5 +291,13 @@ internal sealed class PlatformHostOwner
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_isDisposed, this);
+    }
+
+    private void ThrowIfStopping()
+    {
+        if (_isStopping)
+        {
+            throw new InvalidOperationException("The PlatformHost owner is stopping.");
+        }
     }
 }

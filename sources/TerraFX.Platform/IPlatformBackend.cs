@@ -20,6 +20,12 @@ internal interface IPlatformBackend : IDisposable
 
     PlatformServiceStatus PhysicalInputStatus { get; }
 
+    void CloseWindow(WindowHandle window);
+
+    void CreateWindow(WindowHandle window, WindowOptions options, nint nativeMonitorHandle);
+
+    ImmutableArray<WindowHandle> DrainWindowCloseRequests();
+
     ImmutableArray<MonitorHandle> GetMonitorHandles();
 
     ImmutableArray<PlatformMonitorInfo> GetMonitorInfo();
@@ -29,4 +35,6 @@ internal interface IPlatformBackend : IDisposable
     void SetMonitorHandles(ImmutableArray<MonitorHandle> monitorHandles);
 
     bool TakeMonitorTopologyChanged();
+
+    bool TryGetNativeWindowBinding(WindowHandle window, out PlatformNativeWindowBinding binding);
 }

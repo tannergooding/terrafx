@@ -317,4 +317,87 @@ internal sealed class EngineHostOptionsTests
             Assert.That(indices.Add(monitor.Index), Is.True);
         }
     }
+
+    [Test]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "The dedicated STA test thread must transfer native failures after owner cleanup.")]
+    public async Task WindowsPlatformOwnerWitnessesHiddenWindowCreationAndRetirement()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)
+            || (RuntimeInformation.ProcessArchitecture != Architecture.X64))
+        {
+            Assert.Ignore("The Windows Platform backend requires Windows 11 x64.");
+            return;
+        }
+
+        var options = new EngineHostOptions(
+            HostProfile.Interactive,
+            PlatformBackend.WindowsNative,
+            GraphicsBackend.D3D12,
+            D3D12GraphicsBackend.CreateRegistration(),
+            CreateAssetStoreOptions());
+        var completion = new TaskCompletionSource<(WindowHandle Window, uint OwnerId, bool StaleCloseRejected)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() => {
+            PlatformHostOwner? owner = null;
+            var window = default(WindowHandle);
+            var ownerId = 0U;
+            var staleCloseRejected = false;
+            Exception? failure = null;
+
+            try
+            {
+                owner = PlatformHostOwner.Create(options);
+                ownerId = owner.OwnerId;
+                window = owner.CreateWindow(new WindowOptions("TerraFX hidden window witness") { Visible = false });
+                owner.Pump();
+                owner.CloseWindow(window);
+                owner.Pump();
+
+                try
+                {
+                    owner.CloseWindow(window);
+                }
+                catch (InvalidOperationException)
+                {
+                    staleCloseRejected = true;
+                }
+            }
+            catch (Exception exception)
+            {
+                failure = exception;
+            }
+
+            try
+            {
+                owner?.DisposeFromOwner();
+            }
+            catch (Exception cleanupException)
+            {
+                failure = failure is null
+                    ? cleanupException
+                    : new AggregateException(failure, cleanupException);
+            }
+
+            if (failure is null)
+            {
+                _ = completion.TrySetResult((window, ownerId, staleCloseRejected));
+            }
+            else
+            {
+                _ = completion.TrySetException(failure);
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+
+        var (window, ownerId, staleCloseRejected) = await completion.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        Assert.That(thread.Join(TimeSpan.FromSeconds(5)), Is.True);
+        Assert.That(ownerId, Is.GreaterThan(0));
+        Assert.That(window.IsValid, Is.True);
+        Assert.That(window.OwnerId, Is.EqualTo(ownerId));
+        Assert.That(staleCloseRejected, Is.True);
+    }
 }

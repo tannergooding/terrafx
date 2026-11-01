@@ -44,6 +44,9 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
             throw new NotSupportedException("The Windows Platform backend does not yet provide the required clipboard service.");
         }
 
+        var windowClassName = $"TerraFX.Platform.Window.{ownerId:X8}";
+        var windows = new WindowState?[PlatformHost.MaximumWindowCount];
+
         lock (s_admissionGate)
         {
             if (s_isAdmissionReserved || (s_quarantinedBackend is not null))
@@ -70,6 +73,8 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
 
         _ownerId = ownerId;
         _ownerThreadId = _platformOwner.OwnerThreadId;
+        _windowClassName = windowClassName;
+        _windows = windows;
         _clipboardStatus = clipboardPolicy == ClipboardServicePolicy.Optional
             ? ClipboardServiceStatus.Unsupported
             : ClipboardServiceStatus.NotRequested;
@@ -204,6 +209,7 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
 
         try
         {
+            DisposeWindows();
             _platformOwner.Dispose();
         }
         catch (Exception)
@@ -293,6 +299,9 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
             _ = TranslateMessageNative(&message);
             _ = DispatchMessageNative(&message);
         }
+
+        ApplyDeferredWindowUpdates();
+        ThrowCallbackFailures();
 
         var monitorCount = GetSystemMetricsNative(SystemMetricMonitorCount);
 
