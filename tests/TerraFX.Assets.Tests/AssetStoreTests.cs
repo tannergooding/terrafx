@@ -532,6 +532,75 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    public async Task AssetStoreRetainHonorsLiveLeaseCapacity()
+    {
+        var registration = CreateRegistration();
+        var package = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 90)));
+        var path = AssetPackageReaderTests.WritePackage(package);
+        var store = await AssetStore.CreateAsync(
+            CreateOptions(path, package, registration, maximumLiveAssetLeases: 1),
+            CancellationToken.None).ConfigureAwait(false);
+
+        try
+        {
+            using var lease = await store.LoadAsync<TestAssetValue>(new AssetId(1), CancellationToken.None).ConfigureAwait(false);
+            _ = Assert.Throws<InvalidOperationException>(() => lease.Retain().Dispose());
+            Assert.That(lease.Value.Marker, Is.EqualTo(90));
+        }
+        finally
+        {
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(path);
+        }
+    }
+
+    [Test]
+    public async Task AssetStoreRetainsDecodedValueAndPackageBackingUntilFinalHandleDisposal()
+    {
+        var registration = CreateRegistration();
+        var firstPackage = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 10)));
+        var secondPackage = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 20)));
+        var firstPath = AssetPackageReaderTests.WritePackage(firstPackage);
+        var secondPath = AssetPackageReaderTests.WritePackage(secondPackage);
+        var store = await AssetStore.CreateAsync(
+            CreateOptions(firstPath, firstPackage, registration, maximumLiveAssetLeases: 2),
+            CancellationToken.None).ConfigureAwait(false);
+        AssetLease<TestAssetValue>? originalLease = null;
+        AssetLease<TestAssetValue>? retainedLease = null;
+
+        try
+        {
+            var original = await store.LoadAsync<TestAssetValue>(new AssetId(1), CancellationToken.None).ConfigureAwait(false);
+            originalLease = original;
+            var retained = original.Retain();
+            retainedLease = retained;
+            Assert.That(retained.Value, Is.EqualTo(original.Value));
+            original.Dispose();
+            _ = Assert.Throws<ObjectDisposedException>(() => _ = original.Value);
+            Assert.That(retained.Value.Marker, Is.EqualTo(10));
+
+            await store.ReplacePackageAsync(
+                CreateOptions(secondPath, secondPackage, registration),
+                CancellationToken.None).ConfigureAwait(false);
+            await store.DisposeAsync().ConfigureAwait(false);
+
+            Assert.That(retained.Value.Marker, Is.EqualTo(10));
+            _ = Assert.Throws<ObjectDisposedException>(() => retained.Retain());
+        }
+        finally
+        {
+            originalLease?.Dispose();
+            retainedLease?.Dispose();
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(firstPath);
+            File.Delete(secondPath);
+        }
+    }
+
+    [Test]
     public async Task AssetStoreRetainsOldPackageAcrossReplacementAndDisposal()
     {
         var registration = CreateRegistration();

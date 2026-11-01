@@ -68,7 +68,7 @@ public sealed class AssetStore : IAsyncDisposable
         {
             try
             {
-                lifetime.Dispose();
+                lifetime.ReleaseReference();
             }
             finally
             {
@@ -224,17 +224,39 @@ public sealed class AssetStore : IAsyncDisposable
         previous.ReleaseOwner();
     }
 
-    internal void ReleaseLiveLease(long decodedBytes)
+    internal void ReleaseLeaseReference(long decodedBytes, bool releaseDecodedBytes)
     {
         lock (_gate)
         {
-            if ((_liveAssetLeases <= 0) || (decodedBytes > _liveAssetBytes))
+            if ((_liveAssetLeases <= 0)
+                || (releaseDecodedBytes && (decodedBytes > _liveAssetBytes)))
             {
                 throw new InvalidOperationException("The asset-store lease accounting is inconsistent.");
             }
 
             _liveAssetLeases--;
-            _liveAssetBytes -= decodedBytes;
+
+            if (releaseDecodedBytes)
+            {
+                _liveAssetBytes -= decodedBytes;
+            }
+        }
+    }
+
+    internal void ReserveRetainedLease()
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            var backing = _currentBacking
+                ?? throw new InvalidOperationException("The asset store has no selected package.");
+
+            if (_liveAssetLeases >= backing.Options.MaximumLiveAssetLeases)
+            {
+                throw new InvalidOperationException("The live asset lease budget is exhausted.");
+            }
+
+            _liveAssetLeases++;
         }
     }
 

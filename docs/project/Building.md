@@ -63,6 +63,15 @@ With a compatible SDK installed, `dotnet build` also restores dependencies autom
 
 Test filtering uses the runner's existing `FullyQualifiedName` support, as in the foundation-codec commands below. For implemented cases, confirm nonzero selected and executed counts and inspect current-run TRX results under `artifacts\tst`. A successful command with no selected tests is not validation.
 
+### Retained AssetLease lifetime
+
+Run the focused retained-handle, lease-capacity, package-replacement, and store-disposal regressions:
+
+```powershell
+dotnet test .\tests\TerraFX.Assets.Tests\TerraFX.Assets.Tests.csproj --configuration Debug --filter "FullyQualifiedName~AssetStoreRetain"
+dotnet test .\tests\TerraFX.Assets.Tests\TerraFX.Assets.Tests.csproj --configuration Release --filter "FullyQualifiedName~AssetStoreRetain"
+```
+
 ### Public structural EBIN and schema metadata
 
 Core exposes bounded schema-agnostic EBIN reader/writer and scalar/array payload helpers. These validate wire structure and preserve canonical byte layout; they do not activate or validate an owner schema. `CompiledContentSchemaRegistry` contains immutable schema/profile metadata only. Typed owner codecs and their roots are separately compiled with the selected application registrations.

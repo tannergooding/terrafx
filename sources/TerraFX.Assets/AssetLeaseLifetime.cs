@@ -9,7 +9,7 @@ internal sealed class AssetLeaseLifetime
 {
     private AssetPackageBacking? _backing;
     private readonly long _decodedBytes;
-    private int _disposed;
+    private int _referenceCount = 1;
     private AssetStore? _store;
 
     internal AssetLeaseLifetime(AssetStore store, AssetPackageBacking backing, long decodedBytes)
@@ -19,26 +19,73 @@ internal sealed class AssetLeaseLifetime
         _decodedBytes = decodedBytes;
     }
 
-    public void Dispose()
+    internal void AddReference()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        var store = Volatile.Read(ref _store);
+        ObjectDisposedException.ThrowIf(store is null, this);
+        store.ReserveRetainedLease();
+        var referenceAcquired = false;
+
+        try
         {
-            return;
+            while (true)
+            {
+                var referenceCount = Volatile.Read(ref _referenceCount);
+                ObjectDisposedException.ThrowIf(referenceCount == 0, this);
+
+                if (referenceCount == int.MaxValue)
+                {
+                    throw new InvalidOperationException("The asset lease has too many retained handles.");
+                }
+
+                if (Interlocked.CompareExchange(ref _referenceCount, referenceCount + 1, referenceCount) == referenceCount)
+                {
+                    referenceAcquired = true;
+                    return;
+                }
+            }
+        }
+        finally
+        {
+            if (!referenceAcquired)
+            {
+                store.ReleaseLeaseReference(0, releaseDecodedBytes: false);
+            }
+        }
+    }
+
+    internal void ReleaseReference()
+    {
+        var store = Volatile.Read(ref _store)
+            ?? throw new InvalidOperationException("The asset lease lifetime lost its owning store.");
+        var referenceCount = Interlocked.Decrement(ref _referenceCount);
+
+        if (referenceCount < 0)
+        {
+            throw new InvalidOperationException("The asset lease reference count became negative.");
         }
 
-        var backing = Interlocked.Exchange(ref _backing, null);
-        var store = Interlocked.Exchange(ref _store, null);
+        var isFinalReference = referenceCount == 0;
+        var backing = isFinalReference ? Interlocked.Exchange(ref _backing, null) : null;
 
-        if (backing is not null)
+        if (isFinalReference)
         {
-            try
+            _ = Interlocked.Exchange(ref _store, null)
+                ?? throw new InvalidOperationException("The final asset lease reference lost its owning store.");
+
+            if (backing is null)
             {
-                store?.ReleaseLiveLease(_decodedBytes);
+                throw new InvalidOperationException("The final asset lease reference lost its package backing.");
             }
-            finally
-            {
-                backing.ReleaseReference();
-            }
+        }
+
+        try
+        {
+            store.ReleaseLeaseReference(_decodedBytes, isFinalReference);
+        }
+        finally
+        {
+            backing?.ReleaseReference();
         }
     }
 }
