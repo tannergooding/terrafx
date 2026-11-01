@@ -1310,12 +1310,20 @@ using TerraFX.Input;
 
 namespace TerraFX.Hosting;
 
+public enum HostProfile
+{
+    Headless = 1,
+    OffscreenNative = 2,
+    Interactive = 3
+}
+
 public sealed class EngineHostOptions
 {
-    public EngineHostOptions(HostProfile profile, PlatformBackend platform, GraphicsBackend? graphicsBackend, AssetStoreOptions assetStoreOptions);
+    public EngineHostOptions(HostProfile profile, PlatformBackend platform, GraphicsBackend? graphicsBackend, GraphicsBackendRegistration? graphicsBackendRegistration, AssetStoreOptions assetStoreOptions);
     public HostProfile Profile { get; }
     public PlatformBackend Platform { get; }
     public GraphicsBackend? GraphicsBackend { get; }
+    public GraphicsBackendRegistration? GraphicsBackendRegistration { get; }
     public AssetStoreOptions AssetStoreOptions { get; }
     public int CpuWorkerCount { get; init; } = Math.Min(64, Math.Max(1, Environment.ProcessorCount - 2));
     public SimulationOverrunPolicy OverrunPolicy { get; init; } = SimulationOverrunPolicy.Pause;
@@ -1398,7 +1406,7 @@ public sealed class InputBindingReceipt
 
 `GetSurface` is synchronous and owner-thread-only. It returns the same host-owned logical `Surface` for a live interactive `WindowHandle`; a default/foreign handle throws `ArgumentException`, while off-owner-thread access, a stale/closed handle, or a live window without an interactive surface throws `InvalidOperationException`. Successful interactive window creation establishes this mapping before returning its `Created` receipt. Applying `CloseWindowAsync` invalidates the mapping and the logical surface immediately; native surface/swapchain storage remains fence-retained until GPU use and queued presentation have actually retired. `EngineHost.GetSurface` does not add a `Platform` dependency to `TerraFX.Graphics`.
 
-`EngineHostOptions` requires host profile, platform, nullable graphics backend, and `AssetStoreOptions` in its constructor; that constructor has no optional arguments or fallback package path. `OverrunPolicy` defaults to the chapter [03](03-shared-conventions-and-clocks.md) pause-on-overrun policy, `GraphicsFailurePolicy` defaults to `StopHost`, and `ShutdownTimeout` defaults to five seconds. A null graphics backend is valid only when the selected host profile does not require one. All option values are validated before host construction. `AssetStoreOptions.AbsolutePackagePath`, `ExpectedPackageSha256`, and `Registration` are the required package selection and trusted admission inputs; no cache-directory option exists in this contract. The host passes the frozen options to `AssetStore.CreateAsync` and does not report startup complete until the package digest, directory, profile, registration closure, and typed references are admitted.
+`EngineHostOptions` requires host profile, platform, nullable graphics backend, nullable matching graphics-backend registration, and `AssetStoreOptions` in its constructor; that constructor has no optional arguments or fallback package path. `OverrunPolicy` defaults to the chapter [03](03-shared-conventions-and-clocks.md) pause-on-overrun policy, `GraphicsFailurePolicy` defaults to `StopHost`, and `ShutdownTimeout` defaults to five seconds. `Headless` requires both graphics inputs to be null; `OffscreenNative` and `Interactive` require both to be non-null and to identify the same backend. A registration is immutable factory metadata returned by the explicitly referenced backend package; it is not a device, owner, adapter, surface, or native handle. All option values are validated before host construction. `AssetStoreOptions.AbsolutePackagePath`, `ExpectedPackageSha256`, and `Registration` are the required package selection and trusted admission inputs; no cache-directory option exists in this contract. The host passes the frozen options to `AssetStore.CreateAsync` and does not report startup complete until the package digest, directory, profile, registration closure, typed references, and selected graphics device are admitted.
 
 `InvokeAsync` and `TryInvoke` invoke a bounded synchronous callback on the host owner between ticks. The `EngineContext` is valid only during that callback; retaining it does not retain authority, and later use throws. The callback cannot await, recursively pump, or synchronously wait for its own completion. `TryInvoke` returns false only for a full bounded mailbox, with `completion = null`; true supplies the same asynchronously completed or faulted task as `InvokeAsync`. A pre-canceled `InvokeAsync` returns a canceled task; a pre-canceled `TryInvoke` throws `OperationCanceledException` before admission. `StopAsync` is idempotent; cancellation of its wait cannot undo accepted shutdown. `EngineContext` has no frame-change method: it is a borrowed synchronous callback capability, not the ordinary-thread queue service or standalone World control route. `World.SetFrame` is the owner-idle standalone route; either `EngineHost.ChangeFrameAsync` overload targets the exact hosted World binding and does not require the caller to be the World owner.
 
@@ -3817,6 +3825,18 @@ using TerraFX.Diagnostics;
 
 namespace TerraFX.Graphics
 {
+public enum GraphicsBackend
+{
+    D3D12 = 1,
+    Vulkan = 2
+}
+
+public sealed class GraphicsBackendRegistration
+{
+    internal GraphicsBackendRegistration(IGraphicsBackendFactory factory);
+    public GraphicsBackend Backend { get; }
+}
+
 public sealed class BufferDescription
 {
     public BufferDescription(long byteLength, BufferUsage usage, GpuMemoryKind memoryKind, int? structuredStride, string debugName);
@@ -4094,7 +4114,7 @@ public sealed class ComputePipelineDescription : PipelineDescription
 
 public sealed class GraphicsDevice
 {
-    internal GraphicsDevice();
+    internal static Task<GraphicsDevice> CreateAsync(uint ownerId, GraphicsBackendRegistration registration, GraphicsDeviceProfile profile, GraphicsPlatformKind platformKind, CancellationToken cancellationToken);
     public GraphicsCapabilities Capabilities { get; }
     public uint DeviceEpoch { get; }
     public GraphicsDeviceStatus Status { get; }
@@ -4688,9 +4708,27 @@ public sealed class RenderSubmissionReceipt
     public uint SwapchainEpoch { get; }
 }
 }
-``` 
 
-`GraphicsDevice` is host-created and has no public native/backend constructor. The public resource/pipeline methods enqueue bounded render-owner requests; native creation, command recording, submit, and presentation stay on that owner thread. `Renderer.BuildGraph`, graph imports/resource/pass declarations, and `RenderGraph.Compile` are synchronous and confined to the graph-creator thread; they inspect only the immutable snapshot and copied resource descriptions/state. `Renderer.SubmitAsync` transfers the immutable plan to the graphics owner, where each `RenderPassCallback` runs synchronously through its scoped `CommandRecorder`; callbacks cannot escape, await, perform file I/O/ECS access, or retain mutable world/snapshot state. Descriptor constructors have no optional values. Texture sample count is fixed at one in this profile. Resource-creation tasks fault with typed/native context for unsupported usage, format, capability, or allocation failures; they never return invalid handles. `CreatePipelineAsync` accepts exactly one typed graphics or compute description; shader stage, backend bytecode format, reflected stage/layout, device capabilities, target formats, and binding-layout version must agree before creation. Graphics pipelines require one vertex and one pixel stage; compute pipelines require exactly one compute stage. An empty vertex layout is valid only when reflection uses system-value inputs and no vertex buffer. A graphics layout has one `VertexElementDescription` per reflected non-system input; offsets/stride must fit the vertex record, color formats are nondefault and device-supported, and depth mode/format agree. The fixed first-profile topology is `TriangleList`; blend, reversed-Z depth, cull, and front-face choices are explicit. A compute reflection group size is nonzero and within the device limits; graphics group sizes are zero. Invalid descriptions throw before request admission; unsupported device capabilities fault the task with the missing capability context.
+namespace TerraFX.Graphics.D3D12
+{
+public static class D3D12GraphicsBackend
+{
+    public static GraphicsBackendRegistration CreateRegistration();
+}
+}
+
+namespace TerraFX.Graphics.Vulkan
+{
+public static class VulkanGraphicsBackend
+{
+    public static GraphicsBackendRegistration CreateRegistration();
+}
+}
+```
+
+`HostProfile` selects `Headless`, `OffscreenNative`, or `Interactive`; `PlatformBackend` independently selects `Headless`, `WindowsNative`, `WaylandOnly`, `WaylandThenX11`, or `X11Only`. These enums are API selectors, not wire values. `GraphicsBackend` is owned by `TerraFX.Graphics`; its only values are the explicitly selected D3D12 and Vulkan backends. `D3D12GraphicsBackend.CreateRegistration()` and `VulkanGraphicsBackend.CreateRegistration()` return immutable opaque registrations without creating native resources. The application references the selected backend package and passes its registration alongside the matching enum in `EngineHostOptions`; the host rejects missing or mismatched registration and performs no assembly scanning, implicit loading, or backend fallback. `GraphicsBackendRegistration` has no public constructor; the stored factory is internal, and the two backend-package `CreateRegistration()` methods are its only public creation paths. `GraphicsDevice` is host-created and has no public native/backend constructor. `EngineHost` obtains its `OwnerId` through the existing Runtime-to-Core issuer path and supplies it to the internal Graphics startup port; Graphics does not receive a Core allocator capability. The internal Graphics factory runs on the dedicated graphics owner thread and returns only after capability/profile admission and native device initialization succeed. The host owns the resulting facade and its deterministic shutdown.
+
+The public resource/pipeline methods enqueue bounded render-owner requests; native creation, command recording, submit, and presentation stay on that owner thread. `Renderer.BuildGraph`, graph imports/resource/pass declarations, and `RenderGraph.Compile` are synchronous and confined to the graph-creator thread; they inspect only the immutable snapshot and copied resource descriptions/state. `Renderer.SubmitAsync` transfers the immutable plan to the graphics owner, where each `RenderPassCallback` runs synchronously through its scoped `CommandRecorder`; callbacks cannot escape, await, perform file I/O/ECS access, or retain mutable world/snapshot state. Descriptor constructors have no optional values. Texture sample count is fixed at one in this profile. Resource-creation tasks fault with typed/native context for unsupported usage, format, capability, or allocation failures; they never return invalid handles. `CreatePipelineAsync` accepts exactly one typed graphics or compute description; shader stage, backend bytecode format, reflected stage/layout, device capabilities, target formats, and binding-layout version must agree before creation. Graphics pipelines require one vertex and one pixel stage; compute pipelines require exactly one compute stage. An empty vertex layout is valid only when reflection uses system-value inputs and no vertex buffer. A graphics layout has one `VertexElementDescription` per reflected non-system input; offsets/stride must fit the vertex record, color formats are nondefault and device-supported, and depth mode/format agree. The fixed first-profile topology is `TriangleList`; blend, reversed-Z depth, cull, and front-face choices are explicit. A compute reflection group size is nonzero and within the device limits; graphics group sizes are zero. Invalid descriptions throw before request admission; unsupported device capabilities fault the task with the missing capability context.
 `ShaderBytecodeInput.Bytecode` is a nonempty caller-owned read lease over the complete bytecode blob; its stage must equal `ShaderReflection.Stage`. The immutable reflection constructor rejects default arrays, duplicate stage locations/bindings/field names, invalid field ranges/strides, and group-size values inconsistent with its stage. `ShaderIoSignature.Location` is null only for a reflected system-value semantic. `ShaderReflection` describes stage I/O, resource bindings, record layouts, required capabilities, layout version, and compute group size. Reflection is checked against the native DXIL/SPIR-V bytes and the selected backend; caller metadata never substitutes for native validation. `CreatePipelineAsync` takes an independent internal bytecode sublease for every stage before request acceptance and retains those credits until backend pipeline creation actually terminates. A pre-canceled token returns a canceled task before admission; cancellation after admission cannot release bytes or make the task terminal before native creation/cancellation is complete. Success returns a `GpuPipeline` for the current device epoch, while unsupported/mismatched input faults the task; there is no GPU-ready fallback. Graphics owns these bytecode/reflection records directly through `TerraFX.Buffers` and has no `TerraFX.Assets` dependency.
 
 The `ReadOnlySpan<byte>` buffer upload copies its bytes synchronously before returning the task. Buffer and texture lease uploads take independent range subleases before acceptance; those tasks become terminal only after the copy/transition fence has actually completed and the sublease is released. `UploadTextureAsync` transfers one complete mip/layer/aspect, never a partial region. `TextureSubresource` accepts only `Color` or `Depth`; its mip and array-layer indices are checked against the resource, 3D textures require array layer zero, and 2D/3D mip extents are clamped to at least one texel per axis. `TextureDataLayout` rejects zero pitches in its constructor. `RowPitch` and `SlicePitch` are byte pitches for the caller's rows and depth slices; both must cover the checked texel extent without overlap, and the inferred source byte range from `sourceOffset` must fit the lease. The implementation repacks rows into the backend's native staging footprint and honors native pitch/alignment requirements. Unsupported format/aspect/usage combinations fault with capability context. Upload validates destination `TextureUsage.CopyDestination`, device epoch, residency, budget, checked pitch arithmetic and range before acceptance. `ReadbackBufferAsync` requires a resident same-device source with `CopySource` usage and a positive in-range byte extent, and returns only after its actual copy fence and CPU ownership transfer complete. `ReadbackTextureAsync` validates the same-device source, `CopySource` texture usage, aspect/mip/layer, copy-capable format and required residency/budget; it returns only after the copy fence, mapping, and CPU copy complete. Both readback operations acquire independent source and staging/map credits through actual transfer and CPU-copy completion. Unsupported transfer formats/usages fault; neither readback returns a zero-filled success. Cancellation before admission prevents work; after acceptance it cannot release transfer/source credits or make the task terminal before native work and mapping/copy have actually stopped. `OwnedBuffer<T>` is a sealed disposable CPU owner backed by `UnmanagedBuffer<T>`; its read lease remains valid independently until that lease is disposed. `TextureReadback` owns the full selected subresource's copied bytes, exposes immutable format/extent/subresource and row/slice pitches, and its `ByteLength` is exactly `SlicePitch * Depth`; padding in every exposed row/slice, including trailing padding, is zero. `AcquireReadLease` leases the entire readback byte range. Disposing a GPU owner revokes logical use immediately; physical resource/descriptor/allocation release waits for every last-use submission fence. A `GpuPipeline` follows the same rule: disposal blocks later recording, while already recorded pipeline use retains native state through its actual submission fence. A residency lease pins the version/device-epoch mapping through its consumers and retirement fence. A submission fence is not a presentation fence.
@@ -6399,6 +6437,15 @@ public sealed class WindowMetrics
 
 namespace TerraFX.Platform
 {
+public enum PlatformBackend
+{
+    Headless = 1,
+    WindowsNative = 2,
+    WaylandOnly = 3,
+    WaylandThenX11 = 4,
+    X11Only = 5
+}
+
 public enum ClipboardServicePolicy
 {
     NotRequested,

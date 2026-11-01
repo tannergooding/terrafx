@@ -151,6 +151,39 @@ owner thread, and Core `HostEventSequenceLease`; Runtime alone creates and dispo
 routers. This assembly-wide friendship is not a per-member security boundary, but
 Input has no Runtime reference and exposes no public router/owner fabrication path.
 
+#### Graphics backend registration and device ownership
+
+`TerraFX.Graphics` grants strong-name-qualified friendship to exactly `TerraFX.Runtime`,
+`TerraFX.Graphics.D3D12`, and `TerraFX.Graphics.Vulkan`. These are assembly-wide
+implementation grants, not per-member security boundaries. Runtime alone consumes the
+internal Graphics device-startup port and constructs the sealed host-owned
+`GraphicsDevice` from an application-supplied opaque backend registration. Each
+backend assembly alone implements the internal `IGraphicsBackendFactory`; its public
+static `CreateRegistration()` returns only immutable backend-factory metadata, never
+a live device, owner, handle, or surface. The registration is reusable across hosts
+and contains no mutable or per-device state. Runtime validates its backend value
+against `EngineHostOptions.GraphicsBackend`, issues the device `OwnerId` through the
+existing Core Runtime grant, and performs no dynamic assembly discovery.
+
+`GraphicsDevice` owns its dedicated render thread. Its internal startup operation
+creates and validates the real selected native device on that thread, publishes
+capabilities/adapter identity, and returns to `EngineHost.StartAsync` only after
+profile admission succeeds. Platform remains independent: Platform creates and owns native windows. Its private
+`PlatformNativeWindowBinding` is available only through the Runtime host owner.
+`TerraFX.Platform.csproj` grants only Runtime a strong-name-qualified assembly-wide
+friend entry; friendship is not per-member security and adds no project reference.
+Runtime uses the grant only for the internal native-window binding path, not Graphics
+or a public native-handle API. The binding contains the exact
+`WindowHandle` generation, `PlatformNativeSurfaceKind`, opaque display/instance and
+window/surface handles, and native generation. Runtime validates the live window,
+copies the tuple into an internal Graphics-owned `GraphicsNativeSurfaceBinding`, and
+supplies the new `SurfaceEpoch`. Graphics never references Platform or calls a
+Platform method. Headless creates neither
+registration nor device; OffscreenNative starts a real device without a surface or
+WSI; Interactive enables only the selected backend and actual Platform's surface
+path. Missing registration, mismatched backend, unsupported capability, or native
+initialization failure prevents `StartAsync` success and does not fall back.
+
 Semantic issuance is narrower than CLR access. `World..ctor(WorldConstructionPlan)` is
 the only Runtime caller of `Allocate`; it consumes the exact Entities-owned admitted
 plan, validates its final target/domain/root/reservation/handoff grants before issuing
@@ -221,6 +254,8 @@ An optional metapackage is dependency-only: package metadata/licenses and depend
 | Integrated interactive/offscreen application | `TerraFX.Runtime` and one selected backend package | Other library packages are transitive; namespaces such as `TerraFX.Entities` do not require separate references |
 
 The integrated Runtime package deliberately has the library closure listed above, including portable/native adapter packages even for a headless consumer. Consolidation does not promise a minimal restore/download closure for an ECS-only application; independently minimal ECS packaging is not a separate baseline product. Missing/disabled native services are handled by explicit host profiles and selected registrations, not by loading them and hoping trimming removes the side effects. The ordinary application needs one runtime reference plus its explicitly selected backend, not thirteen manual references.
+
+The selected backend package exposes `D3D12GraphicsBackend.CreateRegistration()` or `VulkanGraphicsBackend.CreateRegistration()`. The application passes that immutable factory token and its matching `GraphicsBackend` value to `EngineHostOptions`; the registration is compile-time rooted for JIT and NativeAOT and does not create a device. Runtime does not reference either backend project, use reflection/assembly scanning, or select a backend implicitly. `TerraFX.Graphics` grants strong-name-qualified internal access only to Runtime and the two backend assemblies for the sealed factory/device ports; the backends depend on Graphics/Core and never on Runtime, Platform, or Hosting. Runtime's host owner obtains the Graphics `OwnerId` from Core through its existing friend grant, then supplies the numeric identity to Graphics; no Core-to-Graphics friend or public owner constructor is added. Platform's native-window binding reaches Graphics only through Runtime's internal `GraphicsNativeSurfaceBinding` bridge, preserving Platform/Graphics independence.
 
 `TerraFX.Core` is safe-facing, not unsafe-free: it inherits the repository's shared `AllowUnsafeBlocks` setting for [06](06-owned-geometry-and-numerics-interchange.md)'s reviewed method-body bitcast blocks and [05](05-owned-buffers-and-internal-collections.md)'s private native allocator/window implementation. The bitcast operation is annotated now in preparation for Unsafe Evolution even when current ordinary C# 15 does not require the context. Proved forward/reverse by-value conversion facades remain safe-callable; consumer projects can keep `AllowUnsafeBlocks = false`. The compilation setting imposes no caller pointer obligation and is not inherited by package consumers. Generators support readonly geometry, explicit binary field tags/kinds and row getters, not mutable matrix fields. `EngineGeometryBinary32Rows2`, `FloatChunk32V2`, frozen exact unit exponent/chunk settings and `EBIN1`/`EPKG2` identities are selected by compiled schema/profile registrations. EPKG2 carries one package-level `foundation/profile` record and no profile table or schema catalogue. Generated finite-admission code uses complete component reductions rather than treating the new mask as a scalar. Compiled NUnit qualification executes NM/BF/SP/BN cases in mandatory NativeAOT lanes and any selected optional JIT comparison lanes; inspecting JIT source is not evidence that a selected binary behaves identically.
 

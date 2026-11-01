@@ -20,6 +20,50 @@ Skinned-normal diagnostics use a compute validation/readback pass, not vertex-st
 
 `GraphicsCapabilities` immutable data contract includes adapter/vendor/device/driver/application programming interface (API) versions, implemented/hardware features separately, actual limits/alignments/formats/heaps, surface modes and selected profile. `Unsupported` profile returns all missing requirements; never create half-functional device.
 
+`TerraFX.Graphics` owns `GraphicsBackend` (`D3D12 = 1`, `Vulkan = 2`) and the opaque immutable `GraphicsBackendRegistration`. The selected backend package exposes a static `CreateRegistration()` method; the registration contains a private, stateless backend factory and no device, owner, adapter, surface, or native handle. An application references one backend package and passes its registration and matching backend value to `EngineHostOptions`. `EngineHost` is the only creator of `GraphicsDevice`; it issues a Core `OwnerId` through Runtime's existing issuer grant and passes only that value through the internal Graphics startup port. Graphics does not receive Core allocator access. Missing/mismatched registrations, unsupported capabilities, or failed native initialization fail host startup without a placeholder device or backend fallback.
+
+The registration's internal factory is invoked on the dedicated Graphics owner thread. Device initialization enumerates the selected API's adapters, selects an adapter that satisfies the requested profile, and reports its stable adapter GUID and actual capabilities before `EngineHost.StartAsync` succeeds. Vulkan instance/device extensions are admitted only for the selected profile and actual platform kind; `OffscreenNative` requests no WSI extensions. Runtime maps the selected `PlatformHost` result to a Graphics-owned `GraphicsPlatformKind`; Graphics and backend assemblies never reference `TerraFX.Platform`. For window presentation, Runtime copies an exact live native-window binding from Platform into an internal `GraphicsNativeSurfaceBinding` containing only the selected backend's required native handles and surface epoch. That binding is not public, is never cached as a Platform object by Graphics, and is retired through the Graphics owner after GPU and presentation completion.
+
+The internal startup port is `GraphicsDevice.CreateAsync(uint ownerId, GraphicsBackendRegistration registration, GraphicsDeviceProfile profile, GraphicsPlatformKind platformKind, CancellationToken)`. `GraphicsDeviceProfile` is `OffscreenNative = 1` or `Interactive = 2`; `GraphicsPlatformKind` is `None = 0`, `Win32 = 1`, `Wayland = 2`, or `X11 = 3`. Runtime maps `HostProfile` and the actual initialized `PlatformHost` backend to these Graphics-owned values. `None` is required for offscreen startup; a native platform kind is required for interactive Vulkan instance-extension selection. D3D12 interactive admission requires Win32. The call issues no successful facade until the internal `IGraphicsBackendFactory` selected by the registration has created a real device and passed the full profile capability gate. The factory has `GraphicsBackend Backend { get; }` and `IGraphicsBackendDevice Create(uint ownerId, GraphicsDeviceProfile profile, GraphicsPlatformKind platformKind, CancellationToken cancellationToken)`; the backend object is created and first used only on the dedicated Graphics owner thread. The backend port remains internal and has no callback or type reference to Runtime, Platform, or Hosting.
+
+`GraphicsNativeSurfaceBinding` is an internal value with constructor `(GraphicsPlatformKind platformKind, nint nativeDisplayOrInstance, nint nativeWindowOrSurface, uint surfaceEpoch)`. `surfaceEpoch` is positive; Win32 receives `(HINSTANCE, HWND)`, Wayland receives `(wl_display*, wl_surface*)`, and X11 receives `(Display*, Window)` in the two native-handle slots. No native handle is exposed by `Surface`, `EngineHost`, or a public descriptor. Runtime obtains the live tuple from the exact Platform window generation and forwards it once to the Graphics owner for surface creation; it does not retain or reinterpret a stale binding. Graphics verifies the platform kind matches the initialized device and binds the returned `Surface` to the exact host/window/surface epoch. Platform keeps ownership of the window and pump; Graphics owns the backend surface/swapchain and its GPU/presentation retirement.
+
+The internal startup types are:
+
+```csharp
+internal enum GraphicsDeviceProfile
+{
+    OffscreenNative = 1,
+    Interactive = 2,
+}
+
+internal enum GraphicsPlatformKind
+{
+    None = 0,
+    Win32 = 1,
+    Wayland = 2,
+    X11 = 3,
+}
+
+internal interface IGraphicsBackendFactory
+{
+    GraphicsBackend Backend { get; }
+
+    IGraphicsBackendDevice Create(
+        uint ownerId,
+        GraphicsDeviceProfile profile,
+        GraphicsPlatformKind platformKind,
+        CancellationToken cancellationToken);
+}
+
+internal interface IGraphicsBackendDevice : IDisposable
+{
+    GraphicsCapabilities Capabilities { get; }
+}
+```
+
+`GraphicsDevice.CreateAsync` starts its dedicated graphics owner thread, invokes the selected factory there, and returns only after `IGraphicsBackendDevice` has created a real native device and passed profile admission. Backend packages implement `IGraphicsBackendFactory` and return their live native owner; they never create or return the public facade. The factory checks cancellation between native operations and unwinds every successfully acquired native object on cancellation/failure; it does not pretend an in-progress native call was canceled. `IGraphicsBackendDevice` is an internal owner port, not a feature-success façade: every public Graphics operation admitted by the selected profile must be implemented by that backend or reject with its typed/native failure. The bounded request channel and last-use retirement remain owned by `GraphicsDevice`, not by the registration token.
+
 ## 2. Typed resources and memory
 
 Native device/resource ownership follows [02 section 4](02-dotnet-api-memory-and-ownership.md#4-native-memory-handles-and-disposal). A device implementation whose managed owner and native device form a single lifetime unit can directly own its private `ID3D12Device*`/Vulkan handles, without a second `SafeHandle` allocation/indirection or a public `SafeHandle` base. Backend substitution does not justify an additional handle-only owner with the same lifetime. The public `GraphicsDevice` remains the existing sealed host-owned facade; deterministic device cleanup participates in host shutdown, not a new independent public `Dispose` contract. Direct finalizer fallback still requires the native API's legal release context, active-use retention and actual GPU/presentation completion; unreachable managed state is not proof of GPU idleness.
