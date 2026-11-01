@@ -55,6 +55,27 @@ internal sealed class GraphicsPipelineRequestTests
             ImmutableCollectionsMarshal.AsImmutableArray(digest));
     }
 
+    private static ComputePipelineDescription CreateComputePipelineDescription(
+        BufferReadLease<byte> bytecode,
+        ImmutableArray<ShaderResourceSignature> resources)
+    {
+        var reflection = new ShaderReflection(
+            ShaderStage.Compute,
+            "CSMain",
+            CreateCompilerIdentity(),
+            [],
+            [],
+            resources,
+            [],
+            [],
+            bindingLayoutVersion: 1,
+            groupSizeX: 1,
+            groupSizeY: 1,
+            groupSizeZ: 1);
+        var shader = new ShaderBytecodeInput(ShaderStage.Compute, ShaderBinaryFormat.Dxil, bytecode, reflection);
+        return new ComputePipelineDescription(shader, bindingLayoutVersion: 1);
+    }
+
     private static ImmutableArray<GraphicsFormatCapabilities> CreateFormats()
         => [
             new GraphicsFormatCapabilities(TextureFormat.Rgba8Unorm, TextureUsage.Sampled | TextureUsage.ColorAttachment, [1]),
@@ -92,7 +113,8 @@ internal sealed class GraphicsPipelineRequestTests
 
     private static GraphicsPipelineDescription CreatePipelineDescription(
         BufferReadLease<byte> bytecode,
-        ImmutableArray<ShaderResourceSignature> vertexResources = default)
+        ImmutableArray<ShaderResourceSignature> vertexResources = default,
+        ImmutableArray<ShaderResourceSignature> pixelResources = default)
     {
         var compilerIdentity = CreateCompilerIdentity();
         var vertexReflection = new ShaderReflection(
@@ -114,7 +136,7 @@ internal sealed class GraphicsPipelineRequestTests
             compilerIdentity,
             [],
             [new ShaderIoSignature("SV_Target", 0, null, ShaderValueType.Float4, ShaderInterpolation.Smooth)],
-            [],
+            pixelResources.IsDefault ? [] : pixelResources,
             [],
             [],
             bindingLayoutVersion: 1,
@@ -137,6 +159,17 @@ internal sealed class GraphicsPipelineRequestTests
             frontFaceClockwise: false,
             bindingLayoutVersion: 1);
     }
+
+    private static PipelineDescription CreatePipelineForStage(
+        BufferReadLease<byte> bytecode,
+        ShaderStage stage,
+        ImmutableArray<ShaderResourceSignature> resources)
+        => stage switch {
+            ShaderStage.Vertex => CreatePipelineDescription(bytecode, vertexResources: resources),
+            ShaderStage.Pixel => CreatePipelineDescription(bytecode, pixelResources: resources),
+            ShaderStage.Compute => CreateComputePipelineDescription(bytecode, resources),
+            _ => throw new ArgumentOutOfRangeException(nameof(stage)),
+        };
 
     [Test]
     public async Task PipelineCancellationWaitsForBackendCreationAndRetiresThePipeline()
@@ -258,10 +291,19 @@ internal sealed class GraphicsPipelineRequestTests
         }
     }
 
-    [TestCase(ShaderResourceKind.SampledImage, 128)]
-    [TestCase(ShaderResourceKind.Sampler, 32)]
-    [TestCase(ShaderResourceKind.UniformBuffer, 16)]
-    public async Task PipelineResourceArraysRespectPerStageDeviceLimits(ShaderResourceKind kind, int maximumCount)
+    [TestCase(ShaderStage.Vertex, ShaderResourceKind.SampledImage, 128)]
+    [TestCase(ShaderStage.Vertex, ShaderResourceKind.Sampler, 32)]
+    [TestCase(ShaderStage.Vertex, ShaderResourceKind.UniformBuffer, 16)]
+    [TestCase(ShaderStage.Pixel, ShaderResourceKind.SampledImage, 128)]
+    [TestCase(ShaderStage.Pixel, ShaderResourceKind.Sampler, 32)]
+    [TestCase(ShaderStage.Pixel, ShaderResourceKind.UniformBuffer, 16)]
+    [TestCase(ShaderStage.Compute, ShaderResourceKind.SampledImage, 128)]
+    [TestCase(ShaderStage.Compute, ShaderResourceKind.Sampler, 32)]
+    [TestCase(ShaderStage.Compute, ShaderResourceKind.UniformBuffer, 16)]
+    public async Task PipelineResourceArraysRespectPerStageDeviceLimits(
+        ShaderStage stage,
+        ShaderResourceKind kind,
+        int maximumCount)
     {
         using var continuePipelineCreation = new ManualResetEventSlim(initialState: true);
         using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
@@ -288,7 +330,7 @@ internal sealed class GraphicsPipelineRequestTests
                 kind,
                 maximumCount);
             pipeline = await graphicsDevice.CreatePipelineAsync(
-                CreatePipelineDescription(callerBytecodeLease, [validResource]))
+                CreatePipelineForStage(callerBytecodeLease, stage, [validResource]))
                 .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             Assert.That(pipeline.Handle.IsValid, Is.True);
             Assert.That(backendDevice.PipelineCreationCount, Is.EqualTo(1));
@@ -310,7 +352,7 @@ internal sealed class GraphicsPipelineRequestTests
                     checked(maximumCount - firstArrayCount + 1)));
             _ = Assert.ThrowsAsync<NotSupportedException>(
                 async () => _ = await graphicsDevice.CreatePipelineAsync(
-                    CreatePipelineDescription(callerBytecodeLease, overLimitResources))
+                    CreatePipelineForStage(callerBytecodeLease, stage, overLimitResources))
                     .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
             Assert.That(backendDevice.PipelineCreationCount, Is.EqualTo(1));
         }
