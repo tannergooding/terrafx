@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.Versioning;
@@ -37,6 +38,40 @@ internal static class Program
             throw new InvalidOperationException("GpuTexture must not expose public resource construction.");
         }
 
-        Console.WriteLine("D3D12 public registration consumer passed with unsafe disabled, no public owner/resource construction, and no native device activation.");
+        if (typeof(GraphicsPipelineDescription).GetConstructor([
+            typeof(ImmutableArray<ShaderBytecodeInput>),
+            typeof(ImmutableArray<VertexElementDescription>),
+            typeof(int),
+            typeof(ImmutableArray<TextureFormat>),
+            typeof(TextureFormat?),
+            typeof(PrimitiveTopology),
+            typeof(PipelineBlendMode),
+            typeof(PipelineDepthMode),
+            typeof(PipelineCullMode),
+            typeof(bool),
+            typeof(int),
+        ]) is null)
+        {
+            throw new InvalidOperationException("The public GraphicsPipelineDescription contract is unavailable to nonfriend consumers.");
+        }
+
+        if (typeof(ComputePipelineDescription).GetConstructor([
+            typeof(ShaderBytecodeInput),
+            typeof(int),
+        ]) is null)
+        {
+            throw new InvalidOperationException("The public ComputePipelineDescription contract is unavailable to nonfriend consumers.");
+        }
+
+        if (typeof(VertexElementDescription).GetConstructor([
+            typeof(int),
+            typeof(VertexElementFormat),
+            typeof(int),
+        ]) is null)
+        {
+            throw new InvalidOperationException("The public VertexElementDescription contract is unavailable to nonfriend consumers.");
+        }
+
+        Console.WriteLine("D3D12 public registration consumer passed with unsafe disabled, public pipeline-description signatures, no public owner/resource construction, and no native device activation.");
     }
 }
