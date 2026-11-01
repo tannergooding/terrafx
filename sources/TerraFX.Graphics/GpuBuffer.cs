@@ -8,7 +8,7 @@ namespace TerraFX.Graphics;
 /// <summary>Owns one device-generation GPU buffer resource.</summary>
 public sealed class GpuBuffer : IDisposable
 {
-    private readonly GraphicsBufferAllocationInfo _allocationInfo;
+    private readonly GraphicsResourceAllocationInfo _allocationInfo;
     private readonly IGraphicsBackendBuffer _backendBuffer;
     private readonly long _byteLength;
     private readonly GraphicsDevice _device;
@@ -23,7 +23,7 @@ public sealed class GpuBuffer : IDisposable
         GpuBufferHandle handle,
         long byteLength,
         uint deviceEpoch,
-        GraphicsBufferAllocationInfo allocationInfo,
+        GraphicsResourceAllocationInfo allocationInfo,
         IGraphicsBackendBuffer backendBuffer,
         GraphicsOwnerRequestQueue.GraphicsRetirementReservation retirementReservation)
     {
@@ -61,7 +61,7 @@ public sealed class GpuBuffer : IDisposable
     /// <summary>Gets the engine-issued buffer identity.</summary>
     public GpuBufferHandle Handle => _handle;
 
-    internal GraphicsBufferAllocationInfo AllocationInfo => _allocationInfo;
+    internal GraphicsResourceAllocationInfo AllocationInfo => _allocationInfo;
 
     internal IGraphicsBackendBuffer BackendBuffer => _backendBuffer;
 

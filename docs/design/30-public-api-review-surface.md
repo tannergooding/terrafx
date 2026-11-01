@@ -4483,7 +4483,7 @@ public sealed class GpuBuffer : IDisposable
         GpuBufferHandle handle,
         long byteLength,
         uint deviceEpoch,
-        GraphicsBufferAllocationInfo allocationInfo,
+        GraphicsResourceAllocationInfo allocationInfo,
         IGraphicsBackendBuffer backendBuffer,
         GraphicsOwnerRequestQueue.GraphicsRetirementReservation retirementReservation);
     public long ByteLength { get; }

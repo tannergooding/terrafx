@@ -617,7 +617,7 @@ public static unsafe class D3D12GraphicsBackend
                 }
             }
 
-            public GraphicsBufferAllocationInfo GetBufferAllocationInfo(BufferDescription description)
+            public GraphicsResourceAllocationInfo GetBufferAllocationInfo(BufferDescription description)
             {
                 ArgumentNullException.ThrowIfNull(description);
                 var nativeDescription = CreateNativeBufferDescription(description);
@@ -644,7 +644,7 @@ public static unsafe class D3D12GraphicsBackend
                     budgetBytes = checked((long)memoryInfo.Budget);
                 }
 
-                return new GraphicsBufferAllocationInfo(
+                return new GraphicsResourceAllocationInfo(
                     checked((long)allocationInfo.SizeInBytes),
                     checked((long)allocationInfo.Alignment),
                     GetBufferHeapIndex(description.MemoryKind),

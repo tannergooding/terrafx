@@ -4,9 +4,9 @@ using System;
 
 namespace TerraFX.Graphics;
 
-internal readonly struct GraphicsBufferAllocationInfo
+internal readonly struct GraphicsResourceAllocationInfo
 {
-    internal GraphicsBufferAllocationInfo(long sizeBytes, long alignment, int heapIndex, long? budgetBytes)
+    internal GraphicsResourceAllocationInfo(long sizeBytes, long alignment, int heapIndex, long? budgetBytes)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sizeBytes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(alignment);

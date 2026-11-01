@@ -65,12 +65,12 @@ internal interface IGraphicsBackendDevice : IDisposable
 
     IGraphicsBackendBuffer CreateBuffer(BufferDescription description);
 
-    GraphicsBufferAllocationInfo GetBufferAllocationInfo(BufferDescription description);
+    GraphicsResourceAllocationInfo GetBufferAllocationInfo(BufferDescription description);
 }
 
-internal readonly struct GraphicsBufferAllocationInfo
+internal readonly struct GraphicsResourceAllocationInfo
 {
-    internal GraphicsBufferAllocationInfo(long sizeBytes, long alignment, int heapIndex, long? budgetBytes);
+    internal GraphicsResourceAllocationInfo(long sizeBytes, long alignment, int heapIndex, long? budgetBytes);
     internal long Alignment { get; }
     internal long? BudgetBytes { get; }
     internal int HeapIndex { get; }

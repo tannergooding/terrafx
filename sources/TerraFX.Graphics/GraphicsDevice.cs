@@ -381,7 +381,7 @@ public sealed class GraphicsDevice
         return exception;
     }
 
-    private void ReleaseResourceAllocation(GraphicsBufferAllocationInfo allocationInfo)
+    private void ReleaseResourceAllocation(GraphicsResourceAllocationInfo allocationInfo)
     {
         if (!_allocatedBytesByHeap.TryGetValue(allocationInfo.HeapIndex, out var heapBytes)
             || (heapBytes < allocationInfo.SizeBytes))
@@ -408,7 +408,7 @@ public sealed class GraphicsDevice
         "Usage",
         "CA2201:Do not raise reserved exception types",
         Justification = "The Graphics allocation contract uses contextual OutOfMemoryException for exhausted resource budgets.")]
-    private void ReserveResourceAllocation(GpuMemoryKind memoryKind, GraphicsBufferAllocationInfo allocationInfo)
+    private void ReserveResourceAllocation(GpuMemoryKind memoryKind, GraphicsResourceAllocationInfo allocationInfo)
     {
         if (allocationInfo.SizeBytes > (DefaultOwnedAllocationBudgetBytes - _allocatedResourceBytes))
         {
