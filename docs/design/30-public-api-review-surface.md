@@ -4297,6 +4297,66 @@ public sealed class UploadReceipt
     public Diagnostic? Rejection { get; }
 }
 
+public readonly struct GpuBufferHandle : IEquatable<GpuBufferHandle>
+{
+    internal GpuBufferHandle(uint ownerId, uint deviceEpoch, uint index, uint generation);
+    public uint DeviceEpoch { get; }
+    public uint Generation { get; }
+    public uint Index { get; }
+    public bool IsValid { get; }
+    public uint OwnerId { get; }
+    public static bool operator !=(GpuBufferHandle left, GpuBufferHandle right);
+    public static bool operator ==(GpuBufferHandle left, GpuBufferHandle right);
+    public bool Equals(GpuBufferHandle other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
+}
+
+public readonly struct GpuTextureHandle : IEquatable<GpuTextureHandle>
+{
+    internal GpuTextureHandle(uint ownerId, uint deviceEpoch, uint index, uint generation);
+    public uint DeviceEpoch { get; }
+    public uint Generation { get; }
+    public uint Index { get; }
+    public bool IsValid { get; }
+    public uint OwnerId { get; }
+    public static bool operator !=(GpuTextureHandle left, GpuTextureHandle right);
+    public static bool operator ==(GpuTextureHandle left, GpuTextureHandle right);
+    public bool Equals(GpuTextureHandle other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
+}
+
+public readonly struct GpuSamplerHandle : IEquatable<GpuSamplerHandle>
+{
+    internal GpuSamplerHandle(uint ownerId, uint deviceEpoch, uint index, uint generation);
+    public uint DeviceEpoch { get; }
+    public uint Generation { get; }
+    public uint Index { get; }
+    public bool IsValid { get; }
+    public uint OwnerId { get; }
+    public static bool operator !=(GpuSamplerHandle left, GpuSamplerHandle right);
+    public static bool operator ==(GpuSamplerHandle left, GpuSamplerHandle right);
+    public bool Equals(GpuSamplerHandle other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
+}
+
+public readonly struct GpuPipelineHandle : IEquatable<GpuPipelineHandle>
+{
+    internal GpuPipelineHandle(uint ownerId, uint deviceEpoch, uint index, uint generation);
+    public uint DeviceEpoch { get; }
+    public uint Generation { get; }
+    public uint Index { get; }
+    public bool IsValid { get; }
+    public uint OwnerId { get; }
+    public static bool operator !=(GpuPipelineHandle left, GpuPipelineHandle right);
+    public static bool operator ==(GpuPipelineHandle left, GpuPipelineHandle right);
+    public bool Equals(GpuPipelineHandle other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
+}
+
 public sealed class GpuBuffer : IDisposable
 {
     internal GpuBuffer(GpuBufferHandle handle, long byteLength, uint deviceEpoch);
