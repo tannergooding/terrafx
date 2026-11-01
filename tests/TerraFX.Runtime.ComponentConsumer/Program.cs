@@ -14,6 +14,7 @@ using TerraFX.Animation;
 using TerraFX.Assets;
 using TerraFX.Entities;
 using TerraFX.Graphics;
+using TerraFX.Input;
 using TerraFX.Physics;
 using TerraFX.Scenes;
 
@@ -28,6 +29,16 @@ internal static partial class Program
         {
             return RunSceneActivationConsumer(args);
         }
+
+        Check(typeof(PhysicalInputEvent)
+            .GetConstructors(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+            .Length == 0);
+        Check(typeof(PhysicalInputValue)
+            .GetConstructors(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+            .Length == 0);
+        Check(default(PhysicalInputValue).Kind == PhysicalInputValueKind.None);
+        Check((int)PhysicalInputEventKind.None == 0);
+        Check((int)PhysicalInputEventKind.StateReconciliation == 22);
 
         Check(
             ((byte)CameraProjectionKind.Perspective == 0)
@@ -509,7 +520,7 @@ internal static partial class Program
         admissionDomain.Dispose();
         Check(admissionDomain.Retirement.IsCompleted);
 
-        Console.WriteLine("Handwritten World consumer passed: component/resource bindings, stateless and stateful system lifetimes, transferred World/Entity attachments, system/component/resource defaults and validation, live Entity references, Scene external-binding options, structural transitions, scoped queries, identity admission, diagnostics, and spatial frames; unsafe disabled.");
+        Console.WriteLine("Handwritten World consumer passed: component/resource bindings, stateless and stateful system lifetimes, transferred World/Entity attachments, system/component/resource defaults and validation, live Entity references, Scene external-binding options, physical input event surface, structural transitions, scoped queries, identity admission, diagnostics, and spatial frames; unsafe disabled.");
         return 0;
     }
 

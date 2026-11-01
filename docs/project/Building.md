@@ -326,6 +326,8 @@ The D3D12 consumer enables NativeAOT locally through `TerraFXPublishAot`; do not
 & .\artifacts\bin\tests\TerraFX.Graphics.D3D12.Consumer\Release\net11.0\win-x64\publish\TerraFX.Graphics.D3D12.Consumer.exe
 ```
 
+The handwritten Runtime consumer also verifies that `PhysicalInputEvent` and `PhysicalInputValue` expose no public constructors and that the event-kind sentinels are stable. Its JIT and Windows x64 NativeAOT executions validate the nonfriend public surface only; neither activates native input or creates a platform window.
+
 The encoded optional-null Scene activation witness can run the exact same cases through the published handwritten NativeAOT executable:
 
 ```powershell
