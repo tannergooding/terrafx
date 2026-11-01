@@ -17,11 +17,27 @@ public sealed class RenderSnapshot2D : RenderSnapshot
         long tickIndex,
         ImmutableArray<Guid> cameraIds,
         ImmutableArray<CameraSnapshot> cameras,
+        ImmutableArray<Guid> directionalLightIds,
+        ImmutableArray<RenderDirectionalLightSnapshot> directionalLights,
         ImmutableArray<Guid> pointLightIds,
         ImmutableArray<RenderPointLightSnapshot> pointLights,
+        ImmutableArray<Guid> spotLightIds,
+        ImmutableArray<RenderSpotLightSnapshot> spotLights,
         PixelSize targetExtent,
         SpatialFrame2 frame)
-        : base(snapshotId, worldGuid, tickIndex, cameraIds, cameras, pointLightIds, pointLights, targetExtent)
+        : base(
+            snapshotId,
+            worldGuid,
+            tickIndex,
+            cameraIds,
+            cameras,
+            directionalLightIds,
+            directionalLights,
+            pointLightIds,
+            pointLights,
+            spotLightIds,
+            spotLights,
+            targetExtent)
     {
         RenderExtractionValidation.ValidateFrame(frame, nameof(frame));
 

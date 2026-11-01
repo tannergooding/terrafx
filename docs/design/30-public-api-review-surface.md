@@ -4572,7 +4572,22 @@ public sealed class RenderExtractionResponse
     public ImmutableArray<Diagnostic> Diagnostics { get; }
 }
 
-`RenderPointLightSnapshot.Range` is expressed in the exact source World engine-distance units; its `Frame3.Settings` identifies those units. Snapshot point lights are unique, filtered by the union of selected camera layer masks, and ordered by RFC-byte `LightId`.
+All light IDs are globally unique within a snapshot and derived from the source Entity ID and `render/<kind>` schema identity. Each typed light array is filtered by the union of selected camera layer masks and ordered by RFC-byte `LightId`. Directional and spot arrays contain enabled components only; point lights have no enabled field. `RenderPointLightSnapshot.Range` and `RenderSpotLightSnapshot.Range` are expressed in the exact source World engine-distance units; their `Frame3.Settings` identifies those units. Spot and directional directions are copied as normalized world-space vectors.
+
+public readonly struct RenderDirectionalLightSnapshot
+{
+    internal RenderDirectionalLightSnapshot(Guid snapshotId, Guid worldGuid, Guid lightId, Guid entityId, SpatialFrame3 frame3, TerraFX.Numerics.Vector3 direction, TerraFX.Numerics.Vector3 color, float illuminance, ulong layerMask, int priority);
+    public TerraFX.Numerics.Vector3 Color { get; }
+    public TerraFX.Numerics.Vector3 Direction { get; }
+    public Guid EntityId { get; }
+    public SpatialFrame3 Frame3 { get; }
+    public float Illuminance { get; }
+    public ulong LayerMask { get; }
+    public Guid LightId { get; }
+    public int Priority { get; }
+    public Guid SnapshotId { get; }
+    public Guid WorldGuid { get; }
+}
 
 public readonly struct RenderPointLightSnapshot
 {
@@ -4589,16 +4604,39 @@ public readonly struct RenderPointLightSnapshot
     public Guid WorldGuid { get; }
 }
 
+public readonly struct RenderSpotLightSnapshot
+{
+    internal RenderSpotLightSnapshot(Guid snapshotId, Guid worldGuid, Guid lightId, Guid entityId, SpatialFrame3 frame3, SpatialPosition3 position, TerraFX.Numerics.Vector3 direction, TerraFX.Numerics.Vector3 color, float luminousFlux, float range, float innerConeAngle, float outerConeAngle, ulong layerMask, int priority);
+    public TerraFX.Numerics.Vector3 Color { get; }
+    public TerraFX.Numerics.Vector3 Direction { get; }
+    public Guid EntityId { get; }
+    public SpatialFrame3 Frame3 { get; }
+    public float InnerConeAngle { get; }
+    public ulong LayerMask { get; }
+    public Guid LightId { get; }
+    public float LuminousFlux { get; }
+    public float OuterConeAngle { get; }
+    public TerraFX.Numerics.SpatialPosition3 Position { get; }
+    public int Priority { get; }
+    public float Range { get; }
+    public Guid SnapshotId { get; }
+    public Guid WorldGuid { get; }
+}
+
 public abstract class RenderSnapshot : IDisposable
 {
-    internal RenderSnapshot(Guid snapshotId, Guid worldGuid, long tickIndex, ImmutableArray<Guid> cameraIds, ImmutableArray<CameraSnapshot> cameras, ImmutableArray<Guid> pointLightIds, ImmutableArray<RenderPointLightSnapshot> pointLights, PixelSize targetExtent);
+    internal RenderSnapshot(Guid snapshotId, Guid worldGuid, long tickIndex, ImmutableArray<Guid> cameraIds, ImmutableArray<CameraSnapshot> cameras, ImmutableArray<Guid> directionalLightIds, ImmutableArray<RenderDirectionalLightSnapshot> directionalLights, ImmutableArray<Guid> pointLightIds, ImmutableArray<RenderPointLightSnapshot> pointLights, ImmutableArray<Guid> spotLightIds, ImmutableArray<RenderSpotLightSnapshot> spotLights, PixelSize targetExtent);
     public Guid SnapshotId { get; }
     public Guid WorldGuid { get; }
     public long TickIndex { get; }
     public ImmutableArray<Guid> CameraIds { get; }
     public ImmutableArray<CameraSnapshot> Cameras { get; }
+    public ImmutableArray<Guid> DirectionalLightIds { get; }
+    public ImmutableArray<RenderDirectionalLightSnapshot> DirectionalLights { get; }
     public ImmutableArray<Guid> PointLightIds { get; }
     public ImmutableArray<RenderPointLightSnapshot> PointLights { get; }
+    public ImmutableArray<Guid> SpotLightIds { get; }
+    public ImmutableArray<RenderSpotLightSnapshot> SpotLights { get; }
     public PixelSize TargetExtent { get; }
     public abstract RenderFrameDimension FrameDimension { get; }
     public abstract SpatialProfileId ProfileId { get; }
@@ -4608,7 +4646,7 @@ public abstract class RenderSnapshot : IDisposable
 
 public sealed class RenderSnapshot2D : RenderSnapshot
 {
-    internal RenderSnapshot2D(Guid snapshotId, Guid worldGuid, long tickIndex, ImmutableArray<Guid> cameraIds, ImmutableArray<CameraSnapshot> cameras, ImmutableArray<Guid> pointLightIds, ImmutableArray<RenderPointLightSnapshot> pointLights, PixelSize targetExtent, SpatialFrame2 frame);
+    internal RenderSnapshot2D(Guid snapshotId, Guid worldGuid, long tickIndex, ImmutableArray<Guid> cameraIds, ImmutableArray<CameraSnapshot> cameras, ImmutableArray<Guid> directionalLightIds, ImmutableArray<RenderDirectionalLightSnapshot> directionalLights, ImmutableArray<Guid> pointLightIds, ImmutableArray<RenderPointLightSnapshot> pointLights, ImmutableArray<Guid> spotLightIds, ImmutableArray<RenderSpotLightSnapshot> spotLights, PixelSize targetExtent, SpatialFrame2 frame);
     public SpatialFrame2 Frame { get; }
     public override RenderFrameDimension FrameDimension { get; }
     public override SpatialProfileId ProfileId { get; }
@@ -4617,7 +4655,7 @@ public sealed class RenderSnapshot2D : RenderSnapshot
 
 public sealed class RenderSnapshot3D : RenderSnapshot
 {
-    internal RenderSnapshot3D(Guid snapshotId, Guid worldGuid, long tickIndex, ImmutableArray<Guid> cameraIds, ImmutableArray<CameraSnapshot> cameras, ImmutableArray<Guid> pointLightIds, ImmutableArray<RenderPointLightSnapshot> pointLights, PixelSize targetExtent, SpatialFrame3 frame);
+    internal RenderSnapshot3D(Guid snapshotId, Guid worldGuid, long tickIndex, ImmutableArray<Guid> cameraIds, ImmutableArray<CameraSnapshot> cameras, ImmutableArray<Guid> directionalLightIds, ImmutableArray<RenderDirectionalLightSnapshot> directionalLights, ImmutableArray<Guid> pointLightIds, ImmutableArray<RenderPointLightSnapshot> pointLights, ImmutableArray<Guid> spotLightIds, ImmutableArray<RenderSpotLightSnapshot> spotLights, PixelSize targetExtent, SpatialFrame3 frame);
     public SpatialFrame3 Frame { get; }
     public override RenderFrameDimension FrameDimension { get; }
     public override SpatialProfileId ProfileId { get; }

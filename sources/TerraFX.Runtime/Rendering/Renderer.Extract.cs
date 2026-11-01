@@ -14,7 +14,9 @@ namespace TerraFX.Rendering;
 public sealed partial class Renderer
 {
     private const int MaximumLightCount = 256;
+    private static readonly Guid s_directionalLightSchemaId = new ContentSchemaIdentityAssignment("render/directional-light").SchemaId;
     private static readonly Guid s_pointLightSchemaId = new ContentSchemaIdentityAssignment("render/point-light").SchemaId;
+    private static readonly Guid s_spotLightSchemaId = new ContentSchemaIdentityAssignment("render/spot-light").SchemaId;
 
     private static int CaptureCameras(
         World world,
@@ -83,6 +85,56 @@ public sealed partial class Renderer
         return cameraIds.Length;
     }
 
+    private static ImmutableArray<RenderDirectionalLightSnapshot> CaptureDirectionalLights(
+        World world,
+        in WorldFrameReadLease frameReadLease,
+        ReadOnlySpan<CameraSnapshot> cameras,
+        Guid snapshotId,
+        int directionalLightCount)
+    {
+        var directionalLights = new RenderDirectionalLightSnapshot[directionalLightCount];
+        var directionalLightIndex = 0;
+        var directionalLightComponents = world.ReadComponentSnapshot<RenderComponentDefinitions.DirectionalLightComponent>(in frameReadLease);
+
+        while (directionalLightComponents.MoveNext())
+        {
+            var component = directionalLightComponents.CurrentValue;
+
+            if (!component.Enabled || !IsSelectedByAnyCamera(component.LayerMask, cameras))
+            {
+                continue;
+            }
+
+            var entity = directionalLightComponents.CurrentEntity;
+            var (_, rotation) = world.ResolveSceneEntityPose(in frameReadLease, entity);
+            var direction = Vector3.Normalize(
+                Vector3.TransformDirection(
+                    component.Direction,
+                    Matrix4x4.CreateFromQuaternion(rotation)));
+            var entityId = world.GetEntityId(entity);
+            var lightId = CreateLightId(entityId, s_directionalLightSchemaId);
+            directionalLights[directionalLightIndex++] = new RenderDirectionalLightSnapshot(
+                snapshotId,
+                frameReadLease.WorldGuid,
+                lightId,
+                entityId,
+                frameReadLease.Frame3,
+                direction,
+                component.Color,
+                component.Illuminance,
+                component.LayerMask,
+                component.Priority);
+        }
+
+        if (directionalLightIndex != directionalLightCount)
+        {
+            throw new InvalidOperationException("The selected directional-light count changed during the committed frame read lease.");
+        }
+
+        Array.Sort(directionalLights, static (left, right) => FoundationCatalogue.CompareRfc(left.LightId, right.LightId));
+        return [.. directionalLights];
+    }
+
     private static ImmutableArray<RenderPointLightSnapshot> CapturePointLights(
         World world,
         in WorldFrameReadLease frameReadLease,
@@ -106,9 +158,7 @@ public sealed partial class Renderer
             var entity = pointLightComponents.CurrentEntity;
             var (position, _) = world.ResolveSceneEntityPose(in frameReadLease, entity);
             var entityId = world.GetEntityId(entity);
-            var lightId = FoundationNameUuid.Create(
-                entityId,
-                "light/" + s_pointLightSchemaId.ToString("N"));
+            var lightId = CreateLightId(entityId, s_pointLightSchemaId);
             pointLights[pointLightIndex++] = new RenderPointLightSnapshot(
                 snapshotId,
                 frameReadLease.WorldGuid,
@@ -129,6 +179,60 @@ public sealed partial class Renderer
 
         Array.Sort(pointLights, static (left, right) => FoundationCatalogue.CompareRfc(left.LightId, right.LightId));
         return [.. pointLights];
+    }
+
+    private static ImmutableArray<RenderSpotLightSnapshot> CaptureSpotLights(
+        World world,
+        in WorldFrameReadLease frameReadLease,
+        ReadOnlySpan<CameraSnapshot> cameras,
+        Guid snapshotId,
+        int spotLightCount)
+    {
+        var spotLights = new RenderSpotLightSnapshot[spotLightCount];
+        var spotLightIndex = 0;
+        var spotLightComponents = world.ReadComponentSnapshot<RenderComponentDefinitions.SpotLightComponent>(in frameReadLease);
+
+        while (spotLightComponents.MoveNext())
+        {
+            var component = spotLightComponents.CurrentValue;
+
+            if (!component.Enabled || !IsSelectedByAnyCamera(component.LayerMask, cameras))
+            {
+                continue;
+            }
+
+            var entity = spotLightComponents.CurrentEntity;
+            var (position, rotation) = world.ResolveSceneEntityPose(in frameReadLease, entity);
+            var direction = Vector3.Normalize(
+                Vector3.TransformDirection(
+                    component.Direction,
+                    Matrix4x4.CreateFromQuaternion(rotation)));
+            var entityId = world.GetEntityId(entity);
+            var lightId = CreateLightId(entityId, s_spotLightSchemaId);
+            spotLights[spotLightIndex++] = new RenderSpotLightSnapshot(
+                snapshotId,
+                frameReadLease.WorldGuid,
+                lightId,
+                entityId,
+                frameReadLease.Frame3,
+                position,
+                direction,
+                component.Color,
+                component.LuminousFlux,
+                component.Range,
+                component.InnerConeAngle,
+                component.OuterConeAngle,
+                component.LayerMask,
+                component.Priority);
+        }
+
+        if (spotLightIndex != spotLightCount)
+        {
+            throw new InvalidOperationException("The selected spot-light count changed during the committed frame read lease.");
+        }
+
+        Array.Sort(spotLights, static (left, right) => FoundationCatalogue.CompareRfc(left.LightId, right.LightId));
+        return [.. spotLights];
     }
 
     private static int CompareCameras(CameraSnapshot left, CameraSnapshot right)
@@ -154,6 +258,19 @@ public sealed partial class Renderer
     private static ImmutableArray<CameraSnapshot> CopyCameras(ReadOnlySpan<CameraSnapshot> cameras)
         => [.. cameras];
 
+    private static ImmutableArray<Guid> CopyDirectionalLightIds(
+        ImmutableArray<RenderDirectionalLightSnapshot> directionalLights)
+    {
+        var directionalLightIds = ImmutableArray.CreateBuilder<Guid>(directionalLights.Length);
+
+        foreach (var directionalLight in directionalLights)
+        {
+            directionalLightIds.Add(directionalLight.LightId);
+        }
+
+        return directionalLightIds.MoveToImmutable();
+    }
+
     private static ImmutableArray<Guid> CopyPointLightIds(ImmutableArray<RenderPointLightSnapshot> pointLights)
     {
         var pointLightIds = ImmutableArray.CreateBuilder<Guid>(pointLights.Length);
@@ -164,6 +281,39 @@ public sealed partial class Renderer
         }
 
         return pointLightIds.MoveToImmutable();
+    }
+
+    private static ImmutableArray<Guid> CopySpotLightIds(ImmutableArray<RenderSpotLightSnapshot> spotLights)
+    {
+        var spotLightIds = ImmutableArray.CreateBuilder<Guid>(spotLights.Length);
+
+        foreach (var spotLight in spotLights)
+        {
+            spotLightIds.Add(spotLight.LightId);
+        }
+
+        return spotLightIds.MoveToImmutable();
+    }
+
+    private static int CountSelectedDirectionalLights(
+        World world,
+        in WorldFrameReadLease frameReadLease,
+        ReadOnlySpan<CameraSnapshot> cameras)
+    {
+        var count = 0;
+        var directionalLights = world.ReadComponentSnapshot<RenderComponentDefinitions.DirectionalLightComponent>(in frameReadLease);
+
+        while (directionalLights.MoveNext())
+        {
+            var light = directionalLights.CurrentValue;
+
+            if (light.Enabled && IsSelectedByAnyCamera(light.LayerMask, cameras))
+            {
+                count = checked(count + 1);
+            }
+        }
+
+        return count;
     }
 
     private static int CountSelectedPointLights(
@@ -184,6 +334,30 @@ public sealed partial class Renderer
 
         return count;
     }
+
+    private static int CountSelectedSpotLights(
+        World world,
+        in WorldFrameReadLease frameReadLease,
+        ReadOnlySpan<CameraSnapshot> cameras)
+    {
+        var count = 0;
+        var spotLights = world.ReadComponentSnapshot<RenderComponentDefinitions.SpotLightComponent>(in frameReadLease);
+
+        while (spotLights.MoveNext())
+        {
+            var light = spotLights.CurrentValue;
+
+            if (light.Enabled && IsSelectedByAnyCamera(light.LayerMask, cameras))
+            {
+                count = checked(count + 1);
+            }
+        }
+
+        return count;
+    }
+
+    private static Guid CreateLightId(Guid entityId, Guid schemaId)
+        => FoundationNameUuid.Create(entityId, "light/" + schemaId.ToString("N"));
 
     private static bool IsSelectedByAnyCamera(ulong layerMask, ReadOnlySpan<CameraSnapshot> cameras)
     {
@@ -231,19 +405,29 @@ public sealed partial class Renderer
             snapshotId,
             cameraScratch);
         var cameraSpan = cameraScratch[..cameraCount];
+        var directionalLightCount = CountSelectedDirectionalLights(world, in frameReadLease, cameraSpan);
         var pointLightCount = CountSelectedPointLights(world, in frameReadLease, cameraSpan);
+        var spotLightCount = CountSelectedSpotLights(world, in frameReadLease, cameraSpan);
+        var lightCount = checked(checked(directionalLightCount + pointLightCount) + spotLightCount);
 
-        if (pointLightCount > MaximumLightCount)
+        if (lightCount > MaximumLightCount)
         {
             return new RenderExtractionResponse(
                 RenderExtractionStatus.CapacityExceeded,
                 snapshot: null,
-                new RenderExtractionLimitDiagnostic(RenderExtractionLimitKind.Lights, pointLightCount, MaximumLightCount),
+                new RenderExtractionLimitDiagnostic(RenderExtractionLimitKind.Lights, lightCount, MaximumLightCount),
                 []);
         }
 
         var cameras = CopyCameras(cameraSpan);
         var cameraIds = CopyCameraIds(cameraSpan);
+        var directionalLights = CaptureDirectionalLights(
+            world,
+            in frameReadLease,
+            cameraSpan,
+            snapshotId,
+            directionalLightCount);
+        var directionalLightIds = CopyDirectionalLightIds(directionalLights);
         var pointLights = CapturePointLights(
             world,
             in frameReadLease,
@@ -251,6 +435,13 @@ public sealed partial class Renderer
             snapshotId,
             pointLightCount);
         var pointLightIds = CopyPointLightIds(pointLights);
+        var spotLights = CaptureSpotLights(
+            world,
+            in frameReadLease,
+            cameraSpan,
+            snapshotId,
+            spotLightCount);
+        var spotLightIds = CopySpotLightIds(spotLights);
         RenderSnapshot2D? snapshot = null;
 
         try
@@ -261,8 +452,12 @@ public sealed partial class Renderer
                 frameReadLease.CompletedTick,
                 cameraIds,
                 cameras,
+                directionalLightIds,
+                directionalLights,
                 pointLightIds,
                 pointLights,
+                spotLightIds,
+                spotLights,
                 options.TargetExtent,
                 frame);
             frameReadLease.ValidateCurrent();
@@ -312,19 +507,29 @@ public sealed partial class Renderer
             snapshotId,
             cameraScratch);
         var cameraSpan = cameraScratch[..cameraCount];
+        var directionalLightCount = CountSelectedDirectionalLights(world, in frameReadLease, cameraSpan);
         var pointLightCount = CountSelectedPointLights(world, in frameReadLease, cameraSpan);
+        var spotLightCount = CountSelectedSpotLights(world, in frameReadLease, cameraSpan);
+        var lightCount = checked(checked(directionalLightCount + pointLightCount) + spotLightCount);
 
-        if (pointLightCount > MaximumLightCount)
+        if (lightCount > MaximumLightCount)
         {
             return new RenderExtractionResponse(
                 RenderExtractionStatus.CapacityExceeded,
                 snapshot: null,
-                new RenderExtractionLimitDiagnostic(RenderExtractionLimitKind.Lights, pointLightCount, MaximumLightCount),
+                new RenderExtractionLimitDiagnostic(RenderExtractionLimitKind.Lights, lightCount, MaximumLightCount),
                 []);
         }
 
         var cameras = CopyCameras(cameraSpan);
         var cameraIds = CopyCameraIds(cameraSpan);
+        var directionalLights = CaptureDirectionalLights(
+            world,
+            in frameReadLease,
+            cameraSpan,
+            snapshotId,
+            directionalLightCount);
+        var directionalLightIds = CopyDirectionalLightIds(directionalLights);
         var pointLights = CapturePointLights(
             world,
             in frameReadLease,
@@ -332,6 +537,13 @@ public sealed partial class Renderer
             snapshotId,
             pointLightCount);
         var pointLightIds = CopyPointLightIds(pointLights);
+        var spotLights = CaptureSpotLights(
+            world,
+            in frameReadLease,
+            cameraSpan,
+            snapshotId,
+            spotLightCount);
+        var spotLightIds = CopySpotLightIds(spotLights);
         RenderSnapshot3D? snapshot = null;
 
         try
@@ -342,8 +554,12 @@ public sealed partial class Renderer
                 frameReadLease.CompletedTick,
                 cameraIds,
                 cameras,
+                directionalLightIds,
+                directionalLights,
                 pointLightIds,
                 pointLights,
+                spotLightIds,
+                spotLights,
                 options.TargetExtent,
                 frameReadLease.Frame3);
             frameReadLease.ValidateCurrent();

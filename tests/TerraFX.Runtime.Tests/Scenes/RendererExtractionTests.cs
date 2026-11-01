@@ -76,6 +76,24 @@ internal sealed partial class SceneAssetStoreTests
             new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(12, 7, 1, 1, orderBytes));
     }
 
+    private static byte[] CreateDirectionalLightRecord(ulong layerMask, bool enabled, int priority)
+    {
+        var layerMaskBytes = new byte[sizeof(ulong)];
+        BinaryPrimitives.WriteUInt64LittleEndian(layerMaskBytes, layerMask);
+        var priorityBytes = new byte[sizeof(int)];
+        BinaryPrimitives.WriteInt32LittleEndian(priorityBytes, priority);
+        return SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("render/directional-light").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 15, 0.5f, 0.75f, 1.0f),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(2, 10, 5000.0f),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(3, 15, 0.0f, -1.0f, 0.0f),
+            new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(4, 4, 1, 1, layerMaskBytes),
+            new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(5, 9, 1, 1, [enabled ? (byte)1 : (byte)0]),
+            new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(6, 7, 1, 1, priorityBytes));
+    }
+
     private static byte[] CreatePointLightRecord(ulong layerMask)
     {
         var layerMaskBytes = new byte[sizeof(ulong)];
@@ -99,6 +117,27 @@ internal sealed partial class SceneAssetStoreTests
             .. RenderingSchemaCatalogue.Schemas,
         ]);
 
+    private static byte[] CreateSpotLightRecord(ulong layerMask, bool enabled, int priority)
+    {
+        var layerMaskBytes = new byte[sizeof(ulong)];
+        BinaryPrimitives.WriteUInt64LittleEndian(layerMaskBytes, layerMask);
+        var priorityBytes = new byte[sizeof(int)];
+        BinaryPrimitives.WriteInt32LittleEndian(priorityBytes, priority);
+        return SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            new ContentSchemaIdentityAssignment("render/spot-light").SchemaId,
+            1,
+            0,
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 15, 0.5f, 0.75f, 1.0f),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(2, 10, 650.0f),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(3, 10, 8.0f),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(4, 15, 0.0f, -1.0f, 0.0f),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(5, 10, 0.4f),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(6, 10, 0.7f),
+            new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(7, 4, 1, 1, layerMaskBytes),
+            new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(8, 9, 1, 1, [enabled ? (byte)1 : (byte)0]),
+            new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(9, 7, 1, 1, priorityBytes));
+    }
+
     [Test]
     public void CpuExtractionSupportRequiresSceneSupportAndRejectsDuplicateRegistration()
     {
@@ -116,6 +155,71 @@ internal sealed partial class SceneAssetStoreTests
     }
 
     [Test]
+    public void DirectionalAndSpotLightsUseWorldDefaultsAndRejectInvalidMutation()
+    {
+        var schemas = CreateRendererRegistry();
+        var registrationBuilder = new WorldRegistrationBuilder(schemas);
+        _ = registrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+        _ = registrationBuilder.RegisterCpuExtractionSupport(Renderer.CreateCpuExtractionSupportRegistration());
+        using var world = World.Create(new WorldOptions(registrationBuilder.Build()));
+        var entity = world.CreateEntity(new EntityDescription());
+        world.Add<RenderComponentDefinitions.DirectionalLightComponent>(entity);
+        world.Add<RenderComponentDefinitions.SpotLightComponent>(entity);
+        Assert.That(
+            world.TryGet<RenderComponentDefinitions.DirectionalLightComponent>(entity, out var directionalLight),
+            Is.True);
+        Assert.That(directionalLight.Color, Is.EqualTo(Vector3.One));
+        Assert.That(directionalLight.Illuminance, Is.EqualTo(10000.0f));
+        Assert.That(directionalLight.Direction, Is.EqualTo(new Vector3(0, -1, 0)));
+        Assert.That(directionalLight.Enabled, Is.False);
+        Assert.That(directionalLight.LayerMask, Is.EqualTo(ulong.MaxValue));
+        Assert.That(directionalLight.Priority, Is.Zero);
+        Assert.That(
+            world.TryGet<RenderComponentDefinitions.SpotLightComponent>(entity, out var spotLight),
+            Is.True);
+        Assert.That(spotLight.Color, Is.EqualTo(Vector3.One));
+        Assert.That(spotLight.LuminousFlux, Is.EqualTo(1000.0f));
+        Assert.That(
+            spotLight.Range,
+            Is.EqualTo(SpatialMath.ConvertQuantity(
+                10,
+                1,
+                0,
+                world.SpatialSettings.MetersPerUnitExponent,
+                1)));
+        Assert.That(spotLight.Direction, Is.EqualTo(new Vector3(0, -1, 0)));
+        Assert.That(spotLight.InnerConeAngle, Is.EqualTo(BitConverter.Int32BitsToSingle(0x3F060A92)));
+        Assert.That(spotLight.OuterConeAngle, Is.EqualTo(BitConverter.Int32BitsToSingle(0x3F490FDB)));
+        Assert.That(spotLight.Enabled, Is.False);
+
+        var invalidDirectional = new RenderComponentDefinitions.DirectionalLightComponent(
+            Vector3.One,
+            float.NaN,
+            new Vector3(0, -1, 0),
+            ulong.MaxValue,
+            enabled: false,
+            priority: 0);
+        var invalidSpot = new RenderComponentDefinitions.SpotLightComponent(
+            Vector3.One,
+            1000.0f,
+            spotLight.Range,
+            new Vector3(0, -1, 0),
+            0.8f,
+            0.7f,
+            ulong.MaxValue,
+            enabled: false,
+            priority: 0);
+        Assert.That(() => world.Set(entity, invalidDirectional), Throws.ArgumentException);
+        Assert.That(() => world.Set(entity, invalidSpot), Throws.ArgumentException);
+        Assert.That(
+            world.TryGet<RenderComponentDefinitions.DirectionalLightComponent>(entity, out directionalLight),
+            Is.True);
+        Assert.That(world.TryGet<RenderComponentDefinitions.SpotLightComponent>(entity, out spotLight), Is.True);
+        Assert.That(directionalLight.Illuminance, Is.EqualTo(10000.0f));
+        Assert.That(spotLight.InnerConeAngle, Is.EqualTo(BitConverter.Int32BitsToSingle(0x3F060A92)));
+    }
+
+    [Test]
     [SuppressMessage(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
@@ -130,7 +234,12 @@ internal sealed partial class SceneAssetStoreTests
         var childPrefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
             new AssetId(prefabAssetId),
             entityId: s_childEntityId,
-            additionalEntityComponents: [childCamera, CreatePointLightRecord(ulong.MaxValue)]);
+            additionalEntityComponents: [
+                childCamera,
+                CreateDirectionalLightRecord(ulong.MaxValue, enabled: true, priority: 2),
+                CreatePointLightRecord(ulong.MaxValue),
+                CreateSpotLightRecord(ulong.MaxValue, enabled: true, priority: 1),
+            ]);
         var firstScene = SceneAssetReaderTests.Fixtures.CreateSceneWithChildPlacement(
             new AssetId(firstSceneAssetId),
             s_sceneRootEntityId,
@@ -144,6 +253,8 @@ internal sealed partial class SceneAssetStoreTests
             additionalEntityComponents: [
                 CreateCameraRecord(order: -1),
                 CreatePointLightRecord(layerMask: 0),
+                CreateDirectionalLightRecord(layerMask: ulong.MaxValue, enabled: false, priority: 100),
+                CreateSpotLightRecord(layerMask: 0, enabled: true, priority: 100),
             ]);
         var package = Package.CreatePackage(
             new Package.Entry(prefabAssetId, Package.CreateEnvelope(prefabAssetId, childPrefab)),
@@ -226,6 +337,18 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(snapshot.PointLights[0].LuminousFlux, Is.EqualTo(750.0f));
             Assert.That(snapshot.PointLights[0].Range, Is.EqualTo(12.0f));
             Assert.That(snapshot.PointLights[0].Position, Is.EqualTo(snapshot.Cameras[1].Position));
+            Assert.That(snapshot.DirectionalLightIds, Has.Length.EqualTo(1));
+            Assert.That(snapshot.DirectionalLights[0].Illuminance, Is.EqualTo(5000.0f));
+            Assert.That(snapshot.DirectionalLights[0].Priority, Is.EqualTo(2));
+            Assert.That(float.Abs(snapshot.DirectionalLights[0].Direction.X - 1.0f), Is.LessThan(1.0e-5f));
+            Assert.That(float.Abs(snapshot.DirectionalLights[0].Direction.Y), Is.LessThan(1.0e-5f));
+            Assert.That(snapshot.SpotLightIds, Has.Length.EqualTo(1));
+            Assert.That(snapshot.SpotLights[0].LuminousFlux, Is.EqualTo(650.0f));
+            Assert.That(snapshot.SpotLights[0].InnerConeAngle, Is.EqualTo(0.4f));
+            Assert.That(snapshot.SpotLights[0].OuterConeAngle, Is.EqualTo(0.7f));
+            Assert.That(snapshot.SpotLights[0].Position, Is.EqualTo(snapshot.Cameras[1].Position));
+            Assert.That(float.Abs(snapshot.SpotLights[0].Direction.X - 1.0f), Is.LessThan(1.0e-5f));
+            Assert.That(float.Abs(snapshot.SpotLights[0].Direction.Y), Is.LessThan(1.0e-5f));
 
             var cameraRight = Vector3.TransformDirection(
                 Vector3.UnitX,
@@ -248,6 +371,8 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(snapshot2D.PointLightIds, Is.EqualTo(snapshot.PointLightIds));
             Assert.That(snapshot2D.PointLights[0].Position, Is.EqualTo(snapshot.PointLights[0].Position));
             Assert.That(snapshot2D.PointLights[0].LuminousFlux, Is.EqualTo(snapshot.PointLights[0].LuminousFlux));
+            Assert.That(snapshot2D.DirectionalLightIds, Is.EqualTo(snapshot.DirectionalLightIds));
+            Assert.That(snapshot2D.SpotLightIds, Is.EqualTo(snapshot.SpotLightIds));
             snapshot2D.Dispose();
 
             snapshot.Dispose();
@@ -269,6 +394,8 @@ internal sealed partial class SceneAssetStoreTests
             var currentSnapshot = (RenderSnapshot3D)(currentResponse.Snapshot
                 ?? throw new InvalidOperationException("The successful current 3D extraction omitted its snapshot."));
             Assert.That(currentSnapshot.PointLights[0].LightId, Is.EqualTo(snapshot.PointLights[0].LightId));
+            Assert.That(currentSnapshot.DirectionalLightIds, Is.EqualTo(snapshot.DirectionalLightIds));
+            Assert.That(currentSnapshot.SpotLightIds, Is.EqualTo(snapshot.SpotLightIds));
             var nextFrame2 = nextPublication.Frame2
                 ?? throw new InvalidOperationException("The enabled 2D frame was omitted from the next committed publication.");
             var currentOptions2D = new RenderExtractionOptions2D(
@@ -300,11 +427,28 @@ internal sealed partial class SceneAssetStoreTests
                 ComponentInitialization.Value(in capacityLight),
             ];
 
-            for (var index = 0; index < 256; index++)
+            for (var index = 0; index < 253; index++)
             {
                 _ = world.CreateEntity(new EntityDescription(components: lightComponents));
             }
 
+            var atLimitPublication = world.Step().Publication;
+            var atLimitOptions = new RenderExtractionOptions3D(
+                atLimitPublication.Frame3,
+                options.TargetExtent,
+                options.CameraIds);
+            var atLimitResponse = renderer.Extract(world, atLimitOptions);
+            Assert.That(atLimitResponse.Status, Is.EqualTo(RenderExtractionStatus.Extracted));
+            var atLimitSnapshot = (RenderSnapshot3D)(atLimitResponse.Snapshot
+                ?? throw new InvalidOperationException("The successful light-limit extraction omitted its snapshot."));
+            Assert.That(
+                atLimitSnapshot.DirectionalLights.Length
+                    + atLimitSnapshot.PointLights.Length
+                    + atLimitSnapshot.SpotLights.Length,
+                Is.EqualTo(256));
+            atLimitSnapshot.Dispose();
+
+            _ = world.CreateEntity(new EntityDescription(components: lightComponents));
             var capacityPublication = world.Step().Publication;
             var capacityOptions3D = new RenderExtractionOptions3D(
                 capacityPublication.Frame3,

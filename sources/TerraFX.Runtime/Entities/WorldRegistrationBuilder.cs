@@ -171,7 +171,7 @@ public sealed class WorldRegistrationBuilder
     /// <param name="support">The opaque registration produced by <see cref="TerraFX.Rendering.Renderer.CreateCpuExtractionSupportRegistration"/>.</param>
     /// <returns>This builder.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="support"/> is null.</exception>
-    /// <exception cref="ArgumentException">CPU extraction support is already registered.</exception>
+    /// <exception cref="ArgumentException">CPU extraction support is already registered, or its component registration conflicts with an existing component.</exception>
     /// <exception cref="InvalidOperationException">The builder is frozen, the compiled registry omits the render-source schema, or the support factory returns an invalid component set.</exception>
     public WorldRegistrationBuilder RegisterCpuExtractionSupport(CpuExtractionSupportRegistration support)
     {

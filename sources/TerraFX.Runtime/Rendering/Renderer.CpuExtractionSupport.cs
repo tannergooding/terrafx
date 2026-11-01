@@ -53,6 +53,8 @@ public sealed partial class Renderer
             ArgumentNullException.ThrowIfNull(builder);
             ArgumentNullException.ThrowIfNull(schemas);
             _ = RenderComponentDefinitions.RegisterPointLight(builder, schemas);
+            _ = RenderComponentDefinitions.RegisterDirectionalLight(builder, schemas);
+            _ = RenderComponentDefinitions.RegisterSpotLight(builder, schemas);
         }
     }
 

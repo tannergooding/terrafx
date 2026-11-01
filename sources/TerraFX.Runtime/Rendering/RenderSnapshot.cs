@@ -13,9 +13,13 @@ public abstract class RenderSnapshot : IDisposable
 {
     private readonly ImmutableArray<Guid> _cameraIds;
     private readonly ImmutableArray<CameraSnapshot> _cameras;
+    private readonly ImmutableArray<Guid> _directionalLightIds;
+    private readonly ImmutableArray<RenderDirectionalLightSnapshot> _directionalLights;
     private int _isDisposed;
     private readonly ImmutableArray<Guid> _pointLightIds;
     private readonly ImmutableArray<RenderPointLightSnapshot> _pointLights;
+    private readonly ImmutableArray<Guid> _spotLightIds;
+    private readonly ImmutableArray<RenderSpotLightSnapshot> _spotLights;
 
     internal RenderSnapshot(
         Guid snapshotId,
@@ -23,20 +27,34 @@ public abstract class RenderSnapshot : IDisposable
         long tickIndex,
         ImmutableArray<Guid> cameraIds,
         ImmutableArray<CameraSnapshot> cameras,
+        ImmutableArray<Guid> directionalLightIds,
+        ImmutableArray<RenderDirectionalLightSnapshot> directionalLights,
         ImmutableArray<Guid> pointLightIds,
         ImmutableArray<RenderPointLightSnapshot> pointLights,
+        ImmutableArray<Guid> spotLightIds,
+        ImmutableArray<RenderSpotLightSnapshot> spotLights,
         PixelSize targetExtent)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(snapshotId, Guid.Empty);
         ArgumentOutOfRangeException.ThrowIfEqual(worldGuid, Guid.Empty);
         ArgumentOutOfRangeException.ThrowIfNegative(tickIndex);
 
-        if (cameraIds.IsDefault || cameras.IsDefault || pointLightIds.IsDefault || pointLights.IsDefault)
+        if (cameraIds.IsDefault
+            || cameras.IsDefault
+            || directionalLightIds.IsDefault
+            || directionalLights.IsDefault
+            || pointLightIds.IsDefault
+            || pointLights.IsDefault
+            || spotLightIds.IsDefault
+            || spotLights.IsDefault)
         {
             throw new ArgumentException("Render snapshot identity/value arrays must be initialized.");
         }
 
-        if ((cameraIds.Length != cameras.Length) || (pointLightIds.Length != pointLights.Length))
+        if ((cameraIds.Length != cameras.Length)
+            || (directionalLightIds.Length != directionalLights.Length)
+            || (pointLightIds.Length != pointLights.Length)
+            || (spotLightIds.Length != spotLights.Length))
         {
             throw new ArgumentException("Each render snapshot identity array must align with its value array.");
         }
@@ -68,28 +86,50 @@ public abstract class RenderSnapshot : IDisposable
             }
         }
 
-        var uniquePointLightIds = new HashSet<Guid>();
+        var uniqueLightIds = new HashSet<Guid>();
+
+        for (var index = 0; index < directionalLightIds.Length; index++)
+        {
+            var lightId = directionalLightIds[index];
+            var light = directionalLights[index];
+
+            if (lightId == Guid.Empty || !uniqueLightIds.Add(lightId))
+            {
+                throw new ArgumentException("The render snapshot light IDs must be nonempty and unique.", nameof(directionalLightIds));
+            }
+
+            if ((light.LightId != lightId)
+                || (light.SnapshotId != snapshotId)
+                || (light.WorldGuid != worldGuid)
+                || cameras.IsEmpty
+                || !RenderExtractionValidation.MatchesFrame(light.Frame3, cameras[0].Frame3))
+            {
+                throw new ArgumentException("The directional-light values do not match their captured identity and frame.");
+            }
+
+            if (index > 0 && FoundationCatalogue.CompareRfc(directionalLightIds[index - 1], lightId) >= 0)
+            {
+                throw new ArgumentException("The render snapshot directional lights must be in canonical light-ID order.", nameof(directionalLightIds));
+            }
+        }
 
         for (var index = 0; index < pointLightIds.Length; index++)
         {
             var lightId = pointLightIds[index];
             var light = pointLights[index];
 
-            if (lightId == Guid.Empty || !uniquePointLightIds.Add(lightId))
+            if (lightId == Guid.Empty || !uniqueLightIds.Add(lightId))
             {
-                throw new ArgumentException("The render snapshot point-light IDs must be nonempty and unique.", nameof(pointLightIds));
+                throw new ArgumentException("The render snapshot light IDs must be nonempty and unique.", nameof(pointLightIds));
             }
 
             if ((light.LightId != lightId)
                 || (light.SnapshotId != snapshotId)
-                || (light.WorldGuid != worldGuid))
+                || (light.WorldGuid != worldGuid)
+                || cameras.IsEmpty
+                || !RenderExtractionValidation.MatchesFrame(light.Frame3, cameras[0].Frame3))
             {
-                throw new ArgumentException("The point-light values do not match their captured identity and World.");
-            }
-
-            if (cameras.IsEmpty || !RenderExtractionValidation.MatchesFrame(light.Frame3, cameras[0].Frame3))
-            {
-                throw new ArgumentException("The point-light value does not match the snapshot's committed World frame.");
+                throw new ArgumentException("The point-light values do not match their captured identity and frame.");
             }
 
             if (index > 0 && FoundationCatalogue.CompareRfc(pointLightIds[index - 1], lightId) >= 0)
@@ -98,13 +138,42 @@ public abstract class RenderSnapshot : IDisposable
             }
         }
 
+        for (var index = 0; index < spotLightIds.Length; index++)
+        {
+            var lightId = spotLightIds[index];
+            var light = spotLights[index];
+
+            if (lightId == Guid.Empty || !uniqueLightIds.Add(lightId))
+            {
+                throw new ArgumentException("The render snapshot light IDs must be nonempty and unique.", nameof(spotLightIds));
+            }
+
+            if ((light.LightId != lightId)
+                || (light.SnapshotId != snapshotId)
+                || (light.WorldGuid != worldGuid)
+                || cameras.IsEmpty
+                || !RenderExtractionValidation.MatchesFrame(light.Frame3, cameras[0].Frame3))
+            {
+                throw new ArgumentException("The spot-light values do not match their captured identity and frame.");
+            }
+
+            if (index > 0 && FoundationCatalogue.CompareRfc(spotLightIds[index - 1], lightId) >= 0)
+            {
+                throw new ArgumentException("The render snapshot spot lights must be in canonical light-ID order.", nameof(spotLightIds));
+            }
+        }
+
         SnapshotId = snapshotId;
         WorldGuid = worldGuid;
         TickIndex = tickIndex;
         _cameraIds = [.. cameraIds];
         _cameras = [.. cameras];
+        _directionalLightIds = [.. directionalLightIds];
+        _directionalLights = [.. directionalLights];
         _pointLightIds = [.. pointLightIds];
         _pointLights = [.. pointLights];
+        _spotLightIds = [.. spotLightIds];
+        _spotLights = [.. spotLights];
         TargetExtent = targetExtent;
     }
 
@@ -113,6 +182,12 @@ public abstract class RenderSnapshot : IDisposable
 
     /// <summary>Gets the copied camera values in committed camera order.</summary>
     public ImmutableArray<CameraSnapshot> Cameras => _cameras;
+
+    /// <summary>Gets the copied directional-light identities in canonical RFC-byte order.</summary>
+    public ImmutableArray<Guid> DirectionalLightIds => _directionalLightIds;
+
+    /// <summary>Gets the copied directional-light values in canonical RFC-byte order.</summary>
+    public ImmutableArray<RenderDirectionalLightSnapshot> DirectionalLights => _directionalLights;
 
     /// <summary>Gets the spatial dimension represented by this snapshot.</summary>
     public abstract RenderFrameDimension FrameDimension { get; }
@@ -131,6 +206,12 @@ public abstract class RenderSnapshot : IDisposable
 
     /// <summary>Gets the identity of this immutable snapshot.</summary>
     public Guid SnapshotId { get; }
+
+    /// <summary>Gets the copied spot-light identities in canonical RFC-byte order.</summary>
+    public ImmutableArray<Guid> SpotLightIds => _spotLightIds;
+
+    /// <summary>Gets the copied spot-light values in canonical RFC-byte order.</summary>
+    public ImmutableArray<RenderSpotLightSnapshot> SpotLights => _spotLights;
 
     /// <summary>Gets the physical target extent.</summary>
     public PixelSize TargetExtent { get; }

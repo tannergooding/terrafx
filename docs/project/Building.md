@@ -164,11 +164,11 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 
 These managed transaction cases do not qualify CPU extraction, NativeAOT, or native execution.
 
-The headless extraction cases exercise package-backed Scene and nested-Prefab activation, exact committed 2D/3D frame selection, canonical camera ordering, hierarchical pose composition, point-light layer filtering and stable identity, exact light-capacity refusal, copied snapshot lifetime, and stale-revision rejection. They also verify point-light defaults/validation and that CPU extraction registration requires Scene support and is admitted only once:
+The headless extraction cases exercise package-backed Scene and nested-Prefab activation, exact committed 2D/3D frame selection, canonical camera ordering, hierarchical pose composition, directional/point/spot light snapshots, camera-layer filtering, stable identities, exact combined light-capacity refusal, copied snapshot lifetime, and stale-revision rejection. They also verify light defaults/validation and that CPU extraction registration requires Scene support and is admitted only once:
 
 ```powershell
-dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~HeadlessRendererExtractsNestedSceneCamerasFromOneCommittedFrame|FullyQualifiedName~CpuExtractionSupportRequiresSceneSupportAndRejectsDuplicateRegistration|FullyQualifiedName~PointLightUsesWorldDefaultsAndRejectsInvalidMutation"
-dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~HeadlessRendererExtractsNestedSceneCamerasFromOneCommittedFrame|FullyQualifiedName~CpuExtractionSupportRequiresSceneSupportAndRejectsDuplicateRegistration|FullyQualifiedName~PointLightUsesWorldDefaultsAndRejectsInvalidMutation"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~HeadlessRendererExtractsNestedSceneCamerasFromOneCommittedFrame|FullyQualifiedName~CpuExtractionSupportRequiresSceneSupportAndRejectsDuplicateRegistration|FullyQualifiedName~DirectionalAndSpotLightsUseWorldDefaultsAndRejectInvalidMutation|FullyQualifiedName~PointLightUsesWorldDefaultsAndRejectsInvalidMutation"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~HeadlessRendererExtractsNestedSceneCamerasFromOneCommittedFrame|FullyQualifiedName~CpuExtractionSupportRequiresSceneSupportAndRejectsDuplicateRegistration|FullyQualifiedName~DirectionalAndSpotLightsUseWorldDefaultsAndRejectInvalidMutation|FullyQualifiedName~PointLightUsesWorldDefaultsAndRejectsInvalidMutation"
 ```
 
 This covers point lights only; draw/sprite/mesh/bone sources, directional/spot lights, asset-lease retention, and the complete frame-cohort lifecycle remain unimplemented. These managed tests do not qualify NativeAOT or native rendering.
