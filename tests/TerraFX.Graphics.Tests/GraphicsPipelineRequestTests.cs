@@ -15,7 +15,7 @@ namespace TerraFX.Graphics.Tests;
 [TestFixture]
 internal sealed class GraphicsPipelineRequestTests
 {
-    private static GraphicsCapabilities CreateCapabilities()
+    private static GraphicsCapabilities CreateCapabilities(GraphicsLimits? limits = null)
     {
         var features = ImmutableArray.Create(
             GraphicsFeature.Direct3DFeatureLevel12,
@@ -33,7 +33,7 @@ internal sealed class GraphicsPipelineRequestTests
             new GraphicsApiVersion(12, 0, 0, 0),
             features,
             features,
-            CreateLimits(),
+            limits ?? CreateLimits(),
             CreateFormats(),
             [new GraphicsMemoryHeapCapabilities(
                 0,
@@ -57,7 +57,10 @@ internal sealed class GraphicsPipelineRequestTests
 
     private static ComputePipelineDescription CreateComputePipelineDescription(
         BufferReadLease<byte> bytecode,
-        ImmutableArray<ShaderResourceSignature> resources)
+        ImmutableArray<ShaderResourceSignature> resources,
+        int groupSizeX = 1,
+        int groupSizeY = 1,
+        int groupSizeZ = 1)
     {
         var reflection = new ShaderReflection(
             ShaderStage.Compute,
@@ -69,9 +72,9 @@ internal sealed class GraphicsPipelineRequestTests
             [],
             [],
             bindingLayoutVersion: 1,
-            groupSizeX: 1,
-            groupSizeY: 1,
-            groupSizeZ: 1);
+            groupSizeX: groupSizeX,
+            groupSizeY: groupSizeY,
+            groupSizeZ: groupSizeZ);
         var shader = new ShaderBytecodeInput(ShaderStage.Compute, ShaderBinaryFormat.Dxil, bytecode, reflection);
         return new ComputePipelineDescription(shader, bindingLayoutVersion: 1);
     }
@@ -87,7 +90,11 @@ internal sealed class GraphicsPipelineRequestTests
             new GraphicsFormatCapabilities(TextureFormat.D32Float, TextureUsage.DepthAttachment | TextureUsage.Sampled, [1]),
         ];
 
-    private static GraphicsLimits CreateLimits()
+    private static GraphicsLimits CreateLimits(
+        int maximumComputeWorkGroupSizeX = 1024,
+        int maximumComputeWorkGroupSizeY = 1024,
+        int maximumComputeWorkGroupSizeZ = 64,
+        int maximumComputeWorkGroupInvocations = 1024)
         => new(
             maximumTextureDimension2D: 16384,
             maximumTextureDimension3D: 2048,
@@ -103,10 +110,10 @@ internal sealed class GraphicsPipelineRequestTests
             bufferCopyOffsetAlignment: 16,
             textureRowPitchAlignment: 256,
             texturePlacementAlignment: 512,
-            maximumComputeWorkGroupSizeX: 1024,
-            maximumComputeWorkGroupSizeY: 1024,
-            maximumComputeWorkGroupSizeZ: 64,
-            maximumComputeWorkGroupInvocations: 1024,
+            maximumComputeWorkGroupSizeX: maximumComputeWorkGroupSizeX,
+            maximumComputeWorkGroupSizeY: maximumComputeWorkGroupSizeY,
+            maximumComputeWorkGroupSizeZ: maximumComputeWorkGroupSizeZ,
+            maximumComputeWorkGroupInvocations: maximumComputeWorkGroupInvocations,
             maximumVertexInputAttributes: 32,
             maximumVertexInputBindings: 32,
             maximumBufferByteLength: 1L << 40);
@@ -170,6 +177,72 @@ internal sealed class GraphicsPipelineRequestTests
             ShaderStage.Compute => CreateComputePipelineDescription(bytecode, resources),
             _ => throw new ArgumentOutOfRangeException(nameof(stage)),
         };
+
+    [TestCase(4, 4, 4, true)]
+    [TestCase(17, 1, 1, false)]
+    [TestCase(1, 17, 1, false)]
+    [TestCase(1, 1, 17, false)]
+    [TestCase(5, 4, 4, false)]
+    public async Task ComputePipelineGroupSizeRespectsDeviceLimits(
+        int groupSizeX,
+        int groupSizeY,
+        int groupSizeZ,
+        bool expectedAdmission)
+    {
+        var limits = CreateLimits(
+            maximumComputeWorkGroupSizeX: 16,
+            maximumComputeWorkGroupSizeY: 16,
+            maximumComputeWorkGroupSizeZ: 16,
+            maximumComputeWorkGroupInvocations: 64);
+        using var continuePipelineCreation = new ManualResetEventSlim(initialState: true);
+        using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
+        var backendDevice = new FakeBackendDevice(
+            CreateCapabilities(limits),
+            pipelineCreationEntered,
+            continuePipelineCreation);
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var graphicsDevice = await GraphicsDevice.CreateAsync(
+            ownerId: 20,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        var bufferOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        var callerBytecodeLease = bufferOwner.AcquireRead(0, 4);
+        GpuPipeline? pipeline = null;
+
+        try
+        {
+            var description = CreateComputePipelineDescription(
+                callerBytecodeLease,
+                [],
+                groupSizeX,
+                groupSizeY,
+                groupSizeZ);
+
+            if (expectedAdmission)
+            {
+                pipeline = await graphicsDevice.CreatePipelineAsync(description)
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.That(pipeline.Handle.IsValid, Is.True);
+                Assert.That(backendDevice.PipelineCreationCount, Is.EqualTo(1));
+            }
+            else
+            {
+                _ = Assert.ThrowsAsync<NotSupportedException>(
+                    async () => _ = await graphicsDevice.CreatePipelineAsync(description)
+                        .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+                Assert.That(backendDevice.PipelineCreationCount, Is.Zero);
+            }
+        }
+        finally
+        {
+            pipeline?.Dispose();
+            callerBytecodeLease.Dispose();
+            bufferOwner.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
 
     [Test]
     public async Task PipelineCancellationWaitsForBackendCreationAndRetiresThePipeline()

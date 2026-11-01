@@ -33,7 +33,7 @@ The new Windows x64 `compile-m04-dxil` command compiles the pinned vertex/pixel 
 
 ### Current graphics pipeline-layout status
 
-`GraphicsPipelineDescription` rejects Vertex/Pixel reflection entries that share a `(group, register class, binding)` but disagree on resource kind or fixed array count; distinct stage-local bindings remain valid. Exact per-stage sampled-image/sampler/uniform-buffer limits now have max/max+1 cases in Vertex, Pixel, and Compute, with over-limit descriptions rejected before backend invocation. `Graphics.Tests` pass 70/70 in Debug and Release; fresh TRX: `artifacts\\tst\\Debug\\tagoo_GOODING-ZEN4_2026-11-01_09_17_21_net11.0.trx` and `artifacts\\tst\\Release\\tagoo_GOODING-ZEN4_2026-11-01_09_17_47_net11.0.trx`. This verifies immutable metadata only; actual-byte reflection and resource-bearing native PSOs remain blocked.
+`GraphicsPipelineDescription` rejects Vertex/Pixel reflection entries that share a `(group, register class, binding)` but disagree on resource kind or fixed array count; distinct stage-local bindings remain valid. Exact per-stage sampled-image/sampler/uniform-buffer limits now have max/max+1 cases in Vertex, Pixel, and Compute, with over-limit descriptions rejected before backend invocation. Compute work-group admission now has exact-device-limit and over-limit cases for each axis and total invocations. `Graphics.Tests` pass 75/75 in Debug and Release; fresh TRX: `artifacts\\tst\\Debug\\tagoo_GOODING-ZEN4_2026-11-01_09_27_55_net11.0.trx` and `artifacts\\tst\\Release\\tagoo_GOODING-ZEN4_2026-11-01_09_28_14_net11.0.trx`. This verifies immutable metadata only; actual-byte reflection and resource-bearing native PSOs remain blocked.
 
 ## Validation boundaries
 
