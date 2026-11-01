@@ -3916,20 +3916,32 @@ public enum TextureUsage
     CopyDestination = 32
 }
 
-public readonly struct TextureSubresource
+public readonly struct TextureSubresource : IEquatable<TextureSubresource>
 {
     public TextureSubresource(int mipLevel, int arrayLayer, TextureAspect aspect);
-    public int MipLevel { get; }
     public int ArrayLayer { get; }
     public TextureAspect Aspect { get; }
+    public int MipLevel { get; }
+    public static bool operator !=(TextureSubresource left, TextureSubresource right);
+    public static bool operator ==(TextureSubresource left, TextureSubresource right);
+    public bool Equals(TextureSubresource other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
 }
 
-public readonly struct TextureDataLayout
+public readonly struct TextureDataLayout : IEquatable<TextureDataLayout>
 {
     public TextureDataLayout(nint rowPitch, nint slicePitch);
     public nint RowPitch { get; }
     public nint SlicePitch { get; }
+    public static bool operator !=(TextureDataLayout left, TextureDataLayout right);
+    public static bool operator ==(TextureDataLayout left, TextureDataLayout right);
+    public bool Equals(TextureDataLayout other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
 }
+
+`TextureAspect` has explicit values `Color = 0` and `Depth = 1`. `TextureSubresource` rejects negative mip/layer indices and undefined aspects; its default identifies color mip 0, layer 0. Upload/readback validates the subresource against the actual texture, including layer zero for 3D textures. `TextureDataLayout` requires positive row and slice pitches; upload validates texel coverage, nonoverlap, checked extent arithmetic, and the source lease range before admission.
 
 public sealed class TextureReadback : IDisposable
 {
@@ -4553,8 +4565,8 @@ public enum GraphTextureUsage
 
 public enum TextureAspect
 {
-    Color,
-    Depth
+    Color = 0,
+    Depth = 1
 }
 
 public readonly struct GraphBufferRange
