@@ -435,21 +435,25 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
-    public async Task TextureAllocationBudgetIsReleasedWhenBackendCreationFails()
+    public async Task TextureAllocationAndRetirementReservationsRecoverAfterBackendCreationFailures()
     {
+        const int failureCount = 257;
         var backendDevice = new FakeBackendDevice(
             textureAllocationSizeBytes: 300L * 1024 * 1024,
-            failNextTextureCreation: true);
+            textureCreationFailureCount: failureCount);
         var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
         GpuTexture? texture = null;
 
         try
         {
-            _ = Assert.ThrowsAsync<InvalidOperationException>(
-                async () => await graphicsDevice.CreateTextureAsync(CreateTextureDescription()).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+            for (var index = 0; index < failureCount; index++)
+            {
+                _ = Assert.ThrowsAsync<InvalidOperationException>(
+                    async () => await graphicsDevice.CreateTextureAsync(CreateTextureDescription()).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+            }
 
             texture = await graphicsDevice.CreateTextureAsync(CreateTextureDescription()).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            Assert.That(backendDevice.TextureCreationCount, Is.EqualTo(2));
+            Assert.That(backendDevice.TextureCreationCount, Is.EqualTo(failureCount + 1));
         }
         finally
         {
@@ -714,8 +718,8 @@ internal sealed class GraphicsBufferTransferTests
         private int _bufferDisposalCount;
         private long _completedFence;
         private int _effectiveSamplerAnisotropyBits;
-        private int _failNextTextureCreation;
         private byte[]? _lastBufferBytes;
+        private int _remainingTextureCreationFailures;
         private int _samplerCreationCount;
         private int _samplerDisposalCount;
         private readonly long? _textureAllocationSizeBytes;
@@ -726,9 +730,10 @@ internal sealed class GraphicsBufferTransferTests
         internal FakeBackendDevice(
             long textureBudgetBytes = 3L * 1024 * 1024 * 1024,
             long? textureAllocationSizeBytes = null,
-            bool failNextTextureCreation = false)
+            int textureCreationFailureCount = 0)
         {
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(textureBudgetBytes);
+            ArgumentOutOfRangeException.ThrowIfNegative(textureCreationFailureCount);
 
             if (textureAllocationSizeBytes is <= 0)
             {
@@ -737,7 +742,7 @@ internal sealed class GraphicsBufferTransferTests
 
             _textureBudgetBytes = textureBudgetBytes;
             _textureAllocationSizeBytes = textureAllocationSizeBytes;
-            _failNextTextureCreation = failNextTextureCreation ? 1 : 0;
+            _remainingTextureCreationFailures = textureCreationFailureCount;
         }
 
         internal FakeBackendDevice(ManualResetEventSlim uploadEntered, ManualResetEventSlim continueUpload)
@@ -804,9 +809,9 @@ internal sealed class GraphicsBufferTransferTests
         {
             _ = Interlocked.Increment(ref _textureCreationCount);
 
-            if (Interlocked.Exchange(ref _failNextTextureCreation, 0) != 0)
+            if (Interlocked.Decrement(ref _remainingTextureCreationFailures) >= 0)
             {
-                throw new InvalidOperationException("The fake texture backend rejected its first creation attempt.");
+                throw new InvalidOperationException("The fake texture backend rejected a texture creation attempt.");
             }
 
             return new FakeBackendTexture(this, description);
