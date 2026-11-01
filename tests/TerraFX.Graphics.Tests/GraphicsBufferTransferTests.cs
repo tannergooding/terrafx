@@ -435,6 +435,61 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task TextureAllocationBudgetRejectsBeforeBackendCreationAndLeavesDeviceUsable()
+    {
+        var backendDevice = new FakeBackendDevice();
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        GpuTexture? texture = null;
+
+        try
+        {
+            var oversizedTexture = new TextureDescription(
+                TextureDimension.Dimension2D,
+                width: 16384,
+                height: 16384,
+                depth: 1,
+                arrayLayers: 1,
+                mipLevels: 1,
+                TextureFormat.Rgba8Unorm,
+                TextureUsage.Sampled | TextureUsage.CopySource | TextureUsage.CopyDestination,
+                debugName: "Oversized texture allocation test");
+            _ = Assert.ThrowsAsync<OutOfMemoryException>(
+                async () => await graphicsDevice.CreateTextureAsync(oversizedTexture).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+
+            Assert.That(backendDevice.TextureCreationCount, Is.Zero);
+
+            texture = await graphicsDevice.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+            Assert.That(backendDevice.TextureCreationCount, Is.EqualTo(1));
+        }
+        finally
+        {
+            texture?.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+
+        Assert.That(backendDevice.TextureDisposalCount, Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task TextureNativeHeapBudgetRejectsBeforeBackendCreation()
+    {
+        var backendDevice = new FakeBackendDevice(textureBudgetBytes: 23);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+
+        try
+        {
+            _ = Assert.ThrowsAsync<OutOfMemoryException>(
+                async () => await graphicsDevice.CreateTextureAsync(CreateTextureDescription()).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+
+            Assert.That(backendDevice.TextureCreationCount, Is.Zero);
+        }
+        finally
+        {
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task TextureUploadRepackagesRowsAndReadbackZeroesExposedPadding()
     {
         var backendDevice = new FakeBackendDevice();
@@ -636,16 +691,21 @@ internal sealed class GraphicsBufferTransferTests
         private byte[]? _lastBufferBytes;
         private int _samplerCreationCount;
         private int _samplerDisposalCount;
+        private readonly long _textureBudgetBytes;
+        private int _textureCreationCount;
         private int _textureDisposalCount;
-
-        internal FakeBackendDevice()
-        {
-        }
 
         internal FakeBackendDevice(ManualResetEventSlim uploadEntered, ManualResetEventSlim continueUpload)
         {
             _uploadEntered = uploadEntered;
             _continueUpload = continueUpload;
+            _textureBudgetBytes = 3L * 1024 * 1024 * 1024;
+        }
+
+        internal FakeBackendDevice(long textureBudgetBytes = 3L * 1024 * 1024 * 1024)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(textureBudgetBytes);
+            _textureBudgetBytes = textureBudgetBytes;
         }
 
         public GraphicsCapabilities Capabilities => _capabilities;
@@ -660,6 +720,8 @@ internal sealed class GraphicsBufferTransferTests
         internal int SamplerCreationCount => Volatile.Read(ref _samplerCreationCount);
 
         internal int SamplerDisposalCount => Volatile.Read(ref _samplerDisposalCount);
+
+        internal int TextureCreationCount => Volatile.Read(ref _textureCreationCount);
 
         internal int TextureDisposalCount => Volatile.Read(ref _textureDisposalCount);
 
@@ -700,7 +762,10 @@ internal sealed class GraphicsBufferTransferTests
         }
 
         public IGraphicsBackendTexture CreateTexture(TextureDescription description)
-            => new FakeBackendTexture(this, description);
+        {
+            _ = Interlocked.Increment(ref _textureCreationCount);
+            return new FakeBackendTexture(this, description);
+        }
 
         public void Dispose()
         {
@@ -728,7 +793,7 @@ internal sealed class GraphicsBufferTransferTests
                 }
             }
 
-            return new GraphicsResourceAllocationInfo(sizeBytes, alignment: 1, heapIndex: 0, budgetBytes: 3L * 1024 * 1024 * 1024);
+            return new GraphicsResourceAllocationInfo(sizeBytes, alignment: 1, heapIndex: 0, budgetBytes: _textureBudgetBytes);
         }
 
         public OwnedBuffer<byte> ReadbackBuffer(IGraphicsBackendBuffer source, long sourceOffset, nint byteLength)
