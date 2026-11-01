@@ -198,6 +198,20 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(float.Abs(cameraRight.X), Is.LessThan(1.0e-5f));
             Assert.That(float.Abs(cameraRight.Y - 1.0f), Is.LessThan(1.0e-5f));
 
+            var frame2 = publication.Frame2
+                ?? throw new InvalidOperationException("The enabled 2D frame was omitted from the committed publication.");
+            var options2D = new RenderExtractionOptions2D(frame2, options.TargetExtent, options.CameraIds);
+            var response2D = renderer.Extract(world, options2D);
+
+            Assert.That(response2D.Status, Is.EqualTo(RenderExtractionStatus.Extracted));
+            Assert.That(response2D.Snapshot, Is.TypeOf<RenderSnapshot2D>());
+            var snapshot2D = (RenderSnapshot2D)(response2D.Snapshot
+                ?? throw new InvalidOperationException("The successful 2D extraction omitted its snapshot."));
+            Assert.That(snapshot2D.FrameDimension, Is.EqualTo(RenderFrameDimension.TwoDimensional));
+            Assert.That(snapshot2D.FrameRevision, Is.EqualTo(frame2.Revision));
+            Assert.That(snapshot2D.Cameras[1].Position, Is.EqualTo(snapshot.Cameras[1].Position));
+            snapshot2D.Dispose();
+
             snapshot.Dispose();
             Assert.That(snapshot.Cameras, Has.Length.EqualTo(2));
             var changedRootTransform = new SceneComponentDefinitions.LocalTransformComponent(
@@ -214,6 +228,17 @@ internal sealed partial class SceneAssetStoreTests
             var currentResponse = renderer.Extract(world, currentOptions);
             Assert.That(currentResponse.Status, Is.EqualTo(RenderExtractionStatus.Extracted));
             Assert.That(currentResponse.Snapshot?.TickIndex, Is.EqualTo(nextPublication.CompletedTick));
+            var nextFrame2 = nextPublication.Frame2
+                ?? throw new InvalidOperationException("The enabled 2D frame was omitted from the next committed publication.");
+            var currentOptions2D = new RenderExtractionOptions2D(
+                nextFrame2,
+                currentOptions.TargetExtent,
+                currentOptions.CameraIds);
+            var currentResponse2D = renderer.Extract(world, currentOptions2D);
+            Assert.That(currentResponse2D.Status, Is.EqualTo(RenderExtractionStatus.Extracted));
+            Assert.That(currentResponse2D.Snapshot?.TickIndex, Is.EqualTo(nextPublication.CompletedTick));
+            currentResponse.Snapshot?.Dispose();
+            currentResponse2D.Snapshot?.Dispose();
         }
         finally
         {
