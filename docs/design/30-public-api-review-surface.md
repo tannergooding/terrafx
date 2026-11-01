@@ -6619,6 +6619,105 @@ public sealed class InputInjection
     public float? TriggerValue { get; }
 }
 
+public enum PhysicalInputEventKind
+{
+    None = 0,
+    KeyDown = 1,
+    KeyUp = 2,
+    KeyRepeat = 3,
+    PointerButtonDown = 4,
+    PointerButtonUp = 5,
+    PointerAbsoluteMotion = 6,
+    PointerRelativeMotion = 7,
+    VerticalScroll = 8,
+    HorizontalScroll = 9,
+    GamepadButtonDown = 10,
+    GamepadButtonUp = 11,
+    GamepadAxis = 12,
+    GamepadStick = 13,
+    GamepadTrigger = 14,
+    FocusGained = 15,
+    FocusLost = 16,
+    WindowEntered = 17,
+    WindowLeft = 18,
+    DeviceAdded = 19,
+    DeviceRemoved = 20,
+    DeviceAssigned = 21,
+    StateReconciliation = 22
+}
+
+[Flags]
+public enum PhysicalInputEventDiagnostic
+{
+    None = 0,
+    TimestampUncertain = 1
+}
+
+public enum PointerScrollUnit
+{
+    None = 0,
+    Detents = 1,
+    SurfaceScale = 2
+}
+
+public enum PhysicalInputValueKind
+{
+    None = 0,
+    Digital = 1,
+    GamepadAxis = 2,
+    GamepadStick = 3,
+    GamepadTrigger = 4
+}
+
+public readonly record struct PhysicalInputValue
+{
+    internal PhysicalInputValue(DigitalControl digitalControl, bool isDown);
+    internal PhysicalInputValue(GamepadAxis axis, float axisValue);
+    internal PhysicalInputValue(GamepadStick stick, Vector2 stickValue);
+    internal PhysicalInputValue(GamepadTrigger trigger, float triggerValue);
+    public PhysicalInputValueKind Kind { get; }
+    public DigitalControl? DigitalControl { get; }
+    public bool? IsDown { get; }
+    public GamepadAxis? Axis { get; }
+    public float? AxisValue { get; }
+    public GamepadStick? Stick { get; }
+    public Vector2? StickValue { get; }
+    public GamepadTrigger? Trigger { get; }
+    public float? TriggerValue { get; }
+}
+
+public sealed class PhysicalInputEvent
+{
+    internal PhysicalInputEvent(PhysicalInputEventKind kind, long hostTimestamp, long hostSequence,
+        InputDeviceHandle? device = null, WindowHandle? window = null, PhysicalInputValue? value = null,
+        Vector2? pointerPosition = null, Vector2? pointerDelta = null, Vector2? pointerContentScale = null,
+        float? scrollValue = null, PointerScrollUnit? scrollUnit = null, ushort? playerSlot = null,
+        ushort? nativeUsagePage = null, ushort? nativeUsage = null, uint? nativeScanCode = null,
+        uint? nativeVirtualKey = null, long? nativeTimestamp = null, string? nativeClockDomain = null,
+        PhysicalInputEventDiagnostic flags = PhysicalInputEventDiagnostic.None,
+        ImmutableArray<PhysicalInputValue> reconciliationState = default);
+    public PhysicalInputEventKind Kind { get; }
+    public long HostTimestamp { get; }
+    public long HostSequence { get; }
+    public InputDeviceHandle? Device { get; }
+    public WindowHandle? Window { get; }
+    public PhysicalInputValue? Value { get; }
+    public Vector2? PointerPosition { get; }
+    public Vector2? PointerDelta { get; }
+    public Vector2? PointerContentScale { get; }
+    public float? ScrollValue { get; }
+    public PointerScrollUnit? ScrollUnit { get; }
+    public ushort? PlayerSlot { get; }
+    public ushort? NativeUsagePage { get; }
+    public ushort? NativeUsage { get; }
+    public uint? NativeScanCode { get; }
+    public uint? NativeVirtualKey { get; }
+    public long? NativeTimestamp { get; }
+    public string? NativeClockDomain { get; }
+    public PhysicalInputEventDiagnostic Flags { get; }
+    public ImmutableArray<PhysicalInputValue> ReconciliationState { get; }
+}
+
 public enum TextInputPurpose
 {
     FreeForm,
