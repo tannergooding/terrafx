@@ -1313,9 +1313,21 @@ namespace TerraFX.Hosting;
 
 public enum HostProfile
 {
+    None = 0,
     Headless = 1,
     OffscreenNative = 2,
     Interactive = 3
+}
+
+public enum SimulationOverrunPolicy
+{
+    Pause = 0,
+    DropDebt = 1
+}
+
+public enum GraphicsFailurePolicy
+{
+    StopHost = 0
 }
 
 public sealed class EngineHostOptions
@@ -1407,7 +1419,7 @@ public sealed class InputBindingReceipt
 
 `GetSurface` is synchronous and owner-thread-only. It returns the same host-owned logical `Surface` for a live interactive `WindowHandle`; a default/foreign handle throws `ArgumentException`, while off-owner-thread access, a stale/closed handle, or a live window without an interactive surface throws `InvalidOperationException`. Successful interactive window creation establishes this mapping before returning its `Created` receipt. Applying `CloseWindowAsync` invalidates the mapping and the logical surface immediately; native surface/swapchain storage remains fence-retained until GPU use and queued presentation have actually retired. `EngineHost.GetSurface` does not add a `Platform` dependency to `TerraFX.Graphics`.
 
-`EngineHostOptions` requires host profile, platform, nullable graphics backend, nullable matching graphics-backend registration, and `AssetStoreOptions` in its constructor; that constructor has no optional arguments or fallback package path. `OverrunPolicy` defaults to the chapter [03](03-shared-conventions-and-clocks.md) pause-on-overrun policy, `GraphicsFailurePolicy` defaults to `StopHost`, and `ShutdownTimeout` defaults to five seconds. `Headless` requires both graphics inputs to be null; `OffscreenNative` and `Interactive` require both to be non-null and to identify the same backend. A registration is immutable factory metadata returned by the explicitly referenced backend package; it is not a device, owner, adapter, surface, or native handle. All option values are validated before host construction. `AssetStoreOptions.AbsolutePackagePath`, `ExpectedPackageSha256`, and `Registration` are the required package selection and trusted admission inputs; no cache-directory option exists in this contract. The host passes the frozen options to `AssetStore.CreateAsync` and does not report startup complete until the package digest, directory, profile, registration closure, typed references, and selected graphics device are admitted.
+`EngineHostOptions` requires host profile, platform, nullable graphics backend, nullable matching graphics-backend registration, and `AssetStoreOptions` in its constructor; that constructor has no optional arguments or fallback package path. `HostProfile.None=0` is invalid; Headless/OffscreenNative require `PlatformBackend.Headless`, while Interactive requires a native display selector. Headless requires both graphics inputs to be null; native profiles require both to be non-null and identify the same backend; Interactive D3D12 requires WindowsNative. `OverrunPolicy` uses `Pause=0` and `DropDebt=1`, defaulting to pause on overrun; `GraphicsFailurePolicy` currently has only `StopHost=0`. `CpuWorkerCount` is in `[0,64]`, defaults to `min(64, max(1, ProcessorCount-2))`, and zero executes partitions inline without worker threads. `ShutdownTimeout` is positive and defaults to five seconds. `ClipboardServicePolicy` defaults to `NotRequested`. These selector and scalar values are validated by the options type before host construction; package contents and runtime/backend capabilities remain startup admission checks. A registration is immutable factory metadata returned by the explicitly referenced backend package; it is not a device, owner, adapter, surface, or native handle. `AssetStoreOptions.AbsolutePackagePath`, `ExpectedPackageSha256`, and `Registration` are the required package selection and trusted admission inputs; no cache-directory option exists in this contract. The host passes the frozen options to `AssetStore.CreateAsync` and does not report startup complete until the package digest, directory, profile, registration closure, typed references, and selected graphics device are admitted.
 
 `InvokeAsync` and `TryInvoke` invoke a bounded synchronous callback on the host owner between ticks. The `EngineContext` is valid only during that callback; retaining it does not retain authority, and later use throws. The callback cannot await, recursively pump, or synchronously wait for its own completion. `TryInvoke` returns false only for a full bounded mailbox, with `completion = null`; true supplies the same asynchronously completed or faulted task as `InvokeAsync`. A pre-canceled `InvokeAsync` returns a canceled task; a pre-canceled `TryInvoke` throws `OperationCanceledException` before admission. `StopAsync` is idempotent; cancellation of its wait cannot undo accepted shutdown. `EngineContext` has no frame-change method: it is a borrowed synchronous callback capability, not the ordinary-thread queue service or standalone World control route. `World.SetFrame` is the owner-idle standalone route; either `EngineHost.ChangeFrameAsync` overload targets the exact hosted World binding and does not require the caller to be the World owner.
 
