@@ -15,17 +15,20 @@ public readonly struct ShaderCompilerIdentity : IEquatable<ShaderCompilerIdentit
     /// <param name="packageId">The nonempty package ID.</param>
     /// <param name="releaseVersion">The nonempty upstream source release version.</param>
     /// <param name="packageVersion">The nonempty package version.</param>
+    /// <param name="targetRid">The nonempty compiler artifact target runtime identifier.</param>
     /// <param name="packageSha256">The 32-byte SHA-256 digest of the package artifact.</param>
     /// <exception cref="ArgumentException">A string is empty or the digest is not exactly 32 initialized bytes.</exception>
     public ShaderCompilerIdentity(
         string packageId,
         string releaseVersion,
         string packageVersion,
+        string targetRid,
         ImmutableArray<byte> packageSha256)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(packageId);
         ArgumentException.ThrowIfNullOrWhiteSpace(releaseVersion);
         ArgumentException.ThrowIfNullOrWhiteSpace(packageVersion);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetRid);
 
         if (packageSha256.IsDefault || (packageSha256.Length != 32))
         {
@@ -35,6 +38,7 @@ public readonly struct ShaderCompilerIdentity : IEquatable<ShaderCompilerIdentit
         PackageId = packageId;
         ReleaseVersion = releaseVersion;
         PackageVersion = packageVersion;
+        TargetRid = targetRid;
         _packageSha256 = [.. packageSha256.ToArray()];
     }
 
@@ -43,6 +47,7 @@ public readonly struct ShaderCompilerIdentity : IEquatable<ShaderCompilerIdentit
         => !string.IsNullOrWhiteSpace(PackageId)
         && !string.IsNullOrWhiteSpace(ReleaseVersion)
         && !string.IsNullOrWhiteSpace(PackageVersion)
+        && !string.IsNullOrWhiteSpace(TargetRid)
         && !_packageSha256.IsDefault
         && (_packageSha256.Length == 32);
 
@@ -58,6 +63,9 @@ public readonly struct ShaderCompilerIdentity : IEquatable<ShaderCompilerIdentit
     /// <summary>Gets the upstream source release version.</summary>
     public string ReleaseVersion { get; }
 
+    /// <summary>Gets the compiler artifact target runtime identifier.</summary>
+    public string TargetRid { get; }
+
     /// <summary>Negates compiler identity equality.</summary>
     public static bool operator !=(ShaderCompilerIdentity left, ShaderCompilerIdentity right)
         => !left.Equals(right);
@@ -71,6 +79,7 @@ public readonly struct ShaderCompilerIdentity : IEquatable<ShaderCompilerIdentit
         => StringComparer.Ordinal.Equals(PackageId, other.PackageId)
         && StringComparer.Ordinal.Equals(ReleaseVersion, other.ReleaseVersion)
         && StringComparer.Ordinal.Equals(PackageVersion, other.PackageVersion)
+        && StringComparer.Ordinal.Equals(TargetRid, other.TargetRid)
         && _packageSha256.AsSpan().SequenceEqual(other._packageSha256.AsSpan());
 
     /// <inheritdoc />
@@ -84,6 +93,7 @@ public readonly struct ShaderCompilerIdentity : IEquatable<ShaderCompilerIdentit
         hash.Add(PackageId, StringComparer.Ordinal);
         hash.Add(ReleaseVersion, StringComparer.Ordinal);
         hash.Add(PackageVersion, StringComparer.Ordinal);
+        hash.Add(TargetRid, StringComparer.Ordinal);
 
         foreach (var value in _packageSha256)
         {

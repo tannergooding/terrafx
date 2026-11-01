@@ -22,6 +22,7 @@ internal sealed class ShaderReflectionTests
             "Microsoft.Direct3D.DXC",
             "1.8.2505.1",
             "1.8.2505.32",
+            "win-x64",
             ImmutableCollectionsMarshal.AsImmutableArray(digest));
     }
 
@@ -100,6 +101,7 @@ internal sealed class ShaderReflectionTests
             "Microsoft.Direct3D.DXC",
             "1.8.2505.1",
             "1.8.2505.32",
+            "win-x64",
             ImmutableCollectionsMarshal.AsImmutableArray(digest));
 
         digest[0] = 0;
@@ -112,11 +114,13 @@ internal sealed class ShaderReflectionTests
             "Microsoft.Direct3D.DXC",
             "1.8.2505.1",
             "1.8.2505.32",
+            "win-x64",
             default));
         _ = Assert.Throws<ArgumentException>(() => new ShaderCompilerIdentity(
             "Microsoft.Direct3D.DXC",
             "1.8.2505.1",
             "1.8.2505.32",
+            "win-x64",
             [(byte)1]));
     }
 

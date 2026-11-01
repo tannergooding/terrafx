@@ -4057,12 +4057,13 @@ public sealed class ShaderRecordLayout
 
 public readonly struct ShaderCompilerIdentity : IEquatable<ShaderCompilerIdentity>
 {
-    public ShaderCompilerIdentity(string packageId, string releaseVersion, string packageVersion, ImmutableArray<byte> packageSha256);
+    public ShaderCompilerIdentity(string packageId, string releaseVersion, string packageVersion, string targetRid, ImmutableArray<byte> packageSha256);
     public bool IsValid { get; }
     public string PackageId { get; }
     public ImmutableArray<byte> PackageSha256 { get; }
     public string PackageVersion { get; }
     public string ReleaseVersion { get; }
+    public string TargetRid { get; }
     public static bool operator !=(ShaderCompilerIdentity left, ShaderCompilerIdentity right);
     public static bool operator ==(ShaderCompilerIdentity left, ShaderCompilerIdentity right);
     public bool Equals(ShaderCompilerIdentity other);

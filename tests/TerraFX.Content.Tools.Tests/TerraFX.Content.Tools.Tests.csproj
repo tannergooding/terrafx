@@ -4,6 +4,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\sources\TerraFX.Content.Tools\TerraFX.Content.Tools.csproj" />
+    <Content Include="..\..\sources\TerraFX.Content.Tools\ShaderToolchainManifest.json" Link="ShaderToolchainManifest.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

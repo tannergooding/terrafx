@@ -72,6 +72,31 @@ dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --confi
 dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Release
 ```
 
+### Offline M04 shader fixture
+
+Run the bounded process and toolchain-manifest regressions:
+
+```powershell
+dotnet test .\tests\TerraFX.Content.Tools.Tests\TerraFX.Content.Tools.Tests.csproj --configuration Debug
+dotnet test .\tests\TerraFX.Content.Tools.Tests\TerraFX.Content.Tools.Tests.csproj --configuration Release
+```
+
+On Windows x64, build Content.Tools and verify its copied DXC binary digests, license files, and executable version:
+
+```powershell
+dotnet build .\sources\TerraFX.Content.Tools\TerraFX.Content.Tools.csproj --configuration Debug
+dotnet .\artifacts\bin\sources\TerraFX.Content.Tools\Debug\net11.0\TerraFX.Content.Tools.dll verify-dxc
+```
+
+To compile the M04 offscreen triangle, set `VULKAN_SDK` to the exact Vulkan SDK 1.4.328.1 root containing `Bin\spirv-cross.exe` and `Bin\spirv-val.exe`, then choose a new output directory:
+
+```powershell
+$env:VULKAN_SDK = 'C:\VulkanSDK\1.4.328.1'
+dotnet .\artifacts\bin\sources\TerraFX.Content.Tools\Debug\net11.0\TerraFX.Content.Tools.dll compile-m04-shader .\artifacts\shader-fixtures\m04-offscreen-triangle
+```
+
+The command emits per-stage DXIL with DXC reflection dumped from the binary, Vulkan 1.3 SPIR-V with SPIRV-Cross JSON reflection, and validates each SPIR-V module with `spirv-val`. The output directory must not already exist. Microsoft DXC is licensed for Windows-only use; Linux Vulkan consumers use the cooked SPIR-V and do not execute the Linux DXC archive.
+
 ### Retained AssetLease lifetime
 
 Run the focused retained-handle, lease-capacity, package-replacement, and store-disposal regressions:
