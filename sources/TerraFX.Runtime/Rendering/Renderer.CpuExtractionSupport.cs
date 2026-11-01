@@ -23,15 +23,16 @@ public sealed partial class Renderer
     /// <returns>The headless Renderer service.</returns>
     public static Renderer CreateHeadless() => new();
 
-    /// <summary>Registers the built-in native Texture asset codec with an Assets builder.</summary>
-    /// <param name="builder">The asset-store builder whose schema registry contains the native/texture and native/texture-mip schemas.</param>
-    /// <returns>The builder with the native Texture asset codec registered.</returns>
+    /// <summary>Registers the built-in native Texture and Atlas asset codecs with an Assets builder.</summary>
+    /// <param name="builder">The asset-store builder whose schema registry contains the Rendering schemas.</param>
+    /// <returns>The builder with the supported rendering asset codecs registered.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="builder"/> is null.</exception>
-    /// <exception cref="ArgumentException">The builder does not contain the exact compiled texture schema tuple or registration conflicts.</exception>
+    /// <exception cref="ArgumentException">The builder does not contain the exact compiled rendering schema tuples or registration conflicts.</exception>
     public static AssetStoreRegistrationBuilder RegisterAssetCodecs(AssetStoreRegistrationBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        return builder.RegisterCodec(new RenderTextureAssetCodec());
+        _ = builder.RegisterCodec(new RenderTextureAssetCodec());
+        return builder.RegisterCodec(new RenderAtlasAssetCodec());
     }
 
     private sealed class BuiltInCpuExtractionSupportRegistration : IWorldCpuExtractionSupportRegistration

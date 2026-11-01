@@ -59,9 +59,11 @@ internal sealed class RenderTextureAssetCodec : IContextualBinarySchemaCodec<Ren
                 ]));
         }
 
-        if (!TryEncodeRecordArray(mipRecords.MoveToImmutable(), limits, out var mipPayload, out var diagnostic))
+        var mipArray = mipRecords.MoveToImmutable();
+
+        if (!RenderAssetRecordArrayWriter.TryEncode(mipArray.AsSpan(), limits, out var mipPayload, out var diagnostic))
         {
-            throw new InvalidDataException($"Texture mip records could not be encoded: {diagnostic?.Category ?? "unknown"}.");
+            throw new InvalidDataException($"Texture mip records could not be encoded: {diagnostic ?? "unknown"}.");
         }
 
         var mipField = new EbinField(8, 24, 1, checked((ulong)value.Mips.Length), mipPayload);
@@ -254,79 +256,6 @@ internal sealed class RenderTextureAssetCodec : IContextualBinarySchemaCodec<Ren
         }
 
         return field.Payload[0];
-    }
-
-    private static bool TryEncodeRecordArray(
-        ImmutableArray<EbinRecord> records,
-        EbinReadLimits limits,
-        out byte[] payload,
-        out BinarySchemaDiagnostic? diagnostic)
-    {
-        payload = [];
-        diagnostic = null;
-        var encodedRecords = new byte[records.Length][];
-        var recordSlices = new EbinPayloadSlice[records.Length];
-        var storageLength = 0;
-
-        for (var index = 0; index < records.Length; index++)
-        {
-            var status = EbinCodec.Prepare(records[index], out var encodedRecord, out var ebinDiagnostic);
-
-            if (status is not EbinStatus.Complete)
-            {
-                diagnostic = CreateDiagnostic($"texture-mip-encode-{ebinDiagnostic.Category}");
-                return false;
-            }
-
-            encodedRecords[index] = encodedRecord;
-            recordSlices[index] = new EbinPayloadSlice(storageLength, encodedRecord.Length);
-            storageLength = checked(storageLength + encodedRecord.Length);
-        }
-
-        var storage = new byte[storageLength];
-
-        for (var index = 0; index < encodedRecords.Length; index++)
-        {
-            encodedRecords[index].CopyTo(storage, recordSlices[index].Offset);
-        }
-
-        var measureStatus = EbinPayloadWriter.MeasureRecordArray(
-            recordSlices,
-            storage,
-            limits,
-            out var payloadLength,
-            out var structuralDiagnostic);
-
-        if (measureStatus is not EbinWriteStatus.Complete)
-        {
-            diagnostic = CreateDiagnostic($"texture-mip-array-{structuralDiagnostic?.Category ?? measureStatus.ToString()}");
-            return false;
-        }
-
-        payload = new byte[payloadLength];
-        var writeStatus = EbinPayloadWriter.WriteRecordArray(
-            recordSlices,
-            storage,
-            limits,
-            payload,
-            out var bytesWritten,
-            out structuralDiagnostic);
-
-        if (writeStatus is not EbinWriteStatus.Complete)
-        {
-            payload = [];
-            diagnostic = CreateDiagnostic($"texture-mip-array-{structuralDiagnostic?.Category ?? writeStatus.ToString()}");
-            return false;
-        }
-
-        if (bytesWritten != payload.Length)
-        {
-            payload = [];
-            diagnostic = CreateDiagnostic("texture-mip-array-length-mismatch");
-            return false;
-        }
-
-        return true;
     }
 
     public BinaryRecordStatus Read(
