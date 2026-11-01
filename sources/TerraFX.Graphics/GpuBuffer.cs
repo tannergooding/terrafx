@@ -7,18 +7,18 @@ namespace TerraFX.Graphics;
 /// <summary>Owns one device-generation GPU buffer resource.</summary>
 public sealed class GpuBuffer : IDisposable
 {
-    private readonly long _byteLength;
+    private readonly BufferDescription _description;
     private readonly uint _deviceEpoch;
     private readonly GpuBufferHandle _handle;
     private readonly GraphicsResourceOwner _resourceOwner;
 
     internal GpuBuffer(
         GpuBufferHandle handle,
-        long byteLength,
+        BufferDescription description,
         uint deviceEpoch,
         GraphicsResourceOwner resourceOwner)
     {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(byteLength);
+        ArgumentNullException.ThrowIfNull(description);
         ArgumentOutOfRangeException.ThrowIfZero(deviceEpoch);
         ArgumentNullException.ThrowIfNull(resourceOwner);
 
@@ -30,20 +30,22 @@ public sealed class GpuBuffer : IDisposable
             throw new ArgumentException("The buffer handle must identify this device generation.", nameof(handle));
         }
 
-        _byteLength = byteLength;
+        _description = description;
         _deviceEpoch = deviceEpoch;
         _handle = handle;
         _resourceOwner = resourceOwner;
     }
 
     /// <summary>Gets the logical byte length.</summary>
-    public long ByteLength => _byteLength;
+    public long ByteLength => _description.ByteLength;
 
     /// <summary>Gets the device generation.</summary>
     public uint DeviceEpoch => _deviceEpoch;
 
     /// <summary>Gets the engine-issued buffer identity.</summary>
     public GpuBufferHandle Handle => _handle;
+
+    internal BufferDescription Description => _description;
 
     internal GraphicsResourceOwner ResourceOwner => _resourceOwner;
 

@@ -20,4 +20,15 @@ internal interface IGraphicsBackendDevice : IDisposable
     GraphicsResourceAllocationInfo GetBufferAllocationInfo(BufferDescription description);
 
     GraphicsResourceAllocationInfo GetTextureAllocationInfo(TextureDescription description);
+
+    OwnedBuffer<byte> ReadbackBuffer(IGraphicsBackendBuffer source, long sourceOffset, nint byteLength);
+
+    long UploadBuffer(
+        IGraphicsBackendBuffer destination,
+        long destinationOffset,
+        BufferReadLease<byte> source,
+        nint sourceOffset,
+        nint byteLength);
+
+    long UploadBuffer(IGraphicsBackendBuffer destination, long destinationOffset, ReadOnlySpan<byte> source);
 }

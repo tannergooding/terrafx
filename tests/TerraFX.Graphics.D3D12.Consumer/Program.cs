@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
+using TerraFX.Buffers;
 using TerraFX.Graphics;
 using TerraFX.Graphics.D3D12;
 
@@ -54,6 +55,23 @@ internal static class Program
             throw new InvalidOperationException("The public CreatePipelineAsync contract is unavailable to nonfriend consumers.");
         }
 
+        var uploadSpanMethod = typeof(GraphicsDevice).GetMethod(
+            nameof(GraphicsDevice.UploadBufferAsync),
+            [typeof(GpuBuffer), typeof(long), typeof(ReadOnlySpan<byte>), typeof(CancellationToken)]);
+        var uploadLeaseMethod = typeof(GraphicsDevice).GetMethod(
+            nameof(GraphicsDevice.UploadBufferAsync),
+            [typeof(GpuBuffer), typeof(long), typeof(BufferReadLease<byte>), typeof(nint), typeof(nint), typeof(CancellationToken)]);
+        var readbackBufferMethod = typeof(GraphicsDevice).GetMethod(
+            nameof(GraphicsDevice.ReadbackBufferAsync),
+            [typeof(GpuBuffer), typeof(long), typeof(nint), typeof(CancellationToken)]);
+
+        if ((uploadSpanMethod?.ReturnType != typeof(Task<UploadReceipt>))
+            || (uploadLeaseMethod?.ReturnType != typeof(Task<UploadReceipt>))
+            || (readbackBufferMethod?.ReturnType != typeof(Task<OwnedBuffer<byte>>)))
+        {
+            throw new InvalidOperationException("The public buffer upload/readback contracts are unavailable to nonfriend consumers.");
+        }
+
         if (typeof(GraphicsPipelineDescription).GetConstructor([
             typeof(ImmutableArray<ShaderBytecodeInput>),
             typeof(ImmutableArray<VertexElementDescription>),
@@ -88,6 +106,6 @@ internal static class Program
             throw new InvalidOperationException("The public VertexElementDescription contract is unavailable to nonfriend consumers.");
         }
 
-        Console.WriteLine("D3D12 public registration consumer passed with unsafe disabled, public pipeline creation and description signatures, no public owner/resource construction, and no native device activation.");
+        Console.WriteLine("D3D12 public registration consumer passed with unsafe disabled, public transfer and pipeline signatures, no public owner/resource construction, and no native device activation.");
     }
 }

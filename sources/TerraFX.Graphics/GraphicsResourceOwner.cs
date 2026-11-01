@@ -7,6 +7,7 @@ namespace TerraFX.Graphics;
 
 internal sealed class GraphicsResourceOwner : IDisposable
 {
+    private int _activeUseCount;
     private readonly GraphicsResourceAllocationInfo? _allocationInfo;
     private readonly IGraphicsBackendResource _backendResource;
     private readonly GraphicsDevice _device;
@@ -38,6 +39,12 @@ internal sealed class GraphicsResourceOwner : IDisposable
 
     internal uint DeviceEpoch => _device.DeviceEpoch;
 
+    internal bool HasActiveUses => Volatile.Read(ref _activeUseCount) != 0;
+
+    internal bool IsLiveForNewWork => Volatile.Read(ref _retirementState) == 0;
+
+    internal bool IsRetirementRequested => Volatile.Read(ref _retirementState) == 1;
+
     internal uint OwnerId => _device.OwnerId;
 
     internal GraphicsOwnerRequestQueue.GraphicsRetirementReservation RetirementReservation => _retirementReservation;
@@ -50,16 +57,52 @@ internal sealed class GraphicsResourceOwner : IDisposable
         }
     }
 
+    internal UseLease AcquireUse(string parameterName)
+    {
+        while (true)
+        {
+            if (!IsLiveForNewWork)
+            {
+                throw new ObjectDisposedException(parameterName, "The Graphics resource no longer accepts new work.");
+            }
+
+            _ = Interlocked.Increment(ref _activeUseCount);
+
+            if (IsLiveForNewWork)
+            {
+                try
+                {
+                    return new UseLease(this);
+                }
+                catch
+                {
+                    ReleaseUse();
+                    throw;
+                }
+            }
+
+            ReleaseUse();
+        }
+    }
+
     internal void MarkQuarantined()
         => Volatile.Write(ref _retirementState, 3);
 
     internal void MarkRetired()
         => Volatile.Write(ref _retirementState, 3);
 
+    internal void RequestRetirementForShutdown()
+        => _ = Interlocked.CompareExchange(ref _retirementState, 1, 0);
+
     internal bool TryBeginRetirement()
     {
         while (true)
         {
+            if (HasActiveUses)
+            {
+                return false;
+            }
+
             var currentState = Volatile.Read(ref _retirementState);
 
             if (currentState >= 2)
@@ -71,6 +114,37 @@ internal sealed class GraphicsResourceOwner : IDisposable
             {
                 return true;
             }
+        }
+    }
+
+    private void ReleaseUse()
+    {
+        var activeUseCount = Interlocked.Decrement(ref _activeUseCount);
+
+        if (activeUseCount < 0)
+        {
+            throw new InvalidOperationException("A Graphics resource use credit was released more than once.");
+        }
+
+        if ((activeUseCount == 0) && IsRetirementRequested)
+        {
+            _device.NotifyResourceUseReleased();
+        }
+    }
+
+    internal sealed class UseLease : IDisposable
+    {
+        private GraphicsResourceOwner? _owner;
+
+        internal UseLease(GraphicsResourceOwner owner)
+        {
+            _owner = owner;
+        }
+
+        public void Dispose()
+        {
+            var owner = Interlocked.Exchange(ref _owner, null);
+            owner?.ReleaseUse();
         }
     }
 }

@@ -127,6 +127,9 @@ internal sealed class GraphicsOwnerRequestQueue : IDisposable
         }
     }
 
+    internal void SignalOwnerWork()
+        => SignalWork();
+
     internal bool TryEnqueueRetirement(IGraphicsDeviceWork work, GraphicsRetirementReservation reservation)
     {
         ArgumentNullException.ThrowIfNull(work);

@@ -316,6 +316,20 @@ internal sealed class GraphicsPipelineRequestTests
         public GraphicsResourceAllocationInfo GetTextureAllocationInfo(TextureDescription description)
             => throw new NotSupportedException();
 
+        public OwnedBuffer<byte> ReadbackBuffer(IGraphicsBackendBuffer source, long sourceOffset, nint byteLength)
+            => throw new NotSupportedException();
+
+        public long UploadBuffer(
+            IGraphicsBackendBuffer destination,
+            long destinationOffset,
+            BufferReadLease<byte> source,
+            nint sourceOffset,
+            nint byteLength)
+            => throw new NotSupportedException();
+
+        public long UploadBuffer(IGraphicsBackendBuffer destination, long destinationOffset, ReadOnlySpan<byte> source)
+            => throw new NotSupportedException();
+
         internal void PipelineDisposed()
             => _ = Interlocked.Increment(ref _pipelineDisposalCount);
     }

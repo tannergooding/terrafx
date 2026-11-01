@@ -664,8 +664,16 @@ public static unsafe class D3D12GraphicsBackend
 
         private sealed unsafe class D3D12BackendDevice : IGraphicsBackendDevice
         {
+            private const long MaximumDedicatedStagingAllocationBytes = 512L * 1024 * 1024;
+            private const long StagingRingCapacityBytes = 64L * 1024 * 1024;
+
             private IDXGIAdapter3* _adapter;
             private ID3D12Device* _device;
+            private ID3D12Resource* _quarantinedStagingResource;
+            private ID3D12Resource* _readbackStagingResource;
+            private D3D12BackendFactory.D3D12TransferQueue? _transferQueue;
+            private byte* _uploadStagingMapped;
+            private ID3D12Resource* _uploadStagingResource;
 
             internal D3D12BackendDevice(ID3D12Device* device, IDXGIAdapter3* adapter, GraphicsCapabilities capabilities)
             {
@@ -683,6 +691,94 @@ public static unsafe class D3D12GraphicsBackend
 
             public GraphicsCapabilities Capabilities { get; }
 
+            private static OwnedBuffer<byte> CopyMappedStorageToOwnedBuffer(byte* source, nint byteLength)
+            {
+                var storage = UnmanagedBuffer<byte>.Allocate(
+                    byteLength,
+                    new BufferAllocationOptions(byteLength, alignment: 1));
+                var transferred = false;
+
+                try
+                {
+                    nint copiedBytes = 0;
+
+                    while (copiedBytes < byteLength)
+                    {
+                        var remainingBytes = byteLength - copiedBytes;
+                        var copyLength = remainingBytes > int.MaxValue
+                            ? int.MaxValue
+                            : checked((int)remainingBytes);
+                        storage.CopyFrom(new ReadOnlySpan<byte>(source + copiedBytes, copyLength), copiedBytes);
+                        copiedBytes = checked(copiedBytes + copyLength);
+                    }
+
+                    var ownedBuffer = storage.TransferToOwnedBuffer();
+                    transferred = true;
+                    return ownedBuffer;
+                }
+                finally
+                {
+                    if (!transferred)
+                    {
+                        storage.Dispose();
+                    }
+                }
+            }
+
+            private static void CopySourceLeaseToMappedStorage(
+                BufferReadLease<byte> source,
+                nint sourceOffset,
+                nint byteLength,
+                byte* destination)
+            {
+                nint copiedBytes = 0;
+
+                while (copiedBytes < byteLength)
+                {
+                    var remainingBytes = byteLength - copiedBytes;
+                    var copyLength = remainingBytes > int.MaxValue
+                        ? int.MaxValue
+                        : checked((int)remainingBytes);
+                    var copyAction = new BufferUploadCopyAction(destination + copiedBytes);
+                    source.UseWindow(checked(sourceOffset + copiedBytes), copyLength, ref copyAction);
+                    copiedBytes = checked(copiedBytes + copyLength);
+                }
+            }
+
+            private static D3D12BackendBuffer GetTransferBuffer(
+                IGraphicsBackendBuffer buffer,
+                BufferUsage requiredUsage,
+                string parameterName)
+            {
+                ArgumentNullException.ThrowIfNull(buffer, parameterName);
+
+                if (buffer is not D3D12BackendBuffer selectedBuffer)
+                {
+                    throw new ArgumentException("The buffer belongs to a different graphics backend.", parameterName);
+                }
+
+                if ((selectedBuffer.Description.Usage & requiredUsage) != requiredUsage)
+                {
+                    throw new ArgumentException($"The buffer does not declare {requiredUsage} usage.", parameterName);
+                }
+
+                return selectedBuffer;
+            }
+
+            private static void ValidateTransferRange(
+                long bufferLength,
+                long offset,
+                nint byteLength,
+                string offsetName,
+                string lengthName)
+            {
+                ArgumentOutOfRangeException.ThrowIfNegative(offset, offsetName);
+                ArgumentOutOfRangeException.ThrowIfNegativeOrZero(byteLength, lengthName);
+                var checkedLength = checked((long)byteLength);
+                ArgumentOutOfRangeException.ThrowIfGreaterThan(offset, bufferLength, offsetName);
+                ArgumentOutOfRangeException.ThrowIfGreaterThan(checkedLength, bufferLength - offset, lengthName);
+            }
+
             public IGraphicsBackendBuffer CreateBuffer(BufferDescription description)
             {
                 ArgumentNullException.ThrowIfNull(description);
@@ -694,7 +790,7 @@ public static unsafe class D3D12GraphicsBackend
 
                 try
                 {
-                    return new D3D12BackendBuffer(resource);
+                    return new D3D12BackendBuffer(resource, description);
                 }
                 catch
                 {
@@ -731,6 +827,39 @@ public static unsafe class D3D12GraphicsBackend
 
             public void Dispose()
             {
+                var transferQueue = _transferQueue;
+
+                if ((transferQueue is not null) && transferQueue.HasUncertainSubmission)
+                {
+                    throw new InvalidOperationException("The D3D12 backend cannot release storage while transfer completion is uncertain.");
+                }
+
+                if (_quarantinedStagingResource is not null)
+                {
+                    throw new InvalidOperationException("The D3D12 backend has a staging resource quarantined after uncertain transfer completion.");
+                }
+
+                transferQueue?.Dispose();
+                _transferQueue = null;
+
+                if (_uploadStagingResource is not null)
+                {
+                    var writtenRange = new D3D12_RANGE {
+                        Begin = 0,
+                        End = checked((nuint)StagingRingCapacityBytes),
+                    };
+                    _uploadStagingResource->Unmap(0, &writtenRange);
+                    _ = _uploadStagingResource->Release();
+                    _uploadStagingResource = null;
+                    _uploadStagingMapped = null;
+                }
+
+                if (_readbackStagingResource is not null)
+                {
+                    _ = _readbackStagingResource->Release();
+                    _readbackStagingResource = null;
+                }
+
                 var device = _device;
                 var adapter = _adapter;
                 _device = null;
@@ -764,6 +893,268 @@ public static unsafe class D3D12GraphicsBackend
                 ValidateTextureDescriptionSupport(_device, description);
                 var nativeDescription = CreateNativeTextureDescription(description);
                 return GetNativeAllocationInfo(_device, &nativeDescription, _adapter, GetTextureHeapIndex());
+            }
+
+            [SuppressMessage(
+                "Usage",
+                "CA1031:Do not catch general exception types",
+                Justification = "A failed readback closes an unsubmitted command list before releasing its staging owner.")]
+            public OwnedBuffer<byte> ReadbackBuffer(IGraphicsBackendBuffer source, long sourceOffset, nint byteLength)
+            {
+                var sourceBuffer = GetTransferBuffer(source, BufferUsage.CopySource, nameof(source));
+                ValidateTransferRange(sourceBuffer.Description.ByteLength, sourceOffset, byteLength, nameof(sourceOffset), nameof(byteLength));
+                var transferQueue = GetTransferQueue();
+                var stagingResource = GetReadbackStaging(byteLength, out var isDedicated);
+                var isMapped = false;
+
+                try
+                {
+                    var commandList = transferQueue.BeginRecording();
+                    var sourceResource = sourceBuffer.GetResource();
+                    var requiresTransition = sourceBuffer.Description.MemoryKind == GpuMemoryKind.DeviceLocal;
+
+                    if (requiresTransition)
+                    {
+                        var toCopySource = D3D12_RESOURCE_BARRIER.InitTransition(
+                            sourceResource,
+                            D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON,
+                            D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_SOURCE,
+                            0,
+                            D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                        commandList->ResourceBarrier(1, &toCopySource);
+                    }
+
+                    commandList->CopyBufferRegion(
+                        stagingResource,
+                        0,
+                        sourceResource,
+                        checked((ulong)sourceOffset),
+                        checked((ulong)byteLength));
+
+                    if (requiresTransition)
+                    {
+                        var toCommon = D3D12_RESOURCE_BARRIER.InitTransition(
+                            sourceResource,
+                            D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_SOURCE,
+                            D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON,
+                            0,
+                            D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                        commandList->ResourceBarrier(1, &toCommon);
+                    }
+
+                    _ = transferQueue.SubmitAndWait();
+                    var readRange = new D3D12_RANGE {
+                        Begin = 0,
+                        End = checked((nuint)byteLength),
+                    };
+                    void* mapped = null;
+                    ThrowIfFailed(stagingResource->Map(0, &readRange, &mapped));
+
+                    if (mapped is null)
+                    {
+                        throw new InvalidOperationException("D3D12 readback staging returned no mapped storage.");
+                    }
+
+                    isMapped = true;
+                    return CopyMappedStorageToOwnedBuffer((byte*)mapped, byteLength);
+                }
+                catch (Exception exception)
+                {
+                    try
+                    {
+                        transferQueue.StopRecording();
+                    }
+                    catch (Exception stopException)
+                    {
+                        throw new AggregateException(exception, stopException);
+                    }
+
+                    throw;
+                }
+                finally
+                {
+                    if (isMapped)
+                    {
+                        var readRange = new D3D12_RANGE {
+                            Begin = 0,
+                            End = 0,
+                        };
+                        stagingResource->Unmap(0, &readRange);
+                        isMapped = false;
+                    }
+
+                    if (isDedicated)
+                    {
+                        ReleaseDedicatedStagingResource(
+                            stagingResource,
+                            isMapped: false,
+                            writtenByteLength: 0,
+                            transferQueue);
+                    }
+                }
+            }
+
+            [SuppressMessage(
+                "Usage",
+                "CA1031:Do not catch general exception types",
+                Justification = "A failed upload closes an unsubmitted command list before releasing its staging owner.")]
+            public long UploadBuffer(
+                IGraphicsBackendBuffer destination,
+                long destinationOffset,
+                BufferReadLease<byte> source,
+                nint sourceOffset,
+                nint byteLength)
+            {
+                ArgumentNullException.ThrowIfNull(source);
+                ArgumentOutOfRangeException.ThrowIfNegative(sourceOffset);
+                ArgumentOutOfRangeException.ThrowIfNegativeOrZero(byteLength);
+                ArgumentOutOfRangeException.ThrowIfGreaterThan(sourceOffset, source.Length);
+                ArgumentOutOfRangeException.ThrowIfGreaterThan(byteLength, source.Length - sourceOffset);
+                var destinationBuffer = GetTransferBuffer(destination, BufferUsage.CopyDestination, nameof(destination));
+
+                if (destinationBuffer.Description.MemoryKind != GpuMemoryKind.DeviceLocal)
+                {
+                    throw new NotSupportedException("D3D12 buffer uploads require a device-local destination.");
+                }
+
+                ValidateTransferRange(
+                    destinationBuffer.Description.ByteLength,
+                    destinationOffset,
+                    byteLength,
+                    nameof(destinationOffset),
+                    nameof(byteLength));
+                var transferQueue = GetTransferQueue();
+                var mapped = GetUploadStaging(byteLength, out var stagingResource, out var isDedicated);
+                var isMapped = true;
+
+                try
+                {
+                    CopySourceLeaseToMappedStorage(source, sourceOffset, byteLength, mapped);
+                    var commandList = transferQueue.BeginRecording();
+                    var destinationResource = destinationBuffer.GetResource();
+                    var toCopyDestination = D3D12_RESOURCE_BARRIER.InitTransition(
+                        destinationResource,
+                        D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON,
+                        D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_DEST,
+                        0,
+                        D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                    commandList->ResourceBarrier(1, &toCopyDestination);
+                    commandList->CopyBufferRegion(
+                        destinationResource,
+                        checked((ulong)destinationOffset),
+                        stagingResource,
+                        0,
+                        checked((ulong)byteLength));
+                    var toCommon = D3D12_RESOURCE_BARRIER.InitTransition(
+                        destinationResource,
+                        D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_DEST,
+                        D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON,
+                        0,
+                        D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                    commandList->ResourceBarrier(1, &toCommon);
+                    return transferQueue.SubmitAndWait();
+                }
+                catch (Exception exception)
+                {
+                    try
+                    {
+                        transferQueue.StopRecording();
+                    }
+                    catch (Exception stopException)
+                    {
+                        throw new AggregateException(exception, stopException);
+                    }
+
+                    throw;
+                }
+                finally
+                {
+                    if (isDedicated)
+                    {
+                        ReleaseDedicatedStagingResource(
+                            stagingResource,
+                            isMapped,
+                            byteLength,
+                            transferQueue);
+                    }
+                }
+            }
+
+            [SuppressMessage(
+                "Usage",
+                "CA1031:Do not catch general exception types",
+                Justification = "A failed upload closes an unsubmitted command list before releasing its staging owner.")]
+            public long UploadBuffer(IGraphicsBackendBuffer destination, long destinationOffset, ReadOnlySpan<byte> source)
+            {
+                ArgumentOutOfRangeException.ThrowIfNegativeOrZero(source.Length);
+                var destinationBuffer = GetTransferBuffer(destination, BufferUsage.CopyDestination, nameof(destination));
+
+                if (destinationBuffer.Description.MemoryKind != GpuMemoryKind.DeviceLocal)
+                {
+                    throw new NotSupportedException("D3D12 buffer uploads require a device-local destination.");
+                }
+
+                ValidateTransferRange(
+                    destinationBuffer.Description.ByteLength,
+                    destinationOffset,
+                    source.Length,
+                    nameof(destinationOffset),
+                    nameof(source));
+                var byteLength = (nint)source.Length;
+                var transferQueue = GetTransferQueue();
+                var mapped = GetUploadStaging(byteLength, out var stagingResource, out var isDedicated);
+
+                try
+                {
+                    source.CopyTo(new Span<byte>(mapped, source.Length));
+                    var commandList = transferQueue.BeginRecording();
+                    var destinationResource = destinationBuffer.GetResource();
+                    var toCopyDestination = D3D12_RESOURCE_BARRIER.InitTransition(
+                        destinationResource,
+                        D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON,
+                        D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_DEST,
+                        0,
+                        D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                    commandList->ResourceBarrier(1, &toCopyDestination);
+                    commandList->CopyBufferRegion(
+                        destinationResource,
+                        checked((ulong)destinationOffset),
+                        stagingResource,
+                        0,
+                        checked((ulong)byteLength));
+                    var toCommon = D3D12_RESOURCE_BARRIER.InitTransition(
+                        destinationResource,
+                        D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_DEST,
+                        D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON,
+                        0,
+                        D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                    commandList->ResourceBarrier(1, &toCommon);
+                    return transferQueue.SubmitAndWait();
+                }
+                catch (Exception exception)
+                {
+                    try
+                    {
+                        transferQueue.StopRecording();
+                    }
+                    catch (Exception stopException)
+                    {
+                        throw new AggregateException(exception, stopException);
+                    }
+
+                    throw;
+                }
+                finally
+                {
+                    if (isDedicated)
+                    {
+                        ReleaseDedicatedStagingResource(
+                            stagingResource,
+                            isMapped: true,
+                            byteLength,
+                            transferQueue);
+                    }
+                }
             }
 
             private ID3D12Resource* CreateCommittedResource(
@@ -812,12 +1203,207 @@ public static unsafe class D3D12GraphicsBackend
                 }
             }
 
+            [SuppressMessage(
+                "Usage",
+                "CA2201:Do not raise reserved exception types",
+                Justification = "Staging admission reports exhaustion of the selected adapter's host-visible memory budget.")]
+            private ID3D12Resource* CreateStagingResource(GpuMemoryKind memoryKind, long byteLength, string debugName)
+            {
+                var usage = memoryKind == GpuMemoryKind.Upload
+                    ? BufferUsage.CopySource
+                    : BufferUsage.CopyDestination;
+                var description = new BufferDescription(byteLength, usage, memoryKind, structuredStride: null, debugName);
+                var allocationInfo = GetBufferAllocationInfo(description);
+
+                if (allocationInfo.SizeBytes > MaximumDedicatedStagingAllocationBytes)
+                {
+                    throw new NotSupportedException(
+                        $"D3D12 staging allocations larger than {MaximumDedicatedStagingAllocationBytes} bytes are not supported.");
+                }
+
+                var availableBudgetBytes = GetAvailableBudgetBytes(memoryKind);
+
+                if (availableBudgetBytes is long available && allocationInfo.SizeBytes > available)
+                {
+                    throw new OutOfMemoryException("The D3D12 adapter's host-visible staging budget is exhausted.");
+                }
+
+                var nativeDescription = CreateNativeBufferDescription(description);
+                return CreateCommittedResource(
+                    nativeDescription,
+                    GetHeapProperties(memoryKind),
+                    GetInitialResourceState(memoryKind),
+                    debugName);
+            }
+
+            private void EnsureReadbackStaging()
+            {
+                if (_readbackStagingResource is null)
+                {
+                    _readbackStagingResource = CreateStagingResource(
+                        GpuMemoryKind.Readback,
+                        StagingRingCapacityBytes,
+                        "TerraFX D3D12 readback staging ring");
+                }
+            }
+
+            private void EnsureUploadStaging()
+            {
+                if (_uploadStagingResource is null)
+                {
+                    var stagingResource = CreateStagingResource(
+                        GpuMemoryKind.Upload,
+                        StagingRingCapacityBytes,
+                        "TerraFX D3D12 upload staging ring");
+                    var writtenRange = new D3D12_RANGE {
+                        Begin = 0,
+                        End = 0,
+                    };
+                    void* mapped = null;
+
+                    try
+                    {
+                        ThrowIfFailed(stagingResource->Map(0, &writtenRange, &mapped));
+
+                        if (mapped is null)
+                        {
+                            throw new InvalidOperationException("D3D12 upload staging returned no mapped storage.");
+                        }
+
+                        _uploadStagingResource = stagingResource;
+                        _uploadStagingMapped = (byte*)mapped;
+                    }
+                    catch
+                    {
+                        _ = stagingResource->Release();
+                        throw;
+                    }
+                }
+            }
+
+            private long? GetAvailableBudgetBytes(GpuMemoryKind memoryKind)
+            {
+                if (_adapter is null)
+                {
+                    return null;
+                }
+
+                var memoryInfo = default(DXGI_QUERY_VIDEO_MEMORY_INFO);
+                var memorySegment = (DXGI_MEMORY_SEGMENT_GROUP)GetBufferHeapIndex(memoryKind);
+                ThrowIfFailed(_adapter->QueryVideoMemoryInfo(0, memorySegment, &memoryInfo));
+                var availableBytes = memoryInfo.Budget > memoryInfo.CurrentUsage
+                    ? memoryInfo.Budget - memoryInfo.CurrentUsage
+                    : 0;
+                return checked((long)availableBytes);
+            }
+
+            private ID3D12Resource* GetReadbackStaging(nint byteLength, out bool isDedicated)
+            {
+                if (byteLength <= StagingRingCapacityBytes)
+                {
+                    EnsureReadbackStaging();
+                    isDedicated = false;
+                    return _readbackStagingResource;
+                }
+
+                isDedicated = true;
+                return CreateStagingResource(GpuMemoryKind.Readback, checked((long)byteLength), "TerraFX D3D12 dedicated readback");
+            }
+
+            private D3D12BackendFactory.D3D12TransferQueue GetTransferQueue()
+            {
+                _transferQueue ??= new D3D12BackendFactory.D3D12TransferQueue(_device);
+
+                return _transferQueue;
+            }
+
+            private byte* GetUploadStaging(nint byteLength, out ID3D12Resource* stagingResource, out bool isDedicated)
+            {
+                if (byteLength <= StagingRingCapacityBytes)
+                {
+                    EnsureUploadStaging();
+                    isDedicated = false;
+                    stagingResource = _uploadStagingResource;
+                    return _uploadStagingMapped;
+                }
+
+                isDedicated = true;
+                stagingResource = CreateStagingResource(
+                    GpuMemoryKind.Upload,
+                    checked((long)byteLength),
+                    "TerraFX D3D12 dedicated upload");
+                var writtenRange = new D3D12_RANGE {
+                    Begin = 0,
+                    End = 0,
+                };
+                void* mapped = null;
+
+                try
+                {
+                    ThrowIfFailed(stagingResource->Map(0, &writtenRange, &mapped));
+
+                    if (mapped is null)
+                    {
+                        throw new InvalidOperationException("D3D12 dedicated upload staging returned no mapped storage.");
+                    }
+
+                    return (byte*)mapped;
+                }
+                catch
+                {
+                    _ = stagingResource->Release();
+                    stagingResource = null;
+                    throw;
+                }
+            }
+
+            private void ReleaseDedicatedStagingResource(
+                ID3D12Resource* stagingResource,
+                bool isMapped,
+                nint writtenByteLength,
+                D3D12BackendFactory.D3D12TransferQueue transferQueue)
+            {
+                if (transferQueue.HasUncertainSubmission)
+                {
+                    _quarantinedStagingResource = stagingResource;
+                    return;
+                }
+
+                if (isMapped)
+                {
+                    var writtenRange = new D3D12_RANGE {
+                        Begin = 0,
+                        End = checked((nuint)writtenByteLength),
+                    };
+                    stagingResource->Unmap(0, &writtenRange);
+                }
+
+                _ = stagingResource->Release();
+            }
+
+            private readonly unsafe struct BufferUploadCopyAction : IAction<ReadOnlySpan<byte>>
+            {
+                private readonly byte* _destination;
+
+                internal BufferUploadCopyAction(byte* destination)
+                {
+                    _destination = destination;
+                }
+
+                public readonly void Invoke(scoped ReadOnlySpan<byte> argument)
+                    => argument.CopyTo(new Span<byte>(_destination, argument.Length));
+            }
+
             private sealed class D3D12BackendBuffer : D3D12BackendResource, IGraphicsBackendBuffer
             {
-                internal D3D12BackendBuffer(ID3D12Resource* resource)
+                internal D3D12BackendBuffer(ID3D12Resource* resource, BufferDescription description)
                     : base(resource)
                 {
+                    ArgumentNullException.ThrowIfNull(description);
+                    Description = description;
                 }
+
+                internal BufferDescription Description { get; }
             }
 
             private abstract unsafe class D3D12BackendResource : IGraphicsBackendResource
@@ -843,6 +1429,12 @@ public static unsafe class D3D12GraphicsBackend
                     {
                         _ = resource->Release();
                     }
+                }
+
+                internal ID3D12Resource* GetResource()
+                {
+                    ObjectDisposedException.ThrowIf(_resource is null, this);
+                    return _resource;
                 }
             }
 
@@ -1355,6 +1947,296 @@ public static unsafe class D3D12GraphicsBackend
                     {
                         _ = rootSignature->Release();
                     }
+                }
+            }
+        }
+
+        private sealed unsafe class D3D12TransferQueue : IDisposable
+        {
+            private const uint TransferFenceTimeoutMilliseconds = 30_000;
+
+            private ID3D12CommandAllocator* _commandAllocator;
+            private ID3D12GraphicsCommandList* _commandList;
+            private ID3D12CommandQueue* _commandQueue;
+            private ID3D12Device* _device;
+            private ID3D12Fence* _fence;
+            private HANDLE _fenceEvent;
+            private bool _hasUncertainSubmission;
+            private bool _isDisposed;
+            private bool _isRecording;
+            private ulong _nextFenceValue;
+            private readonly int _ownerThreadId = Environment.CurrentManagedThreadId;
+
+            internal D3D12TransferQueue(ID3D12Device* device)
+            {
+                if (device is null)
+                {
+                    throw new ArgumentNullException(nameof(device));
+                }
+
+                var queueDescription = new D3D12_COMMAND_QUEUE_DESC {
+                    Type = D3D12_COMMAND_LIST_TYPE.D3D12_COMMAND_LIST_TYPE_DIRECT,
+                    Priority = (int)D3D12_COMMAND_QUEUE_PRIORITY.D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
+                    Flags = D3D12_COMMAND_QUEUE_FLAGS.D3D12_COMMAND_QUEUE_FLAG_NONE,
+                    NodeMask = 0,
+                };
+                var queueId = typeof(ID3D12CommandQueue).GUID;
+                var allocatorId = typeof(ID3D12CommandAllocator).GUID;
+                var commandListId = typeof(ID3D12GraphicsCommandList).GUID;
+                var fenceId = typeof(ID3D12Fence).GUID;
+                ID3D12CommandQueue* commandQueue = null;
+                ID3D12CommandAllocator* commandAllocator = null;
+                ID3D12GraphicsCommandList* commandList = null;
+                ID3D12Fence* fence = null;
+
+                try
+                {
+                    ThrowIfFailed(device->CreateCommandQueue(&queueDescription, &queueId, (void**)&commandQueue));
+                    ThrowIfFailed(device->CreateCommandAllocator(queueDescription.Type, &allocatorId, (void**)&commandAllocator));
+                    ThrowIfFailed(device->CreateCommandList(
+                        0,
+                        queueDescription.Type,
+                        commandAllocator,
+                        null,
+                        &commandListId,
+                        (void**)&commandList));
+
+                    if ((commandQueue is null) || (commandAllocator is null) || (commandList is null))
+                    {
+                        throw new InvalidOperationException("D3D12 transfer queue creation returned an incomplete command owner.");
+                    }
+
+                    ThrowIfFailed(commandList->Close());
+                    ThrowIfFailed(device->CreateFence(0, D3D12_FENCE_FLAGS.D3D12_FENCE_FLAG_NONE, &fenceId, (void**)&fence));
+
+                    if (fence is null)
+                    {
+                        throw new InvalidOperationException("D3D12 transfer fence creation returned no fence.");
+                    }
+
+                    var fenceEvent = Windows.CreateEventW(null, false, false, null);
+
+                    if (fenceEvent.Value is null)
+                    {
+                        ThrowLastWin32Error("Creating the D3D12 transfer fence event failed.");
+                    }
+
+                    _commandQueue = commandQueue;
+                    _commandAllocator = commandAllocator;
+                    _commandList = commandList;
+                    _fence = fence;
+                    _fenceEvent = fenceEvent;
+                    _device = device;
+                    commandQueue = null;
+                    commandAllocator = null;
+                    commandList = null;
+                    fence = null;
+                }
+                catch
+                {
+                    if (fence is not null)
+                    {
+                        _ = fence->Release();
+                    }
+
+                    if (commandList is not null)
+                    {
+                        _ = commandList->Release();
+                    }
+
+                    if (commandAllocator is not null)
+                    {
+                        _ = commandAllocator->Release();
+                    }
+
+                    if (commandQueue is not null)
+                    {
+                        _ = commandQueue->Release();
+                    }
+
+                    throw;
+                }
+            }
+
+            internal bool HasUncertainSubmission => _hasUncertainSubmission;
+
+            private static void ThrowLastWin32Error(string message)
+            {
+                var error = Marshal.GetHRForLastWin32Error();
+
+                if (error != 0)
+                {
+                    Marshal.ThrowExceptionForHR(error);
+                }
+
+                throw new InvalidOperationException(message);
+            }
+
+            public void Dispose()
+            {
+                if (_isDisposed)
+                {
+                    return;
+                }
+
+                if (_hasUncertainSubmission)
+                {
+                    throw new InvalidOperationException("The D3D12 transfer queue cannot be released while submitted work is uncertain.");
+                }
+
+                EnsureOwnerThread();
+
+                if ((_fenceEvent.Value is not null) && !Windows.CloseHandle(_fenceEvent))
+                {
+                    ThrowLastWin32Error("Closing the D3D12 transfer fence event failed.");
+                }
+
+                _fenceEvent = default;
+
+                var fence = _fence;
+                var commandList = _commandList;
+                var commandAllocator = _commandAllocator;
+                var commandQueue = _commandQueue;
+                _fence = null;
+                _commandList = null;
+                _commandAllocator = null;
+                _commandQueue = null;
+                _device = null;
+                _isDisposed = true;
+
+                if (fence is not null)
+                {
+                    _ = fence->Release();
+                }
+
+                if (commandList is not null)
+                {
+                    _ = commandList->Release();
+                }
+
+                if (commandAllocator is not null)
+                {
+                    _ = commandAllocator->Release();
+                }
+
+                if (commandQueue is not null)
+                {
+                    _ = commandQueue->Release();
+                }
+            }
+
+            internal ID3D12GraphicsCommandList* BeginRecording()
+            {
+                EnsureOwnerThread();
+
+                if (_hasUncertainSubmission)
+                {
+                    throw new InvalidOperationException("The D3D12 transfer queue is quarantined after an uncertain submission.");
+                }
+
+                if (_isRecording)
+                {
+                    throw new InvalidOperationException("A D3D12 transfer command list is already recording.");
+                }
+
+                ThrowIfFailed(_commandAllocator->Reset());
+                ThrowIfFailed(_commandList->Reset(_commandAllocator, null));
+                _isRecording = true;
+                return _commandList;
+            }
+
+            internal void StopRecording()
+            {
+                EnsureOwnerThread();
+
+                if (_isRecording)
+                {
+                    _isRecording = false;
+                    ThrowIfFailed(_commandList->Close());
+                }
+            }
+
+            internal long SubmitAndWait()
+            {
+                EnsureOwnerThread();
+
+                if (!_isRecording)
+                {
+                    throw new InvalidOperationException("The D3D12 transfer command list is not recording.");
+                }
+
+                ThrowIfFailed(_commandList->Close());
+                _isRecording = false;
+
+                if (_nextFenceValue >= long.MaxValue)
+                {
+                    throw new InvalidOperationException("The D3D12 transfer fence value space is exhausted.");
+                }
+
+                var fenceValue = ++_nextFenceValue;
+                _hasUncertainSubmission = true;
+                var commandLists = stackalloc ID3D12CommandList*[1];
+                commandLists[0] = (ID3D12CommandList*)_commandList;
+                _commandQueue->ExecuteCommandLists(1, commandLists);
+                var signalResult = _commandQueue->Signal(_fence, fenceValue);
+
+                if (signalResult.FAILED)
+                {
+                    throw new GraphicsDeviceLostException(signalResult.Value);
+                }
+
+                var eventResult = _fence->SetEventOnCompletion(fenceValue, _fenceEvent);
+
+                if (eventResult.FAILED)
+                {
+                    throw new GraphicsDeviceLostException(eventResult.Value);
+                }
+
+                var waitResult = Windows.WaitForSingleObject(_fenceEvent, TransferFenceTimeoutMilliseconds);
+
+                if (waitResult == 0xFFFFFFFF)
+                {
+                    var error = Marshal.GetHRForLastWin32Error();
+                    throw new GraphicsDeviceLostException(error != 0 ? error : unchecked((int)0x80004005));
+                }
+
+                if (waitResult == 0x00000102)
+                {
+                    throw new GraphicsDeviceLostException(unchecked((int)0x800705B4));
+                }
+
+                if (waitResult != 0)
+                {
+                    throw new GraphicsDeviceLostException(unchecked((int)0x80004005));
+                }
+
+                var completedFenceValue = _fence->GetCompletedValue();
+
+                if (completedFenceValue == ulong.MaxValue)
+                {
+                    var deviceRemovedReason = _device->GetDeviceRemovedReason();
+                    throw new GraphicsDeviceLostException(
+                        deviceRemovedReason.FAILED
+                            ? deviceRemovedReason.Value
+                            : DxgiErrorDeviceRemoved);
+                }
+
+                if (completedFenceValue < fenceValue)
+                {
+                    throw new GraphicsDeviceLostException(unchecked((int)0x80004005));
+                }
+
+                _hasUncertainSubmission = false;
+                return checked((long)fenceValue);
+            }
+
+            private void EnsureOwnerThread()
+            {
+                ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+                if (Environment.CurrentManagedThreadId != _ownerThreadId)
+                {
+                    throw new InvalidOperationException("D3D12 transfer commands must execute on their owning thread.");
                 }
             }
         }
