@@ -126,6 +126,7 @@ public sealed class GraphicsPipelineDescription : PipelineDescription
         Array.Sort(sortedVertexElements, static (left, right) => left.Location.CompareTo(right.Location));
         ValidateVertexElements(sortedVertexElements, vertexShader.Reflection.Inputs, vertexStride);
         ValidateStageLinkage(vertexShader.Reflection, pixelShader.Reflection);
+        ValidateStageResourceBindings(vertexShader.Reflection, pixelShader.Reflection);
 
         var copiedColorFormats = colorTargetFormats.ToArray();
 
@@ -284,6 +285,44 @@ public sealed class GraphicsPipelineDescription : PipelineDescription
             {
                 throw new ArgumentException("Every user pixel-shader input must have a matching vertex-shader output.", nameof(pixelReflection));
             }
+        }
+    }
+
+    private static void ValidateStageResourceBindings(ShaderReflection vertexReflection, ShaderReflection pixelReflection)
+    {
+        var vertexResources = vertexReflection.Resources;
+        var pixelResources = pixelReflection.Resources;
+        var vertexIndex = 0;
+        var pixelIndex = 0;
+
+        while ((vertexIndex < vertexResources.Length) && (pixelIndex < pixelResources.Length))
+        {
+            var vertexResource = vertexResources[vertexIndex];
+            var pixelResource = pixelResources[pixelIndex];
+            var identityComparison = ShaderReflection.CompareResourceIdentity(vertexResource, pixelResource);
+
+            if (identityComparison < 0)
+            {
+                vertexIndex++;
+                continue;
+            }
+
+            if (identityComparison > 0)
+            {
+                pixelIndex++;
+                continue;
+            }
+
+            if ((vertexResource.Kind != pixelResource.Kind)
+                || (vertexResource.ArrayCount != pixelResource.ArrayCount))
+            {
+                throw new ArgumentException(
+                    "Vertex and pixel shaders must agree on the type and descriptor count of each shared resource binding.",
+                    nameof(pixelReflection));
+            }
+
+            vertexIndex++;
+            pixelIndex++;
         }
     }
 

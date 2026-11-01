@@ -39,23 +39,12 @@ internal sealed class GraphicsPipelineDescriptionTests
         PipelineBlendMode blendMode = PipelineBlendMode.Opaque,
         PipelineDepthMode depthMode = PipelineDepthMode.Disabled,
         PipelineCullMode cullMode = PipelineCullMode.None,
-        int bindingLayoutVersion = 1)
+        int bindingLayoutVersion = 1,
+        ImmutableArray<ShaderResourceSignature>? vertexResources = null,
+        ImmutableArray<ShaderResourceSignature>? pixelResources = null)
     {
-        vertexReflection ??= CreateSystemVertexReflection();
-        pixelReflection ??= CreateReflection(
-            ShaderStage.Pixel,
-            inputs: ImmutableArray.Create(new ShaderIoSignature(
-                "SV_Position",
-                0,
-                null,
-                ShaderValueType.Float4,
-                ShaderInterpolation.Smooth)),
-            outputs: ImmutableArray.Create(new ShaderIoSignature(
-                "SV_Target",
-                0,
-                null,
-                ShaderValueType.Float4,
-                ShaderInterpolation.Smooth)));
+        vertexReflection ??= CreateSystemVertexReflection(vertexResources);
+        pixelReflection ??= CreateSystemPixelReflection(pixelResources);
 
         var vertexShader = new ShaderBytecodeInput(
             ShaderStage.Vertex,
@@ -89,14 +78,15 @@ internal sealed class GraphicsPipelineDescriptionTests
         int bindingLayoutVersion = 1,
         int groupSizeX = 0,
         int groupSizeY = 0,
-        int groupSizeZ = 0)
+        int groupSizeZ = 0,
+        ImmutableArray<ShaderResourceSignature>? resources = null)
         => new(
             stage,
             "main",
             CreateCompilerIdentity(),
             inputs ?? [],
             outputs ?? [],
-            [],
+            resources ?? [],
             [],
             [],
             bindingLayoutVersion,
@@ -104,7 +94,24 @@ internal sealed class GraphicsPipelineDescriptionTests
             groupSizeY,
             groupSizeZ);
 
-    private static ShaderReflection CreateSystemVertexReflection()
+    private static ShaderReflection CreateSystemPixelReflection(ImmutableArray<ShaderResourceSignature>? resources = null)
+        => CreateReflection(
+            ShaderStage.Pixel,
+            inputs: ImmutableArray.Create(new ShaderIoSignature(
+                "SV_Position",
+                0,
+                null,
+                ShaderValueType.Float4,
+                ShaderInterpolation.Smooth)),
+            outputs: ImmutableArray.Create(new ShaderIoSignature(
+                "SV_Target",
+                0,
+                null,
+                ShaderValueType.Float4,
+                ShaderInterpolation.Smooth)),
+            resources: resources);
+
+    private static ShaderReflection CreateSystemVertexReflection(ImmutableArray<ShaderResourceSignature>? resources = null)
         => CreateReflection(
             ShaderStage.Vertex,
             inputs: ImmutableArray.Create(new ShaderIoSignature(
@@ -118,7 +125,8 @@ internal sealed class GraphicsPipelineDescriptionTests
                 0,
                 null,
                 ShaderValueType.Float4,
-                ShaderInterpolation.Smooth)));
+                ShaderInterpolation.Smooth)),
+            resources: resources);
 
     [Test]
     public void GraphicsPipelineAllowsSystemValueOnlyVertexInputWithoutVertexBuffer()
@@ -366,6 +374,48 @@ internal sealed class GraphicsPipelineDescriptionTests
             0,
             (VertexElementFormat)99,
             0));
+    }
+
+    [Test]
+    public void GraphicsPipelineRejectsSharedResourceBindingsWithDifferentKindsOrArrayCounts()
+    {
+        using var owner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        using var bytecode = owner.AcquireRead(0, 4);
+        var vertexResource = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            binding: 0,
+            ShaderResourceKind.StorageImage,
+            arrayCount: 2);
+        var matchingPixelResource = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            binding: 0,
+            ShaderResourceKind.StorageImage,
+            arrayCount: 2);
+
+        _ = CreatePipelineDescription(
+            bytecode,
+            vertexReflection: CreateSystemVertexReflection([vertexResource]),
+            pixelReflection: CreateSystemPixelReflection([matchingPixelResource]));
+
+        var mismatchedKind = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            binding: 0,
+            ShaderResourceKind.StorageBuffer,
+            arrayCount: 2);
+        var mismatchedArrayCount = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            binding: 0,
+            ShaderResourceKind.StorageImage,
+            arrayCount: 3);
+
+        _ = Assert.Throws<ArgumentException>(() => CreatePipelineDescription(
+            bytecode,
+            vertexReflection: CreateSystemVertexReflection([vertexResource]),
+            pixelReflection: CreateSystemPixelReflection([mismatchedKind])));
+        _ = Assert.Throws<ArgumentException>(() => CreatePipelineDescription(
+            bytecode,
+            vertexReflection: CreateSystemVertexReflection([vertexResource]),
+            pixelReflection: CreateSystemPixelReflection([mismatchedArrayCount])));
     }
 
     [Test]

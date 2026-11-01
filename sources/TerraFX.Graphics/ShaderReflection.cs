@@ -159,6 +159,21 @@ public sealed class ShaderReflection
     /// <summary>Gets the shader stage.</summary>
     public ShaderStage Stage { get; }
 
+    internal static int CompareResourceIdentity(ShaderResourceSignature left, ShaderResourceSignature right)
+    {
+        var groupComparison = left.Group.CompareTo(right.Group);
+
+        if (groupComparison != 0)
+        {
+            return groupComparison;
+        }
+
+        var classComparison = GetResourceClass(left.Kind).CompareTo(GetResourceClass(right.Kind));
+        return (classComparison != 0)
+            ? classComparison
+            : left.Binding.CompareTo(right.Binding);
+    }
+
     private static int CompareIo(ShaderIoSignature left, ShaderIoSignature right)
     {
         var locationComparison = CompareNullableLocations(left.Location, right.Location);
@@ -186,22 +201,10 @@ public sealed class ShaderReflection
 
     private static int CompareResources(ShaderResourceSignature left, ShaderResourceSignature right)
     {
-        var groupComparison = left.Group.CompareTo(right.Group);
-
-        if (groupComparison != 0)
-        {
-            return groupComparison;
-        }
-
-        var classComparison = GetResourceClass(left.Kind).CompareTo(GetResourceClass(right.Kind));
-
-        if (classComparison != 0)
-        {
-            return classComparison;
-        }
-
-        var bindingComparison = left.Binding.CompareTo(right.Binding);
-        return (bindingComparison != 0) ? bindingComparison : left.Kind.CompareTo(right.Kind);
+        var identityComparison = CompareResourceIdentity(left, right);
+        return (identityComparison != 0)
+            ? identityComparison
+            : left.Kind.CompareTo(right.Kind);
     }
 
     private static int GetResourceClass(ShaderResourceKind kind)
