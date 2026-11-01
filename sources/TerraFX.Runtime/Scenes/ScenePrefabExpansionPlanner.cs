@@ -62,17 +62,37 @@ internal static class ScenePrefabExpansionPlanner
             throw new ArgumentOutOfRangeException(nameof(sceneId));
         }
 
-        var builder = new SceneExpansionBuilder(assets, limits, cancellationToken);
-        using (builder)
+        var sceneLease = await assets.LoadAsync<SceneAsset>(sceneId, cancellationToken).ConfigureAwait(false);
+        return await PrepareTakingLeaseAsync(sceneLease, limits, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task<SceneExpansionPlan> PrepareTakingLeaseAsync(
+        AssetLease<SceneAsset> sceneLease,
+        SceneExpansionLimits limits,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(sceneLease);
+        SceneExpansionBuilder? builder = null;
+
+        try
         {
-            return await builder.BuildAsync(sceneId).ConfigureAwait(false);
+            builder = new SceneExpansionBuilder(limits, cancellationToken);
+            return await builder.BuildAsync(sceneLease).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (builder is null)
+            {
+                sceneLease.Dispose();
+            }
+
+            builder?.Dispose();
         }
     }
 
     private sealed class SceneExpansionBuilder : IDisposable
     {
         private readonly List<AssetId> _assetPath = [];
-        private readonly AssetStore _assets;
         private int _buildChildPlacementCursor;
         private int _buildEntityCursor;
         private int _buildEntityMapCursor;
@@ -109,11 +129,9 @@ internal static class ScenePrefabExpansionPlanner
         private long _totalComponentRecordBytes;
 
         internal SceneExpansionBuilder(
-            AssetStore assets,
             SceneExpansionLimits limits,
             CancellationToken cancellationToken)
         {
-            _assets = assets;
             _limits = limits;
             _cancellationToken = cancellationToken;
         }
@@ -581,12 +599,12 @@ internal static class ScenePrefabExpansionPlanner
             _occurrenceIdentities = [];
         }
 
-        internal async Task<SceneExpansionPlan> BuildAsync(AssetId sceneId)
+        internal async Task<SceneExpansionPlan> BuildAsync(AssetLease<SceneAsset> sceneLease)
         {
-            _cancellationToken.ThrowIfCancellationRequested();
-            var sceneLease = await _assets.LoadAsync<SceneAsset>(sceneId, _cancellationToken).ConfigureAwait(false);
+            ArgumentNullException.ThrowIfNull(sceneLease);
             _sceneLease = sceneLease;
-            _assetPath.Add(sceneId);
+            _cancellationToken.ThrowIfCancellationRequested();
+            _assetPath.Add(sceneLease.AssetId);
             var sceneSource = new SceneExpansionSource(sceneLease.Value);
             var rootCount = await CountOccurrenceAsync(
                 sceneSource,
@@ -1843,15 +1861,16 @@ internal static class ScenePrefabExpansionPlanner
                 return existingLease.Value;
             }
 
-            var lease = await _assets.LoadAsync<ScenePrefabAsset>(assetId, _cancellationToken).ConfigureAwait(false);
+            var sceneLease = _sceneLease
+                ?? throw new InvalidOperationException("The Prefab was requested before the Scene lease was acquired.");
+            var lease = await sceneLease.LoadFromPackageAsync<ScenePrefabAsset>(
+                assetId,
+                _cancellationToken).ConfigureAwait(false);
             var value = lease.Value;
             var retained = false;
 
             try
             {
-                var sceneLease = _sceneLease
-                    ?? throw new InvalidOperationException("The Prefab was requested before the Scene lease was acquired.");
-
                 if (!ReferenceEquals(value.Schemas, sceneLease.Value.Schemas)
                     || !ReferenceEquals(value.ReadLimits, sceneLease.Value.ReadLimits))
                 {

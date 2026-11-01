@@ -81,6 +81,15 @@ dotnet test .\tests\TerraFX.Assets.Tests\TerraFX.Assets.Tests.csproj --configura
 dotnet test .\tests\TerraFX.Assets.Tests\TerraFX.Assets.Tests.csproj --configuration Release --filter "FullyQualifiedName~AssetStoreLoadsAssetFromPackageLease"
 ```
 
+### Scene prefab package continuity
+
+Run the Scene expansion regression proving nested Prefabs remain bound to the root Scene lease's package after the AssetStore is replaced:
+
+```powershell
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~ScenePrefabExpansionUsesRootSceneLeaseBackingAfterStoreReplacement"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~ScenePrefabExpansionUsesRootSceneLeaseBackingAfterStoreReplacement"
+```
+
 ### Rendering texture asset codec
 
 Run the package-backed RGBA8 texture codec regressions for exact BaseOnly/FullChain mips and semantic validation:
