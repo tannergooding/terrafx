@@ -4479,13 +4479,10 @@ public readonly struct GpuPipelineHandle : IEquatable<GpuPipelineHandle>
 public sealed class GpuBuffer : IDisposable
 {
     internal GpuBuffer(
-        GraphicsDevice device,
         GpuBufferHandle handle,
         long byteLength,
         uint deviceEpoch,
-        GraphicsResourceAllocationInfo allocationInfo,
-        IGraphicsBackendBuffer backendBuffer,
-        GraphicsOwnerRequestQueue.GraphicsRetirementReservation retirementReservation);
+        GraphicsResourceOwner resourceOwner);
     public long ByteLength { get; }
     public uint DeviceEpoch { get; }
     public GpuBufferHandle Handle { get; }
@@ -4494,10 +4491,10 @@ public sealed class GpuBuffer : IDisposable
 
 public sealed class GpuTexture : IDisposable
 {
-    internal GpuTexture(GpuTextureHandle handle, TextureDescription description, uint deviceEpoch);
-    public GpuTextureHandle Handle { get; }
+    internal GpuTexture(GpuTextureHandle handle, TextureDescription description, uint deviceEpoch, GraphicsResourceOwner resourceOwner);
     public TextureDescription Description { get; }
     public uint DeviceEpoch { get; }
+    public GpuTextureHandle Handle { get; }
     public void Dispose();
 }
 

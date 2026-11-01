@@ -145,6 +145,48 @@ public static unsafe class D3D12GraphicsBackend
             };
         }
 
+        private static D3D12_RESOURCE_DESC CreateNativeTextureDescription(TextureDescription description)
+        {
+            ArgumentNullException.ThrowIfNull(description);
+
+            var flags = D3D12_RESOURCE_FLAGS.D3D12_RESOURCE_FLAG_NONE;
+
+            if ((description.Usage & TextureUsage.Storage) != 0)
+            {
+                flags |= D3D12_RESOURCE_FLAGS.D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+            }
+
+            if ((description.Usage & TextureUsage.ColorAttachment) != 0)
+            {
+                flags |= D3D12_RESOURCE_FLAGS.D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+            }
+
+            if ((description.Usage & TextureUsage.DepthAttachment) != 0)
+            {
+                flags |= D3D12_RESOURCE_FLAGS.D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+            }
+
+            return new D3D12_RESOURCE_DESC {
+                Dimension = description.Dimension == TextureDimension.Dimension2D
+                    ? D3D12_RESOURCE_DIMENSION.D3D12_RESOURCE_DIMENSION_TEXTURE2D
+                    : D3D12_RESOURCE_DIMENSION.D3D12_RESOURCE_DIMENSION_TEXTURE3D,
+                Alignment = 0,
+                Width = checked((ulong)description.Width),
+                Height = checked((uint)description.Height),
+                DepthOrArraySize = checked((ushort)((description.Dimension == TextureDimension.Dimension2D)
+                    ? description.ArrayLayers
+                    : description.Depth)),
+                MipLevels = checked((ushort)description.MipLevels),
+                Format = GetNativeFormat(description.Format),
+                SampleDesc = new DXGI_SAMPLE_DESC {
+                    Count = 1,
+                    Quality = 0,
+                },
+                Layout = D3D12_TEXTURE_LAYOUT.D3D12_TEXTURE_LAYOUT_UNKNOWN,
+                Flags = flags,
+            };
+        }
+
         private static string GetAdapterName(DXGI_ADAPTER_DESC1* description)
         {
             var name = (char*)&description->Description;
@@ -348,6 +390,42 @@ public static unsafe class D3D12GraphicsBackend
             }
         }
 
+        private static GraphicsResourceAllocationInfo GetNativeAllocationInfo(
+            ID3D12Device* device,
+            D3D12_RESOURCE_DESC* description,
+            IDXGIAdapter3* adapter,
+            int heapIndex)
+        {
+            var allocationInfo = device->GetResourceAllocationInfo(0, 1, description);
+
+            if (allocationInfo.SizeInBytes == ulong.MaxValue)
+            {
+                ThrowIfFailed(device->GetDeviceRemovedReason());
+                throw new InvalidOperationException("D3D12 returned an invalid resource allocation size.");
+            }
+
+            if (allocationInfo.SizeInBytes == 0)
+            {
+                throw new InvalidOperationException("D3D12 returned an invalid resource allocation size.");
+            }
+
+            long? budgetBytes = null;
+
+            if (adapter is not null)
+            {
+                var memoryInfo = default(DXGI_QUERY_VIDEO_MEMORY_INFO);
+                var memorySegment = (DXGI_MEMORY_SEGMENT_GROUP)heapIndex;
+                ThrowIfFailed(adapter->QueryVideoMemoryInfo(0, memorySegment, &memoryInfo));
+                budgetBytes = checked((long)memoryInfo.Budget);
+            }
+
+            return new GraphicsResourceAllocationInfo(
+                checked((long)allocationInfo.SizeInBytes),
+                checked((long)allocationInfo.Alignment),
+                heapIndex,
+                budgetBytes);
+        }
+
         private static DXGI_FORMAT GetNativeFormat(TextureFormat format)
             => format switch {
                 TextureFormat.R8Unorm => DXGI_FORMAT.DXGI_FORMAT_R8_UNORM,
@@ -402,6 +480,9 @@ public static unsafe class D3D12GraphicsBackend
             return shaderModel.HighestShaderModel;
         }
 
+        private static int GetTextureHeapIndex()
+            => (int)DXGI_MEMORY_SEGMENT_GROUP.DXGI_MEMORY_SEGMENT_GROUP_LOCAL;
+
         private static void ThrowIfFailed(HRESULT result)
         {
             if (result.FAILED)
@@ -412,6 +493,53 @@ public static unsafe class D3D12GraphicsBackend
                 }
 
                 Marshal.ThrowExceptionForHR(result.Value);
+            }
+        }
+
+        private static void ValidateTextureDescriptionSupport(ID3D12Device* device, TextureDescription description)
+        {
+            var support = new D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+                Format = GetNativeFormat(description.Format),
+            };
+            ThrowIfFailed(device->CheckFeatureSupport(
+                D3D12_FEATURE.D3D12_FEATURE_FORMAT_SUPPORT,
+                &support,
+                (uint)sizeof(D3D12_FEATURE_DATA_FORMAT_SUPPORT)));
+
+            var dimensionSupport = description.Dimension == TextureDimension.Dimension2D
+                ? D3D12_FORMAT_SUPPORT1.D3D12_FORMAT_SUPPORT1_TEXTURE2D
+                : D3D12_FORMAT_SUPPORT1.D3D12_FORMAT_SUPPORT1_TEXTURE3D;
+
+            if ((support.Support1 & dimensionSupport) == 0)
+            {
+                throw new NotSupportedException($"D3D12 does not support {description.Dimension} textures in format {description.Format}.");
+            }
+
+            var requiredSupport = default(D3D12_FORMAT_SUPPORT1);
+
+            if ((description.Usage & TextureUsage.Sampled) != 0)
+            {
+                requiredSupport |= D3D12_FORMAT_SUPPORT1.D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE;
+            }
+
+            if ((description.Usage & TextureUsage.Storage) != 0)
+            {
+                requiredSupport |= D3D12_FORMAT_SUPPORT1.D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW;
+            }
+
+            if ((description.Usage & TextureUsage.ColorAttachment) != 0)
+            {
+                requiredSupport |= D3D12_FORMAT_SUPPORT1.D3D12_FORMAT_SUPPORT1_RENDER_TARGET;
+            }
+
+            if ((description.Usage & TextureUsage.DepthAttachment) != 0)
+            {
+                requiredSupport |= D3D12_FORMAT_SUPPORT1.D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL;
+            }
+
+            if ((support.Support1 & requiredSupport) != requiredSupport)
+            {
+                throw new NotSupportedException($"D3D12 does not support texture usages {description.Usage} for {description.Format}.");
             }
         }
 
@@ -555,46 +683,40 @@ public static unsafe class D3D12GraphicsBackend
             public IGraphicsBackendBuffer CreateBuffer(BufferDescription description)
             {
                 ArgumentNullException.ThrowIfNull(description);
-
-                var nativeDescription = CreateNativeBufferDescription(description);
-                var heapProperties = GetHeapProperties(description.MemoryKind);
-                var initialState = GetInitialResourceState(description.MemoryKind);
-                var resourceId = typeof(ID3D12Resource).GUID;
-                ID3D12Resource* resource = null;
+                var resource = CreateCommittedResource(
+                    CreateNativeBufferDescription(description),
+                    GetHeapProperties(description.MemoryKind),
+                    GetInitialResourceState(description.MemoryKind),
+                    description.DebugName);
 
                 try
                 {
-                    ThrowIfFailed(_device->CreateCommittedResource(
-                        &heapProperties,
-                        D3D12_HEAP_FLAGS.D3D12_HEAP_FLAG_NONE,
-                        &nativeDescription,
-                        initialState,
-                        null,
-                        &resourceId,
-                        (void**)&resource));
-
-                    if (resource is null)
-                    {
-                        throw new InvalidOperationException("D3D12 committed buffer creation returned no resource.");
-                    }
-
-                    if (description.DebugName.Length > 0)
-                    {
-                        fixed (char* name = description.DebugName)
-                        {
-                            ThrowIfFailed(resource->SetName(name));
-                        }
-                    }
-
                     return new D3D12BackendBuffer(resource);
                 }
                 catch
                 {
-                    if (resource is not null)
-                    {
-                        _ = resource->Release();
-                    }
+                    _ = resource->Release();
+                    throw;
+                }
+            }
 
+            public IGraphicsBackendTexture CreateTexture(TextureDescription description)
+            {
+                ArgumentNullException.ThrowIfNull(description);
+                ValidateTextureDescriptionSupport(_device, description);
+                var resource = CreateCommittedResource(
+                    CreateNativeTextureDescription(description),
+                    GetHeapProperties(GpuMemoryKind.DeviceLocal),
+                    D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON,
+                    description.DebugName);
+
+                try
+                {
+                    return new D3D12BackendTexture(resource);
+                }
+                catch
+                {
+                    _ = resource->Release();
                     throw;
                 }
             }
@@ -621,41 +743,80 @@ public static unsafe class D3D12GraphicsBackend
             {
                 ArgumentNullException.ThrowIfNull(description);
                 var nativeDescription = CreateNativeBufferDescription(description);
-                var allocationInfo = _device->GetResourceAllocationInfo(0, 1, &nativeDescription);
-
-                if (allocationInfo.SizeInBytes == ulong.MaxValue)
-                {
-                    ThrowIfFailed(_device->GetDeviceRemovedReason());
-                    throw new InvalidOperationException("D3D12 returned an invalid buffer allocation size.");
-                }
-
-                if (allocationInfo.SizeInBytes == 0)
-                {
-                    throw new InvalidOperationException("D3D12 returned an invalid buffer allocation size.");
-                }
-
-                long? budgetBytes = null;
-
-                if (_adapter is not null)
-                {
-                    var memoryInfo = default(DXGI_QUERY_VIDEO_MEMORY_INFO);
-                    var memorySegment = (DXGI_MEMORY_SEGMENT_GROUP)GetBufferHeapIndex(description.MemoryKind);
-                    ThrowIfFailed(_adapter->QueryVideoMemoryInfo(0, memorySegment, &memoryInfo));
-                    budgetBytes = checked((long)memoryInfo.Budget);
-                }
-
-                return new GraphicsResourceAllocationInfo(
-                    checked((long)allocationInfo.SizeInBytes),
-                    checked((long)allocationInfo.Alignment),
-                    GetBufferHeapIndex(description.MemoryKind),
-                    budgetBytes);
+                return GetNativeAllocationInfo(
+                    _device,
+                    &nativeDescription,
+                    _adapter,
+                    GetBufferHeapIndex(description.MemoryKind));
             }
 
-            private sealed unsafe class D3D12BackendBuffer : IGraphicsBackendBuffer
+            public GraphicsResourceAllocationInfo GetTextureAllocationInfo(TextureDescription description)
+            {
+                ArgumentNullException.ThrowIfNull(description);
+                ValidateTextureDescriptionSupport(_device, description);
+                var nativeDescription = CreateNativeTextureDescription(description);
+                return GetNativeAllocationInfo(_device, &nativeDescription, _adapter, GetTextureHeapIndex());
+            }
+
+            private ID3D12Resource* CreateCommittedResource(
+                D3D12_RESOURCE_DESC nativeDescription,
+                D3D12_HEAP_PROPERTIES heapProperties,
+                D3D12_RESOURCE_STATES initialState,
+                string debugName)
+            {
+                var resourceId = typeof(ID3D12Resource).GUID;
+                ID3D12Resource* resource = null;
+
+                try
+                {
+                    ThrowIfFailed(_device->CreateCommittedResource(
+                        &heapProperties,
+                        D3D12_HEAP_FLAGS.D3D12_HEAP_FLAG_NONE,
+                        &nativeDescription,
+                        initialState,
+                        null,
+                        &resourceId,
+                        (void**)&resource));
+
+                    if (resource is null)
+                    {
+                        throw new InvalidOperationException("D3D12 committed resource creation returned no resource.");
+                    }
+
+                    if (debugName.Length > 0)
+                    {
+                        fixed (char* name = debugName)
+                        {
+                            ThrowIfFailed(resource->SetName(name));
+                        }
+                    }
+
+                    return resource;
+                }
+                catch
+                {
+                    if (resource is not null)
+                    {
+                        _ = resource->Release();
+                    }
+
+                    throw;
+                }
+            }
+
+            private sealed class D3D12BackendBuffer : D3D12BackendResource, IGraphicsBackendBuffer
+            {
+                internal D3D12BackendBuffer(ID3D12Resource* resource)
+                    : base(resource)
+                {
+                }
+            }
+
+            private abstract unsafe class D3D12BackendResource : IGraphicsBackendResource
             {
                 private ID3D12Resource* _resource;
 
-                internal D3D12BackendBuffer(ID3D12Resource* resource)
+                protected D3D12BackendResource(ID3D12Resource* resource)
                 {
                     if (resource is null)
                     {
@@ -674,6 +835,14 @@ public static unsafe class D3D12GraphicsBackend
                     {
                         _ = resource->Release();
                     }
+                }
+            }
+
+            private sealed class D3D12BackendTexture : D3D12BackendResource, IGraphicsBackendTexture
+            {
+                internal D3D12BackendTexture(ID3D12Resource* resource)
+                    : base(resource)
+                {
                 }
             }
         }

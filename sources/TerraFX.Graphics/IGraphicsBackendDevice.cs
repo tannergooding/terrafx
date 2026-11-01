@@ -10,5 +10,9 @@ internal interface IGraphicsBackendDevice : IDisposable
 
     IGraphicsBackendBuffer CreateBuffer(BufferDescription description);
 
+    IGraphicsBackendTexture CreateTexture(TextureDescription description);
+
     GraphicsResourceAllocationInfo GetBufferAllocationInfo(BufferDescription description);
+
+    GraphicsResourceAllocationInfo GetTextureAllocationInfo(TextureDescription description);
 }

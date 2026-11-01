@@ -19,21 +19,22 @@ public sealed class GraphicsDevice
     private const long DefaultOwnedAllocationBudgetBytes = 512L * 1024 * 1024;
 
     // Keep an owner rooted if native disposal cannot confirm that its resources were released.
-    private static readonly ConcurrentBag<IGraphicsBackendBuffer> s_quarantinedBackendBuffers = [];
     private static readonly ConcurrentBag<IGraphicsBackendDevice> s_quarantinedBackendDevices = [];
-    private static readonly ConcurrentBag<GpuBuffer> s_quarantinedGpuBuffers = [];
+    private static readonly ConcurrentBag<IGraphicsBackendResource> s_quarantinedBackendResources = [];
     private static readonly ConcurrentBag<GraphicsDevice> s_quarantinedGraphicsDevices = [];
+    private static readonly ConcurrentBag<GraphicsResourceOwner> s_quarantinedResources = [];
 
-    private long _allocatedResourceBytes;
     private readonly Dictionary<int, long> _allocatedBytesByHeap = [];
+    private long _allocatedResourceBytes;
     private IGraphicsBackendDevice? _backendDevice;
-    private readonly HashSet<GpuBuffer> _buffers = [];
     private readonly GraphicsCapabilities _capabilities;
-    private bool _hasQuarantinedBuffers;
+    private bool _hasQuarantinedResources;
     private ulong _nextBufferIndex;
+    private ulong _nextTextureIndex;
     private readonly uint _ownerId;
     private readonly GraphicsOwnerRequestQueue _ownerQueue = new();
     private readonly Thread _ownerThread;
+    private readonly HashSet<GraphicsResourceOwner> _resources = [];
     private Exception? _retirementFailure;
     private readonly TaskCompletionSource _shutdownCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _shutdownTask;
@@ -191,11 +192,47 @@ public sealed class GraphicsDevice
         return await request.Task.ConfigureAwait(false);
     }
 
-    internal void EnqueueBufferRetirement(GpuBuffer buffer)
+    /// <summary>Creates one owned GPU texture on the dedicated graphics owner.</summary>
+    /// <param name="description">The validated extent, format, mip count, and usage.</param>
+    /// <param name="cancellationToken">A token that cancels admission or observation before completion.</param>
+    /// <returns>The owned texture after native allocation succeeds.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="description"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">A texture extent or array-layer count exceeds the selected device limits.</exception>
+    /// <exception cref="NotSupportedException">The selected device does not support the requested format, usage, or sample count.</exception>
+    /// <exception cref="InvalidOperationException">The device is not accepting resource requests.</exception>
+    public async Task<GpuTexture> CreateTextureAsync(TextureDescription description, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(description);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (Status != GraphicsDeviceStatus.Ready)
+        {
+            throw new InvalidOperationException("The GraphicsDevice is not accepting resource requests.");
+        }
+
+        ValidateTextureCapabilities(description);
+
+        var reservation = await _ownerQueue.ReserveRetirementAsync(cancellationToken).ConfigureAwait(false);
+        var request = new CreateTextureRequest(this, description, reservation, cancellationToken);
+
+        try
+        {
+            await _ownerQueue.WriteRequestAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            request.AdmissionFailed();
+            throw;
+        }
+
+        return await request.Task.ConfigureAwait(false);
+    }
+
+    internal void EnqueueResourceRetirement(GraphicsResourceOwner resource)
     {
         _ = _ownerQueue.TryEnqueueRetirement(
-            new RetireBufferRequest(this, buffer),
-            buffer.RetirementReservation);
+            new RetireResourceRequest(this, resource),
+            resource.RetirementReservation);
     }
 
     internal Task ShutdownAsync()
@@ -236,6 +273,7 @@ public sealed class GraphicsDevice
         }
 
         var allocationInfo = backendDevice.GetBufferAllocationInfo(description);
+        ArgumentOutOfRangeException.ThrowIfLessThan(allocationInfo.SizeBytes, description.ByteLength);
         ReserveResourceAllocation(description.MemoryKind, allocationInfo);
 
         IGraphicsBackendBuffer? backendBuffer = null;
@@ -244,18 +282,12 @@ public sealed class GraphicsDevice
         {
             backendBuffer = backendDevice.CreateBuffer(description);
             var handle = new GpuBufferHandle(_ownerId, DeviceEpoch, GetNextBufferIndex(), generation: 1);
-            var buffer = new GpuBuffer(
-                this,
-                handle,
-                description.ByteLength,
-                DeviceEpoch,
-                allocationInfo,
-                backendBuffer,
-                retirementReservation);
+            var resourceOwner = new GraphicsResourceOwner(this, allocationInfo, backendBuffer, retirementReservation);
+            var buffer = new GpuBuffer(handle, description.ByteLength, DeviceEpoch, resourceOwner);
 
-            if (!_buffers.Add(buffer))
+            if (!_resources.Add(resourceOwner))
             {
-                throw new InvalidOperationException("The newly created Graphics buffer already exists in its owner registry.");
+                throw new InvalidOperationException("The newly created Graphics resource already exists in its owner registry.");
             }
 
             backendBuffer = null;
@@ -271,7 +303,59 @@ public sealed class GraphicsDevice
                 }
                 catch (Exception cleanupException)
                 {
-                    QuarantineBackendBuffer(backendBuffer, new AggregateException(exception, cleanupException));
+                    QuarantineBackendResource(backendBuffer, new AggregateException(exception, cleanupException));
+                    throw new AggregateException(exception, cleanupException);
+                }
+            }
+
+            ReleaseResourceAllocation(allocationInfo);
+            throw;
+        }
+    }
+
+    private GpuTexture CreateTextureOnOwner(
+        TextureDescription description,
+        GraphicsOwnerRequestQueue.GraphicsRetirementReservation retirementReservation)
+    {
+        var backendDevice = _backendDevice
+            ?? throw new InvalidOperationException("The GraphicsDevice has no live backend owner.");
+
+        if (Status != GraphicsDeviceStatus.Ready)
+        {
+            throw new InvalidOperationException("The GraphicsDevice stopped before the texture request was executed.");
+        }
+
+        var allocationInfo = backendDevice.GetTextureAllocationInfo(description);
+        ReserveResourceAllocation(GpuMemoryKind.DeviceLocal, allocationInfo);
+
+        IGraphicsBackendTexture? backendTexture = null;
+
+        try
+        {
+            backendTexture = backendDevice.CreateTexture(description);
+            var handle = new GpuTextureHandle(_ownerId, DeviceEpoch, GetNextTextureIndex(), generation: 1);
+            var resourceOwner = new GraphicsResourceOwner(this, allocationInfo, backendTexture, retirementReservation);
+            var texture = new GpuTexture(handle, description, DeviceEpoch, resourceOwner);
+
+            if (!_resources.Add(resourceOwner))
+            {
+                throw new InvalidOperationException("The newly created Graphics texture already exists in its owner registry.");
+            }
+
+            backendTexture = null;
+            return texture;
+        }
+        catch (Exception exception)
+        {
+            if (backendTexture is not null)
+            {
+                try
+                {
+                    backendTexture.Dispose();
+                }
+                catch (Exception cleanupException)
+                {
+                    QuarantineBackendResource(backendTexture, new AggregateException(exception, cleanupException));
                     throw new AggregateException(exception, cleanupException);
                 }
             }
@@ -289,6 +373,16 @@ public sealed class GraphicsDevice
         }
 
         return (uint)_nextBufferIndex++;
+    }
+
+    private uint GetNextTextureIndex()
+    {
+        if (_nextTextureIndex > uint.MaxValue)
+        {
+            throw new InvalidOperationException("The GraphicsDevice exhausted its texture handle slots.");
+        }
+
+        return (uint)_nextTextureIndex++;
     }
 
     private void MarkDeviceLost()
@@ -311,22 +405,12 @@ public sealed class GraphicsDevice
         }
     }
 
-    private void QuarantineBackendBuffer(IGraphicsBackendBuffer backendBuffer, Exception exception)
+    private void QuarantineBackendResource(IGraphicsBackendResource backendResource, Exception exception)
     {
-        s_quarantinedBackendBuffers.Add(backendBuffer);
+        s_quarantinedBackendResources.Add(backendResource);
         s_quarantinedGraphicsDevices.Add(this);
-        _hasQuarantinedBuffers = true;
+        _hasQuarantinedResources = true;
         _retirementFailure ??= exception;
-    }
-
-    private void QuarantineBuffer(GpuBuffer buffer, Exception exception)
-    {
-        buffer.MarkQuarantined();
-        s_quarantinedGpuBuffers.Add(buffer);
-        s_quarantinedGraphicsDevices.Add(this);
-        _hasQuarantinedBuffers = true;
-        _retirementFailure ??= exception;
-        buffer.RetirementReservation.Dispose();
     }
 
     [SuppressMessage(
@@ -362,14 +446,14 @@ public sealed class GraphicsDevice
             }
         }
 
-        var activeBuffers = new GpuBuffer[_buffers.Count];
-        _buffers.CopyTo(activeBuffers);
+        var activeResources = new GraphicsResourceOwner[_resources.Count];
+        _resources.CopyTo(activeResources);
 
-        foreach (var buffer in activeBuffers)
+        foreach (var resource in activeResources)
         {
             try
             {
-                QuarantineBuffer(buffer, exception);
+                QuarantineResource(resource, exception);
             }
             catch (Exception failureException)
             {
@@ -379,6 +463,16 @@ public sealed class GraphicsDevice
 
         s_quarantinedGraphicsDevices.Add(this);
         return exception;
+    }
+
+    private void QuarantineResource(GraphicsResourceOwner resource, Exception exception)
+    {
+        resource.MarkQuarantined();
+        s_quarantinedResources.Add(resource);
+        s_quarantinedGraphicsDevices.Add(this);
+        _hasQuarantinedResources = true;
+        _retirementFailure ??= exception;
+        resource.RetirementReservation.Dispose();
     }
 
     private void ReleaseResourceAllocation(GraphicsResourceAllocationInfo allocationInfo)
@@ -455,43 +549,43 @@ public sealed class GraphicsDevice
         _allocatedResourceBytes = totalBytes;
     }
 
-    private void RetireBufferOnOwner(GpuBuffer buffer)
+    private void RetireResourceOnOwner(GraphicsResourceOwner resource)
     {
-        if (!buffer.TryBeginRetirement())
+        if (!resource.TryBeginRetirement())
         {
             return;
         }
 
-        buffer.BackendBuffer.Dispose();
+        resource.BackendResource.Dispose();
 
-        if (!_buffers.Remove(buffer))
+        if (!_resources.Remove(resource))
         {
-            throw new InvalidOperationException("A retired Graphics buffer was not registered with its owner.");
+            throw new InvalidOperationException("A retired Graphics resource was not registered with its owner.");
         }
 
-        ReleaseResourceAllocation(buffer.AllocationInfo);
-        buffer.RetirementReservation.Dispose();
-        buffer.MarkRetired();
+        ReleaseResourceAllocation(resource.AllocationInfo);
+        resource.RetirementReservation.Dispose();
+        resource.MarkRetired();
     }
 
     [SuppressMessage(
         "Usage",
         "CA1031:Do not catch general exception types",
         Justification = "Every failed native release is quarantined and retained while shutdown proceeds for unrelated resources.")]
-    private void RetireBuffersForShutdown()
+    private void RetireResourcesForShutdown()
     {
-        var activeBuffers = new GpuBuffer[_buffers.Count];
-        _buffers.CopyTo(activeBuffers);
+        var activeResources = new GraphicsResourceOwner[_resources.Count];
+        _resources.CopyTo(activeResources);
 
-        foreach (var buffer in activeBuffers)
+        foreach (var resource in activeResources)
         {
             try
             {
-                RetireBufferOnOwner(buffer);
+                RetireResourceOnOwner(resource);
             }
             catch (Exception exception)
             {
-                QuarantineBuffer(buffer, exception);
+                QuarantineResource(resource, exception);
             }
         }
     }
@@ -529,9 +623,9 @@ public sealed class GraphicsDevice
                         ExecuteOwnerWork(retirement, this);
                     }
 
-                    RetireBuffersForShutdown();
+                    RetireResourcesForShutdown();
 
-                    if (_hasQuarantinedBuffers)
+                    if (_hasQuarantinedResources)
                     {
                         s_quarantinedGraphicsDevices.Add(this);
                         Volatile.Write(ref _status, (int)GraphicsDeviceStatus.Stopping);
@@ -575,6 +669,57 @@ public sealed class GraphicsDevice
         {
             _ownerQueue.Dispose();
         }
+    }
+
+    private void ValidateTextureCapabilities(TextureDescription description)
+    {
+        var limits = Capabilities.Limits;
+
+        if (description.Dimension == TextureDimension.Dimension2D)
+        {
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(description.Width, limits.MaximumTextureDimension2D);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(description.Height, limits.MaximumTextureDimension2D);
+        }
+        else
+        {
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(description.Width, limits.MaximumTextureDimension3D);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(description.Height, limits.MaximumTextureDimension3D);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(description.Depth, limits.MaximumTextureDimension3D);
+        }
+
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(description.ArrayLayers, limits.MaximumArrayLayers);
+
+        GraphicsFormatCapabilities? formatCapabilities = null;
+
+        foreach (var candidate in Capabilities.Formats)
+        {
+            if (candidate.Format == description.Format)
+            {
+                formatCapabilities = candidate;
+                break;
+            }
+        }
+
+        if (formatCapabilities is null)
+        {
+            throw new NotSupportedException($"The selected device does not support texture format {description.Format}.");
+        }
+
+        if ((formatCapabilities.SupportedUsages & description.Usage) != description.Usage)
+        {
+            throw new NotSupportedException(
+                $"The selected device does not support texture usages {description.Usage} for {description.Format}.");
+        }
+
+        foreach (var sampleCount in formatCapabilities.SampleCounts)
+        {
+            if (sampleCount == 1)
+            {
+                return;
+            }
+        }
+
+        throw new NotSupportedException($"The selected device does not support single-sample texture format {description.Format}.");
     }
 
     private sealed class CreateBufferRequest : IGraphicsDeviceWork
@@ -629,7 +774,7 @@ public sealed class GraphicsDevice
                 }
                 else
                 {
-                    device.RetireBufferOnOwner(buffer);
+                    device.RetireResourceOnOwner(buffer.ResourceOwner);
                 }
             }
             finally
@@ -647,7 +792,112 @@ public sealed class GraphicsDevice
 
             if (_createdBuffer is not null)
             {
-                _device.QuarantineBuffer(_createdBuffer, exception);
+                _device.QuarantineResource(_createdBuffer.ResourceOwner, exception);
+            }
+
+            ReleaseReservation();
+
+            if (Interlocked.CompareExchange(ref _state, 2, 0) == 0)
+            {
+                _ = _completion.TrySetException(exception);
+            }
+
+            _cancellationRegistration.Dispose();
+        }
+
+        internal void AdmissionFailed()
+        {
+            _ = Interlocked.Exchange(ref _state, 2);
+            ReleaseReservation();
+            _cancellationRegistration.Dispose();
+        }
+
+        private void Cancel()
+        {
+            if (Interlocked.CompareExchange(ref _state, 1, 0) == 0)
+            {
+                _ = _completion.TrySetCanceled(_cancellationToken);
+            }
+        }
+
+        private void ReleaseReservation()
+        {
+            var reservation = Interlocked.Exchange(ref _retirementReservation, null);
+            reservation?.Dispose();
+        }
+    }
+
+    private sealed class CreateTextureRequest : IGraphicsDeviceWork
+    {
+        private readonly CancellationTokenRegistration _cancellationRegistration;
+        private readonly CancellationToken _cancellationToken;
+        private readonly TaskCompletionSource<GpuTexture> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private GpuTexture? _createdTexture;
+        private readonly TextureDescription _description;
+        private readonly GraphicsDevice _device;
+        private GraphicsOwnerRequestQueue.GraphicsRetirementReservation? _retirementReservation;
+        // 0 is pending, 1 is canceled observation, and 2 is terminal.
+        private int _state;
+
+        internal CreateTextureRequest(
+            GraphicsDevice device,
+            TextureDescription description,
+            GraphicsOwnerRequestQueue.GraphicsRetirementReservation retirementReservation,
+            CancellationToken cancellationToken)
+        {
+            _description = description;
+            _device = device;
+            _retirementReservation = retirementReservation;
+            _cancellationToken = cancellationToken;
+            _cancellationRegistration = cancellationToken.Register(
+                static state => ((CreateTextureRequest)state!).Cancel(),
+                this);
+        }
+
+        internal Task<GpuTexture> Task => _completion.Task;
+
+        public void Execute(GraphicsDevice device)
+        {
+            if (Volatile.Read(ref _state) == 1)
+            {
+                ReleaseReservation();
+                _cancellationRegistration.Dispose();
+                return;
+            }
+
+            try
+            {
+                var reservation = _retirementReservation
+                    ?? throw new InvalidOperationException("The texture request has no retirement reservation.");
+                var texture = device.CreateTextureOnOwner(_description, reservation);
+                _createdTexture = texture;
+                _retirementReservation = null;
+
+                if (Interlocked.CompareExchange(ref _state, 2, 0) == 0)
+                {
+                    _ = _completion.TrySetResult(texture);
+                }
+                else
+                {
+                    device.RetireResourceOnOwner(texture.ResourceOwner);
+                }
+            }
+            finally
+            {
+                _cancellationRegistration.Dispose();
+            }
+        }
+
+        public void Fail(Exception exception)
+        {
+            if (exception is GraphicsDeviceLostException)
+            {
+                _device.MarkDeviceLost();
+            }
+
+            if (_createdTexture is not null)
+            {
+                _device.QuarantineResource(_createdTexture.ResourceOwner, exception);
             }
 
             ReleaseReservation();
@@ -783,21 +1033,21 @@ public sealed class GraphicsDevice
         }
     }
 
-    private sealed class RetireBufferRequest : IGraphicsDeviceWork
+    private sealed class RetireResourceRequest : IGraphicsDeviceWork
     {
-        private readonly GpuBuffer _buffer;
         private readonly GraphicsDevice _device;
+        private readonly GraphicsResourceOwner _resource;
 
-        internal RetireBufferRequest(GraphicsDevice device, GpuBuffer buffer)
+        internal RetireResourceRequest(GraphicsDevice device, GraphicsResourceOwner resource)
         {
-            _buffer = buffer;
+            _resource = resource;
             _device = device;
         }
 
         public void Execute(GraphicsDevice device)
-            => device.RetireBufferOnOwner(_buffer);
+            => device.RetireResourceOnOwner(_resource);
 
         public void Fail(Exception exception)
-            => _device.QuarantineBuffer(_buffer, exception);
+            => _device.QuarantineResource(_resource, exception);
     }
 }

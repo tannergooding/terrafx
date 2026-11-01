@@ -32,6 +32,11 @@ internal static class Program
             throw new InvalidOperationException("GpuBuffer must not expose public resource construction.");
         }
 
+        if (typeof(GpuTexture).GetConstructors(BindingFlags.Instance | BindingFlags.Public).Length != 0)
+        {
+            throw new InvalidOperationException("GpuTexture must not expose public resource construction.");
+        }
+
         Console.WriteLine("D3D12 public registration consumer passed with unsafe disabled, no public owner/resource construction, and no native device activation.");
     }
 }

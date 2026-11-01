@@ -64,8 +64,10 @@ internal interface IGraphicsBackendDevice : IDisposable
     GraphicsCapabilities Capabilities { get; }
 
     IGraphicsBackendBuffer CreateBuffer(BufferDescription description);
+    IGraphicsBackendTexture CreateTexture(TextureDescription description);
 
     GraphicsResourceAllocationInfo GetBufferAllocationInfo(BufferDescription description);
+    GraphicsResourceAllocationInfo GetTextureAllocationInfo(TextureDescription description);
 }
 
 internal readonly struct GraphicsResourceAllocationInfo
@@ -77,14 +79,32 @@ internal readonly struct GraphicsResourceAllocationInfo
     internal long SizeBytes { get; }
 }
 
-internal interface IGraphicsBackendBuffer : IDisposable
+internal interface IGraphicsBackendResource : IDisposable
 {
+}
+
+internal interface IGraphicsBackendBuffer : IGraphicsBackendResource
+{
+}
+
+internal interface IGraphicsBackendTexture : IGraphicsBackendResource
+{
+}
+
+internal sealed class GraphicsResourceOwner : IDisposable
+{
+    internal GraphicsResourceOwner(
+        GraphicsDevice device,
+        GraphicsResourceAllocationInfo allocationInfo,
+        IGraphicsBackendResource backendResource,
+        GraphicsOwnerRequestQueue.GraphicsRetirementReservation retirementReservation);
+    public void Dispose();
 }
 ```
 
 `GraphicsDevice.CreateAsync` starts its dedicated graphics owner thread, invokes the selected factory there, and returns only after `IGraphicsBackendDevice` has created a real native device and passed profile admission. Backend packages implement `IGraphicsBackendFactory` and return their live native owner; they never create or return the public facade. The factory checks cancellation between native operations and unwinds every successfully acquired native object on cancellation/failure; it does not pretend an in-progress native call was canceled. `IGraphicsBackendDevice` is an internal owner port, not a feature-success façade: every public Graphics operation admitted by the selected profile must be implemented by that backend or reject with its typed/native failure. The bounded request channel and last-use retirement remain owned by `GraphicsDevice`, not by the registration token.
 
-`IGraphicsBackendDevice.GetBufferAllocationInfo` queries actual resource size, alignment, native memory-heap identity, and a current nullable heap budget estimate before reservation; `CreateBuffer` runs only on the graphics owner. D3D12 uses `GetResourceAllocationInfo` and `IDXGIAdapter3.QueryVideoMemoryInfo` followed by a committed resource in the heap selected by `GpuMemoryKind`. `GraphicsDevice` reserves the persistent allocation budget and reported native-heap budget before creation, then releases those credits only after owner-thread resource release. `GpuBuffer.Dispose` revokes new use immediately and queues retirement with its pre-reserved retirement credit. During host shutdown, accepted requests drain before all remaining buffers retire and the backend device is released. Uncertain resource release quarantines and roots the buffer/device and faults shutdown rather than releasing storage by assumption.
+`GraphicsResourceOwner` is an internal owner-thread-created object that holds one `IGraphicsBackendResource`, the exact allocation record, and one retirement reservation; `GpuBuffer` and `GpuTexture` expose only their typed handle/description and delegate disposal to this owner. `IGraphicsBackendDevice.GetBufferAllocationInfo` and `GetTextureAllocationInfo` query actual resource size, alignment, native memory-heap identity, and a current nullable heap budget estimate before reservation; `CreateBuffer`/`CreateTexture` run only on the graphics owner. D3D12 uses `GetResourceAllocationInfo` and `IDXGIAdapter3.QueryVideoMemoryInfo` followed by committed buffers or textures in the selected native heap (textures use device-local memory). Texture admission checks actual format usages, sample count, dimensions, and array limits; the D3D12 backend also checks the actual 2D/3D format-support bit before allocation. `GraphicsDevice` reserves the persistent allocation budget and reported native-heap budget before creation, then releases those credits only after owner-thread resource release. Buffer and texture `Dispose` revoke new use immediately and queue retirement with the pre-reserved retirement credit. During host shutdown, accepted requests drain before all remaining resources retire and the backend device is released. Uncertain resource release quarantines and roots the resource/device and faults shutdown rather than releasing storage by assumption.
 
 `GraphicsOwnerRequestQueue` keeps ordinary requests and retirements in separate capacity-256 channels. Ordinary admission waits for capacity and honors cancellation before acceptance. A queue-issued, internal `GraphicsOwnerRequestQueue.GraphicsRetirementReservation` is acquired before a resource-creating request is accepted and remains held until native retirement or quarantine; dequeuing retirement work alone does not release the reserved capacity. Closing retirement-reservation admission does not prevent already reserved resources from entering the retirement channel. These channels do not reuse host-mailbox, World-control, or Input-control failure semantics.
 
