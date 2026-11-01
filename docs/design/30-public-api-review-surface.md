@@ -6820,6 +6820,23 @@ public readonly struct MonitorHandle : IEquatable<MonitorHandle>
     public static bool operator !=(MonitorHandle left, MonitorHandle right);
 }
 
+public enum DpiSource
+{
+    Unknown = 0,
+    WindowsPerMonitorV2 = 1,
+    WaylandFractionalScale = 2,
+    WaylandIntegerBufferScale = 3,
+    X11Settings = 4,
+    ApplicationOverride = 5
+}
+
+public enum DpiConfidence
+{
+    None = 0,
+    Reported = 1,
+    Assumed96Dpi = 2
+}
+
 public sealed class WindowMetrics
 {
     internal WindowMetrics(Vector2 logicalClientSize, PixelSize clientPixelSize, Vector2 contentScale, float? effectiveDpi, DpiSource dpiSource, DpiConfidence dpiConfidence, uint surfaceEpoch, uint swapchainEpoch);
