@@ -266,6 +266,13 @@ public sealed class UnmanagedBuffer<T> : IDisposable
         }
     }
 
+    /// <summary>Transfers the finalized storage owner credit to a read-only <see cref="OwnedBuffer{T}"/>.</summary>
+    /// <returns>A read-only owner for the same allocation; this mutable owner is closed.</returns>
+    /// <exception cref="InvalidOperationException">A writable lease or write operation is still active.</exception>
+    /// <exception cref="ObjectDisposedException">The allocation owner is already closed.</exception>
+    public OwnedBuffer<T> TransferToOwnedBuffer()
+        => new(this);
+
     internal BufferReadLease<T> AcquireOwnedReadLease(nint offset, nint length)
     {
         using (ReentrantGate.EnterScope(ref _gate))
@@ -357,7 +364,7 @@ public sealed class UnmanagedBuffer<T> : IDisposable
         }
     }
 
-    internal void TransferToOwnedBuffer()
+    internal void TransferToOwnedBufferCore()
     {
         using (ReentrantGate.EnterScope(ref _gate))
         {

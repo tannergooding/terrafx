@@ -2,7 +2,6 @@
 
 using System;
 using System.Collections.Immutable;
-using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,24 +13,6 @@ namespace TerraFX.Core.Tests;
 [TestFixture]
 internal sealed class BufferTests
 {
-    private static OwnedBuffer<T> CreateOwnedBuffer<T>(UnmanagedBuffer<T> storage)
-        where T : unmanaged
-    {
-        var constructor = typeof(OwnedBuffer<T>).GetConstructor(
-            BindingFlags.Instance | BindingFlags.NonPublic,
-            binder: null,
-            [typeof(UnmanagedBuffer<T>)],
-            modifiers: null);
-        Assert.That(constructor, Is.Not.Null);
-
-        if (constructor is null)
-        {
-            throw new InvalidOperationException("The accepted internal OwnedBuffer constructor was not found.");
-        }
-
-        return (OwnedBuffer<T>)constructor.Invoke([storage]);
-    }
-
     [Test]
     public void AllocationValidatesSignedExtentsAlignmentAndRoundedBudget()
     {
@@ -260,11 +241,11 @@ internal sealed class BufferTests
     {
         var buffer = UnmanagedBuffer<int>.Allocate(2, new BufferAllocationOptions(8, 4));
         using var writeLease = buffer.AcquireWrite(0, 2);
-        _ = Assert.Throws<TargetInvocationException>(() => CreateOwnedBuffer(buffer));
+        _ = Assert.Throws<InvalidOperationException>(() => buffer.TransferToOwnedBuffer());
         writeLease.Dispose();
         buffer.CopyFrom([7, 11], 0);
         using var priorReadLease = buffer.AcquireRead(0, 2);
-        var owned = CreateOwnedBuffer(buffer);
+        var owned = buffer.TransferToOwnedBuffer();
 
         _ = Assert.Throws<ObjectDisposedException>(() => buffer.AcquireRead(0, 1));
         var priorRead = new BufferPublicConsumer.SumReadAction();

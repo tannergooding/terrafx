@@ -16,7 +16,7 @@ public sealed class OwnedBuffer<T> : IDisposable
     {
         ArgumentNullException.ThrowIfNull(storage);
         _storage = storage;
-        storage.TransferToOwnedBuffer();
+        storage.TransferToOwnedBufferCore();
     }
 
     /// <summary>Gets the immutable checked logical byte extent.</summary>

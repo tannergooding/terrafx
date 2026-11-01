@@ -30,6 +30,7 @@ Allocation validates nonnegative element count, positive power-of-two alignment,
 | `BufferWriteLease<T> AcquireWrite(nint offset, nint length)` | Exclusive mutation of the named range under the selected overlap policy |
 | `void CopyTo(nint sourceOffset, Span<T> destination)` | Synchronous copied read; no escaping native view |
 | `void CopyFrom(ReadOnlySpan<T> source, nint destinationOffset)` | Synchronous copied write with conflict validation |
+| `OwnedBuffer<T> TransferToOwnedBuffer()` | Closes this mutable owner and transfers the finalized storage credit to the read-only owner without copying |
 | `void Dispose()` | Closes new admissions, releases the owner's credit, and defers actual free until active uses/leases complete |
 
 Both lease types are sealed disposable reference owners, not freely copied owning structs. A lease records allocation identity/generation, offset/count, access mode, and its independent lifetime credit. Calls through a disposed lease throw. `Dispose` is idempotent; disposing the buffer does not invalidate an already admitted operation's memory beneath it. A new lease after close throws `ObjectDisposedException`.
@@ -44,7 +45,7 @@ Range conflicts are explicit: simultaneous reads may overlap; a write conflicts 
 
 ## 3. Asynchronous and native consumption
 
-`TerraFX.Buffers.OwnedBuffer<T>` is the sealed read-only owner for finalized results such as CPU readback, not another allocator or collection family. Its constructor is internal; public members are immutable `nint Length`/`ByteLength`, `AcquireReadLease(nint offset, nint length)` and `Dispose`. It shares `UnmanagedBuffer<T>`'s checked allocation, accounting, lease and scoped-window machinery.
+`TerraFX.Buffers.OwnedBuffer<T>` is the sealed read-only owner for finalized results such as CPU readback, not another allocator or collection family. Its constructor is internal; the public `UnmanagedBuffer<T>.TransferToOwnedBuffer()` is its only public creation path. Transfer closes the mutable source, releases its allocation-owner credit, and gives the read-only owner one independent credit without copying. Transfer refuses while a writable lease or write operation is active; existing read leases retain their independent credits. `OwnedBuffer<T>` public members are immutable `nint Length`/`ByteLength`, `AcquireReadLease(nint offset, nint length)` and `Dispose`. It shares `UnmanagedBuffer<T>`'s checked allocation, accounting, lease and scoped-window machinery.
 
 Finalization joins all writes, transfers the private storage/accounting credit exactly once, and leaves no caller-accessible mutable owner or write lease. The engine performs no further writes after publication. Merely wrapping an arbitrary aliased writable owner does not establish this invariant. Independent read leases can overlap and remain valid after owner disposal; disposal closes new acquisitions and drops the owner credit, but callbacks/native consumers still delay actual reclamation. No public pointer, writable window, `Memory<T>`, or underlying storage property is added.
 

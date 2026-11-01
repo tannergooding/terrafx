@@ -752,6 +752,7 @@ public sealed class UnmanagedBuffer<T> : IDisposable where T : unmanaged
     public BufferWriteLease<T> AcquireWrite(nint offset, nint length);
     public void CopyTo(nint sourceOffset, Span<T> destination);
     public void CopyFrom(ReadOnlySpan<T> source, nint destinationOffset);
+    public OwnedBuffer<T> TransferToOwnedBuffer();
     public void Dispose();
 }
 

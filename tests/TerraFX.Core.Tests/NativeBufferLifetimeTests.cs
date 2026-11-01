@@ -28,7 +28,7 @@ internal sealed class NativeBufferLifetimeTests
     private static WeakReference<OwnedBuffer<int>> CreateAbandonedOwnedBuffer(FakeNativeMemoryOperations nativeMemory)
     {
         var storage = UnmanagedBuffer<int>.Allocate(1, s_allocationOptions, nativeMemory);
-        var ownedBuffer = new OwnedBuffer<int>(storage);
+        var ownedBuffer = storage.TransferToOwnedBuffer();
         _ = ownedBuffer.AcquireReadLease(0, 1);
         return new WeakReference<OwnedBuffer<int>>(ownedBuffer);
     }
