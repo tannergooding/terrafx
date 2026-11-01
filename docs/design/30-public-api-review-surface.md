@@ -4479,12 +4479,55 @@ public ref struct CommandRecorder
 public sealed class Surface
 {
     internal Surface();
+    public SurfaceCapabilities Capabilities { get; }
     public uint SurfaceEpoch { get; }
     public uint SwapchainEpoch { get; }
     public PixelSize ClientPixelSize { get; }
     public TextureFormat ColorFormat { get; }
     public Task<SurfaceResizeReceipt> ResizeAsync(PixelSize clientPixelSize, CancellationToken cancellationToken = default);
     public Task<PresentationReceipt> WaitForPresentationAsync(long presentationSequence, CancellationToken cancellationToken = default);
+}
+
+public enum GraphicsPresentMode
+{
+    Fifo = 1,
+    Mailbox = 2,
+    Immediate = 3
+}
+
+public enum SurfaceColorSpace
+{
+    SrgbNonlinear = 1
+}
+
+public readonly struct SurfaceFormat
+{
+    internal SurfaceFormat(TextureFormat format, SurfaceColorSpace colorSpace);
+    public TextureFormat Format { get; }
+    public SurfaceColorSpace ColorSpace { get; }
+}
+
+public sealed class SurfaceCapabilities
+{
+    internal SurfaceCapabilities(
+        ImmutableArray<SurfaceFormat> formats,
+        ImmutableArray<GraphicsPresentMode> presentModes,
+        PixelSize minimumExtent,
+        PixelSize maximumExtent,
+        int minimumImageCount,
+        int? maximumImageCount,
+        bool supportsTearing,
+        uint surfaceEpoch,
+        uint swapchainEpoch);
+    public ImmutableArray<SurfaceFormat> Formats { get; }
+    public ImmutableArray<GraphicsPresentMode> PresentModes { get; }
+    public PixelSize MinimumExtent { get; }
+    public PixelSize MaximumExtent { get; }
+    public int MinimumImageCount { get; }
+    public int? MaximumImageCount { get; }
+    public bool SupportsTearing { get; }
+    public uint SurfaceEpoch { get; }
+    public uint SwapchainEpoch { get; }
 }
 
 public enum SurfaceResizeStatus
