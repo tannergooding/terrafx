@@ -303,6 +303,9 @@ internal sealed class GraphicsPipelineRequestTests
             return new FakeBackendPipeline(this);
         }
 
+        public IGraphicsBackendSampler CreateSampler(SamplerDescription description, float effectiveMaximumAnisotropy)
+            => throw new NotSupportedException();
+
         public IGraphicsBackendTexture CreateTexture(TextureDescription description)
             => throw new NotSupportedException();
 

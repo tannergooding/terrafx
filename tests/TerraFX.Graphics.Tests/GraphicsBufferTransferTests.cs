@@ -297,6 +297,40 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task SamplerCreationClampsAnisotropyAndRetiresOnOwner()
+    {
+        var backendDevice = new FakeBackendDevice();
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var sampler = await graphicsDevice.CreateSamplerAsync(
+            new SamplerDescription(
+                SamplerFilter.Linear,
+                SamplerFilter.Linear,
+                SamplerFilter.Linear,
+                SamplerAddressMode.Repeat,
+                SamplerAddressMode.Clamp,
+                SamplerAddressMode.Clamp,
+                maximumAnisotropy: 8.0f)).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+        try
+        {
+            Assert.That(sampler.Handle.IsValid, Is.True);
+            Assert.That(sampler.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
+            Assert.That(backendDevice.EffectiveSamplerAnisotropy, Is.EqualTo(1.0f));
+
+            sampler.Dispose();
+            sampler = null;
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            Assert.That(backendDevice.SamplerDisposalCount, Is.EqualTo(1));
+        }
+        finally
+        {
+            sampler?.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task SpanUploadCopiesCallerBytesAndReadbackReturnsTheRequestedRange()
     {
         var backendDevice = new FakeBackendDevice();
@@ -539,7 +573,9 @@ internal sealed class GraphicsBufferTransferTests
         private readonly List<byte[]> _buffers = [];
         private int _bufferDisposalCount;
         private long _completedFence;
+        private int _effectiveSamplerAnisotropyBits;
         private byte[]? _lastBufferBytes;
+        private int _samplerDisposalCount;
         private int _textureDisposalCount;
 
         internal FakeBackendDevice()
@@ -556,7 +592,12 @@ internal sealed class GraphicsBufferTransferTests
 
         internal int BufferDisposalCount => Volatile.Read(ref _bufferDisposalCount);
 
+        internal float EffectiveSamplerAnisotropy
+            => BitConverter.Int32BitsToSingle(Volatile.Read(ref _effectiveSamplerAnisotropyBits));
+
         internal byte[]? LastBufferBytes => _lastBufferBytes;
+
+        internal int SamplerDisposalCount => Volatile.Read(ref _samplerDisposalCount);
 
         internal int TextureDisposalCount => Volatile.Read(ref _textureDisposalCount);
 
@@ -580,6 +621,12 @@ internal sealed class GraphicsBufferTransferTests
             PipelineDescription description,
             ReadOnlySpan<BufferReadLease<byte>> bytecodeLeases)
             => throw new NotSupportedException();
+
+        public IGraphicsBackendSampler CreateSampler(SamplerDescription description, float effectiveMaximumAnisotropy)
+        {
+            _ = Interlocked.Exchange(ref _effectiveSamplerAnisotropyBits, BitConverter.SingleToInt32Bits(effectiveMaximumAnisotropy));
+            return new FakeBackendSampler(this);
+        }
 
         public IGraphicsBackendTexture CreateTexture(TextureDescription description)
             => new FakeBackendTexture(this, description);
@@ -758,6 +805,9 @@ internal sealed class GraphicsBufferTransferTests
             }
         }
 
+        internal void SamplerDisposed()
+            => _ = Interlocked.Increment(ref _samplerDisposalCount);
+
         internal void TextureDisposed(FakeBackendTexture texture)
             => _ = Interlocked.Increment(ref _textureDisposalCount);
 
@@ -818,6 +868,25 @@ internal sealed class GraphicsBufferTransferTests
             }
 
             return _device;
+        }
+    }
+
+    private sealed class FakeBackendSampler : IGraphicsBackendSampler
+    {
+        private readonly FakeBackendDevice _device;
+        private int _isDisposed;
+
+        internal FakeBackendSampler(FakeBackendDevice device)
+        {
+            _device = device;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _isDisposed, 1) == 0)
+            {
+                _device.SamplerDisposed();
+            }
         }
     }
 

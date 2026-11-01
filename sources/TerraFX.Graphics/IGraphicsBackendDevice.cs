@@ -15,6 +15,8 @@ internal interface IGraphicsBackendDevice : IDisposable
         PipelineDescription description,
         ReadOnlySpan<BufferReadLease<byte>> bytecodeLeases);
 
+    IGraphicsBackendSampler CreateSampler(SamplerDescription description, float effectiveMaximumAnisotropy);
+
     IGraphicsBackendTexture CreateTexture(TextureDescription description);
 
     GraphicsResourceAllocationInfo GetBufferAllocationInfo(BufferDescription description);

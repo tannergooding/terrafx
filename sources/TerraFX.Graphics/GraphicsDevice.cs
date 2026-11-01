@@ -34,6 +34,7 @@ public sealed class GraphicsDevice
     private bool _hasQuarantinedResources;
     private ulong _nextBufferIndex;
     private ulong _nextPipelineIndex;
+    private ulong _nextSamplerIndex;
     private ulong _nextTextureIndex;
     private readonly uint _ownerId;
     private readonly GraphicsOwnerRequestQueue _ownerQueue = new();
@@ -541,6 +542,47 @@ public sealed class GraphicsDevice
         }
     }
 
+    /// <summary>Creates one owned GPU sampler on the dedicated graphics owner.</summary>
+    /// <param name="description">The validated filtering, addressing, and anisotropy request.</param>
+    /// <param name="cancellationToken">A token that cancels admission or observation before completion.</param>
+    /// <returns>The owned sampler after native descriptor creation succeeds.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="description"/> is <see langword="null"/>.</exception>
+    /// <exception cref="InvalidOperationException">The device is not accepting sampler requests.</exception>
+    public async Task<GpuSampler> CreateSamplerAsync(SamplerDescription description, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(description);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (Status != GraphicsDeviceStatus.Ready)
+        {
+            throw new InvalidOperationException("The GraphicsDevice is not accepting resource requests.");
+        }
+
+        var reservation = await _ownerQueue.ReserveRetirementAsync(cancellationToken).ConfigureAwait(false);
+        CreateSamplerRequest? request = null;
+
+        try
+        {
+            request = new CreateSamplerRequest(this, description, reservation, cancellationToken);
+            await _ownerQueue.WriteRequestAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (request is null)
+            {
+                reservation.Dispose();
+            }
+            else
+            {
+                request.AdmissionFailed();
+            }
+
+            throw;
+        }
+
+        return await request.Task.ConfigureAwait(false);
+    }
+
     /// <summary>Creates one owned GPU texture on the dedicated graphics owner.</summary>
     /// <param name="description">The validated extent, format, mip count, and usage.</param>
     /// <param name="cancellationToken">A token that cancels admission or observation before completion.</param>
@@ -954,6 +996,55 @@ public sealed class GraphicsDevice
         }
     }
 
+    private GpuSampler CreateSamplerOnOwner(
+        SamplerDescription description,
+        GraphicsOwnerRequestQueue.GraphicsRetirementReservation retirementReservation)
+    {
+        var backendDevice = _backendDevice
+            ?? throw new InvalidOperationException("The GraphicsDevice has no live backend owner.");
+
+        if (Status != GraphicsDeviceStatus.Ready)
+        {
+            throw new InvalidOperationException("The GraphicsDevice stopped before the sampler request was executed.");
+        }
+
+        var effectiveMaximumAnisotropy = Math.Min(description.MaximumAnisotropy, Capabilities.Limits.MaximumSamplerAnisotropy);
+        IGraphicsBackendSampler? backendSampler = null;
+
+        try
+        {
+            backendSampler = backendDevice.CreateSampler(description, effectiveMaximumAnisotropy);
+            var handle = new GpuSamplerHandle(_ownerId, DeviceEpoch, GetNextSamplerIndex(), generation: 1);
+            var resourceOwner = new GraphicsResourceOwner(this, allocationInfo: null, backendSampler, retirementReservation);
+            var sampler = new GpuSampler(handle, DeviceEpoch, resourceOwner);
+
+            if (!_resources.Add(resourceOwner))
+            {
+                throw new InvalidOperationException("The newly created Graphics sampler already exists in its owner registry.");
+            }
+
+            backendSampler = null;
+            return sampler;
+        }
+        catch (Exception exception)
+        {
+            if (backendSampler is not null)
+            {
+                try
+                {
+                    backendSampler.Dispose();
+                }
+                catch (Exception cleanupException)
+                {
+                    QuarantineBackendResource(backendSampler, new AggregateException(exception, cleanupException));
+                    throw new AggregateException(exception, cleanupException);
+                }
+            }
+
+            throw;
+        }
+    }
+
     private GpuTexture CreateTextureOnOwner(
         TextureDescription description,
         GraphicsOwnerRequestQueue.GraphicsRetirementReservation retirementReservation)
@@ -1024,6 +1115,16 @@ public sealed class GraphicsDevice
         }
 
         return (uint)_nextPipelineIndex++;
+    }
+
+    private uint GetNextSamplerIndex()
+    {
+        if (_nextSamplerIndex > uint.MaxValue)
+        {
+            throw new InvalidOperationException("The GraphicsDevice exhausted its sampler handle slots.");
+        }
+
+        return (uint)_nextSamplerIndex++;
     }
 
     private uint GetNextTextureIndex()
@@ -1911,6 +2012,112 @@ public sealed class GraphicsDevice
             }
 
             ReleaseShaderBytecode(bytecodeLeases);
+        }
+
+        private void ReleaseReservation()
+        {
+            var reservation = Interlocked.Exchange(ref _retirementReservation, null);
+            reservation?.Dispose();
+        }
+    }
+
+    private sealed class CreateSamplerRequest : IGraphicsDeviceWork
+    {
+        private readonly CancellationTokenRegistration _cancellationRegistration;
+        private readonly CancellationToken _cancellationToken;
+        private readonly TaskCompletionSource<GpuSampler> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private GpuSampler? _createdSampler;
+        private readonly SamplerDescription _description;
+        private readonly GraphicsDevice _device;
+        private GraphicsOwnerRequestQueue.GraphicsRetirementReservation? _retirementReservation;
+        private int _state;
+
+        internal CreateSamplerRequest(
+            GraphicsDevice device,
+            SamplerDescription description,
+            GraphicsOwnerRequestQueue.GraphicsRetirementReservation retirementReservation,
+            CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(description);
+            ArgumentNullException.ThrowIfNull(retirementReservation);
+            _description = description;
+            _device = device;
+            _retirementReservation = retirementReservation;
+            _cancellationToken = cancellationToken;
+            _cancellationRegistration = cancellationToken.Register(
+                static state => ((CreateSamplerRequest)state!).Cancel(),
+                this);
+        }
+
+        internal Task<GpuSampler> Task => _completion.Task;
+
+        public void Execute(GraphicsDevice device)
+        {
+            if (Volatile.Read(ref _state) == 1)
+            {
+                ReleaseReservation();
+                _cancellationRegistration.Dispose();
+                return;
+            }
+
+            try
+            {
+                var reservation = _retirementReservation
+                    ?? throw new InvalidOperationException("The sampler request has no retirement reservation.");
+                var sampler = device.CreateSamplerOnOwner(_description, reservation);
+                _createdSampler = sampler;
+                _retirementReservation = null;
+
+                if (Interlocked.CompareExchange(ref _state, 2, 0) == 0)
+                {
+                    _ = _completion.TrySetResult(sampler);
+                }
+                else
+                {
+                    device.RetireResourceOnOwner(sampler.ResourceOwner);
+                }
+            }
+            finally
+            {
+                _cancellationRegistration.Dispose();
+            }
+        }
+
+        public void Fail(Exception exception)
+        {
+            if (exception is GraphicsDeviceLostException)
+            {
+                _device.MarkDeviceLost();
+            }
+
+            if (_createdSampler is not null)
+            {
+                _device.QuarantineResource(_createdSampler.ResourceOwner, exception);
+            }
+
+            ReleaseReservation();
+
+            if (Interlocked.CompareExchange(ref _state, 2, 0) == 0)
+            {
+                _ = _completion.TrySetException(exception);
+            }
+
+            _cancellationRegistration.Dispose();
+        }
+
+        internal void AdmissionFailed()
+        {
+            _ = Interlocked.Exchange(ref _state, 2);
+            ReleaseReservation();
+            _cancellationRegistration.Dispose();
+        }
+
+        private void Cancel()
+        {
+            if (Interlocked.CompareExchange(ref _state, 1, 0) == 0)
+            {
+                _ = _completion.TrySetCanceled(_cancellationToken);
+            }
         }
 
         private void ReleaseReservation()

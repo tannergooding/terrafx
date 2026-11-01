@@ -148,6 +148,30 @@ public static unsafe class D3D12GraphicsBackend
             };
         }
 
+        private static D3D12_SAMPLER_DESC CreateNativeSamplerDescription(
+            SamplerDescription description,
+            float effectiveMaximumAnisotropy)
+        {
+            ArgumentNullException.ThrowIfNull(description);
+
+            if (effectiveMaximumAnisotropy > 1.0f)
+            {
+                throw new NotSupportedException("D3D12 sampler anisotropy is not implemented.");
+            }
+
+            return new D3D12_SAMPLER_DESC {
+                Filter = GetNativeSamplerFilter(description),
+                AddressU = GetNativeSamplerAddressMode(description.AddressU),
+                AddressV = GetNativeSamplerAddressMode(description.AddressV),
+                AddressW = GetNativeSamplerAddressMode(description.AddressW),
+                MipLODBias = 0.0f,
+                MaxAnisotropy = 1,
+                ComparisonFunc = D3D12_COMPARISON_FUNC.D3D12_COMPARISON_FUNC_ALWAYS,
+                MinLOD = 0.0f,
+                MaxLOD = description.Mip == SamplerFilter.None ? 0.0f : float.MaxValue,
+            };
+        }
+
         private static D3D12_RESOURCE_DESC CreateNativeTextureDescription(TextureDescription description)
         {
             ArgumentNullException.ThrowIfNull(description);
@@ -443,6 +467,31 @@ public static unsafe class D3D12GraphicsBackend
                 _ => throw new ArgumentOutOfRangeException(nameof(format)),
             };
 
+        private static D3D12_TEXTURE_ADDRESS_MODE GetNativeSamplerAddressMode(SamplerAddressMode addressMode)
+            => addressMode switch {
+                SamplerAddressMode.Clamp => D3D12_TEXTURE_ADDRESS_MODE.D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+                SamplerAddressMode.Repeat => D3D12_TEXTURE_ADDRESS_MODE.D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+                _ => throw new ArgumentOutOfRangeException(nameof(addressMode)),
+            };
+
+        private static D3D12_FILTER GetNativeSamplerFilter(SamplerDescription description)
+        {
+            var minificationLinear = description.Minification == SamplerFilter.Linear;
+            var magnificationLinear = description.Magnification == SamplerFilter.Linear;
+            var mipLinear = description.Mip == SamplerFilter.Linear;
+
+            return (minificationLinear, magnificationLinear, mipLinear) switch {
+                (false, false, false) => D3D12_FILTER.D3D12_FILTER_MIN_MAG_MIP_POINT,
+                (false, false, true) => D3D12_FILTER.D3D12_FILTER_MIN_MAG_POINT_MIP_LINEAR,
+                (false, true, false) => D3D12_FILTER.D3D12_FILTER_MIN_POINT_MAG_LINEAR_MIP_POINT,
+                (false, true, true) => D3D12_FILTER.D3D12_FILTER_MIN_POINT_MAG_MIP_LINEAR,
+                (true, false, false) => D3D12_FILTER.D3D12_FILTER_MIN_LINEAR_MAG_MIP_POINT,
+                (true, false, true) => D3D12_FILTER.D3D12_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR,
+                (true, true, false) => D3D12_FILTER.D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT,
+                (true, true, true) => D3D12_FILTER.D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+            };
+        }
+
         private static ImmutableArray<int> GetSampleCounts(ID3D12Device* device, DXGI_FORMAT format)
         {
             var sampleCounts = ImmutableArray.CreateBuilder<int>();
@@ -665,12 +714,17 @@ public static unsafe class D3D12GraphicsBackend
         private sealed unsafe class D3D12BackendDevice : IGraphicsBackendDevice
         {
             private const long MaximumDedicatedStagingAllocationBytes = 512L * 1024 * 1024;
+            private const int SamplerDescriptorCapacity = 256;
             private const long StagingRingCapacityBytes = 64L * 1024 * 1024;
 
             private IDXGIAdapter3* _adapter;
             private ID3D12Device* _device;
+            private Stack<int>? _freeSamplerDescriptors;
+            private readonly int _ownerThreadId = Environment.CurrentManagedThreadId;
             private ID3D12Resource* _quarantinedStagingResource;
             private ID3D12Resource* _readbackStagingResource;
+            private ID3D12DescriptorHeap* _samplerDescriptorHeap;
+            private uint _samplerDescriptorIncrementSize;
             private D3D12BackendFactory.D3D12TransferQueue? _transferQueue;
             private byte* _uploadStagingMapped;
             private ID3D12Resource* _uploadStagingResource;
@@ -941,6 +995,44 @@ public static unsafe class D3D12GraphicsBackend
                 ReadOnlySpan<BufferReadLease<byte>> bytecodeLeases)
                 => D3D12BackendFactory.D3D12PipelineBuilder.Create(_device, description, bytecodeLeases);
 
+            public IGraphicsBackendSampler CreateSampler(SamplerDescription description, float effectiveMaximumAnisotropy)
+            {
+                ArgumentNullException.ThrowIfNull(description);
+                EnsureOwnerThread();
+
+                if (!float.IsFinite(effectiveMaximumAnisotropy)
+                    || (effectiveMaximumAnisotropy < 1.0f)
+                    || (effectiveMaximumAnisotropy > Capabilities.Limits.MaximumSamplerAnisotropy))
+                {
+                    throw new ArgumentOutOfRangeException(nameof(effectiveMaximumAnisotropy));
+                }
+
+                EnsureSamplerDescriptorHeap();
+                var freeDescriptors = _freeSamplerDescriptors
+                    ?? throw new InvalidOperationException("The D3D12 sampler descriptor heap has no free-slot owner.");
+
+                if (freeDescriptors.Count == 0)
+                {
+                    throw new InvalidOperationException("The D3D12 sampler descriptor capacity is exhausted.");
+                }
+
+                var slot = freeDescriptors.Pop();
+
+                try
+                {
+                    var nativeDescription = CreateNativeSamplerDescription(description, effectiveMaximumAnisotropy);
+                    var cpuHandle = _samplerDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+                    cpuHandle.ptr = checked(cpuHandle.ptr + (checked((nuint)slot) * _samplerDescriptorIncrementSize));
+                    _device->CreateSampler(&nativeDescription, cpuHandle);
+                    return new D3D12BackendSampler(this, slot);
+                }
+                catch
+                {
+                    freeDescriptors.Push(slot);
+                    throw;
+                }
+            }
+
             public IGraphicsBackendTexture CreateTexture(TextureDescription description)
             {
                 ArgumentNullException.ThrowIfNull(description);
@@ -976,6 +1068,12 @@ public static unsafe class D3D12GraphicsBackend
                     throw new InvalidOperationException("The D3D12 backend has a staging resource quarantined after uncertain transfer completion.");
                 }
 
+                if ((_samplerDescriptorHeap is not null)
+                    && (_freeSamplerDescriptors?.Count != SamplerDescriptorCapacity))
+                {
+                    throw new InvalidOperationException("The D3D12 backend still has live sampler descriptor owners.");
+                }
+
                 transferQueue?.Dispose();
                 _transferQueue = null;
 
@@ -995,6 +1093,14 @@ public static unsafe class D3D12GraphicsBackend
                 {
                     _ = _readbackStagingResource->Release();
                     _readbackStagingResource = null;
+                }
+
+                if (_samplerDescriptorHeap is not null)
+                {
+                    _ = _samplerDescriptorHeap->Release();
+                    _samplerDescriptorHeap = null;
+                    _samplerDescriptorIncrementSize = 0;
+                    _freeSamplerDescriptors = null;
                 }
 
                 var device = _device;
@@ -1556,6 +1662,14 @@ public static unsafe class D3D12GraphicsBackend
                     debugName);
             }
 
+            private void EnsureOwnerThread()
+            {
+                if (_ownerThreadId != Environment.CurrentManagedThreadId)
+                {
+                    throw new InvalidOperationException("D3D12 sampler ownership must remain on the device owner thread.");
+                }
+            }
+
             private void EnsureReadbackStaging()
             {
                 if (_readbackStagingResource is null)
@@ -1564,6 +1678,57 @@ public static unsafe class D3D12GraphicsBackend
                         GpuMemoryKind.Readback,
                         StagingRingCapacityBytes,
                         "TerraFX D3D12 readback staging ring");
+                }
+            }
+
+            private void EnsureSamplerDescriptorHeap()
+            {
+                if (_samplerDescriptorHeap is not null)
+                {
+                    return;
+                }
+
+                EnsureOwnerThread();
+                var freeDescriptors = new Stack<int>(SamplerDescriptorCapacity);
+
+                for (var slot = 0; slot < SamplerDescriptorCapacity; slot++)
+                {
+                    freeDescriptors.Push(slot);
+                }
+
+                var heapDescription = new D3D12_DESCRIPTOR_HEAP_DESC {
+                    Type = D3D12_DESCRIPTOR_HEAP_TYPE.D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+                    NumDescriptors = SamplerDescriptorCapacity,
+                    Flags = D3D12_DESCRIPTOR_HEAP_FLAGS.D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                    NodeMask = 0,
+                };
+                var heapId = typeof(ID3D12DescriptorHeap).GUID;
+                ID3D12DescriptorHeap* descriptorHeap = null;
+                ThrowIfFailed(_device->CreateDescriptorHeap(&heapDescription, &heapId, (void**)&descriptorHeap));
+
+                if (descriptorHeap is null)
+                {
+                    throw new InvalidOperationException("D3D12 sampler descriptor heap creation returned no heap.");
+                }
+
+                try
+                {
+                    var incrementSize = _device->GetDescriptorHandleIncrementSize(
+                        D3D12_DESCRIPTOR_HEAP_TYPE.D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+
+                    if (incrementSize == 0)
+                    {
+                        throw new InvalidOperationException("D3D12 reported a zero sampler descriptor increment.");
+                    }
+
+                    _samplerDescriptorHeap = descriptorHeap;
+                    _samplerDescriptorIncrementSize = incrementSize;
+                    _freeSamplerDescriptors = freeDescriptors;
+                }
+                catch
+                {
+                    _ = descriptorHeap->Release();
+                    throw;
                 }
             }
 
@@ -1748,6 +1913,26 @@ public static unsafe class D3D12GraphicsBackend
                 _ = stagingResource->Release();
             }
 
+            private void ReleaseSamplerDescriptor(int slot)
+            {
+                EnsureOwnerThread();
+
+                if ((uint)slot >= SamplerDescriptorCapacity)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(slot));
+                }
+
+                var freeDescriptors = _freeSamplerDescriptors
+                    ?? throw new InvalidOperationException("The D3D12 sampler descriptor heap has no free-slot owner.");
+
+                if (freeDescriptors.Contains(slot))
+                {
+                    throw new InvalidOperationException("The D3D12 sampler descriptor was released more than once.");
+                }
+
+                freeDescriptors.Push(slot);
+            }
+
             private readonly unsafe struct BufferUploadCopyAction : IAction<ReadOnlySpan<byte>>
             {
                 private readonly byte* _destination;
@@ -1802,6 +1987,32 @@ public static unsafe class D3D12GraphicsBackend
                 {
                     ObjectDisposedException.ThrowIf(_resource is null, this);
                     return _resource;
+                }
+            }
+
+            private sealed class D3D12BackendSampler : IGraphicsBackendSampler
+            {
+                private readonly int _descriptorSlot;
+                private D3D12BackendDevice? _device;
+
+                internal D3D12BackendSampler(D3D12BackendDevice device, int descriptorSlot)
+                {
+                    ArgumentNullException.ThrowIfNull(device);
+                    _device = device;
+                    _descriptorSlot = descriptorSlot;
+                }
+
+                public void Dispose()
+                {
+                    var device = _device;
+
+                    if (device is null)
+                    {
+                        return;
+                    }
+
+                    device.ReleaseSamplerDescriptor(_descriptorSlot);
+                    _device = null;
                 }
             }
 

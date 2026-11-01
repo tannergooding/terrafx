@@ -41,6 +41,11 @@ internal static class Program
             throw new InvalidOperationException("GpuTexture must not expose public resource construction.");
         }
 
+        if (typeof(GpuSampler).GetConstructors(BindingFlags.Instance | BindingFlags.Public).Length != 0)
+        {
+            throw new InvalidOperationException("GpuSampler must not expose public resource construction.");
+        }
+
         if (typeof(GpuPipeline).GetConstructors(BindingFlags.Instance | BindingFlags.Public).Length != 0)
         {
             throw new InvalidOperationException("GpuPipeline must not expose public resource construction.");
@@ -53,6 +58,15 @@ internal static class Program
         if ((createPipelineMethod is null) || (createPipelineMethod.ReturnType != typeof(Task<GpuPipeline>)))
         {
             throw new InvalidOperationException("The public CreatePipelineAsync contract is unavailable to nonfriend consumers.");
+        }
+
+        var createSamplerMethod = typeof(GraphicsDevice).GetMethod(
+            nameof(GraphicsDevice.CreateSamplerAsync),
+            [typeof(SamplerDescription), typeof(CancellationToken)]);
+
+        if ((createSamplerMethod is null) || (createSamplerMethod.ReturnType != typeof(Task<GpuSampler>)))
+        {
+            throw new InvalidOperationException("The public CreateSamplerAsync contract is unavailable to nonfriend consumers.");
         }
 
         var uploadSpanMethod = typeof(GraphicsDevice).GetMethod(
@@ -121,6 +135,6 @@ internal static class Program
             throw new InvalidOperationException("The public VertexElementDescription contract is unavailable to nonfriend consumers.");
         }
 
-        Console.WriteLine("D3D12 public registration consumer passed with unsafe disabled, public transfer and pipeline signatures, no public owner/resource construction, and no native device activation.");
+        Console.WriteLine("D3D12 public registration consumer passed with unsafe disabled, public transfer/pipeline/sampler signatures, no public owner/resource construction, and no native device activation.");
     }
 }
