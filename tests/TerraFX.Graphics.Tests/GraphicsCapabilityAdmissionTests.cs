@@ -24,11 +24,16 @@ internal sealed class GraphicsCapabilityAdmissionTests
             (GraphicsBackend.Vulkan, GraphicsDeviceProfile.Interactive) => [GraphicsFeature.TimelineSemaphore, GraphicsFeature.Synchronization2, GraphicsFeature.DynamicRendering, GraphicsFeature.SwapchainMaintenance1],
             _ => throw new ArgumentOutOfRangeException(nameof(backend)),
         };
+        var adapterId = backend switch {
+            GraphicsBackend.D3D12 => new GraphicsAdapterId(backend, [0, 1, 2, 3, 4, 5, 6, 7]),
+            GraphicsBackend.Vulkan => new GraphicsAdapterId(backend, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
+            _ => throw new ArgumentOutOfRangeException(nameof(backend)),
+        };
 
         return new GraphicsCapabilities(
             backend,
             profile,
-            new Guid("00112233-4455-6677-8899-aabbccddeeff"),
+            adapterId,
             vendorId: 0x1002,
             deviceId: 0x744C,
             adapterName: "Admission test adapter",

@@ -17,7 +17,7 @@ public sealed class GraphicsCapabilities
     internal GraphicsCapabilities(
         GraphicsBackend backend,
         GraphicsDeviceProfile profile,
-        Guid adapterId,
+        GraphicsAdapterId adapterId,
         uint vendorId,
         uint deviceId,
         string adapterName,
@@ -40,7 +40,11 @@ public sealed class GraphicsCapabilities
             throw new ArgumentOutOfRangeException(nameof(profile));
         }
 
-        ArgumentOutOfRangeException.ThrowIfEqual(adapterId, Guid.Empty);
+        if (!adapterId.IsValid || (adapterId.Backend != backend))
+        {
+            throw new ArgumentException("The adapter identity must be valid and match the selected backend.", nameof(adapterId));
+        }
+
         ArgumentException.ThrowIfNullOrWhiteSpace(adapterName);
         ArgumentException.ThrowIfNullOrWhiteSpace(driverName);
         ArgumentException.ThrowIfNullOrWhiteSpace(driverVersion);
@@ -95,7 +99,7 @@ public sealed class GraphicsCapabilities
     }
 
     /// <summary>Gets the native identity of the selected adapter.</summary>
-    public Guid AdapterId { get; }
+    public GraphicsAdapterId AdapterId { get; }
 
     /// <summary>Gets the adapter name reported by the selected backend.</summary>
     public string AdapterName { get; }

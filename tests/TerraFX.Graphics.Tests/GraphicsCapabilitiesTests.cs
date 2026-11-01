@@ -18,12 +18,13 @@ internal sealed class GraphicsCapabilitiesTests
         ImmutableArray<GraphicsFeature>? implementedFeatures = null,
         ImmutableArray<GraphicsFormatCapabilities>? formats = null,
         ImmutableArray<GraphicsMemoryHeapCapabilities>? memoryHeaps = null,
-        float maximumSamplerAnisotropy = 1.0f)
+        float maximumSamplerAnisotropy = 1.0f,
+        GraphicsAdapterId? adapterId = null)
     {
         return new GraphicsCapabilities(
             GraphicsBackend.D3D12,
             GraphicsDeviceProfile.OffscreenNative,
-            new Guid("00112233-4455-6677-8899-aabbccddeeff"),
+            adapterId ?? new GraphicsAdapterId(GraphicsBackend.D3D12, [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77]),
             vendorId: 0x1002,
             deviceId: 0x744C,
             adapterName: "Test adapter",
@@ -101,6 +102,36 @@ internal sealed class GraphicsCapabilitiesTests
             supportsTearing: false,
             surfaceEpoch,
             swapchainEpoch);
+
+    [Test]
+    public void GraphicsAdapterIdCopiesAndComparesNativeIdentityBytes()
+    {
+        var source = new byte[] { 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77 };
+        var adapterId = new GraphicsAdapterId(GraphicsBackend.D3D12, source);
+        source[0] = 0xFF;
+        var equalAdapterId = new GraphicsAdapterId(
+            GraphicsBackend.D3D12,
+            [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77]);
+        var differentAdapterId = new GraphicsAdapterId(
+            GraphicsBackend.D3D12,
+            [0x01, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77]);
+        var vulkanAdapterId = new GraphicsAdapterId(
+            GraphicsBackend.Vulkan,
+            [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+
+        Assert.That(adapterId.IsValid, Is.True);
+        Assert.That(adapterId.NativeIdentifier, Is.EqualTo([0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77]));
+        Assert.That(adapterId, Is.EqualTo(equalAdapterId));
+        Assert.That(adapterId.GetHashCode(), Is.EqualTo(equalAdapterId.GetHashCode()));
+        Assert.That(adapterId != differentAdapterId, Is.True);
+        Assert.That(adapterId != vulkanAdapterId, Is.True);
+        Assert.That(default(GraphicsAdapterId).IsValid, Is.False);
+        _ = Assert.Throws<ArgumentException>(() => new GraphicsAdapterId(GraphicsBackend.D3D12, [0x00]));
+        _ = Assert.Throws<ArgumentException>(() => CreateCapabilities(adapterId: default(GraphicsAdapterId)));
+        _ = Assert.Throws<ArgumentException>(() => CreateCapabilities(adapterId: new GraphicsAdapterId(
+            GraphicsBackend.Vulkan,
+            [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F])));
+    }
 
     [Test]
     public void GraphicsCapabilitiesCopiesAndOrdersImmutableValues()

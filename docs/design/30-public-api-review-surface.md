@@ -4341,12 +4341,25 @@ public sealed class GraphicsMemoryHeapCapabilities
     public long SizeBytes { get; }
 }
 
+public readonly struct GraphicsAdapterId : IEquatable<GraphicsAdapterId>
+{
+    internal GraphicsAdapterId(GraphicsBackend backend, ReadOnlySpan<byte> nativeIdentifier);
+    public GraphicsBackend Backend { get; }
+    public bool IsValid { get; }
+    public ImmutableArray<byte> NativeIdentifier { get; }
+    public static bool operator !=(GraphicsAdapterId left, GraphicsAdapterId right);
+    public static bool operator ==(GraphicsAdapterId left, GraphicsAdapterId right);
+    public bool Equals(GraphicsAdapterId other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
+}
+
 public sealed class GraphicsCapabilities
 {
     internal GraphicsCapabilities(
         GraphicsBackend backend,
         GraphicsDeviceProfile profile,
-        Guid adapterId,
+        GraphicsAdapterId adapterId,
         uint vendorId,
         uint deviceId,
         string adapterName,
@@ -4358,7 +4371,7 @@ public sealed class GraphicsCapabilities
         GraphicsLimits limits,
         ImmutableArray<GraphicsFormatCapabilities> formats,
         ImmutableArray<GraphicsMemoryHeapCapabilities> memoryHeaps);
-    public Guid AdapterId { get; }
+    public GraphicsAdapterId AdapterId { get; }
     public string AdapterName { get; }
     public GraphicsApiVersion ApiVersion { get; }
     public GraphicsBackend Backend { get; }
