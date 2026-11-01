@@ -13,6 +13,7 @@ internal sealed partial class WindowsPlatformOwnerInitialization : IDisposable
 {
     private const uint CoInitializeApartmentThreaded = 0x2;
     private static readonly nint s_dpiAwarenessContextPerMonitorAwareV2 = new(-4);
+    private int _activeRawInputRegistrationCount;
     private int _isDisposed;
     private readonly int _ownerThreadId;
     private readonly nint _previousThreadDpiAwarenessContext;
@@ -150,6 +151,12 @@ internal sealed partial class WindowsPlatformOwnerInitialization : IDisposable
         }
 
         EnsureOwnerThread();
+
+        if (Volatile.Read(ref _activeRawInputRegistrationCount) != 0)
+        {
+            throw new InvalidOperationException("Raw Input registrations must retire before the Windows Platform owner shuts down.");
+        }
+
         _ = Interlocked.Exchange(ref _isDisposed, 1);
         CoUninitializeNative();
 
@@ -159,7 +166,7 @@ internal sealed partial class WindowsPlatformOwnerInitialization : IDisposable
         }
     }
 
-    private void EnsureOwnerThread()
+    internal void EnsureOwnerThread()
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
 
@@ -167,5 +174,23 @@ internal sealed partial class WindowsPlatformOwnerInitialization : IDisposable
         {
             throw new InvalidOperationException("Windows Platform initialization must be disposed on its owner thread.");
         }
+    }
+
+    internal void ReleaseRawInputRegistration()
+    {
+        EnsureOwnerThread();
+        var activeCount = Interlocked.Decrement(ref _activeRawInputRegistrationCount);
+
+        if (activeCount < 0)
+        {
+            _ = Interlocked.Increment(ref _activeRawInputRegistrationCount);
+            throw new InvalidOperationException("The Windows Platform owner has no active Raw Input registration to release.");
+        }
+    }
+
+    internal void ReserveRawInputRegistration()
+    {
+        EnsureOwnerThread();
+        _ = Interlocked.Increment(ref _activeRawInputRegistrationCount);
     }
 }

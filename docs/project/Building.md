@@ -81,7 +81,7 @@ dotnet build .\sources\TerraFX.Graphics.D3D12\TerraFX.Graphics.D3D12.csproj --co
 
 ### Platform owner contracts
 
-Run the owning-project tests for explicit platform selection, the Headless owner/capability path, and Windows owner startup prerequisites:
+Run the owning-project tests for explicit platform selection, the Headless owner/capability path, Windows PMv2/STA startup, and foreground Raw Input registration/admission:
 
 ```powershell
 dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Debug
