@@ -9,6 +9,11 @@
     <RootNamespace>TerraFX.Graphics.D3D12.Consumer</RootNamespace>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(TerraFXPublishAot)' == 'true'">
+    <PublishAot>true</PublishAot>
+    <PublishDocumentationFile>false</PublishDocumentationFile>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Remove="Microsoft.NET.Test.Sdk;NUnit;NUnit3TestAdapter" />
     <ProjectReference Include="..\..\sources\TerraFX.Graphics.D3D12\TerraFX.Graphics.D3D12.csproj" />
