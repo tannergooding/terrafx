@@ -4184,6 +4184,15 @@ public sealed class GraphicsDevice
     public Task<TextureReadback> ReadbackTextureAsync(GpuTexture source, TextureSubresource subresource, CancellationToken cancellationToken = default);
 }
 
+public enum GraphicsDeviceStatus
+{
+    None = 0,
+    Ready = 1,
+    Lost = 2,
+    Stopping = 3,
+    Disposed = 4
+}
+
 public enum GraphicsDeviceProfile
 {
     None = 0,
