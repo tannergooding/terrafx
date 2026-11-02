@@ -13,6 +13,7 @@ internal sealed class PlatformHostOwner
 {
     private Dictionary<string, MonitorHandle> _activeMonitorHandles;
     private readonly HashSet<WindowHandle> _activeWindowHandles;
+    private readonly PlatformInputBroker _inputBroker;
     private bool _isDisposed;
     private bool _isStopping;
     private Dictionary<MonitorHandle, nint> _nativeMonitorHandles;
@@ -29,6 +30,7 @@ internal sealed class PlatformHostOwner
         _platform = platform;
         _profile = profile;
         _ownerThreadId = Environment.CurrentManagedThreadId;
+        _inputBroker = new PlatformInputBroker(ownerId);
         _activeMonitorHandles = [];
         _activeWindowHandles = [];
         _nativeMonitorHandles = [];
@@ -157,16 +159,9 @@ internal sealed class PlatformHostOwner
 
         _isStopping = true;
         _activeWindowHandles.Clear();
+        _inputBroker.Retire();
         _platform.DisposeFromOwner();
         _isDisposed = true;
-    }
-
-    internal PlatformInputSampleBatch DrainInputSamples()
-    {
-        EnsureOwnerThread();
-        ThrowIfDisposed();
-        ThrowIfStopping();
-        return _platform.DrainInputSamples();
     }
 
     internal ImmutableArray<WindowHandle> DrainWindowCloseRequests()
@@ -230,7 +225,7 @@ internal sealed class PlatformHostOwner
         return binding;
     }
 
-    internal void Pump()
+    internal PlatformInputCaptureBatch Pump()
     {
         EnsureOwnerThread();
         ThrowIfDisposed();
@@ -241,6 +236,8 @@ internal sealed class PlatformHostOwner
         {
             RefreshMonitorSnapshot();
         }
+
+        return _inputBroker.Capture(_platform.DrainInputSamples(), _activeWindowHandles.Contains);
     }
 
     private void EnsureOwnerThread()

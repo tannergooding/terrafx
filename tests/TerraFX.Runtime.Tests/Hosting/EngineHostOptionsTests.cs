@@ -97,16 +97,16 @@ internal sealed class EngineHostOptionsTests
             Assert.That(owner.OwnerId, Is.GreaterThan(0));
             Assert.That(owner.Platform.ClipboardStatus, Is.EqualTo(ClipboardServiceStatus.NotRequested));
             Assert.That(owner.Platform.GetMonitorHandles(), Is.Empty);
-            owner.Pump();
+            _ = owner.Pump();
 
             _ = Assert.Throws<InvalidOperationException>(
-                () => Task.Run(owner.Pump).GetAwaiter().GetResult());
+                () => Task.Run(() => _ = owner.Pump()).GetAwaiter().GetResult());
             _ = Assert.Throws<InvalidOperationException>(
                 () => Task.Run(owner.DisposeFromOwner).GetAwaiter().GetResult());
 
             owner.DisposeFromOwner();
             owner.DisposeFromOwner();
-            _ = Assert.Throws<ObjectDisposedException>(owner.Pump);
+            _ = Assert.Throws<ObjectDisposedException>(() => _ = owner.Pump());
         }
         finally
         {
@@ -263,7 +263,7 @@ internal sealed class EngineHostOptionsTests
                 owner = PlatformHostOwner.Create(options);
                 ownerId = owner.OwnerId;
                 monitors = owner.Platform.GetMonitorHandles();
-                owner.Pump();
+                _ = owner.Pump();
 
                 foreach (var monitor in monitors)
                 {
@@ -352,9 +352,9 @@ internal sealed class EngineHostOptionsTests
                 owner = PlatformHostOwner.Create(options);
                 ownerId = owner.OwnerId;
                 window = owner.CreateWindow(new WindowOptions("TerraFX hidden window witness") { Visible = false });
-                owner.Pump();
+                _ = owner.Pump();
                 owner.CloseWindow(window);
-                owner.Pump();
+                _ = owner.Pump();
 
                 try
                 {
