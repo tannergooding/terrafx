@@ -131,15 +131,23 @@ internal sealed class M04ShaderFixtureCompilerTests
             Throws.TypeOf<InvalidDataException>());
     }
 
-    private static ShaderReflection ReadSyntheticTypedReflection(string dxilReflection, string spirvReflection)
+    private static ShaderReflection ReadSyntheticTypedReflection(
+        string dxilReflection,
+        string spirvReflection,
+        params uint[] capabilities)
     {
-        byte[] spirvBytecode = [
-            0x03, 0x02, 0x23, 0x07,
-            0x00, 0x00, 0x01, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x01, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-        ];
+        var spirvWords = new uint[5 + (2 * capabilities.Length)];
+        spirvWords[0] = 0x07230203;
+        spirvWords[1] = 0x00010000;
+        spirvWords[3] = 1;
+
+        for (var index = 0; index < capabilities.Length; index++)
+        {
+            spirvWords[5 + (2 * index)] = (2U << 16) | 17U;
+            spirvWords[6 + (2 * index)] = capabilities[index];
+        }
+
+        var spirvBytecode = MemoryMarshal.AsBytes(spirvWords.AsSpan()).ToArray();
         var compilerIdentity = new ShaderCompilerIdentity(
             "TerraFX.Content.Tools.Tests",
             "test",
@@ -555,12 +563,20 @@ internal sealed class M04ShaderFixtureCompilerTests
             }
             """;
 
-        var reflection = ReadSyntheticTypedReflection(dxilReflection, spirvReflection);
+        var reflection = ReadSyntheticTypedReflection(dxilReflection, spirvReflection, 2, 3, 9, 10, 61, 64, 5302);
 
         Assert.That(reflection.RecordLayouts.Length, Is.EqualTo(1));
         Assert.That(reflection.RecordLayouts[0].Name, Is.EqualTo("FrameData"));
         Assert.That(reflection.RecordLayouts[0].ByteLength, Is.EqualTo(128));
         Assert.That(reflection.RecordLayouts[0].Fields.Length, Is.EqualTo(4));
+        Assert.That(reflection.RequiredCapabilities, Is.EqualTo([
+            ShaderCapability.Float16,
+            ShaderCapability.DoublePrecision,
+            ShaderCapability.WaveOperations,
+            ShaderCapability.DescriptorIndexing,
+            ShaderCapability.GeometryShader,
+            ShaderCapability.Tessellation,
+        ]));
         Assert.That(
             reflection.RecordLayouts[0].Fields[2],
             Is.EqualTo(new ShaderFieldLayout(
@@ -615,5 +631,11 @@ internal sealed class M04ShaderFixtureCompilerTests
         Assert.That(
             () => ReadSyntheticTypedReflection(dxilReflection, mismatchedArrayStride.ToJsonString()),
             Throws.TypeOf<InvalidDataException>());
+        Assert.That(
+            () => ReadSyntheticTypedReflection(dxilReflection, spirvReflection, 8),
+            Throws.TypeOf<NotSupportedException>());
+        Assert.That(
+            () => ReadSyntheticTypedReflection(dxilReflection, spirvReflection, 5303),
+            Throws.TypeOf<NotSupportedException>());
     }
 }

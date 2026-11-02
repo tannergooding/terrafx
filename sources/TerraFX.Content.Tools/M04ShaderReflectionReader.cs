@@ -13,8 +13,18 @@ namespace TerraFX.Content.Tools;
 
 internal static class M04ShaderReflectionReader
 {
+    private const uint CapabilityDescriptorIndexingMaximum = 5312;
+    private const uint CapabilityDescriptorIndexingMinimum = 5306;
+    private const uint CapabilityFloat16 = 9;
+    private const uint CapabilityFloat64 = 10;
+    private const uint CapabilityGeometry = 2;
+    private const uint CapabilityGroupNonUniformMaximum = 68;
+    private const uint CapabilityGroupNonUniformMinimum = 61;
     private const uint CapabilityMatrix = 0;
+    private const uint CapabilityRuntimeDescriptorArray = 5302;
     private const uint CapabilityShader = 1;
+    private const uint CapabilityShaderNonUniform = 5301;
+    private const uint CapabilityTessellation = 3;
     private const uint MagicNumber = 0x07230203;
     private const ushort OpCapability = 17;
 
@@ -392,6 +402,8 @@ internal static class M04ShaderReflectionReader
     private static ImmutableArray<ShaderCapability> ParseCapabilities(ReadOnlySpan<byte> bytecode)
     {
         var words = GetSpirvWords(bytecode);
+        var seenCapabilities = new HashSet<uint>();
+        var requiredCapabilities = new HashSet<ShaderCapability>();
 
         for (var cursor = 5; cursor < words.Length;)
         {
@@ -411,16 +423,37 @@ internal static class M04ShaderReflectionReader
                     throw new InvalidDataException("SPIR-V OpCapability has an invalid operand count.");
                 }
 
-                if (words[cursor + 1] is not (CapabilityMatrix or CapabilityShader))
+                var capability = words[cursor + 1];
+
+                if (!seenCapabilities.Add(capability))
                 {
-                    throw new NotSupportedException("The M04 reflection reader only converts Shader/Matrix baseline capabilities.");
+                    throw new InvalidDataException("The reflected SPIR-V module contains a duplicate capability declaration.");
+                }
+
+                var requiredCapability = capability switch {
+                    CapabilityMatrix or CapabilityShader => (ShaderCapability?)null,
+                    CapabilityFloat16 => ShaderCapability.Float16,
+                    CapabilityFloat64 => ShaderCapability.DoublePrecision,
+                    CapabilityGeometry => ShaderCapability.GeometryShader,
+                    CapabilityTessellation => ShaderCapability.Tessellation,
+                    CapabilityRuntimeDescriptorArray or CapabilityShaderNonUniform => ShaderCapability.DescriptorIndexing,
+                    _ when capability is >= CapabilityGroupNonUniformMinimum and <= CapabilityGroupNonUniformMaximum
+                        => ShaderCapability.WaveOperations,
+                    _ when capability is >= CapabilityDescriptorIndexingMinimum and <= CapabilityDescriptorIndexingMaximum
+                        => ShaderCapability.DescriptorIndexing,
+                    _ => throw new NotSupportedException($"SPIR-V capability {capability} is not supported by the M04 reflection reader."),
+                };
+
+                if (requiredCapability is ShaderCapability value)
+                {
+                    _ = requiredCapabilities.Add(value);
                 }
             }
 
             cursor += wordCount;
         }
 
-        return [];
+        return [.. requiredCapabilities];
     }
 
     private static (string RegisterClass, int Binding) ParseDxilRegister(string register)
