@@ -31,6 +31,7 @@ public static unsafe class D3D12GraphicsBackend
         private const int DxgiErrorDeviceReset = unchecked((int)0x887A0007);
         private const int DxgiErrorDriverInternalError = unchecked((int)0x887A0020);
         private const int DxgiErrorNotFound = unchecked((int)0x887A0002);
+        private const uint MaximumD3D12MultisampleCount = 32;
 
         internal D3D12BackendFactory()
         {
@@ -256,7 +257,7 @@ public static unsafe class D3D12GraphicsBackend
 
         private static string GetDriverVersion(IDXGIAdapter1* adapter)
         {
-            var deviceId = typeof(ID3D12Device).GUID;
+            var deviceId = typeof(IDXGIDevice).GUID;
             var driverVersion = default(LARGE_INTEGER);
             ThrowIfFailed(adapter->CheckInterfaceSupport(&deviceId, &driverVersion));
             return unchecked((ulong)driverVersion.QuadPart).ToString("X16", CultureInfo.InvariantCulture);
@@ -491,7 +492,7 @@ public static unsafe class D3D12GraphicsBackend
         {
             var sampleCounts = ImmutableArray.CreateBuilder<int>();
 
-            for (uint sampleCount = 1; sampleCount <= 64; sampleCount *= 2)
+            for (uint sampleCount = 1; sampleCount <= MaximumD3D12MultisampleCount; sampleCount *= 2)
             {
                 var support = new D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS {
                     Format = format,
@@ -661,7 +662,10 @@ public static unsafe class D3D12GraphicsBackend
 
                             if (!missingRequirements.IsEmpty)
                             {
-                                failures.Add($"{capabilities.AdapterName}: {string.Join("; ", missingRequirements)}");
+                                failures.Add(
+                                    $"{capabilities.AdapterName} "
+                                    + $"(vendor {capabilities.VendorId:X4}, device {capabilities.DeviceId:X4}, "
+                                    + $"driver {capabilities.DriverVersion}): {string.Join("; ", missingRequirements)}");
                                 continue;
                             }
 

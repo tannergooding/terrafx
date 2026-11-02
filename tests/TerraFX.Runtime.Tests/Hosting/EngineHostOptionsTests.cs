@@ -12,6 +12,7 @@ using TerraFX;
 using TerraFX.Assets;
 using TerraFX.Graphics;
 using TerraFX.Graphics.D3D12;
+using TerraFX.Graphics.Vulkan;
 using TerraFX.Hosting;
 using TerraFX.Platform;
 
@@ -111,6 +112,159 @@ internal sealed class EngineHostOptionsTests
         finally
         {
             owner.DisposeFromOwner();
+        }
+    }
+
+    [Test]
+    public void CreatesAndShutsDownD3D12GraphicsDeviceUsingHostIssuedIdentity()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            Assert.Ignore("The D3D12 backend targets Windows 11.");
+            return;
+        }
+
+        var registration = D3D12GraphicsBackend.CreateRegistration();
+        var options = new EngineHostOptions(
+            HostProfile.OffscreenNative,
+            PlatformBackend.Headless,
+            GraphicsBackend.D3D12,
+            registration,
+            CreateAssetStoreOptions());
+        var platformOwner = PlatformHostOwner.Create(options);
+        GraphicsDevice? device = null;
+
+        try
+        {
+            try
+            {
+                device = GraphicsDevice.CreateAsync(
+                    platformOwner.OwnerId,
+                    registration,
+                    GraphicsDeviceProfile.OffscreenNative,
+                    GraphicsPlatformKind.None,
+                    CancellationToken.None).GetAwaiter().GetResult();
+            }
+            catch (DllNotFoundException exception)
+            {
+                Assert.Ignore($"A required D3D12 system library is unavailable: {exception.Message}");
+            }
+            catch (EntryPointNotFoundException exception)
+            {
+                Assert.Ignore($"A required D3D12 system entry point is unavailable: {exception.Message}");
+            }
+            catch (NotSupportedException exception)
+            {
+                Assert.Ignore($"No available D3D12 device satisfies OffscreenNative: {exception.Message}");
+            }
+
+            var graphicsDevice = device
+                ?? throw new InvalidOperationException("D3D12 GraphicsDevice startup returned no device.");
+            var capabilities = graphicsDevice.Capabilities;
+            Assert.That(graphicsDevice.OwnerId, Is.EqualTo(platformOwner.OwnerId));
+            Assert.That(graphicsDevice.Status, Is.EqualTo(GraphicsDeviceStatus.Ready));
+            Assert.That(capabilities.Backend, Is.EqualTo(GraphicsBackend.D3D12));
+            Assert.That(capabilities.Profile, Is.EqualTo(GraphicsDeviceProfile.OffscreenNative));
+            Assert.That(capabilities.AdapterName, Is.Not.Empty);
+            Assert.That(capabilities.DriverName, Is.Not.Empty);
+            Assert.That(capabilities.DriverVersion, Is.Not.Empty);
+            Assert.That(capabilities.ApiVersion.Major, Is.GreaterThan(0));
+            TestContext.WriteLine(
+                $"Backend={capabilities.Backend}; Profile={capabilities.Profile}; Adapter={capabilities.AdapterName}; "
+                + $"Vendor={capabilities.VendorId:X4}; Device={capabilities.DeviceId:X4}; "
+                + $"Driver={capabilities.DriverName} {capabilities.DriverVersion}; "
+                + $"API={capabilities.ApiVersion.Major}.{capabilities.ApiVersion.Minor}.{capabilities.ApiVersion.Patch}");
+        }
+        finally
+        {
+            try
+            {
+                if (device is not null)
+                {
+                    device.ShutdownAsync().GetAwaiter().GetResult();
+                    Assert.That(device.Status, Is.EqualTo(GraphicsDeviceStatus.Disposed));
+                }
+            }
+            finally
+            {
+                platformOwner.DisposeFromOwner();
+            }
+        }
+    }
+
+    [Test]
+    public void CreatesAndShutsDownVulkanGraphicsDeviceUsingHostIssuedIdentity()
+    {
+        var registration = VulkanGraphicsBackend.CreateRegistration();
+        var options = new EngineHostOptions(
+            HostProfile.OffscreenNative,
+            PlatformBackend.Headless,
+            GraphicsBackend.Vulkan,
+            registration,
+            CreateAssetStoreOptions());
+        var platformOwner = PlatformHostOwner.Create(options);
+        GraphicsDevice? device = null;
+
+        try
+        {
+            try
+            {
+                device = GraphicsDevice.CreateAsync(
+                    platformOwner.OwnerId,
+                    registration,
+                    GraphicsDeviceProfile.OffscreenNative,
+                    GraphicsPlatformKind.None,
+                    CancellationToken.None).GetAwaiter().GetResult();
+            }
+            catch (DllNotFoundException exception)
+            {
+                Assert.Ignore($"No Vulkan loader is installed: {exception.Message}");
+            }
+            catch (EntryPointNotFoundException exception)
+            {
+                Assert.Ignore($"The installed Vulkan loader lacks a required entry point: {exception.Message}");
+            }
+            catch (NotSupportedException exception)
+            {
+                Assert.Ignore($"No available Vulkan device satisfies OffscreenNative: {exception.Message}");
+            }
+
+            var graphicsDevice = device
+                ?? throw new InvalidOperationException("Vulkan GraphicsDevice startup returned no device.");
+            var capabilities = graphicsDevice.Capabilities;
+            Assert.That(graphicsDevice.OwnerId, Is.EqualTo(platformOwner.OwnerId));
+            Assert.That(graphicsDevice.Status, Is.EqualTo(GraphicsDeviceStatus.Ready));
+            Assert.That(capabilities.Backend, Is.EqualTo(GraphicsBackend.Vulkan));
+            Assert.That(capabilities.Profile, Is.EqualTo(GraphicsDeviceProfile.OffscreenNative));
+            Assert.That(capabilities.AdapterName, Is.Not.Empty);
+            Assert.That(capabilities.DriverName, Is.Not.Empty);
+            Assert.That(capabilities.DriverVersion, Is.Not.Empty);
+            Assert.That(capabilities.ApiVersion.Major, Is.EqualTo(1));
+            Assert.That(capabilities.ApiVersion.Minor, Is.GreaterThanOrEqualTo(3));
+            TestContext.WriteLine(
+                $"Backend={capabilities.Backend}; Profile={capabilities.Profile}; Adapter={capabilities.AdapterName}; "
+                + $"Vendor={capabilities.VendorId:X4}; Device={capabilities.DeviceId:X4}; "
+                + $"Driver={capabilities.DriverName} {capabilities.DriverVersion}; "
+                + $"API={capabilities.ApiVersion.Major}.{capabilities.ApiVersion.Minor}.{capabilities.ApiVersion.Patch}; "
+                + $"Features={string.Join(",", capabilities.ImplementedFeatures)}");
+            TestContext.WriteLine(
+                $"VULKAN_SDK={Environment.GetEnvironmentVariable("VULKAN_SDK") ?? "(unset)"}; "
+                + $"VK_INSTANCE_LAYERS={Environment.GetEnvironmentVariable("VK_INSTANCE_LAYERS") ?? "(unset)"}");
+        }
+        finally
+        {
+            try
+            {
+                if (device is not null)
+                {
+                    device.ShutdownAsync().GetAwaiter().GetResult();
+                    Assert.That(device.Status, Is.EqualTo(GraphicsDeviceStatus.Disposed));
+                }
+            }
+            finally
+            {
+                platformOwner.DisposeFromOwner();
+            }
         }
     }
 

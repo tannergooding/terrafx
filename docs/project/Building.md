@@ -79,6 +79,17 @@ dotnet build .\sources\TerraFX.Graphics.D3D12\TerraFX.Graphics.D3D12.csproj --co
 dotnet build .\sources\TerraFX.Graphics.D3D12\TerraFX.Graphics.D3D12.csproj --configuration Release
 ```
 
+### D3D12 OffscreenNative startup probe
+
+The focused Runtime test attempts D3D12 startup through the registration using a `PlatformHostOwner`-issued identity:
+
+```powershell
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~CreatesAndShutsDownD3D12GraphicsDeviceUsingHostIssuedIdentity"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~CreatesAndShutsDownD3D12GraphicsDeviceUsingHostIssuedIdentity"
+```
+
+On the current Windows 11 x64 host, D3D12 device creation and the `IDXGIDevice` UMD-version query succeed, but profile admission rejects both AMD adapters because `D32Float` does not report `Sampled` support. The test is explicitly skipped with both adapter identities and UMD versions in the TRX; this is a capability blocker, not a native D3D12 pass. The accepted format contract must be satisfied before the adapter can return a `GraphicsDevice`.
+
 ### Platform owner contracts
 
 Run the owning-project tests for explicit platform selection, the Headless owner/capability path, Windows PMv2/STA startup, and foreground Raw Input registration/admission:
@@ -133,7 +144,21 @@ dotnet test .\tests\TerraFX.Graphics.Vulkan.Tests\TerraFX.Graphics.Vulkan.Tests.
 dotnet test .\tests\TerraFX.Graphics.Vulkan.Tests\TerraFX.Graphics.Vulkan.Tests.csproj --configuration Release
 ```
 
-The fixture-dependent tests create and retire an internal graphics pipeline with a Frame-group uniform buffer from the compiled SPIR-V. The M04 shader-tool tests check its actual DXIL/SPIRV-Cross output: one `float4` field at offset 0 in a 16-byte block, mapped to Vulkan set 0/binding 0. Pipeline failure after descriptor-layout creation must clean up the layout and prior shader modules. A native descriptor test allocates and populates an immutable Frame-group uniform-buffer set, rejects a mismatched binding and out-of-range descriptor, and proves that the set retains its pipeline/layout and buffer until retirement. The suite checks that a 65-MiB upload is refused while the 64-MiB ring is live, that a follow-up ring upload/readback succeeds, and that the same 65-MiB upload succeeds through dedicated staging on a fresh device. It also admits a 128-MiB dedicated upload at the full staging-budget boundary, verifies bytes at both ends, and rejects a 128-MiB-plus-one-byte upload. A managed test verifies that `VulkanGraphicsBackend.CreateRegistration()` selects Vulkan without creating a device. Native tests still exercise `VulkanBackendDevice` directly, not the public `GraphicsDevice` startup, descriptor-set command binding, graph submission, or presentation path. The current native suite passes 62/62 in Debug and Release with `VK_LAYER_KHRONOS_validation` enabled. If the fixture environment variable is unset, the fixture-dependent tests are skipped; a successful run with zero selected/executed cases is not evidence.
+The fixture-dependent tests create and retire an internal graphics pipeline with a Frame-group uniform buffer from the compiled SPIR-V. The M04 shader-tool tests check its actual DXIL/SPIRV-Cross output: one `float4` field at offset 0 in a 16-byte block, mapped to Vulkan set 0/binding 0. Pipeline failure after descriptor-layout creation must clean up the layout and prior shader modules. A native descriptor test allocates and populates an immutable Frame-group uniform-buffer set, rejects a mismatched binding and out-of-range descriptor, and proves that the set retains its pipeline/layout and buffer until retirement. The suite checks that a 65-MiB upload is refused while the 64-MiB ring is live, that a follow-up ring upload/readback succeeds, and that the same 65-MiB upload succeeds through dedicated staging on a fresh device. It also admits a 128-MiB dedicated upload at the full staging-budget boundary, verifies bytes at both ends, and rejects a 128-MiB-plus-one-byte upload. A managed test verifies that `VulkanGraphicsBackend.CreateRegistration()` selects Vulkan without creating a device. Native Vulkan tests exercise `VulkanBackendDevice` directly, not descriptor-set command binding, graph submission, or presentation. The current native suite passes 62/62 in Debug and Release with `VK_LAYER_KHRONOS_validation` enabled. If the fixture environment variable is unset, the fixture-dependent tests are skipped; a successful run with zero selected/executed cases is not evidence.
+
+### Vulkan GraphicsDevice startup through the host issuer
+
+This focused Runtime test supplies a real `PlatformHostOwner`-issued identity to `GraphicsDevice.CreateAsync`, starts an OffscreenNative device through `VulkanGraphicsBackend.CreateRegistration`, records the reported adapter/driver/API and validation-layer environment in the TRX output, then shuts down the device and platform owner:
+
+```powershell
+$env:VULKAN_SDK = 'C:\VulkanSDK\1.4.328.1'
+$env:VK_LAYER_PATH = 'C:\VulkanSDK\1.4.328.1\Bin'
+$env:VK_INSTANCE_LAYERS = 'VK_LAYER_KHRONOS_validation'
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~EngineHostOptionsTests"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~EngineHostOptionsTests"
+```
+
+This verifies the internal startup port with the sealed `GraphicsDevice` facade; it does not exercise `EngineHost`, Persistence service initialization, resource requests through the facade, or graph submission. The test explicitly skips when the Vulkan loader or a qualifying device is unavailable.
 
 ### Retained AssetLease lifetime
 

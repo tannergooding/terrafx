@@ -5,6 +5,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\sources\TerraFX.Runtime\TerraFX.Runtime.csproj" />
     <ProjectReference Include="..\..\sources\TerraFX.Graphics.D3D12\TerraFX.Graphics.D3D12.csproj" />
+    <ProjectReference Include="..\..\sources\TerraFX.Graphics.Vulkan\TerraFX.Graphics.Vulkan.csproj" />
     <ProjectReference Include="..\TerraFX.Runtime.ComponentConsumer\TerraFX.Runtime.ComponentConsumer.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\TerraFX.Runtime.GeneratedComponentConsumer\TerraFX.Runtime.GeneratedComponentConsumer.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
