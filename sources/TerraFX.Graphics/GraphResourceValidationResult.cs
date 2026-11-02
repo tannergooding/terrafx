@@ -12,16 +12,23 @@ internal readonly struct GraphResourceValidationResult
         bool importsValid,
         bool contentsValid,
         bool dependenciesValid,
-        ImmutableArray<RenderPassId> orderedPasses)
+        ImmutableArray<RenderPassId> orderedPasses,
+        ImmutableArray<GraphResourceStateTransition> stateTransitions)
     {
         if (orderedPasses.IsDefault)
         {
             throw new ArgumentException("The ordered pass list must be initialized.", nameof(orderedPasses));
         }
 
-        if (!(accessesValid && importsValid && contentsValid && dependenciesValid) && !orderedPasses.IsEmpty)
+        if (stateTransitions.IsDefault)
         {
-            throw new ArgumentException("An invalid graph cannot expose an ordered pass plan.", nameof(orderedPasses));
+            throw new ArgumentException("The graph resource state transition list must be initialized.", nameof(stateTransitions));
+        }
+
+        if (!(accessesValid && importsValid && contentsValid && dependenciesValid)
+            && (!orderedPasses.IsEmpty || !stateTransitions.IsEmpty))
+        {
+            throw new ArgumentException("An invalid graph cannot expose ordered passes or state transitions.");
         }
 
         AccessesValid = accessesValid;
@@ -29,6 +36,7 @@ internal readonly struct GraphResourceValidationResult
         DependenciesValid = dependenciesValid;
         ImportsValid = importsValid;
         OrderedPasses = [.. orderedPasses];
+        StateTransitions = [.. stateTransitions];
     }
 
     internal bool AccessesValid { get; }
@@ -42,4 +50,6 @@ internal readonly struct GraphResourceValidationResult
     internal bool IsValid => AccessesValid && ImportsValid && ContentsValid && DependenciesValid;
 
     internal ImmutableArray<RenderPassId> OrderedPasses { get; }
+
+    internal ImmutableArray<GraphResourceStateTransition> StateTransitions { get; }
 }

@@ -233,10 +233,12 @@ internal static class RenderGraphDependencyCompiler
 
                     if (left.PassId == right.PassId)
                     {
-                        if (left.IsTexture
-                            && (left.IsWrite != right.IsWrite)
-                            && !left.IsAttachmentLoadOf(right)
-                            && !right.IsAttachmentLoadOf(left))
+                        var attachmentLoadPair =
+                            left.IsAttachmentLoadOf(right) || right.IsAttachmentLoadOf(left);
+
+                        if ((left.IsWrite && right.IsWrite)
+                            || (left.IsTexture && (left.IsWrite != right.IsWrite) && !attachmentLoadPair)
+                            || ((left.RequiredState != right.RequiredState) && !attachmentLoadPair))
                         {
                             accessesValid = false;
                         }

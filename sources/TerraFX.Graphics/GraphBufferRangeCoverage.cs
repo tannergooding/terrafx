@@ -2,12 +2,15 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 
 namespace TerraFX.Graphics;
 
 internal sealed class GraphBufferRangeCoverage
 {
     private readonly List<GraphBufferRange> _ranges = [];
+
+    internal ImmutableArray<GraphBufferRange> Ranges => [.. _ranges];
 
     private static void ValidateRange(GraphBufferRange range)
     {
@@ -91,6 +94,25 @@ internal sealed class GraphBufferRangeCoverage
         }
 
         return false;
+    }
+
+    internal ImmutableArray<GraphBufferRange> GetOverlappingRanges(GraphBufferRange range)
+    {
+        ValidateRange(range);
+        var overlaps = new List<GraphBufferRange>();
+        var rangeEnd = range.EndExclusive;
+
+        foreach (var current in _ranges)
+        {
+            if (current.Overlaps(range))
+            {
+                var start = Math.Max(current.ByteOffset, range.ByteOffset);
+                var end = Math.Min(current.EndExclusive, rangeEnd);
+                overlaps.Add(new GraphBufferRange(start, end - start));
+            }
+        }
+
+        return [.. overlaps];
     }
 
     internal void Remove(GraphBufferRange range)

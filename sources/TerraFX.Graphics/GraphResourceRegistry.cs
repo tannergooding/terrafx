@@ -10,6 +10,7 @@ internal sealed class GraphResourceRegistry
 {
     private readonly List<GraphResourceAccess> _accesses = [];
     private readonly List<GraphBufferImportRecord> _bufferImports = [];
+    private readonly Dictionary<ulong, GraphBufferResourceRecord> _bufferResourcesById = [];
     private readonly Dictionary<GraphBufferVersion, GraphBufferResourceRecord> _bufferResourcesByVersion = [];
     private readonly GraphicsDevice _device;
     private readonly uint _deviceEpoch;
@@ -18,6 +19,7 @@ internal sealed class GraphResourceRegistry
     private readonly int _ownerThreadId;
     private readonly GraphPassRegistry _passRegistry;
     private readonly List<GraphTextureImportRecord> _textureImports = [];
+    private readonly Dictionary<ulong, GraphTextureResourceRecord> _textureResourcesById = [];
     private readonly Dictionary<GraphTextureVersion, GraphTextureResourceRecord> _textureResourcesByVersion = [];
 
     internal GraphResourceRegistry(GraphicsDevice device, uint graphOwnerId)
@@ -178,7 +180,12 @@ internal sealed class GraphResourceRegistry
 
         var range = new GraphBufferRange(0, description.ByteLength);
         var version = new GraphBufferVersion(_deviceEpoch, GetNextResourceId(), 0, description, range);
-        var resource = new GraphBufferResourceRecord(version, contentsValid: false, importRecord: null);
+        var resource = new GraphBufferResourceRecord(
+            version,
+            contentsValid: false,
+            GraphResourceState.Undefined,
+            importRecord: null);
+        _bufferResourcesById.Add(version.ResourceId, resource);
         _bufferResourcesByVersion.Add(version, resource);
         return version;
     }
@@ -194,7 +201,12 @@ internal sealed class GraphResourceRegistry
             : TextureAspect.Color;
         var range = new GraphTextureRange(0, description.MipLevels, 0, description.ArrayLayers, aspect);
         var version = new GraphTextureVersion(_deviceEpoch, GetNextResourceId(), 0, description, range);
-        var resource = new GraphTextureResourceRecord(version, contentsValid: false, importRecord: null);
+        var resource = new GraphTextureResourceRecord(
+            version,
+            contentsValid: false,
+            GraphResourceState.Undefined,
+            importRecord: null);
+        _textureResourcesById.Add(version.ResourceId, resource);
         _textureResourcesByVersion.Add(version, resource);
         return version;
     }
@@ -252,9 +264,13 @@ internal sealed class GraphResourceRegistry
         }
 
         _bufferImports.Add(import);
-        _bufferResourcesByVersion.Add(
+        var resource = new GraphBufferResourceRecord(
             version,
-            new GraphBufferResourceRecord(version, import.InitialContentsValid, import));
+            import.InitialContentsValid,
+            import.InitialState,
+            import);
+        _bufferResourcesById.Add(version.ResourceId, resource);
+        _bufferResourcesByVersion.Add(version, resource);
         return version;
     }
 
@@ -279,9 +295,13 @@ internal sealed class GraphResourceRegistry
         }
 
         _textureImports.Add(import);
-        _textureResourcesByVersion.Add(
+        var resource = new GraphTextureResourceRecord(
             version,
-            new GraphTextureResourceRecord(version, import.InitialContentsValid, import));
+            import.InitialContentsValid,
+            import.InitialState,
+            import);
+        _textureResourcesById.Add(version.ResourceId, resource);
+        _textureResourcesByVersion.Add(version, resource);
         return version;
     }
 
@@ -344,12 +364,14 @@ internal sealed class GraphResourceRegistry
         var dependenciesValid =
             _passRegistry.TryOrder([.. _accesses], out var orderedPasses, out var accessesValid);
         var isValid = accessesValid && importsValid && contentsValid && dependenciesValid;
+        var stateTransitions = isValid ? CreateStateTransitions(orderedPasses) : [];
         return new GraphResourceValidationResult(
             accessesValid,
             importsValid,
             contentsValid,
             dependenciesValid,
-            isValid ? orderedPasses : []);
+            isValid ? orderedPasses : [],
+            stateTransitions);
     }
 
     internal GraphTextureVersion WriteAttachment(
@@ -439,6 +461,99 @@ internal sealed class GraphResourceRegistry
         return nextVersion;
     }
 
+    private ImmutableArray<GraphResourceStateTransition> CreateStateTransitions(
+        ImmutableArray<RenderPassId> orderedPasses)
+    {
+        var accessesByPass = new Dictionary<RenderPassId, List<GraphResourceAccess>>();
+
+        foreach (var access in _accesses)
+        {
+            if (!accessesByPass.TryGetValue(access.PassId, out var passAccesses))
+            {
+                passAccesses = [];
+                accessesByPass.Add(access.PassId, passAccesses);
+            }
+
+            passAccesses.Add(access);
+        }
+
+        var bufferStateMaps = new Dictionary<ulong, GraphBufferStateMap>();
+        var textureStateMaps = new Dictionary<ulong, GraphTextureStateMap>();
+        var transitions = new List<GraphResourceStateTransition>();
+
+        foreach (var passId in orderedPasses)
+        {
+            if (!accessesByPass.TryGetValue(passId, out var passAccesses))
+            {
+                continue;
+            }
+
+            foreach (var access in passAccesses)
+            {
+                if (access.IsTexture)
+                {
+                    if (!textureStateMaps.TryGetValue(access.ResourceId, out var stateMap))
+                    {
+                        if (!_textureResourcesById.TryGetValue(access.ResourceId, out var resource))
+                        {
+                            throw new InvalidOperationException("The graph texture access lost its resource record.");
+                        }
+
+                        stateMap = new GraphTextureStateMap();
+                        stateMap.Set(resource.InitialVersion.Range, resource.InitialState);
+                        textureStateMaps.Add(access.ResourceId, stateMap);
+                    }
+
+                    foreach (var (range, beforeState) in stateMap.GetUniformStateSegments(access.TextureRange))
+                    {
+                        if (beforeState != access.RequiredState)
+                        {
+                            transitions.Add(new GraphResourceStateTransition(
+                                passId,
+                                GetTextureResource(access.ResourceId).InitialVersion,
+                                range,
+                                beforeState,
+                                access.RequiredState));
+                        }
+                    }
+
+                    stateMap.Set(access.TextureRange, access.RequiredState);
+                }
+                else
+                {
+                    if (!bufferStateMaps.TryGetValue(access.ResourceId, out var stateMap))
+                    {
+                        if (!_bufferResourcesById.TryGetValue(access.ResourceId, out var resource))
+                        {
+                            throw new InvalidOperationException("The graph buffer access lost its resource record.");
+                        }
+
+                        stateMap = new GraphBufferStateMap();
+                        stateMap.Set(resource.InitialVersion.Range, resource.InitialState);
+                        bufferStateMaps.Add(access.ResourceId, stateMap);
+                    }
+
+                    foreach (var (range, beforeState) in stateMap.GetStateSegments(access.BufferRange))
+                    {
+                        if (beforeState != access.RequiredState)
+                        {
+                            transitions.Add(new GraphResourceStateTransition(
+                                passId,
+                                GetBufferResource(access.ResourceId).InitialVersion,
+                                range,
+                                beforeState,
+                                access.RequiredState));
+                        }
+                    }
+
+                    stateMap.Set(access.BufferRange, access.RequiredState);
+                }
+            }
+        }
+
+        return [.. transitions];
+    }
+
     private void EnsureDeviceReady()
     {
         if ((_device.DeviceEpoch != _deviceEpoch) || (_device.Status != GraphicsDeviceStatus.Ready))
@@ -465,6 +580,16 @@ internal sealed class GraphResourceRegistry
         throw new ArgumentException("The buffer version does not belong to this graph.", nameof(version));
     }
 
+    private GraphBufferResourceRecord GetBufferResource(ulong resourceId)
+    {
+        if (_bufferResourcesById.TryGetValue(resourceId, out var resource))
+        {
+            return resource;
+        }
+
+        throw new ArgumentException("The buffer resource ID does not belong to this graph.", nameof(resourceId));
+    }
+
     private ulong GetNextResourceId()
     {
         _nextResourceId = checked(_nextResourceId + 1);
@@ -479,6 +604,16 @@ internal sealed class GraphResourceRegistry
         }
 
         throw new ArgumentException("The texture version does not belong to this graph.", nameof(version));
+    }
+
+    private GraphTextureResourceRecord GetTextureResource(ulong resourceId)
+    {
+        if (_textureResourcesById.TryGetValue(resourceId, out var resource))
+        {
+            return resource;
+        }
+
+        throw new ArgumentException("The texture resource ID does not belong to this graph.", nameof(resourceId));
     }
 
     private void ValidateDevice(GraphicsResourceOwner resourceOwner, uint deviceEpoch)

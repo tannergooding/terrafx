@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 
 namespace TerraFX.Graphics;
 
@@ -10,6 +11,8 @@ internal sealed class GraphTextureRangeCoverage
     private readonly List<GraphTextureRange> _ranges = [];
 
     internal bool IsEmpty => _ranges.Count == 0;
+
+    internal ImmutableArray<GraphTextureRange> Ranges => [.. _ranges];
 
     private static List<GraphTextureRange> Subtract(GraphTextureRange source, GraphTextureRange removed)
     {
@@ -132,6 +135,31 @@ internal sealed class GraphTextureRangeCoverage
         }
 
         return false;
+    }
+
+    internal ImmutableArray<GraphTextureRange> GetOverlappingRanges(GraphTextureRange range)
+    {
+        ValidateRange(range);
+        var overlaps = new List<GraphTextureRange>();
+
+        foreach (var current in _ranges)
+        {
+            if (current.Overlaps(range))
+            {
+                var firstMip = Math.Max(current.FirstMip, range.FirstMip);
+                var mipEnd = Math.Min(current.MipEndExclusive, range.MipEndExclusive);
+                var firstLayer = Math.Max(current.FirstLayer, range.FirstLayer);
+                var layerEnd = Math.Min(current.LayerEndExclusive, range.LayerEndExclusive);
+                overlaps.Add(new GraphTextureRange(
+                    firstMip,
+                    mipEnd - firstMip,
+                    firstLayer,
+                    layerEnd - firstLayer,
+                    current.Aspect));
+            }
+        }
+
+        return [.. overlaps];
     }
 
     internal bool Overlaps(GraphTextureRange range)

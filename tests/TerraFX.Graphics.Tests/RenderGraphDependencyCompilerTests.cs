@@ -160,6 +160,29 @@ internal sealed class RenderGraphDependencyCompilerTests
     }
 
     [Test]
+    public void TryOrderReportsOverlappingSamePassStateConflict()
+    {
+        var passId = new RenderPassId(7, 0);
+        var description = new BufferDescription(
+            64,
+            BufferUsage.Storage | BufferUsage.CopySource,
+            GpuMemoryKind.DeviceLocal,
+            structuredStride: null,
+            debugName: string.Empty);
+        var range = new GraphBufferRange(0, 16);
+        var version = new GraphBufferVersion(1, 4, 0, description, range);
+        var passes = ImmutableArray.Create(
+            new RenderGraphPassNode(passId, new RenderPassDescription("pass", 0, [], false)));
+        var accesses = ImmutableArray.Create(
+            new GraphResourceAccess(passId, version, range, GraphBufferUsage.StorageRead, isWrite: false),
+            new GraphResourceAccess(passId, version, range, GraphBufferUsage.CopySource, isWrite: false));
+
+        Assert.That(RenderGraphDependencyCompiler.TryOrder(passes, accesses, out var orderedPasses, out var accessesValid), Is.True);
+        Assert.That(accessesValid, Is.False);
+        Assert.That(orderedPasses, Is.EqualTo(ImmutableArray.Create(passId)));
+    }
+
+    [Test]
     public void TryOrderUsesDeclaredOrderThenOrdinalNameWithinReadyPasses()
     {
         var preceding = new RenderPassId(7, 0);

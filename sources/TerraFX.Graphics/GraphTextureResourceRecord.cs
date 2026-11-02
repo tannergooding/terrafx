@@ -10,15 +10,26 @@ internal sealed class GraphTextureResourceRecord
     private readonly GraphTextureContentLedger _contentLedger;
     private GraphTextureVersion _currentVersion;
     private readonly GraphTextureImportRecord? _importRecord;
+    private readonly GraphResourceState _initialState;
+    private readonly GraphTextureVersion _initialVersion;
     private readonly HashSet<GraphTextureVersion> _versions = [];
 
     internal GraphTextureResourceRecord(
         GraphTextureVersion initialVersion,
         bool contentsValid,
+        GraphResourceState initialState,
         GraphTextureImportRecord? importRecord)
     {
         ArgumentNullException.ThrowIfNull(initialVersion);
+
+        if (!Enum.IsDefined(initialState))
+        {
+            throw new ArgumentOutOfRangeException(nameof(initialState));
+        }
+
         _currentVersion = initialVersion;
+        _initialState = initialState;
+        _initialVersion = initialVersion;
         _contentLedger = new GraphTextureContentLedger(initialVersion, contentsValid);
         _importRecord = importRecord;
         _ = _versions.Add(initialVersion);
@@ -27,6 +38,10 @@ internal sealed class GraphTextureResourceRecord
     internal GraphTextureVersion CurrentVersion => _currentVersion;
 
     internal GraphTextureImportRecord? ImportRecord => _importRecord;
+
+    internal GraphResourceState InitialState => _initialState;
+
+    internal GraphTextureVersion InitialVersion => _initialVersion;
 
     internal bool IsInitialized(GraphTextureVersion version, GraphTextureRange range)
         => _contentLedger.IsInitialized(version, range);

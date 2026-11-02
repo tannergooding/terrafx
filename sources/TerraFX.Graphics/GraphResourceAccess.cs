@@ -162,6 +162,8 @@ internal readonly struct GraphResourceAccess
 
     internal TextureUsage? AttachmentUsage => _attachmentUsage;
 
+    internal GraphBufferRange BufferRange => _bufferRange;
+
     internal GraphBufferUsage? BufferUsage => _bufferUsage;
 
     internal bool ContentsValid => _contentsValid;
@@ -218,6 +220,8 @@ internal readonly struct GraphResourceAccess
     }
 
     internal ulong ResourceId { get; }
+
+    internal GraphTextureRange TextureRange => _textureRange;
 
     internal GraphTextureUsage? TextureUsage => _textureUsage;
 

@@ -508,6 +508,172 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task GraphResourceRegistryTracksDisjointBufferStateRanges()
+    {
+        var backendDevice = new FakeBackendDevice();
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var registry = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 7);
+        var description = new BufferDescription(
+            byteLength: 64,
+            BufferUsage.Storage | BufferUsage.CopyDestination,
+            GpuMemoryKind.DeviceLocal,
+            structuredStride: null,
+            debugName: "Transient graph buffer");
+
+        try
+        {
+            var storageWriter = registry.AddPass(new RenderPassDescription("storage", 0, [], false));
+            var copyWriter = registry.AddPass(new RenderPassDescription("copy", 1, [], false));
+            var reader = registry.AddPass(new RenderPassDescription("reader", 2, [], false));
+            var initialVersion = registry.CreateTransientBuffer(description);
+            var storageVersion = registry.WriteBuffer(
+                storageWriter,
+                initialVersion,
+                new GraphBufferRange(0, 16),
+                GraphBufferUsage.StorageWrite);
+            var copyVersion = registry.WriteBuffer(
+                copyWriter,
+                storageVersion,
+                new GraphBufferRange(16, 16),
+                GraphBufferUsage.CopyDestination);
+            registry.ReadBuffer(
+                reader,
+                copyVersion,
+                new GraphBufferRange(0, 16),
+                GraphBufferUsage.StorageRead);
+
+            var result = registry.ValidateCompilation();
+            Assert.That(result.IsValid, Is.True);
+            Assert.That(result.StateTransitions, Has.Length.EqualTo(3));
+            Assert.That(result.StateTransitions[0].PassId, Is.EqualTo(storageWriter));
+            Assert.That(result.StateTransitions[0].BeforeState, Is.EqualTo(GraphResourceState.Undefined));
+            Assert.That(result.StateTransitions[0].AfterState, Is.EqualTo(GraphResourceState.StorageWrite));
+            Assert.That(result.StateTransitions[0].BufferRange, Is.EqualTo(new GraphBufferRange(0, 16)));
+            Assert.That(result.StateTransitions[1].PassId, Is.EqualTo(copyWriter));
+            Assert.That(result.StateTransitions[1].BeforeState, Is.EqualTo(GraphResourceState.Undefined));
+            Assert.That(result.StateTransitions[1].AfterState, Is.EqualTo(GraphResourceState.CopyDestination));
+            Assert.That(result.StateTransitions[1].BufferRange, Is.EqualTo(new GraphBufferRange(16, 16)));
+            Assert.That(result.StateTransitions[2].PassId, Is.EqualTo(reader));
+            Assert.That(result.StateTransitions[2].BeforeState, Is.EqualTo(GraphResourceState.StorageWrite));
+            Assert.That(result.StateTransitions[2].AfterState, Is.EqualTo(GraphResourceState.StorageRead));
+            Assert.That(result.StateTransitions[2].BufferRange, Is.EqualTo(new GraphBufferRange(0, 16)));
+        }
+        finally
+        {
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task GraphResourceRegistryTracksDisjointTextureStateRanges()
+    {
+        var backendDevice = new FakeBackendDevice();
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var registry = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 7);
+        var description = new TextureDescription(
+            TextureDimension.Dimension2D,
+            8,
+            8,
+            1,
+            1,
+            2,
+            TextureFormat.Rgba16Float,
+            TextureUsage.Sampled | TextureUsage.Storage | TextureUsage.CopyDestination,
+            "Transient graph texture");
+        var mip0 = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+        var mip1 = new GraphTextureRange(1, 1, 0, 1, TextureAspect.Color);
+        var bothMips = new GraphTextureRange(0, 2, 0, 1, TextureAspect.Color);
+
+        try
+        {
+            var storageWriter = registry.AddPass(new RenderPassDescription("storage", 0, [], false));
+            var copyWriter = registry.AddPass(new RenderPassDescription("copy", 1, [], false));
+            var reader = registry.AddPass(new RenderPassDescription("reader", 2, [], false));
+            var initialVersion = registry.CreateTransientTexture(description);
+            var storageVersion = registry.WriteTexture(
+                storageWriter,
+                initialVersion,
+                mip0,
+                GraphTextureUsage.StorageWrite);
+            var copyVersion = registry.WriteTexture(
+                copyWriter,
+                storageVersion,
+                mip1,
+                GraphTextureUsage.CopyDestination);
+            registry.ReadTexture(reader, copyVersion, bothMips, GraphTextureUsage.SampledRead);
+
+            var result = registry.ValidateCompilation();
+            Assert.That(result.IsValid, Is.True);
+            Assert.That(result.StateTransitions, Has.Length.EqualTo(4));
+            Assert.That(result.StateTransitions[0].PassId, Is.EqualTo(storageWriter));
+            Assert.That(result.StateTransitions[0].BeforeState, Is.EqualTo(GraphResourceState.Undefined));
+            Assert.That(result.StateTransitions[0].AfterState, Is.EqualTo(GraphResourceState.StorageWrite));
+            Assert.That(result.StateTransitions[0].TextureRange, Is.EqualTo(mip0));
+            Assert.That(result.StateTransitions[1].PassId, Is.EqualTo(copyWriter));
+            Assert.That(result.StateTransitions[1].BeforeState, Is.EqualTo(GraphResourceState.Undefined));
+            Assert.That(result.StateTransitions[1].AfterState, Is.EqualTo(GraphResourceState.CopyDestination));
+            Assert.That(result.StateTransitions[1].TextureRange, Is.EqualTo(mip1));
+            Assert.That(result.StateTransitions[2].PassId, Is.EqualTo(reader));
+            Assert.That(result.StateTransitions[2].BeforeState, Is.EqualTo(GraphResourceState.StorageWrite));
+            Assert.That(result.StateTransitions[2].AfterState, Is.EqualTo(GraphResourceState.ShaderSampledRead));
+            Assert.That(result.StateTransitions[2].TextureRange, Is.EqualTo(mip0));
+            Assert.That(result.StateTransitions[3].PassId, Is.EqualTo(reader));
+            Assert.That(result.StateTransitions[3].BeforeState, Is.EqualTo(GraphResourceState.CopyDestination));
+            Assert.That(result.StateTransitions[3].AfterState, Is.EqualTo(GraphResourceState.ShaderSampledRead));
+            Assert.That(result.StateTransitions[3].TextureRange, Is.EqualTo(mip1));
+        }
+        finally
+        {
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task GraphResourceRegistryTracksImportedInitialStateTransitions()
+    {
+        var backendDevice = new FakeBackendDevice();
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var buffer = await graphicsDevice.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
+        var range = new GraphBufferRange(0, buffer.ByteLength);
+
+        try
+        {
+            _ = await graphicsDevice.UploadBufferAsync(buffer, destinationOffset: 0, [1, 2, 3, 4, 5, 6, 7, 8])
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            var registry = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 7);
+            var version = registry.ImportBuffer(
+                buffer,
+                range,
+                new GraphImportOptions(
+                    GraphResourceState.General,
+                    contentsValid: true,
+                    GraphImportCompletionPolicy.RequireIdle));
+            var importValidation = registry.GetBufferImport(version).CaptureValidation();
+            Assert.That(importValidation.StateMatches, Is.True);
+            Assert.That(importValidation.ContentsMatch, Is.True);
+            Assert.That(importValidation.IsIdle, Is.True);
+            var pass = registry.AddPass(new RenderPassDescription("copy", 0, [], false));
+            registry.ReadBuffer(pass, version, range, GraphBufferUsage.CopySource);
+
+            var result = registry.ValidateCompilation();
+            Assert.That(result.AccessesValid, Is.True);
+            Assert.That(result.ImportsValid, Is.True);
+            Assert.That(result.ContentsValid, Is.True);
+            Assert.That(result.DependenciesValid, Is.True);
+            Assert.That(result.IsValid, Is.True);
+            Assert.That(result.StateTransitions, Has.Length.EqualTo(1));
+            Assert.That(result.StateTransitions[0].BeforeState, Is.EqualTo(GraphResourceState.General));
+            Assert.That(result.StateTransitions[0].AfterState, Is.EqualTo(GraphResourceState.CopySource));
+        }
+        finally
+        {
+            buffer.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task GraphResourceRegistryTracksTextureSubresourceMembership()
     {
         var backendDevice = new FakeBackendDevice();
@@ -669,6 +835,11 @@ internal sealed class GraphicsBufferTransferTests
             Assert.That(result.ContentsValid, Is.True);
             Assert.That(result.DependenciesValid, Is.True);
             Assert.That(result.OrderedPasses, Is.EqualTo(expectedOrder));
+            Assert.That(result.StateTransitions, Has.Length.EqualTo(2));
+            Assert.That(result.StateTransitions[0].BeforeState, Is.EqualTo(GraphResourceState.Undefined));
+            Assert.That(result.StateTransitions[0].AfterState, Is.EqualTo(GraphResourceState.StorageWrite));
+            Assert.That(result.StateTransitions[1].BeforeState, Is.EqualTo(GraphResourceState.StorageWrite));
+            Assert.That(result.StateTransitions[1].AfterState, Is.EqualTo(GraphResourceState.StorageRead));
         }
         finally
         {

@@ -10,15 +10,26 @@ internal sealed class GraphBufferResourceRecord
     private readonly GraphBufferContentLedger _contentLedger;
     private GraphBufferVersion _currentVersion;
     private readonly GraphBufferImportRecord? _importRecord;
+    private readonly GraphResourceState _initialState;
+    private readonly GraphBufferVersion _initialVersion;
     private readonly HashSet<GraphBufferVersion> _versions = [];
 
     internal GraphBufferResourceRecord(
         GraphBufferVersion initialVersion,
         bool contentsValid,
+        GraphResourceState initialState,
         GraphBufferImportRecord? importRecord)
     {
         ArgumentNullException.ThrowIfNull(initialVersion);
+
+        if (!Enum.IsDefined(initialState))
+        {
+            throw new ArgumentOutOfRangeException(nameof(initialState));
+        }
+
         _currentVersion = initialVersion;
+        _initialState = initialState;
+        _initialVersion = initialVersion;
         _contentLedger = new GraphBufferContentLedger(initialVersion, contentsValid);
         _importRecord = importRecord;
         _ = _versions.Add(initialVersion);
@@ -27,6 +38,10 @@ internal sealed class GraphBufferResourceRecord
     internal GraphBufferVersion CurrentVersion => _currentVersion;
 
     internal GraphBufferImportRecord? ImportRecord => _importRecord;
+
+    internal GraphResourceState InitialState => _initialState;
+
+    internal GraphBufferVersion InitialVersion => _initialVersion;
 
     internal bool IsInitialized(GraphBufferVersion version, GraphBufferRange range)
         => _contentLedger.IsInitialized(version, range);
