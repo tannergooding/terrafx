@@ -37,6 +37,20 @@ internal sealed class VulkanGraphicsCapabilityMapperTests
     }
 
     [Test]
+    public void DescriptorLimitsClampToThePublicIntegerRange()
+    {
+        var limits = CreateValidLimits();
+        limits.maxPerStageDescriptorSampledImages = uint.MaxValue;
+
+        var mapped = VulkanGraphicsCapabilityMapper.CreateLimits(
+            limits,
+            maximumBufferByteLength: 1UL << 30,
+            samplerAnisotropySupported: false);
+
+        Assert.That(mapped.MaximumSampledImagesPerStage, Is.EqualTo(int.MaxValue));
+    }
+
+    [Test]
     public void FormatFeatureBitsMapToIndependentTextureUsages()
     {
         const VkFormatFeatureFlags features =

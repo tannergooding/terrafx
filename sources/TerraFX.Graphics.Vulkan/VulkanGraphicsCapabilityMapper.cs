@@ -119,7 +119,8 @@ internal static class VulkanGraphicsCapabilityMapper
 
     private static int ConvertPositiveInt(uint value, string parameterName)
     {
-        var converted = checked((int)value);
+        // Vulkan uses UINT32_MAX for effectively unbounded descriptor limits; GraphicsLimits uses Int32.
+        var converted = value > int.MaxValue ? int.MaxValue : checked((int)value);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(converted, parameterName);
         return converted;
     }
