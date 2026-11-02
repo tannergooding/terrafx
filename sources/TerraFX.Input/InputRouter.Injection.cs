@@ -1198,11 +1198,12 @@ public sealed partial class InputRouter
         discardedInputCount = 0;
         var physicalInputCount = physicalInputs.IsDefault ? 0 : physicalInputs.Length;
         var reconciliationInputCount = (long)heldInputs.Length + physicalInputCount;
+        var requiresWholePausedState = _isPaused && physicalInputs.IsDefault;
 
         if (heldInputs.IsDefault
             || (reconciliationInputCount > MaximumPendingReconciliationInputs)
-            || _inputOverflowed
-            || !IsValidReconciliationScope(inputClasses, playerSlot, _isPaused))
+            || (_inputOverflowed && !_overflowServiced)
+            || !IsValidReconciliationScope(inputClasses, playerSlot, requiresWholePausedState))
         {
             return CreateRoutingRejection("InvalidReconciliation", "/State");
         }
@@ -1281,11 +1282,6 @@ public sealed partial class InputRouter
         _hostControlTimestamp = hostTimestamp;
         _lastSeenHostTimestamp = hostTimestamp;
         _controlCommandsInBoundary++;
-
-        if (_isPaused)
-        {
-            _isPaused = false;
-        }
 
         return new InputRoutingReceipt(
             InputRoutingStatus.Applied,
@@ -1702,6 +1698,11 @@ public sealed partial class InputRouter
             }
         }
 
+        if (_inputOverflowed && (_lastUnacceptedHostSequence > control.HostSequence))
+        {
+            MarkUnreconciledControls(control.InputClasses, control.PlayerSlot);
+        }
+
         UpdateBindingsForScope(control.InputClasses, control.PlayerSlot);
         RefreshAllConsumptionLeases();
 
@@ -1716,6 +1717,24 @@ public sealed partial class InputRouter
         }
 
         _pendingReconciliationInputCount -= reconciliationInputCount;
+
+        if (_isPaused && !_pauseControlPending && _unreconciledControls.Count == 0)
+        {
+            _isPaused = false;
+        }
+
+        if (_inputOverflowed
+            && _overflowServiced
+            && (_lastUnacceptedHostSequence <= control.HostSequence)
+            && (_unreconciledControls.Count == 0))
+        {
+            _inputOverflowed = false;
+            _overflowServiced = false;
+            _firstUnacceptedHostSequence = 0;
+            _lastUnacceptedHostSequence = 0;
+            _lastAssignedInputTick = _nextOpenTick;
+        }
+
         return RecomputeAllActions(control.HostSequence, assignedTick, cancellationReason: null);
     }
 
@@ -2081,6 +2100,17 @@ public sealed partial class InputRouter
         if (_inputOverflowed)
         {
             RecordUnacceptedSequence(hostSequence);
+
+            var inputClass = GetInputClass(envelope.Control);
+
+            if (inputClass != InputClass.None)
+            {
+                var playerSlot = inputClass == InputClass.Gamepad
+                    ? envelope.Control.PlayerSlot
+                    : (ushort?)null;
+                MarkUnreconciledControls(inputClass, playerSlot);
+            }
+
             return CreateInputCapacityFailure(hostSequence, effectiveTick, effectiveLate);
         }
 
@@ -2238,6 +2268,7 @@ public sealed partial class InputRouter
         _digitalControlStates.Clear();
         _scalarControlValues.Clear();
         _vectorControlValues.Clear();
+        MarkUnreconciledControls(InputClass.Keyboard | InputClass.Pointing | InputClass.Gamepad, playerSlot: null);
         var transitions = ImmutableArray.CreateBuilder<InputActionTransition>();
 
         foreach (var mapState in _maps.Values.OrderBy(static state => state.Map.MapId.ToString("D"), StringComparer.Ordinal))
@@ -2429,18 +2460,18 @@ public sealed partial class InputRouter
 
         ApplyPendingReboundActions(assignedTick);
 
-        if (_inputOverflowed)
+        if (_inputOverflowed && !_overflowServiced)
         {
-            if (!_overflowServiced)
-            {
-                _ = HandleInputOverflow(assignedTick);
-            }
+            _ = HandleInputOverflow(assignedTick);
         }
         else
         {
             while (true)
             {
-                var inputReady = _inputInbox.TryPeek(out var envelope) && (envelope.AssignedTick <= assignedTick);
+                InputEnvelope? envelope = null;
+                var inputReady = !_inputOverflowed
+                    && _inputInbox.TryPeek(out envelope)
+                    && (envelope.AssignedTick <= assignedTick);
                 var controlReady = _inputControlInbox.TryPeek(out var control)
                     && (control.AssignedTick is { } controlTick)
                     && (controlTick <= assignedTick);
