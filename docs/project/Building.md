@@ -155,6 +155,8 @@ dotnet .\artifacts\bin\sources\TerraFX.Content.Tools\Debug\net11.0\TerraFX.Conte
 
 The command emits the vertex, baseline pixel, resource-bearing `pixel-sampled`, combined `pixel-sampled-frame`, and storage-bearing `pixel-sampled-frame-storage` stages as DXIL with DXC reflection dumped from the binary and Vulkan 1.3 SPIR-V with SPIRV-Cross JSON reflection, then validates each SPIR-V module with `spirv-val`. The baseline pixel reflection pins the FrameData UBO to set 0/binding 0; `pixel-sampled` consumes `FrameTexture` and `FrameSampler` at set 0 bindings 16 and 40; `pixel-sampled-frame` reflects the UBO together with both sampled resources; `pixel-sampled-frame-storage` also reflects `FrameStorageBuffer` at binding 32 and `FrameStorageImage` at binding 33 with `r32ui` format. The output directory must not already exist. Microsoft DXC is licensed for Windows-only use; Linux Vulkan consumers use the cooked SPIR-V and do not execute the Linux DXC archive.
 
+The typed reflection converter cross-checks SPIRV-Cross uniform-buffer records against DXIL `Buffer Definitions`: record association and byte length, supported flat field names/types/offsets/counts, fixed-array strides, and explicit row-major `float4x4` layout. Nested records, one-element or multidimensional record arrays, and storage-buffer element-record association remain unsupported.
+
 ### Vulkan OffscreenNative backend tests
 
 After compiling the M04 shader fixture, point the Vulkan tests at its output directory. To enable the installed Vulkan validation layer, set its manifest directory and layer name as shown:

@@ -59,6 +59,7 @@ internal static class M04ShaderReflectionReader
         ValidateSpirvCrossIo(root, "inputs", inputs, stage, isInput: true);
         ValidateSpirvCrossIo(root, "outputs", outputs, stage, isInput: false);
         var recordLayouts = ParseRecordLayouts(root);
+        DxilRecordLayoutReader.Validate(dxilReflection, recordLayouts);
         var requiredCapabilities = ParseCapabilities(spirvBytecode);
 
         if (stage == ShaderStage.Compute)
@@ -495,25 +496,24 @@ internal static class M04ShaderReflectionReader
 
             foreach (var member in members.EnumerateArray())
             {
-                var valueType = ParseSpirvType(GetRequiredString(member, "type"));
-                var arrayCount = GetArrayCount(member);
-                var arrayStride = (arrayCount == 1) ? 0 : GetRequiredInt32(member, "array_stride");
-                fields.Add(new ShaderFieldLayout(
-                    GetRequiredString(member, "name"),
-                    valueType,
-                    GetRequiredInt32(member, "offset"),
-                    GetTypeByteLength(valueType),
-                    arrayCount,
-                    arrayStride));
+                fields.Add(DxilRecordLayoutReader.ParseSpirvRecordField(member));
             }
 
             var typeName = type.TryGetProperty("name", out _)
                 ? GetRequiredString(type, "name")
                 : GetRequiredString(uniformBuffer, "name");
-            layouts.Add(new ShaderRecordLayout(
-                NormalizeResourceName(typeName),
-                GetRequiredInt32(uniformBuffer, "block_size"),
-                fields.MoveToImmutable()));
+
+            try
+            {
+                layouts.Add(new ShaderRecordLayout(
+                    NormalizeResourceName(typeName),
+                    GetRequiredInt32(uniformBuffer, "block_size"),
+                    fields.MoveToImmutable()));
+            }
+            catch (ArgumentException exception)
+            {
+                throw new InvalidDataException("SPIRV-Cross reported an invalid uniform-buffer record layout.", exception);
+            }
         }
 
         return layouts.MoveToImmutable();
@@ -846,6 +846,370 @@ internal static class M04ShaderReflectionReader
                 throw new InvalidDataException($"SPIRV-Cross {collectionName} omitted a DXIL stage-I/O location.");
             }
         }
+    }
+
+    private static class DxilRecordLayoutReader
+    {
+        internal static ShaderFieldLayout ParseSpirvRecordField(JsonElement member)
+        {
+            var valueType = ParseSpirvType(GetRequiredString(member, "type"));
+            var hasArray = member.TryGetProperty("array", out var array);
+
+            if (hasArray && ((array.ValueKind != JsonValueKind.Array) || (array.GetArrayLength() != 1)))
+            {
+                throw new NotSupportedException("The M04 reflection reader only converts one-dimensional record arrays.");
+            }
+
+            var arrayCount = GetArrayCount(member);
+
+            if (hasArray && (arrayCount == 1))
+            {
+                throw new NotSupportedException("The reflected record layout cannot distinguish a one-element array from a scalar field.");
+            }
+
+            var byteLength = GetTypeByteLength(valueType);
+            var arrayStride = (arrayCount == 1) ? 0 : GetRecordArrayStride(byteLength);
+
+            if ((arrayCount > 1) && (GetRequiredInt32(member, "array_stride") != arrayStride))
+            {
+                throw new InvalidDataException("SPIRV-Cross record-array stride does not match the supported HLSL layout.");
+            }
+
+            if (valueType == ShaderValueType.Float4x4)
+            {
+                if ((GetRequiredInt32(member, "matrix_stride") != 16)
+                    || !member.TryGetProperty("row_major", out var rowMajor)
+                    || (rowMajor.ValueKind != JsonValueKind.True))
+                {
+                    throw new InvalidDataException("The M04 record layout requires 16-byte row-major float4x4 matrices.");
+                }
+            }
+            else if (member.TryGetProperty("matrix_stride", out _))
+            {
+                throw new InvalidDataException("SPIRV-Cross reported matrix layout metadata for a non-matrix record field.");
+            }
+
+            try
+            {
+                return new ShaderFieldLayout(
+                    GetRequiredString(member, "name"),
+                    valueType,
+                    GetRequiredInt32(member, "offset"),
+                    byteLength,
+                    arrayCount,
+                    arrayStride);
+            }
+            catch (ArgumentException exception)
+            {
+                throw new InvalidDataException("SPIRV-Cross reported an invalid uniform-buffer field layout.", exception);
+            }
+        }
+
+        internal static void Validate(string dxilReflection, ImmutableArray<ShaderRecordLayout> spirvLayouts)
+        {
+            var dxilLayouts = ParseDxilRecordLayouts(dxilReflection);
+
+            if (dxilLayouts.Length != spirvLayouts.Length)
+            {
+                throw new InvalidDataException("DXIL and SPIRV-Cross report different uniform-buffer record counts.");
+            }
+
+            var layoutsByName = new Dictionary<string, ShaderRecordLayout>(StringComparer.Ordinal);
+
+            foreach (var dxilLayout in dxilLayouts)
+            {
+                if (!layoutsByName.TryAdd(dxilLayout.Name, dxilLayout))
+                {
+                    throw new InvalidDataException($"DXIL reflection contains duplicate record layout '{dxilLayout.Name}'.");
+                }
+            }
+
+            foreach (var spirvLayout in spirvLayouts)
+            {
+                if (!layoutsByName.TryGetValue(spirvLayout.Name, out var dxilLayout)
+                    || (dxilLayout.ByteLength != spirvLayout.ByteLength)
+                    || (dxilLayout.Fields.Length != spirvLayout.Fields.Length))
+                {
+                    throw new InvalidDataException($"DXIL record layout '{spirvLayout.Name}' does not match SPIRV-Cross reflection.");
+                }
+
+                for (var index = 0; index < dxilLayout.Fields.Length; index++)
+                {
+                    if (dxilLayout.Fields[index] != spirvLayout.Fields[index])
+                    {
+                        throw new InvalidDataException($"DXIL record field '{spirvLayout.Fields[index].Name}' does not match SPIRV-Cross reflection.");
+                    }
+                }
+            }
+        }
+
+        private static string GetDxilLineContent(string line)
+        {
+            var trimmed = line.Trim();
+            return trimmed.StartsWith(';', StringComparison.Ordinal)
+                ? trimmed[1..].Trim()
+                : string.Empty;
+        }
+
+        private static int GetRecordArrayStride(int byteLength)
+            => checked((byteLength + 15) & ~15);
+
+        private static int GetRequiredDxilInteger(string text, string propertyName)
+        {
+            var propertyIndex = text.IndexOf(propertyName, StringComparison.Ordinal);
+
+            if (propertyIndex < 0)
+            {
+                throw new InvalidDataException($"DXIL record metadata omitted '{propertyName}'.");
+            }
+
+            var value = text.AsSpan(propertyIndex + propertyName.Length);
+            var valueIndex = 0;
+
+            while ((valueIndex < value.Length) && char.IsWhiteSpace(value[valueIndex]))
+            {
+                valueIndex++;
+            }
+
+            var valueEnd = valueIndex;
+
+            while ((valueEnd < value.Length) && (value[valueEnd] is >= '0' and <= '9'))
+            {
+                valueEnd++;
+            }
+
+            if ((valueEnd == valueIndex)
+                || !int.TryParse(value[valueIndex..valueEnd], NumberStyles.None, CultureInfo.InvariantCulture, out var result))
+            {
+                throw new InvalidDataException($"DXIL record metadata '{propertyName}' is not a nonnegative 32-bit integer.");
+            }
+
+            return result;
+        }
+
+        private static ShaderFieldLayout ParseDxilRecordField(string content)
+        {
+            var separator = content.IndexOf(';', StringComparison.Ordinal);
+
+            if (separator < 0)
+            {
+                throw new InvalidDataException("A DXIL record field omitted its declaration separator.");
+            }
+
+            var declaration = content[..separator].Trim();
+            var tokens = declaration.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var typeIndex = 0;
+            var isRowMajor = false;
+
+            if ((tokens.Length > 0) && (tokens[0] is "row_major" or "column_major"))
+            {
+                isRowMajor = StringComparer.Ordinal.Equals(tokens[0], "row_major");
+                typeIndex++;
+            }
+
+            if (tokens.Length != typeIndex + 2)
+            {
+                throw new NotSupportedException($"DXIL record field declaration '{declaration}' is outside the supported flat layout.");
+            }
+
+            var valueType = ParseDxilRecordValueType(tokens[typeIndex]);
+
+            if (valueType == ShaderValueType.Float4x4 != isRowMajor)
+            {
+                throw new InvalidDataException("The M04 record layout requires explicitly row-major float4x4 fields.");
+            }
+
+            var name = tokens[typeIndex + 1];
+            var arrayCount = 1;
+            var arrayStart = name.IndexOf('[', StringComparison.Ordinal);
+
+            if (arrayStart >= 0)
+            {
+                if (!name.EndsWith(']', StringComparison.Ordinal)
+                    || (name.IndexOf('[', arrayStart + 1, StringComparison.Ordinal) >= 0))
+                {
+                    throw new NotSupportedException($"DXIL record field declaration '{declaration}' has an unsupported array shape.");
+                }
+
+                var arrayLength = name.AsSpan(arrayStart + 1, name.Length - arrayStart - 2);
+
+                if (!int.TryParse(arrayLength, NumberStyles.None, CultureInfo.InvariantCulture, out arrayCount)
+                    || (arrayCount <= 0))
+                {
+                    throw new InvalidDataException($"DXIL record field declaration '{declaration}' has an invalid array count.");
+                }
+
+                name = name[..arrayStart];
+
+                if (arrayCount == 1)
+                {
+                    throw new NotSupportedException("The reflected record layout cannot distinguish a one-element array from a scalar field.");
+                }
+            }
+
+            var byteLength = GetTypeByteLength(valueType);
+            var arrayStride = (arrayCount == 1) ? 0 : GetRecordArrayStride(byteLength);
+
+            try
+            {
+                return new ShaderFieldLayout(
+                    name,
+                    valueType,
+                    GetRequiredDxilInteger(content, "Offset:"),
+                    byteLength,
+                    arrayCount,
+                    arrayStride);
+            }
+            catch (ArgumentException exception)
+            {
+                throw new InvalidDataException($"DXIL record field '{name}' has an invalid layout.", exception);
+            }
+        }
+
+        private static ShaderRecordLayout ParseDxilRecordLayout(string[] lines, ref int index, string cbufferName)
+        {
+            string? recordName = null;
+            int? byteLength = null;
+            var fields = ImmutableArray.CreateBuilder<ShaderFieldLayout>();
+            var inRecord = false;
+
+            for (var cursor = index + 1; cursor < lines.Length; cursor++)
+            {
+                var content = GetDxilLineContent(lines[cursor]);
+
+                if (content.StartsWith("cbuffer ", StringComparison.Ordinal)
+                    || StringComparer.Ordinal.Equals(content, "Resource Bindings:"))
+                {
+                    throw new InvalidDataException($"DXIL cbuffer '{cbufferName}' has an unterminated record definition.");
+                }
+
+                if (!inRecord)
+                {
+                    if (content.StartsWith("struct ", StringComparison.Ordinal))
+                    {
+                        recordName = content["struct ".Length..].Trim();
+                        inRecord = true;
+                    }
+
+                    continue;
+                }
+
+                if (content.StartsWith('}', StringComparison.Ordinal))
+                {
+                    var separator = content.IndexOf(';', StringComparison.Ordinal);
+
+                    if (separator < 0)
+                    {
+                        throw new InvalidDataException($"DXIL cbuffer '{cbufferName}' has an invalid record terminator.");
+                    }
+
+                    var closingName = content[1..separator].Trim();
+
+                    if (!StringComparer.Ordinal.Equals(recordName, closingName))
+                    {
+                        throw new InvalidDataException($"DXIL cbuffer '{cbufferName}' has inconsistent record names.");
+                    }
+
+                    if (GetRequiredDxilInteger(content, "Offset:") != 0)
+                    {
+                        throw new InvalidDataException($"DXIL cbuffer '{cbufferName}' has a nonzero record base offset.");
+                    }
+
+                    byteLength = GetRequiredDxilInteger(content, "Size:");
+                    index = cursor;
+                    break;
+                }
+
+                if (content.StartsWith("struct ", StringComparison.Ordinal))
+                {
+                    throw new NotSupportedException("Nested DXIL uniform-buffer records are not supported by the M04 reflection reader.");
+                }
+
+                if (content.Contains("Offset:", StringComparison.Ordinal))
+                {
+                    fields.Add(ParseDxilRecordField(content));
+                }
+            }
+
+            if (!inRecord || (recordName is null) || (byteLength is null))
+            {
+                throw new InvalidDataException($"DXIL cbuffer '{cbufferName}' omitted its record definition or byte length.");
+            }
+
+            if (!StringComparer.Ordinal.Equals(NormalizeResourceName(cbufferName), NormalizeResourceName(recordName)))
+            {
+                throw new InvalidDataException($"DXIL cbuffer '{cbufferName}' does not identify its reflected record '{recordName}'.");
+            }
+
+            try
+            {
+                return new ShaderRecordLayout(
+                    NormalizeResourceName(recordName),
+                    byteLength.Value,
+                    fields.ToImmutable());
+            }
+            catch (ArgumentException exception)
+            {
+                throw new InvalidDataException($"DXIL cbuffer '{cbufferName}' reported an invalid record layout.", exception);
+            }
+        }
+
+        private static ImmutableArray<ShaderRecordLayout> ParseDxilRecordLayouts(string dxilReflection)
+        {
+            var lines = dxilReflection.Split('\n');
+            var sectionIndex = -1;
+
+            for (var index = 0; index < lines.Length; index++)
+            {
+                if (StringComparer.Ordinal.Equals(lines[index].Trim(), "; Buffer Definitions:"))
+                {
+                    sectionIndex = index;
+                    break;
+                }
+            }
+
+            if (sectionIndex < 0)
+            {
+                return [];
+            }
+
+            var layouts = ImmutableArray.CreateBuilder<ShaderRecordLayout>();
+
+            for (var index = sectionIndex + 1; index < lines.Length; index++)
+            {
+                var content = GetDxilLineContent(lines[index]);
+
+                if (StringComparer.Ordinal.Equals(content, "Resource Bindings:"))
+                {
+                    break;
+                }
+
+                if (content.StartsWith("cbuffer ", StringComparison.Ordinal))
+                {
+                    layouts.Add(ParseDxilRecordLayout(lines, ref index, content["cbuffer ".Length..].Trim()));
+                }
+            }
+
+            return layouts.ToImmutable();
+        }
+
+        private static ShaderValueType ParseDxilRecordValueType(string type)
+            => type switch {
+                "float" => ShaderValueType.Float1,
+                "float2" => ShaderValueType.Float2,
+                "float3" => ShaderValueType.Float3,
+                "float4" => ShaderValueType.Float4,
+                "float4x4" => ShaderValueType.Float4x4,
+                "int" => ShaderValueType.Int1,
+                "int2" => ShaderValueType.Int2,
+                "int3" => ShaderValueType.Int3,
+                "int4" => ShaderValueType.Int4,
+                "uint" => ShaderValueType.UInt1,
+                "uint2" => ShaderValueType.UInt2,
+                "uint3" => ShaderValueType.UInt3,
+                "uint4" => ShaderValueType.UInt4,
+                _ => throw new NotSupportedException($"DXIL record field type '{type}' is not supported by the M04 reflection reader."),
+            };
     }
 
     private readonly record struct ReflectedResource(

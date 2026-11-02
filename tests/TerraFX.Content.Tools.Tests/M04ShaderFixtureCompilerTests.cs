@@ -131,6 +131,75 @@ internal sealed class M04ShaderFixtureCompilerTests
             Throws.TypeOf<InvalidDataException>());
     }
 
+    private static ShaderReflection ReadSyntheticTypedReflection(string dxilReflection, string spirvReflection)
+    {
+        byte[] spirvBytecode = [
+            0x03, 0x02, 0x23, 0x07,
+            0x00, 0x00, 0x01, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x01, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ];
+        var compilerIdentity = new ShaderCompilerIdentity(
+            "TerraFX.Content.Tools.Tests",
+            "test",
+            "1.0.0",
+            "win-x64",
+            [.. new byte[32]]);
+
+        return M04ShaderReflectionReader.Read(dxilReflection, spirvReflection, spirvBytecode, compilerIdentity);
+    }
+
+    private static string ReplaceDxilFieldOffset(string reflection, string fieldName, int offset)
+    {
+        var lines = reflection.Split('\n');
+
+        for (var index = 0; index < lines.Length; index++)
+        {
+            var line = lines[index].Trim();
+
+            if (!line.StartsWith(';', StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var content = line[1..].Trim();
+            var declarationEnd = content.IndexOf(';', StringComparison.Ordinal);
+            var offsetMarker = content.IndexOf("Offset:", StringComparison.Ordinal);
+
+            if ((declarationEnd < 0)
+                || (offsetMarker < 0)
+                || !content[..declarationEnd].Trim().EndsWith($" {fieldName}", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var valueStart = offsetMarker + "Offset:".Length;
+
+            while ((valueStart < content.Length) && char.IsWhiteSpace(content[valueStart]))
+            {
+                valueStart++;
+            }
+
+            var valueEnd = valueStart;
+
+            while ((valueEnd < content.Length) && (content[valueEnd] is >= '0' and <= '9'))
+            {
+                valueEnd++;
+            }
+
+            if (valueStart == valueEnd)
+            {
+                throw new InvalidDataException($"DXIL field '{fieldName}' omitted its offset value.");
+            }
+
+            lines[index] = $"; {content[..valueStart]}{offset}{content[valueEnd..]}";
+            return string.Join('\n', lines);
+        }
+
+        throw new InvalidDataException($"DXIL reflection omitted the field '{fieldName}'.");
+    }
+
     private static string ReplaceDxilResourceColumn(string reflection, string resourceName, int columnIndex, string replacement)
     {
         var lines = reflection.Split('\n');
@@ -405,5 +474,126 @@ internal sealed class M04ShaderFixtureCompilerTests
                 Directory.Delete(outputDirectory, recursive: true);
             }
         }
+    }
+
+    [Test]
+    public void ReadValidatesUniformRecordFieldOffsetsArraysAndMatrixMajorAcrossBackends()
+    {
+        const string dxilReflection = """
+            ; EntryFunctionName: PSMain
+            ;
+            ; Input signature:
+            ;
+            ; Name                 Index   Mask Register SysValue  Format   Used
+            ; -------------------- ----- ------ -------- -------- ------- ------
+            ;
+            ; Output signature:
+            ;
+            ; Name                 Index   Mask Register SysValue  Format   Used
+            ; -------------------- ----- ------ -------- -------- ------- ------
+            ; SV_Target                0   xyzw        0   TARGET   float   xyzw
+            ;
+            ; Buffer Definitions:
+            ;
+            ; cbuffer FrameData
+            ; {
+            ;
+            ;   struct FrameData
+            ;   {
+            ;
+            ;       float4 color;                                 ; Offset:    0
+            ;       float4 tint;                                  ; Offset:   16
+            ;       row_major float4x4 transform;                 ; Offset:   32
+            ;       float3 samples[2];                            ; Offset:   96
+            ;   } FrameData;                                      ; Offset:    0 Size:   128
+            ;
+            ; }
+            ;
+            ; Resource Bindings:
+            ;
+            ; Name                                 Type  Format         Dim      ID      HLSL Bind  Count
+            ; ------------------------------ ---------- ------- ----------- ------- -------------- ------
+            ; FrameData                         cbuffer      NA          NA     CB0            cb0     1
+            """;
+        const string spirvReflection = """
+            {
+              "entryPoints": [{ "name": "PSMain", "mode": "frag" }],
+              "inputs": [],
+              "outputs": [{ "name": "@entryPointOutput", "type": "vec4", "location": 0 }],
+              "ubos": [{ "type": "_1", "name": "type.FrameData", "block_size": 128, "set": 0, "binding": 0 }],
+              "types": {
+                "_1": {
+                  "name": "type.FrameData",
+                  "members": [
+                    { "name": "color", "type": "vec4", "offset": 0 },
+                    { "name": "tint", "type": "vec4", "offset": 16 },
+                    { "name": "transform", "type": "mat4", "offset": 32, "matrix_stride": 16, "row_major": true },
+                    { "name": "samples", "type": "vec3", "array": [2], "array_size_is_literal": [true], "offset": 96, "array_stride": 16 }
+                  ]
+                }
+              }
+            }
+            """;
+
+        var reflection = ReadSyntheticTypedReflection(dxilReflection, spirvReflection);
+
+        Assert.That(reflection.RecordLayouts.Length, Is.EqualTo(1));
+        Assert.That(reflection.RecordLayouts[0].Name, Is.EqualTo("FrameData"));
+        Assert.That(reflection.RecordLayouts[0].ByteLength, Is.EqualTo(128));
+        Assert.That(reflection.RecordLayouts[0].Fields.Length, Is.EqualTo(4));
+        Assert.That(
+            reflection.RecordLayouts[0].Fields[2],
+            Is.EqualTo(new ShaderFieldLayout(
+                "transform",
+                ShaderValueType.Float4x4,
+                byteOffset: 32,
+                byteLength: 64,
+                arrayCount: 1,
+                arrayStride: 0)));
+        Assert.That(
+            reflection.RecordLayouts[0].Fields[3],
+            Is.EqualTo(new ShaderFieldLayout(
+                "samples",
+                ShaderValueType.Float3,
+                byteOffset: 96,
+                byteLength: 12,
+                arrayCount: 2,
+                arrayStride: 16)));
+
+        var mismatchedDxilOffsets = ReplaceDxilFieldOffset(dxilReflection, "color", 16);
+        mismatchedDxilOffsets = ReplaceDxilFieldOffset(mismatchedDxilOffsets, "tint", 0);
+        Assert.That(
+            () => ReadSyntheticTypedReflection(mismatchedDxilOffsets, spirvReflection),
+            Throws.TypeOf<InvalidDataException>());
+
+        var mismatchedRecordBase = dxilReflection.Replace(
+            "Offset:    0 Size:   128",
+            "Offset:    4 Size:   128",
+            StringComparison.Ordinal);
+        Assert.That(
+            () => ReadSyntheticTypedReflection(mismatchedRecordBase, spirvReflection),
+            Throws.TypeOf<InvalidDataException>());
+
+        var mismatchedMatrixMajor = JsonNode.Parse(spirvReflection) as JsonObject
+            ?? throw new InvalidDataException("The synthetic SPIRV-Cross reflection root must be an object.");
+        var members = mismatchedMatrixMajor["types"]?["_1"]?["members"] as JsonArray
+            ?? throw new InvalidDataException("The synthetic SPIRV-Cross record members must be an array.");
+        var matrix = members[2] as JsonObject
+            ?? throw new InvalidDataException("The synthetic SPIRV-Cross matrix member must be an object.");
+        matrix["row_major"] = false;
+        Assert.That(
+            () => ReadSyntheticTypedReflection(dxilReflection, mismatchedMatrixMajor.ToJsonString()),
+            Throws.TypeOf<InvalidDataException>());
+
+        var mismatchedArrayStride = JsonNode.Parse(spirvReflection) as JsonObject
+            ?? throw new InvalidDataException("The synthetic SPIRV-Cross reflection root must be an object.");
+        var arrayMembers = mismatchedArrayStride["types"]?["_1"]?["members"] as JsonArray
+            ?? throw new InvalidDataException("The synthetic SPIRV-Cross record members must be an array.");
+        var arrayField = arrayMembers[3] as JsonObject
+            ?? throw new InvalidDataException("The synthetic SPIRV-Cross array member must be an object.");
+        arrayField["array_stride"] = 32;
+        Assert.That(
+            () => ReadSyntheticTypedReflection(dxilReflection, mismatchedArrayStride.ToJsonString()),
+            Throws.TypeOf<InvalidDataException>());
     }
 }
