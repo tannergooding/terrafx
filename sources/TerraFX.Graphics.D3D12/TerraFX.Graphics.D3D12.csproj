@@ -3,6 +3,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <InternalsVisibleTo Include="TerraFX.Runtime.Tests" Key="$(AssemblyOriginatorPublicKey)" />
     <ProjectReference Include="..\TerraFX.Graphics\TerraFX.Graphics.csproj" />
     <PackageReference Include="TerraFX.Interop.Windows" />
     <AssemblyAttribute Include="System.Runtime.Versioning.SupportedOSPlatformAttribute">

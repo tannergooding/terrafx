@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using TerraFX;
@@ -24,7 +25,7 @@ public static unsafe class D3D12GraphicsBackend
     public static GraphicsBackendRegistration CreateRegistration()
         => new(new D3D12BackendFactory());
 
-    private sealed unsafe class D3D12BackendFactory : IGraphicsBackendFactory
+    internal sealed unsafe class D3D12BackendFactory : IGraphicsBackendFactory
     {
         private const int DxgiErrorDeviceHung = unchecked((int)0x887A0006);
         private const int DxgiErrorDeviceRemoved = unchecked((int)0x887A0005);
@@ -758,18 +759,24 @@ public static unsafe class D3D12GraphicsBackend
             }
         }
 
-        private sealed unsafe class D3D12BackendDevice : IGraphicsBackendDevice
+        internal sealed unsafe class D3D12BackendDevice : IGraphicsBackendDevice
         {
+            private const uint DefaultShader4ComponentMapping = 0x1688;
             private const long MaximumDedicatedStagingAllocationBytes = 512L * 1024 * 1024;
+            private const int ResourceDescriptorCapacity = 1024;
             private const int SamplerDescriptorCapacity = 256;
             private const long StagingRingCapacityBytes = 64L * 1024 * 1024;
 
             private IDXGIAdapter3* _adapter;
             private ID3D12Device* _device;
-            private Stack<int>? _freeSamplerDescriptors;
+            private int _liveDescriptorSetCount;
             private readonly int _ownerThreadId = Environment.CurrentManagedThreadId;
             private ID3D12Resource* _quarantinedStagingResource;
             private ID3D12Resource* _readbackStagingResource;
+            private D3D12DescriptorRangeAllocator? _resourceDescriptorAllocator;
+            private ID3D12DescriptorHeap* _resourceDescriptorHeap;
+            private uint _resourceDescriptorIncrementSize;
+            private D3D12DescriptorRangeAllocator? _samplerDescriptorAllocator;
             private ID3D12DescriptorHeap* _samplerDescriptorHeap;
             private uint _samplerDescriptorIncrementSize;
             private D3D12BackendFactory.D3D12TransferQueue? _transferQueue;
@@ -1003,6 +1010,28 @@ public static unsafe class D3D12GraphicsBackend
                 return selectedTexture;
             }
 
+            private static bool MatchesReflectedResource(
+                ImmutableArray<ShaderResourceSignature> resources,
+                ShaderBindingGroup group,
+                int binding,
+                ShaderResourceKind kind)
+            {
+                for (var index = 0; index < resources.Length; index++)
+                {
+                    var resource = resources[index];
+
+                    if ((resource.Group == group)
+                        && (resource.Binding == binding)
+                        && (resource.Kind == kind)
+                        && (resource.ArrayCount == 1))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
             private static void ValidateTransferRange(
                 long bufferLength,
                 long offset,
@@ -1028,7 +1057,7 @@ public static unsafe class D3D12GraphicsBackend
 
                 try
                 {
-                    return new D3D12BackendBuffer(resource, description);
+                    return new D3D12BackendBuffer(this, resource, description);
                 }
                 catch
                 {
@@ -1040,7 +1069,7 @@ public static unsafe class D3D12GraphicsBackend
             public IGraphicsBackendPipeline CreatePipeline(
                 PipelineDescription description,
                 ReadOnlySpan<BufferReadLease<byte>> bytecodeLeases)
-                => D3D12BackendFactory.D3D12PipelineBuilder.Create(_device, description, bytecodeLeases);
+                => D3D12BackendFactory.D3D12PipelineBuilder.Create(this, _device, description, bytecodeLeases);
 
             public IGraphicsBackendSampler CreateSampler(SamplerDescription description, float effectiveMaximumAnisotropy)
             {
@@ -1055,15 +1084,9 @@ public static unsafe class D3D12GraphicsBackend
                 }
 
                 EnsureSamplerDescriptorHeap();
-                var freeDescriptors = _freeSamplerDescriptors
+                var descriptorAllocator = _samplerDescriptorAllocator
                     ?? throw new InvalidOperationException("The D3D12 sampler descriptor heap has no free-slot owner.");
-
-                if (freeDescriptors.Count == 0)
-                {
-                    throw new InvalidOperationException("The D3D12 sampler descriptor capacity is exhausted.");
-                }
-
-                var slot = freeDescriptors.Pop();
+                var slot = descriptorAllocator.Allocate(1);
 
                 try
                 {
@@ -1075,7 +1098,7 @@ public static unsafe class D3D12GraphicsBackend
                 }
                 catch
                 {
-                    freeDescriptors.Push(slot);
+                    descriptorAllocator.Release(slot, 1);
                     throw;
                 }
             }
@@ -1092,7 +1115,7 @@ public static unsafe class D3D12GraphicsBackend
 
                 try
                 {
-                    return new D3D12BackendTexture(resource, description);
+                    return new D3D12BackendTexture(this, resource, description);
                 }
                 catch
                 {
@@ -1115,10 +1138,21 @@ public static unsafe class D3D12GraphicsBackend
                     throw new InvalidOperationException("The D3D12 backend has a staging resource quarantined after uncertain transfer completion.");
                 }
 
+                if (_liveDescriptorSetCount != 0)
+                {
+                    throw new InvalidOperationException("The D3D12 backend still has live descriptor sets.");
+                }
+
                 if ((_samplerDescriptorHeap is not null)
-                    && (_freeSamplerDescriptors?.Count != SamplerDescriptorCapacity))
+                    && (_samplerDescriptorAllocator?.AllocatedCount != 0))
                 {
                     throw new InvalidOperationException("The D3D12 backend still has live sampler descriptor owners.");
+                }
+
+                if ((_resourceDescriptorHeap is not null)
+                    && (_resourceDescriptorAllocator?.AllocatedCount != 0))
+                {
+                    throw new InvalidOperationException("The D3D12 backend still has live resource descriptor ranges.");
                 }
 
                 transferQueue?.Dispose();
@@ -1147,7 +1181,15 @@ public static unsafe class D3D12GraphicsBackend
                     _ = _samplerDescriptorHeap->Release();
                     _samplerDescriptorHeap = null;
                     _samplerDescriptorIncrementSize = 0;
-                    _freeSamplerDescriptors = null;
+                    _samplerDescriptorAllocator = null;
+                }
+
+                if (_resourceDescriptorHeap is not null)
+                {
+                    _ = _resourceDescriptorHeap->Release();
+                    _resourceDescriptorHeap = null;
+                    _resourceDescriptorIncrementSize = 0;
+                    _resourceDescriptorAllocator = null;
                 }
 
                 var device = _device;
@@ -1660,6 +1702,477 @@ public static unsafe class D3D12GraphicsBackend
                 }
             }
 
+            internal D3D12BackendDescriptorSet CreateDescriptorSet(
+                IGraphicsBackendPipeline pipeline,
+                ImmutableArray<D3D12BackendUniformBufferBinding> uniformBufferBindings,
+                ImmutableArray<D3D12BackendSampledImageBinding> sampledImageBindings,
+                ImmutableArray<D3D12BackendSamplerBinding> samplerBindings)
+            {
+                EnsureOwnerThread();
+                ArgumentNullException.ThrowIfNull(pipeline);
+
+                if (pipeline is not ID3D12BackendPipelineDescriptorOwner selectedPipeline
+                    || !ReferenceEquals(selectedPipeline.Owner, this)
+                    || selectedPipeline.IsDisposed)
+                {
+                    throw new ArgumentException("The pipeline is not live on this D3D12 device.", nameof(pipeline));
+                }
+
+                if (uniformBufferBindings.IsDefault || sampledImageBindings.IsDefault || samplerBindings.IsDefault)
+                {
+                    throw new ArgumentException("D3D12 descriptor binding arrays must be initialized.");
+                }
+
+                var resources = selectedPipeline.Resources;
+                var tableCounts = new int[D3D12DescriptorLayout.TableCount];
+                var expectedUniformBufferCount = 0;
+                var expectedSampledImageCount = 0;
+                var expectedSamplerCount = 0;
+
+                for (var index = 0; index < resources.Length; index++)
+                {
+                    var resource = resources[index];
+
+                    if (resource.ArrayCount != 1)
+                    {
+                        throw new NotSupportedException("D3D12 descriptor arrays are not supported by this descriptor-set path.");
+                    }
+
+                    switch (resource.Kind)
+                    {
+                        case ShaderResourceKind.UniformBuffer:
+                        {
+                            expectedUniformBufferCount++;
+                            break;
+                        }
+
+                        case ShaderResourceKind.SampledImage:
+                        {
+                            expectedSampledImageCount++;
+                            break;
+                        }
+
+                        case ShaderResourceKind.Sampler:
+                        {
+                            expectedSamplerCount++;
+                            break;
+                        }
+
+                        default:
+                        {
+                            throw new NotSupportedException("This D3D12 descriptor-set path supports uniform buffers, sampled images, and samplers.");
+                        }
+                    }
+
+                    tableCounts[D3D12DescriptorLayout.GetTableIndex(resource)] = checked(
+                        tableCounts[D3D12DescriptorLayout.GetTableIndex(resource)] + resource.ArrayCount);
+                }
+
+                if (resources.IsEmpty
+                    || expectedUniformBufferCount != uniformBufferBindings.Length
+                    || expectedSampledImageCount != sampledImageBindings.Length
+                    || expectedSamplerCount != samplerBindings.Length)
+                {
+                    throw new ArgumentException("The pipeline does not have a complete supported descriptor set.", nameof(pipeline));
+                }
+
+                var sortedUniformBufferBindings = uniformBufferBindings.ToArray();
+                Array.Sort(sortedUniformBufferBindings, static (left, right) => {
+                    var groupComparison = left.Group.CompareTo(right.Group);
+                    return (groupComparison != 0)
+                        ? groupComparison
+                        : left.Binding.CompareTo(right.Binding);
+                });
+                var retainedBuffers = new D3D12BackendBuffer[sortedUniformBufferBindings.Length];
+                var uniformBufferRoundedRanges = new long[sortedUniformBufferBindings.Length];
+
+                for (var index = 0; index < sortedUniformBufferBindings.Length; index++)
+                {
+                    var binding = sortedUniformBufferBindings[index];
+                    ArgumentNullException.ThrowIfNull(binding.Buffer);
+
+                    if ((binding.Group == ShaderBindingGroup.None)
+                        || (binding.Binding < 0)
+                        || (binding.Buffer is not D3D12BackendBuffer buffer)
+                        || !ReferenceEquals(buffer.Owner, this)
+                        || buffer.IsDisposed)
+                    {
+                        throw new ArgumentException("A uniform-buffer descriptor binding has an invalid group, binding, or buffer owner.", nameof(uniformBufferBindings));
+                    }
+
+                    if (!MatchesReflectedResource(
+                            resources,
+                            binding.Group,
+                            binding.Binding,
+                            ShaderResourceKind.UniformBuffer)
+                        || ((index != 0)
+                            && (sortedUniformBufferBindings[index - 1].Group == binding.Group)
+                            && (sortedUniformBufferBindings[index - 1].Binding == binding.Binding)))
+                    {
+                        throw new ArgumentException("Uniform-buffer descriptors must match the pipeline's unique reflected bindings.", nameof(uniformBufferBindings));
+                    }
+
+                    if ((buffer.Description.Usage & BufferUsage.Uniform) == 0)
+                    {
+                        throw new ArgumentException("A bound buffer does not declare uniform-buffer usage.", nameof(uniformBufferBindings));
+                    }
+
+                    ArgumentOutOfRangeException.ThrowIfNegative(binding.Offset);
+                    ArgumentOutOfRangeException.ThrowIfNegativeOrZero(binding.Range);
+
+                    var rangeEnd = checked(binding.Offset + binding.Range);
+
+                    if (rangeEnd > buffer.Description.ByteLength)
+                    {
+                        throw new ArgumentException("The uniform-buffer descriptor range exceeds its buffer.", nameof(uniformBufferBindings));
+                    }
+
+                    if ((binding.Offset % Capabilities.Limits.UniformBufferOffsetAlignment) != 0)
+                    {
+                        throw new ArgumentException("The uniform-buffer descriptor offset does not satisfy device alignment.", nameof(uniformBufferBindings));
+                    }
+
+                    ArgumentOutOfRangeException.ThrowIfGreaterThan(
+                        binding.Range,
+                        Capabilities.Limits.MaximumUniformBufferRangeBytes,
+                        nameof(uniformBufferBindings));
+
+                    var roundedRange = checked((binding.Range + 255L) & ~255L);
+
+                    if (checked(binding.Offset + roundedRange) > buffer.Description.ByteLength)
+                    {
+                        throw new ArgumentException("The aligned uniform-buffer descriptor range exceeds its buffer.", nameof(uniformBufferBindings));
+                    }
+
+                    retainedBuffers[index] = buffer;
+                    uniformBufferRoundedRanges[index] = roundedRange;
+                }
+
+                var sortedSampledImageBindings = sampledImageBindings.ToArray();
+                Array.Sort(sortedSampledImageBindings, static (left, right) => {
+                    var groupComparison = left.Group.CompareTo(right.Group);
+                    return (groupComparison != 0)
+                        ? groupComparison
+                        : left.Binding.CompareTo(right.Binding);
+                });
+                var retainedTextures = new D3D12BackendTexture[sortedSampledImageBindings.Length];
+
+                for (var index = 0; index < sortedSampledImageBindings.Length; index++)
+                {
+                    var binding = sortedSampledImageBindings[index];
+                    ArgumentNullException.ThrowIfNull(binding.Texture);
+
+                    if ((binding.Group == ShaderBindingGroup.None)
+                        || (binding.Binding < 0)
+                        || (binding.Texture is not D3D12BackendTexture texture)
+                        || !ReferenceEquals(texture.Owner, this)
+                        || texture.IsDisposed)
+                    {
+                        throw new ArgumentException("A sampled-image descriptor binding has an invalid group, binding, or texture owner.", nameof(sampledImageBindings));
+                    }
+
+                    if (!MatchesReflectedResource(
+                            resources,
+                            binding.Group,
+                            binding.Binding,
+                            ShaderResourceKind.SampledImage)
+                        || ((index != 0)
+                            && (sortedSampledImageBindings[index - 1].Group == binding.Group)
+                            && (sortedSampledImageBindings[index - 1].Binding == binding.Binding)))
+                    {
+                        throw new ArgumentException("Sampled-image descriptors must match the pipeline's unique reflected bindings.", nameof(sampledImageBindings));
+                    }
+
+                    if ((texture.Description.Usage & TextureUsage.Sampled) == 0)
+                    {
+                        throw new ArgumentException("A bound texture does not declare sampled usage.", nameof(sampledImageBindings));
+                    }
+
+                    if ((texture.Description.Dimension != TextureDimension.Dimension2D)
+                        || (texture.Description.ArrayLayers != 1))
+                    {
+                        throw new NotSupportedException("This D3D12 descriptor-set path supports single-layer 2D sampled textures.");
+                    }
+
+                    retainedTextures[index] = texture;
+                }
+
+                var sortedSamplerBindings = samplerBindings.ToArray();
+                Array.Sort(sortedSamplerBindings, static (left, right) => {
+                    var groupComparison = left.Group.CompareTo(right.Group);
+                    return (groupComparison != 0)
+                        ? groupComparison
+                        : left.Binding.CompareTo(right.Binding);
+                });
+                var retainedSamplers = new D3D12BackendSampler[sortedSamplerBindings.Length];
+
+                for (var index = 0; index < sortedSamplerBindings.Length; index++)
+                {
+                    var binding = sortedSamplerBindings[index];
+                    ArgumentNullException.ThrowIfNull(binding.Sampler);
+
+                    if ((binding.Group == ShaderBindingGroup.None)
+                        || (binding.Binding < 0)
+                        || (binding.Sampler is not D3D12BackendSampler sampler)
+                        || !ReferenceEquals(sampler.Owner, this)
+                        || sampler.IsDisposed)
+                    {
+                        throw new ArgumentException("A sampler descriptor binding has an invalid group, binding, or sampler owner.", nameof(samplerBindings));
+                    }
+
+                    if (!MatchesReflectedResource(
+                            resources,
+                            binding.Group,
+                            binding.Binding,
+                            ShaderResourceKind.Sampler)
+                        || ((index != 0)
+                            && (sortedSamplerBindings[index - 1].Group == binding.Group)
+                            && (sortedSamplerBindings[index - 1].Binding == binding.Binding)))
+                    {
+                        throw new ArgumentException("Sampler descriptors must match the pipeline's unique reflected bindings.", nameof(samplerBindings));
+                    }
+
+                    retainedSamplers[index] = sampler;
+                }
+
+                var descriptorTableCount = 0;
+                var rootParameterIndices = new int[D3D12DescriptorLayout.TableCount];
+                Array.Fill(rootParameterIndices, -1);
+
+                for (var tableIndex = 0; tableIndex < D3D12DescriptorLayout.TableCount; tableIndex++)
+                {
+                    if (tableCounts[tableIndex] != 0)
+                    {
+                        rootParameterIndices[tableIndex] = descriptorTableCount++;
+                    }
+                }
+
+                var hasResourceTable = false;
+                var hasSamplerTable = false;
+
+                for (var tableIndex = 0; tableIndex < D3D12DescriptorLayout.TableCount; tableIndex++)
+                {
+                    if (tableCounts[tableIndex] == 0)
+                    {
+                        continue;
+                    }
+
+                    hasSamplerTable |= (tableIndex % 4) == 3;
+                    hasResourceTable |= (tableIndex % 4) != 3;
+                }
+
+                if (hasResourceTable)
+                {
+                    EnsureResourceDescriptorHeap();
+                }
+
+                if (hasSamplerTable)
+                {
+                    EnsureSamplerDescriptorHeap();
+                }
+
+                var descriptorRangeStarts = new int[D3D12DescriptorLayout.TableCount];
+                Array.Fill(descriptorRangeStarts, -1);
+                var ownsDescriptorRanges = true;
+
+                try
+                {
+                    for (var tableIndex = 0; tableIndex < D3D12DescriptorLayout.TableCount; tableIndex++)
+                    {
+                        var descriptorCount = tableCounts[tableIndex];
+
+                        if (descriptorCount == 0)
+                        {
+                            continue;
+                        }
+
+                        var allocator = ((tableIndex % 4) == 3)
+                            ? _samplerDescriptorAllocator
+                            : _resourceDescriptorAllocator;
+                        descriptorRangeStarts[tableIndex] = (allocator
+                            ?? throw new InvalidOperationException("The D3D12 descriptor heap has no range allocator."))
+                            .Allocate(descriptorCount);
+                    }
+
+                    var tableOffsets = new int[D3D12DescriptorLayout.TableCount];
+
+                    for (var index = 0; index < sortedUniformBufferBindings.Length; index++)
+                    {
+                        var binding = sortedUniformBufferBindings[index];
+                        var tableIndex = D3D12DescriptorLayout.GetTableIndex(binding.Group, ShaderResourceKind.UniformBuffer);
+                        var descriptorIndex = checked(descriptorRangeStarts[tableIndex] + tableOffsets[tableIndex]++);
+                        var cpuHandle = _resourceDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+                        cpuHandle.ptr = checked(
+                            cpuHandle.ptr
+                            + (checked((nuint)descriptorIndex) * _resourceDescriptorIncrementSize));
+                        var constantBufferView = new D3D12_CONSTANT_BUFFER_VIEW_DESC {
+                            BufferLocation = checked(retainedBuffers[index].GetResource()->GetGPUVirtualAddress() + checked((ulong)binding.Offset)),
+                            SizeInBytes = checked((uint)uniformBufferRoundedRanges[index]),
+                        };
+                        _device->CreateConstantBufferView(&constantBufferView, cpuHandle);
+                    }
+
+                    for (var index = 0; index < sortedSampledImageBindings.Length; index++)
+                    {
+                        var binding = sortedSampledImageBindings[index];
+                        var tableIndex = D3D12DescriptorLayout.GetTableIndex(binding.Group, ShaderResourceKind.SampledImage);
+                        var descriptorIndex = checked(descriptorRangeStarts[tableIndex] + tableOffsets[tableIndex]++);
+                        var cpuHandle = _resourceDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+                        cpuHandle.ptr = checked(
+                            cpuHandle.ptr
+                            + (checked((nuint)descriptorIndex) * _resourceDescriptorIncrementSize));
+                        CreateSampledImageView(retainedTextures[index], cpuHandle);
+                    }
+
+                    for (var index = 0; index < sortedSamplerBindings.Length; index++)
+                    {
+                        var binding = sortedSamplerBindings[index];
+                        var tableIndex = D3D12DescriptorLayout.GetTableIndex(binding.Group, ShaderResourceKind.Sampler);
+                        var descriptorIndex = checked(descriptorRangeStarts[tableIndex] + tableOffsets[tableIndex]++);
+                        var destination = _samplerDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+                        destination.ptr = checked(
+                            destination.ptr
+                            + (checked((nuint)descriptorIndex) * _samplerDescriptorIncrementSize));
+                        var source = _samplerDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+                        source.ptr = checked(
+                            source.ptr
+                            + (checked((nuint)retainedSamplers[index].DescriptorSlot) * _samplerDescriptorIncrementSize));
+                        _device->CopyDescriptorsSimple(
+                            1,
+                            destination,
+                            source,
+                            D3D12_DESCRIPTOR_HEAP_TYPE.D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+                    }
+
+                    var descriptorTableHandles = new D3D12_GPU_DESCRIPTOR_HANDLE[descriptorTableCount];
+
+                    for (var tableIndex = 0; tableIndex < D3D12DescriptorLayout.TableCount; tableIndex++)
+                    {
+                        if (tableCounts[tableIndex] == 0)
+                        {
+                            continue;
+                        }
+
+                        var isSamplerTable = (tableIndex % 4) == 3;
+                        var heap = isSamplerTable
+                            ? _samplerDescriptorHeap
+                            : _resourceDescriptorHeap;
+                        var increment = isSamplerTable
+                            ? _samplerDescriptorIncrementSize
+                            : _resourceDescriptorIncrementSize;
+                        var gpuHandle = heap->GetGPUDescriptorHandleForHeapStart();
+                        gpuHandle.ptr = checked(
+                            gpuHandle.ptr
+                            + (checked((ulong)descriptorRangeStarts[tableIndex]) * increment));
+                        descriptorTableHandles[rootParameterIndices[tableIndex]] = gpuHandle;
+                    }
+
+                    var result = new D3D12BackendDescriptorSet(
+                        this,
+                        selectedPipeline,
+                        retainedBuffers,
+                        retainedTextures,
+                        retainedSamplers,
+                        descriptorRangeStarts,
+                        tableCounts,
+                        descriptorTableHandles);
+                    selectedPipeline.RetainDescriptorSet();
+                    var retainedBufferCount = 0;
+                    var retainedTextureCount = 0;
+                    var retainedSamplerCount = 0;
+
+                    try
+                    {
+                        for (; retainedBufferCount < retainedBuffers.Length; retainedBufferCount++)
+                        {
+                            retainedBuffers[retainedBufferCount].RetainDescriptorSet();
+                        }
+
+                        for (; retainedTextureCount < retainedTextures.Length; retainedTextureCount++)
+                        {
+                            retainedTextures[retainedTextureCount].RetainDescriptorSet();
+                        }
+
+                        for (; retainedSamplerCount < retainedSamplers.Length; retainedSamplerCount++)
+                        {
+                            retainedSamplers[retainedSamplerCount].RetainDescriptorSet();
+                        }
+
+                        _liveDescriptorSetCount = checked(_liveDescriptorSetCount + 1);
+                    }
+                    catch
+                    {
+                        for (var index = retainedSamplerCount - 1; index >= 0; index--)
+                        {
+                            retainedSamplers[index].ReleaseDescriptorSet();
+                        }
+
+                        for (var index = retainedTextureCount - 1; index >= 0; index--)
+                        {
+                            retainedTextures[index].ReleaseDescriptorSet();
+                        }
+
+                        for (var index = retainedBufferCount - 1; index >= 0; index--)
+                        {
+                            retainedBuffers[index].ReleaseDescriptorSet();
+                        }
+
+                        selectedPipeline.ReleaseDescriptorSet();
+                        throw;
+                    }
+
+                    ownsDescriptorRanges = false;
+                    return result;
+                }
+                finally
+                {
+                    if (ownsDescriptorRanges)
+                    {
+                        ReleaseDescriptorRanges(descriptorRangeStarts, tableCounts);
+                    }
+                }
+            }
+
+            internal void DestroyDescriptorSet(D3D12BackendDescriptorSet descriptorSet)
+            {
+                ArgumentNullException.ThrowIfNull(descriptorSet);
+                EnsureOwnerThread();
+
+                if (!ReferenceEquals(descriptorSet._owner, this))
+                {
+                    throw new ArgumentException("The descriptor set belongs to a different D3D12 device.", nameof(descriptorSet));
+                }
+
+                if (descriptorSet._isDisposed)
+                {
+                    return;
+                }
+
+                ObjectDisposedException.ThrowIf(_device is null, this);
+                ReleaseDescriptorRanges(descriptorSet._rangeStarts, descriptorSet._rangeCounts);
+
+                foreach (var backendSampler in descriptorSet._samplers)
+                {
+                    ((D3D12BackendSampler)backendSampler).ReleaseDescriptorSet();
+                }
+
+                foreach (var backendTexture in descriptorSet._textures)
+                {
+                    ((D3D12BackendTexture)backendTexture).ReleaseDescriptorSet();
+                }
+
+                foreach (var backendBuffer in descriptorSet._buffers)
+                {
+                    ((D3D12BackendBuffer)backendBuffer).ReleaseDescriptorSet();
+                }
+
+                var pipeline = descriptorSet._pipeline
+                    ?? throw new InvalidOperationException("The D3D12 descriptor set has no pipeline owner.");
+                pipeline.ReleaseDescriptorSet();
+                descriptorSet.MarkDisposed();
+                _liveDescriptorSetCount = checked(_liveDescriptorSetCount - 1);
+            }
+
             private ID3D12Resource* CreateCommittedResource(
                 D3D12_RESOURCE_DESC nativeDescription,
                 D3D12_HEAP_PROPERTIES heapProperties,
@@ -1704,6 +2217,26 @@ public static unsafe class D3D12GraphicsBackend
 
                     throw;
                 }
+            }
+
+            private void CreateSampledImageView(D3D12BackendTexture texture, D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle)
+            {
+                var description = texture.Description;
+                var viewDescription = default(D3D12_SHADER_RESOURCE_VIEW_DESC);
+                viewDescription.Format = (description.Format == TextureFormat.D32Float)
+                    ? DXGI_FORMAT.DXGI_FORMAT_R32_FLOAT
+                    : GetNativeFormat(description.Format);
+                viewDescription.ViewDimension = D3D12_SRV_DIMENSION.D3D12_SRV_DIMENSION_TEXTURE2D;
+                viewDescription.Shader4ComponentMapping = DefaultShader4ComponentMapping;
+                var anonymous = viewDescription.Anonymous;
+                var textureView = anonymous.Texture2D;
+                textureView.MostDetailedMip = 0;
+                textureView.MipLevels = checked((uint)description.MipLevels);
+                textureView.PlaneSlice = 0;
+                textureView.ResourceMinLODClamp = 0.0f;
+                anonymous.Texture2D = textureView;
+                viewDescription.Anonymous = anonymous;
+                _device->CreateShaderResourceView(texture.GetResource(), &viewDescription, cpuHandle);
             }
 
             [SuppressMessage(
@@ -1758,6 +2291,51 @@ public static unsafe class D3D12GraphicsBackend
                 }
             }
 
+            private void EnsureResourceDescriptorHeap()
+            {
+                if (_resourceDescriptorHeap is not null)
+                {
+                    return;
+                }
+
+                EnsureOwnerThread();
+                var descriptorAllocator = new D3D12DescriptorRangeAllocator(ResourceDescriptorCapacity);
+                var heapDescription = new D3D12_DESCRIPTOR_HEAP_DESC {
+                    Type = D3D12_DESCRIPTOR_HEAP_TYPE.D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                    NumDescriptors = ResourceDescriptorCapacity,
+                    Flags = D3D12_DESCRIPTOR_HEAP_FLAGS.D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                    NodeMask = 0,
+                };
+                var heapId = typeof(ID3D12DescriptorHeap).GUID;
+                ID3D12DescriptorHeap* descriptorHeap = null;
+                ThrowIfFailed(_device->CreateDescriptorHeap(&heapDescription, &heapId, (void**)&descriptorHeap));
+
+                if (descriptorHeap is null)
+                {
+                    throw new InvalidOperationException("D3D12 resource descriptor heap creation returned no heap.");
+                }
+
+                try
+                {
+                    var incrementSize = _device->GetDescriptorHandleIncrementSize(
+                        D3D12_DESCRIPTOR_HEAP_TYPE.D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+                    if (incrementSize == 0)
+                    {
+                        throw new InvalidOperationException("D3D12 reported a zero resource descriptor increment.");
+                    }
+
+                    _resourceDescriptorHeap = descriptorHeap;
+                    _resourceDescriptorIncrementSize = incrementSize;
+                    _resourceDescriptorAllocator = descriptorAllocator;
+                }
+                catch
+                {
+                    _ = descriptorHeap->Release();
+                    throw;
+                }
+            }
+
             private void EnsureSamplerDescriptorHeap()
             {
                 if (_samplerDescriptorHeap is not null)
@@ -1766,12 +2344,7 @@ public static unsafe class D3D12GraphicsBackend
                 }
 
                 EnsureOwnerThread();
-                var freeDescriptors = new Stack<int>(SamplerDescriptorCapacity);
-
-                for (var slot = 0; slot < SamplerDescriptorCapacity; slot++)
-                {
-                    freeDescriptors.Push(slot);
-                }
+                var descriptorAllocator = new D3D12DescriptorRangeAllocator(SamplerDescriptorCapacity);
 
                 var heapDescription = new D3D12_DESCRIPTOR_HEAP_DESC {
                     Type = D3D12_DESCRIPTOR_HEAP_TYPE.D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
@@ -1800,7 +2373,7 @@ public static unsafe class D3D12GraphicsBackend
 
                     _samplerDescriptorHeap = descriptorHeap;
                     _samplerDescriptorIncrementSize = incrementSize;
-                    _freeSamplerDescriptors = freeDescriptors;
+                    _samplerDescriptorAllocator = descriptorAllocator;
                 }
                 catch
                 {
@@ -1993,6 +2566,25 @@ public static unsafe class D3D12GraphicsBackend
                 _ = stagingResource->Release();
             }
 
+            private void ReleaseDescriptorRanges(int[] rangeStarts, int[] rangeCounts)
+            {
+                for (var tableIndex = D3D12DescriptorLayout.TableCount - 1; tableIndex >= 0; tableIndex--)
+                {
+                    if ((rangeCounts[tableIndex] == 0) || (rangeStarts[tableIndex] < 0))
+                    {
+                        continue;
+                    }
+
+                    var allocator = ((tableIndex % 4) == 3)
+                        ? _samplerDescriptorAllocator
+                        : _resourceDescriptorAllocator;
+                    (allocator
+                        ?? throw new InvalidOperationException("The D3D12 descriptor heap range allocator is unavailable."))
+                        .Release(rangeStarts[tableIndex], rangeCounts[tableIndex]);
+                    rangeStarts[tableIndex] = -1;
+                }
+            }
+
             private void ReleaseSamplerDescriptor(int slot)
             {
                 EnsureOwnerThread();
@@ -2002,15 +2594,96 @@ public static unsafe class D3D12GraphicsBackend
                     throw new ArgumentOutOfRangeException(nameof(slot));
                 }
 
-                var freeDescriptors = _freeSamplerDescriptors
+                var descriptorAllocator = _samplerDescriptorAllocator
                     ?? throw new InvalidOperationException("The D3D12 sampler descriptor heap has no free-slot owner.");
+                descriptorAllocator.Release(slot, 1);
+            }
 
-                if (freeDescriptors.Contains(slot))
+            internal sealed class D3D12BackendDescriptorSet : IDisposable
+            {
+                internal readonly IGraphicsBackendBuffer[] _buffers;
+                internal readonly D3D12_GPU_DESCRIPTOR_HANDLE[] _descriptorTableHandles;
+                internal bool _isDisposed;
+                internal readonly D3D12BackendDevice _owner;
+                internal ID3D12BackendPipelineDescriptorOwner? _pipeline;
+                internal readonly int[] _rangeCounts;
+                internal readonly int[] _rangeStarts;
+                internal readonly IGraphicsBackendSampler[] _samplers;
+                internal readonly IGraphicsBackendTexture[] _textures;
+
+                internal D3D12BackendDescriptorSet(
+                    D3D12BackendDevice owner,
+                    ID3D12BackendPipelineDescriptorOwner pipeline,
+                    IGraphicsBackendBuffer[] buffers,
+                    IGraphicsBackendTexture[] textures,
+                    IGraphicsBackendSampler[] samplers,
+                    int[] rangeStarts,
+                    int[] rangeCounts,
+                    D3D12_GPU_DESCRIPTOR_HANDLE[] descriptorTableHandles)
                 {
-                    throw new InvalidOperationException("The D3D12 sampler descriptor was released more than once.");
+                    ArgumentNullException.ThrowIfNull(owner);
+                    ArgumentNullException.ThrowIfNull(pipeline);
+                    ArgumentNullException.ThrowIfNull(buffers);
+                    ArgumentNullException.ThrowIfNull(textures);
+                    ArgumentNullException.ThrowIfNull(samplers);
+                    ArgumentNullException.ThrowIfNull(rangeStarts);
+                    ArgumentNullException.ThrowIfNull(rangeCounts);
+                    ArgumentNullException.ThrowIfNull(descriptorTableHandles);
+                    _owner = owner;
+                    _pipeline = pipeline;
+                    _buffers = buffers;
+                    _textures = textures;
+                    _samplers = samplers;
+                    _rangeStarts = rangeStarts;
+                    _rangeCounts = rangeCounts;
+                    _descriptorTableHandles = descriptorTableHandles;
                 }
 
-                freeDescriptors.Push(slot);
+                internal bool AreDescriptorTableHandlesValid
+                {
+                    get
+                    {
+                        for (var index = 0; index < _descriptorTableHandles.Length; index++)
+                        {
+                            if (_descriptorTableHandles[index].ptr == 0)
+                            {
+                                return false;
+                            }
+                        }
+
+                        return true;
+                    }
+                }
+
+                internal int BufferCount => _buffers.Length;
+
+                internal int DescriptorTableCount => _descriptorTableHandles.Length;
+
+                internal bool IsDisposed => _isDisposed;
+
+                internal int SamplerCount => _samplers.Length;
+
+                internal int TextureCount => _textures.Length;
+
+                public void Dispose()
+                {
+                    if (!_isDisposed)
+                    {
+                        _owner.DestroyDescriptorSet(this);
+                    }
+                }
+
+                internal void MarkDisposed()
+                {
+                    Array.Clear(_buffers);
+                    Array.Clear(_textures);
+                    Array.Clear(_samplers);
+                    Array.Clear(_descriptorTableHandles);
+                    Array.Clear(_rangeStarts);
+                    Array.Clear(_rangeCounts);
+                    _pipeline = null;
+                    _isDisposed = true;
+                }
             }
 
             private readonly unsafe struct BufferUploadCopyAction : IAction<ReadOnlySpan<byte>>
@@ -2028,8 +2701,8 @@ public static unsafe class D3D12GraphicsBackend
 
             private sealed class D3D12BackendBuffer : D3D12BackendResource, IGraphicsBackendBuffer
             {
-                internal D3D12BackendBuffer(ID3D12Resource* resource, BufferDescription description)
-                    : base(resource)
+                internal D3D12BackendBuffer(D3D12BackendDevice owner, ID3D12Resource* resource, BufferDescription description)
+                    : base(owner, resource)
                 {
                     ArgumentNullException.ThrowIfNull(description);
                     Description = description;
@@ -2040,20 +2713,34 @@ public static unsafe class D3D12GraphicsBackend
 
             private abstract unsafe class D3D12BackendResource : IGraphicsBackendResource
             {
+                private int _descriptorSetReferenceCount;
+                private readonly D3D12BackendDevice _owner;
                 private ID3D12Resource* _resource;
 
-                protected D3D12BackendResource(ID3D12Resource* resource)
+                protected D3D12BackendResource(D3D12BackendDevice owner, ID3D12Resource* resource)
                 {
+                    ArgumentNullException.ThrowIfNull(owner);
+
                     if (resource is null)
                     {
                         throw new ArgumentNullException(nameof(resource));
                     }
 
+                    _owner = owner;
                     _resource = resource;
                 }
 
+                internal bool IsDisposed => _resource is null;
+
+                internal D3D12BackendDevice Owner => _owner;
+
                 public void Dispose()
                 {
+                    if (_descriptorSetReferenceCount != 0)
+                    {
+                        throw new InvalidOperationException("The D3D12 resource cannot be retired while descriptor sets remain live.");
+                    }
+
                     var resource = _resource;
                     _resource = null;
 
@@ -2068,10 +2755,27 @@ public static unsafe class D3D12GraphicsBackend
                     ObjectDisposedException.ThrowIf(_resource is null, this);
                     return _resource;
                 }
+
+                internal void ReleaseDescriptorSet()
+                {
+                    if (_descriptorSetReferenceCount <= 0)
+                    {
+                        throw new InvalidOperationException("The D3D12 resource descriptor-set reference count is invalid.");
+                    }
+
+                    _descriptorSetReferenceCount--;
+                }
+
+                internal void RetainDescriptorSet()
+                {
+                    ObjectDisposedException.ThrowIf(_resource is null, this);
+                    _descriptorSetReferenceCount = checked(_descriptorSetReferenceCount + 1);
+                }
             }
 
             private sealed class D3D12BackendSampler : IGraphicsBackendSampler
             {
+                private int _descriptorSetReferenceCount;
                 private readonly int _descriptorSlot;
                 private D3D12BackendDevice? _device;
 
@@ -2082,6 +2786,12 @@ public static unsafe class D3D12GraphicsBackend
                     _descriptorSlot = descriptorSlot;
                 }
 
+                internal int DescriptorSlot => _descriptorSlot;
+
+                internal bool IsDisposed => _device is null;
+
+                internal D3D12BackendDevice? Owner => _device;
+
                 public void Dispose()
                 {
                     var device = _device;
@@ -2091,15 +2801,36 @@ public static unsafe class D3D12GraphicsBackend
                         return;
                     }
 
+                    if (_descriptorSetReferenceCount != 0)
+                    {
+                        throw new InvalidOperationException("The D3D12 sampler cannot be retired while descriptor sets remain live.");
+                    }
+
                     device.ReleaseSamplerDescriptor(_descriptorSlot);
                     _device = null;
+                }
+
+                internal void ReleaseDescriptorSet()
+                {
+                    if (_descriptorSetReferenceCount <= 0)
+                    {
+                        throw new InvalidOperationException("The D3D12 sampler descriptor-set reference count is invalid.");
+                    }
+
+                    _descriptorSetReferenceCount--;
+                }
+
+                internal void RetainDescriptorSet()
+                {
+                    ObjectDisposedException.ThrowIf(_device is null, this);
+                    _descriptorSetReferenceCount = checked(_descriptorSetReferenceCount + 1);
                 }
             }
 
             private sealed class D3D12BackendTexture : D3D12BackendResource, IGraphicsBackendTexture
             {
-                internal D3D12BackendTexture(ID3D12Resource* resource, TextureDescription description)
-                    : base(resource)
+                internal D3D12BackendTexture(D3D12BackendDevice owner, ID3D12Resource* resource, TextureDescription description)
+                    : base(owner, resource)
                 {
                     ArgumentNullException.ThrowIfNull(description);
                     Description = description;
@@ -2112,10 +2843,13 @@ public static unsafe class D3D12GraphicsBackend
         private unsafe class D3D12PipelineBuilder
         {
             internal static IGraphicsBackendPipeline Create(
+                D3D12BackendDevice owner,
                 ID3D12Device* device,
                 PipelineDescription description,
                 ReadOnlySpan<BufferReadLease<byte>> bytecodeLeases)
             {
+                ArgumentNullException.ThrowIfNull(owner);
+
                 if (device is null)
                 {
                     throw new ArgumentNullException(nameof(device));
@@ -2161,7 +2895,10 @@ public static unsafe class D3D12GraphicsBackend
                         shaderBytecode[index] = CopyShaderBytecode(bytecodeLeases[index], out shaderBytecodeLengths[index]);
                     }
 
-                    rootSignature = CreateDescriptorRootSignature(device, shaderInputs);
+                    rootSignature = CreateDescriptorRootSignature(
+                        device,
+                        shaderInputs,
+                        out var pipelineResources);
 
                     if (description is GraphicsPipelineDescription selectedGraphicsDescription)
                     {
@@ -2192,7 +2929,11 @@ public static unsafe class D3D12GraphicsBackend
                         throw new InvalidOperationException("D3D12 pipeline creation returned an incomplete native owner.");
                     }
 
-                    var result = new D3D12BackendPipeline(pipelineState, rootSignature);
+                    var result = new D3D12BackendPipeline(
+                        owner,
+                        pipelineState,
+                        rootSignature,
+                        pipelineResources);
                     pipelineState = null;
                     rootSignature = null;
                     return result;
@@ -2344,7 +3085,8 @@ public static unsafe class D3D12GraphicsBackend
 
             private static ID3D12RootSignature* CreateDescriptorRootSignature(
                 ID3D12Device* device,
-                ImmutableArray<ShaderBytecodeInput> shaderInputs)
+                ImmutableArray<ShaderBytecodeInput> shaderInputs,
+                out ImmutableArray<ShaderResourceSignature> resourceSignatures)
             {
                 var resources = new List<ShaderResourceSignature>();
 
@@ -2355,14 +3097,14 @@ public static unsafe class D3D12GraphicsBackend
                     for (var resourceIndex = 0; resourceIndex < shaderResources.Length; resourceIndex++)
                     {
                         var resource = shaderResources[resourceIndex];
-                        var resourceTableIndex = GetD3D12TableIndex(resource);
+                        var resourceTableIndex = D3D12DescriptorLayout.GetTableIndex(resource);
                         var existingResourceFound = false;
 
                         for (var existingIndex = 0; existingIndex < resources.Count; existingIndex++)
                         {
                             var existingResource = resources[existingIndex];
 
-                            if ((GetD3D12TableIndex(existingResource) == resourceTableIndex)
+                            if ((D3D12DescriptorLayout.GetTableIndex(existingResource) == resourceTableIndex)
                                 && (existingResource.Binding == resource.Binding))
                             {
                                 if ((existingResource.Kind != resource.Kind)
@@ -2383,18 +3125,19 @@ public static unsafe class D3D12GraphicsBackend
                     }
                 }
 
-                resources.Sort(CompareResources);
+                resources.Sort(D3D12DescriptorLayout.Compare);
+                resourceSignatures = [.. resources];
                 var descriptorRanges = stackalloc D3D12_DESCRIPTOR_RANGE[Math.Max(1, resources.Count)];
-                var rangeStarts = stackalloc int[16];
-                var rangeCounts = stackalloc uint[16];
-                NativeMemory.Clear(rangeStarts, checked((nuint)16 * (nuint)sizeof(int)));
-                NativeMemory.Clear(rangeCounts, checked((nuint)16 * (nuint)sizeof(uint)));
+                var rangeStarts = stackalloc int[D3D12DescriptorLayout.TableCount];
+                var rangeCounts = stackalloc uint[D3D12DescriptorLayout.TableCount];
+                NativeMemory.Clear(rangeStarts, checked((nuint)D3D12DescriptorLayout.TableCount * (nuint)sizeof(int)));
+                NativeMemory.Clear(rangeCounts, checked((nuint)D3D12DescriptorLayout.TableCount * (nuint)sizeof(uint)));
                 var descriptorRangeCount = 0;
 
                 for (var index = 0; index < resources.Count; index++)
                 {
                     var resource = resources[index];
-                    var tableIndex = GetD3D12TableIndex(resource);
+                    var tableIndex = D3D12DescriptorLayout.GetTableIndex(resource);
 
                     if (rangeCounts[tableIndex] == 0)
                     {
@@ -2402,20 +3145,20 @@ public static unsafe class D3D12GraphicsBackend
                     }
 
                     var descriptorRange = default(D3D12_DESCRIPTOR_RANGE);
-                    descriptorRange.RangeType = GetD3D12DescriptorRangeType(resource.Kind);
+                    descriptorRange.RangeType = D3D12DescriptorLayout.GetRangeType(resource.Kind);
                     descriptorRange.NumDescriptors = checked((uint)resource.ArrayCount);
                     descriptorRange.BaseShaderRegister = checked((uint)resource.Binding);
-                    descriptorRange.RegisterSpace = checked((uint)GetD3D12RegisterSpace(resource.Group));
+                    descriptorRange.RegisterSpace = checked((uint)D3D12DescriptorLayout.GetRegisterSpace(resource.Group));
                     descriptorRange.OffsetInDescriptorsFromTableStart = uint.MaxValue;
                     descriptorRanges[descriptorRangeCount++] = descriptorRange;
                     rangeCounts[tableIndex] = checked(rangeCounts[tableIndex] + 1);
                 }
 
-                var rootParameters = stackalloc D3D12_ROOT_PARAMETER[16];
-                NativeMemory.Clear(rootParameters, checked((nuint)16 * (nuint)sizeof(D3D12_ROOT_PARAMETER)));
+                var rootParameters = stackalloc D3D12_ROOT_PARAMETER[D3D12DescriptorLayout.TableCount];
+                NativeMemory.Clear(rootParameters, checked((nuint)D3D12DescriptorLayout.TableCount * (nuint)sizeof(D3D12_ROOT_PARAMETER)));
                 var rootParameterCount = 0;
 
-                for (var tableIndex = 0; tableIndex < 16; tableIndex++)
+                for (var tableIndex = 0; tableIndex < D3D12DescriptorLayout.TableCount; tableIndex++)
                 {
                     if (rangeCounts[tableIndex] == 0)
                     {
@@ -2491,52 +3234,6 @@ public static unsafe class D3D12GraphicsBackend
                     {
                         _ = signatureBlob->Release();
                     }
-                }
-
-                static int CompareResources(ShaderResourceSignature left, ShaderResourceSignature right)
-                {
-                    var tableComparison = GetD3D12TableIndex(left).CompareTo(GetD3D12TableIndex(right));
-                    return (tableComparison != 0)
-                        ? tableComparison
-                        : left.Binding.CompareTo(right.Binding);
-                }
-
-                static D3D12_DESCRIPTOR_RANGE_TYPE GetD3D12DescriptorRangeType(ShaderResourceKind kind)
-                {
-                    return kind switch {
-                        ShaderResourceKind.UniformBuffer => D3D12_DESCRIPTOR_RANGE_TYPE.D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
-                        ShaderResourceKind.SampledImage => D3D12_DESCRIPTOR_RANGE_TYPE.D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-                        ShaderResourceKind.StorageImage or ShaderResourceKind.StorageBuffer => D3D12_DESCRIPTOR_RANGE_TYPE.D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
-                        ShaderResourceKind.Sampler => D3D12_DESCRIPTOR_RANGE_TYPE.D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
-                        _ => throw new ArgumentOutOfRangeException(nameof(kind)),
-                    };
-                }
-
-                static int GetD3D12RegisterClassIndex(ShaderResourceKind kind)
-                {
-                    return kind switch {
-                        ShaderResourceKind.UniformBuffer => 0,
-                        ShaderResourceKind.SampledImage => 1,
-                        ShaderResourceKind.StorageImage or ShaderResourceKind.StorageBuffer => 2,
-                        ShaderResourceKind.Sampler => 3,
-                        _ => throw new ArgumentOutOfRangeException(nameof(kind)),
-                    };
-                }
-
-                static int GetD3D12RegisterSpace(ShaderBindingGroup group)
-                {
-                    return group switch {
-                        ShaderBindingGroup.Frame => 0,
-                        ShaderBindingGroup.Material => 1,
-                        ShaderBindingGroup.ObjectData => 2,
-                        ShaderBindingGroup.Pass => 3,
-                        _ => throw new ArgumentOutOfRangeException(nameof(group)),
-                    };
-                }
-
-                static int GetD3D12TableIndex(ShaderResourceSignature resource)
-                {
-                    return checked((GetD3D12RegisterSpace(resource.Group) * 4) + GetD3D12RegisterClassIndex(resource.Kind));
                 }
             }
 
@@ -2703,15 +3400,22 @@ public static unsafe class D3D12GraphicsBackend
                     => argument.CopyTo(new Span<byte>(_destination, argument.Length));
             }
 
-            private sealed unsafe class D3D12BackendPipeline : IGraphicsBackendPipeline
+            private sealed unsafe class D3D12BackendPipeline : ID3D12BackendPipelineDescriptorOwner
             {
+                private int _descriptorSetReferenceCount;
+                private readonly D3D12BackendDevice _owner;
                 private ID3D12PipelineState* _pipelineState;
+                private readonly ImmutableArray<ShaderResourceSignature> _resources;
                 private ID3D12RootSignature* _rootSignature;
 
                 internal D3D12BackendPipeline(
+                    D3D12BackendDevice owner,
                     ID3D12PipelineState* pipelineState,
-                    ID3D12RootSignature* rootSignature)
+                    ID3D12RootSignature* rootSignature,
+                    ImmutableArray<ShaderResourceSignature> resources)
                 {
+                    ArgumentNullException.ThrowIfNull(owner);
+
                     if (pipelineState is null)
                     {
                         throw new ArgumentNullException(nameof(pipelineState));
@@ -2722,12 +3426,30 @@ public static unsafe class D3D12GraphicsBackend
                         throw new ArgumentNullException(nameof(rootSignature));
                     }
 
+                    if (resources.IsDefault)
+                    {
+                        throw new ArgumentException("D3D12 pipeline resource signatures must be initialized.", nameof(resources));
+                    }
+
+                    _owner = owner;
                     _pipelineState = pipelineState;
+                    _resources = resources;
                     _rootSignature = rootSignature;
                 }
 
+                public bool IsDisposed => _pipelineState is null;
+
+                public D3D12BackendDevice Owner => _owner;
+
+                public ImmutableArray<ShaderResourceSignature> Resources => _resources;
+
                 public void Dispose()
                 {
+                    if (_descriptorSetReferenceCount != 0)
+                    {
+                        throw new InvalidOperationException("The D3D12 pipeline cannot be retired while descriptor sets remain live.");
+                    }
+
                     var pipelineState = _pipelineState;
                     var rootSignature = _rootSignature;
                     _pipelineState = null;
@@ -2742,6 +3464,22 @@ public static unsafe class D3D12GraphicsBackend
                     {
                         _ = rootSignature->Release();
                     }
+                }
+
+                public void ReleaseDescriptorSet()
+                {
+                    if (_descriptorSetReferenceCount <= 0)
+                    {
+                        throw new InvalidOperationException("The D3D12 pipeline descriptor-set reference count is invalid.");
+                    }
+
+                    _descriptorSetReferenceCount--;
+                }
+
+                public void RetainDescriptorSet()
+                {
+                    ObjectDisposedException.ThrowIf(_pipelineState is null, this);
+                    _descriptorSetReferenceCount = checked(_descriptorSetReferenceCount + 1);
                 }
             }
         }

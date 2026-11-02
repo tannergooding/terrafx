@@ -51,9 +51,26 @@ internal sealed class EngineHostOptionsTests
 
     private static GraphicsPipelineDescription CreateD3D12ResourcePipelineDescription(
         BufferReadLease<byte> vertexBytecode,
-        BufferReadLease<byte> pixelBytecode)
+        BufferReadLease<byte> pixelBytecode,
+        bool includeStorageResources)
     {
         var compilerIdentity = CreateShaderCompilerIdentity();
+        var pixelEntryPoint = includeStorageResources
+            ? "PSSampledFrameStorageMain"
+            : "PSSampledFrameMain";
+        ImmutableArray<ShaderResourceSignature> pixelResources = includeStorageResources
+            ? [
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1),
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.SampledImage, 1),
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, 1),
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 1, ShaderResourceKind.StorageImage, 1),
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.Sampler, 1),
+            ]
+            : [
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1),
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.SampledImage, 1),
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.Sampler, 1),
+            ];
         var vertexReflection = new ShaderReflection(
             ShaderStage.Vertex,
             "VSMain",
@@ -69,17 +86,11 @@ internal sealed class EngineHostOptionsTests
             groupSizeZ: 0);
         var pixelReflection = new ShaderReflection(
             ShaderStage.Pixel,
-            "PSSampledFrameStorageMain",
+            pixelEntryPoint,
             compilerIdentity,
             [],
             [new ShaderIoSignature("SV_Target", 0, null, ShaderValueType.Float4, ShaderInterpolation.Smooth)],
-            [
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1),
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.SampledImage, 1),
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, 1),
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 1, ShaderResourceKind.StorageImage, 1),
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.Sampler, 1),
-            ],
+            pixelResources,
             [
                 new ShaderRecordLayout(
                     "FrameData",
@@ -282,7 +293,7 @@ internal sealed class EngineHostOptionsTests
                 using var vertexBytecode = vertexBytecodeStorage.AcquireReadLease(0, vertexBytecodeStorage.Length);
                 using var pixelBytecode = pixelBytecodeStorage.AcquireReadLease(0, pixelBytecodeStorage.Length);
                 using var pipeline = graphicsDevice.CreatePipelineAsync(
-                    CreateD3D12ResourcePipelineDescription(vertexBytecode, pixelBytecode),
+                    CreateD3D12ResourcePipelineDescription(vertexBytecode, pixelBytecode, includeStorageResources: true),
                     CancellationToken.None)
                     .GetAwaiter()
                     .GetResult();
@@ -573,6 +584,170 @@ internal sealed class EngineHostOptionsTests
             {
                 platformOwner.DisposeFromOwner();
             }
+        }
+    }
+
+    [Test]
+    [System.Runtime.Versioning.SupportedOSPlatform("windows10.0.22000.0")]
+    public void CreatesD3D12DescriptorSetsAndRetainsNativeOwners()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            Assert.Ignore("The D3D12 backend targets Windows 11.");
+            return;
+        }
+
+        var dxilFixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_DXIL_FIXTURE_DIRECTORY");
+
+        if (string.IsNullOrWhiteSpace(dxilFixtureDirectory))
+        {
+            Assert.Ignore("Set TERRAFX_M04_DXIL_FIXTURE_DIRECTORY to run the D3D12 descriptor-set witness.");
+            return;
+        }
+
+        var registration = D3D12GraphicsBackend.CreateRegistration();
+        var options = new EngineHostOptions(
+            HostProfile.OffscreenNative,
+            PlatformBackend.Headless,
+            GraphicsBackend.D3D12,
+            registration,
+            CreateAssetStoreOptions());
+        var platformOwner = PlatformHostOwner.Create(options);
+
+        try
+        {
+            D3D12GraphicsBackend.D3D12BackendFactory.D3D12BackendDevice device;
+
+            try
+            {
+                device = (D3D12GraphicsBackend.D3D12BackendFactory.D3D12BackendDevice)
+                    new D3D12GraphicsBackend.D3D12BackendFactory().Create(
+                        platformOwner.OwnerId,
+                        GraphicsDeviceProfile.OffscreenNative,
+                        GraphicsPlatformKind.None,
+                        CancellationToken.None);
+            }
+            catch (DllNotFoundException exception)
+            {
+                Assert.Ignore($"A required D3D12 system library is unavailable: {exception.Message}");
+                return;
+            }
+            catch (EntryPointNotFoundException exception)
+            {
+                Assert.Ignore($"A required D3D12 system entry point is unavailable: {exception.Message}");
+                return;
+            }
+            catch (NotSupportedException exception)
+            {
+                Assert.Ignore($"No available D3D12 device satisfies OffscreenNative: {exception.Message}");
+                return;
+            }
+
+            using (device)
+            {
+                using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
+                    dxilFixtureDirectory,
+                    "M04OffscreenTriangle.vertex.dxil"));
+                using var pixelBytecodeStorage = CreateBytecodeStorage(Path.Combine(
+                    dxilFixtureDirectory,
+                    "M04OffscreenTriangle.pixel-sampled-frame.dxil"));
+                using var vertexBytecode = vertexBytecodeStorage.AcquireReadLease(0, vertexBytecodeStorage.Length);
+                using var pixelBytecode = pixelBytecodeStorage.AcquireReadLease(0, pixelBytecodeStorage.Length);
+                using var pipeline = device.CreatePipeline(
+                    CreateD3D12ResourcePipelineDescription(
+                        vertexBytecode,
+                        pixelBytecode,
+                        includeStorageResources: false),
+                    [vertexBytecode, pixelBytecode]);
+                using var uniformBuffer = device.CreateBuffer(
+                    new BufferDescription(
+                        512,
+                        BufferUsage.Uniform,
+                        GpuMemoryKind.DeviceLocal,
+                        structuredStride: null,
+                        debugName: "d3d12-descriptor-set-frame-data"));
+                using var sampledTexture = device.CreateTexture(
+                    new TextureDescription(
+                        TextureDimension.Dimension2D,
+                        1,
+                        1,
+                        depth: 1,
+                        arrayLayers: 1,
+                        mipLevels: 1,
+                        TextureFormat.Rgba8Unorm,
+                        TextureUsage.Sampled,
+                        "d3d12-descriptor-set-sampled-texture"));
+                using var sampler = device.CreateSampler(
+                    new SamplerDescription(
+                        SamplerFilter.Linear,
+                        SamplerFilter.Linear,
+                        SamplerFilter.None,
+                        SamplerAddressMode.Clamp,
+                        SamplerAddressMode.Clamp,
+                        SamplerAddressMode.Clamp,
+                        maximumAnisotropy: 1.0f),
+                    effectiveMaximumAnisotropy: 1.0f);
+                var uniformBufferBindings = ImmutableArray.Create(new D3D12BackendUniformBufferBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    uniformBuffer,
+                    0,
+                    16));
+                var sampledImageBindings = ImmutableArray.Create(new D3D12BackendSampledImageBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    sampledTexture));
+                var samplerBindings = ImmutableArray.Create(new D3D12BackendSamplerBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    sampler));
+
+                _ = Assert.Throws<ArgumentException>(() => device.CreateDescriptorSet(
+                    pipeline,
+                    uniformBufferBindings,
+                    sampledImageBindings,
+                    []));
+
+                var misalignedUniformBufferBindings = ImmutableArray.Create(new D3D12BackendUniformBufferBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    uniformBuffer,
+                    1,
+                    16));
+                _ = Assert.Throws<ArgumentException>(() => device.CreateDescriptorSet(
+                    pipeline,
+                    misalignedUniformBufferBindings,
+                    sampledImageBindings,
+                    samplerBindings));
+
+                using var descriptorSet = device.CreateDescriptorSet(
+                    pipeline,
+                    uniformBufferBindings,
+                    sampledImageBindings,
+                    samplerBindings);
+                Assert.That(descriptorSet.BufferCount, Is.EqualTo(1));
+                Assert.That(descriptorSet.TextureCount, Is.EqualTo(1));
+                Assert.That(descriptorSet.SamplerCount, Is.EqualTo(1));
+                Assert.That(descriptorSet.DescriptorTableCount, Is.EqualTo(3));
+                Assert.That(descriptorSet.AreDescriptorTableHandlesValid, Is.True);
+                _ = Assert.Throws<InvalidOperationException>(uniformBuffer.Dispose);
+                _ = Assert.Throws<InvalidOperationException>(sampledTexture.Dispose);
+                _ = Assert.Throws<InvalidOperationException>(sampler.Dispose);
+                _ = Assert.Throws<InvalidOperationException>(pipeline.Dispose);
+                _ = Assert.Throws<InvalidOperationException>(device.Dispose);
+
+                descriptorSet.Dispose();
+                Assert.That(descriptorSet.IsDisposed, Is.True);
+                Assert.DoesNotThrow(uniformBuffer.Dispose);
+                Assert.DoesNotThrow(sampledTexture.Dispose);
+                Assert.DoesNotThrow(sampler.Dispose);
+                Assert.DoesNotThrow(pipeline.Dispose);
+                TestContext.WriteLine("D3D12 wrote CBV, SRV, and sampler tables and retained every native owner until descriptor-set disposal.");
+            }
+        }
+        finally
+        {
+            platformOwner.DisposeFromOwner();
         }
     }
 

@@ -86,18 +86,20 @@ dotnet build .\sources\TerraFX.Graphics.D3D12\TerraFX.Graphics.D3D12.csproj --co
 dotnet build .\sources\TerraFX.Graphics.D3D12\TerraFX.Graphics.D3D12.csproj --configuration Release
 ```
 
-### D3D12 OffscreenNative startup probe
+### D3D12 OffscreenNative startup and descriptor-set probes
 
-The focused Runtime test attempts D3D12 startup through the registration using a `PlatformHostOwner`-issued identity:
+The focused Runtime tests exercise D3D12 startup and descriptor writes using a `PlatformHostOwner`-issued identity:
 
 ```powershell
-dotnet .\artifacts\bin\sources\TerraFX.Content.Tools\Debug\net11.0\TerraFX.Content.Tools.dll compile-m04-dxil .\artifacts\shader-fixtures\m04-d3d12-resources
-$env:TERRAFX_M04_DXIL_FIXTURE_DIRECTORY = (Resolve-Path .\artifacts\shader-fixtures\m04-d3d12-resources).Path
+dotnet .\artifacts\bin\sources\TerraFX.Content.Tools\Debug\net11.0\TerraFX.Content.Tools.dll compile-m04-dxil .\artifacts\shader-fixtures\m04-offscreen-d3d12-resources-v1
+$env:TERRAFX_M04_DXIL_FIXTURE_DIRECTORY = (Resolve-Path .\artifacts\shader-fixtures\m04-offscreen-d3d12-resources-v1).Path
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~CreatesAndShutsDownD3D12GraphicsDeviceUsingHostIssuedIdentity"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~CreatesAndShutsDownD3D12GraphicsDeviceUsingHostIssuedIdentity"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.EngineHostOptionsTests.CreatesD3D12DescriptorSetsAndRetainsNativeOwners"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.EngineHostOptionsTests.CreatesD3D12DescriptorSetsAndRetainsNativeOwners"
 ```
 
-On the current Windows 11 x64 host, the native test passes on the AMD Radeon RX 7900 XTX (vendor `1002`, device `744C`, UMD `002000007D0F1B75`). D3D12 admits sampled D32 depth through an `R32_TYPELESS` resource, with `D32_FLOAT` depth and `R32_FLOAT` sampled view formats; the witness creates a real depth/sampled texture and verifies an exact upload/readback round trip. The same test round-trips a 4x4x2 RGBA8 volume and creates a resource-bearing PSO/root signature from the compiled DXIL fixture, using root tables for CBV/SRV/UAV/sampler register classes. Descriptor heap writes, shader execution, and graph submission remain unimplemented, so this is not the public graph/pipeline witness.
+On the current Windows 11 x64 host, the native tests pass on the AMD Radeon RX 7900 XTX (vendor `1002`, device `744C`, UMD `002000007D0F1B75`). D3D12 admits sampled D32 depth through an `R32_TYPELESS` resource, with `D32_FLOAT` depth and `R32_FLOAT` sampled view formats; the startup witness creates a real depth/sampled texture and verifies an exact upload/readback round trip. It also round-trips a 4x4x2 RGBA8 volume and creates a resource-bearing PSO/root signature from compiled DXIL. The descriptor-set test directly creates the D3D12 backend on its test thread using the Core owner ID issued by `PlatformHostOwner`, then writes the `PSSampledFrameMain` Frame CBV/SRV/sampler tables and verifies incomplete/misaligned binding refusal plus pipeline/resource/backend retention until set disposal. This writer currently excludes storage/UAV descriptors and arrays; neither test binds tables to a command list, executes the shader, or submits a graph, so neither is the public graph/pipeline witness.
 
 ### Platform owner contracts
 
