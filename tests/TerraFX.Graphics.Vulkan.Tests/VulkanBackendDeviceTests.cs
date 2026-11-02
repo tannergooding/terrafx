@@ -63,7 +63,9 @@ internal sealed class VulkanBackendDeviceTests
         PipelineBlendMode blendMode = PipelineBlendMode.Opaque,
         bool usesSampledResources = false,
         bool includesFrameUniformBuffer = true,
-        bool includesStorageResources = false)
+        bool includesStorageResources = false,
+        int sampledImageBinding = 0,
+        int sampledImageArrayCount = 1)
     {
         var compilerIdentity = CreateShaderCompilerIdentity();
         var pixelResources = ImmutableArray.CreateBuilder<ShaderResourceSignature>();
@@ -75,7 +77,11 @@ internal sealed class VulkanBackendDeviceTests
 
         if (usesSampledResources)
         {
-            pixelResources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.SampledImage, 1));
+            pixelResources.Add(new ShaderResourceSignature(
+                ShaderBindingGroup.Frame,
+                sampledImageBinding,
+                ShaderResourceKind.SampledImage,
+                sampledImageArrayCount));
             pixelResources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.Sampler, 1));
         }
 
@@ -990,6 +996,48 @@ internal sealed class VulkanBackendDeviceTests
     }
 
     [Test]
+    public void OffscreenNativeDevicePipelineCreationRejectsMismatchedSampledImageBinding()
+    {
+        var fixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
+
+        if (string.IsNullOrWhiteSpace(fixtureDirectory))
+        {
+            Assert.Ignore("The compiled M04 shader fixture is not selected through TERRAFX_M04_SHADER_FIXTURE_DIRECTORY.");
+            return;
+        }
+
+        using var device = CreateVulkanDeviceForNativeSmokeTest();
+        using var vertexStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.vertex.spv"));
+        using var pixelStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.pixel-sampled.spv"));
+        using var vertexLease = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
+        using var pixelLease = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
+        var description = CreateShaderFixtureDescription(
+            vertexLease,
+            pixelLease,
+            usesSampledResources: true,
+            includesFrameUniformBuffer: false,
+            sampledImageBinding: 1);
+
+        Assert.That(
+            () => device.CreatePipeline(description, [vertexLease, pixelLease]),
+            Throws.ArgumentException);
+
+        var mismatchedArrayDescription = CreateShaderFixtureDescription(
+            vertexLease,
+            pixelLease,
+            usesSampledResources: true,
+            includesFrameUniformBuffer: false,
+            sampledImageArrayCount: 2);
+        Assert.That(
+            () => device.CreatePipeline(mismatchedArrayDescription, [vertexLease, pixelLease]),
+            Throws.ArgumentException);
+    }
+
+    [Test]
     public void OffscreenNativeDeviceStagingBudgetAdmitsExactDedicatedBoundary()
     {
         const int exactBudgetByteLength = 128 * 1024 * 1024;
@@ -1224,6 +1272,63 @@ internal sealed class VulkanBackendDeviceTests
     [Test]
     public void RegistrationSelectsVulkanWithoutCreatingDevice()
         => Assert.That(VulkanGraphicsBackend.CreateRegistration().Backend, Is.EqualTo(GraphicsBackend.Vulkan));
+
+    [Test]
+    public void SpirvPreflightRejectsMissingShaderCapabilityWithoutCreatingDevice()
+    {
+        var fixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
+
+        if (string.IsNullOrWhiteSpace(fixtureDirectory))
+        {
+            Assert.Ignore("The compiled M04 shader fixture is not selected through TERRAFX_M04_SHADER_FIXTURE_DIRECTORY.");
+            return;
+        }
+
+        var pixelBytecode = File.ReadAllBytes(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.pixel-sampled.spv"));
+        var words = MemoryMarshal.Cast<byte, uint>(pixelBytecode.AsSpan());
+        var capabilityReplaced = false;
+
+        for (var cursor = 5; cursor < words.Length;)
+        {
+            var instruction = words[cursor];
+            var wordCount = checked((int)(instruction >> 16));
+            var opcode = checked((ushort)(instruction & 0xFFFF));
+
+            if ((wordCount == 0) || (wordCount > words.Length - cursor))
+            {
+                throw new InvalidDataException("The selected SPIR-V fixture contains an invalid instruction.");
+            }
+
+            if ((opcode == 17) && (wordCount == 2) && (words[cursor + 1] == 1))
+            {
+                words[cursor + 1] = 0;
+                capabilityReplaced = true;
+                break;
+            }
+
+            cursor += wordCount;
+        }
+
+        Assert.That(capabilityReplaced, Is.True);
+
+        using var vertexStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.vertex.spv"));
+        using var pixelStorage = CreateBytecodeStorage(pixelBytecode);
+        using var vertexLease = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
+        using var pixelLease = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
+        var description = CreateShaderFixtureDescription(
+            vertexLease,
+            pixelLease,
+            usesSampledResources: true,
+            includesFrameUniformBuffer: false);
+
+        Assert.That(
+            () => SpirvReflectionValidator.Validate(description.Shaders[1], pixelLease, index: 1),
+            Throws.ArgumentException);
+    }
 
     private readonly struct ReadbackCopyAction : IAction<ReadOnlySpan<byte>>
     {

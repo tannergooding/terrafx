@@ -134,5 +134,7 @@ internal sealed unsafe partial class VulkanBackendDevice
         {
             throw new ArgumentException("SPIR-V bytecode length must be a positive multiple of four.", nameof(bytecode));
         }
+
+        SpirvReflectionValidator.Validate(shader, bytecode, index);
     }
 }
