@@ -10,11 +10,17 @@ internal static class RenderGraphDependencyCompiler
 {
     internal static bool TryOrder(
         ImmutableArray<RenderGraphPassNode> passes,
+        ImmutableArray<GraphResourceAccess> accesses,
         out ImmutableArray<RenderPassId> orderedPasses)
     {
         if (passes.IsDefault)
         {
             throw new ArgumentException("The pass list must be initialized.", nameof(passes));
+        }
+
+        if (accesses.IsDefault)
+        {
+            throw new ArgumentException("The resource access list must be initialized.", nameof(accesses));
         }
 
         var passIndices = new Dictionary<RenderPassId, int>(passes.Length);
@@ -49,13 +55,7 @@ internal static class RenderGraphDependencyCompiler
             }
         }
 
-        var outgoing = new List<int>[passes.Length];
-        var incomingCounts = new int[passes.Length];
-
-        for (var index = 0; index < passes.Length; index++)
-        {
-            outgoing[index] = [];
-        }
+        var dependencies = new HashSet<(int Predecessor, int Dependent)>();
 
         for (var index = 0; index < passes.Length; index++)
         {
@@ -74,9 +74,23 @@ internal static class RenderGraphDependencyCompiler
                     throw new ArgumentException("Every predecessor must belong to the compiled graph.", nameof(passes));
                 }
 
-                outgoing[predecessorIndex].Add(index);
-                incomingCounts[index] = checked(incomingCounts[index] + 1);
+                _ = dependencies.Add((predecessorIndex, index));
             }
+        }
+
+        AddResourceDependencies(accesses, passIndices, graphOwnerId, dependencies);
+        var outgoing = new List<int>[passes.Length];
+        var incomingCounts = new int[passes.Length];
+
+        for (var index = 0; index < passes.Length; index++)
+        {
+            outgoing[index] = [];
+        }
+
+        foreach (var (predecessorIndex, dependentIndex) in dependencies)
+        {
+            outgoing[predecessorIndex].Add(dependentIndex);
+            incomingCounts[dependentIndex] = checked(incomingCounts[dependentIndex] + 1);
         }
 
         var ready = new SortedSet<int>(Comparer<int>.Create((left, right) => {
@@ -134,5 +148,97 @@ internal static class RenderGraphDependencyCompiler
 
         orderedPasses = result.MoveToImmutable();
         return true;
+    }
+
+    private static void AddDependency(
+        RenderPassId predecessor,
+        RenderPassId dependent,
+        Dictionary<RenderPassId, int> passIndices,
+        HashSet<(int Predecessor, int Dependent)> dependencies)
+        => _ = dependencies.Add((passIndices[predecessor], passIndices[dependent]));
+
+    private static void AddResourceDependencies(
+        ImmutableArray<GraphResourceAccess> accesses,
+        Dictionary<RenderPassId, int> passIndices,
+        uint graphOwnerId,
+        HashSet<(int Predecessor, int Dependent)> dependencies)
+    {
+        var accessesByResource = new Dictionary<(uint DeviceEpoch, ulong ResourceId, bool IsTexture), List<GraphResourceAccess>>();
+        var deviceEpoch = 0u;
+
+        foreach (var access in accesses)
+        {
+            if (!access.PassId.IsValid || (access.PassId.GraphOwnerId != graphOwnerId))
+            {
+                throw new ArgumentException("Every resource access must name a pass in the compiled graph.", nameof(accesses));
+            }
+
+            if (!passIndices.ContainsKey(access.PassId))
+            {
+                throw new ArgumentException("Every resource access must name a pass in the compiled graph.", nameof(accesses));
+            }
+
+            if (deviceEpoch == 0)
+            {
+                deviceEpoch = access.DeviceEpoch;
+            }
+            else if (access.DeviceEpoch != deviceEpoch)
+            {
+                throw new ArgumentException("Every graph resource access must use the same device epoch.", nameof(accesses));
+            }
+
+            var resourceKey = (access.DeviceEpoch, access.ResourceId, access.IsTexture);
+
+            if (!accessesByResource.TryGetValue(resourceKey, out var resourceAccesses))
+            {
+                resourceAccesses = [];
+                accessesByResource.Add(resourceKey, resourceAccesses);
+            }
+
+            resourceAccesses.Add(access);
+        }
+
+        foreach (var resourceAccesses in accessesByResource.Values)
+        {
+            for (var leftIndex = 0; leftIndex < resourceAccesses.Count; leftIndex++)
+            {
+                var left = resourceAccesses[leftIndex];
+
+                for (var rightIndex = leftIndex + 1; rightIndex < resourceAccesses.Count; rightIndex++)
+                {
+                    var right = resourceAccesses[rightIndex];
+
+                    if ((left.PassId == right.PassId)
+                        || (!left.Overlaps(right))
+                        || (!left.IsWrite && !right.IsWrite))
+                    {
+                        continue;
+                    }
+
+                    if (left.IsWrite && right.IsWrite)
+                    {
+                        if (left.Version == right.Version)
+                        {
+                            throw new ArgumentException("An overlapping graph resource version cannot have writes from different passes.", nameof(accesses));
+                        }
+
+                        AddDependency(left.Version < right.Version ? left.PassId : right.PassId,
+                            left.Version < right.Version ? right.PassId : left.PassId,
+                            passIndices,
+                            dependencies);
+                    }
+                    else
+                    {
+                        var writer = left.IsWrite ? left : right;
+                        var reader = left.IsWrite ? right : left;
+                        AddDependency(
+                            (writer.Version <= reader.Version) ? writer.PassId : reader.PassId,
+                            (writer.Version <= reader.Version) ? reader.PassId : writer.PassId,
+                            passIndices,
+                            dependencies);
+                    }
+                }
+            }
+        }
     }
 }

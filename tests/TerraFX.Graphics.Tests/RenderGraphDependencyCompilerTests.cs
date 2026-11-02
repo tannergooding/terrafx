@@ -9,6 +9,96 @@ namespace TerraFX.Graphics.Tests;
 [TestFixture]
 internal sealed class RenderGraphDependencyCompilerTests
 {
+    private static BufferDescription CreateBufferDescription()
+        => new(64, BufferUsage.Storage, GpuMemoryKind.DeviceLocal, null, string.Empty);
+
+    private static TextureDescription CreateTextureDescription()
+        => new(TextureDimension.Dimension2D, 16, 16, 1, 2, 5, TextureFormat.Rgba8Unorm, TextureUsage.Storage | TextureUsage.Sampled, string.Empty);
+
+    [Test]
+    public void TryOrderAddsBufferReadAfterWriteDependency()
+    {
+        var writer = new RenderPassId(7, 0);
+        var reader = new RenderPassId(7, 1);
+        var description = CreateBufferDescription();
+        var previousVersion = new GraphBufferVersion(1, 4, 0, description, new GraphBufferRange(0, 64));
+        var writtenVersion = new GraphBufferVersion(1, 4, 1, description, previousVersion.Range);
+        var passes = ImmutableArray.Create(
+            new RenderGraphPassNode(reader, new RenderPassDescription("reader", -1, [], false)),
+            new RenderGraphPassNode(writer, new RenderPassDescription("writer", 1, [], false)));
+        var accesses = ImmutableArray.Create(
+            new GraphResourceAccess(writer, writtenVersion, new GraphBufferRange(0, 16), isWrite: true),
+            new GraphResourceAccess(reader, writtenVersion, new GraphBufferRange(0, 16), isWrite: false));
+
+        Assert.That(RenderGraphDependencyCompiler.TryOrder(passes, accesses, out var orderedPasses), Is.True);
+        Assert.That(orderedPasses, Is.EqualTo(ImmutableArray.Create(writer, reader)));
+    }
+
+    [Test]
+    public void TryOrderAddsBufferWriteAfterReadAndWriteAfterWriteDependencies()
+    {
+        var reader = new RenderPassId(7, 0);
+        var firstWriter = new RenderPassId(7, 1);
+        var secondWriter = new RenderPassId(7, 2);
+        var description = CreateBufferDescription();
+        var version0 = new GraphBufferVersion(1, 4, 0, description, new GraphBufferRange(0, 64));
+        var version1 = new GraphBufferVersion(1, 4, 1, description, version0.Range);
+        var version2 = new GraphBufferVersion(1, 4, 2, description, version0.Range);
+        var passes = ImmutableArray.Create(
+            new RenderGraphPassNode(secondWriter, new RenderPassDescription("second", -2, [], false)),
+            new RenderGraphPassNode(reader, new RenderPassDescription("read-old", 1, [], false)),
+            new RenderGraphPassNode(firstWriter, new RenderPassDescription("first", 0, [], false)));
+        var accesses = ImmutableArray.Create(
+            new GraphResourceAccess(reader, version0, new GraphBufferRange(0, 16), isWrite: false),
+            new GraphResourceAccess(firstWriter, version1, new GraphBufferRange(0, 16), isWrite: true),
+            new GraphResourceAccess(secondWriter, version2, new GraphBufferRange(0, 16), isWrite: true));
+
+        Assert.That(RenderGraphDependencyCompiler.TryOrder(passes, accesses, out var orderedPasses), Is.True);
+        Assert.That(orderedPasses, Is.EqualTo(ImmutableArray.Create(reader, firstWriter, secondWriter)));
+    }
+
+    [Test]
+    public void TryOrderAddsTextureSubresourceReadAfterWriteDependency()
+    {
+        var writer = new RenderPassId(7, 0);
+        var reader = new RenderPassId(7, 1);
+        var description = CreateTextureDescription();
+        var version = new GraphTextureVersion(
+            1,
+            4,
+            1,
+            description,
+            new GraphTextureRange(0, 5, 0, 2, TextureAspect.Color));
+        var passes = ImmutableArray.Create(
+            new RenderGraphPassNode(reader, new RenderPassDescription("reader", -1, [], false)),
+            new RenderGraphPassNode(writer, new RenderPassDescription("writer", 1, [], false)));
+        var accesses = ImmutableArray.Create(
+            new GraphResourceAccess(writer, version, new GraphTextureRange(0, 2, 0, 1, TextureAspect.Color), isWrite: true),
+            new GraphResourceAccess(reader, version, new GraphTextureRange(1, 1, 0, 1, TextureAspect.Color), isWrite: false));
+
+        Assert.That(RenderGraphDependencyCompiler.TryOrder(passes, accesses, out var orderedPasses), Is.True);
+        Assert.That(orderedPasses, Is.EqualTo(ImmutableArray.Create(writer, reader)));
+    }
+
+    [Test]
+    public void TryOrderLeavesDisjointBufferRangesUnordered()
+    {
+        var reader = new RenderPassId(7, 0);
+        var writer = new RenderPassId(7, 1);
+        var description = CreateBufferDescription();
+        var version0 = new GraphBufferVersion(1, 4, 0, description, new GraphBufferRange(0, 64));
+        var version1 = new GraphBufferVersion(1, 4, 1, description, version0.Range);
+        var passes = ImmutableArray.Create(
+            new RenderGraphPassNode(writer, new RenderPassDescription("writer", 1, [], false)),
+            new RenderGraphPassNode(reader, new RenderPassDescription("reader", -1, [], false)));
+        var accesses = ImmutableArray.Create(
+            new GraphResourceAccess(reader, version0, new GraphBufferRange(0, 16), isWrite: false),
+            new GraphResourceAccess(writer, version1, new GraphBufferRange(16, 16), isWrite: true));
+
+        Assert.That(RenderGraphDependencyCompiler.TryOrder(passes, accesses, out var orderedPasses), Is.True);
+        Assert.That(orderedPasses, Is.EqualTo(ImmutableArray.Create(reader, writer)));
+    }
+
     [Test]
     public void TryOrderRejectsCyclesWithoutReturningAnOrder()
     {
@@ -18,7 +108,7 @@ internal sealed class RenderGraphDependencyCompilerTests
             new RenderGraphPassNode(first, new RenderPassDescription("first", 0, [second], false)),
             new RenderGraphPassNode(second, new RenderPassDescription("second", 0, [first], false)));
 
-        Assert.That(RenderGraphDependencyCompiler.TryOrder(passes, out var orderedPasses), Is.False);
+        Assert.That(RenderGraphDependencyCompiler.TryOrder(passes, [], out var orderedPasses), Is.False);
         Assert.That(orderedPasses, Is.Empty);
     }
 
@@ -29,12 +119,12 @@ internal sealed class RenderGraphDependencyCompilerTests
         var duplicateIds = ImmutableArray.Create(
             new RenderGraphPassNode(first, new RenderPassDescription("first", 0, [], false)),
             new RenderGraphPassNode(first, new RenderPassDescription("second", 0, [], false)));
-        _ = Assert.Throws<ArgumentException>(() => RenderGraphDependencyCompiler.TryOrder(duplicateIds, out _));
+        _ = Assert.Throws<ArgumentException>(() => RenderGraphDependencyCompiler.TryOrder(duplicateIds, [], out _));
 
         var mixedOwners = ImmutableArray.Create(
             new RenderGraphPassNode(first, new RenderPassDescription("first", 0, [], false)),
             new RenderGraphPassNode(new RenderPassId(2, 0), new RenderPassDescription("second", 0, [], false)));
-        _ = Assert.Throws<ArgumentException>(() => RenderGraphDependencyCompiler.TryOrder(mixedOwners, out _));
+        _ = Assert.Throws<ArgumentException>(() => RenderGraphDependencyCompiler.TryOrder(mixedOwners, [], out _));
     }
 
     [Test]
@@ -45,18 +135,18 @@ internal sealed class RenderGraphDependencyCompilerTests
 
         var foreignPass = ImmutableArray.Create(
             new RenderGraphPassNode(first, new RenderPassDescription("first", 0, [foreign], false)));
-        _ = Assert.Throws<ArgumentException>(() => RenderGraphDependencyCompiler.TryOrder(foreignPass, out _));
+        _ = Assert.Throws<ArgumentException>(() => RenderGraphDependencyCompiler.TryOrder(foreignPass, [], out _));
 
         var second = new RenderPassId(1, 1);
         var missingPass = ImmutableArray.Create(
             new RenderGraphPassNode(first, new RenderPassDescription("first", 0, [], false)),
             new RenderGraphPassNode(second, new RenderPassDescription("second", 0, [new RenderPassId(1, 2)], false)));
-        _ = Assert.Throws<ArgumentException>(() => RenderGraphDependencyCompiler.TryOrder(missingPass, out _));
+        _ = Assert.Throws<ArgumentException>(() => RenderGraphDependencyCompiler.TryOrder(missingPass, [], out _));
 
         var duplicatePredecessorPass = ImmutableArray.Create(
             new RenderGraphPassNode(first, new RenderPassDescription("first", 0, [], false)),
             new RenderGraphPassNode(second, new RenderPassDescription("second", 0, [first, first], false)));
-        _ = Assert.Throws<ArgumentException>(() => RenderGraphDependencyCompiler.TryOrder(duplicatePredecessorPass, out _));
+        _ = Assert.Throws<ArgumentException>(() => RenderGraphDependencyCompiler.TryOrder(duplicatePredecessorPass, [], out _));
     }
 
     [Test]
@@ -70,7 +160,7 @@ internal sealed class RenderGraphDependencyCompilerTests
             new RenderGraphPassNode(independent, new RenderPassDescription("a-independent", 0, [], false)),
             new RenderGraphPassNode(preceding, new RenderPassDescription("late", -1, [], false)));
 
-        Assert.That(RenderGraphDependencyCompiler.TryOrder(passes, out var orderedPasses), Is.True);
+        Assert.That(RenderGraphDependencyCompiler.TryOrder(passes, [], out var orderedPasses), Is.True);
         Assert.That(orderedPasses, Is.EqualTo(ImmutableArray.Create(preceding, independent, dependent)));
     }
 }
