@@ -334,6 +334,13 @@ internal sealed class M04ShaderFixtureCompilerTests
                 Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-frame-storage.reflection.json")).ConfigureAwait(false);
             var storageSpirvBytecode = await File.ReadAllBytesAsync(
                 Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-frame-storage.spv")).ConfigureAwait(false);
+
+            AssertTypedReflectionRejects(
+                ReplaceDxilResourceColumn(storageDxilReflection, "FrameTexture", 2, "u32"),
+                storageSpirvReflection,
+                storageSpirvBytecode,
+                typedStorageReflection.CompilerIdentity);
+
             var mismatchedStorageImageFormat = JsonNode.Parse(storageSpirvReflection) as JsonObject
                 ?? throw new InvalidDataException("The storage SPIRV-Cross reflection root must be an object.");
             var mismatchedStorageImages = mismatchedStorageImageFormat["images"] as JsonArray

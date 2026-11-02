@@ -52,7 +52,8 @@ internal static class M04ShaderReflectionReader
             throw new InvalidDataException("DXIL and SPIRV-Cross reflection name different entry points.");
         }
 
-        var resources = ParseResources(root);
+        var imageTypes = SpirvImageTypeReader.Read(spirvBytecode);
+        var resources = ParseResources(root, imageTypes);
         ValidateDxilResourceBindings(dxilReflection, resources);
         var inputs = ParseDxilSignatures(dxilReflection, "Input signature:", stage, isInput: true);
         var outputs = ParseDxilSignatures(dxilReflection, "Output signature:", stage, isInput: false);
@@ -93,6 +94,7 @@ internal static class M04ShaderReflectionReader
         JsonElement root,
         string collectionName,
         ShaderResourceKind kind,
+        Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage)> imageTypes,
         ImmutableArray<ReflectedResource>.Builder resources)
     {
         if (!root.TryGetProperty(collectionName, out var collection))
@@ -114,6 +116,22 @@ internal static class M04ShaderReflectionReader
             var group = GetGroup(descriptorSet);
             var binding = checked(nativeBinding - GetBindingOffset(kind));
             string? format = null;
+            string? componentFormat = null;
+
+            if (kind is ShaderResourceKind.SampledImage or ShaderResourceKind.StorageImage)
+            {
+                if (!imageTypes.TryGetValue((descriptorSet, nativeBinding), out var imageType))
+                {
+                    throw new InvalidDataException($"SPIR-V has no image type for descriptor set {descriptorSet}, binding {nativeBinding}.");
+                }
+
+                if (imageType.IsStorage != (kind == ShaderResourceKind.StorageImage))
+                {
+                    throw new InvalidDataException("SPIR-V image sampling mode does not match the SPIRV-Cross resource collection.");
+                }
+
+                componentFormat = imageType.ComponentFormat;
+            }
 
             if (resource.TryGetProperty("format", out var formatElement))
             {
@@ -149,7 +167,8 @@ internal static class M04ShaderReflectionReader
                 name,
                 new ShaderResourceSignature(group, binding, kind, GetArrayCount(resource)),
                 spirvType,
-                format));
+                format,
+                componentFormat));
         }
     }
 
@@ -326,6 +345,23 @@ internal static class M04ShaderReflectionReader
         return value.GetString()!;
     }
 
+    private static ReadOnlySpan<uint> GetSpirvWords(ReadOnlySpan<byte> bytecode)
+    {
+        if ((bytecode.Length < (5 * sizeof(uint))) || ((bytecode.Length % sizeof(uint)) != 0))
+        {
+            throw new InvalidDataException("The reflected SPIR-V module has an invalid byte length.");
+        }
+
+        var words = MemoryMarshal.Cast<byte, uint>(bytecode);
+
+        if (words[0] != MagicNumber)
+        {
+            throw new InvalidDataException("The reflected shader bytecode is not SPIR-V.");
+        }
+
+        return words;
+    }
+
     private static ShaderStage GetStage(string mode)
         => mode switch {
             "vert" => ShaderStage.Vertex,
@@ -348,17 +384,7 @@ internal static class M04ShaderReflectionReader
 
     private static ImmutableArray<ShaderCapability> ParseCapabilities(ReadOnlySpan<byte> bytecode)
     {
-        if ((bytecode.Length < (5 * sizeof(uint))) || ((bytecode.Length % sizeof(uint)) != 0))
-        {
-            throw new InvalidDataException("The reflected SPIR-V module has an invalid byte length.");
-        }
-
-        var words = MemoryMarshal.Cast<byte, uint>(bytecode);
-
-        if (words[0] != MagicNumber)
-        {
-            throw new InvalidDataException("The reflected shader bytecode is not SPIR-V.");
-        }
+        var words = GetSpirvWords(bytecode);
 
         for (var cursor = 5; cursor < words.Length;)
         {
@@ -519,15 +545,17 @@ internal static class M04ShaderReflectionReader
         return layouts.MoveToImmutable();
     }
 
-    private static ImmutableArray<ReflectedResource> ParseResources(JsonElement root)
+    private static ImmutableArray<ReflectedResource> ParseResources(
+        JsonElement root,
+        Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage)> imageTypes)
     {
         CheckUnsupportedResourceCollections(root);
         var resources = ImmutableArray.CreateBuilder<ReflectedResource>();
-        AddResourceCollection(root, "ubos", ShaderResourceKind.UniformBuffer, resources);
-        AddResourceCollection(root, "separate_images", ShaderResourceKind.SampledImage, resources);
-        AddResourceCollection(root, "separate_samplers", ShaderResourceKind.Sampler, resources);
-        AddResourceCollection(root, "ssbos", ShaderResourceKind.StorageBuffer, resources);
-        AddResourceCollection(root, "images", ShaderResourceKind.StorageImage, resources);
+        AddResourceCollection(root, "ubos", ShaderResourceKind.UniformBuffer, imageTypes, resources);
+        AddResourceCollection(root, "separate_images", ShaderResourceKind.SampledImage, imageTypes, resources);
+        AddResourceCollection(root, "separate_samplers", ShaderResourceKind.Sampler, imageTypes, resources);
+        AddResourceCollection(root, "ssbos", ShaderResourceKind.StorageBuffer, imageTypes, resources);
+        AddResourceCollection(root, "images", ShaderResourceKind.StorageImage, imageTypes, resources);
         return resources.ToImmutable();
     }
 
@@ -690,7 +718,7 @@ internal static class M04ShaderReflectionReader
         {
             return resource.Signature.Kind switch {
                 ShaderResourceKind.UniformBuffer => ("cbuffer", "NA", "NA"),
-                ShaderResourceKind.SampledImage => ("texture", null, GetTextureDimension(resource.SpirvType)),
+                ShaderResourceKind.SampledImage => ("texture", resource.ComponentFormat, GetTextureDimension(resource.SpirvType)),
                 ShaderResourceKind.StorageBuffer => ("UAV", "struct", "r/w"),
                 ShaderResourceKind.StorageImage => ("UAV", GetDxilStorageImageFormat(resource.Format), GetStorageImageDimension(resource.SpirvType)),
                 ShaderResourceKind.Sampler => ("sampler", "NA", "NA"),
@@ -752,6 +780,12 @@ internal static class M04ShaderReflectionReader
 
             var matchedResource = resources[matchedIndex];
             var expectedShape = GetDxilResourceShape(matchedResource);
+
+            if ((matchedResource.Signature.Kind == ShaderResourceKind.StorageImage)
+                && !StringComparer.Ordinal.Equals(matchedResource.ComponentFormat, expectedShape.Format))
+            {
+                throw new InvalidDataException($"DXIL storage-image resource '{resourceName}' does not match the SPIR-V component type.");
+            }
 
             if (!StringComparer.Ordinal.Equals(row[1], expectedShape.Type)
                 || ((expectedShape.Format is not null) && !StringComparer.Ordinal.Equals(row[2], expectedShape.Format))
@@ -1212,9 +1246,249 @@ internal static class M04ShaderReflectionReader
             };
     }
 
+    private static class SpirvImageTypeReader
+    {
+        private const uint DecorationBinding = 33;
+        private const uint DecorationDescriptorSet = 34;
+        private const ushort OpDecorate = 71;
+        private const ushort OpTypeArray = 28;
+        private const ushort OpTypeFloat = 22;
+        private const ushort OpTypeImage = 25;
+        private const ushort OpTypeInt = 21;
+        private const ushort OpTypePointer = 32;
+        private const ushort OpTypeRuntimeArray = 29;
+        private const ushort OpVariable = 59;
+        private const uint StorageClassUniformConstant = 0;
+
+        internal static Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage)> Read(
+            ReadOnlySpan<byte> bytecode)
+        {
+            var words = GetSpirvWords(bytecode);
+            var scalarFormats = new Dictionary<uint, string>();
+            var pointerTypes = new Dictionary<uint, uint>();
+            var imageTypes = new Dictionary<uint, (uint SampledTypeId, uint Sampled)>();
+            var arrayElementTypes = new Dictionary<uint, uint>();
+            var decorations = new Dictionary<uint, (int? DescriptorSet, int? Binding)>();
+            var variables = new List<(uint PointerType, uint Id, uint StorageClass)>();
+
+            for (var cursor = 5; cursor < words.Length;)
+            {
+                var instruction = words[cursor];
+                var wordCount = checked((int)(instruction >> 16));
+                var opcode = checked((ushort)(instruction & 0xFFFF));
+
+                if ((wordCount == 0) || (wordCount > words.Length - cursor))
+                {
+                    throw new InvalidDataException("The reflected SPIR-V module contains a truncated instruction.");
+                }
+
+                switch (opcode)
+                {
+                    case OpTypeInt:
+                    {
+                        if ((wordCount != 4) || (words[cursor + 3] > 1))
+                        {
+                            throw new InvalidDataException("SPIR-V OpTypeInt has an invalid operand count or signedness.");
+                        }
+
+                        var prefix = (words[cursor + 3] == 0) ? "u" : "i";
+
+                        if (!scalarFormats.TryAdd(words[cursor + 1], $"{prefix}{words[cursor + 2]}"))
+                        {
+                            throw new InvalidDataException("The reflected SPIR-V module redeclares a type ID.");
+                        }
+
+                        break;
+                    }
+
+                    case OpTypeFloat:
+                    {
+                        if (wordCount != 3)
+                        {
+                            throw new InvalidDataException("SPIR-V OpTypeFloat has an invalid operand count.");
+                        }
+
+                        if (!scalarFormats.TryAdd(words[cursor + 1], $"f{words[cursor + 2]}"))
+                        {
+                            throw new InvalidDataException("The reflected SPIR-V module redeclares a type ID.");
+                        }
+
+                        break;
+                    }
+
+                    case OpTypeImage:
+                    {
+                        if ((wordCount is not (9 or 10))
+                            || !imageTypes.TryAdd(words[cursor + 1], (words[cursor + 2], words[cursor + 7])))
+                        {
+                            throw new InvalidDataException("SPIR-V OpTypeImage has an invalid operand count or duplicate result ID.");
+                        }
+
+                        break;
+                    }
+
+                    case OpTypeArray:
+                    {
+                        if ((wordCount != 4) || !arrayElementTypes.TryAdd(words[cursor + 1], words[cursor + 2]))
+                        {
+                            throw new InvalidDataException("SPIR-V OpTypeArray has an invalid operand count or duplicate result ID.");
+                        }
+
+                        break;
+                    }
+
+                    case OpTypeRuntimeArray:
+                    {
+                        if ((wordCount != 3) || !arrayElementTypes.TryAdd(words[cursor + 1], words[cursor + 2]))
+                        {
+                            throw new InvalidDataException("SPIR-V OpTypeRuntimeArray has an invalid operand count or duplicate result ID.");
+                        }
+
+                        break;
+                    }
+
+                    case OpTypePointer:
+                    {
+                        if ((wordCount != 4) || !pointerTypes.TryAdd(words[cursor + 1], words[cursor + 3]))
+                        {
+                            throw new InvalidDataException("SPIR-V OpTypePointer has an invalid operand count or duplicate result ID.");
+                        }
+
+                        break;
+                    }
+
+                    case OpDecorate:
+                    {
+                        if (wordCount < 3)
+                        {
+                            throw new InvalidDataException("SPIR-V OpDecorate has an invalid operand count.");
+                        }
+
+                        var targetId = words[cursor + 1];
+                        var decoration = words[cursor + 2];
+
+                        if (decoration is not (DecorationBinding or DecorationDescriptorSet))
+                        {
+                            break;
+                        }
+
+                        if (wordCount != 4)
+                        {
+                            throw new InvalidDataException("SPIR-V descriptor decorations must contain one literal operand.");
+                        }
+
+                        var value = words[cursor + 3];
+
+                        if (value > int.MaxValue)
+                        {
+                            throw new InvalidDataException("SPIR-V descriptor set and binding values must fit in a signed 32-bit integer.");
+                        }
+
+                        var existingDecoration = decorations.GetValueOrDefault(targetId);
+                        var (descriptorSet, binding) = existingDecoration;
+
+                        if (decoration == DecorationDescriptorSet)
+                        {
+                            if (descriptorSet is not null)
+                            {
+                                throw new InvalidDataException("The reflected SPIR-V module has duplicate descriptor-set decorations.");
+                            }
+
+                            descriptorSet = (int)value;
+                        }
+                        else
+                        {
+                            if (binding is not null)
+                            {
+                                throw new InvalidDataException("The reflected SPIR-V module has duplicate descriptor-binding decorations.");
+                            }
+
+                            binding = (int)value;
+                        }
+
+                        decorations[targetId] = (descriptorSet, binding);
+                        break;
+                    }
+
+                    case OpVariable:
+                    {
+                        if (wordCount is not (4 or 5))
+                        {
+                            throw new InvalidDataException("SPIR-V OpVariable has an invalid operand count.");
+                        }
+
+                        variables.Add((words[cursor + 1], words[cursor + 2], words[cursor + 3]));
+                        break;
+                    }
+                }
+
+                cursor += wordCount;
+            }
+
+            var imageFormats = new Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage)>();
+
+            foreach (var (pointerType, variableId, storageClass) in variables)
+            {
+                if (storageClass != StorageClassUniformConstant)
+                {
+                    continue;
+                }
+
+                if (!pointerTypes.TryGetValue(pointerType, out var typeId))
+                {
+                    throw new InvalidDataException("A SPIR-V UniformConstant variable has no reflected pointer type.");
+                }
+
+                var visitedArrayTypes = new HashSet<uint>();
+
+                while (arrayElementTypes.TryGetValue(typeId, out var elementTypeId))
+                {
+                    if (!visitedArrayTypes.Add(typeId))
+                    {
+                        throw new InvalidDataException("The reflected SPIR-V descriptor type contains an array cycle.");
+                    }
+
+                    typeId = elementTypeId;
+                }
+
+                if (!imageTypes.TryGetValue(typeId, out var imageType))
+                {
+                    continue;
+                }
+
+                if (!decorations.TryGetValue(variableId, out var decoration)
+                    || (decoration.DescriptorSet is not int descriptorSet)
+                    || (decoration.Binding is not int binding))
+                {
+                    throw new InvalidDataException("A SPIR-V image variable omitted its descriptor set or binding.");
+                }
+
+                if (!scalarFormats.TryGetValue(imageType.SampledTypeId, out var componentFormat)
+                    || (componentFormat is not ("f32" or "i32" or "u32")))
+                {
+                    throw new NotSupportedException("M04 image resources require a 32-bit float, signed-integer, or unsigned-integer component type.");
+                }
+
+                var isStorage = imageType.Sampled switch {
+                    1 => false,
+                    2 => true,
+                    _ => throw new NotSupportedException("The M04 reflection reader only converts explicitly sampled or storage images."),
+                };
+
+                if (!imageFormats.TryAdd((descriptorSet, binding), (componentFormat, isStorage)))
+                {
+                    throw new InvalidDataException("The reflected SPIR-V module contains duplicate image descriptor identities.");
+                }
+            }
+
+            return imageFormats;
+        }
+    }
+
     private readonly record struct ReflectedResource(
         string Name,
         ShaderResourceSignature Signature,
         string SpirvType,
-        string? Format);
+        string? Format,
+        string? ComponentFormat);
 }
