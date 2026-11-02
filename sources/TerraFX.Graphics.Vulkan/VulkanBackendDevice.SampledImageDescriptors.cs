@@ -11,8 +11,9 @@ namespace TerraFX.Graphics.Vulkan;
 
 internal sealed unsafe partial class VulkanBackendDevice
 {
-    internal VulkanBackendDescriptorSet CreateSampledImageSamplerDescriptorSet(
+    internal VulkanBackendDescriptorSet CreateFrameDescriptorSet(
         VulkanBackendPipeline pipeline,
+        ImmutableArray<VulkanBackendUniformBufferBinding> uniformBufferBindings,
         ImmutableArray<VulkanBackendSampledImageBinding> imageBindings,
         ImmutableArray<VulkanBackendSamplerBinding> samplerBindings)
     {
@@ -24,13 +25,14 @@ internal sealed unsafe partial class VulkanBackendDevice
             throw new ArgumentException("The pipeline is not live on this Vulkan device.", nameof(pipeline));
         }
 
-        if (imageBindings.IsDefault || samplerBindings.IsDefault)
+        if (uniformBufferBindings.IsDefault || imageBindings.IsDefault || samplerBindings.IsDefault)
         {
-            throw new ArgumentException("Sampled-image and sampler descriptor bindings must be initialized.", nameof(imageBindings));
+            throw new ArgumentException("Frame descriptor bindings must be initialized.", nameof(uniformBufferBindings));
         }
 
         var resources = pipeline.Resources;
         var setIndex = -1;
+        var expectedUniformBufferCount = 0;
         var expectedImageCount = 0;
         var expectedSamplerCount = 0;
 
@@ -45,11 +47,17 @@ internal sealed unsafe partial class VulkanBackendDevice
 
             if (resource.ArrayCount != 1)
             {
-                throw new NotSupportedException("Sampled-image and sampler descriptor arrays are not supported.");
+                throw new NotSupportedException("Frame descriptor arrays are not supported.");
             }
 
             switch (resource.Kind)
             {
+                case ShaderResourceKind.UniformBuffer:
+                {
+                    expectedUniformBufferCount++;
+                    break;
+                }
+
                 case ShaderResourceKind.SampledImage:
                 {
                     expectedImageCount++;
@@ -64,7 +72,7 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                 default:
                 {
-                    throw new NotSupportedException("This descriptor-set path supports only Frame-group sampled images and samplers.");
+                    throw new NotSupportedException("This descriptor-set path supports only Frame-group uniform buffers, sampled images, and samplers.");
                 }
             }
 
@@ -73,11 +81,83 @@ internal sealed unsafe partial class VulkanBackendDevice
 
         if ((setIndex < 0)
             || (setIndex >= pipeline.DescriptorSetLayouts.Length)
+            || (expectedUniformBufferCount != uniformBufferBindings.Length)
             || (expectedImageCount != imageBindings.Length)
             || (expectedSamplerCount != samplerBindings.Length)
-            || ((expectedImageCount == 0) && (expectedSamplerCount == 0)))
+            || ((expectedUniformBufferCount == 0) && (expectedImageCount == 0) && (expectedSamplerCount == 0)))
         {
-            throw new ArgumentException("The pipeline does not have a complete Frame-group sampled-image/sampler set.");
+            throw new ArgumentException("The pipeline does not have a complete Frame-group descriptor set.");
+        }
+
+        var sortedUniformBufferBindings = uniformBufferBindings.ToArray();
+        Array.Sort(sortedUniformBufferBindings, static (left, right) => left.Binding.CompareTo(right.Binding));
+        var retainedBuffers = new VulkanBackendBuffer[sortedUniformBufferBindings.Length];
+        var bufferInfos = new VkDescriptorBufferInfo[sortedUniformBufferBindings.Length];
+        var bufferWrites = new VkWriteDescriptorSet[sortedUniformBufferBindings.Length];
+
+        for (var index = 0; index < sortedUniformBufferBindings.Length; index++)
+        {
+            var binding = sortedUniformBufferBindings[index];
+            ArgumentNullException.ThrowIfNull(binding.Buffer);
+
+            if ((binding.Group != ShaderBindingGroup.Frame)
+                || (binding.Binding < 0)
+                || binding.Buffer.IsDisposed
+                || !ReferenceEquals(binding.Buffer.Owner, this))
+            {
+                throw new ArgumentException("A uniform-buffer descriptor binding has an invalid group, binding, or buffer owner.", nameof(uniformBufferBindings));
+            }
+
+            if (!MatchesReflectedResource(
+                    resources,
+                    binding.Group,
+                    binding.Binding,
+                    ShaderResourceKind.UniformBuffer)
+                || ((index != 0) && (sortedUniformBufferBindings[index - 1].Binding == binding.Binding)))
+            {
+                throw new ArgumentException("Uniform-buffer descriptors must match the pipeline's unique reflected bindings.", nameof(uniformBufferBindings));
+            }
+
+            if ((binding.Buffer.Description.Usage & BufferUsage.Uniform) == 0)
+            {
+                throw new ArgumentException("A bound buffer does not declare uniform-buffer usage.", nameof(uniformBufferBindings));
+            }
+
+            ArgumentOutOfRangeException.ThrowIfNegative(binding.Offset);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(binding.Range);
+
+            var rangeEnd = checked(binding.Offset + binding.Range);
+
+            if (rangeEnd > binding.Buffer.Description.ByteLength)
+            {
+                throw new ArgumentException("The uniform-buffer descriptor range exceeds its buffer.", nameof(uniformBufferBindings));
+            }
+
+            if ((binding.Offset % Capabilities.Limits.UniformBufferOffsetAlignment) != 0)
+            {
+                throw new ArgumentException("The uniform-buffer descriptor offset does not satisfy device alignment.", nameof(uniformBufferBindings));
+            }
+
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(
+                binding.Range,
+                Capabilities.Limits.MaximumUniformBufferRangeBytes,
+                nameof(uniformBufferBindings));
+
+            var write = default(VkWriteDescriptorSet);
+            write.sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstBinding = GetNativeDescriptorBinding(
+                new ShaderResourceSignature(
+                    binding.Group,
+                    binding.Binding,
+                    ShaderResourceKind.UniformBuffer,
+                    arrayCount: 1));
+            write.descriptorCount = 1;
+            write.descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            bufferWrites[index] = write;
+            retainedBuffers[index] = binding.Buffer;
+            bufferInfos[index].buffer = binding.Buffer.Buffer;
+            bufferInfos[index].offset = checked((ulong)binding.Offset);
+            bufferInfos[index].range = checked((ulong)binding.Range);
         }
 
         var sortedImageBindings = imageBindings.ToArray();
@@ -184,8 +264,19 @@ internal sealed unsafe partial class VulkanBackendDevice
             samplerWrites[index] = write;
         }
 
-        var poolSizes = new VkDescriptorPoolSize[(imageInfos.Length == 0 ? 0 : 1) + (samplerInfos.Length == 0 ? 0 : 1)];
+        var poolSizes = new VkDescriptorPoolSize[
+            (bufferInfos.Length == 0 ? 0 : 1)
+            + (imageInfos.Length == 0 ? 0 : 1)
+            + (samplerInfos.Length == 0 ? 0 : 1)];
         var poolSizeCount = 0;
+
+        if (bufferInfos.Length != 0)
+        {
+            var poolSize = default(VkDescriptorPoolSize);
+            poolSize.type = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            poolSize.descriptorCount = checked((uint)bufferInfos.Length);
+            poolSizes[poolSizeCount++] = poolSize;
+        }
 
         if (imageInfos.Length != 0)
         {
@@ -240,6 +331,26 @@ internal sealed unsafe partial class VulkanBackendDevice
                 VulkanApi.vkAllocateDescriptorSets(_device, &allocateInfo, &descriptorSet),
                 "vkAllocateDescriptorSets");
 
+            if (bufferWrites.Length != 0)
+            {
+                fixed (VkDescriptorBufferInfo* bufferInfosPointer = bufferInfos)
+                fixed (VkWriteDescriptorSet* bufferWritesPointer = bufferWrites)
+                {
+                    for (var index = 0; index < bufferWrites.Length; index++)
+                    {
+                        bufferWritesPointer[index].dstSet = descriptorSet;
+                        bufferWritesPointer[index].pBufferInfo = bufferInfosPointer + index;
+                    }
+
+                    VulkanApi.vkUpdateDescriptorSets(
+                        _device,
+                        checked((uint)bufferWrites.Length),
+                        bufferWritesPointer,
+                        0,
+                        null);
+                }
+            }
+
             if (imageWrites.Length != 0)
             {
                 fixed (VkDescriptorImageInfo* imageInfosPointer = imageInfos)
@@ -285,16 +396,22 @@ internal sealed unsafe partial class VulkanBackendDevice
                 pipeline,
                 descriptorPool,
                 descriptorSet,
-                [],
+                retainedBuffers,
                 retainedTextures,
                 retainedSamplers,
                 imageViews);
             pipeline.RetainDescriptorSet();
+            var retainedBufferCount = 0;
             var retainedTextureCount = 0;
             var retainedSamplerCount = 0;
 
             try
             {
+                for (; retainedBufferCount < retainedBuffers.Length; retainedBufferCount++)
+                {
+                    retainedBuffers[retainedBufferCount].RetainDescriptorSet();
+                }
+
                 for (; retainedTextureCount < retainedTextures.Length; retainedTextureCount++)
                 {
                     retainedTextures[retainedTextureCount].RetainDescriptorSet();
@@ -317,6 +434,11 @@ internal sealed unsafe partial class VulkanBackendDevice
                 for (var index = retainedTextureCount - 1; index >= 0; index--)
                 {
                     retainedTextures[index].ReleaseDescriptorSet();
+                }
+
+                for (var index = retainedBufferCount - 1; index >= 0; index--)
+                {
+                    retainedBuffers[index].ReleaseDescriptorSet();
                 }
 
                 pipeline.ReleaseDescriptorSet();
@@ -343,4 +465,14 @@ internal sealed unsafe partial class VulkanBackendDevice
             }
         }
     }
+
+    internal VulkanBackendDescriptorSet CreateSampledImageSamplerDescriptorSet(
+        VulkanBackendPipeline pipeline,
+        ImmutableArray<VulkanBackendSampledImageBinding> imageBindings,
+        ImmutableArray<VulkanBackendSamplerBinding> samplerBindings)
+        => CreateFrameDescriptorSet(
+            pipeline,
+            [],
+            imageBindings,
+            samplerBindings);
 }

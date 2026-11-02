@@ -61,20 +61,25 @@ internal sealed class VulkanBackendDeviceTests
         BufferReadLease<byte> vertexBytecode,
         BufferReadLease<byte> pixelBytecode,
         PipelineBlendMode blendMode = PipelineBlendMode.Opaque,
-        bool usesSampledResources = false)
+        bool usesSampledResources = false,
+        bool includesFrameUniformBuffer = true)
     {
         var compilerIdentity = CreateShaderCompilerIdentity();
-        ImmutableArray<ShaderResourceSignature> pixelResources = usesSampledResources
+        var pixelResources = ImmutableArray.CreateBuilder<ShaderResourceSignature>();
+
+        if (includesFrameUniformBuffer)
+        {
+            pixelResources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1));
+        }
+
+        if (usesSampledResources)
+        {
+            pixelResources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.SampledImage, 1));
+            pixelResources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.Sampler, 1));
+        }
+
+        ImmutableArray<ShaderRecordLayout> pixelRecordLayouts = includesFrameUniformBuffer
             ? [
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.SampledImage, 1),
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.Sampler, 1),
-            ]
-            : [
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1),
-            ];
-        ImmutableArray<ShaderRecordLayout> pixelRecordLayouts = usesSampledResources
-            ? []
-            : [
                 new ShaderRecordLayout(
                     "FrameData",
                     16,
@@ -85,7 +90,14 @@ internal sealed class VulkanBackendDeviceTests
                         16,
                         1,
                         0)]),
-            ];
+            ]
+            : [];
+        var pixelEntryPoint = (usesSampledResources, includesFrameUniformBuffer) switch {
+            (false, true) => "PSMain",
+            (true, false) => "PSSampledMain",
+            (true, true) => "PSSampledFrameMain",
+            _ => throw new ArgumentException("A pixel shader fixture must declare a Frame UBO or sampled image and sampler."),
+        };
         var vertexReflection = new ShaderReflection(
             ShaderStage.Vertex,
             "VSMain",
@@ -101,11 +113,11 @@ internal sealed class VulkanBackendDeviceTests
             groupSizeZ: 0);
         var pixelReflection = new ShaderReflection(
             ShaderStage.Pixel,
-            usesSampledResources ? "PSSampledMain" : "PSMain",
+            pixelEntryPoint,
             compilerIdentity,
             [],
             [new ShaderIoSignature("SV_Target", 0, null, ShaderValueType.Float4, ShaderInterpolation.Smooth)],
-            pixelResources,
+            pixelResources.ToImmutable(),
             pixelRecordLayouts,
             [],
             bindingLayoutVersion: 1,
@@ -307,7 +319,8 @@ internal sealed class VulkanBackendDeviceTests
             CreateShaderFixtureDescription(
                 vertexLease,
                 pixelLease,
-                usesSampledResources: true),
+                usesSampledResources: true,
+                includesFrameUniformBuffer: false),
             [vertexLease, pixelLease]);
         using var texture = device.CreateTexture(
             new TextureDescription(
@@ -380,6 +393,132 @@ internal sealed class VulkanBackendDeviceTests
             Throws.InvalidOperationException.With.Message.Contains("descriptor sets remain live"));
 
         descriptorSet.Dispose();
+        texture.Dispose();
+        sampler.Dispose();
+        pipeline.Dispose();
+        device.Dispose();
+    }
+
+    [Test]
+    public void OffscreenNativeDeviceAllocatesAndPopulatesVulkanMixedFrameDescriptorSet()
+    {
+        var fixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
+
+        if (string.IsNullOrWhiteSpace(fixtureDirectory))
+        {
+            Assert.Ignore("The compiled M04 shader fixture is not selected through TERRAFX_M04_SHADER_FIXTURE_DIRECTORY.");
+            return;
+        }
+
+        using var device = CreateVulkanDeviceForNativeSmokeTest();
+        using var vertexStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.vertex.spv"));
+        using var pixelStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.pixel-sampled-frame.spv"));
+        using var vertexLease = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
+        using var pixelLease = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
+        using var pipeline = device.CreatePipeline(
+            CreateShaderFixtureDescription(
+                vertexLease,
+                pixelLease,
+                usesSampledResources: true),
+            [vertexLease, pixelLease]);
+        using var buffer = device.CreateBuffer(
+            new BufferDescription(
+                16,
+                BufferUsage.Uniform,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: null,
+                debugName: "mixed-frame-data"));
+        using var texture = device.CreateTexture(
+            new TextureDescription(
+                TextureDimension.Dimension2D,
+                1,
+                1,
+                depth: 1,
+                arrayLayers: 1,
+                mipLevels: 1,
+                TextureFormat.Rgba8Unorm,
+                TextureUsage.Sampled | TextureUsage.CopySource | TextureUsage.CopyDestination,
+                "mixed-frame-texture"));
+        var sourceBytes = new byte[] { 0x11, 0x32, 0x53, 0xF4 };
+        var sourceStorage = UnmanagedBuffer<byte>.Allocate(
+            sourceBytes.Length,
+            new BufferAllocationOptions(sourceBytes.Length, alignment: 1));
+        sourceStorage.CopyFrom(sourceBytes.AsSpan(), 0);
+
+        using var ownedSource = sourceStorage.TransferToOwnedBuffer();
+        using var sourceLease = ownedSource.AcquireReadLease(0, sourceBytes.Length);
+        var subresource = new TextureSubresource(0, 0, TextureAspect.Color);
+        Assert.That(
+            device.UploadTexture(
+                texture,
+                subresource,
+                sourceLease,
+                0,
+                new TextureDataLayout(rowPitch: 4, slicePitch: 4)),
+            Is.GreaterThan(0));
+        using var sampler = device.CreateSampler(
+            new SamplerDescription(
+                SamplerFilter.Linear,
+                SamplerFilter.Linear,
+                SamplerFilter.None,
+                SamplerAddressMode.Clamp,
+                SamplerAddressMode.Clamp,
+                SamplerAddressMode.Clamp,
+                maximumAnisotropy: 1.0f),
+            effectiveMaximumAnisotropy: 1.0f);
+        var imageBindings = ImmutableArray.Create(new VulkanBackendSampledImageBinding(
+            ShaderBindingGroup.Frame,
+            0,
+            texture));
+        var samplerBindings = ImmutableArray.Create(new VulkanBackendSamplerBinding(
+            ShaderBindingGroup.Frame,
+            0,
+            sampler));
+
+        Assert.That(
+            () => device.CreateFrameDescriptorSet(
+                pipeline,
+                [],
+                imageBindings,
+                samplerBindings),
+            Throws.ArgumentException);
+
+        using var descriptorSet = device.CreateFrameDescriptorSet(
+            pipeline,
+            [new VulkanBackendUniformBufferBinding(
+                ShaderBindingGroup.Frame,
+                0,
+                buffer,
+                0,
+                16)],
+            imageBindings,
+            samplerBindings);
+        Assert.That(descriptorSet.IsDisposed, Is.False);
+        Assert.That(descriptorSet.Buffers.Length, Is.EqualTo(1));
+        Assert.That(descriptorSet.Textures.Length, Is.EqualTo(1));
+        Assert.That(descriptorSet.Samplers.Length, Is.EqualTo(1));
+        Assert.That(
+            device.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("live descriptor sets"));
+        Assert.That(
+            pipeline.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("descriptor sets remain live"));
+        Assert.That(
+            buffer.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("descriptor sets remain live"));
+        Assert.That(
+            texture.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("descriptor sets remain live"));
+        Assert.That(
+            sampler.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("descriptor sets remain live"));
+
+        descriptorSet.Dispose();
+        buffer.Dispose();
         texture.Dispose();
         sampler.Dispose();
         pipeline.Dispose();
@@ -587,7 +726,8 @@ internal sealed class VulkanBackendDeviceTests
             CreateShaderFixtureDescription(
                 vertexLease,
                 pixelLease,
-                usesSampledResources: true),
+                usesSampledResources: true,
+                includesFrameUniformBuffer: false),
             [vertexLease, pixelLease]);
 
         Assert.That(pipeline.IsDisposed, Is.False);

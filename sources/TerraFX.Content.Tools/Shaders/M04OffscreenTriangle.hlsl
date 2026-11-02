@@ -37,3 +37,8 @@ float4 PSSampledMain(VertexOutput input) : SV_Target0
 {
     return FrameTexture.Sample(FrameSampler, float2(0.5, 0.5));
 }
+
+float4 PSSampledFrameMain(VertexOutput input) : SV_Target0
+{
+    return FrameTexture.Sample(FrameSampler, float2(0.5, 0.5)) * color;
+}
