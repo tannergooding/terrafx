@@ -4542,7 +4542,8 @@ public enum GraphResourceState
     ColorAttachment,
     DepthRead,
     DepthWrite,
-    Present
+    Present,
+    General = 13
 }
 
 public enum GraphImportCompletionPolicy

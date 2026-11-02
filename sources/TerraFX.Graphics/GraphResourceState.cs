@@ -43,4 +43,7 @@ public enum GraphResourceState
 
     /// <summary>The resource is ready for presentation.</summary>
     Present = 12,
+
+    /// <summary>The resource is in the backend's neutral state with no graph usage implied.</summary>
+    General = 13,
 }

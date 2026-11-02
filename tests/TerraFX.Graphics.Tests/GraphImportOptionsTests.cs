@@ -20,11 +20,12 @@ internal sealed class GraphImportOptionsTests
     public void ImportOptionsRetainTrackedStateContentsAndCompletionPolicy()
     {
         var options = new GraphImportOptions(
-            GraphResourceState.ColorAttachment,
+            GraphResourceState.General,
             true,
             GraphImportCompletionPolicy.RequireIdle);
 
-        Assert.That(options.InitialState, Is.EqualTo(GraphResourceState.ColorAttachment));
+        Assert.That((int)GraphResourceState.General, Is.EqualTo(13));
+        Assert.That(options.InitialState, Is.EqualTo(GraphResourceState.General));
         Assert.That(options.ContentsValid, Is.True);
         Assert.That(options.CompletionPolicy, Is.EqualTo(GraphImportCompletionPolicy.RequireIdle));
     }
