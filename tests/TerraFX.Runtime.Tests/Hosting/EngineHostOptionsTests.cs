@@ -706,6 +706,8 @@ internal sealed class EngineHostOptionsTests
                     pipeline,
                     uniformBufferBindings,
                     sampledImageBindings,
+                    [],
+                    [],
                     []));
 
                 var misalignedUniformBufferBindings = ImmutableArray.Create(new D3D12BackendUniformBufferBinding(
@@ -718,12 +720,16 @@ internal sealed class EngineHostOptionsTests
                     pipeline,
                     misalignedUniformBufferBindings,
                     sampledImageBindings,
+                    [],
+                    [],
                     samplerBindings));
 
                 using var descriptorSet = device.CreateDescriptorSet(
                     pipeline,
                     uniformBufferBindings,
                     sampledImageBindings,
+                    [],
+                    [],
                     samplerBindings);
                 Assert.That(descriptorSet.BufferCount, Is.EqualTo(1));
                 Assert.That(descriptorSet.TextureCount, Is.EqualTo(1));
@@ -743,6 +749,174 @@ internal sealed class EngineHostOptionsTests
                 Assert.DoesNotThrow(sampler.Dispose);
                 Assert.DoesNotThrow(pipeline.Dispose);
                 TestContext.WriteLine("D3D12 wrote CBV, SRV, and sampler tables and retained every native owner until descriptor-set disposal.");
+
+                using var storagePixelBytecodeStorage = CreateBytecodeStorage(Path.Combine(
+                    dxilFixtureDirectory,
+                    "M04OffscreenTriangle.pixel-sampled-frame-storage.dxil"));
+                using var storagePixelBytecode = storagePixelBytecodeStorage.AcquireReadLease(0, storagePixelBytecodeStorage.Length);
+                using var storagePipeline = device.CreatePipeline(
+                    CreateD3D12ResourcePipelineDescription(
+                        vertexBytecode,
+                        storagePixelBytecode,
+                        includeStorageResources: true),
+                    [vertexBytecode, storagePixelBytecode]);
+                using var storageUniformBuffer = device.CreateBuffer(
+                    new BufferDescription(
+                        512,
+                        BufferUsage.Uniform,
+                        GpuMemoryKind.DeviceLocal,
+                        structuredStride: null,
+                        debugName: "d3d12-storage-descriptor-frame-data"));
+                using var storageSampledTexture = device.CreateTexture(
+                    new TextureDescription(
+                        TextureDimension.Dimension2D,
+                        1,
+                        1,
+                        depth: 1,
+                        arrayLayers: 1,
+                        mipLevels: 1,
+                        TextureFormat.Rgba8Unorm,
+                        TextureUsage.Sampled,
+                        "d3d12-storage-descriptor-sampled-texture"));
+                using var storageBuffer = device.CreateBuffer(
+                    new BufferDescription(
+                        16,
+                        BufferUsage.Storage,
+                        GpuMemoryKind.DeviceLocal,
+                        structuredStride: 4,
+                        debugName: "d3d12-storage-descriptor-buffer"));
+                using var storageTexture = device.CreateTexture(
+                    new TextureDescription(
+                        TextureDimension.Dimension2D,
+                        1,
+                        1,
+                        depth: 1,
+                        arrayLayers: 1,
+                        mipLevels: 1,
+                        TextureFormat.R32UInt,
+                        TextureUsage.Storage,
+                        "d3d12-storage-descriptor-texture"));
+                using var storageSampler = device.CreateSampler(
+                    new SamplerDescription(
+                        SamplerFilter.Linear,
+                        SamplerFilter.Linear,
+                        SamplerFilter.None,
+                        SamplerAddressMode.Clamp,
+                        SamplerAddressMode.Clamp,
+                        SamplerAddressMode.Clamp,
+                        maximumAnisotropy: 1.0f),
+                    effectiveMaximumAnisotropy: 1.0f);
+                var storageUniformBufferBindings = ImmutableArray.Create(new D3D12BackendUniformBufferBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    storageUniformBuffer,
+                    0,
+                    16));
+                var storageSampledImageBindings = ImmutableArray.Create(new D3D12BackendSampledImageBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    storageSampledTexture));
+                var storageBufferBindings = ImmutableArray.Create(new D3D12BackendStorageBufferBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    storageBuffer,
+                    0,
+                    16));
+                var storageImageBindings = ImmutableArray.Create(new D3D12BackendStorageImageBinding(
+                    ShaderBindingGroup.Frame,
+                    1,
+                    storageTexture));
+                var storageSamplerBindings = ImmutableArray.Create(new D3D12BackendSamplerBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    storageSampler));
+
+                _ = Assert.Throws<ArgumentException>(() => device.CreateDescriptorSet(
+                    storagePipeline,
+                    storageUniformBufferBindings,
+                    storageSampledImageBindings,
+                    storageBufferBindings,
+                    [],
+                    storageSamplerBindings));
+
+                var unalignedStorageBufferBindings = ImmutableArray.Create(new D3D12BackendStorageBufferBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    storageBuffer,
+                    1,
+                    16));
+                _ = Assert.Throws<ArgumentException>(() => device.CreateDescriptorSet(
+                    storagePipeline,
+                    storageUniformBufferBindings,
+                    storageSampledImageBindings,
+                    unalignedStorageBufferBindings,
+                    storageImageBindings,
+                    storageSamplerBindings));
+
+                var invalidStructuredRangeBindings = ImmutableArray.Create(new D3D12BackendStorageBufferBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    storageBuffer,
+                    0,
+                    5));
+                _ = Assert.Throws<ArgumentException>(() => device.CreateDescriptorSet(
+                    storagePipeline,
+                    storageUniformBufferBindings,
+                    storageSampledImageBindings,
+                    invalidStructuredRangeBindings,
+                    storageImageBindings,
+                    storageSamplerBindings));
+
+                using var invalidStorageBuffer = device.CreateBuffer(
+                    new BufferDescription(
+                        16,
+                        BufferUsage.CopySource,
+                        GpuMemoryKind.DeviceLocal,
+                        structuredStride: 4,
+                        debugName: "d3d12-storage-descriptor-invalid-usage"));
+                var invalidStorageUsageBindings = ImmutableArray.Create(new D3D12BackendStorageBufferBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    invalidStorageBuffer,
+                    0,
+                    16));
+                _ = Assert.Throws<ArgumentException>(() => device.CreateDescriptorSet(
+                    storagePipeline,
+                    storageUniformBufferBindings,
+                    storageSampledImageBindings,
+                    invalidStorageUsageBindings,
+                    storageImageBindings,
+                    storageSamplerBindings));
+
+                using var storageDescriptorSet = device.CreateDescriptorSet(
+                    storagePipeline,
+                    storageUniformBufferBindings,
+                    storageSampledImageBindings,
+                    storageBufferBindings,
+                    storageImageBindings,
+                    storageSamplerBindings);
+                Assert.That(storageDescriptorSet.BufferCount, Is.EqualTo(2));
+                Assert.That(storageDescriptorSet.TextureCount, Is.EqualTo(2));
+                Assert.That(storageDescriptorSet.SamplerCount, Is.EqualTo(1));
+                Assert.That(storageDescriptorSet.DescriptorTableCount, Is.EqualTo(4));
+                Assert.That(storageDescriptorSet.AreDescriptorTableHandlesValid, Is.True);
+                _ = Assert.Throws<InvalidOperationException>(storageUniformBuffer.Dispose);
+                _ = Assert.Throws<InvalidOperationException>(storageSampledTexture.Dispose);
+                _ = Assert.Throws<InvalidOperationException>(storageBuffer.Dispose);
+                _ = Assert.Throws<InvalidOperationException>(storageTexture.Dispose);
+                _ = Assert.Throws<InvalidOperationException>(storageSampler.Dispose);
+                _ = Assert.Throws<InvalidOperationException>(storagePipeline.Dispose);
+                _ = Assert.Throws<InvalidOperationException>(device.Dispose);
+
+                storageDescriptorSet.Dispose();
+                Assert.That(storageDescriptorSet.IsDisposed, Is.True);
+                Assert.DoesNotThrow(storageUniformBuffer.Dispose);
+                Assert.DoesNotThrow(storageSampledTexture.Dispose);
+                Assert.DoesNotThrow(storageBuffer.Dispose);
+                Assert.DoesNotThrow(storageTexture.Dispose);
+                Assert.DoesNotThrow(storageSampler.Dispose);
+                Assert.DoesNotThrow(storagePipeline.Dispose);
+                TestContext.WriteLine("D3D12 wrote scalar storage-buffer and storage-image UAV descriptors and retained their owners until descriptor-set disposal.");
             }
         }
         finally

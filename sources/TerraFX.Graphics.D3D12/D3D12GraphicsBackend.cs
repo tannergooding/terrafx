@@ -1706,6 +1706,8 @@ public static unsafe class D3D12GraphicsBackend
                 IGraphicsBackendPipeline pipeline,
                 ImmutableArray<D3D12BackendUniformBufferBinding> uniformBufferBindings,
                 ImmutableArray<D3D12BackendSampledImageBinding> sampledImageBindings,
+                ImmutableArray<D3D12BackendStorageBufferBinding> storageBufferBindings,
+                ImmutableArray<D3D12BackendStorageImageBinding> storageImageBindings,
                 ImmutableArray<D3D12BackendSamplerBinding> samplerBindings)
             {
                 EnsureOwnerThread();
@@ -1718,7 +1720,11 @@ public static unsafe class D3D12GraphicsBackend
                     throw new ArgumentException("The pipeline is not live on this D3D12 device.", nameof(pipeline));
                 }
 
-                if (uniformBufferBindings.IsDefault || sampledImageBindings.IsDefault || samplerBindings.IsDefault)
+                if (uniformBufferBindings.IsDefault
+                    || sampledImageBindings.IsDefault
+                    || storageBufferBindings.IsDefault
+                    || storageImageBindings.IsDefault
+                    || samplerBindings.IsDefault)
                 {
                     throw new ArgumentException("D3D12 descriptor binding arrays must be initialized.");
                 }
@@ -1727,6 +1733,8 @@ public static unsafe class D3D12GraphicsBackend
                 var tableCounts = new int[D3D12DescriptorLayout.TableCount];
                 var expectedUniformBufferCount = 0;
                 var expectedSampledImageCount = 0;
+                var expectedStorageBufferCount = 0;
+                var expectedStorageImageCount = 0;
                 var expectedSamplerCount = 0;
 
                 for (var index = 0; index < resources.Length; index++)
@@ -1752,6 +1760,18 @@ public static unsafe class D3D12GraphicsBackend
                             break;
                         }
 
+                        case ShaderResourceKind.StorageBuffer:
+                        {
+                            expectedStorageBufferCount++;
+                            break;
+                        }
+
+                        case ShaderResourceKind.StorageImage:
+                        {
+                            expectedStorageImageCount++;
+                            break;
+                        }
+
                         case ShaderResourceKind.Sampler:
                         {
                             expectedSamplerCount++;
@@ -1771,6 +1791,8 @@ public static unsafe class D3D12GraphicsBackend
                 if (resources.IsEmpty
                     || expectedUniformBufferCount != uniformBufferBindings.Length
                     || expectedSampledImageCount != sampledImageBindings.Length
+                    || expectedStorageBufferCount != storageBufferBindings.Length
+                    || expectedStorageImageCount != storageImageBindings.Length
                     || expectedSamplerCount != samplerBindings.Length)
                 {
                     throw new ArgumentException("The pipeline does not have a complete supported descriptor set.", nameof(pipeline));
@@ -1783,7 +1805,7 @@ public static unsafe class D3D12GraphicsBackend
                         ? groupComparison
                         : left.Binding.CompareTo(right.Binding);
                 });
-                var retainedBuffers = new D3D12BackendBuffer[sortedUniformBufferBindings.Length];
+                var retainedUniformBuffers = new D3D12BackendBuffer[sortedUniformBufferBindings.Length];
                 var uniformBufferRoundedRanges = new long[sortedUniformBufferBindings.Length];
 
                 for (var index = 0; index < sortedUniformBufferBindings.Length; index++)
@@ -1844,8 +1866,85 @@ public static unsafe class D3D12GraphicsBackend
                         throw new ArgumentException("The aligned uniform-buffer descriptor range exceeds its buffer.", nameof(uniformBufferBindings));
                     }
 
-                    retainedBuffers[index] = buffer;
+                    retainedUniformBuffers[index] = buffer;
                     uniformBufferRoundedRanges[index] = roundedRange;
+                }
+
+                var sortedStorageBufferBindings = storageBufferBindings.ToArray();
+                Array.Sort(sortedStorageBufferBindings, static (left, right) => {
+                    var groupComparison = left.Group.CompareTo(right.Group);
+                    return (groupComparison != 0)
+                        ? groupComparison
+                        : left.Binding.CompareTo(right.Binding);
+                });
+                var retainedStorageBuffers = new D3D12BackendBuffer[sortedStorageBufferBindings.Length];
+
+                for (var index = 0; index < sortedStorageBufferBindings.Length; index++)
+                {
+                    var binding = sortedStorageBufferBindings[index];
+                    ArgumentNullException.ThrowIfNull(binding.Buffer);
+
+                    if ((binding.Group == ShaderBindingGroup.None)
+                        || (binding.Binding < 0)
+                        || (binding.Buffer is not D3D12BackendBuffer buffer)
+                        || !ReferenceEquals(buffer.Owner, this)
+                        || buffer.IsDisposed)
+                    {
+                        throw new ArgumentException("A storage-buffer descriptor binding has an invalid group, binding, or buffer owner.", nameof(storageBufferBindings));
+                    }
+
+                    if (!MatchesReflectedResource(
+                            resources,
+                            binding.Group,
+                            binding.Binding,
+                            ShaderResourceKind.StorageBuffer)
+                        || ((index != 0)
+                            && (sortedStorageBufferBindings[index - 1].Group == binding.Group)
+                            && (sortedStorageBufferBindings[index - 1].Binding == binding.Binding)))
+                    {
+                        throw new ArgumentException("Storage-buffer descriptors must match the pipeline's unique reflected bindings.", nameof(storageBufferBindings));
+                    }
+
+                    if ((buffer.Description.Usage & BufferUsage.Storage) == 0)
+                    {
+                        throw new ArgumentException("A bound buffer does not declare storage-buffer usage.", nameof(storageBufferBindings));
+                    }
+
+                    ArgumentOutOfRangeException.ThrowIfNegative(binding.Offset);
+                    ArgumentOutOfRangeException.ThrowIfNegativeOrZero(binding.Range);
+
+                    var rangeEnd = checked(binding.Offset + binding.Range);
+
+                    if (rangeEnd > buffer.Description.ByteLength)
+                    {
+                        throw new ArgumentException("The storage-buffer descriptor range exceeds its buffer.", nameof(storageBufferBindings));
+                    }
+
+                    if ((binding.Offset % Capabilities.Limits.StorageBufferOffsetAlignment) != 0)
+                    {
+                        throw new ArgumentException("The storage-buffer descriptor offset does not satisfy device alignment.", nameof(storageBufferBindings));
+                    }
+
+                    ArgumentOutOfRangeException.ThrowIfGreaterThan(
+                        binding.Range,
+                        Capabilities.Limits.MaximumBufferByteLength,
+                        nameof(storageBufferBindings));
+
+                    var structuredStride = buffer.Description.StructuredStride
+                        ?? throw new NotSupportedException("This D3D12 descriptor-set path requires structured storage buffers.");
+
+                    if (((binding.Offset % structuredStride) != 0)
+                        || ((binding.Range % structuredStride) != 0))
+                    {
+                        throw new ArgumentException("The storage-buffer descriptor range must align to its structured element stride.", nameof(storageBufferBindings));
+                    }
+
+                    if ((binding.Range / structuredStride) > uint.MaxValue)
+                    {
+                        throw new ArgumentOutOfRangeException(nameof(storageBufferBindings));
+                    }
+
+                    retainedStorageBuffers[index] = buffer;
                 }
 
                 var sortedSampledImageBindings = sampledImageBindings.ToArray();
@@ -1855,7 +1954,7 @@ public static unsafe class D3D12GraphicsBackend
                         ? groupComparison
                         : left.Binding.CompareTo(right.Binding);
                 });
-                var retainedTextures = new D3D12BackendTexture[sortedSampledImageBindings.Length];
+                var retainedSampledTextures = new D3D12BackendTexture[sortedSampledImageBindings.Length];
 
                 for (var index = 0; index < sortedSampledImageBindings.Length; index++)
                 {
@@ -1894,7 +1993,56 @@ public static unsafe class D3D12GraphicsBackend
                         throw new NotSupportedException("This D3D12 descriptor-set path supports single-layer 2D sampled textures.");
                     }
 
-                    retainedTextures[index] = texture;
+                    retainedSampledTextures[index] = texture;
+                }
+
+                var sortedStorageImageBindings = storageImageBindings.ToArray();
+                Array.Sort(sortedStorageImageBindings, static (left, right) => {
+                    var groupComparison = left.Group.CompareTo(right.Group);
+                    return (groupComparison != 0)
+                        ? groupComparison
+                        : left.Binding.CompareTo(right.Binding);
+                });
+                var retainedStorageTextures = new D3D12BackendTexture[sortedStorageImageBindings.Length];
+
+                for (var index = 0; index < sortedStorageImageBindings.Length; index++)
+                {
+                    var binding = sortedStorageImageBindings[index];
+                    ArgumentNullException.ThrowIfNull(binding.Texture);
+
+                    if ((binding.Group == ShaderBindingGroup.None)
+                        || (binding.Binding < 0)
+                        || (binding.Texture is not D3D12BackendTexture texture)
+                        || !ReferenceEquals(texture.Owner, this)
+                        || texture.IsDisposed)
+                    {
+                        throw new ArgumentException("A storage-image descriptor binding has an invalid group, binding, or texture owner.", nameof(storageImageBindings));
+                    }
+
+                    if (!MatchesReflectedResource(
+                            resources,
+                            binding.Group,
+                            binding.Binding,
+                            ShaderResourceKind.StorageImage)
+                        || ((index != 0)
+                            && (sortedStorageImageBindings[index - 1].Group == binding.Group)
+                            && (sortedStorageImageBindings[index - 1].Binding == binding.Binding)))
+                    {
+                        throw new ArgumentException("Storage-image descriptors must match the pipeline's unique reflected bindings.", nameof(storageImageBindings));
+                    }
+
+                    if ((texture.Description.Usage & TextureUsage.Storage) == 0)
+                    {
+                        throw new ArgumentException("A bound texture does not declare storage-image usage.", nameof(storageImageBindings));
+                    }
+
+                    if ((texture.Description.Dimension != TextureDimension.Dimension2D)
+                        || (texture.Description.ArrayLayers != 1))
+                    {
+                        throw new NotSupportedException("This D3D12 descriptor-set path supports single-layer 2D storage textures.");
+                    }
+
+                    retainedStorageTextures[index] = texture;
                 }
 
                 var sortedSamplerBindings = samplerBindings.ToArray();
@@ -1935,6 +2083,24 @@ public static unsafe class D3D12GraphicsBackend
                     retainedSamplers[index] = sampler;
                 }
 
+                var retainedBuffers = new D3D12BackendBuffer[
+                    checked(retainedUniformBuffers.Length + retainedStorageBuffers.Length)];
+                Array.Copy(retainedUniformBuffers, 0, retainedBuffers, 0, retainedUniformBuffers.Length);
+                Array.Copy(
+                    retainedStorageBuffers,
+                    0,
+                    retainedBuffers,
+                    retainedUniformBuffers.Length,
+                    retainedStorageBuffers.Length);
+                var retainedTextures = new D3D12BackendTexture[
+                    checked(retainedSampledTextures.Length + retainedStorageTextures.Length)];
+                Array.Copy(retainedSampledTextures, 0, retainedTextures, 0, retainedSampledTextures.Length);
+                Array.Copy(
+                    retainedStorageTextures,
+                    0,
+                    retainedTextures,
+                    retainedSampledTextures.Length,
+                    retainedStorageTextures.Length);
                 var descriptorTableCount = 0;
                 var rootParameterIndices = new int[D3D12DescriptorLayout.TableCount];
                 Array.Fill(rootParameterIndices, -1);
@@ -2006,7 +2172,7 @@ public static unsafe class D3D12GraphicsBackend
                             cpuHandle.ptr
                             + (checked((nuint)descriptorIndex) * _resourceDescriptorIncrementSize));
                         var constantBufferView = new D3D12_CONSTANT_BUFFER_VIEW_DESC {
-                            BufferLocation = checked(retainedBuffers[index].GetResource()->GetGPUVirtualAddress() + checked((ulong)binding.Offset)),
+                            BufferLocation = checked(retainedUniformBuffers[index].GetResource()->GetGPUVirtualAddress() + checked((ulong)binding.Offset)),
                             SizeInBytes = checked((uint)uniformBufferRoundedRanges[index]),
                         };
                         _device->CreateConstantBufferView(&constantBufferView, cpuHandle);
@@ -2021,7 +2187,65 @@ public static unsafe class D3D12GraphicsBackend
                         cpuHandle.ptr = checked(
                             cpuHandle.ptr
                             + (checked((nuint)descriptorIndex) * _resourceDescriptorIncrementSize));
-                        CreateSampledImageView(retainedTextures[index], cpuHandle);
+                        CreateSampledImageView(retainedSampledTextures[index], cpuHandle);
+                    }
+
+                    var storageBufferIndex = 0;
+                    var storageImageIndex = 0;
+
+                    while ((storageBufferIndex < sortedStorageBufferBindings.Length)
+                        || (storageImageIndex < sortedStorageImageBindings.Length))
+                    {
+                        var useStorageBuffer = storageImageIndex >= sortedStorageImageBindings.Length;
+
+                        if (!useStorageBuffer && (storageBufferIndex < sortedStorageBufferBindings.Length))
+                        {
+                            var bufferBinding = sortedStorageBufferBindings[storageBufferIndex];
+                            var imageBinding = sortedStorageImageBindings[storageImageIndex];
+                            var groupComparison = bufferBinding.Group.CompareTo(imageBinding.Group);
+                            var bindingComparison = (groupComparison == 0)
+                                ? bufferBinding.Binding.CompareTo(imageBinding.Binding)
+                                : groupComparison;
+
+                            if (bindingComparison == 0)
+                            {
+                                throw new InvalidOperationException("D3D12 storage-buffer and storage-image bindings share one UAV register.");
+                            }
+
+                            useStorageBuffer = bindingComparison < 0;
+                        }
+
+                        var group = useStorageBuffer
+                            ? sortedStorageBufferBindings[storageBufferIndex].Group
+                            : sortedStorageImageBindings[storageImageIndex].Group;
+                        var kind = useStorageBuffer
+                            ? ShaderResourceKind.StorageBuffer
+                            : ShaderResourceKind.StorageImage;
+                        var storageTableIndex = D3D12DescriptorLayout.GetTableIndex(group, kind);
+                        var storageDescriptorIndex = checked(
+                            descriptorRangeStarts[storageTableIndex] + tableOffsets[storageTableIndex]++);
+                        var storageCpuHandle = _resourceDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+                        storageCpuHandle.ptr = checked(
+                            storageCpuHandle.ptr
+                            + (checked((nuint)storageDescriptorIndex) * _resourceDescriptorIncrementSize));
+
+                        if (useStorageBuffer)
+                        {
+                            var binding = sortedStorageBufferBindings[storageBufferIndex];
+                            CreateStorageBufferView(
+                                retainedStorageBuffers[storageBufferIndex],
+                                binding.Offset,
+                                binding.Range,
+                                storageCpuHandle);
+                            storageBufferIndex++;
+                        }
+                        else
+                        {
+                            CreateStorageImageView(
+                                retainedStorageTextures[storageImageIndex],
+                                storageCpuHandle);
+                            storageImageIndex++;
+                        }
                     }
 
                     for (var index = 0; index < sortedSamplerBindings.Length; index++)
@@ -2270,6 +2494,43 @@ public static unsafe class D3D12GraphicsBackend
                     GetHeapProperties(memoryKind),
                     GetInitialResourceState(memoryKind),
                     debugName);
+            }
+
+            private void CreateStorageBufferView(
+                D3D12BackendBuffer buffer,
+                long offset,
+                long range,
+                D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle)
+            {
+                var structuredStride = buffer.Description.StructuredStride
+                    ?? throw new NotSupportedException("This D3D12 descriptor-set path requires structured storage buffers.");
+                var viewDescription = default(D3D12_UNORDERED_ACCESS_VIEW_DESC);
+                viewDescription.Format = DXGI_FORMAT.DXGI_FORMAT_UNKNOWN;
+                viewDescription.ViewDimension = D3D12_UAV_DIMENSION.D3D12_UAV_DIMENSION_BUFFER;
+                var anonymous = viewDescription.Anonymous;
+                var bufferView = anonymous.Buffer;
+                bufferView.FirstElement = checked((ulong)(offset / structuredStride));
+                bufferView.NumElements = checked((uint)(range / structuredStride));
+                bufferView.StructureByteStride = checked((uint)structuredStride);
+                bufferView.CounterOffsetInBytes = 0;
+                bufferView.Flags = D3D12_BUFFER_UAV_FLAGS.D3D12_BUFFER_UAV_FLAG_NONE;
+                anonymous.Buffer = bufferView;
+                viewDescription.Anonymous = anonymous;
+                _device->CreateUnorderedAccessView(buffer.GetResource(), null, &viewDescription, cpuHandle);
+            }
+
+            private void CreateStorageImageView(D3D12BackendTexture texture, D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle)
+            {
+                var viewDescription = default(D3D12_UNORDERED_ACCESS_VIEW_DESC);
+                viewDescription.Format = GetNativeFormat(texture.Description.Format);
+                viewDescription.ViewDimension = D3D12_UAV_DIMENSION.D3D12_UAV_DIMENSION_TEXTURE2D;
+                var anonymous = viewDescription.Anonymous;
+                var textureView = anonymous.Texture2D;
+                textureView.MipSlice = 0;
+                textureView.PlaneSlice = 0;
+                anonymous.Texture2D = textureView;
+                viewDescription.Anonymous = anonymous;
+                _device->CreateUnorderedAccessView(texture.GetResource(), null, &viewDescription, cpuHandle);
             }
 
             private void EnsureOwnerThread()
