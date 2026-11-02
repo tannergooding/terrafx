@@ -95,7 +95,7 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~CreatesAndShutsDownD3D12GraphicsDeviceUsingHostIssuedIdentity"
 ```
 
-On the current Windows 11 x64 host, D3D12 device creation and the `IDXGIDevice` UMD-version query succeed, but profile admission rejects both AMD adapters because `D32Float` does not report `Sampled` support. The test is explicitly skipped with both adapter identities and UMD versions in the TRX; this is a capability blocker, not a native D3D12 pass. The accepted format contract must be satisfied before the adapter can return a `GraphicsDevice`.
+On the current Windows 11 x64 host, the native test passes on the AMD Radeon RX 7900 XTX (vendor `1002`, device `744C`, UMD `002000007D0F1B75`). D3D12 admits sampled D32 depth through an `R32_TYPELESS` resource, with `D32_FLOAT` depth and `R32_FLOAT` sampled view formats; the witness creates a real depth/sampled texture and verifies an exact upload/readback round trip. The same test also round-trips a 4x4x2 RGBA8 volume to exercise multi-slice copy-footprint bounds. This does not yet create DSV/SRV descriptors or execute a shader that samples depth, so it is not the public graph/pipeline witness.
 
 ### Platform owner contracts
 

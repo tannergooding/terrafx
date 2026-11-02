@@ -83,7 +83,7 @@ internal static class D3D12GraphResourceStateMapper
         }
 
         if ((state is GraphResourceState.DepthRead or GraphResourceState.DepthWrite)
-            != (description.Format == TextureFormat.D32Float))
+            && (description.Format != TextureFormat.D32Float))
         {
             throw new ArgumentException("The selected graph depth state does not match the texture format.", nameof(state));
         }

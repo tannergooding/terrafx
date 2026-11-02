@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Assets;
+using TerraFX.Buffers;
 using TerraFX.Graphics;
 using TerraFX.Graphics.D3D12;
 using TerraFX.Graphics.Vulkan;
@@ -116,6 +117,10 @@ internal sealed class EngineHostOptionsTests
     }
 
     [Test]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "The synchronous waits complete native requests before resource disposal, and the PlatformHostOwner must be used on its creating test thread.")]
     public void CreatesAndShutsDownD3D12GraphicsDeviceUsingHostIssuedIdentity()
     {
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
@@ -169,6 +174,145 @@ internal sealed class EngineHostOptionsTests
             Assert.That(capabilities.DriverName, Is.Not.Empty);
             Assert.That(capabilities.DriverVersion, Is.Not.Empty);
             Assert.That(capabilities.ApiVersion.Major, Is.GreaterThan(0));
+            using var depthTexture = graphicsDevice.CreateTextureAsync(
+                new TextureDescription(
+                    TextureDimension.Dimension2D,
+                    4,
+                    4,
+                    depth: 1,
+                    arrayLayers: 1,
+                    mipLevels: 1,
+                    TextureFormat.D32Float,
+                    TextureUsage.DepthAttachment | TextureUsage.Sampled | TextureUsage.CopySource | TextureUsage.CopyDestination,
+                    "d32-sampled-startup"))
+                .GetAwaiter()
+                .GetResult();
+            Assert.That(depthTexture.Handle.IsValid, Is.True);
+            Assert.That(depthTexture.Handle.OwnerId, Is.EqualTo(platformOwner.OwnerId));
+            Assert.That(depthTexture.Handle.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
+
+            var expected = new byte[64];
+
+            for (var index = 0; index < expected.Length; index++)
+            {
+                expected[index] = unchecked((byte)((index * 37) + 11));
+            }
+
+            var sourceStorage = UnmanagedBuffer<byte>.Allocate(
+                expected.Length,
+                new BufferAllocationOptions(expected.Length, alignment: 1));
+            sourceStorage.CopyFrom(expected.AsSpan(), 0);
+
+            using var ownedSource = sourceStorage.TransferToOwnedBuffer();
+            using var sourceLease = ownedSource.AcquireReadLease(0, expected.Length);
+            var subresource = new TextureSubresource(0, 0, TextureAspect.Depth);
+            var upload = graphicsDevice.UploadTextureAsync(
+                depthTexture,
+                subresource,
+                sourceLease,
+                0,
+                new TextureDataLayout(rowPitch: 16, slicePitch: 64),
+                CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            Assert.That(upload.Status, Is.EqualTo(UploadStatus.Ready));
+            Assert.That(upload.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
+            var completedFence = upload.CompletedFence
+                ?? throw new InvalidOperationException("A ready D3D12 texture upload has no completed fence.");
+            Assert.That(completedFence, Is.GreaterThan(0));
+
+            using var readback = graphicsDevice.ReadbackTextureAsync(
+                depthTexture,
+                subresource,
+                CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            Assert.That(readback.Format, Is.EqualTo(TextureFormat.D32Float));
+            var padded = new byte[checked((int)readback.ByteLength)];
+            using (var readLease = readback.AcquireReadLease())
+            {
+                var copyAction = new ReadbackCopyAction(padded);
+                readLease.UseWindow(0, padded.Length, ref copyAction);
+            }
+
+            var actual = new byte[expected.Length];
+
+            for (var row = 0; row < readback.Height; row++)
+            {
+                padded.AsSpan(
+                    checked(row * (int)readback.RowPitch),
+                    16)
+                    .CopyTo(actual.AsSpan(row * 16, 16));
+            }
+
+            Assert.That(actual, Is.EqualTo(expected));
+
+            var volumeDescription = new TextureDescription(
+                TextureDimension.Dimension3D,
+                4,
+                4,
+                depth: 2,
+                arrayLayers: 1,
+                mipLevels: 1,
+                TextureFormat.Rgba8Unorm,
+                TextureUsage.CopySource | TextureUsage.CopyDestination,
+                "volume-copy-footprint");
+            using var volumeTexture = graphicsDevice.CreateTextureAsync(volumeDescription).GetAwaiter().GetResult();
+            var volumeExpected = new byte[128];
+
+            for (var index = 0; index < volumeExpected.Length; index++)
+            {
+                volumeExpected[index] = unchecked((byte)((index * 23) + 5));
+            }
+
+            var volumeSourceStorage = UnmanagedBuffer<byte>.Allocate(
+                volumeExpected.Length,
+                new BufferAllocationOptions(volumeExpected.Length, alignment: 1));
+            volumeSourceStorage.CopyFrom(volumeExpected.AsSpan(), 0);
+
+            using var ownedVolumeSource = volumeSourceStorage.TransferToOwnedBuffer();
+            using var volumeSourceLease = ownedVolumeSource.AcquireReadLease(0, volumeExpected.Length);
+            var volumeSubresource = new TextureSubresource(0, 0, TextureAspect.Color);
+            var volumeUpload = graphicsDevice.UploadTextureAsync(
+                volumeTexture,
+                volumeSubresource,
+                volumeSourceLease,
+                0,
+                new TextureDataLayout(rowPitch: 16, slicePitch: 64),
+                CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            Assert.That(volumeUpload.Status, Is.EqualTo(UploadStatus.Ready));
+
+            using var volumeReadback = graphicsDevice.ReadbackTextureAsync(
+                volumeTexture,
+                volumeSubresource,
+                CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            var volumePadded = new byte[checked((int)volumeReadback.ByteLength)];
+
+            using (var volumeReadLease = volumeReadback.AcquireReadLease())
+            {
+                var copyAction = new ReadbackCopyAction(volumePadded);
+                volumeReadLease.UseWindow(0, volumePadded.Length, ref copyAction);
+            }
+
+            var volumeActual = new byte[volumeExpected.Length];
+
+            for (var slice = 0; slice < volumeReadback.Depth; slice++)
+            {
+                for (var row = 0; row < volumeReadback.Height; row++)
+                {
+                    var sourceOffset = checked(
+                        (slice * (int)volumeReadback.SlicePitch)
+                        + (row * (int)volumeReadback.RowPitch));
+                    var destinationOffset = checked((slice * 64) + (row * 16));
+                    volumePadded.AsSpan(sourceOffset, 16).CopyTo(volumeActual.AsSpan(destinationOffset, 16));
+                }
+            }
+
+            Assert.That(volumeActual, Is.EqualTo(volumeExpected));
             TestContext.WriteLine(
                 $"Backend={capabilities.Backend}; Profile={capabilities.Profile}; Adapter={capabilities.AdapterName}; "
                 + $"Vendor={capabilities.VendorId:X4}; Device={capabilities.DeviceId:X4}; "

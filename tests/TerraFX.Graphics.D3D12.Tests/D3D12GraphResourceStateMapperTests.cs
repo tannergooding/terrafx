@@ -89,6 +89,10 @@ internal sealed class D3D12GraphResourceStateMapperTests
     [TestCase(TextureFormat.Rgba16Float, GraphResourceState.StorageWrite, D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_UNORDERED_ACCESS)]
     [TestCase(TextureFormat.Rgba16Float, GraphResourceState.ColorAttachment, D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_RENDER_TARGET)]
     [TestCase(TextureFormat.Rgba16Float, GraphResourceState.Present, D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_PRESENT)]
+    [TestCase(TextureFormat.D32Float, GraphResourceState.Undefined, D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON)]
+    [TestCase(TextureFormat.D32Float, GraphResourceState.General, D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON)]
+    [TestCase(TextureFormat.D32Float, GraphResourceState.CopySource, D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_SOURCE)]
+    [TestCase(TextureFormat.D32Float, GraphResourceState.CopyDestination, D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_DEST)]
     [TestCase(TextureFormat.D32Float, GraphResourceState.DepthRead, D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_DEPTH_READ)]
     [TestCase(TextureFormat.D32Float, GraphResourceState.DepthWrite, D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_DEPTH_WRITE)]
     public void TextureGraphStatesMapToLegacyStates(

@@ -205,7 +205,7 @@ public static unsafe class D3D12GraphicsBackend
                     ? description.ArrayLayers
                     : description.Depth)),
                 MipLevels = checked((ushort)description.MipLevels),
-                Format = GetNativeFormat(description.Format),
+                Format = GetNativeTextureResourceFormat(description),
                 SampleDesc = new DXGI_SAMPLE_DESC {
                     Count = 1,
                     Quality = 0,
@@ -289,16 +289,7 @@ public static unsafe class D3D12GraphicsBackend
             {
                 var format = (TextureFormat)value;
                 var nativeFormat = GetNativeFormat(format);
-                var formatSupport = new D3D12_FEATURE_DATA_FORMAT_SUPPORT {
-                    Format = nativeFormat,
-                };
-
-                var result = device->CheckFeatureSupport(
-                    D3D12_FEATURE.D3D12_FEATURE_FORMAT_SUPPORT,
-                    &formatSupport,
-                    (uint)sizeof(D3D12_FEATURE_DATA_FORMAT_SUPPORT));
-
-                ThrowIfFailed(result);
+                var formatSupport = GetFormatSupport(device, nativeFormat);
 
                 if ((formatSupport.Support1 & D3D12_FORMAT_SUPPORT1.D3D12_FORMAT_SUPPORT1_TEXTURE2D) == 0)
                 {
@@ -307,7 +298,21 @@ public static unsafe class D3D12GraphicsBackend
 
                 var usages = TextureUsage.CopySource | TextureUsage.CopyDestination;
 
-                if ((formatSupport.Support1 & D3D12_FORMAT_SUPPORT1.D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE) != 0)
+                if (format == TextureFormat.D32Float)
+                {
+                    var typelessSupport = GetFormatSupport(device, DXGI_FORMAT.DXGI_FORMAT_R32_TYPELESS);
+                    var sampledViewSupport = GetFormatSupport(device, DXGI_FORMAT.DXGI_FORMAT_R32_FLOAT);
+                    const D3D12_FORMAT_SUPPORT1 requiredSampledViewSupport =
+                        D3D12_FORMAT_SUPPORT1.D3D12_FORMAT_SUPPORT1_TEXTURE2D
+                        | D3D12_FORMAT_SUPPORT1.D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE;
+
+                    if (((typelessSupport.Support1 & D3D12_FORMAT_SUPPORT1.D3D12_FORMAT_SUPPORT1_TEXTURE2D) != 0)
+                        && ((sampledViewSupport.Support1 & requiredSampledViewSupport) == requiredSampledViewSupport))
+                    {
+                        usages |= TextureUsage.Sampled;
+                    }
+                }
+                else if ((formatSupport.Support1 & D3D12_FORMAT_SUPPORT1.D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE) != 0)
                 {
                     usages |= TextureUsage.Sampled;
                 }
@@ -336,6 +341,18 @@ public static unsafe class D3D12GraphicsBackend
             }
 
             return formats.ToImmutable();
+        }
+
+        private static D3D12_FEATURE_DATA_FORMAT_SUPPORT GetFormatSupport(ID3D12Device* device, DXGI_FORMAT format)
+        {
+            var support = new D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+                Format = format,
+            };
+            ThrowIfFailed(device->CheckFeatureSupport(
+                D3D12_FEATURE.D3D12_FEATURE_FORMAT_SUPPORT,
+                &support,
+                (uint)sizeof(D3D12_FEATURE_DATA_FORMAT_SUPPORT)));
+            return support;
         }
 
         private static D3D12_HEAP_PROPERTIES GetHeapProperties(GpuMemoryKind memoryKind)
@@ -488,6 +505,12 @@ public static unsafe class D3D12GraphicsBackend
             };
         }
 
+        private static DXGI_FORMAT GetNativeTextureResourceFormat(TextureDescription description)
+            => (description.Format == TextureFormat.D32Float)
+                && ((description.Usage & TextureUsage.Sampled) != 0)
+                ? DXGI_FORMAT.DXGI_FORMAT_R32_TYPELESS
+                : GetNativeFormat(description.Format);
+
         private static ImmutableArray<int> GetSampleCounts(ID3D12Device* device, DXGI_FORMAT format)
         {
             var sampleCounts = ImmutableArray.CreateBuilder<int>();
@@ -546,13 +569,7 @@ public static unsafe class D3D12GraphicsBackend
 
         private static void ValidateTextureDescriptionSupport(ID3D12Device* device, TextureDescription description)
         {
-            var support = new D3D12_FEATURE_DATA_FORMAT_SUPPORT {
-                Format = GetNativeFormat(description.Format),
-            };
-            ThrowIfFailed(device->CheckFeatureSupport(
-                D3D12_FEATURE.D3D12_FEATURE_FORMAT_SUPPORT,
-                &support,
-                (uint)sizeof(D3D12_FEATURE_DATA_FORMAT_SUPPORT)));
+            var support = GetFormatSupport(device, GetNativeTextureResourceFormat(description));
 
             var dimensionSupport = description.Dimension == TextureDimension.Dimension2D
                 ? D3D12_FORMAT_SUPPORT1.D3D12_FORMAT_SUPPORT1_TEXTURE2D
@@ -561,6 +578,37 @@ public static unsafe class D3D12GraphicsBackend
             if ((support.Support1 & dimensionSupport) == 0)
             {
                 throw new NotSupportedException($"D3D12 does not support {description.Dimension} textures in format {description.Format}.");
+            }
+
+            if (description.Format == TextureFormat.D32Float)
+            {
+                if ((description.Usage & TextureUsage.Sampled) != 0)
+                {
+                    var sampledViewSupport = GetFormatSupport(device, DXGI_FORMAT.DXGI_FORMAT_R32_FLOAT);
+                    const D3D12_FORMAT_SUPPORT1 requiredSampledViewSupport =
+                        D3D12_FORMAT_SUPPORT1.D3D12_FORMAT_SUPPORT1_TEXTURE2D
+                        | D3D12_FORMAT_SUPPORT1.D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE;
+
+                    if ((sampledViewSupport.Support1 & requiredSampledViewSupport) != requiredSampledViewSupport)
+                    {
+                        throw new NotSupportedException("D3D12 does not support sampling D32Float through an R32Float view.");
+                    }
+                }
+
+                if ((description.Usage & TextureUsage.DepthAttachment) != 0)
+                {
+                    var depthViewSupport = GetFormatSupport(device, DXGI_FORMAT.DXGI_FORMAT_D32_FLOAT);
+                    const D3D12_FORMAT_SUPPORT1 requiredDepthViewSupport =
+                        D3D12_FORMAT_SUPPORT1.D3D12_FORMAT_SUPPORT1_TEXTURE2D
+                        | D3D12_FORMAT_SUPPORT1.D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL;
+
+                    if ((depthViewSupport.Support1 & requiredDepthViewSupport) != requiredDepthViewSupport)
+                    {
+                        throw new NotSupportedException("D3D12 does not support D32Float depth-stencil views.");
+                    }
+                }
+
+                return;
             }
 
             var requiredSupport = default(D3D12_FORMAT_SUPPORT1);
@@ -1860,7 +1908,10 @@ public static unsafe class D3D12GraphicsBackend
                     throw new NotSupportedException("D3D12 returned an unsupported texture-copy footprint.");
                 }
 
-                var footprintByteLength = checked((ulong)footprint.RowPitch * rowCount * footprint.Depth);
+                var rowCountAcrossSlices = checked((ulong)rowCount * footprint.Depth);
+                var footprintByteLength = checked(
+                    ((rowCountAcrossSlices - 1) * footprint.RowPitch)
+                    + rowSizeBytes);
                 var footprintEnd = checked(layout.Offset + footprintByteLength);
 
                 if (footprintEnd > totalBytes)
