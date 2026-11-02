@@ -12,7 +12,7 @@ using VulkanApi = TerraFX.Interop.Vulkan.Vulkan;
 
 namespace TerraFX.Graphics.Vulkan;
 
-internal sealed unsafe partial class VulkanBackendDevice : IDisposable
+internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevice
 {
     private const uint RequestedApiVersion = (1u << 22) | (3u << 12);
 

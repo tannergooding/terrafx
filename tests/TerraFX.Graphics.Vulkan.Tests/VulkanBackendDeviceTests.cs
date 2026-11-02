@@ -708,6 +708,10 @@ internal sealed class VulkanBackendDeviceTests
         }
     }
 
+    [Test]
+    public void RegistrationSelectsVulkanWithoutCreatingDevice()
+        => Assert.That(VulkanGraphicsBackend.CreateRegistration().Backend, Is.EqualTo(GraphicsBackend.Vulkan));
+
     private readonly struct ReadbackCopyAction : IAction<ReadOnlySpan<byte>>
     {
         private readonly byte[] _destination;
