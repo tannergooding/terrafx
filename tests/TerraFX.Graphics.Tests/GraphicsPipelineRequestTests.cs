@@ -60,7 +60,8 @@ internal sealed class GraphicsPipelineRequestTests
         ImmutableArray<ShaderResourceSignature> resources,
         int groupSizeX = 1,
         int groupSizeY = 1,
-        int groupSizeZ = 1)
+        int groupSizeZ = 1,
+        ImmutableArray<ShaderCapability> requiredCapabilities = default)
     {
         var reflection = new ShaderReflection(
             ShaderStage.Compute,
@@ -70,7 +71,7 @@ internal sealed class GraphicsPipelineRequestTests
             [],
             resources,
             [],
-            [],
+            requiredCapabilities.IsDefault ? [] : requiredCapabilities,
             bindingLayoutVersion: 1,
             groupSizeX: groupSizeX,
             groupSizeY: groupSizeY,
@@ -238,6 +239,50 @@ internal sealed class GraphicsPipelineRequestTests
         finally
         {
             pipeline?.Dispose();
+            callerBytecodeLease.Dispose();
+            bufferOwner.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [TestCase(ShaderCapability.Float16)]
+    [TestCase(ShaderCapability.DoublePrecision)]
+    [TestCase(ShaderCapability.WaveOperations)]
+    [TestCase(ShaderCapability.DescriptorIndexing)]
+    [TestCase(ShaderCapability.GeometryShader)]
+    [TestCase(ShaderCapability.Tessellation)]
+    public async Task NonbaselineShaderCapabilitiesRejectBeforeBackendPipelineCreation(ShaderCapability capability)
+    {
+        using var continuePipelineCreation = new ManualResetEventSlim(initialState: true);
+        using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
+        var backendDevice = new FakeBackendDevice(
+            CreateCapabilities(),
+            pipelineCreationEntered,
+            continuePipelineCreation);
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var graphicsDevice = await GraphicsDevice.CreateAsync(
+            ownerId: 21,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        var bufferOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        var callerBytecodeLease = bufferOwner.AcquireRead(0, 4);
+
+        try
+        {
+            var description = CreateComputePipelineDescription(
+                callerBytecodeLease,
+                [],
+                requiredCapabilities: [capability]);
+
+            _ = Assert.ThrowsAsync<NotSupportedException>(
+                async () => _ = await graphicsDevice.CreatePipelineAsync(description)
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+            Assert.That(backendDevice.PipelineCreationCount, Is.Zero);
+        }
+        finally
+        {
             callerBytecodeLease.Dispose();
             bufferOwner.Dispose();
             await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
