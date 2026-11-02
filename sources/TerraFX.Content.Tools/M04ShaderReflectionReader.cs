@@ -699,8 +699,24 @@ internal static class M04ShaderReflectionReader
         ShaderStage stage,
         bool isInput)
     {
+        var expectedLocations = new bool[signatures.Length];
+        var expectedLocationCount = 0;
+
+        for (var index = 0; index < signatures.Length; index++)
+        {
+            if (GetExpectedLocation(signatures[index], stage, isInput) is not null)
+            {
+                expectedLocationCount++;
+            }
+        }
+
         if (!root.TryGetProperty(collectionName, out var values))
         {
+            if (expectedLocationCount != 0)
+            {
+                throw new InvalidDataException($"SPIRV-Cross omitted the '{collectionName}' stage-I/O collection.");
+            }
+
             return;
         }
 
@@ -719,21 +735,43 @@ internal static class M04ShaderReflectionReader
             }
 
             var valueType = ParseSpirvType(GetRequiredString(value, "type"));
-            var matched = false;
+            var matchedIndex = -1;
 
-            foreach (var signature in signatures)
+            for (var index = 0; index < signatures.Length; index++)
             {
-                if ((signature.ValueType == valueType)
-                    && (GetExpectedLocation(signature, stage, isInput) == location))
+                var signature = signatures[index];
+
+                if (GetExpectedLocation(signature, stage, isInput) == location)
                 {
-                    matched = true;
+                    if (signature.ValueType != valueType)
+                    {
+                        throw new InvalidDataException($"SPIRV-Cross {collectionName} value types do not match the typed DXIL stage-I/O signatures.");
+                    }
+
+                    if (expectedLocations[index])
+                    {
+                        throw new InvalidDataException($"SPIRV-Cross {collectionName} contains a duplicate stage-I/O location.");
+                    }
+
+                    matchedIndex = index;
                     break;
                 }
             }
 
-            if (!matched)
+            if (matchedIndex < 0)
             {
                 throw new InvalidDataException($"SPIRV-Cross {collectionName} do not match the typed DXIL stage-I/O signatures.");
+            }
+
+            expectedLocations[matchedIndex] = true;
+        }
+
+        for (var index = 0; index < signatures.Length; index++)
+        {
+            if ((GetExpectedLocation(signatures[index], stage, isInput) is not null)
+                && !expectedLocations[index])
+            {
+                throw new InvalidDataException($"SPIRV-Cross {collectionName} omitted a DXIL stage-I/O location.");
             }
         }
     }

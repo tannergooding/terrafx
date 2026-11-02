@@ -5,6 +5,7 @@ using System.Collections.Immutable;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -115,6 +116,21 @@ internal sealed class M04ShaderFixtureCompilerTests
         Assert.That(root.GetProperty("images")[0].GetProperty("format").GetString(), Is.EqualTo("r32ui"));
     }
 
+    private static void AssertTypedReflectionRejects(
+        string dxilReflection,
+        string spirvReflection,
+        byte[] spirvBytecode,
+        ShaderCompilerIdentity compilerIdentity)
+    {
+        Assert.That(
+            () => M04ShaderReflectionReader.Read(
+                dxilReflection,
+                spirvReflection,
+                spirvBytecode,
+                compilerIdentity),
+            Throws.TypeOf<InvalidDataException>());
+    }
+
     [Test]
     public async Task CompileAsyncProducesValidatedDxilSpirvAndReflectionWithPinnedSdk()
     {
@@ -218,6 +234,39 @@ internal sealed class M04ShaderFixtureCompilerTests
             Assert.That(typedStorageReflection.Resources, Does.Contain(
                 new ShaderResourceSignature(ShaderBindingGroup.Frame, 1, ShaderResourceKind.StorageImage, 1)));
             AssertFrameDataRecord(typedStorageReflection);
+
+            var pixelDxilReflection = await File.ReadAllTextAsync(
+                Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel.dxil-reflection.txt")).ConfigureAwait(false);
+            var pixelSpirvReflection = await File.ReadAllTextAsync(
+                Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel.reflection.json")).ConfigureAwait(false);
+            var pixelSpirvBytecode = await File.ReadAllBytesAsync(
+                Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel.spv")).ConfigureAwait(false);
+            var missingOutput = JsonNode.Parse(pixelSpirvReflection) as JsonObject
+                ?? throw new InvalidDataException("The pixel SPIRV-Cross reflection root must be an object.");
+
+            if (!missingOutput.Remove("outputs"))
+            {
+                throw new InvalidDataException("The pixel SPIRV-Cross reflection omitted its expected output fixture.");
+            }
+
+            AssertTypedReflectionRejects(
+                pixelDxilReflection,
+                missingOutput.ToJsonString(),
+                pixelSpirvBytecode,
+                typedPixelReflection.CompilerIdentity);
+
+            var duplicateOutput = JsonNode.Parse(pixelSpirvReflection) as JsonObject
+                ?? throw new InvalidDataException("The pixel SPIRV-Cross reflection root must be an object.");
+            var outputSignatures = duplicateOutput["outputs"] as JsonArray
+                ?? throw new InvalidDataException("The pixel SPIRV-Cross reflection outputs must be an array.");
+            var firstOutput = outputSignatures[0]?.DeepClone()
+                ?? throw new InvalidDataException("The pixel SPIRV-Cross reflection output fixture is missing.");
+            outputSignatures.Add(firstOutput);
+            AssertTypedReflectionRejects(
+                pixelDxilReflection,
+                duplicateOutput.ToJsonString(),
+                pixelSpirvBytecode,
+                typedPixelReflection.CompilerIdentity);
         }
         finally
         {
