@@ -87,6 +87,12 @@ internal ref struct WorldPersistenceCaptureLease
         return _world.CountComponentStateRecord(this, entity, schema, cancellationToken);
     }
 
+    internal readonly nint CountResourceStateRecord(int resourceIndex, CancellationToken cancellationToken)
+    {
+        ValidateCurrent();
+        return _world.CountResourceStateRecord(this, resourceIndex, cancellationToken);
+    }
+
     internal void Dispose()
     {
         if (_isDisposed)
@@ -102,6 +108,12 @@ internal ref struct WorldPersistenceCaptureLease
     {
         ValidateCurrent();
         return _world.CreateComponentStateEnumerator(this);
+    }
+
+    internal readonly World.ResourceStateCaptureEnumerator GetResourceStateEnumerator()
+    {
+        ValidateCurrent();
+        return _world.CreateResourceStateEnumerator(this);
     }
 
     internal readonly bool IsBoundTo(World world)
@@ -125,5 +137,14 @@ internal ref struct WorldPersistenceCaptureLease
     {
         ValidateCurrent();
         return _world.WriteComponentStateRecord(this, entity, schema, destination, cancellationToken);
+    }
+
+    internal readonly nint WriteResourceStateRecord(
+        int resourceIndex,
+        scoped Span<byte> destination,
+        CancellationToken cancellationToken)
+    {
+        ValidateCurrent();
+        return _world.WriteResourceStateRecord(this, resourceIndex, destination, cancellationToken);
     }
 }

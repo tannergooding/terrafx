@@ -38,8 +38,17 @@ internal sealed class WorldResourceRegistration<T> : IWorldResourceRegistration
 
     public Type ResourceType => typeof(T);
 
+    public ContentSchemaReference Schema => _factory.Descriptor.Schema;
+
     private static long ArrayBytes(int count, int stride)
         => checked(ArrayHeaderBytes + ((checked((long)count * stride) + 7) & ~7L));
+
+    public nint CountStateRecord(object storage, CancellationToken cancellationToken)
+    {
+        var partitions = GetPartitions(storage);
+        var operation = CreateOperation(WorldResourceOperationKind.Count);
+        return _codec.Count(operation, partitions, _factory.Dispatch.CreateCaptureData(partitions), cancellationToken);
+    }
 
     public object CreateStorage()
         => new T[PartitionCount];
@@ -89,12 +98,7 @@ internal sealed class WorldResourceRegistration<T> : IWorldResourceRegistration
 
     public void ValidateForExecution(object storage)
     {
-        ArgumentNullException.ThrowIfNull(storage);
-
-        if (storage is not T[] partitions || (partitions.Length != PartitionCount))
-        {
-            throw new InvalidOperationException("The resource storage array does not match its frozen registration.");
-        }
+        var partitions = GetPartitions(storage);
 
         for (var index = 0; index < partitions.Length; index++)
         {
@@ -122,5 +126,38 @@ internal sealed class WorldResourceRegistration<T> : IWorldResourceRegistration
                 throw new InvalidOperationException("A resource partition failed codec validation after a system scope.");
             }
         }
+    }
+
+    public nint WriteStateRecord(object storage, scoped Span<byte> destination, CancellationToken cancellationToken)
+    {
+        var partitions = GetPartitions(storage);
+        var operation = CreateOperation(WorldResourceOperationKind.Write);
+        return _codec.Write(
+            operation,
+            partitions,
+            _factory.Dispatch.CreateCaptureData(partitions),
+            destination,
+            cancellationToken);
+    }
+
+    private WorldResourceOperationControl CreateOperation(WorldResourceOperationKind operation)
+        => new(
+            _factory,
+            ResourceId,
+            Schema,
+            PartitionCount,
+            typeof(T),
+            operation);
+
+    private T[] GetPartitions(object storage)
+    {
+        ArgumentNullException.ThrowIfNull(storage);
+
+        if (storage is not T[] partitions || (partitions.Length != PartitionCount))
+        {
+            throw new InvalidOperationException("The resource storage array does not match its frozen registration.");
+        }
+
+        return partitions;
     }
 }

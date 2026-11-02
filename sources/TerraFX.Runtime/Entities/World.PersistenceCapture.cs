@@ -102,6 +102,24 @@ public sealed partial class World
         }
     }
 
+    internal nint CountResourceStateRecord(
+        WorldPersistenceCaptureLease lease,
+        int resourceIndex,
+        CancellationToken cancellationToken)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(this))
+        {
+            throw new ArgumentException("The persistence capture lease belongs to another World.", nameof(lease));
+        }
+
+        var registration = GetResourceCaptureRegistration(resourceIndex, out var storage);
+        var count = registration.CountStateRecord(storage, cancellationToken);
+        lease.ValidateCurrent();
+        return count;
+    }
+
     internal ComponentStateCaptureEnumerator CreateComponentStateEnumerator(WorldPersistenceCaptureLease lease)
     {
         lease.ValidateCurrent();
@@ -112,6 +130,18 @@ public sealed partial class World
         }
 
         return new ComponentStateCaptureEnumerator(this, lease);
+    }
+
+    internal ResourceStateCaptureEnumerator CreateResourceStateEnumerator(WorldPersistenceCaptureLease lease)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(this))
+        {
+            throw new ArgumentException("The persistence capture lease belongs to another World.", nameof(lease));
+        }
+
+        return new ResourceStateCaptureEnumerator(this, lease);
     }
 
     internal void ReleasePersistenceCaptureLease(WorldPersistenceCaptureLease lease)
@@ -193,6 +223,25 @@ public sealed partial class World
         }
     }
 
+    internal nint WriteResourceStateRecord(
+        WorldPersistenceCaptureLease lease,
+        int resourceIndex,
+        scoped Span<byte> destination,
+        CancellationToken cancellationToken)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(this))
+        {
+            throw new ArgumentException("The persistence capture lease belongs to another World.", nameof(lease));
+        }
+
+        var registration = GetResourceCaptureRegistration(resourceIndex, out var storage);
+        var written = registration.WriteStateRecord(storage, destination, cancellationToken);
+        lease.ValidateCurrent();
+        return written;
+    }
+
     private IComponentCaptureRegistration GetComponentCaptureRegistration(
         Entity entity,
         ContentSchemaReference schema,
@@ -219,6 +268,14 @@ public sealed partial class World
         }
 
         return captureRegistration;
+    }
+
+    private IWorldResourceRegistration GetResourceCaptureRegistration(int resourceIndex, out object storage)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(resourceIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(resourceIndex, Registration.Resources.Length);
+        storage = _resourceStorage[resourceIndex];
+        return Registration.Resources[resourceIndex];
     }
 
     internal sealed class ComponentStateCaptureContext : IComponentCaptureContext
@@ -352,6 +409,76 @@ public sealed partial class World
             if (!_hasCurrent)
             {
                 throw new InvalidOperationException("The component capture enumerator has no current record.");
+            }
+        }
+    }
+
+    internal ref struct ResourceStateCaptureEnumerator
+    {
+        private readonly World _world;
+        private readonly WorldPersistenceCaptureLease _lease;
+        private int _resourceIndex;
+        private bool _hasCurrent;
+
+        internal ResourceStateCaptureEnumerator(World world, WorldPersistenceCaptureLease lease)
+        {
+            _world = world;
+            _lease = lease;
+            _resourceIndex = -1;
+            _hasCurrent = false;
+        }
+
+        internal readonly int CurrentIndex
+        {
+            get
+            {
+                ValidateCurrent();
+                return _resourceIndex;
+            }
+        }
+
+        internal readonly Guid CurrentResourceId
+        {
+            get
+            {
+                ValidateCurrent();
+                return _world.Registration.Resources[_resourceIndex].ResourceId;
+            }
+        }
+
+        internal readonly ContentSchemaReference CurrentSchema
+        {
+            get
+            {
+                ValidateCurrent();
+                return _world.Registration.Resources[_resourceIndex].Schema;
+            }
+        }
+
+        internal bool MoveNext()
+        {
+            _lease.ValidateCurrent();
+            _hasCurrent = false;
+            var nextResourceIndex = _resourceIndex + 1;
+
+            if (nextResourceIndex >= _world.Registration.Resources.Length)
+            {
+                _resourceIndex = _world.Registration.Resources.Length;
+                return false;
+            }
+
+            _resourceIndex = nextResourceIndex;
+            _hasCurrent = true;
+            return true;
+        }
+
+        private readonly void ValidateCurrent()
+        {
+            _lease.ValidateCurrent();
+
+            if (!_hasCurrent)
+            {
+                throw new InvalidOperationException("The resource capture enumerator has no current record.");
             }
         }
     }

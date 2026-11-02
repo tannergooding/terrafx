@@ -255,6 +255,62 @@ internal sealed class WorldResourceSchemaTests
     }
 
     [Test]
+    public void PersistenceCaptureWritesRegisteredResourceStateFromCommittedWorld()
+    {
+        var (registry, factory, field) = CreateFactoryFixture();
+        var resourceId = Guid.NewGuid();
+        var description = new SystemResourceDescription(resourceId, 2, allowParallelAccess: true);
+        var codec = new ResourceStateCodec(factory, field);
+        var builder = new WorldRegistrationBuilder(registry);
+        _ = builder.RegisterResource(
+            description,
+            new ResourceFactoryProvider(factory.RegistrationBinding),
+            codec);
+        var registration = builder.Build();
+        using var world = World.Create(new WorldOptions(registration) {
+            CpuWorkerCount = 0,
+            InitialReplayLineageId = Guid.NewGuid(),
+            WorldGuid = Guid.NewGuid(),
+        });
+        _ = world.Step();
+
+        using var lease = world.AcquirePersistenceCaptureLease();
+        var enumerator = lease.GetResourceStateEnumerator();
+        Assert.That(enumerator.MoveNext(), Is.True);
+        Assert.That(enumerator.CurrentIndex, Is.EqualTo(0));
+        Assert.That(enumerator.CurrentResourceId, Is.EqualTo(resourceId));
+        Assert.That(enumerator.CurrentSchema, Is.EqualTo(factory.Descriptor.Schema));
+
+        var byteCount = lease.CountResourceStateRecord(enumerator.CurrentIndex, CancellationToken.None);
+        Assert.That(byteCount, Is.EqualTo((nint)(2 * sizeof(ulong))));
+        var encoded = new byte[checked((int)byteCount)];
+        var written = lease.WriteResourceStateRecord(
+            enumerator.CurrentIndex,
+            encoded,
+            CancellationToken.None);
+        Span<byte> expected = stackalloc byte[2 * sizeof(ulong)];
+        BinaryPrimitives.WriteUInt64LittleEndian(expected[..sizeof(ulong)], 2);
+        BinaryPrimitives.WriteUInt64LittleEndian(expected[sizeof(ulong)..], 3);
+
+        Assert.That(written, Is.EqualTo(byteCount));
+        Assert.That(encoded, Is.EqualTo(expected.ToArray()));
+        Assert.That(enumerator.MoveNext(), Is.False);
+
+        var staleCurrentRejected = false;
+
+        try
+        {
+            _ = enumerator.CurrentResourceId;
+        }
+        catch (InvalidOperationException)
+        {
+            staleCurrentRejected = true;
+        }
+
+        Assert.That(staleCurrentRejected, Is.True);
+    }
+
+    [Test]
     public void ResourceFieldsResolveExactRecordAndArrayPathsForPartitionBindings()
     {
         var nestedAssignment = new ContentSchemaIdentityAssignment("application/descriptor/resource-test/v1");
