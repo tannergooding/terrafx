@@ -104,7 +104,7 @@ internal static class M04ShaderReflectionReader
         JsonElement root,
         string collectionName,
         ShaderResourceKind kind,
-        Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage, string Dimension)> imageTypes,
+        Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage, string Dimension, string? Format)> imageTypes,
         ImmutableArray<ReflectedResource>.Builder resources)
     {
         if (!root.TryGetProperty(collectionName, out var collection))
@@ -127,6 +127,7 @@ internal static class M04ShaderReflectionReader
             var binding = checked(nativeBinding - GetBindingOffset(kind));
             string? format = null;
             string? componentFormat = null;
+            string? imageFormat = null;
 
             if (kind is ShaderResourceKind.SampledImage or ShaderResourceKind.StorageImage)
             {
@@ -148,6 +149,7 @@ internal static class M04ShaderReflectionReader
                 }
 
                 componentFormat = imageType.ComponentFormat;
+                imageFormat = imageType.Format;
             }
 
             if (resource.TryGetProperty("format", out var formatElement))
@@ -177,6 +179,11 @@ internal static class M04ShaderReflectionReader
                 if (format is null)
                 {
                     throw new InvalidDataException("SPIRV-Cross storage-image reflection must include its format.");
+                }
+
+                if (!StringComparer.Ordinal.Equals(imageFormat, format))
+                {
+                    throw new InvalidDataException("SPIRV-Cross storage-image format does not match the SPIR-V image format.");
                 }
             }
 
@@ -587,7 +594,7 @@ internal static class M04ShaderReflectionReader
 
     private static ImmutableArray<ReflectedResource> ParseResources(
         JsonElement root,
-        Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage, string Dimension)> imageTypes)
+        Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage, string Dimension, string? Format)> imageTypes)
     {
         CheckUnsupportedResourceCollections(root);
         var resources = ImmutableArray.CreateBuilder<ReflectedResource>();
@@ -1274,6 +1281,10 @@ internal static class M04ShaderReflectionReader
     {
         private const uint DecorationBinding = 33;
         private const uint DecorationDescriptorSet = 34;
+        private const uint ImageFormatR32f = 3;
+        private const uint ImageFormatR32i = 24;
+        private const uint ImageFormatR32ui = 33;
+        private const uint ImageFormatUnknown = 0;
         private const ushort OpDecorate = 71;
         private const ushort OpTypeArray = 28;
         private const ushort OpTypeFloat = 22;
@@ -1301,13 +1312,13 @@ internal static class M04ShaderReflectionReader
                     _ => throw new NotSupportedException($"SPIRV-Cross texture type '{type}' has no supported SPIR-V dimension mapping."),
                 };
 
-        internal static Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage, string Dimension)> Read(
+        internal static Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage, string Dimension, string? Format)> Read(
             ReadOnlySpan<byte> bytecode)
         {
             var words = GetSpirvWords(bytecode);
             var scalarFormats = new Dictionary<uint, string>();
             var pointerTypes = new Dictionary<uint, uint>();
-            var imageTypes = new Dictionary<uint, (uint SampledTypeId, uint Dimension, uint Sampled)>();
+            var imageTypes = new Dictionary<uint, (uint SampledTypeId, uint Dimension, uint Sampled, uint Format)>();
             var arrayElementTypes = new Dictionary<uint, uint>();
             var decorations = new Dictionary<uint, (int? DescriptorSet, int? Binding)>();
             var variables = new List<(uint PointerType, uint Id, uint StorageClass)>();
@@ -1360,7 +1371,9 @@ internal static class M04ShaderReflectionReader
                     case OpTypeImage:
                     {
                         if ((wordCount is not (9 or 10))
-                            || !imageTypes.TryAdd(words[cursor + 1], (words[cursor + 2], words[cursor + 3], words[cursor + 7])))
+                            || !imageTypes.TryAdd(
+                                words[cursor + 1],
+                                (words[cursor + 2], words[cursor + 3], words[cursor + 7], words[cursor + 8])))
                         {
                             throw new InvalidDataException("SPIR-V OpTypeImage has an invalid operand count or duplicate result ID.");
                         }
@@ -1466,7 +1479,7 @@ internal static class M04ShaderReflectionReader
                 cursor += wordCount;
             }
 
-            var imageFormats = new Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage, string Dimension)>();
+            var imageFormats = new Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage, string Dimension, string? Format)>();
 
             foreach (var (pointerType, variableId, storageClass) in variables)
             {
@@ -1522,8 +1535,20 @@ internal static class M04ShaderReflectionReader
                     3 => "cube",
                     _ => throw new NotSupportedException("The M04 reflection reader only converts 1D, 2D, 3D, and cube images."),
                 };
+                var format = imageType.Format switch {
+                    ImageFormatUnknown => null,
+                    ImageFormatR32f => "r32f",
+                    ImageFormatR32i => "r32i",
+                    ImageFormatR32ui => "r32ui",
+                    _ => throw new NotSupportedException("The M04 reflection reader does not convert this SPIR-V image format."),
+                };
 
-                if (!imageFormats.TryAdd((descriptorSet, binding), (componentFormat, isStorage, dimension)))
+                if ((isStorage && (format is null)) || (!isStorage && (format is not null)))
+                {
+                    throw new InvalidDataException("SPIR-V sampled/storage image format does not match its image mode.");
+                }
+
+                if (!imageFormats.TryAdd((descriptorSet, binding), (componentFormat, isStorage, dimension, format)))
                 {
                     throw new InvalidDataException("The reflected SPIR-V module contains duplicate image descriptor identities.");
                 }
