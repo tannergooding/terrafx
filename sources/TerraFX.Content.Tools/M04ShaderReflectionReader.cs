@@ -64,9 +64,9 @@ internal static class M04ShaderReflectionReader
             throw new InvalidDataException("DXIL and SPIRV-Cross reflection name different entry points.");
         }
 
-        var (imageTypes, descriptorArrayCounts) = SpirvImageTypeReader.Read(spirvBytecode);
+        var (imageTypes, descriptorBindings) = SpirvImageTypeReader.Read(spirvBytecode);
         var resources = ParseResources(root, imageTypes);
-        SpirvImageTypeReader.ValidateDescriptorArrayCounts(resources, descriptorArrayCounts);
+        SpirvImageTypeReader.ValidateDescriptorBindings(resources, descriptorBindings);
         ValidateDxilResourceBindings(dxilReflection, resources);
         var inputs = ParseDxilSignatures(dxilReflection, "Input signature:", stage, isInput: true);
         var outputs = ParseDxilSignatures(dxilReflection, "Output signature:", stage, isInput: false);
@@ -1294,6 +1294,8 @@ internal static class M04ShaderReflectionReader
     private static class SpirvImageTypeReader
     {
         private const uint DecorationBinding = 33;
+        private const uint DecorationBlock = 2;
+        private const uint DecorationBufferBlock = 3;
         private const uint DecorationDescriptorSet = 34;
         private const uint ImageFormatR32f = 3;
         private const uint ImageFormatR32i = 24;
@@ -1307,7 +1309,12 @@ internal static class M04ShaderReflectionReader
         private const ushort OpTypeInt = 21;
         private const ushort OpTypePointer = 32;
         private const ushort OpTypeRuntimeArray = 29;
+        private const ushort OpTypeSampledImage = 27;
+        private const ushort OpTypeSampler = 26;
+        private const ushort OpTypeStruct = 30;
         private const ushort OpVariable = 59;
+        private const uint StorageClassStorageBuffer = 12;
+        private const uint StorageClassUniform = 2;
         private const uint StorageClassUniformConstant = 0;
 
         internal static string GetCrossDimension(string type, bool isStorage)
@@ -1329,13 +1336,18 @@ internal static class M04ShaderReflectionReader
 
         internal static (
             Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage, string Dimension, string? Format)> ImageTypes,
-            Dictionary<(int DescriptorSet, int Binding), int> ArrayCounts) Read(
+            Dictionary<(int DescriptorSet, int Binding), (ShaderResourceKind Kind, int ArrayCount)> DescriptorBindings) Read(
             ReadOnlySpan<byte> bytecode)
         {
             var words = GetSpirvWords(bytecode);
             var scalarFormats = new Dictionary<uint, string>();
             var pointerTypes = new Dictionary<uint, uint>();
             var imageTypes = new Dictionary<uint, (uint SampledTypeId, uint Dimension, uint Sampled, uint Format)>();
+            var samplerTypeIds = new HashSet<uint>();
+            var sampledImageTypeIds = new HashSet<uint>();
+            var blockTypeIds = new HashSet<uint>();
+            var bufferBlockTypeIds = new HashSet<uint>();
+            var structTypeIds = new HashSet<uint>();
             var arrayElementTypes = new Dictionary<uint, (uint ElementTypeId, uint LengthId, bool IsRuntime)>();
             var arrayLengths = new Dictionary<uint, uint>();
             var decorations = new Dictionary<uint, (int? DescriptorSet, int? Binding)>();
@@ -1399,6 +1411,36 @@ internal static class M04ShaderReflectionReader
                         break;
                     }
 
+                    case OpTypeSampler:
+                    {
+                        if ((wordCount != 2) || !samplerTypeIds.Add(words[cursor + 1]))
+                        {
+                            throw new InvalidDataException("SPIR-V OpTypeSampler has an invalid operand count or duplicate result ID.");
+                        }
+
+                        break;
+                    }
+
+                    case OpTypeSampledImage:
+                    {
+                        if ((wordCount != 3) || !sampledImageTypeIds.Add(words[cursor + 1]))
+                        {
+                            throw new InvalidDataException("SPIR-V OpTypeSampledImage has an invalid operand count or duplicate result ID.");
+                        }
+
+                        break;
+                    }
+
+                    case OpTypeStruct:
+                    {
+                        if ((wordCount < 2) || !structTypeIds.Add(words[cursor + 1]))
+                        {
+                            throw new InvalidDataException("SPIR-V OpTypeStruct has an invalid operand count or duplicate result ID.");
+                        }
+
+                        break;
+                    }
+
                     case OpTypeArray:
                     {
                         if ((wordCount != 4)
@@ -1454,6 +1496,25 @@ internal static class M04ShaderReflectionReader
 
                         var targetId = words[cursor + 1];
                         var decoration = words[cursor + 2];
+
+                        if (decoration is DecorationBlock or DecorationBufferBlock)
+                        {
+                            if (wordCount != 3)
+                            {
+                                throw new InvalidDataException("SPIR-V block type decorations cannot contain extra operands.");
+                            }
+
+                            var blockTypes = (decoration == DecorationBlock)
+                                ? blockTypeIds
+                                : bufferBlockTypeIds;
+
+                            if (!blockTypes.Add(targetId))
+                            {
+                                throw new InvalidDataException("The reflected SPIR-V module has duplicate block type decorations.");
+                            }
+
+                            break;
+                        }
 
                         if (decoration is not (DecorationBinding or DecorationDescriptorSet))
                         {
@@ -1514,7 +1575,7 @@ internal static class M04ShaderReflectionReader
             }
 
             var imageFormats = new Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage, string Dimension, string? Format)>();
-            var descriptorArrayCounts = new Dictionary<(int DescriptorSet, int Binding), int>();
+            var descriptorBindings = new Dictionary<(int DescriptorSet, int Binding), (ShaderResourceKind Kind, int ArrayCount)>();
 
             foreach (var (pointerType, variableId, storageClass) in variables)
             {
@@ -1560,7 +1621,17 @@ internal static class M04ShaderReflectionReader
                     typeId = arrayType.ElementTypeId;
                 }
 
-                if (!descriptorArrayCounts.TryAdd((descriptorSet, binding), descriptorArrayCount))
+                var descriptorKind = GetDescriptorKind(
+                    storageClass,
+                    typeId,
+                    imageTypes,
+                    samplerTypeIds,
+                    sampledImageTypeIds,
+                    structTypeIds,
+                    blockTypeIds,
+                    bufferBlockTypeIds);
+
+                if (!descriptorBindings.TryAdd((descriptorSet, binding), (descriptorKind, descriptorArrayCount)))
                 {
                     throw new InvalidDataException("The reflected SPIR-V module contains duplicate descriptor identities.");
                 }
@@ -1608,14 +1679,15 @@ internal static class M04ShaderReflectionReader
                 }
             }
 
-            return (imageFormats, descriptorArrayCounts);
+            return (imageFormats, descriptorBindings);
         }
 
-        internal static void ValidateDescriptorArrayCounts(
+        internal static void ValidateDescriptorBindings(
             ImmutableArray<ReflectedResource> resources,
-            Dictionary<(int DescriptorSet, int Binding), int> spirvArrayCounts)
+            Dictionary<(int DescriptorSet, int Binding), (ShaderResourceKind Kind, int ArrayCount)> spirvBindings)
         {
-            var reflectedArrayCounts = new Dictionary<(int DescriptorSet, int Binding), int>();
+            var reflectedBindings =
+                new Dictionary<(int DescriptorSet, int Binding), (ShaderResourceKind Kind, int ArrayCount)>();
 
             foreach (var resource in resources)
             {
@@ -1623,25 +1695,81 @@ internal static class M04ShaderReflectionReader
                     GetDescriptorSet(resource.Signature.Group),
                     checked(resource.Signature.Binding + GetBindingOffset(resource.Signature.Kind)));
 
-                if (!reflectedArrayCounts.TryAdd(descriptor, resource.Signature.ArrayCount))
+                if (!reflectedBindings.TryAdd(
+                    descriptor,
+                    (resource.Signature.Kind, resource.Signature.ArrayCount)))
                 {
                     throw new InvalidDataException("SPIRV-Cross contains duplicate descriptor identities.");
                 }
             }
 
-            if (reflectedArrayCounts.Count != spirvArrayCounts.Count)
+            if (reflectedBindings.Count != spirvBindings.Count)
             {
                 throw new InvalidDataException("SPIR-V and SPIRV-Cross report different descriptor counts.");
             }
 
-            foreach (var (descriptor, arrayCount) in reflectedArrayCounts)
+            foreach (var (descriptor, reflectedBinding) in reflectedBindings)
             {
-                if (!spirvArrayCounts.TryGetValue(descriptor, out var spirvArrayCount)
-                    || (arrayCount != spirvArrayCount))
+                if (!spirvBindings.TryGetValue(descriptor, out var spirvBinding)
+                    || (reflectedBinding != spirvBinding))
                 {
-                    throw new InvalidDataException("SPIR-V and SPIRV-Cross report different descriptor-array counts.");
+                    throw new InvalidDataException("SPIR-V and SPIRV-Cross report different resource classes or descriptor-array counts.");
                 }
             }
+        }
+
+        private static ShaderResourceKind GetDescriptorKind(
+            uint storageClass,
+            uint typeId,
+            Dictionary<uint, (uint SampledTypeId, uint Dimension, uint Sampled, uint Format)> imageTypes,
+            HashSet<uint> samplerTypeIds,
+            HashSet<uint> sampledImageTypeIds,
+            HashSet<uint> structTypeIds,
+            HashSet<uint> blockTypeIds,
+            HashSet<uint> bufferBlockTypeIds)
+        {
+            if (storageClass == StorageClassUniformConstant)
+            {
+                if (imageTypes.TryGetValue(typeId, out var imageType))
+                {
+                    return imageType.Sampled switch {
+                        1 => ShaderResourceKind.SampledImage,
+                        2 => ShaderResourceKind.StorageImage,
+                        _ => throw new NotSupportedException("The M04 reflection reader only converts explicitly sampled or storage images."),
+                    };
+                }
+
+                if (samplerTypeIds.Contains(typeId))
+                {
+                    return ShaderResourceKind.Sampler;
+                }
+
+                if (sampledImageTypeIds.Contains(typeId))
+                {
+                    throw new NotSupportedException("Combined image-sampler descriptors are not supported by the M04 reflection reader.");
+                }
+            }
+            else if ((storageClass == StorageClassUniform)
+                && structTypeIds.Contains(typeId))
+            {
+                if (blockTypeIds.Contains(typeId))
+                {
+                    return ShaderResourceKind.UniformBuffer;
+                }
+
+                if (bufferBlockTypeIds.Contains(typeId))
+                {
+                    return ShaderResourceKind.StorageBuffer;
+                }
+            }
+            else if ((storageClass == StorageClassStorageBuffer)
+                && structTypeIds.Contains(typeId)
+                && blockTypeIds.Contains(typeId))
+            {
+                return ShaderResourceKind.StorageBuffer;
+            }
+
+            throw new NotSupportedException("The reflected SPIR-V descriptor resource class is not supported by the M04 reflection reader.");
         }
     }
 

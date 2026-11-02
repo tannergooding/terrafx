@@ -361,6 +361,59 @@ internal sealed class M04ShaderFixtureCompilerTests
                 storageSpirvBytecode,
                 typedStorageReflection.CompilerIdentity);
 
+            var mismatchedSpirvImageModeWords = MemoryMarshal.Cast<byte, uint>(storageSpirvBytecode).ToArray();
+            var changedSpirvImageMode = false;
+
+            for (var cursor = 5; cursor < mismatchedSpirvImageModeWords.Length;)
+            {
+                var instruction = mismatchedSpirvImageModeWords[cursor];
+                var wordCount = checked((int)(instruction >> 16));
+                var opcode = checked((ushort)(instruction & 0xFFFF));
+
+                if ((opcode == 25) && (mismatchedSpirvImageModeWords[cursor + 7] == 1))
+                {
+                    mismatchedSpirvImageModeWords[cursor + 7] = 2;
+                    mismatchedSpirvImageModeWords[cursor + 8] = 3;
+                    changedSpirvImageMode = true;
+                    break;
+                }
+
+                cursor += wordCount;
+            }
+
+            Assert.That(changedSpirvImageMode, Is.True);
+            AssertTypedReflectionRejects(
+                storageDxilReflection,
+                storageSpirvReflection,
+                MemoryMarshal.AsBytes(mismatchedSpirvImageModeWords.AsSpan()).ToArray(),
+                typedStorageReflection.CompilerIdentity);
+
+            var mismatchedSpirvStorageClassWords = MemoryMarshal.Cast<byte, uint>(storageSpirvBytecode).ToArray();
+            var changedSpirvStorageClass = false;
+
+            for (var cursor = 5; cursor < mismatchedSpirvStorageClassWords.Length;)
+            {
+                var instruction = mismatchedSpirvStorageClassWords[cursor];
+                var wordCount = checked((int)(instruction >> 16));
+                var opcode = checked((ushort)(instruction & 0xFFFF));
+
+                if ((opcode == 59) && (mismatchedSpirvStorageClassWords[cursor + 3] == 12))
+                {
+                    mismatchedSpirvStorageClassWords[cursor + 3] = 2;
+                    changedSpirvStorageClass = true;
+                    break;
+                }
+
+                cursor += wordCount;
+            }
+
+            Assert.That(changedSpirvStorageClass, Is.True);
+            AssertTypedReflectionRejects(
+                storageDxilReflection,
+                storageSpirvReflection,
+                MemoryMarshal.AsBytes(mismatchedSpirvStorageClassWords.AsSpan()).ToArray(),
+                typedStorageReflection.CompilerIdentity);
+
             var mismatchedStorageImageFormat = JsonNode.Parse(storageSpirvReflection) as JsonObject
                 ?? throw new InvalidDataException("The storage SPIRV-Cross reflection root must be an object.");
             var mismatchedStorageImages = mismatchedStorageImageFormat["images"] as JsonArray
