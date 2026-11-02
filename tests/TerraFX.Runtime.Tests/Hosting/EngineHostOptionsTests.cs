@@ -1377,11 +1377,288 @@ internal sealed partial class EngineHostOptionsTests
         Assert.That(actualResizedMetrics.SwapchainEpoch, Is.Zero);
     }
 
+    [Test]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "The dedicated STA test thread must transfer native failures after owner cleanup.")]
+    public async Task WindowsPlatformOwnerWitnessesPerMonitorDpiTransition()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)
+            || (RuntimeInformation.ProcessArchitecture != Architecture.X64))
+        {
+            Assert.Ignore("The Windows Platform backend requires Windows 11 x64.");
+            return;
+        }
+
+        var options = new EngineHostOptions(
+            HostProfile.Interactive,
+            PlatformBackend.WindowsNative,
+            GraphicsBackend.D3D12,
+            D3D12GraphicsBackend.CreateRegistration(),
+            CreateAssetStoreOptions());
+        var completion = new TaskCompletionSource<(
+            uint OwnerId,
+            ImmutableArray<float> ObservedDpis,
+            float? SourceDpi,
+            float? TargetDpi,
+            nint InitialNativeMonitor,
+            nint SourceNativeMonitor,
+            nint TargetNativeMonitor,
+            nint FinalNativeMonitor,
+            WindowMetrics? InitialMetrics,
+            WindowMetrics? MovedMetrics)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() => {
+            PlatformHostOwner? owner = null;
+            var ownerId = 0U;
+            var observedDpis = ImmutableArray<float>.Empty;
+            float? sourceDpi = null;
+            float? targetDpi = null;
+            nint initialNativeMonitor = 0;
+            nint sourceNativeMonitor = 0;
+            nint targetNativeMonitor = 0;
+            nint finalNativeMonitor = 0;
+            WindowMetrics? initialMetrics = null;
+            WindowMetrics? movedMetrics = null;
+            Exception? failure = null;
+
+            try
+            {
+                owner = PlatformHostOwner.Create(options);
+                ownerId = owner.OwnerId;
+                var monitors = owner.Platform.GetMonitorHandles();
+                var monitorDpiBuilder = ImmutableArray.CreateBuilder<(MonitorHandle Monitor, float Dpi)>(monitors.Length);
+
+                foreach (var monitor in monitors)
+                {
+                    var probeWindow = owner.CreateWindow(new WindowOptions("TerraFX monitor DPI probe") {
+                        ClientSize = new Vector2(160.0f, 120.0f),
+                        Monitor = monitor,
+                        Visible = false,
+                    });
+                    _ = owner.Pump();
+                    var effectiveDpi = owner.Platform.GetMetrics(probeWindow).EffectiveDpi
+                        ?? throw new InvalidOperationException("Windows did not report effective DPI for a monitor probe window.");
+                    monitorDpiBuilder.Add((monitor, effectiveDpi));
+                    owner.CloseWindow(probeWindow);
+                    _ = owner.Pump();
+                }
+
+                var observedDpiBuilder = ImmutableArray.CreateBuilder<float>(monitorDpiBuilder.Count);
+
+                foreach (var monitorDpi in monitorDpiBuilder)
+                {
+                    observedDpiBuilder.Add(monitorDpi.Dpi);
+                }
+
+                observedDpis = observedDpiBuilder.MoveToImmutable();
+
+                var sourceMonitor = default(MonitorHandle);
+                var targetMonitor = default(MonitorHandle);
+
+                for (var sourceIndex = 0; sourceIndex < monitorDpiBuilder.Count && !sourceMonitor.IsValid; sourceIndex++)
+                {
+                    for (var targetIndex = sourceIndex + 1; targetIndex < monitorDpiBuilder.Count; targetIndex++)
+                    {
+                        var source = monitorDpiBuilder[sourceIndex];
+                        var target = monitorDpiBuilder[targetIndex];
+
+                        if (source.Dpi != target.Dpi)
+                        {
+                            sourceMonitor = source.Monitor;
+                            targetMonitor = target.Monitor;
+                            sourceDpi = source.Dpi;
+                            targetDpi = target.Dpi;
+                            break;
+                        }
+                    }
+                }
+
+                if (sourceMonitor.IsValid)
+                {
+                    var window = owner.CreateWindow(new WindowOptions("TerraFX per-monitor DPI witness") {
+                        ClientSize = new Vector2(160.0f, 120.0f),
+                        Monitor = sourceMonitor,
+                        Visible = false,
+                    });
+                    _ = owner.Pump();
+                    initialMetrics = owner.Platform.GetMetrics(window);
+
+                    var binding = owner.GetNativeWindowBinding(window);
+                    initialNativeMonitor = WindowsTestNativeMethods.MonitorFromWindow(
+                        binding.NativeWindowOrSurface,
+                        WindowsTestNativeMethods.MonitorDefaultToNearest);
+                    sourceNativeMonitor = owner.GetNativeMonitorHandle(sourceMonitor);
+                    targetNativeMonitor = owner.GetNativeMonitorHandle(targetMonitor);
+                    var targetBounds = new WindowsTestNativeMethods.MonitorInfo {
+                        Size = checked((uint)Marshal.SizeOf<WindowsTestNativeMethods.MonitorInfo>()),
+                    };
+
+                    if (!WindowsTestNativeMethods.GetMonitorInfo(targetNativeMonitor, ref targetBounds))
+                    {
+                        throw new Win32Exception(
+                            Marshal.GetLastPInvokeError(),
+                            "The Windows DPI witness could not read the target monitor bounds.");
+                    }
+
+                    if (!WindowsTestNativeMethods.GetWindowRect(binding.NativeWindowOrSurface, out var windowBounds))
+                    {
+                        throw new Win32Exception(
+                            Marshal.GetLastPInvokeError(),
+                            "The Windows DPI witness could not read the hidden HWND bounds.");
+                    }
+
+                    var targetWidth = targetBounds.Monitor.Right - targetBounds.Monitor.Left;
+                    var targetHeight = targetBounds.Monitor.Bottom - targetBounds.Monitor.Top;
+
+                    if ((targetWidth <= 2) || (targetHeight <= 2))
+                    {
+                        throw new InvalidOperationException("Windows returned invalid bounds for the target monitor.");
+                    }
+
+                    var width = windowBounds.Right - windowBounds.Left;
+                    var height = windowBounds.Bottom - windowBounds.Top;
+
+                    if ((width <= 0) || (height <= 0))
+                    {
+                        throw new InvalidOperationException("Windows returned invalid bounds for the DPI witness window.");
+                    }
+
+                    var x = targetBounds.Monitor.Left + ((targetWidth - width) / 2);
+                    var y = targetBounds.Monitor.Top + ((targetHeight - height) / 2);
+
+                    if (!WindowsTestNativeMethods.SetWindowPos(
+                        binding.NativeWindowOrSurface,
+                        insertAfter: 0,
+                        x,
+                        y,
+                        width,
+                        height,
+                        WindowsTestNativeMethods.WindowPositionNoZOrder
+                            | WindowsTestNativeMethods.WindowPositionNoActivate))
+                    {
+                        throw new Win32Exception(
+                            Marshal.GetLastPInvokeError(),
+                            "The Windows DPI witness could not move its hidden HWND to the target monitor.");
+                    }
+
+                    _ = owner.Pump();
+                    movedMetrics = owner.Platform.GetMetrics(window);
+                    finalNativeMonitor = WindowsTestNativeMethods.MonitorFromWindow(
+                        binding.NativeWindowOrSurface,
+                        WindowsTestNativeMethods.MonitorDefaultToNearest);
+                    owner.CloseWindow(window);
+                    _ = owner.Pump();
+                }
+            }
+            catch (Exception exception)
+            {
+                failure = exception;
+            }
+
+            try
+            {
+                owner?.DisposeFromOwner();
+            }
+            catch (Exception cleanupException)
+            {
+                failure = failure is null
+                    ? cleanupException
+                    : new AggregateException(failure, cleanupException);
+            }
+
+            if (failure is null)
+            {
+                _ = completion.TrySetResult((
+                    ownerId,
+                    observedDpis,
+                    sourceDpi,
+                    targetDpi,
+                    initialNativeMonitor,
+                    sourceNativeMonitor,
+                    targetNativeMonitor,
+                    finalNativeMonitor,
+                    initialMetrics,
+                    movedMetrics));
+            }
+            else
+            {
+                _ = completion.TrySetException(failure);
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+
+        var (
+            ownerId,
+            observedDpis,
+            sourceDpi,
+            targetDpi,
+            initialNativeMonitor,
+            sourceNativeMonitor,
+            targetNativeMonitor,
+            finalNativeMonitor,
+            initialMetrics,
+            movedMetrics) = await completion.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        Assert.That(thread.Join(TimeSpan.FromSeconds(5)), Is.True);
+        Assert.That(ownerId, Is.GreaterThan(0));
+
+        if ((sourceDpi is not float expectedSourceDpi)
+            || (targetDpi is not float expectedTargetDpi))
+        {
+            Assert.Ignore(
+                $"The Windows test host has no pair of monitors with distinct effective DPI values "
+                    + $"(observed: {string.Join(", ", observedDpis)}).");
+            return;
+        }
+
+        var actualInitialMetrics = initialMetrics
+            ?? throw new InvalidOperationException("The Windows DPI witness did not publish its initial metrics snapshot.");
+        var actualMovedMetrics = movedMetrics
+            ?? throw new InvalidOperationException("The Windows DPI witness did not publish its moved metrics snapshot.");
+        Assert.That(expectedSourceDpi, Is.Not.EqualTo(expectedTargetDpi));
+        Assert.That(initialNativeMonitor, Is.Not.Zero);
+        Assert.That(initialNativeMonitor, Is.EqualTo(sourceNativeMonitor));
+        Assert.That(initialNativeMonitor, Is.Not.EqualTo(finalNativeMonitor));
+        Assert.That(finalNativeMonitor, Is.EqualTo(targetNativeMonitor));
+        Assert.That(actualInitialMetrics.EffectiveDpi, Is.EqualTo(expectedSourceDpi));
+        Assert.That(actualMovedMetrics.EffectiveDpi, Is.EqualTo(expectedTargetDpi));
+        Assert.That(actualMovedMetrics, Is.Not.SameAs(actualInitialMetrics));
+        Assert.That(actualInitialMetrics.DpiSource, Is.EqualTo(DpiSource.WindowsPerMonitorV2));
+        Assert.That(actualMovedMetrics.DpiSource, Is.EqualTo(DpiSource.WindowsPerMonitorV2));
+        Assert.That(actualInitialMetrics.DpiConfidence, Is.EqualTo(DpiConfidence.Reported));
+        Assert.That(actualMovedMetrics.DpiConfidence, Is.EqualTo(DpiConfidence.Reported));
+        Assert.That(actualMovedMetrics.LogicalClientSize.X, Is.EqualTo(actualInitialMetrics.LogicalClientSize.X).Within(0.5f));
+        Assert.That(actualMovedMetrics.LogicalClientSize.Y, Is.EqualTo(actualInitialMetrics.LogicalClientSize.Y).Within(0.5f));
+        Assert.That(actualMovedMetrics.ContentScale.X, Is.EqualTo(expectedTargetDpi / 96.0f).Within(0.0001f));
+        Assert.That(actualMovedMetrics.ContentScale.Y, Is.EqualTo(expectedTargetDpi / 96.0f).Within(0.0001f));
+        Assert.That(actualMovedMetrics.LogicalClientSize.X * actualMovedMetrics.ContentScale.X,
+            Is.EqualTo(actualMovedMetrics.ClientPixelSize.Width).Within(0.01f));
+        Assert.That(actualMovedMetrics.LogicalClientSize.Y * actualMovedMetrics.ContentScale.Y,
+            Is.EqualTo(actualMovedMetrics.ClientPixelSize.Height).Within(0.01f));
+    }
+
     private static partial class WindowsTestNativeMethods
     {
+        internal const uint MonitorDefaultToNearest = 0x00000002;
         internal const uint WindowPositionNoActivate = 0x0010;
         internal const uint WindowPositionNoMove = 0x0002;
         internal const uint WindowPositionNoZOrder = 0x0004;
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport("user32.dll", EntryPoint = "GetMonitorInfoW", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool GetMonitorInfo(nint monitor, ref MonitorInfo monitorInfo);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport("user32.dll", EntryPoint = "GetWindowRect", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool GetWindowRect(nint window, out NativeRect rect);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport("user32.dll", EntryPoint = "MonitorFromWindow")]
+        internal static partial nint MonitorFromWindow(nint window, uint flags);
 
         [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [LibraryImport("user32.dll", EntryPoint = "SetWindowPos", SetLastError = true)]
@@ -1394,6 +1671,24 @@ internal sealed partial class EngineHostOptionsTests
             int width,
             int height,
             uint flags);
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct MonitorInfo
+        {
+            internal uint Size;
+            internal NativeRect Monitor;
+            internal NativeRect Work;
+            internal uint Flags;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct NativeRect
+        {
+            internal int Left;
+            internal int Top;
+            internal int Right;
+            internal int Bottom;
+        }
     }
 
     private readonly struct ReadbackCopyAction : IAction<ReadOnlySpan<byte>>
