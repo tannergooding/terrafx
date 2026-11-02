@@ -27,8 +27,8 @@ internal sealed class RenderGraphDependencyCompilerTests
             new RenderGraphPassNode(reader, new RenderPassDescription("reader", -1, [], false)),
             new RenderGraphPassNode(writer, new RenderPassDescription("writer", 1, [], false)));
         var accesses = ImmutableArray.Create(
-            new GraphResourceAccess(writer, writtenVersion, new GraphBufferRange(0, 16), isWrite: true),
-            new GraphResourceAccess(reader, writtenVersion, new GraphBufferRange(0, 16), isWrite: false));
+            new GraphResourceAccess(writer, writtenVersion, new GraphBufferRange(0, 16), GraphBufferUsage.StorageWrite, isWrite: true),
+            new GraphResourceAccess(reader, writtenVersion, new GraphBufferRange(0, 16), GraphBufferUsage.StorageRead, isWrite: false));
 
         Assert.That(RenderGraphDependencyCompiler.TryOrder(passes, accesses, out var orderedPasses), Is.True);
         Assert.That(orderedPasses, Is.EqualTo(ImmutableArray.Create(writer, reader)));
@@ -49,9 +49,9 @@ internal sealed class RenderGraphDependencyCompilerTests
             new RenderGraphPassNode(reader, new RenderPassDescription("read-old", 1, [], false)),
             new RenderGraphPassNode(firstWriter, new RenderPassDescription("first", 0, [], false)));
         var accesses = ImmutableArray.Create(
-            new GraphResourceAccess(reader, version0, new GraphBufferRange(0, 16), isWrite: false),
-            new GraphResourceAccess(firstWriter, version1, new GraphBufferRange(0, 16), isWrite: true),
-            new GraphResourceAccess(secondWriter, version2, new GraphBufferRange(0, 16), isWrite: true));
+            new GraphResourceAccess(reader, version0, new GraphBufferRange(0, 16), GraphBufferUsage.StorageRead, isWrite: false),
+            new GraphResourceAccess(firstWriter, version1, new GraphBufferRange(0, 16), GraphBufferUsage.StorageWrite, isWrite: true),
+            new GraphResourceAccess(secondWriter, version2, new GraphBufferRange(0, 16), GraphBufferUsage.StorageWrite, isWrite: true));
 
         Assert.That(RenderGraphDependencyCompiler.TryOrder(passes, accesses, out var orderedPasses), Is.True);
         Assert.That(orderedPasses, Is.EqualTo(ImmutableArray.Create(reader, firstWriter, secondWriter)));
@@ -73,8 +73,18 @@ internal sealed class RenderGraphDependencyCompilerTests
             new RenderGraphPassNode(reader, new RenderPassDescription("reader", -1, [], false)),
             new RenderGraphPassNode(writer, new RenderPassDescription("writer", 1, [], false)));
         var accesses = ImmutableArray.Create(
-            new GraphResourceAccess(writer, version, new GraphTextureRange(0, 2, 0, 1, TextureAspect.Color), isWrite: true),
-            new GraphResourceAccess(reader, version, new GraphTextureRange(1, 1, 0, 1, TextureAspect.Color), isWrite: false));
+            new GraphResourceAccess(
+                writer,
+                version,
+                new GraphTextureRange(0, 2, 0, 1, TextureAspect.Color),
+                GraphTextureUsage.StorageWrite,
+                isWrite: true),
+            new GraphResourceAccess(
+                reader,
+                version,
+                new GraphTextureRange(1, 1, 0, 1, TextureAspect.Color),
+                GraphTextureUsage.SampledRead,
+                isWrite: false));
 
         Assert.That(RenderGraphDependencyCompiler.TryOrder(passes, accesses, out var orderedPasses), Is.True);
         Assert.That(orderedPasses, Is.EqualTo(ImmutableArray.Create(writer, reader)));
@@ -92,8 +102,8 @@ internal sealed class RenderGraphDependencyCompilerTests
             new RenderGraphPassNode(writer, new RenderPassDescription("writer", 1, [], false)),
             new RenderGraphPassNode(reader, new RenderPassDescription("reader", -1, [], false)));
         var accesses = ImmutableArray.Create(
-            new GraphResourceAccess(reader, version0, new GraphBufferRange(0, 16), isWrite: false),
-            new GraphResourceAccess(writer, version1, new GraphBufferRange(16, 16), isWrite: true));
+            new GraphResourceAccess(reader, version0, new GraphBufferRange(0, 16), GraphBufferUsage.StorageRead, isWrite: false),
+            new GraphResourceAccess(writer, version1, new GraphBufferRange(16, 16), GraphBufferUsage.StorageWrite, isWrite: true));
 
         Assert.That(RenderGraphDependencyCompiler.TryOrder(passes, accesses, out var orderedPasses), Is.True);
         Assert.That(orderedPasses, Is.EqualTo(ImmutableArray.Create(reader, writer)));

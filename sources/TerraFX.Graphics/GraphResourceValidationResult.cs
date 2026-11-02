@@ -8,6 +8,7 @@ namespace TerraFX.Graphics;
 internal readonly struct GraphResourceValidationResult
 {
     internal GraphResourceValidationResult(
+        bool accessesValid,
         bool importsValid,
         bool contentsValid,
         bool dependenciesValid,
@@ -18,16 +19,19 @@ internal readonly struct GraphResourceValidationResult
             throw new ArgumentException("The ordered pass list must be initialized.", nameof(orderedPasses));
         }
 
-        if (!(importsValid && contentsValid && dependenciesValid) && !orderedPasses.IsEmpty)
+        if (!(accessesValid && importsValid && contentsValid && dependenciesValid) && !orderedPasses.IsEmpty)
         {
             throw new ArgumentException("An invalid graph cannot expose an ordered pass plan.", nameof(orderedPasses));
         }
 
+        AccessesValid = accessesValid;
         ContentsValid = contentsValid;
         DependenciesValid = dependenciesValid;
         ImportsValid = importsValid;
         OrderedPasses = [.. orderedPasses];
     }
+
+    internal bool AccessesValid { get; }
 
     internal bool ContentsValid { get; }
 
@@ -35,7 +39,7 @@ internal readonly struct GraphResourceValidationResult
 
     internal bool ImportsValid { get; }
 
-    internal bool IsValid => ImportsValid && ContentsValid && DependenciesValid;
+    internal bool IsValid => AccessesValid && ImportsValid && ContentsValid && DependenciesValid;
 
     internal ImmutableArray<RenderPassId> OrderedPasses { get; }
 }

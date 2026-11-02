@@ -6,14 +6,20 @@ namespace TerraFX.Graphics;
 
 internal readonly struct GraphResourceAccess
 {
+    private readonly AttachmentLoadAction? _attachmentLoadAction;
+    private readonly AttachmentStoreAction? _attachmentStoreAction;
+    private readonly TextureUsage? _attachmentUsage;
     private readonly GraphBufferRange _bufferRange;
+    private readonly GraphBufferUsage? _bufferUsage;
     private readonly bool _contentsValid;
     private readonly GraphTextureRange _textureRange;
+    private readonly GraphTextureUsage? _textureUsage;
 
     internal GraphResourceAccess(
         RenderPassId passId,
         GraphBufferVersion version,
         GraphBufferRange range,
+        GraphBufferUsage usage,
         bool isWrite,
         bool contentsValid = true)
     {
@@ -29,21 +35,32 @@ internal readonly struct GraphResourceAccess
             throw new ArgumentException("The buffer access range must fit its graph version.", nameof(range));
         }
 
+        if (!Enum.IsDefined(usage))
+        {
+            throw new ArgumentOutOfRangeException(nameof(usage));
+        }
+
         DeviceEpoch = version.DeviceEpoch;
         IsTexture = false;
         IsWrite = isWrite;
         PassId = passId;
         ResourceId = version.ResourceId;
         Version = version.Version;
+        _attachmentLoadAction = null;
+        _attachmentStoreAction = null;
+        _attachmentUsage = null;
         _contentsValid = contentsValid;
         _bufferRange = range;
+        _bufferUsage = usage;
         _textureRange = default;
+        _textureUsage = null;
     }
 
     internal GraphResourceAccess(
         RenderPassId passId,
         GraphTextureVersion version,
         GraphTextureRange range,
+        GraphTextureUsage usage,
         bool isWrite,
         bool contentsValid = true)
     {
@@ -59,16 +76,93 @@ internal readonly struct GraphResourceAccess
             throw new ArgumentException("The texture access range must fit its graph version.", nameof(range));
         }
 
+        if (!Enum.IsDefined(usage))
+        {
+            throw new ArgumentOutOfRangeException(nameof(usage));
+        }
+
         DeviceEpoch = version.DeviceEpoch;
         IsTexture = true;
         IsWrite = isWrite;
         PassId = passId;
         ResourceId = version.ResourceId;
         Version = version.Version;
+        _attachmentLoadAction = null;
+        _attachmentStoreAction = null;
+        _attachmentUsage = null;
         _contentsValid = contentsValid;
         _bufferRange = default;
+        _bufferUsage = null;
         _textureRange = range;
+        _textureUsage = usage;
     }
+
+    internal GraphResourceAccess(
+        RenderPassId passId,
+        GraphTextureVersion version,
+        GraphTextureRange range,
+        TextureUsage attachmentUsage,
+        AttachmentLoadAction loadAction,
+        AttachmentStoreAction storeAction,
+        bool isWrite,
+        bool contentsValid)
+    {
+        if (!passId.IsValid)
+        {
+            throw new ArgumentException("The graph pass ID must be valid.", nameof(passId));
+        }
+
+        ArgumentNullException.ThrowIfNull(version);
+
+        if (!range.IsWithin(version.Range))
+        {
+            throw new ArgumentException("The texture access range must fit its graph version.", nameof(range));
+        }
+
+        if (attachmentUsage is not (
+            TerraFX.Graphics.TextureUsage.ColorAttachment or TerraFX.Graphics.TextureUsage.DepthAttachment))
+        {
+            throw new ArgumentOutOfRangeException(nameof(attachmentUsage));
+        }
+
+        if (!Enum.IsDefined(loadAction))
+        {
+            throw new ArgumentOutOfRangeException(nameof(loadAction));
+        }
+
+        if (!Enum.IsDefined(storeAction))
+        {
+            throw new ArgumentOutOfRangeException(nameof(storeAction));
+        }
+
+        if (!isWrite && (loadAction != TerraFX.Graphics.AttachmentLoadAction.Load))
+        {
+            throw new ArgumentException("An attachment read must represent a Load action.", nameof(loadAction));
+        }
+
+        DeviceEpoch = version.DeviceEpoch;
+        IsTexture = true;
+        IsWrite = isWrite;
+        PassId = passId;
+        ResourceId = version.ResourceId;
+        Version = version.Version;
+        _attachmentLoadAction = loadAction;
+        _attachmentStoreAction = storeAction;
+        _attachmentUsage = attachmentUsage;
+        _contentsValid = contentsValid;
+        _bufferRange = default;
+        _bufferUsage = null;
+        _textureRange = range;
+        _textureUsage = null;
+    }
+
+    internal AttachmentLoadAction? AttachmentLoadAction => _attachmentLoadAction;
+
+    internal AttachmentStoreAction? AttachmentStoreAction => _attachmentStoreAction;
+
+    internal TextureUsage? AttachmentUsage => _attachmentUsage;
+
+    internal GraphBufferUsage? BufferUsage => _bufferUsage;
 
     internal bool ContentsValid => _contentsValid;
 
@@ -82,7 +176,18 @@ internal readonly struct GraphResourceAccess
 
     internal ulong ResourceId { get; }
 
+    internal GraphTextureUsage? TextureUsage => _textureUsage;
+
     internal int Version { get; }
+
+    internal bool IsAttachmentLoadOf(GraphResourceAccess other)
+        => !IsWrite
+            && other.IsWrite
+            && _attachmentUsage.HasValue
+            && _attachmentUsage == other._attachmentUsage
+            && _attachmentLoadAction == TerraFX.Graphics.AttachmentLoadAction.Load
+            && _attachmentLoadAction == other._attachmentLoadAction
+            && _attachmentStoreAction == other._attachmentStoreAction;
 
     internal bool Overlaps(GraphResourceAccess other)
         => IsTexture

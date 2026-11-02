@@ -87,6 +87,15 @@ internal sealed class GraphPassRegistry
         return RenderGraphDependencyCompiler.TryOrder(Passes, accesses, out orderedPasses);
     }
 
+    internal bool TryOrder(
+        ImmutableArray<GraphResourceAccess> accesses,
+        out ImmutableArray<RenderPassId> orderedPasses,
+        out bool accessesValid)
+    {
+        EnsureOwnerThread();
+        return RenderGraphDependencyCompiler.TryOrder(Passes, accesses, out orderedPasses, out accessesValid);
+    }
+
     private void EnsureOwnerThread()
     {
         if (Environment.CurrentManagedThreadId != _ownerThreadId)

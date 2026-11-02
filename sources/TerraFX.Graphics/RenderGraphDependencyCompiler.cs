@@ -13,6 +13,23 @@ internal static class RenderGraphDependencyCompiler
         ImmutableArray<GraphResourceAccess> accesses,
         out ImmutableArray<RenderPassId> orderedPasses)
     {
+        var dependenciesValid = TryOrder(passes, accesses, out orderedPasses, out var accessesValid);
+
+        if (!accessesValid)
+        {
+            orderedPasses = [];
+            return false;
+        }
+
+        return dependenciesValid;
+    }
+
+    internal static bool TryOrder(
+        ImmutableArray<RenderGraphPassNode> passes,
+        ImmutableArray<GraphResourceAccess> accesses,
+        out ImmutableArray<RenderPassId> orderedPasses,
+        out bool accessesValid)
+    {
         if (passes.IsDefault)
         {
             throw new ArgumentException("The pass list must be initialized.", nameof(passes));
@@ -78,7 +95,7 @@ internal static class RenderGraphDependencyCompiler
             }
         }
 
-        AddResourceDependencies(accesses, passIndices, graphOwnerId, dependencies);
+        accessesValid = AddResourceDependencies(accesses, passIndices, graphOwnerId, dependencies);
         var outgoing = new List<int>[passes.Length];
         var incomingCounts = new int[passes.Length];
 
@@ -157,13 +174,14 @@ internal static class RenderGraphDependencyCompiler
         HashSet<(int Predecessor, int Dependent)> dependencies)
         => _ = dependencies.Add((passIndices[predecessor], passIndices[dependent]));
 
-    private static void AddResourceDependencies(
+    private static bool AddResourceDependencies(
         ImmutableArray<GraphResourceAccess> accesses,
         Dictionary<RenderPassId, int> passIndices,
         uint graphOwnerId,
         HashSet<(int Predecessor, int Dependent)> dependencies)
     {
         var accessesByResource = new Dictionary<(uint DeviceEpoch, ulong ResourceId, bool IsTexture), List<GraphResourceAccess>>();
+        var accessesValid = true;
         var deviceEpoch = 0u;
 
         foreach (var access in accesses)
@@ -208,9 +226,25 @@ internal static class RenderGraphDependencyCompiler
                 {
                     var right = resourceAccesses[rightIndex];
 
-                    if ((left.PassId == right.PassId)
-                        || (!left.Overlaps(right))
-                        || (!left.IsWrite && !right.IsWrite))
+                    if (!left.Overlaps(right))
+                    {
+                        continue;
+                    }
+
+                    if (left.PassId == right.PassId)
+                    {
+                        if (left.IsTexture
+                            && (left.IsWrite != right.IsWrite)
+                            && !left.IsAttachmentLoadOf(right)
+                            && !right.IsAttachmentLoadOf(left))
+                        {
+                            accessesValid = false;
+                        }
+
+                        continue;
+                    }
+
+                    if (!left.IsWrite && !right.IsWrite)
                     {
                         continue;
                     }
@@ -240,5 +274,7 @@ internal static class RenderGraphDependencyCompiler
                 }
             }
         }
+
+        return accessesValid;
     }
 }

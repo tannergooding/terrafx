@@ -338,9 +338,60 @@ internal sealed class GraphicsBufferTransferTests
 
             var result = registry.ValidateCompilation();
             Assert.That(result.IsValid, Is.False);
+            Assert.That(result.AccessesValid, Is.True);
             Assert.That(result.ImportsValid, Is.True);
             Assert.That(result.ContentsValid, Is.True);
             Assert.That(result.DependenciesValid, Is.False);
+            Assert.That(result.OrderedPasses, Is.Empty);
+        }
+        finally
+        {
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task GraphResourceRegistryRejectsOverlappingSamePassTextureFeedback()
+    {
+        var backendDevice = new FakeBackendDevice();
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var registry = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 7);
+        var description = new TextureDescription(
+            TextureDimension.Dimension2D,
+            4,
+            4,
+            1,
+            1,
+            1,
+            TextureFormat.Rgba16Float,
+            TextureUsage.Sampled | TextureUsage.Storage,
+            "Transient feedback texture");
+        var range = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+
+        try
+        {
+            var seedPass = registry.AddPass(new RenderPassDescription("seed", 0, [], false));
+            var feedbackPass = registry.AddPass(new RenderPassDescription("feedback", 1, [], false));
+            var initialVersion = registry.CreateTransientTexture(description);
+            var initializedVersion = registry.WriteTexture(
+                seedPass,
+                initialVersion,
+                range,
+                GraphTextureUsage.StorageWrite);
+            registry.ReadTexture(feedbackPass, initializedVersion, range, GraphTextureUsage.SampledRead);
+            registry.ReadTexture(feedbackPass, initializedVersion, range, GraphTextureUsage.StorageRead);
+            _ = registry.WriteTexture(
+                feedbackPass,
+                initializedVersion,
+                range,
+                GraphTextureUsage.StorageWrite);
+
+            var result = registry.ValidateCompilation();
+            Assert.That(result.IsValid, Is.False);
+            Assert.That(result.AccessesValid, Is.False);
+            Assert.That(result.ImportsValid, Is.True);
+            Assert.That(result.ContentsValid, Is.True);
+            Assert.That(result.DependenciesValid, Is.True);
             Assert.That(result.OrderedPasses, Is.Empty);
         }
         finally
@@ -399,7 +450,9 @@ internal sealed class GraphicsBufferTransferTests
             Assert.That(registry.TryOrder(out var orderedPasses), Is.True);
             ImmutableArray<RenderPassId> expectedOrder = [loadPass, discardPass, readPass];
             Assert.That(orderedPasses, Is.EqualTo(expectedOrder));
-            Assert.That(registry.ValidateCompilation().ContentsValid, Is.False);
+            var result = registry.ValidateCompilation();
+            Assert.That(result.ContentsValid, Is.False);
+            Assert.That(result.AccessesValid, Is.True);
         }
         finally
         {
@@ -552,6 +605,7 @@ internal sealed class GraphicsBufferTransferTests
             Assert.That(orderedPasses, Is.EqualTo(expectedOrder));
             var invalidContentResult = registry.ValidateCompilation();
             Assert.That(invalidContentResult.IsValid, Is.False);
+            Assert.That(invalidContentResult.AccessesValid, Is.True);
             Assert.That(invalidContentResult.ImportsValid, Is.True);
             Assert.That(invalidContentResult.ContentsValid, Is.False);
             Assert.That(invalidContentResult.DependenciesValid, Is.True);
@@ -610,6 +664,7 @@ internal sealed class GraphicsBufferTransferTests
             var result = registry.ValidateCompilation();
             ImmutableArray<RenderPassId> expectedOrder = [writer, reader];
             Assert.That(result.IsValid, Is.True);
+            Assert.That(result.AccessesValid, Is.True);
             Assert.That(result.ImportsValid, Is.True);
             Assert.That(result.ContentsValid, Is.True);
             Assert.That(result.DependenciesValid, Is.True);

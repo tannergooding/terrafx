@@ -302,6 +302,7 @@ internal sealed class GraphResourceRegistry
             passId,
             version,
             range,
+            usage,
             isWrite: false,
             contentsValid: contentsValid));
     }
@@ -323,6 +324,7 @@ internal sealed class GraphResourceRegistry
             passId,
             version,
             range,
+            usage,
             isWrite: false,
             contentsValid: contentsValid));
     }
@@ -339,9 +341,11 @@ internal sealed class GraphResourceRegistry
 
         var importsValid = !HasInvalidImports;
         var contentsValid = !HasUninitializedReads;
-        var dependenciesValid = _passRegistry.TryOrder([.. _accesses], out var orderedPasses);
-        var isValid = importsValid && contentsValid && dependenciesValid;
+        var dependenciesValid =
+            _passRegistry.TryOrder([.. _accesses], out var orderedPasses, out var accessesValid);
+        var isValid = accessesValid && importsValid && contentsValid && dependenciesValid;
         return new GraphResourceValidationResult(
+            accessesValid,
             importsValid,
             contentsValid,
             dependenciesValid,
@@ -380,6 +384,9 @@ internal sealed class GraphResourceRegistry
                 passId,
                 previousVersion,
                 range,
+                usage,
+                loadAction,
+                storeAction,
                 isWrite: false,
                 contentsValid: loadContentsValid));
         }
@@ -388,6 +395,9 @@ internal sealed class GraphResourceRegistry
             passId,
             nextVersion,
             range,
+            usage,
+            loadAction,
+            storeAction,
             isWrite: true,
             contentsValid: nextContentsValid));
         return nextVersion;
@@ -407,7 +417,7 @@ internal sealed class GraphResourceRegistry
         var resource = GetBufferResource(previousVersion);
         var nextVersion = resource.Write(previousVersion, range);
         _bufferResourcesByVersion.Add(nextVersion, resource);
-        _accesses.Add(new GraphResourceAccess(passId, nextVersion, range, isWrite: true));
+        _accesses.Add(new GraphResourceAccess(passId, nextVersion, range, usage, isWrite: true));
         return nextVersion;
     }
 
@@ -425,7 +435,7 @@ internal sealed class GraphResourceRegistry
         var resource = GetTextureResource(previousVersion);
         var nextVersion = resource.Write(previousVersion, range);
         _textureResourcesByVersion.Add(nextVersion, resource);
-        _accesses.Add(new GraphResourceAccess(passId, nextVersion, range, isWrite: true));
+        _accesses.Add(new GraphResourceAccess(passId, nextVersion, range, usage, isWrite: true));
         return nextVersion;
     }
 
