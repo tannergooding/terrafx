@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using NUnit.Framework;
 using TerraFX;
@@ -13,6 +14,24 @@ namespace TerraFX.Runtime.Tests.Entities;
 [TestFixture]
 internal sealed class WorldPersistenceCaptureTests
 {
+    private static World CreateSceneWorld()
+    {
+        var schemas = new CompiledContentSchemaRegistry([
+            .. CoreContentSchemaCatalogue.PrimitiveSchemas,
+            .. CoreContentSchemaCatalogue.FoundationSchemas,
+            .. NativeAssetSchemaCatalogue.Schemas,
+            .. SceneSchemaCatalogue.Schemas,
+        ]);
+        var registrationBuilder = new WorldRegistrationBuilder(schemas);
+        _ = registrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+        var registration = registrationBuilder.Build();
+        return World.Create(new WorldOptions(registration) {
+            CpuWorkerCount = 0,
+            InitialReplayLineageId = Guid.NewGuid(),
+            WorldGuid = Guid.NewGuid(),
+        });
+    }
+
     private static World CreateWorld()
     {
         var registration = new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build();
@@ -99,20 +118,7 @@ internal sealed class WorldPersistenceCaptureTests
     [Test]
     public void CapturePersistentComponentRecordFromCommittedWorld()
     {
-        var schemas = new CompiledContentSchemaRegistry([
-            .. CoreContentSchemaCatalogue.PrimitiveSchemas,
-            .. CoreContentSchemaCatalogue.FoundationSchemas,
-            .. NativeAssetSchemaCatalogue.Schemas,
-            .. SceneSchemaCatalogue.Schemas,
-        ]);
-        var registrationBuilder = new WorldRegistrationBuilder(schemas);
-        _ = registrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
-        var registration = registrationBuilder.Build();
-        using var world = World.Create(new WorldOptions(registration) {
-            CpuWorkerCount = 0,
-            InitialReplayLineageId = Guid.NewGuid(),
-            WorldGuid = Guid.NewGuid(),
-        });
+        using var world = CreateSceneWorld();
         var entity = world.CreateEntity(new EntityDescription());
         world.Add<SceneComponentDefinitions.LocalTransformComponent>(entity);
         _ = world.Step();
@@ -139,5 +145,51 @@ internal sealed class WorldPersistenceCaptureTests
 
         Assert.That(written, Is.EqualTo(byteCount));
         Assert.That(encoded, Is.EqualTo(expected));
+    }
+
+    [Test]
+    public void EnumeratesPersistentComponentsInStableWorkPlanOrder()
+    {
+        using var world = CreateSceneWorld();
+        var firstEntity = world.CreateEntity(new EntityDescription());
+        var secondEntity = world.CreateEntity(new EntityDescription());
+        world.Add<SceneComponentDefinitions.LocalTransformComponent>(firstEntity);
+        world.Add<SceneComponentDefinitions.LocalTransformComponent>(secondEntity);
+        _ = world.Step();
+
+        var componentAssignment = new ContentSchemaIdentityAssignment("scene/local-transform");
+        var componentSchema = new ContentSchemaReference(
+            componentAssignment.SchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+        using var lease = world.AcquirePersistenceCaptureLease();
+        var enumerator = lease.GetComponentStateEnumerator();
+        var entityIds = new List<Guid>(2);
+        var schemas = new List<ContentSchemaReference>(2);
+
+        while (enumerator.MoveNext())
+        {
+            entityIds.Add(world.GetEntityId(enumerator.CurrentEntity));
+            schemas.Add(enumerator.CurrentSchema);
+        }
+
+        Guid[] expectedEntityIds = [world.GetEntityId(firstEntity), world.GetEntityId(secondEntity)];
+        ContentSchemaReference[] expectedSchemas = [componentSchema, componentSchema];
+        Assert.That(entityIds, Is.EqualTo(expectedEntityIds));
+        Assert.That(schemas, Is.EqualTo(expectedSchemas));
+
+        var staleCurrentRejected = false;
+
+        try
+        {
+            _ = enumerator.CurrentEntity;
+        }
+        catch (InvalidOperationException)
+        {
+            staleCurrentRejected = true;
+        }
+
+        Assert.That(staleCurrentRejected, Is.True);
     }
 }

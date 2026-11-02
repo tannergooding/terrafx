@@ -98,6 +98,12 @@ internal ref struct WorldPersistenceCaptureLease
         _isDisposed = true;
     }
 
+    internal readonly World.ComponentStateCaptureEnumerator GetComponentStateEnumerator()
+    {
+        ValidateCurrent();
+        return _world.CreateComponentStateEnumerator(this);
+    }
+
     internal readonly bool IsBoundTo(World world)
         => ReferenceEquals(_world, world);
 

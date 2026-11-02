@@ -102,6 +102,18 @@ public sealed partial class World
         }
     }
 
+    internal ComponentStateCaptureEnumerator CreateComponentStateEnumerator(WorldPersistenceCaptureLease lease)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(this))
+        {
+            throw new ArgumentException("The persistence capture lease belongs to another World.", nameof(lease));
+        }
+
+        return new ComponentStateCaptureEnumerator(this, lease);
+    }
+
     internal void ReleasePersistenceCaptureLease(WorldPersistenceCaptureLease lease)
     {
         ValidatePersistenceCaptureLease(lease);
@@ -209,7 +221,7 @@ public sealed partial class World
         return captureRegistration;
     }
 
-    private sealed class ComponentStateCaptureContext : IComponentCaptureContext
+    internal sealed class ComponentStateCaptureContext : IComponentCaptureContext
     {
         private IComponentCaptureRegistration? _registration;
         private World? _world;
@@ -246,6 +258,101 @@ public sealed partial class World
         {
             _world = null;
             _registration = null;
+        }
+    }
+
+    internal ref struct ComponentStateCaptureEnumerator
+    {
+        private readonly World _world;
+        private readonly WorldPersistenceCaptureLease _lease;
+        private int _componentIndex;
+        private Entity _currentEntity;
+        private ContentSchemaReference _currentSchema;
+        private int _rowIndex;
+        private int _workIndex;
+        private bool _hasCurrent;
+
+        internal ComponentStateCaptureEnumerator(World world, WorldPersistenceCaptureLease lease)
+        {
+            _world = world;
+            _lease = lease;
+            _componentIndex = 0;
+            _currentEntity = default;
+            _currentSchema = default;
+            _rowIndex = 0;
+            _workIndex = 0;
+            _hasCurrent = false;
+        }
+
+        internal readonly Entity CurrentEntity
+        {
+            get
+            {
+                ValidateCurrent();
+                return _currentEntity;
+            }
+        }
+
+        internal readonly ContentSchemaReference CurrentSchema
+        {
+            get
+            {
+                ValidateCurrent();
+                return _currentSchema;
+            }
+        }
+
+        internal bool MoveNext()
+        {
+            _lease.ValidateCurrent();
+            _hasCurrent = false;
+
+            while (_workIndex < _world._componentTagWorkPlanCount)
+            {
+                var work = _world._componentTagWorkPlan[_workIndex];
+                var archetype = _world._queryArchetypes[work.ArchetypeOrdinal]
+                    ?? throw new InvalidOperationException("The component/tag work plan references an empty archetype.");
+
+                if (_rowIndex >= work.Length)
+                {
+                    _workIndex++;
+                    _rowIndex = 0;
+                    _componentIndex = 0;
+                    continue;
+                }
+
+                if (_componentIndex >= archetype.Components.Length)
+                {
+                    _rowIndex++;
+                    _componentIndex = 0;
+                    continue;
+                }
+
+                var registration = archetype.Components[_componentIndex++];
+
+                if (registration.Descriptor.Flags != ComponentStorageFlags.Persistent)
+                {
+                    continue;
+                }
+
+                var row = work.StartRow + _rowIndex;
+                _currentEntity = archetype.Storage.GetEntities(work.ChunkIndex, row, 1)[0];
+                _currentSchema = registration.SchemaReference;
+                _hasCurrent = true;
+                return true;
+            }
+
+            return false;
+        }
+
+        private readonly void ValidateCurrent()
+        {
+            _lease.ValidateCurrent();
+
+            if (!_hasCurrent)
+            {
+                throw new InvalidOperationException("The component capture enumerator has no current record.");
+            }
         }
     }
 }
