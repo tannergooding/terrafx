@@ -161,12 +161,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             byteLength,
             nameof(destinationOffset),
             nameof(byteLength));
-        var staging = CreateStagingBuffer(new BufferDescription(
-            checked((long)byteLength),
-            BufferUsage.CopySource,
-            GpuMemoryKind.Upload,
-            structuredStride: null,
-            debugName: "Vulkan buffer upload staging"));
+        var (staging, isDedicatedStaging) = GetUploadStagingBuffer(checked((long)byteLength));
 
         try
         {
@@ -210,7 +205,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             {
                 RetainUncertainBuffer(staging);
             }
-            else
+            else if (isDedicatedStaging)
             {
                 staging.Dispose();
             }
@@ -241,12 +236,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             source.Length,
             nameof(destinationOffset),
             nameof(source));
-        var staging = CreateStagingBuffer(new BufferDescription(
-            source.Length,
-            BufferUsage.CopySource,
-            GpuMemoryKind.Upload,
-            structuredStride: null,
-            debugName: "Vulkan buffer upload staging"));
+        var (staging, isDedicatedStaging) = GetUploadStagingBuffer(source.Length);
 
         try
         {
@@ -290,7 +280,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             {
                 RetainUncertainBuffer(staging);
             }
-            else
+            else if (isDedicatedStaging)
             {
                 staging.Dispose();
             }

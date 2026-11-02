@@ -10,9 +10,11 @@ namespace TerraFX.Graphics.Vulkan;
 internal sealed unsafe partial class VulkanBackendDevice
 {
     private const long TransferStagingBudgetBytes = 128L * 1024 * 1024;
+    private const long UploadStagingRingCapacityBytes = 64L * 1024 * 1024;
 
     private int _liveBufferCount;
     private long _liveStagingBytes;
+    private VulkanBackendBuffer? _uploadStagingRing;
 
     private static VkBuffer CreateNativeBuffer(VkDevice device, BufferDescription description)
     {
@@ -291,6 +293,40 @@ internal sealed unsafe partial class VulkanBackendDevice
         {
             throw new InvalidOperationException("Vulkan device operations are blocked while submission completion is uncertain.");
         }
+    }
+
+    private (VulkanBackendBuffer Buffer, bool IsDedicated) GetUploadStagingBuffer(long byteLength)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(byteLength);
+        EnsureActive();
+        var ringCapacity = Math.Min(UploadStagingRingCapacityBytes, Capabilities.Limits.MaximumBufferByteLength);
+
+        if (byteLength > ringCapacity)
+        {
+            return (
+                CreateStagingBuffer(new BufferDescription(
+                    byteLength,
+                    BufferUsage.CopySource,
+                    GpuMemoryKind.Upload,
+                    structuredStride: null,
+                    debugName: "Vulkan dedicated upload staging")),
+                true);
+        }
+
+        var stagingRing = _uploadStagingRing;
+
+        if (stagingRing is null)
+        {
+            stagingRing = CreateStagingBuffer(new BufferDescription(
+                ringCapacity,
+                BufferUsage.CopySource,
+                GpuMemoryKind.Upload,
+                structuredStride: null,
+                debugName: "Vulkan upload staging ring"));
+            _uploadStagingRing = stagingRing;
+        }
+
+        return (stagingRing, false);
     }
 
     private void ReleaseStagingBytes(long sizeBytes)

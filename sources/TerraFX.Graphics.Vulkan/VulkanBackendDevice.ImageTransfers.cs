@@ -142,12 +142,7 @@ internal sealed unsafe partial class VulkanBackendDevice
         var rowByteLength = checked((nint)extent.Width * TextureReadback.GetBytesPerTexel(destination.Description.Format));
         var slicePitch = checked(rowByteLength * extent.Height);
         var byteLength = checked(slicePitch * extent.Depth);
-        var staging = CreateStagingBuffer(new BufferDescription(
-            checked((long)byteLength),
-            BufferUsage.CopySource,
-            GpuMemoryKind.Upload,
-            structuredStride: null,
-            debugName: "Vulkan texture upload staging"));
+        var (staging, isDedicatedStaging) = GetUploadStagingBuffer(checked((long)byteLength));
 
         try
         {
@@ -197,7 +192,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             {
                 RetainUncertainBuffer(staging);
             }
-            else
+            else if (isDedicatedStaging)
             {
                 staging.Dispose();
             }

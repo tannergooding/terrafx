@@ -721,6 +721,14 @@ internal sealed unsafe partial class VulkanBackendDevice : IDisposable
             throw new InvalidOperationException("The Vulkan device cannot release storage while submission completion is uncertain.");
         }
 
+        var uploadStagingRing = _uploadStagingRing;
+
+        if (uploadStagingRing is not null)
+        {
+            _uploadStagingRing = null;
+            uploadStagingRing.Dispose();
+        }
+
         if (_liveBufferCount != 0)
         {
             throw new InvalidOperationException("The Vulkan device still has live buffer owners.");
