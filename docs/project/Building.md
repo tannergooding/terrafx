@@ -157,7 +157,7 @@ The command emits the vertex, baseline pixel, resource-bearing `pixel-sampled`, 
 
 The typed reflection converter cross-checks SPIRV-Cross uniform-buffer records against DXIL `Buffer Definitions`: record association and byte length, supported flat field names/types/offsets/counts, fixed-array strides, and explicit row-major `float4x4` layout. Nested records, one-element or multidimensional record arrays, and storage-buffer element-record association remain unsupported.
 
-For sampled and storage images, the converter resolves the descriptor-decorated `OpTypeImage` through SPIR-V pointer/array types and compares its 32-bit component class (`f32`, `i32`, or `u32`) with DXIL resource reflection. Storage-image component class must also agree with the selected reflected image format; this does not establish sampled texture API view-format compatibility.
+For sampled and storage images, the converter resolves the descriptor-decorated `OpTypeImage` through SPIR-V pointer/array types and compares its supported dimension and 32-bit component class (`f32`, `i32`, or `u32`) with SPIRV-Cross and DXIL resource reflection. Storage-image component class must also agree with the selected reflected image format; this does not establish sampled texture API view-format compatibility or cover every image shape.
 
 ### Vulkan OffscreenNative backend tests
 

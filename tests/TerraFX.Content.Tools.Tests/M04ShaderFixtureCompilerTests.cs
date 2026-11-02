@@ -367,6 +367,19 @@ internal sealed class M04ShaderFixtureCompilerTests
                 storageSpirvBytecode,
                 typedStorageReflection.CompilerIdentity);
 
+            var mismatchedSampledImageDimension = JsonNode.Parse(storageSpirvReflection) as JsonObject
+                ?? throw new InvalidDataException("The sampled SPIRV-Cross reflection root must be an object.");
+            var sampledImages = mismatchedSampledImageDimension["separate_images"] as JsonArray
+                ?? throw new InvalidDataException("The sampled SPIRV-Cross image collection must be an array.");
+            var sampledImage = sampledImages[0] as JsonObject
+                ?? throw new InvalidDataException("The sampled SPIRV-Cross image fixture must be an object.");
+            sampledImage["type"] = "texture3D";
+            AssertTypedReflectionRejects(
+                storageDxilReflection,
+                mismatchedSampledImageDimension.ToJsonString(),
+                storageSpirvBytecode,
+                typedStorageReflection.CompilerIdentity);
+
             AssertTypedReflectionRejects(
                 ReplaceDxilResourceColumn(storageDxilReflection, "FrameStorageBuffer", 3, "2d"),
                 storageSpirvReflection,
