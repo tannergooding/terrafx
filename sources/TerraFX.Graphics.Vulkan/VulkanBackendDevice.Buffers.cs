@@ -202,6 +202,11 @@ internal sealed unsafe partial class VulkanBackendDevice
             return;
         }
 
+        if (_hasUncertainSubmission)
+        {
+            throw new InvalidOperationException("Vulkan buffer retirement cannot release storage while submission completion is uncertain.");
+        }
+
         ObjectDisposedException.ThrowIf(_isDisposed, this);
         VulkanApi.vkDestroyBuffer(_device, buffer.Buffer, null);
         VulkanApi.vkFreeMemory(_device, buffer.Memory, null);
@@ -248,5 +253,10 @@ internal sealed unsafe partial class VulkanBackendDevice
     {
         EnsureOwnerThread();
         ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+        if (_hasUncertainSubmission)
+        {
+            throw new InvalidOperationException("Vulkan device operations are blocked while submission completion is uncertain.");
+        }
     }
 }

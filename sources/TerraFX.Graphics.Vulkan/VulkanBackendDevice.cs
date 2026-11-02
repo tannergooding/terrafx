@@ -677,6 +677,11 @@ internal sealed unsafe partial class VulkanBackendDevice : IDisposable
             return;
         }
 
+        if (_hasUncertainSubmission)
+        {
+            throw new InvalidOperationException("The Vulkan device cannot release storage while submission completion is uncertain.");
+        }
+
         if (_liveBufferCount != 0)
         {
             throw new InvalidOperationException("The Vulkan device still has live buffer owners.");

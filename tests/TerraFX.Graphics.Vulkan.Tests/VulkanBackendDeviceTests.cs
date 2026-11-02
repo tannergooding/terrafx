@@ -3,6 +3,7 @@
 using System;
 using System.Threading;
 using NUnit.Framework;
+using TerraFX.Buffers;
 using TerraFX.Graphics;
 using TerraFX.Graphics.Vulkan;
 using TerraFX.Interop.Vulkan;
@@ -12,6 +13,15 @@ namespace TerraFX.Graphics.Vulkan.Tests;
 [TestFixture]
 internal sealed class VulkanBackendDeviceTests
 {
+    private static void AssertReadback(OwnedBuffer<byte> readback, byte[] expected)
+    {
+        using var lease = readback.AcquireReadLease(0, expected.Length);
+        var actual = new byte[expected.Length];
+        var copyAction = new ReadbackCopyAction(actual);
+        lease.UseWindow(0, expected.Length, ref copyAction);
+        Assert.That(actual, Is.EqualTo(expected));
+    }
+
     [Test]
     public void OffscreenNativeCreationReportsAndReleasesARealDevice()
     {
@@ -113,5 +123,72 @@ internal sealed class VulkanBackendDeviceTests
         {
             Assert.Ignore($"No available Vulkan device satisfies the buffer allocation smoke test: {exception.Message}");
         }
+    }
+
+    [Test]
+    public void OffscreenNativeDeviceUploadsAndReadsBackDeviceLocalBufferBytes()
+    {
+        try
+        {
+            using var device = VulkanBackendDevice.Create(
+                GraphicsDeviceProfile.OffscreenNative,
+                CancellationToken.None);
+            using var buffer = device.CreateBuffer(
+                new BufferDescription(
+                    1024,
+                    BufferUsage.CopySource | BufferUsage.CopyDestination,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: null,
+                    debugName: "transfer"));
+            var payload = new byte[257];
+
+            for (var index = 0; index < payload.Length; index++)
+            {
+                payload[index] = unchecked((byte)(index * 31));
+            }
+
+            Assert.That(device.UploadBuffer(buffer, 0, payload), Is.GreaterThan(0));
+
+            var sourceStorage = UnmanagedBuffer<byte>.Allocate(
+                payload.Length,
+                new BufferAllocationOptions(payload.Length, alignment: 1));
+            sourceStorage.CopyFrom(payload.AsSpan(), 0);
+
+            using var ownedSource = sourceStorage.TransferToOwnedBuffer();
+            using var sourceLease = ownedSource.AcquireReadLease(0, payload.Length);
+            Assert.That(
+                device.UploadBuffer(buffer, 513, sourceLease, 0, payload.Length),
+                Is.GreaterThan(0));
+
+            using var firstReadback = device.ReadbackBuffer(buffer, 0, payload.Length);
+            AssertReadback(firstReadback, payload);
+            using var secondReadback = device.ReadbackBuffer(buffer, 513, payload.Length);
+            AssertReadback(secondReadback, payload);
+        }
+        catch (DllNotFoundException exception)
+        {
+            Assert.Ignore($"No Vulkan loader is installed: {exception.Message}");
+        }
+        catch (EntryPointNotFoundException exception)
+        {
+            Assert.Ignore($"The installed Vulkan loader lacks a required entry point: {exception.Message}");
+        }
+        catch (NotSupportedException exception)
+        {
+            Assert.Ignore($"No available Vulkan device satisfies the buffer transfer smoke test: {exception.Message}");
+        }
+    }
+
+    private readonly struct ReadbackCopyAction : IAction<ReadOnlySpan<byte>>
+    {
+        private readonly byte[] _destination;
+
+        internal ReadbackCopyAction(byte[] destination)
+        {
+            _destination = destination;
+        }
+
+        public readonly void Invoke(scoped ReadOnlySpan<byte> argument)
+            => argument.CopyTo(_destination);
     }
 }
