@@ -54,7 +54,8 @@ internal sealed partial class EngineHostOptionsTests
     private static GraphicsPipelineDescription CreateD3D12ResourcePipelineDescription(
         BufferReadLease<byte> vertexBytecode,
         BufferReadLease<byte> pixelBytecode,
-        bool includeStorageResources)
+        bool includeStorageResources,
+        int sampledImageBinding = 0)
     {
         var compilerIdentity = CreateShaderCompilerIdentity();
         var pixelEntryPoint = includeStorageResources
@@ -63,14 +64,14 @@ internal sealed partial class EngineHostOptionsTests
         ImmutableArray<ShaderResourceSignature> pixelResources = includeStorageResources
             ? [
                 new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1),
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.SampledImage, 1),
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, sampledImageBinding, ShaderResourceKind.SampledImage, 1),
                 new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, 1),
                 new ShaderResourceSignature(ShaderBindingGroup.Frame, 1, ShaderResourceKind.StorageImage, 1),
                 new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.Sampler, 1),
             ]
             : [
                 new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1),
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.SampledImage, 1),
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, sampledImageBinding, ShaderResourceKind.SampledImage, 1),
                 new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.Sampler, 1),
             ];
         var vertexReflection = new ShaderReflection(
@@ -655,6 +656,15 @@ internal sealed partial class EngineHostOptionsTests
                     "M04OffscreenTriangle.pixel-sampled-frame.dxil"));
                 using var vertexBytecode = vertexBytecodeStorage.AcquireReadLease(0, vertexBytecodeStorage.Length);
                 using var pixelBytecode = pixelBytecodeStorage.AcquireReadLease(0, pixelBytecodeStorage.Length);
+                _ = Assert.Throws<ArgumentException>(() => {
+                    using var mismatchedPipeline = device.CreatePipeline(
+                        CreateD3D12ResourcePipelineDescription(
+                            vertexBytecode,
+                            pixelBytecode,
+                            includeStorageResources: false,
+                            sampledImageBinding: 1),
+                        [vertexBytecode, pixelBytecode]);
+                });
                 using var pipeline = device.CreatePipeline(
                     CreateD3D12ResourcePipelineDescription(
                         vertexBytecode,

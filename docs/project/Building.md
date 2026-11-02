@@ -103,6 +103,8 @@ On the current Windows 11 x64 host, the native tests pass on the AMD Radeon RX 7
 
 The descriptor witness holds 128 live sampler-backed sets to fill the 256-slot sampler heap, verifies that the next sampler admission is refused, then retires one set/sampler and confirms both ranges can be reused by a replacement set. This verifies native descriptor-capacity refusal and recovery, not GPU-completion retirement.
 
+The same native witness intentionally changes the typed sampled-image register from `t0` to `t1` while keeping the compiled DXIL unchanged; D3D12 rejects the mismatched pipeline state. This validates resource-register compatibility for the selected fixture, not complete reflection equivalence.
+
 ### Platform owner contracts
 
 Run the owning-project tests for explicit platform selection, the Headless owner/capability path, Windows PMv2/STA startup, and foreground Raw Input registration/admission:
