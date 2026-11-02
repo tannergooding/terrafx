@@ -7,4 +7,5 @@ internal enum PlatformInputDeviceKind
     Unknown = 0,
     Keyboard = 1,
     Pointer = 2,
+    Gamepad = 3,
 }

@@ -53,6 +53,62 @@ internal sealed class PlatformInputBroker
             Diagnostics: sample.Diagnostics,
             MonotonicTimestamp: sample.MonotonicTimestamp);
 
+    private static PhysicalInputValue CreateGamepadValue(PlatformInputSample sample)
+    {
+        switch (sample.Kind)
+        {
+            case PhysicalInputEventKind.GamepadButtonDown:
+            case PhysicalInputEventKind.GamepadButtonUp:
+            {
+                var isDown = sample.Kind == PhysicalInputEventKind.GamepadButtonDown;
+
+                if ((sample.GamepadButton is not { } button)
+                    || (sample.IsDown != isDown)
+                    || !Enum.IsDefined(button))
+                {
+                    throw new InvalidOperationException("A platform gamepad-button sample has an invalid control state.");
+                }
+
+                return new PhysicalInputValue(button, isDown);
+            }
+
+            case PhysicalInputEventKind.GamepadAxis:
+            {
+                if ((sample.Axis is not { } axis) || (sample.AxisValue is not { } axisValue))
+                {
+                    throw new InvalidOperationException("A platform gamepad-axis sample is incomplete.");
+                }
+
+                return new PhysicalInputValue(axis, axisValue);
+            }
+
+            case PhysicalInputEventKind.GamepadStick:
+            {
+                if ((sample.Stick is not { } stick) || (sample.StickValue is not { } stickValue))
+                {
+                    throw new InvalidOperationException("A platform gamepad-stick sample is incomplete.");
+                }
+
+                return new PhysicalInputValue(stick, stickValue);
+            }
+
+            case PhysicalInputEventKind.GamepadTrigger:
+            {
+                if ((sample.Trigger is not { } trigger) || (sample.TriggerValue is not { } triggerValue))
+                {
+                    throw new InvalidOperationException("A platform gamepad-trigger sample is incomplete.");
+                }
+
+                return new PhysicalInputValue(trigger, triggerValue);
+            }
+
+            default:
+            {
+                throw new ArgumentOutOfRangeException(nameof(sample));
+            }
+        }
+    }
+
     private static bool IsDeviceScoped(PhysicalInputEventKind kind)
         => kind is PhysicalInputEventKind.KeyDown
             or PhysicalInputEventKind.KeyRepeat
@@ -63,6 +119,27 @@ internal sealed class PlatformInputBroker
             or PhysicalInputEventKind.PointerRelativeMotion
             or PhysicalInputEventKind.VerticalScroll
             or PhysicalInputEventKind.HorizontalScroll
+            or PhysicalInputEventKind.GamepadButtonDown
+            or PhysicalInputEventKind.GamepadButtonUp
+            or PhysicalInputEventKind.GamepadAxis
+            or PhysicalInputEventKind.GamepadStick
+            or PhysicalInputEventKind.GamepadTrigger
+            or PhysicalInputEventKind.DeviceAdded
+            or PhysicalInputEventKind.DeviceRemoved;
+
+    private static bool IsGamepadInput(PhysicalInputEventKind kind)
+        => kind is PhysicalInputEventKind.GamepadButtonDown
+            or PhysicalInputEventKind.GamepadButtonUp
+            or PhysicalInputEventKind.GamepadAxis
+            or PhysicalInputEventKind.GamepadStick
+            or PhysicalInputEventKind.GamepadTrigger;
+
+    private static bool IsWindowless(PhysicalInputEventKind kind)
+        => kind is PhysicalInputEventKind.GamepadButtonDown
+            or PhysicalInputEventKind.GamepadButtonUp
+            or PhysicalInputEventKind.GamepadAxis
+            or PhysicalInputEventKind.GamepadStick
+            or PhysicalInputEventKind.GamepadTrigger
             or PhysicalInputEventKind.DeviceAdded
             or PhysicalInputEventKind.DeviceRemoved;
 
@@ -95,9 +172,7 @@ internal sealed class PlatformInputBroker
                 throw new InvalidOperationException("The platform input sample has an invalid device source.");
             }
 
-            if ((sample.Kind is PhysicalInputEventKind.DeviceAdded or PhysicalInputEventKind.DeviceRemoved)
-                ? (sample.Window is not null)
-                : (sample.Window is null))
+            if (IsWindowless(sample.Kind) ? (sample.Window is not null) : (sample.Window is null))
             {
                 throw new InvalidOperationException("The platform input sample has an invalid window source.");
             }
@@ -119,6 +194,11 @@ internal sealed class PlatformInputBroker
                 throw new InvalidOperationException("A pointer input sample has a non-pointer device class.");
             }
 
+            if (IsGamepadInput(sample.Kind) && (sample.DeviceKind != PlatformInputDeviceKind.Gamepad))
+            {
+                throw new InvalidOperationException("A gamepad input sample has a non-gamepad device class.");
+            }
+
             var hostTimestamp = GetHostTimestamp(sample.MonotonicTimestamp);
 
             if (sample.Window is { } window)
@@ -135,6 +215,9 @@ internal sealed class PlatformInputBroker
                 }
             }
 
+            PhysicalInputValue? gamepadValue = IsGamepadInput(sample.Kind)
+                ? CreateGamepadValue(sample)
+                : null;
             var device = (InputDeviceHandle?)null;
             var isNewDevice = false;
 
@@ -161,7 +244,7 @@ internal sealed class PlatformInputBroker
             {
                 if (isNewDevice)
                 {
-                    events.Add(CreatePhysicalInputEvent(sample, device, hostTimestamp));
+                    events.Add(CreatePhysicalInputEvent(sample, device, hostTimestamp, gamepadValue));
                 }
 
                 continue;
@@ -174,7 +257,7 @@ internal sealed class PlatformInputBroker
                     throw new InvalidOperationException("A device-removal sample has no issued device handle.");
                 }
 
-                events.Add(CreatePhysicalInputEvent(sample, removedDevice, hostTimestamp));
+                events.Add(CreatePhysicalInputEvent(sample, removedDevice, hostTimestamp, gamepadValue));
                 RemoveDevice(sample.NativeDeviceIdentity, removedDevice);
                 continue;
             }
@@ -192,7 +275,7 @@ internal sealed class PlatformInputBroker
                     hostTimestamp));
             }
 
-            events.Add(CreatePhysicalInputEvent(sample, device, hostTimestamp));
+            events.Add(CreatePhysicalInputEvent(sample, device, hostTimestamp, gamepadValue));
         }
 
         return new PlatformInputCaptureBatch(events.ToImmutable(), discardedSampleCount);
@@ -218,7 +301,8 @@ internal sealed class PlatformInputBroker
     private PhysicalInputEvent CreatePhysicalInputEvent(
         PlatformInputSample sample,
         InputDeviceHandle? device,
-        long hostTimestamp)
+        long hostTimestamp,
+        PhysicalInputValue? gamepadValue = null)
     {
         PhysicalInputValue? value = null;
 
@@ -273,6 +357,16 @@ internal sealed class PlatformInputBroker
                 }
 
                 value = new PhysicalInputValue(new DigitalControl(button), isDown);
+                break;
+            }
+
+            case PhysicalInputEventKind.GamepadButtonDown:
+            case PhysicalInputEventKind.GamepadButtonUp:
+            case PhysicalInputEventKind.GamepadAxis:
+            case PhysicalInputEventKind.GamepadStick:
+            case PhysicalInputEventKind.GamepadTrigger:
+            {
+                value = gamepadValue ?? CreateGamepadValue(sample);
                 break;
             }
 
