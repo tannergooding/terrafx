@@ -300,7 +300,43 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(childTransform.Position.X, Is.EqualTo(2.0f));
             var childCameraId = world.GetEntityId(child);
             var rootCameraId = world.GetEntityId(rootCamera);
+            var externalRootId = world.GetEntityId(externalRoot);
             var publication = world.Step().Publication;
+
+            var foundChildScene = false;
+            var foundRootScene = false;
+            var foundExternalRoot = false;
+
+            using (var captureLease = world.AcquirePersistenceCaptureLease())
+            {
+                var entities = captureLease.GetEntityStateEnumerator();
+
+                while (entities.MoveNext())
+                {
+                    var entityId = entities.CurrentEntityId;
+
+                    if (entityId == childCameraId)
+                    {
+                        Assert.That(entities.CurrentSceneInstanceId, Is.EqualTo(firstInstance.SceneInstanceId));
+                        foundChildScene = true;
+                    }
+                    else if (entityId == rootCameraId)
+                    {
+                        Assert.That(entities.CurrentSceneInstanceId, Is.EqualTo(secondInstance.SceneInstanceId));
+                        foundRootScene = true;
+                    }
+                    else if (entityId == externalRootId)
+                    {
+                        Assert.That(entities.CurrentSceneInstanceId, Is.Null);
+                        foundExternalRoot = true;
+                    }
+                }
+            }
+
+            Assert.That(foundChildScene, Is.True);
+            Assert.That(foundRootScene, Is.True);
+            Assert.That(foundExternalRoot, Is.True);
+
             var renderer = Renderer.CreateHeadless();
             var options = new RenderExtractionOptions3D(
                 publication.Frame3,
