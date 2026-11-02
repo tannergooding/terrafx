@@ -395,6 +395,10 @@ internal sealed class GraphicsBufferTransferTests
 
         try
         {
+            (var initialState, var initialContentsValid) = buffer.ResourceOwner.GetGraphImportState(new GraphBufferRange(0, buffer.ByteLength));
+            Assert.That(initialState, Is.EqualTo(GraphResourceState.Undefined));
+            Assert.That(initialContentsValid, Is.False);
+
             var source = new byte[] { 1, 2, 3, 4 };
             var uploadTask = graphicsDevice.UploadBufferAsync(buffer, destinationOffset: 2, source);
             source[0] = byte.MaxValue;
@@ -404,6 +408,13 @@ internal sealed class GraphicsBufferTransferTests
             Assert.That(receipt.Status, Is.EqualTo(UploadStatus.Ready));
             Assert.That(receipt.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
             Assert.That(receipt.CompletedFence, Is.EqualTo(1));
+
+            (var uploadedState, var uploadedContentsValid) = buffer.ResourceOwner.GetGraphImportState(new GraphBufferRange(2, 4));
+            (var untouchedState, var untouchedContentsValid) = buffer.ResourceOwner.GetGraphImportState(new GraphBufferRange(0, 2));
+            Assert.That(uploadedState, Is.EqualTo(GraphResourceState.General));
+            Assert.That(uploadedContentsValid, Is.True);
+            Assert.That(untouchedState, Is.EqualTo(GraphResourceState.General));
+            Assert.That(untouchedContentsValid, Is.False);
 
             using var readback = await graphicsDevice.ReadbackBufferAsync(buffer, sourceOffset: 1, byteLength: 6)
                 .WaitAsync(TimeSpan.FromSeconds(5))
@@ -562,11 +573,63 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task TextureSubresourceUploadTracksStateAndContentsPerMipAndLayer()
+    {
+        var backendDevice = new FakeBackendDevice();
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var description = new TextureDescription(
+            TextureDimension.Dimension2D,
+            width: 4,
+            height: 4,
+            depth: 1,
+            arrayLayers: 2,
+            mipLevels: 3,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.CopySource | TextureUsage.CopyDestination,
+            debugName: "Graph subresource state test");
+        var texture = await graphicsDevice.CreateTextureAsync(description).ConfigureAwait(false);
+        using var sourceOwner = UnmanagedBuffer<byte>.Allocate(64, new BufferAllocationOptions(64, 1));
+        sourceOwner.CopyFrom(new byte[64], 0);
+        using var sourceLease = sourceOwner.AcquireRead(0, 64);
+
+        try
+        {
+            var uploadedSubresource = new TextureSubresource(0, 1, TextureAspect.Color);
+            var receipt = await graphicsDevice.UploadTextureAsync(
+                texture,
+                uploadedSubresource,
+                sourceLease,
+                sourceOffset: 0,
+                new TextureDataLayout(rowPitch: 16, slicePitch: 64)).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            Assert.That(receipt.Status, Is.EqualTo(UploadStatus.Ready));
+
+            (var uploadedState, var uploadedContents) = texture.ResourceOwner.GetGraphImportState(
+                new GraphTextureRange(0, 1, 1, 1, TextureAspect.Color));
+            (var untouchedState, var untouchedContents) = texture.ResourceOwner.GetGraphImportState(
+                new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
+            Assert.That(uploadedState, Is.EqualTo(GraphResourceState.General));
+            Assert.That(uploadedContents, Is.True);
+            Assert.That(untouchedState, Is.EqualTo(GraphResourceState.Undefined));
+            Assert.That(untouchedContents, Is.False);
+            _ = Assert.Throws<InvalidOperationException>(
+                () => texture.ResourceOwner.GetGraphImportState(new GraphTextureRange(0, 1, 0, 2, TextureAspect.Color)));
+        }
+        finally
+        {
+            texture.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task TextureUploadRepackagesRowsAndReadbackZeroesExposedPadding()
     {
         var backendDevice = new FakeBackendDevice();
         var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
         var texture = await graphicsDevice.CreateTextureAsync(CreateTextureDescription()).ConfigureAwait(false);
+        var subresource = new TextureSubresource(0, 0, TextureAspect.Color);
+        var graphRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
         var sourceBytes = new byte[40];
         Array.Fill(sourceBytes, (byte)0xEE);
 
@@ -586,15 +649,22 @@ internal sealed class GraphicsBufferTransferTests
 
         try
         {
+            (var initialState, var initialContentsValid) = texture.ResourceOwner.GetGraphImportState(graphRange);
+            Assert.That(initialState, Is.EqualTo(GraphResourceState.Undefined));
+            Assert.That(initialContentsValid, Is.False);
+
             var receipt = await graphicsDevice.UploadTextureAsync(
                 texture,
-                new TextureSubresource(0, 0, TextureAspect.Color),
+                subresource,
                 sourceLease,
                 sourceOffset: 2,
                 new TextureDataLayout(rowPitch: 16, slicePitch: 32)).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
             Assert.That(receipt.Status, Is.EqualTo(UploadStatus.Ready));
             Assert.That(receipt.CompletedFence, Is.EqualTo(1));
+            (var uploadedState, var uploadedContentsValid) = texture.ResourceOwner.GetGraphImportState(graphRange);
+            Assert.That(uploadedState, Is.EqualTo(GraphResourceState.General));
+            Assert.That(uploadedContentsValid, Is.True);
 
             sourceLease.Dispose();
             sourceLeaseDisposed = true;
@@ -603,7 +673,7 @@ internal sealed class GraphicsBufferTransferTests
 
             using var readback = await graphicsDevice.ReadbackTextureAsync(
                 texture,
-                new TextureSubresource(0, 0, TextureAspect.Color)).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                subresource).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             using var readbackLease = readback.AcquireReadLease();
             var actual = new byte[32];
             var copyAction = new ReadbackCopyAction(actual);

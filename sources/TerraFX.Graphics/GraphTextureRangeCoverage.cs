@@ -9,6 +9,8 @@ internal sealed class GraphTextureRangeCoverage
 {
     private readonly List<GraphTextureRange> _ranges = [];
 
+    internal bool IsEmpty => _ranges.Count == 0;
+
     private static List<GraphTextureRange> Subtract(GraphTextureRange source, GraphTextureRange removed)
     {
         if (!source.Overlaps(removed))
@@ -130,6 +132,12 @@ internal sealed class GraphTextureRangeCoverage
         }
 
         return false;
+    }
+
+    internal bool Overlaps(GraphTextureRange range)
+    {
+        ValidateRange(range);
+        return _ranges.Exists(existing => existing.Overlaps(range));
     }
 
     internal void Remove(GraphTextureRange range)

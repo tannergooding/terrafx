@@ -916,7 +916,12 @@ public sealed class GraphicsDevice
         {
             backendBuffer = backendDevice.CreateBuffer(description);
             var handle = new GpuBufferHandle(_ownerId, DeviceEpoch, GetNextBufferIndex(), generation: 1);
-            var resourceOwner = new GraphicsResourceOwner(this, allocationInfo, backendBuffer, retirementReservation);
+            var resourceOwner = new GraphicsResourceOwner(
+                this,
+                allocationInfo,
+                backendBuffer,
+                retirementReservation,
+                bufferDescription: description);
             var buffer = new GpuBuffer(handle, description, DeviceEpoch, resourceOwner);
 
             if (!_resources.Add(resourceOwner))
@@ -1066,7 +1071,12 @@ public sealed class GraphicsDevice
         {
             backendTexture = backendDevice.CreateTexture(description);
             var handle = new GpuTextureHandle(_ownerId, DeviceEpoch, GetNextTextureIndex(), generation: 1);
-            var resourceOwner = new GraphicsResourceOwner(this, allocationInfo, backendTexture, retirementReservation);
+            var resourceOwner = new GraphicsResourceOwner(
+                this,
+                allocationInfo,
+                backendTexture,
+                retirementReservation,
+                textureDescription: description);
             var texture = new GpuTexture(handle, description, DeviceEpoch, resourceOwner);
 
             if (!_resources.Add(resourceOwner))
@@ -1245,7 +1255,9 @@ public sealed class GraphicsDevice
             throw new InvalidOperationException("The source buffer has no backend buffer owner.");
         }
 
-        return backendDevice.ReadbackBuffer(backendBuffer, sourceOffset, byteLength);
+        var result = backendDevice.ReadbackBuffer(backendBuffer, sourceOffset, byteLength);
+        source.ResourceOwner.RecordBufferReadback();
+        return result;
     }
 
     private TextureReadback ReadbackTextureOnOwner(GpuTexture source, TextureSubresource subresource)
@@ -1266,7 +1278,9 @@ public sealed class GraphicsDevice
             throw new InvalidOperationException("The source texture has no backend texture owner.");
         }
 
-        return backendDevice.ReadbackTexture(backendTexture, subresource);
+        var result = backendDevice.ReadbackTexture(backendTexture, subresource);
+        source.ResourceOwner.RecordTextureReadback(subresource);
+        return result;
     }
 
     private void ReleaseResourceAllocation(GraphicsResourceAllocationInfo allocationInfo)
@@ -1550,7 +1564,9 @@ public sealed class GraphicsDevice
             throw new InvalidOperationException("The destination buffer has no backend buffer owner.");
         }
 
-        return backendDevice.UploadBuffer(backendBuffer, destinationOffset, source, sourceOffset, byteLength);
+        var completedFence = backendDevice.UploadBuffer(backendBuffer, destinationOffset, source, sourceOffset, byteLength);
+        destination.ResourceOwner.RecordBufferUpload(destinationOffset, byteLength);
+        return completedFence;
     }
 
     private long UploadBufferOnOwner(GpuBuffer destination, long destinationOffset, ReadOnlySpan<byte> source)
@@ -1575,7 +1591,9 @@ public sealed class GraphicsDevice
             throw new InvalidOperationException("The destination buffer has no backend buffer owner.");
         }
 
-        return backendDevice.UploadBuffer(backendBuffer, destinationOffset, source);
+        var completedFence = backendDevice.UploadBuffer(backendBuffer, destinationOffset, source);
+        destination.ResourceOwner.RecordBufferUpload(destinationOffset, source.Length);
+        return completedFence;
     }
 
     private long UploadTextureOnOwner(
@@ -1609,7 +1627,9 @@ public sealed class GraphicsDevice
             throw new InvalidOperationException("The destination texture has no backend texture owner.");
         }
 
-        return backendDevice.UploadTexture(backendTexture, subresource, source, sourceOffset, sourceLayout);
+        var completedFence = backendDevice.UploadTexture(backendTexture, subresource, source, sourceOffset, sourceLayout);
+        destination.ResourceOwner.RecordTextureUpload(subresource);
+        return completedFence;
     }
 
     private void ValidatePipelineDescriptionForDevice(PipelineDescription description)
