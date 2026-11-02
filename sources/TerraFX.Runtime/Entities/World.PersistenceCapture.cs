@@ -205,6 +205,18 @@ public sealed partial class World
         return new ComponentStateCaptureEnumerator(this, lease);
     }
 
+    internal EntityStateCaptureEnumerator CreateEntityStateEnumerator(WorldPersistenceCaptureLease lease)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(this))
+        {
+            throw new ArgumentException("The persistence capture lease belongs to another World.", nameof(lease));
+        }
+
+        return new EntityStateCaptureEnumerator(this, lease);
+    }
+
     internal ResourceStateCaptureEnumerator CreateResourceStateEnumerator(WorldPersistenceCaptureLease lease)
     {
         lease.ValidateCurrent();

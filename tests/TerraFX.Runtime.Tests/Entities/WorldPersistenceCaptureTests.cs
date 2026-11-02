@@ -148,6 +148,53 @@ internal sealed class WorldPersistenceCaptureTests
     }
 
     [Test]
+    public void EnumeratesCommittedEntitiesAndArchetypeMembership()
+    {
+        using var world = CreateSceneWorld();
+        var firstEntity = world.CreateEntity(new EntityDescription());
+        var secondEntity = world.CreateEntity(new EntityDescription());
+        world.Add<SceneComponentDefinitions.LocalTransformComponent>(firstEntity);
+        _ = world.Step();
+
+        var firstEntityId = world.GetEntityId(firstEntity);
+        var secondEntityId = world.GetEntityId(secondEntity);
+        var componentAssignment = new ContentSchemaIdentityAssignment("scene/local-transform");
+        var componentSchema = new ContentSchemaReference(
+            componentAssignment.SchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+        using var lease = world.AcquirePersistenceCaptureLease();
+        var enumerator = lease.GetEntityStateEnumerator();
+        var observations = new Dictionary<
+            Guid,
+            (uint AssignmentOrdinal, int PersistentCount, ContentSchemaReference? PersistentSchema, int TransientCount, int TagCount)>(2);
+
+        while (enumerator.MoveNext())
+        {
+            var persistentCount = enumerator.CurrentPersistentComponentCount;
+            ContentSchemaReference? persistentSchema = persistentCount == 0
+                ? null
+                : enumerator.GetPersistentComponentSchema(0);
+            var observation = (
+                enumerator.CurrentAssignmentOrdinal,
+                persistentCount,
+                persistentSchema,
+                enumerator.CurrentTransientSchemaCount,
+                enumerator.CurrentTagCount);
+            Assert.That(observations.TryAdd(enumerator.CurrentEntityId, observation), Is.True);
+        }
+
+        Assert.That(observations.Count, Is.EqualTo(2));
+        Assert.That(
+            observations[firstEntityId],
+            Is.EqualTo((1U, 1, (ContentSchemaReference?)componentSchema, 0, 0)));
+        Assert.That(
+            observations[secondEntityId],
+            Is.EqualTo((2U, 0, (ContentSchemaReference?)null, 0, 0)));
+    }
+
+    [Test]
     public void EnumeratesPersistentComponentsInStableWorkPlanOrder()
     {
         using var world = CreateSceneWorld();

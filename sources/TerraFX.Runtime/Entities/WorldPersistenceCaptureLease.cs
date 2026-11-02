@@ -128,6 +128,12 @@ internal ref struct WorldPersistenceCaptureLease
         return _world.CreateComponentStateEnumerator(this);
     }
 
+    internal readonly World.EntityStateCaptureEnumerator GetEntityStateEnumerator()
+    {
+        ValidateCurrent();
+        return _world.CreateEntityStateEnumerator(this);
+    }
+
     internal readonly World.ResourceStateCaptureEnumerator GetResourceStateEnumerator()
     {
         ValidateCurrent();
