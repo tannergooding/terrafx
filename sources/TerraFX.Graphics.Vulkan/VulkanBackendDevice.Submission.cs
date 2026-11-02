@@ -76,7 +76,7 @@ internal sealed unsafe partial class VulkanBackendDevice
     {
         ValidateTransferBuffer(source, BufferUsage.CopySource, nameof(source));
         ValidateTransferRange(source.Description.ByteLength, sourceOffset, byteLength, nameof(sourceOffset), nameof(byteLength));
-        var staging = CreateBuffer(new BufferDescription(
+        var staging = CreateStagingBuffer(new BufferDescription(
             checked((long)byteLength),
             BufferUsage.CopyDestination,
             GpuMemoryKind.Readback,
@@ -161,7 +161,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             byteLength,
             nameof(destinationOffset),
             nameof(byteLength));
-        var staging = CreateBuffer(new BufferDescription(
+        var staging = CreateStagingBuffer(new BufferDescription(
             checked((long)byteLength),
             BufferUsage.CopySource,
             GpuMemoryKind.Upload,
@@ -241,7 +241,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             source.Length,
             nameof(destinationOffset),
             nameof(source));
-        var staging = CreateBuffer(new BufferDescription(
+        var staging = CreateStagingBuffer(new BufferDescription(
             source.Length,
             BufferUsage.CopySource,
             GpuMemoryKind.Upload,

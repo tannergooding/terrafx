@@ -726,6 +726,11 @@ internal sealed unsafe partial class VulkanBackendDevice : IDisposable
             throw new InvalidOperationException("The Vulkan device still has live buffer owners.");
         }
 
+        if (_liveStagingBytes != 0)
+        {
+            throw new InvalidOperationException("The Vulkan device still has staging allocation reservations.");
+        }
+
         if (_liveTextureCount != 0)
         {
             throw new InvalidOperationException("The Vulkan device still has live texture owners.");

@@ -8,9 +8,11 @@ namespace TerraFX.Graphics.Vulkan;
 
 internal sealed class VulkanBackendBuffer : IGraphicsBackendBuffer
 {
+    private long _allocationSizeBytes;
     private VkBuffer _buffer;
     private BufferDescription _description;
     private bool _isDisposed;
+    private bool _isStaging;
     private VkDeviceMemory _memory;
     private VkMemoryPropertyFlags _memoryProperties;
     private uint _memoryTypeIndex;
@@ -22,7 +24,9 @@ internal sealed class VulkanBackendBuffer : IGraphicsBackendBuffer
         BufferDescription description,
         VkDeviceMemory memory,
         VkMemoryPropertyFlags memoryProperties,
-        uint memoryTypeIndex)
+        uint memoryTypeIndex,
+        long allocationSizeBytes,
+        bool isStaging)
     {
         ArgumentNullException.ThrowIfNull(owner);
         ArgumentNullException.ThrowIfNull(description);
@@ -32,13 +36,19 @@ internal sealed class VulkanBackendBuffer : IGraphicsBackendBuffer
         _memory = memory;
         _memoryProperties = memoryProperties;
         _memoryTypeIndex = memoryTypeIndex;
+        _allocationSizeBytes = allocationSizeBytes;
+        _isStaging = isStaging;
     }
+
+    internal long AllocationSizeBytes => _allocationSizeBytes;
 
     internal VkBuffer Buffer => _buffer;
 
     internal BufferDescription Description => _description;
 
     internal bool IsDisposed => _isDisposed;
+
+    internal bool IsStaging => _isStaging;
 
     internal VkDeviceMemory Memory => _memory;
 
@@ -58,9 +68,11 @@ internal sealed class VulkanBackendBuffer : IGraphicsBackendBuffer
 
     internal void MarkDisposed()
     {
+        _allocationSizeBytes = 0;
         _buffer = default;
         _description = null!;
         _isDisposed = true;
+        _isStaging = false;
         _memory = default;
         _memoryProperties = default;
         _memoryTypeIndex = 0;

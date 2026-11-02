@@ -45,7 +45,7 @@ internal sealed unsafe partial class VulkanBackendDevice
         var rowPitch = checked((nint)extent.Width * TextureReadback.GetBytesPerTexel(source.Description.Format));
         var slicePitch = checked(rowPitch * extent.Height);
         var byteLength = checked(slicePitch * extent.Depth);
-        var staging = CreateBuffer(new BufferDescription(
+        var staging = CreateStagingBuffer(new BufferDescription(
             checked((long)byteLength),
             BufferUsage.CopyDestination,
             GpuMemoryKind.Readback,
@@ -142,7 +142,7 @@ internal sealed unsafe partial class VulkanBackendDevice
         var rowByteLength = checked((nint)extent.Width * TextureReadback.GetBytesPerTexel(destination.Description.Format));
         var slicePitch = checked(rowByteLength * extent.Height);
         var byteLength = checked(slicePitch * extent.Depth);
-        var staging = CreateBuffer(new BufferDescription(
+        var staging = CreateStagingBuffer(new BufferDescription(
             checked((long)byteLength),
             BufferUsage.CopySource,
             GpuMemoryKind.Upload,

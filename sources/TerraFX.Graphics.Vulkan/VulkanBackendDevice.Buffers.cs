@@ -9,7 +9,10 @@ namespace TerraFX.Graphics.Vulkan;
 
 internal sealed unsafe partial class VulkanBackendDevice
 {
+    private const long TransferStagingBudgetBytes = 128L * 1024 * 1024;
+
     private int _liveBufferCount;
+    private long _liveStagingBytes;
 
     private static VkBuffer CreateNativeBuffer(VkDevice device, BufferDescription description)
     {
@@ -129,63 +132,7 @@ internal sealed unsafe partial class VulkanBackendDevice
     }
 
     internal VulkanBackendBuffer CreateBuffer(BufferDescription description)
-    {
-        ArgumentNullException.ThrowIfNull(description);
-        EnsureActive();
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(
-            description.ByteLength,
-            Capabilities.Limits.MaximumBufferByteLength,
-            nameof(description));
-
-        var buffer = CreateNativeBuffer(_device, description);
-        var ownsBuffer = true;
-        var memory = default(VkDeviceMemory);
-        var ownsMemory = false;
-
-        try
-        {
-            var requirements = default(VkMemoryRequirements);
-            VulkanApi.vkGetBufferMemoryRequirements(_device, buffer, &requirements);
-            GetMemoryTypeIndex(
-                _physicalDeviceMemoryProperties,
-                requirements.memoryTypeBits,
-                description.MemoryKind,
-                out var memoryTypeIndex,
-                out var memoryProperties,
-                out _);
-            var allocateInfo = default(VkMemoryAllocateInfo);
-            allocateInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-            allocateInfo.allocationSize = requirements.size;
-            allocateInfo.memoryTypeIndex = memoryTypeIndex;
-            ThrowIfFailed(VulkanApi.vkAllocateMemory(_device, &allocateInfo, null, &memory), "vkAllocateMemory");
-            ownsMemory = true;
-            ThrowIfFailed(VulkanApi.vkBindBufferMemory(_device, buffer, memory, 0), "vkBindBufferMemory");
-
-            var result = new VulkanBackendBuffer(
-                this,
-                buffer,
-                description,
-                memory,
-                memoryProperties,
-                memoryTypeIndex);
-            _liveBufferCount = checked(_liveBufferCount + 1);
-            ownsBuffer = false;
-            ownsMemory = false;
-            return result;
-        }
-        finally
-        {
-            if (ownsMemory)
-            {
-                VulkanApi.vkFreeMemory(_device, memory, null);
-            }
-
-            if (ownsBuffer)
-            {
-                VulkanApi.vkDestroyBuffer(_device, buffer, null);
-            }
-        }
-    }
+        => CreateBufferCore(description, isStaging: false);
 
     internal void DestroyBuffer(VulkanBackendBuffer buffer)
     {
@@ -208,6 +155,12 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
 
         ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+        if (buffer.IsStaging)
+        {
+            ReleaseStagingBytes(buffer.AllocationSizeBytes);
+        }
+
         VulkanApi.vkDestroyBuffer(_device, buffer.Buffer, null);
         VulkanApi.vkFreeMemory(_device, buffer.Memory, null);
         buffer.MarkDisposed();
@@ -249,6 +202,86 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
     }
 
+    private VulkanBackendBuffer CreateBufferCore(BufferDescription description, bool isStaging)
+    {
+        ArgumentNullException.ThrowIfNull(description);
+        EnsureActive();
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(
+            description.ByteLength,
+            Capabilities.Limits.MaximumBufferByteLength,
+            nameof(description));
+
+        var buffer = CreateNativeBuffer(_device, description);
+        var ownsBuffer = true;
+        var memory = default(VkDeviceMemory);
+        var ownsMemory = false;
+        var hasStagingReservation = false;
+        long allocationSizeBytes = 0;
+
+        try
+        {
+            var requirements = default(VkMemoryRequirements);
+            VulkanApi.vkGetBufferMemoryRequirements(_device, buffer, &requirements);
+            allocationSizeBytes = ConvertPositiveLong(requirements.size, nameof(requirements));
+
+            if (isStaging)
+            {
+                ReserveStagingBytes(allocationSizeBytes);
+                hasStagingReservation = true;
+            }
+
+            GetMemoryTypeIndex(
+                _physicalDeviceMemoryProperties,
+                requirements.memoryTypeBits,
+                description.MemoryKind,
+                out var memoryTypeIndex,
+                out var memoryProperties,
+                out _);
+            var allocateInfo = default(VkMemoryAllocateInfo);
+            allocateInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            allocateInfo.allocationSize = requirements.size;
+            allocateInfo.memoryTypeIndex = memoryTypeIndex;
+            ThrowIfFailed(VulkanApi.vkAllocateMemory(_device, &allocateInfo, null, &memory), "vkAllocateMemory");
+            ownsMemory = true;
+            ThrowIfFailed(VulkanApi.vkBindBufferMemory(_device, buffer, memory, 0), "vkBindBufferMemory");
+
+            var result = new VulkanBackendBuffer(
+                this,
+                buffer,
+                description,
+                memory,
+                memoryProperties,
+                memoryTypeIndex,
+                allocationSizeBytes,
+                isStaging);
+            _liveBufferCount = checked(_liveBufferCount + 1);
+            ownsBuffer = false;
+            ownsMemory = false;
+            hasStagingReservation = false;
+            return result;
+        }
+        finally
+        {
+            if (ownsMemory)
+            {
+                VulkanApi.vkFreeMemory(_device, memory, null);
+            }
+
+            if (ownsBuffer)
+            {
+                VulkanApi.vkDestroyBuffer(_device, buffer, null);
+            }
+
+            if (hasStagingReservation)
+            {
+                ReleaseStagingBytes(allocationSizeBytes);
+            }
+        }
+    }
+
+    private VulkanBackendBuffer CreateStagingBuffer(BufferDescription description)
+        => CreateBufferCore(description, isStaging: true);
+
     private void EnsureActive()
     {
         EnsureOwnerThread();
@@ -258,5 +291,25 @@ internal sealed unsafe partial class VulkanBackendDevice
         {
             throw new InvalidOperationException("Vulkan device operations are blocked while submission completion is uncertain.");
         }
+    }
+
+    private void ReleaseStagingBytes(long sizeBytes)
+    {
+        if ((sizeBytes <= 0) || (sizeBytes > _liveStagingBytes))
+        {
+            throw new InvalidOperationException("Vulkan staging allocation accounting is inconsistent.");
+        }
+
+        _liveStagingBytes -= sizeBytes;
+    }
+
+    private void ReserveStagingBytes(long sizeBytes)
+    {
+        if ((sizeBytes <= 0) || (sizeBytes > TransferStagingBudgetBytes - _liveStagingBytes))
+        {
+            throw new InvalidOperationException("The Vulkan transfer staging budget is exhausted.");
+        }
+
+        _liveStagingBytes = checked(_liveStagingBytes + sizeBytes);
     }
 }
