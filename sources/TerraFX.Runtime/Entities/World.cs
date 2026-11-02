@@ -1788,8 +1788,8 @@ public sealed partial class World : IDisposable
         EnsureOwnerThread();
 
         if (Volatile.Read(ref _isStructuralOperationActive) != 0
-            && (!_isFrameReadLeaseActive
-                || Environment.CurrentManagedThreadId != _ownerThreadId))
+            && ((!_isFrameReadLeaseActive && !_isPersistenceCaptureLeaseActive)
+                || (Environment.CurrentManagedThreadId != _ownerThreadId)))
         {
             throw new InvalidOperationException("World reads are unavailable during a structural operation.");
         }
