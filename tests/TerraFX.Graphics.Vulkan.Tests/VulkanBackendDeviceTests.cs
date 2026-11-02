@@ -114,7 +114,7 @@ internal sealed class VulkanBackendDeviceTests
             bindingLayoutVersion: 1);
     }
 
-    private static VulkanBackendDevice CreateVulkanDeviceForPipelineSmokeTest()
+    private static VulkanBackendDevice CreateVulkanDeviceForNativeSmokeTest()
     {
         try
         {
@@ -339,7 +339,7 @@ internal sealed class VulkanBackendDeviceTests
             return;
         }
 
-        using var device = CreateVulkanDeviceForPipelineSmokeTest();
+        using var device = CreateVulkanDeviceForNativeSmokeTest();
         using var vertexStorage = CreateBytecodeStorage(Path.Combine(
             fixtureDirectory,
             "M04OffscreenTriangle.vertex.spv"));
@@ -371,7 +371,7 @@ internal sealed class VulkanBackendDeviceTests
             return;
         }
 
-        using var device = CreateVulkanDeviceForPipelineSmokeTest();
+        using var device = CreateVulkanDeviceForNativeSmokeTest();
         using var vertexStorage = CreateBytecodeStorage(Path.Combine(
             fixtureDirectory,
             "M04OffscreenTriangle.vertex.spv"));
@@ -388,6 +388,58 @@ internal sealed class VulkanBackendDeviceTests
             () => device.CreatePipeline(description, [vertexLease, pixelLease]),
             Throws.ArgumentException);
         device.Dispose();
+    }
+
+    [Test]
+    public void OffscreenNativeDeviceStagingBudgetRejectsOversizedUploadAndRecovers()
+    {
+        const int uploadByteLength = 65 * 1024 * 1024;
+        var oversizedBytes = new byte[uploadByteLength];
+        oversizedBytes[0] = 0x42;
+        oversizedBytes[1] = 0x17;
+        oversizedBytes[2] = 0x9C;
+
+        using (var device = CreateVulkanDeviceForNativeSmokeTest())
+        {
+            if (device.Capabilities.Limits.MaximumBufferByteLength < uploadByteLength)
+            {
+                Assert.Ignore("The selected Vulkan device cannot allocate the 65-MiB destination required by the staging-budget test.");
+                return;
+            }
+
+            using var destination = device.CreateBuffer(
+                new BufferDescription(
+                    uploadByteLength,
+                    BufferUsage.CopySource | BufferUsage.CopyDestination,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: null,
+                    debugName: "staging-budget destination"));
+            var initialBytes = new byte[] { 0x11, 0x22, 0x33 };
+            Assert.That(device.UploadBuffer(destination, 0, initialBytes), Is.GreaterThan(0));
+
+            Assert.That(
+                () => device.UploadBuffer(destination, 0, oversizedBytes),
+                Throws.InvalidOperationException.With.Message.Contains("staging budget is exhausted"));
+
+            var recoveryBytes = new byte[] { 0xA5, 0x5A, 0xC3 };
+            Assert.That(device.UploadBuffer(destination, 7, recoveryBytes), Is.GreaterThan(0));
+            using var readback = device.ReadbackBuffer(destination, 7, recoveryBytes.Length);
+            AssertReadback(readback, recoveryBytes);
+        }
+
+        using (var device = CreateVulkanDeviceForNativeSmokeTest())
+        using (var destination = device.CreateBuffer(
+            new BufferDescription(
+                uploadByteLength,
+                BufferUsage.CopySource | BufferUsage.CopyDestination,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: null,
+                debugName: "dedicated-staging destination")))
+        {
+            Assert.That(device.UploadBuffer(destination, 0, oversizedBytes), Is.GreaterThan(0));
+            using var readback = device.ReadbackBuffer(destination, 0, 3);
+            AssertReadback(readback, [0x42, 0x17, 0x9C]);
+        }
     }
 
     [Test]

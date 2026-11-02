@@ -133,7 +133,7 @@ dotnet test .\tests\TerraFX.Graphics.Vulkan.Tests\TerraFX.Graphics.Vulkan.Tests.
 dotnet test .\tests\TerraFX.Graphics.Vulkan.Tests\TerraFX.Graphics.Vulkan.Tests.csproj --configuration Release
 ```
 
-The fixture-dependent tests create and retire an internal resource-free graphics pipeline from the compiled SPIR-V and verify cleanup after invalid second-stage bytecode. They exercise `VulkanBackendDevice` directly, not the public `GraphicsDevice`, descriptor binding, graph submission, or presentation path. If the fixture environment variable is unset, those focused pipeline tests are skipped; a successful run with zero selected/executed cases is not evidence.
+The fixture-dependent tests create and retire an internal resource-free graphics pipeline from the compiled SPIR-V and verify cleanup after invalid second-stage bytecode. The suite checks that a 65-MiB upload is refused while the 64-MiB ring is live, that a follow-up ring upload/readback succeeds, and that the same 65-MiB upload succeeds through dedicated staging on a fresh device. These tests exercise `VulkanBackendDevice` directly, not the public `GraphicsDevice`, descriptor binding, graph submission, or presentation path. If the fixture environment variable is unset, the focused pipeline tests are skipped; a successful run with zero selected/executed cases is not evidence.
 
 ### Retained AssetLease lifetime
 
