@@ -292,6 +292,40 @@ internal sealed class TextInputSessionTests
     }
 
     [Test]
+    public void TextEditRejectionPreservesTheAuthoritativeSelectionAndShadow()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = CreateRouter(sequenceLease, s_window);
+        var session = router.BeginTextSession(CreateOptions(s_window, 1, "A\U0001F642B", 1, 2));
+
+        Assert.That(
+            session.PublishNativeBatch(
+                10,
+                sequenceLease.Allocate(),
+                1,
+                [
+                    new TextInputChange(TextInputChangeKind.TextEditRequested, editStart: 2, deleteLength: 1),
+                    new TextInputChange(TextInputChangeKind.TextCommitted, "x"),
+                ]),
+            Is.EqualTo(TextInputBatchPublishStatus.Published));
+
+        Assert.That(session.TryReadBatch(out var batch), Is.True);
+        Assert.That(batch!.ResultDocumentRevision, Is.EqualTo(2));
+        Assert.That(batch.Changes, Has.Length.EqualTo(2));
+        Assert.That(batch.Changes[0].Kind, Is.EqualTo(TextInputChangeKind.TextEditRejected));
+        Assert.That(batch.Changes[0].Diagnostic?.Code, Is.EqualTo("TextInput.TextEditRejected"));
+        Assert.That(batch.Changes[1].Kind, Is.EqualTo(TextInputChangeKind.TextCommitted));
+        Assert.That(batch.Changes[1].EditStart, Is.EqualTo(1));
+        Assert.That(batch.Changes[1].DeleteLength, Is.EqualTo(2));
+
+        session.Update(CreateOptions(s_window, 2, "AxB", 2, 0));
+        Assert.That(session.DocumentRevision, Is.EqualTo(2));
+        Assert.That(session.LastDiagnostic, Is.Null);
+        session.Dispose();
+        router.Dispose();
+    }
+
+    [Test]
     public void TextOutputBudgetIsExactAndOverflowUsesRecipientRecovery()
     {
         var sequenceLease = new HostEventSequenceLease();
