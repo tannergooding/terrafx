@@ -126,6 +126,64 @@ internal sealed class TextInputSessionTests
     }
 
     [Test]
+    public void NativeBatchAppliesOrderedEditsAsOneDocumentRevision()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = CreateRouter(sequenceLease, s_window);
+        var session = router.BeginTextSession(CreateOptions(s_window, 1, "abcd", 1, 1));
+
+        Assert.That(
+            session.PublishNativeBatch(
+                10,
+                sequenceLease.Allocate(),
+                1,
+                [
+                    new TextInputChange(TextInputChangeKind.TextEditRequested, editStart: 1, deleteLength: 1),
+                    new TextInputChange(TextInputChangeKind.TextCommitted, "XY"),
+                    new TextInputChange(TextInputChangeKind.TextCommitted, "!"),
+                ]),
+            Is.EqualTo(TextInputBatchPublishStatus.Published));
+
+        Assert.That(session.TryReadBatch(out var batch), Is.True);
+        Assert.That(batch!.BaseDocumentRevision, Is.EqualTo(1));
+        Assert.That(batch.ResultDocumentRevision, Is.EqualTo(2));
+        Assert.That(batch.Changes, Has.Length.EqualTo(3));
+        Assert.That(batch.Changes[0].Kind, Is.EqualTo(TextInputChangeKind.TextEditRequested));
+        Assert.That(batch.Changes[1].Kind, Is.EqualTo(TextInputChangeKind.TextCommitted));
+        Assert.That(batch.Changes[1].EditStart, Is.EqualTo(1));
+        Assert.That(batch.Changes[1].DeleteLength, Is.Zero);
+        Assert.That(batch.Changes[2].EditStart, Is.EqualTo(3));
+        Assert.That(batch.Changes[2].DeleteLength, Is.Zero);
+        Assert.That(session.DocumentRevision, Is.EqualTo(1));
+
+        Assert.That(
+            session.PublishNativeBatch(
+                11,
+                sequenceLease.Allocate(),
+                2,
+                [new TextInputChange(TextInputChangeKind.TextCommitted, "z")]),
+            Is.EqualTo(TextInputBatchPublishStatus.StaleMirror));
+        Assert.That(session.TryReadBatch(out var staleBatch), Is.True);
+        Assert.That(staleBatch!.Changes[0].Kind, Is.EqualTo(TextInputChangeKind.StaleMirror));
+
+        session.Update(CreateOptions(s_window, 2, "aXY!cd", 4, 0));
+        Assert.That(
+            session.PublishNativeBatch(
+                12,
+                sequenceLease.Allocate(),
+                2,
+                [new TextInputChange(TextInputChangeKind.TextCommitted, "z")]),
+            Is.EqualTo(TextInputBatchPublishStatus.Published));
+        Assert.That(session.TryReadBatch(out var resumedBatch), Is.True);
+        Assert.That(resumedBatch!.BaseDocumentRevision, Is.EqualTo(2));
+        Assert.That(resumedBatch.ResultDocumentRevision, Is.EqualTo(3));
+        Assert.That(resumedBatch.Changes[0].EditStart, Is.EqualTo(4));
+
+        session.Dispose();
+        router.Dispose();
+    }
+
+    [Test]
     public void ReadsOrderedCommittedTextAndRequiresAnAuthoritativeUpdate()
     {
         var sequenceLease = new HostEventSequenceLease();
@@ -201,6 +259,16 @@ internal sealed class TextInputSessionTests
         Assert.That(staleBatch!.Changes[0].Kind, Is.EqualTo(TextInputChangeKind.StaleMirror));
         Assert.That(session.LastDiagnostic?.Code, Is.EqualTo("TextInput.StaleMirror"));
 
+        Assert.That(
+            session.PublishNativeBatch(
+                13,
+                sequenceLease.Allocate(),
+                2,
+                [new TextInputChange(TextInputChangeKind.TextCommitted, "y")]),
+            Is.EqualTo(TextInputBatchPublishStatus.StaleMirror));
+        Assert.That(session.TryReadBatch(out var repeatedStaleBatch), Is.True);
+        Assert.That(repeatedStaleBatch!.Changes[0].Kind, Is.EqualTo(TextInputChangeKind.StaleMirror));
+
         session.Update(CreateOptions(s_window, 2, "axc", 2, 0));
         Assert.That(session.DocumentRevision, Is.EqualTo(2));
         Assert.That(session.LastDiagnostic, Is.Null);
@@ -209,7 +277,7 @@ internal sealed class TextInputSessionTests
 
         Assert.That(
             session.PublishNativeBatch(
-                13,
+                14,
                 sequenceLease.Allocate(),
                 2,
                 [new TextInputChange(TextInputChangeKind.TextEditRequested, editStart: 4, deleteLength: 1)]),
