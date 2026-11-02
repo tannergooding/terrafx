@@ -17,6 +17,7 @@ internal sealed unsafe partial class VulkanBackendDevice
     private bool _hasUncertainSubmission;
     private ulong _timelineValue;
     private readonly List<VulkanBackendBuffer> _uncertainBufferOwners = [];
+    private readonly List<VulkanBackendTexture> _uncertainTextureOwners = [];
 
     private static void CopyMappedStorageToOwnedBuffer(byte* source, nint byteLength, UnmanagedBuffer<byte> destination)
     {
@@ -411,7 +412,16 @@ internal sealed unsafe partial class VulkanBackendDevice
     private void RetainUncertainBuffer(VulkanBackendBuffer buffer)
         => _uncertainBufferOwners.Add(buffer);
 
+    private void RetainUncertainTexture(VulkanBackendTexture texture)
+        => _uncertainTextureOwners.Add(texture);
+
     private long SubmitAndWait(VulkanBackendBuffer retainedBuffer)
+        => SubmitAndWaitCore(retainedBuffer, retainedTexture: null);
+
+    private long SubmitAndWait(VulkanBackendTexture retainedTexture)
+        => SubmitAndWaitCore(retainedBuffer: null, retainedTexture: retainedTexture);
+
+    private long SubmitAndWaitCore(VulkanBackendBuffer? retainedBuffer, VulkanBackendTexture? retainedTexture)
     {
         EnsureActive();
 
@@ -462,7 +472,16 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
         catch (InvalidOperationException) when (_hasUncertainSubmission)
         {
-            RetainUncertainBuffer(retainedBuffer);
+            if (retainedBuffer is not null)
+            {
+                RetainUncertainBuffer(retainedBuffer);
+            }
+
+            if (retainedTexture is not null)
+            {
+                RetainUncertainTexture(retainedTexture);
+            }
+
             throw;
         }
     }

@@ -22,6 +22,15 @@ internal sealed class VulkanBackendDeviceTests
         Assert.That(actual, Is.EqualTo(expected));
     }
 
+    private static void AssertTextureReadback(TextureReadback readback, byte[] expected)
+    {
+        using var lease = readback.AcquireReadLease();
+        var actual = new byte[expected.Length];
+        var copyAction = new ReadbackCopyAction(actual);
+        lease.UseWindow(0, actual.Length, ref copyAction);
+        Assert.That(actual, Is.EqualTo(expected));
+    }
+
     [Test]
     public void OffscreenNativeCreationReportsAndReleasesARealDevice()
     {
@@ -222,6 +231,89 @@ internal sealed class VulkanBackendDeviceTests
         catch (NotSupportedException exception)
         {
             Assert.Ignore($"No available Vulkan device satisfies the buffer transfer smoke test: {exception.Message}");
+        }
+    }
+
+    [Test]
+    public void OffscreenNativeDeviceUploadsAndReadsBackPaddedTextureRows()
+    {
+        try
+        {
+            using var device = VulkanBackendDevice.Create(
+                GraphicsDeviceProfile.OffscreenNative,
+                CancellationToken.None);
+            using var texture = device.CreateTexture(
+                new TextureDescription(
+                    TextureDimension.Dimension2D,
+                    64,
+                    32,
+                    depth: 1,
+                    arrayLayers: 2,
+                    mipLevels: 2,
+                    format: TextureFormat.Rgba8Unorm,
+                    usage: TextureUsage.CopySource | TextureUsage.CopyDestination,
+                    debugName: "texture-transfer"));
+            var subresource = new TextureSubresource(1, 1, TextureAspect.Color);
+            var width = 32;
+            var height = 16;
+            var rowByteLength = width * 4;
+            var sourceRowPitch = rowByteLength + 8;
+            var sourceSlicePitch = sourceRowPitch * height;
+            var sourceByteLength = (sourceRowPitch * (height - 1)) + rowByteLength;
+            var sourceBytes = new byte[sourceByteLength];
+            var expected = new byte[rowByteLength * height];
+
+            for (var index = 0; index < expected.Length; index++)
+            {
+                expected[index] = unchecked((byte)((index * 17) + 3));
+            }
+
+            Array.Fill(sourceBytes, (byte)0xCD);
+
+            for (var row = 0; row < height; row++)
+            {
+                Array.Copy(expected, row * rowByteLength, sourceBytes, row * sourceRowPitch, rowByteLength);
+            }
+
+            Assert.That(
+                () => device.ReadbackTexture(texture, subresource),
+                Throws.InvalidOperationException.With.Message.Contains("uninitialized"));
+
+            var sourceStorage = UnmanagedBuffer<byte>.Allocate(
+                sourceByteLength,
+                new BufferAllocationOptions(sourceByteLength, alignment: 1));
+            sourceStorage.CopyFrom(sourceBytes.AsSpan(), 0);
+
+            using var ownedSource = sourceStorage.TransferToOwnedBuffer();
+            using var sourceLease = ownedSource.AcquireReadLease(0, sourceByteLength);
+            Assert.That(
+                device.UploadTexture(
+                    texture,
+                    subresource,
+                    sourceLease,
+                    0,
+                    new TextureDataLayout(sourceRowPitch, sourceSlicePitch)),
+                Is.GreaterThan(0));
+            Assert.That(texture.GetLayout(subresource), Is.EqualTo(VkImageLayout.VK_IMAGE_LAYOUT_GENERAL));
+            Assert.That(texture.IsInitialized(subresource), Is.True);
+
+            using var readback = device.ReadbackTexture(texture, subresource);
+            Assert.That(readback.RowPitch, Is.EqualTo(checked((nint)rowByteLength)));
+            Assert.That(readback.SlicePitch, Is.EqualTo(checked((nint)(rowByteLength * height))));
+            Assert.That(readback.ByteLength, Is.EqualTo(checked((nint)expected.Length)));
+            AssertTextureReadback(readback, expected);
+        }
+        catch (DllNotFoundException exception)
+        {
+            Assert.Ignore($"No Vulkan loader is installed: {exception.Message}");
+        }
+        catch (EntryPointNotFoundException exception)
+        {
+            Assert.Ignore($"The installed Vulkan loader lacks a required entry point: {exception.Message}");
+        }
+        catch (NotSupportedException exception)
+        {
+            Assert.Ignore($"No available Vulkan device satisfies the texture transfer smoke test: {exception.Message}");
         }
     }
 

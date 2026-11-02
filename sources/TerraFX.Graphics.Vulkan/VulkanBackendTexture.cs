@@ -10,6 +10,7 @@ internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
 {
     private TextureDescription _description;
     private VkImage _image;
+    private bool[] _initialized;
     private bool _isDisposed;
     private VkImageLayout[] _layouts;
     private VkDeviceMemory _memory;
@@ -28,9 +29,10 @@ internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
         _owner = owner;
         _image = image;
         _description = description;
+        _initialized = new bool[checked(description.MipLevels * description.ArrayLayers)];
         _memory = memory;
         _memoryTypeIndex = memoryTypeIndex;
-        _layouts = new VkImageLayout[checked(description.MipLevels * description.ArrayLayers)];
+        _layouts = new VkImageLayout[_initialized.Length];
         Array.Fill(_layouts, VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED);
     }
 
@@ -57,15 +59,22 @@ internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
     internal VkImageLayout GetLayout(TextureSubresource subresource)
         => _layouts[GetSubresourceIndex(subresource)];
 
+    internal bool IsInitialized(TextureSubresource subresource)
+        => _initialized[GetSubresourceIndex(subresource)];
+
     internal void MarkDisposed()
     {
         _description = null!;
         _image = default;
         _isDisposed = true;
+        _initialized = [];
         _layouts = [];
         _memory = default;
         _memoryTypeIndex = 0;
     }
+
+    internal void MarkInitialized(TextureSubresource subresource)
+        => _initialized[GetSubresourceIndex(subresource)] = true;
 
     internal void SetLayout(TextureSubresource subresource, VkImageLayout layout)
         => _layouts[GetSubresourceIndex(subresource)] = layout;
