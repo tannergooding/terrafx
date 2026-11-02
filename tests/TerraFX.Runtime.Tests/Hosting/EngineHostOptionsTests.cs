@@ -796,15 +796,16 @@ internal sealed class EngineHostOptionsTests
                         TextureFormat.R32UInt,
                         TextureUsage.Storage,
                         "d3d12-storage-descriptor-texture"));
+                var storageSamplerDescription = new SamplerDescription(
+                    SamplerFilter.Linear,
+                    SamplerFilter.Linear,
+                    SamplerFilter.None,
+                    SamplerAddressMode.Clamp,
+                    SamplerAddressMode.Clamp,
+                    SamplerAddressMode.Clamp,
+                    maximumAnisotropy: 1.0f);
                 using var storageSampler = device.CreateSampler(
-                    new SamplerDescription(
-                        SamplerFilter.Linear,
-                        SamplerFilter.Linear,
-                        SamplerFilter.None,
-                        SamplerAddressMode.Clamp,
-                        SamplerAddressMode.Clamp,
-                        SamplerAddressMode.Clamp,
-                        maximumAnisotropy: 1.0f),
+                    storageSamplerDescription,
                     effectiveMaximumAnisotropy: 1.0f);
                 var storageUniformBufferBindings = ImmutableArray.Create(new D3D12BackendUniformBufferBinding(
                     ShaderBindingGroup.Frame,
@@ -908,7 +909,81 @@ internal sealed class EngineHostOptionsTests
                 _ = Assert.Throws<InvalidOperationException>(storagePipeline.Dispose);
                 _ = Assert.Throws<InvalidOperationException>(device.Dispose);
 
-                storageDescriptorSet.Dispose();
+                const int SamplerHeapCapacity = 256;
+                const int SamplerDescriptorsPerSet = 2;
+                var descriptorSets = new D3D12GraphicsBackend.D3D12BackendFactory.D3D12BackendDevice.D3D12BackendDescriptorSet?[
+                    SamplerHeapCapacity / SamplerDescriptorsPerSet];
+                var samplerOwners = new IGraphicsBackendSampler?[descriptorSets.Length];
+                descriptorSets[0] = storageDescriptorSet;
+                samplerOwners[0] = storageSampler;
+
+                try
+                {
+                    for (var index = 1; index < descriptorSets.Length; index++)
+                    {
+                        var samplerOwner = device.CreateSampler(
+                            storageSamplerDescription,
+                            effectiveMaximumAnisotropy: 1.0f);
+                        samplerOwners[index] = samplerOwner;
+                        var samplerBinding = ImmutableArray.Create(new D3D12BackendSamplerBinding(
+                            ShaderBindingGroup.Frame,
+                            0,
+                            samplerOwner));
+                        descriptorSets[index] = device.CreateDescriptorSet(
+                            storagePipeline,
+                            storageUniformBufferBindings,
+                            storageSampledImageBindings,
+                            storageBufferBindings,
+                            storageImageBindings,
+                            samplerBinding);
+                    }
+
+                    _ = Assert.Throws<InvalidOperationException>(() => device.CreateSampler(
+                        storageSamplerDescription,
+                        effectiveMaximumAnisotropy: 1.0f));
+
+                    var firstDescriptorSet = descriptorSets[0]
+                        ?? throw new InvalidOperationException("The initial D3D12 descriptor set is missing.");
+                    firstDescriptorSet.Dispose();
+                    descriptorSets[0] = null;
+                    var firstSampler = samplerOwners[0]
+                        ?? throw new InvalidOperationException("The initial D3D12 sampler is missing.");
+                    firstSampler.Dispose();
+                    samplerOwners[0] = null;
+
+                    var replacementSampler = device.CreateSampler(
+                        storageSamplerDescription,
+                        effectiveMaximumAnisotropy: 1.0f);
+                    samplerOwners[0] = replacementSampler;
+                    var replacementSamplerBinding = ImmutableArray.Create(new D3D12BackendSamplerBinding(
+                        ShaderBindingGroup.Frame,
+                        0,
+                        replacementSampler));
+                    descriptorSets[0] = device.CreateDescriptorSet(
+                        storagePipeline,
+                        storageUniformBufferBindings,
+                        storageSampledImageBindings,
+                        storageBufferBindings,
+                        storageImageBindings,
+                        replacementSamplerBinding);
+                    Assert.That(descriptorSets[0]?.AreDescriptorTableHandlesValid, Is.True);
+                    _ = Assert.Throws<InvalidOperationException>(() => device.CreateSampler(
+                        storageSamplerDescription,
+                        effectiveMaximumAnisotropy: 1.0f));
+                }
+                finally
+                {
+                    for (var index = descriptorSets.Length - 1; index >= 0; index--)
+                    {
+                        descriptorSets[index]?.Dispose();
+                    }
+
+                    for (var index = samplerOwners.Length - 1; index >= 0; index--)
+                    {
+                        samplerOwners[index]?.Dispose();
+                    }
+                }
+
                 Assert.That(storageDescriptorSet.IsDisposed, Is.True);
                 Assert.DoesNotThrow(storageUniformBuffer.Dispose);
                 Assert.DoesNotThrow(storageSampledTexture.Dispose);
