@@ -181,6 +181,46 @@ internal sealed class VulkanBackendDeviceTests
     }
 
     [Test]
+    public void OffscreenNativeDeviceCreatesAndRetainsASampler()
+    {
+        try
+        {
+            using var device = VulkanBackendDevice.Create(
+                GraphicsDeviceProfile.OffscreenNative,
+                CancellationToken.None);
+            var description = new SamplerDescription(
+                SamplerFilter.Linear,
+                SamplerFilter.Nearest,
+                SamplerFilter.None,
+                SamplerAddressMode.Clamp,
+                SamplerAddressMode.Repeat,
+                SamplerAddressMode.Clamp,
+                maximumAnisotropy: 16.0f);
+            using (var sampler = device.CreateSampler(description, effectiveMaximumAnisotropy: 1.0f))
+            {
+                Assert.That(device.Capabilities.Limits.MaximumSamplerAnisotropy, Is.EqualTo(1.0f));
+                Assert.That(
+                    device.Dispose,
+                    Throws.InvalidOperationException.With.Message.Contains("live sampler owners"));
+            }
+
+            device.Dispose();
+        }
+        catch (DllNotFoundException exception)
+        {
+            Assert.Ignore($"No Vulkan loader is installed: {exception.Message}");
+        }
+        catch (EntryPointNotFoundException exception)
+        {
+            Assert.Ignore($"The installed Vulkan loader lacks a required entry point: {exception.Message}");
+        }
+        catch (NotSupportedException exception)
+        {
+            Assert.Ignore($"No available Vulkan device satisfies the sampler smoke test: {exception.Message}");
+        }
+    }
+
+    [Test]
     public void OffscreenNativeDeviceUploadsAndReadsBackDeviceLocalBufferBytes()
     {
         try

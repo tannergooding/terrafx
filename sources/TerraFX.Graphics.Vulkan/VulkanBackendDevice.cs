@@ -744,6 +744,11 @@ internal sealed unsafe partial class VulkanBackendDevice : IDisposable
             throw new InvalidOperationException("The Vulkan device still has live texture owners.");
         }
 
+        if (_liveSamplerCount != 0)
+        {
+            throw new InvalidOperationException("The Vulkan device still has live sampler owners.");
+        }
+
         ThrowIfFailed(VulkanApi.vkDeviceWaitIdle(_device), "vkDeviceWaitIdle");
         VulkanApi.vkDestroySemaphore(_device, _timelineSemaphore, null);
         VulkanApi.vkDestroyCommandPool(_device, _commandPool, null);
