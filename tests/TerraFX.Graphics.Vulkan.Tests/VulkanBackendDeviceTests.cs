@@ -5,6 +5,7 @@ using System.Threading;
 using NUnit.Framework;
 using TerraFX.Graphics;
 using TerraFX.Graphics.Vulkan;
+using TerraFX.Interop.Vulkan;
 
 namespace TerraFX.Graphics.Vulkan.Tests;
 
@@ -53,6 +54,64 @@ internal sealed class VulkanBackendDeviceTests
         {
             Assert.Ignore($"No available Vulkan device satisfies OffscreenNative: {exception.Message}");
             return;
+        }
+    }
+
+    [Test]
+    public void OffscreenNativeDeviceAllocatesEachBufferMemoryKindAndRetainsLiveOwners()
+    {
+        try
+        {
+            using var device = VulkanBackendDevice.Create(
+                GraphicsDeviceProfile.OffscreenNative,
+                CancellationToken.None);
+            using (var deviceLocalBuffer = device.CreateBuffer(
+                new BufferDescription(
+                    4096,
+                    BufferUsage.CopySource | BufferUsage.CopyDestination,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: null,
+                    debugName: "device-local")))
+            using (var uploadBuffer = device.CreateBuffer(
+                new BufferDescription(
+                    4096,
+                    BufferUsage.CopySource,
+                    GpuMemoryKind.Upload,
+                    structuredStride: null,
+                    debugName: "upload")))
+            using (var readbackBuffer = device.CreateBuffer(
+                new BufferDescription(
+                    4096,
+                    BufferUsage.CopyDestination,
+                    GpuMemoryKind.Readback,
+                    structuredStride: null,
+                    debugName: "readback")))
+            {
+                Assert.That(deviceLocalBuffer.Description.ByteLength, Is.EqualTo(4096));
+                Assert.That(
+                    (uploadBuffer.MemoryProperties & VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0,
+                    Is.True);
+                Assert.That(
+                    (readbackBuffer.MemoryProperties & VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0,
+                    Is.True);
+                Assert.That(
+                    device.Dispose,
+                    Throws.InvalidOperationException.With.Message.Contains("live buffer owners"));
+            }
+
+            device.Dispose();
+        }
+        catch (DllNotFoundException exception)
+        {
+            Assert.Ignore($"No Vulkan loader is installed: {exception.Message}");
+        }
+        catch (EntryPointNotFoundException exception)
+        {
+            Assert.Ignore($"The installed Vulkan loader lacks a required entry point: {exception.Message}");
+        }
+        catch (NotSupportedException exception)
+        {
+            Assert.Ignore($"No available Vulkan device satisfies the buffer allocation smoke test: {exception.Message}");
         }
     }
 }

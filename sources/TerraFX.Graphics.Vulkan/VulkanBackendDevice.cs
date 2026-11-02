@@ -677,6 +677,11 @@ internal sealed unsafe partial class VulkanBackendDevice : IDisposable
             return;
         }
 
+        if (_liveBufferCount != 0)
+        {
+            throw new InvalidOperationException("The Vulkan device still has live buffer owners.");
+        }
+
         ThrowIfFailed(VulkanApi.vkDeviceWaitIdle(_device), "vkDeviceWaitIdle");
         VulkanApi.vkDestroySemaphore(_device, _timelineSemaphore, null);
         VulkanApi.vkDestroyCommandPool(_device, _commandPool, null);
