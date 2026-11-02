@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -16,6 +17,12 @@ namespace TerraFX.Graphics.Vulkan.Tests;
 [TestFixture]
 internal sealed class VulkanBackendDeviceTests
 {
+    private static void AppendSpirvInstruction(List<uint> words, ushort opcode, params uint[] operands)
+    {
+        words.Add((checked((uint)operands.Length + 1) << 16) | opcode);
+        words.AddRange(operands);
+    }
+
     private static void AssertReadback(OwnedBuffer<byte> readback, byte[] expected)
     {
         using var lease = readback.AcquireReadLease(0, expected.Length);
@@ -45,6 +52,36 @@ internal sealed class VulkanBackendDeviceTests
 
     private static OwnedBuffer<byte> CreateBytecodeStorage(string path)
         => CreateBytecodeStorage(File.ReadAllBytes(path));
+
+    private static byte[] CreateMatrixUniformSpirv(
+        uint matrixMajor,
+        uint matrixStride,
+        uint rowCount,
+        uint columnCount)
+    {
+        var words = new List<uint> {
+            0x07230203,
+            0x00010600,
+            0,
+            10,
+            0,
+        };
+        AppendSpirvInstruction(words, 17, 1);
+        AppendSpirvInstruction(words, 15, 4, 9, 0x6E69616D, 0);
+        AppendSpirvInstruction(words, 22, 2, 32);
+        AppendSpirvInstruction(words, 23, 3, 2, rowCount);
+        AppendSpirvInstruction(words, 24, 4, 3, columnCount);
+        AppendSpirvInstruction(words, 30, 5, 4);
+        AppendSpirvInstruction(words, 32, 6, 2, 5);
+        AppendSpirvInstruction(words, 59, 6, 8, 2);
+        AppendSpirvInstruction(words, 71, 5, 2);
+        AppendSpirvInstruction(words, 71, 8, 34, 0);
+        AppendSpirvInstruction(words, 71, 8, 33, 0);
+        AppendSpirvInstruction(words, 72, 5, 0, 35, 0);
+        AppendSpirvInstruction(words, 72, 5, 0, matrixMajor);
+        AppendSpirvInstruction(words, 72, 5, 0, 7, matrixStride);
+        return MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(words)).ToArray();
+    }
 
     private static ShaderCompilerIdentity CreateShaderCompilerIdentity()
     {
@@ -1276,6 +1313,36 @@ internal sealed class VulkanBackendDeviceTests
         => Assert.That(VulkanGraphicsBackend.CreateRegistration().Backend, Is.EqualTo(GraphicsBackend.Vulkan));
 
     [Test]
+    public void SpirvPreflightAcceptsContractualRowMajorMatrixRecordWithoutCreatingDevice()
+    {
+        using var storage = CreateBytecodeStorage(CreateMatrixUniformSpirv(
+            matrixMajor: 4,
+            matrixStride: 16,
+            rowCount: 4,
+            columnCount: 4));
+        using var lease = storage.AcquireReadLease(0, storage.Length);
+        var reflection = new ShaderReflection(
+            ShaderStage.Pixel,
+            "main",
+            CreateShaderCompilerIdentity(),
+            [],
+            [],
+            [new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1)],
+            [new ShaderRecordLayout(
+                "FrameData",
+                64,
+                [new ShaderFieldLayout("matrix", ShaderValueType.Float4x4, 0, 64, 1, 0)])],
+            [],
+            bindingLayoutVersion: 1,
+            groupSizeX: 0,
+            groupSizeY: 0,
+            groupSizeZ: 0);
+        var shader = new ShaderBytecodeInput(ShaderStage.Pixel, ShaderBinaryFormat.SpirV, lease, reflection);
+
+        Assert.DoesNotThrow(() => SpirvReflectionValidator.Validate(shader, lease, index: 0));
+    }
+
+    [Test]
     public void SpirvPreflightRejectsMissingShaderCapabilityWithoutCreatingDevice()
     {
         var fixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
@@ -1361,6 +1428,43 @@ internal sealed class VulkanBackendDeviceTests
         Assert.That(
             () => SpirvReflectionValidator.Validate(description.Shaders[1], pixelLease, index: 1),
             Throws.ArgumentException);
+    }
+
+    [TestCase(5u, 16u, 4u, 4u)]
+    [TestCase(4u, 32u, 4u, 4u)]
+    [TestCase(4u, 16u, 3u, 4u)]
+    [TestCase(4u, 16u, 4u, 3u)]
+    public void SpirvPreflightRejectsUnsupportedMatrixRecordWithoutCreatingDevice(
+        uint matrixMajor,
+        uint matrixStride,
+        uint rowCount,
+        uint columnCount)
+    {
+        using var storage = CreateBytecodeStorage(CreateMatrixUniformSpirv(
+            matrixMajor,
+            matrixStride,
+            rowCount,
+            columnCount));
+        using var lease = storage.AcquireReadLease(0, storage.Length);
+        var reflection = new ShaderReflection(
+            ShaderStage.Pixel,
+            "main",
+            CreateShaderCompilerIdentity(),
+            [],
+            [],
+            [new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1)],
+            [new ShaderRecordLayout(
+                "FrameData",
+                64,
+                [new ShaderFieldLayout("matrix", ShaderValueType.Float4x4, 0, 64, 1, 0)])],
+            [],
+            bindingLayoutVersion: 1,
+            groupSizeX: 0,
+            groupSizeY: 0,
+            groupSizeZ: 0);
+        var shader = new ShaderBytecodeInput(ShaderStage.Pixel, ShaderBinaryFormat.SpirV, lease, reflection);
+
+        _ = Assert.Throws<NotSupportedException>(() => SpirvReflectionValidator.Validate(shader, lease, index: 0));
     }
 
     private readonly struct ReadbackCopyAction : IAction<ReadOnlySpan<byte>>

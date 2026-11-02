@@ -18,9 +18,11 @@ internal static class SpirvReflectionValidator
     private const uint DecorationBinding = 33;
     private const uint DecorationBlock = 2;
     private const uint DecorationBufferBlock = 3;
+    private const uint DecorationColMajor = 5;
     private const uint DecorationDescriptorSet = 34;
     private const uint DecorationMatrixStride = 7;
     private const uint DecorationOffset = 35;
+    private const uint DecorationRowMajor = 4;
     private const uint ExecutionModelCompute = 5;
     private const uint ExecutionModelFragment = 4;
     private const uint ExecutionModelVertex = 0;
@@ -135,12 +137,11 @@ internal static class SpirvReflectionValidator
         uint decoration,
         ReadOnlySpan<uint> operands)
     {
-        if (decoration is not (DecorationMatrixStride or DecorationOffset))
+        if (decoration is not (DecorationMatrixStride or DecorationOffset or DecorationRowMajor or DecorationColMajor))
         {
             return;
         }
 
-        var value = GetDecorationLiteral(operands, structureId, decoration);
         var key = new MemberKey(structureId, memberIndex);
 
         if (!module.MemberDecorations.TryGetValue(key, out var memberDecorations))
@@ -149,13 +150,27 @@ internal static class SpirvReflectionValidator
             module.MemberDecorations.Add(key, memberDecorations);
         }
 
-        if (decoration == DecorationOffset)
+        if (decoration is DecorationRowMajor or DecorationColMajor)
         {
-            SetUniqueValue(ref memberDecorations.Offset, value, structureId, decoration);
+            if (!operands.IsEmpty)
+            {
+                throw new ArgumentException($"SPIR-V matrix-major decoration {decoration} on structure {structureId} must not have operands.");
+            }
+
+            SetUniqueValue(ref memberDecorations.MatrixMajor, decoration, structureId, decoration);
         }
         else
         {
-            SetUniqueValue(ref memberDecorations.MatrixStride, value, structureId, decoration);
+            var value = GetDecorationLiteral(operands, structureId, decoration);
+
+            if (decoration == DecorationOffset)
+            {
+                SetUniqueValue(ref memberDecorations.Offset, value, structureId, decoration);
+            }
+            else
+            {
+                SetUniqueValue(ref memberDecorations.MatrixStride, value, structureId, decoration);
+            }
         }
     }
 
@@ -378,17 +393,33 @@ internal static class SpirvReflectionValidator
     {
         if (type.Opcode == OpTypeMatrix)
         {
-            if (memberDecorations.MatrixStride is null)
+            if (memberDecorations.MatrixStride is not uint matrixStride)
             {
                 throw new ArgumentException("SPIR-V matrix members must declare a MatrixStride.");
             }
 
-            throw new NotSupportedException(
-                "SPIR-V matrix-major layout cannot be compared to shader record metadata that has no major-order field.");
+            var columnType = GetType(module, type.Operands[1]);
+
+            if ((memberDecorations.MatrixMajor != DecorationRowMajor)
+                || (matrixStride != 16)
+                || (type.Operands[2] != 4)
+                || (columnType.Opcode != OpTypeVector)
+                || (columnType.Operands[2] != 4)
+                || (GetScalarValueType(module, columnType.Operands[1]).ValueType != ShaderValueType.Float1))
+            {
+                throw new NotSupportedException("SPIR-V uniform matrices must be row-major float4x4 values with a 16-byte row stride.");
+            }
+
+            return (ShaderValueType.Float4x4, 64);
         }
 
         if (type.Opcode == OpTypeVector)
         {
+            if ((memberDecorations.MatrixMajor is not null) || (memberDecorations.MatrixStride is not null))
+            {
+                throw new ArgumentException("SPIR-V matrix layout decorations may only be applied to matrix members.");
+            }
+
             var (scalarType, scalarByteLength) = GetScalarValueType(module, type.Operands[1]);
             var componentCount = type.Operands[2];
             var valueType = (scalarType, componentCount) switch {
@@ -405,6 +436,11 @@ internal static class SpirvReflectionValidator
             };
 
             return (valueType, checked((int)componentCount * scalarByteLength));
+        }
+
+        if ((memberDecorations.MatrixMajor is not null) || (memberDecorations.MatrixStride is not null))
+        {
+            throw new ArgumentException("SPIR-V matrix layout decorations may only be applied to matrix members.");
         }
 
         return GetScalarValueType(module, type.Operands[0]);
@@ -952,6 +988,7 @@ internal static class SpirvReflectionValidator
 
     private sealed class MemberDecorations
     {
+        internal uint? MatrixMajor;
         internal uint? MatrixStride;
         internal uint? Offset;
     }
