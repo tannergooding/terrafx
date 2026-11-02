@@ -4730,18 +4730,20 @@ public sealed class RenderGraphPlan
 
 public sealed class BufferBinding
 {
-    public BufferBinding(ShaderBindingGroup group, int binding, GraphBufferVersion resource, GraphBufferRange range);
+    public BufferBinding(ShaderBindingGroup group, int binding, ShaderResourceKind kind, GraphBufferVersion resource, GraphBufferRange range);
     public ShaderBindingGroup Group { get; }
     public int Binding { get; }
+    public ShaderResourceKind Kind { get; }
     public GraphBufferVersion Resource { get; }
     public GraphBufferRange Range { get; }
 }
 
 public sealed class TextureBinding
 {
-    public TextureBinding(ShaderBindingGroup group, int binding, GraphTextureVersion resource, GraphTextureRange range);
+    public TextureBinding(ShaderBindingGroup group, int binding, ShaderResourceKind kind, GraphTextureVersion resource, GraphTextureRange range);
     public ShaderBindingGroup Group { get; }
     public int Binding { get; }
+    public ShaderResourceKind Kind { get; }
     public GraphTextureVersion Resource { get; }
     public GraphTextureRange Range { get; }
 }
@@ -5124,6 +5126,8 @@ public static class VulkanGraphicsBackend
 }
 }
 ```
+
+`BufferBinding.Kind` is `UniformBuffer` or `StorageBuffer`; `TextureBinding.Kind` is `SampledImage` or `StorageImage`. Their `Binding` values remain local to the selected resource class, matching `ShaderResourceSignature.Binding`; Vulkan set/binding offsets are applied by the backend, not supplied by callers. `SamplerBinding` represents only `Sampler`. Each binding range must be a nonempty subrange of its exact graph version, and the graph resource description must declare the usage required by its resource kind. `BindingSet` copies and canonical-sorts each initialized array, rejecting null elements and duplicate `(group, kind, binding)` identities; sampler uniqueness is `(group, binding)`. Different resource kinds may use the same local binding because their native register classes are distinct.
 
 `HostProfile` selects `Headless`, `OffscreenNative`, or `Interactive`; `PlatformBackend` independently selects `Headless`, `WindowsNative`, `WaylandOnly`, `WaylandThenX11`, or `X11Only`, with `None = 0` as an invalid unselected sentinel. These enums are API selectors, not wire values. `GraphicsBackend` is owned by `TerraFX.Graphics`; `None = 0` is an invalid unselected sentinel, and D3D12/Vulkan are the only selectable backends. `GraphicsDeviceProfile.None` is likewise invalid; a profile is selected through `HostProfile`, not directly by applications. `TextureFormat.None`, `GraphicsPresentMode.None`, and `SurfaceColorSpace.None` are invalid sentinels. `D3D12GraphicsBackend.CreateRegistration()` and `VulkanGraphicsBackend.CreateRegistration()` return immutable opaque registrations without creating native resources. The application references the selected backend package and passes its registration alongside the matching enum in `EngineHostOptions`; the host rejects missing or mismatched registration and performs no assembly scanning, implicit loading, or backend fallback. `GraphicsBackendRegistration` has no public constructor; the stored factory is internal, and the two backend-package `CreateRegistration()` methods are its only public creation paths. `GraphicsDevice` is host-created and has no public native/backend constructor. `EngineHost` obtains its `OwnerId` through the existing Runtime-to-Core issuer path and supplies it to the internal Graphics startup port; Graphics does not receive a Core allocator capability. The internal Graphics factory runs on the dedicated graphics owner thread and returns only after capability/profile admission and native device initialization succeed. The host owns the resulting facade and its deterministic shutdown.
 
