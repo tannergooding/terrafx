@@ -308,6 +308,48 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task GraphResourceRegistryRejectsConflictingExplicitAndInferredDependencies()
+    {
+        var backendDevice = new FakeBackendDevice();
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var registry = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 7);
+        var description = new BufferDescription(
+            byteLength: 8,
+            BufferUsage.Storage,
+            GpuMemoryKind.DeviceLocal,
+            structuredStride: null,
+            debugName: "Transient graph buffer");
+
+        try
+        {
+            var reader = registry.AddPass(new RenderPassDescription("reader", 0, [], false));
+            var writer = registry.AddPass(new RenderPassDescription("writer", 1, [reader], false));
+            var initialVersion = registry.CreateTransientBuffer(description);
+            var writtenVersion = registry.WriteBuffer(
+                writer,
+                initialVersion,
+                new GraphBufferRange(0, 8),
+                GraphBufferUsage.StorageWrite);
+            registry.ReadBuffer(
+                reader,
+                writtenVersion,
+                new GraphBufferRange(0, 8),
+                GraphBufferUsage.StorageRead);
+
+            var result = registry.ValidateCompilation();
+            Assert.That(result.IsValid, Is.False);
+            Assert.That(result.ImportsValid, Is.True);
+            Assert.That(result.ContentsValid, Is.True);
+            Assert.That(result.DependenciesValid, Is.False);
+            Assert.That(result.OrderedPasses, Is.Empty);
+        }
+        finally
+        {
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task GraphResourceRegistryTracksAttachmentLoadAndDiscardValidity()
     {
         var backendDevice = new FakeBackendDevice();
@@ -357,6 +399,7 @@ internal sealed class GraphicsBufferTransferTests
             Assert.That(registry.TryOrder(out var orderedPasses), Is.True);
             ImmutableArray<RenderPassId> expectedOrder = [loadPass, discardPass, readPass];
             Assert.That(orderedPasses, Is.EqualTo(expectedOrder));
+            Assert.That(registry.ValidateCompilation().ContentsValid, Is.False);
         }
         finally
         {
@@ -395,6 +438,7 @@ internal sealed class GraphicsBufferTransferTests
             Assert.That(firstImport.HasOverlappingImport, Is.True);
             Assert.That(secondImport.HasOverlappingImport, Is.False);
             Assert.That(overlappingImport.CaptureValidation().IsAdmissible, Is.False);
+            Assert.That(registry.ValidateCompilation().ImportsValid, Is.False);
 
             var staleRegistry = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 8);
             var staleVersion = staleRegistry.ImportBuffer(buffer, new GraphBufferRange(0, 1), options);
@@ -506,6 +550,12 @@ internal sealed class GraphicsBufferTransferTests
             Assert.That(registry.TryOrder(out var orderedPasses), Is.True);
             ImmutableArray<RenderPassId> expectedOrder = [writer, reader];
             Assert.That(orderedPasses, Is.EqualTo(expectedOrder));
+            var invalidContentResult = registry.ValidateCompilation();
+            Assert.That(invalidContentResult.IsValid, Is.False);
+            Assert.That(invalidContentResult.ImportsValid, Is.True);
+            Assert.That(invalidContentResult.ContentsValid, Is.False);
+            Assert.That(invalidContentResult.DependenciesValid, Is.True);
+            Assert.That(invalidContentResult.OrderedPasses, Is.Empty);
 
             var foreignRegistry = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 8);
             var foreignVersion = foreignRegistry.CreateTransientBuffer(description);
@@ -521,6 +571,49 @@ internal sealed class GraphicsBufferTransferTests
                     initialVersion,
                     new GraphBufferRange(0, 16),
                     GraphBufferUsage.VertexRead));
+        }
+        finally
+        {
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task GraphResourceRegistryValidatesCompleteAccessPlan()
+    {
+        var backendDevice = new FakeBackendDevice();
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var registry = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 7);
+        var description = new BufferDescription(
+            byteLength: 8,
+            BufferUsage.Storage,
+            GpuMemoryKind.DeviceLocal,
+            structuredStride: null,
+            debugName: "Transient graph buffer");
+
+        try
+        {
+            var writer = registry.AddPass(new RenderPassDescription("write", 0, [], false));
+            var reader = registry.AddPass(new RenderPassDescription("read", -1, [], false));
+            var initialVersion = registry.CreateTransientBuffer(description);
+            var writtenVersion = registry.WriteBuffer(
+                writer,
+                initialVersion,
+                new GraphBufferRange(0, 8),
+                GraphBufferUsage.StorageWrite);
+            registry.ReadBuffer(
+                reader,
+                writtenVersion,
+                new GraphBufferRange(0, 8),
+                GraphBufferUsage.StorageRead);
+
+            var result = registry.ValidateCompilation();
+            ImmutableArray<RenderPassId> expectedOrder = [writer, reader];
+            Assert.That(result.IsValid, Is.True);
+            Assert.That(result.ImportsValid, Is.True);
+            Assert.That(result.ContentsValid, Is.True);
+            Assert.That(result.DependenciesValid, Is.True);
+            Assert.That(result.OrderedPasses, Is.EqualTo(expectedOrder));
         }
         finally
         {

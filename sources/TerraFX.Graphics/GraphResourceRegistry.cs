@@ -333,6 +333,21 @@ internal sealed class GraphResourceRegistry
         return _passRegistry.TryOrder([.. _accesses], out orderedPasses);
     }
 
+    internal GraphResourceValidationResult ValidateCompilation()
+    {
+        EnsureOwnerThread();
+
+        var importsValid = !HasInvalidImports;
+        var contentsValid = !HasUninitializedReads;
+        var dependenciesValid = _passRegistry.TryOrder([.. _accesses], out var orderedPasses);
+        var isValid = importsValid && contentsValid && dependenciesValid;
+        return new GraphResourceValidationResult(
+            importsValid,
+            contentsValid,
+            dependenciesValid,
+            isValid ? orderedPasses : []);
+    }
+
     internal GraphTextureVersion WriteAttachment(
         RenderPassId passId,
         GraphTextureVersion previousVersion,
