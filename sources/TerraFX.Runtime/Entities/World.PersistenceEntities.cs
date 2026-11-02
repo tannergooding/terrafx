@@ -31,6 +31,81 @@ public sealed partial class World
         }
     }
 
+    internal readonly struct AttachmentStateCaptureRow
+    {
+        internal AttachmentStateCaptureRow(int tableIndex, Guid? ownerEntityId, ContentSchemaReference schema, AttachmentScope scope)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(tableIndex);
+            var hasInvalidOwnerScope = scope == AttachmentScope.World == ownerEntityId.HasValue;
+
+            if ((ownerEntityId == Guid.Empty)
+                || (schema.SchemaId == Guid.Empty)
+                || (schema.Major <= 0)
+                || (schema.Minor < 0)
+                || (scope is not AttachmentScope.World and not AttachmentScope.Entity)
+                || hasInvalidOwnerScope)
+            {
+                throw new ArgumentException("The captured attachment sort key is invalid.");
+            }
+
+            TableIndex = tableIndex;
+            OwnerEntityId = ownerEntityId;
+            Schema = schema;
+            Scope = scope;
+        }
+
+        internal Guid? OwnerEntityId { get; }
+
+        internal ContentSchemaReference Schema { get; }
+
+        internal AttachmentScope Scope { get; }
+
+        internal int TableIndex { get; }
+    }
+
+    internal sealed class AttachmentStateCaptureRowComparer : IComparer<AttachmentStateCaptureRow>
+    {
+        internal static readonly AttachmentStateCaptureRowComparer Instance = new();
+
+        public int Compare(AttachmentStateCaptureRow left, AttachmentStateCaptureRow right)
+        {
+            var comparison = left.OwnerEntityId.HasValue.CompareTo(right.OwnerEntityId.HasValue);
+
+            if (comparison != 0)
+            {
+                return comparison;
+            }
+
+            if ((left.OwnerEntityId is Guid leftOwnerEntityId)
+                && (right.OwnerEntityId is Guid rightOwnerEntityId))
+            {
+                comparison = FoundationCatalogue.CompareRfc(leftOwnerEntityId, rightOwnerEntityId);
+
+                if (comparison != 0)
+                {
+                    return comparison;
+                }
+            }
+
+            comparison = FoundationCatalogue.CompareRfc(left.Schema.SchemaId, right.Schema.SchemaId);
+
+            if (comparison != 0)
+            {
+                return comparison;
+            }
+
+            comparison = left.Schema.Major.CompareTo(right.Schema.Major);
+
+            if (comparison != 0)
+            {
+                return comparison;
+            }
+
+            comparison = left.Schema.Minor.CompareTo(right.Schema.Minor);
+            return (comparison != 0) ? comparison : left.Schema.Scope.CompareTo(right.Schema.Scope);
+        }
+    }
+
     internal ref struct EntityStateCaptureEnumerator
     {
         private readonly World _world;

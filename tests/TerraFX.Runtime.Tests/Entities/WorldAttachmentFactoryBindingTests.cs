@@ -129,8 +129,10 @@ internal sealed class WorldAttachmentFactoryBindingTests
             WorldGuid = Guid.NewGuid(),
         });
         var target = world.CreateEntity(new EntityDescription());
-        var captureOwner = world.CreateEntity(new EntityDescription());
-        var captureOwnerId = world.GetEntityId(captureOwner);
+        var captureOwnerId = Guid.Parse("10000000-0000-0000-0000-000000000001");
+        var lowerCaptureOwnerId = Guid.Parse("00000001-0000-0000-0000-000000000001");
+        var captureOwner = world.CreateEntity(new EntityDescription(persistentId: captureOwnerId));
+        var lowerCaptureOwner = world.CreateEntity(new EntityDescription(persistentId: lowerCaptureOwnerId));
         Assert.That(
             () => world.SetAttachment(new ProbeAttachment { Target = target }, AttachmentOwnership.CallerOwned),
             Throws.ArgumentException);
@@ -153,6 +155,10 @@ internal sealed class WorldAttachmentFactoryBindingTests
         world.SetAttachment(captureOwner, entityScoped, AttachmentOwnership.Transferred);
         var first = new ProbeAttachment { Counter = 12, Target = target };
         world.SetAttachment(first, AttachmentOwnership.Transferred);
+        world.SetAttachment(
+            lowerCaptureOwner,
+            new ProbeAttachment { Counter = 10, Target = target },
+            AttachmentOwnership.Transferred);
         Assert.That(world.TryGetAttachment<ProbeAttachment>(out var stored), Is.True);
         Assert.That(stored, Is.SameAs(first));
         Assert.That(provider.ReleaseCount, Is.Zero);
@@ -162,7 +168,9 @@ internal sealed class WorldAttachmentFactoryBindingTests
 
         using (var lease = world.AcquirePersistenceCaptureLease())
         {
-            var enumerator = lease.GetAttachmentStateEnumerator();
+            Assert.That(lease.GetAttachmentStateCount(), Is.EqualTo(3));
+            var captureRows = new World.AttachmentStateCaptureRow[3];
+            var enumerator = lease.GetCanonicalAttachmentStateEnumerator(captureRows);
             var capturedRecordCount = 0;
             var capturedWorldScope = false;
             var capturedEntityScope = false;
@@ -171,22 +179,31 @@ internal sealed class WorldAttachmentFactoryBindingTests
             {
                 var scope = enumerator.CurrentScope;
                 var ownerEntityId = enumerator.CurrentOwnerEntityId;
-                long expectedCounter;
+                var expectedCounter = capturedRecordCount switch {
+                    0 => 12L,
+                    1 => 10L,
+                    2 => 11L,
+                    _ => throw new InvalidOperationException("The canonical attachment cursor returned an extra record."),
+                };
+                var expectedOwnerEntityId = capturedRecordCount switch {
+                    0 => (Guid?)null,
+                    1 => lowerCaptureOwnerId,
+                    2 => captureOwnerId,
+                    _ => throw new InvalidOperationException("The canonical attachment cursor returned an extra record."),
+                };
+                var expectedTableIndex = capturedRecordCount switch {
+                    0 => 1,
+                    1 => 2,
+                    2 => 0,
+                    _ => throw new InvalidOperationException("The canonical attachment cursor returned an extra record."),
+                };
+                var expectedScope = expectedOwnerEntityId.HasValue ? AttachmentScope.Entity : AttachmentScope.World;
 
-                if (scope == AttachmentScope.World)
-                {
-                    Assert.That(ownerEntityId, Is.Null);
-                    capturedWorldScope = true;
-                    expectedCounter = 12;
-                }
-                else
-                {
-                    Assert.That(scope, Is.EqualTo(AttachmentScope.Entity));
-                    Assert.That(ownerEntityId, Is.EqualTo(captureOwnerId));
-                    capturedEntityScope = true;
-                    expectedCounter = 11;
-                }
-
+                Assert.That(enumerator.CurrentIndex, Is.EqualTo(expectedTableIndex));
+                Assert.That(ownerEntityId, Is.EqualTo(expectedOwnerEntityId));
+                Assert.That(scope, Is.EqualTo(expectedScope));
+                capturedWorldScope |= scope == AttachmentScope.World;
+                capturedEntityScope |= scope == AttachmentScope.Entity;
                 Assert.That(enumerator.CurrentSchema, Is.EqualTo(schema));
                 var byteCount = lease.CountAttachmentStateRecord(enumerator.CurrentIndex, CancellationToken.None);
                 Assert.That(byteCount, Is.EqualTo((nint)(sizeof(long) + 1 + 16)));
@@ -206,17 +223,19 @@ internal sealed class WorldAttachmentFactoryBindingTests
                 capturedRecordCount++;
             }
 
-            Assert.That(capturedRecordCount, Is.EqualTo(2));
+            Assert.That(capturedRecordCount, Is.EqualTo(3));
             Assert.That(capturedWorldScope, Is.True);
             Assert.That(capturedEntityScope, Is.True);
         }
 
         Assert.That(world.RemoveAttachment<ProbeAttachment>(captureOwner), Is.True);
         Assert.That(provider.ReleaseCount, Is.EqualTo(1));
+        Assert.That(world.RemoveAttachment<ProbeAttachment>(lowerCaptureOwner), Is.True);
+        Assert.That(provider.ReleaseCount, Is.EqualTo(2));
 
         var second = new ProbeAttachment { Counter = 13, Target = target };
         world.SetAttachment(second, AttachmentOwnership.Transferred);
-        Assert.That(provider.ReleaseCount, Is.EqualTo(2));
+        Assert.That(provider.ReleaseCount, Is.EqualTo(3));
         Assert.That(provider.LastReleasedValue, Is.SameAs(first));
         Assert.That(provider.LastReleaseBinding!.WorldGuid, Is.EqualTo(world.WorldGuid));
         Assert.That(provider.LastReleaseBinding.ReplacementInstallationId, Is.GreaterThan(0));
@@ -241,7 +260,7 @@ internal sealed class WorldAttachmentFactoryBindingTests
 
         Assert.That(world.RemoveAttachment<ProbeAttachment>(), Is.True);
         Assert.That(world.RemoveAttachment<ProbeAttachment>(), Is.False);
-        Assert.That(provider.ReleaseCount, Is.EqualTo(4));
+        Assert.That(provider.ReleaseCount, Is.EqualTo(5));
         Assert.That(provider.LastReleasedValue, Is.SameAs(third));
         Assert.That(provider.LastReleaseBinding!.ReplacementInstallationId, Is.Null);
 
@@ -261,7 +280,7 @@ internal sealed class WorldAttachmentFactoryBindingTests
         Assert.That(provider.LastReleasedValue, Is.SameAs(entityValue));
         Assert.That(provider.LastReleaseBinding!.Scope, Is.EqualTo(AttachmentScope.Entity));
         Assert.That(provider.LastReleaseBinding.OwnerEntityId, Is.EqualTo(entityOwnerId));
-        Assert.That(provider.ReleaseCount, Is.EqualTo(5));
+        Assert.That(provider.ReleaseCount, Is.EqualTo(6));
 
         var referencedTarget = world.CreateEntity(new EntityDescription());
         var referencedTargetId = world.GetEntityId(referencedTarget);
@@ -312,7 +331,7 @@ internal sealed class WorldAttachmentFactoryBindingTests
         Assert.That(disposalException.PrimaryFailure.Scope, Is.EqualTo(AttachmentScope.World));
         Assert.That(disposalException.PrimaryFailure.OwnerEntityId, Is.Null);
         Assert.That(provider.LastReleaseBinding!.ReplacementInstallationId, Is.Null);
-        Assert.That(provider.ReleaseCount, Is.EqualTo(73));
+        Assert.That(provider.ReleaseCount, Is.EqualTo(74));
     }
 
     [Test]

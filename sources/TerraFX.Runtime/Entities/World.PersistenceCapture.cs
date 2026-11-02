@@ -193,6 +193,59 @@ public sealed partial class World
         return new AttachmentStateCaptureEnumerator(this, lease);
     }
 
+    internal AttachmentStateCaptureEnumerator CreateCanonicalAttachmentStateEnumerator(
+        WorldPersistenceCaptureLease lease,
+        Span<AttachmentStateCaptureRow> destination)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(this))
+        {
+            throw new ArgumentException("The persistence capture lease belongs to another World.", nameof(lease));
+        }
+
+        var attachmentCount = _attachments.CountTransferredEntries();
+
+        if (destination.Length != attachmentCount)
+        {
+            throw new ArgumentException("The attachment-row destination must match the exact transferred attachment count.", nameof(destination));
+        }
+
+        var source = new AttachmentStateCaptureEnumerator(this, lease);
+        var rowIndex = 0;
+
+        while (source.MoveNext())
+        {
+            if (rowIndex >= destination.Length)
+            {
+                throw new InvalidOperationException("The attachment table contains more transferred entries than its reported count.");
+            }
+
+            destination[rowIndex++] = new AttachmentStateCaptureRow(
+                source.CurrentIndex,
+                source.CurrentOwnerEntityId,
+                source.CurrentSchema,
+                source.CurrentScope);
+        }
+
+        if (rowIndex != attachmentCount)
+        {
+            throw new InvalidOperationException("The attachment table does not contain every reported transferred entry.");
+        }
+
+        destination.Sort(AttachmentStateCaptureRowComparer.Instance);
+
+        for (var index = 1; index < destination.Length; index++)
+        {
+            if (AttachmentStateCaptureRowComparer.Instance.Compare(destination[index - 1], destination[index]) == 0)
+            {
+                throw new InvalidOperationException("The transferred attachment table contains duplicate canonical owner/schema keys.");
+            }
+        }
+
+        return new AttachmentStateCaptureEnumerator(this, lease, destination, isCanonicalOrder: true);
+    }
+
     internal EntityStateCaptureEnumerator CreateCanonicalEntityStateEnumerator(
         WorldPersistenceCaptureLease lease,
         Span<EntityStateCaptureRow> destination)
@@ -293,6 +346,18 @@ public sealed partial class World
         }
 
         return new SystemStateCaptureEnumerator(this, lease);
+    }
+
+    internal int GetPersistenceAttachmentCount(WorldPersistenceCaptureLease lease)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(this))
+        {
+            throw new ArgumentException("The persistence capture lease belongs to another World.", nameof(lease));
+        }
+
+        return _attachments.CountTransferredEntries();
     }
 
     internal int GetPersistenceEntityCount(WorldPersistenceCaptureLease lease)
@@ -754,16 +819,28 @@ public sealed partial class World
     {
         private readonly World _world;
         private readonly WorldPersistenceCaptureLease _lease;
+        private readonly Span<AttachmentStateCaptureRow> _canonicalRows;
+        private readonly bool _isCanonicalOrder;
         private int _entryIndex;
+        private int _canonicalRowIndex;
         private bool _hasCurrent;
+        private AttachmentStateCaptureRow _currentCanonicalRow;
         private WorldAttachmentTable.AttachmentEntry _currentEntry;
 
-        internal AttachmentStateCaptureEnumerator(World world, WorldPersistenceCaptureLease lease)
+        internal AttachmentStateCaptureEnumerator(
+            World world,
+            WorldPersistenceCaptureLease lease,
+            Span<AttachmentStateCaptureRow> canonicalRows = default,
+            bool isCanonicalOrder = false)
         {
             _world = world;
             _lease = lease;
+            _canonicalRows = canonicalRows;
+            _isCanonicalOrder = isCanonicalOrder;
             _entryIndex = -1;
+            _canonicalRowIndex = 0;
             _hasCurrent = false;
+            _currentCanonicalRow = default;
             _currentEntry = default;
         }
 
@@ -772,7 +849,7 @@ public sealed partial class World
             get
             {
                 ValidateCurrent();
-                return _entryIndex;
+                return _isCanonicalOrder ? _currentCanonicalRow.TableIndex : _entryIndex;
             }
         }
 
@@ -781,6 +858,12 @@ public sealed partial class World
             get
             {
                 ValidateCurrent();
+
+                if (_isCanonicalOrder)
+                {
+                    return _currentCanonicalRow.OwnerEntityId;
+                }
+
                 return _currentEntry.OwnerEntityId;
             }
         }
@@ -790,6 +873,12 @@ public sealed partial class World
             get
             {
                 ValidateCurrent();
+
+                if (_isCanonicalOrder)
+                {
+                    return _currentCanonicalRow.Schema;
+                }
+
                 return _currentEntry.Registration?.Descriptor.Schema
                     ?? throw new InvalidOperationException("The current attachment capture record has no registration.");
             }
@@ -800,6 +889,12 @@ public sealed partial class World
             get
             {
                 ValidateCurrent();
+
+                if (_isCanonicalOrder)
+                {
+                    return _currentCanonicalRow.Scope;
+                }
+
                 return _currentEntry.Registration?.Scope
                     ?? throw new InvalidOperationException("The current attachment capture record has no registration.");
             }
@@ -810,6 +905,31 @@ public sealed partial class World
             _lease.ValidateCurrent();
             _hasCurrent = false;
             _currentEntry = default;
+
+            if (_isCanonicalOrder)
+            {
+                if (_canonicalRowIndex >= _canonicalRows.Length)
+                {
+                    _currentCanonicalRow = default;
+                    return false;
+                }
+
+                _currentCanonicalRow = _canonicalRows[_canonicalRowIndex++];
+                _entryIndex = _currentCanonicalRow.TableIndex;
+                _currentEntry = _world.GetAttachmentCaptureEntry(_entryIndex);
+
+                if ((_currentEntry.OwnerEntityId != _currentCanonicalRow.OwnerEntityId)
+                    || (_currentEntry.Registration?.Descriptor.Schema != _currentCanonicalRow.Schema)
+                    || (_currentEntry.Registration?.Scope != _currentCanonicalRow.Scope))
+                {
+                    throw new InvalidOperationException("The attachment table entry changed after canonical capture.");
+                }
+
+                _hasCurrent = true;
+                return true;
+            }
+
+            _currentCanonicalRow = default;
 
             while (++_entryIndex < _world._attachments.Count)
             {

@@ -116,10 +116,23 @@ internal ref struct WorldPersistenceCaptureLease
         _isDisposed = true;
     }
 
+    internal readonly int GetAttachmentStateCount()
+    {
+        ValidateCurrent();
+        return _world.GetPersistenceAttachmentCount(this);
+    }
+
     internal readonly World.AttachmentStateCaptureEnumerator GetAttachmentStateEnumerator()
     {
         ValidateCurrent();
         return _world.CreateAttachmentStateEnumerator(this);
+    }
+
+    internal readonly World.AttachmentStateCaptureEnumerator GetCanonicalAttachmentStateEnumerator(
+        Span<World.AttachmentStateCaptureRow> destination)
+    {
+        ValidateCurrent();
+        return _world.CreateCanonicalAttachmentStateEnumerator(this, destination);
     }
 
     internal readonly World.EntityStateCaptureEnumerator GetCanonicalEntityStateEnumerator(
