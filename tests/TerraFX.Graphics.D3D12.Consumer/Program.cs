@@ -4,6 +4,7 @@ using System;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
@@ -135,6 +136,93 @@ internal static class Program
             throw new InvalidOperationException("The public VertexElementDescription contract is unavailable to nonfriend consumers.");
         }
 
+        VerifyShaderReflectionSurface();
+
         Console.WriteLine("D3D12 public registration consumer passed with unsafe disabled, public transfer/pipeline/sampler signatures, no public owner/resource construction, and no native device activation.");
+    }
+
+    private static void VerifyShaderReflectionSurface()
+    {
+        var packageDigest = new byte[32];
+        packageDigest[0] = 0xA5;
+        var compilerIdentity = new ShaderCompilerIdentity(
+            "TerraFX.Graphics.D3D12.Consumer",
+            "contract",
+            "1.0.0",
+            "win-x64",
+            ImmutableCollectionsMarshal.AsImmutableArray(packageDigest));
+        var frameDataField = new ShaderFieldLayout(
+            "color",
+            ShaderValueType.Float4,
+            byteOffset: 0,
+            byteLength: 16,
+            arrayCount: 1,
+            arrayStride: 0);
+        var fields = new[] { frameDataField };
+        var frameDataLayout = new ShaderRecordLayout(
+            "FrameData",
+            16,
+            ImmutableCollectionsMarshal.AsImmutableArray(fields));
+        var recordLayouts = new[] { frameDataLayout };
+        var frameUniformBuffer = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.UniformBuffer,
+            1);
+        var resources = new[] {
+            new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.Sampler, 1),
+            new ShaderResourceSignature(ShaderBindingGroup.Frame, 1, ShaderResourceKind.StorageImage, 1),
+            new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, 1),
+            new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.SampledImage, 1),
+            frameUniformBuffer,
+        };
+        var output = new ShaderIoSignature("SV_Target", 0, location: null, ShaderValueType.Float4, ShaderInterpolation.Smooth);
+        var outputs = new[] { output };
+        var capabilities = new[] {
+            ShaderCapability.DescriptorIndexing,
+            ShaderCapability.DoublePrecision,
+            ShaderCapability.Float16,
+            ShaderCapability.WaveOperations,
+        };
+        var reflection = new ShaderReflection(
+            ShaderStage.Pixel,
+            "PSMain",
+            compilerIdentity,
+            [],
+            ImmutableCollectionsMarshal.AsImmutableArray(outputs),
+            ImmutableCollectionsMarshal.AsImmutableArray(resources),
+            ImmutableCollectionsMarshal.AsImmutableArray(recordLayouts),
+            ImmutableCollectionsMarshal.AsImmutableArray(capabilities),
+            bindingLayoutVersion: 1,
+            groupSizeX: 0,
+            groupSizeY: 0,
+            groupSizeZ: 0);
+
+        packageDigest[0] = 0x5A;
+        fields[0] = default;
+        recordLayouts[0] = new ShaderRecordLayout("OtherRecord", 16, [frameDataField]);
+        resources[4] = default;
+        outputs[0] = default;
+        capabilities[0] = ShaderCapability.None;
+
+        if ((reflection.CompilerIdentity != compilerIdentity)
+            || (reflection.RecordLayouts.Length != 1)
+            || !StringComparer.Ordinal.Equals(reflection.RecordLayouts[0].Name, "FrameData")
+            || (reflection.RecordLayouts[0].Fields[0] != frameDataField)
+            || (reflection.Resources[0] != frameUniformBuffer)
+            || (reflection.Outputs[0] != output)
+            || (reflection.RequiredCapabilities[0] != ShaderCapability.Float16)
+            || (reflection.RequiredCapabilities[1] != ShaderCapability.DoublePrecision)
+            || (reflection.RequiredCapabilities[2] != ShaderCapability.WaveOperations)
+            || (reflection.RequiredCapabilities[3] != ShaderCapability.DescriptorIndexing)
+            || (reflection.Resources.Length != 5)
+            || (reflection.Resources[0].Kind != ShaderResourceKind.UniformBuffer)
+            || (reflection.Resources[1].Kind != ShaderResourceKind.SampledImage)
+            || (reflection.Resources[2].Kind != ShaderResourceKind.StorageBuffer)
+            || (reflection.Resources[3].Kind != ShaderResourceKind.StorageImage)
+            || (reflection.Resources[4].Kind != ShaderResourceKind.Sampler))
+        {
+            throw new InvalidOperationException("The public ShaderReflection value contract is unavailable or not canonical for nonfriend consumers.");
+        }
     }
 }
