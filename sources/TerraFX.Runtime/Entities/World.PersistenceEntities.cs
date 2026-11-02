@@ -2,6 +2,7 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 
 namespace TerraFX.Entities;
 
@@ -34,16 +35,26 @@ public sealed partial class World
     {
         private readonly World _world;
         private readonly WorldPersistenceCaptureLease _lease;
+        private readonly Span<EntityStateCaptureRow> _canonicalRows;
+        private readonly bool _isCanonicalOrder;
+        private EntityStateCaptureRow _currentCaptureRow;
         private Entity _currentEntity;
         private WorldArchetype? _currentArchetype;
         private int _rowIndex;
         private int _workIndex;
         private bool _hasCurrent;
 
-        internal EntityStateCaptureEnumerator(World world, WorldPersistenceCaptureLease lease)
+        internal EntityStateCaptureEnumerator(
+            World world,
+            WorldPersistenceCaptureLease lease,
+            Span<EntityStateCaptureRow> canonicalRows = default,
+            bool isCanonicalOrder = false)
         {
             _world = world;
             _lease = lease;
+            _canonicalRows = canonicalRows;
+            _isCanonicalOrder = isCanonicalOrder;
+            _currentCaptureRow = default;
             _currentEntity = default;
             _currentArchetype = null;
             _rowIndex = 0;
@@ -51,11 +62,20 @@ public sealed partial class World
             _hasCurrent = false;
         }
 
+        internal readonly WorldArchetype CurrentArchetype
+            => GetCurrentArchetype();
+
         internal readonly uint CurrentAssignmentOrdinal
         {
             get
             {
                 ValidateCurrent();
+
+                if (_isCanonicalOrder)
+                {
+                    return _currentCaptureRow.AssignmentOrdinal;
+                }
+
                 var ordinal = _world._identityLedger.GetLiveOrdinal(IdentityKind.Entity, _currentEntity.Index);
                 return (ordinal != 0)
                     ? ordinal
@@ -77,7 +97,7 @@ public sealed partial class World
             get
             {
                 ValidateCurrent();
-                return _world.GetEntityId(_currentEntity);
+                return _isCanonicalOrder ? _currentCaptureRow.EntityId : _world.GetEntityId(_currentEntity);
             }
         }
 
@@ -102,6 +122,11 @@ public sealed partial class World
             get
             {
                 ValidateCurrent();
+
+                if (_isCanonicalOrder)
+                {
+                    return _currentCaptureRow.SceneInstanceId;
+                }
 
                 if (_world._sceneParticipant is not { } sceneParticipant
                     || !sceneParticipant.TryGetSceneInstanceId(_world, _currentEntity, out var sceneInstanceId))
@@ -201,6 +226,23 @@ public sealed partial class World
             _lease.ValidateCurrent();
             _hasCurrent = false;
 
+            if (_isCanonicalOrder)
+            {
+                if (_rowIndex < _canonicalRows.Length)
+                {
+                    _currentCaptureRow = _canonicalRows[_rowIndex++];
+                    _currentEntity = _currentCaptureRow.Entity;
+                    _currentArchetype = _currentCaptureRow.Archetype;
+                    _hasCurrent = true;
+                    return true;
+                }
+
+                _currentCaptureRow = default;
+                _currentArchetype = null;
+                _currentEntity = default;
+                return false;
+            }
+
             while (_workIndex < _world._componentTagWorkPlanCount)
             {
                 var work = _world._componentTagWorkPlan[_workIndex];
@@ -242,6 +284,54 @@ public sealed partial class World
                 throw new InvalidOperationException("The Entity capture enumerator has no current record.");
             }
         }
+    }
+
+    internal readonly struct EntityStateCaptureRow
+    {
+        internal EntityStateCaptureRow(
+            Entity entity,
+            Guid entityId,
+            uint assignmentOrdinal,
+            Guid? sceneInstanceId,
+            WorldArchetype archetype)
+        {
+            if (entityId == Guid.Empty)
+            {
+                throw new ArgumentException("A live Entity identity cannot be empty.", nameof(entityId));
+            }
+
+            ArgumentOutOfRangeException.ThrowIfZero(assignmentOrdinal);
+            ArgumentNullException.ThrowIfNull(archetype);
+
+            if (sceneInstanceId == Guid.Empty)
+            {
+                throw new ArgumentException("A live SceneInstance identity cannot be empty.", nameof(sceneInstanceId));
+            }
+
+            Entity = entity;
+            EntityId = entityId;
+            AssignmentOrdinal = assignmentOrdinal;
+            SceneInstanceId = sceneInstanceId;
+            Archetype = archetype;
+        }
+
+        internal WorldArchetype Archetype { get; }
+
+        internal uint AssignmentOrdinal { get; }
+
+        internal Entity Entity { get; }
+
+        internal Guid EntityId { get; }
+
+        internal Guid? SceneInstanceId { get; }
+    }
+
+    internal sealed class EntityStateCaptureRowComparer : IComparer<EntityStateCaptureRow>
+    {
+        internal static readonly EntityStateCaptureRowComparer Instance = new();
+
+        public int Compare(EntityStateCaptureRow left, EntityStateCaptureRow right)
+            => FoundationCatalogue.CompareRfc(left.EntityId, right.EntityId);
     }
 
     internal ref struct IdentityAssignmentCaptureEnumerator

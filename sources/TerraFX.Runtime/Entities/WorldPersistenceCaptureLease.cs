@@ -122,10 +122,23 @@ internal ref struct WorldPersistenceCaptureLease
         return _world.CreateAttachmentStateEnumerator(this);
     }
 
+    internal readonly World.EntityStateCaptureEnumerator GetCanonicalEntityStateEnumerator(
+        Span<World.EntityStateCaptureRow> destination)
+    {
+        ValidateCurrent();
+        return _world.CreateCanonicalEntityStateEnumerator(this, destination);
+    }
+
     internal readonly World.ComponentStateCaptureEnumerator GetComponentStateEnumerator()
     {
         ValidateCurrent();
         return _world.CreateComponentStateEnumerator(this);
+    }
+
+    internal readonly int GetEntityStateCount()
+    {
+        ValidateCurrent();
+        return _world.GetPersistenceEntityCount(this);
     }
 
     internal readonly World.EntityStateCaptureEnumerator GetEntityStateEnumerator()

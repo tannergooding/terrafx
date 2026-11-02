@@ -14,7 +14,9 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
 
     private int _activeInstanceCount;
     private readonly SceneInstance?[] _activeInstances;
+    private readonly SceneInstance?[] _activeInstancesByFirstEntityOrdinal;
     private int _activeOccurrenceCount;
+    private int _activeOrderedInstanceCount;
     private readonly Lock _instanceGate = new();
     private int _isDisposed;
     private readonly int _maximumActiveSceneInstances;
@@ -39,6 +41,7 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         _maximumSceneOccurrences = options.MaximumSceneOccurrences;
         _pendingRequests = new SceneOwnerRequest[options.MaximumPendingOwnerRequests];
         _activeInstances = new SceneInstance[options.MaximumActiveSceneInstances];
+        _activeInstancesByFirstEntityOrdinal = new SceneInstance[options.MaximumActiveSceneInstances];
         _reservedInstanceSlots = new bool[options.MaximumActiveSceneInstances];
     }
 
@@ -69,6 +72,7 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         int maximumPendingOwnerRequests)
     {
         var activeInstanceBytes = ArrayBytes(maximumActiveSceneInstances, IntPtr.Size);
+        var activeInstanceOrderBytes = ArrayBytes(maximumActiveSceneInstances, IntPtr.Size);
         var activeInstanceObjectBytes = ArrayBytes(maximumActiveSceneInstances, 256);
         var reservedSlotBytes = ArrayBytes(maximumActiveSceneInstances, sizeof(bool));
         var pendingRequestBytes = ArrayBytes(maximumPendingOwnerRequests, IntPtr.Size);
@@ -76,6 +80,7 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         return checked(
             ObjectStorageByteReservation
             + activeInstanceBytes
+            + activeInstanceOrderBytes
             + activeInstanceObjectBytes
             + reservedSlotBytes
             + pendingRequestBytes
@@ -114,6 +119,11 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
             {
                 instance = _activeInstances[index];
                 _activeInstances[index] = null;
+
+                if (instance is { EntityCount: > 0 })
+                {
+                    RemoveActiveInstanceByOrdinal(instance);
+                }
             }
 
             instance?.RevokeFromWorld();
@@ -221,12 +231,21 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
                 throw new InvalidOperationException("The Scene instance reservation no longer matches its prepared publication.");
             }
 
+            var orderedInsertionIndex = (instance.EntityCount == 0)
+                ? -1
+                : FindActiveInstanceInsertionIndex(instance);
+
             _reservedInstanceSlots[reservation.Slot] = false;
             _reservedInstanceCount--;
             _reservedOccurrenceCount -= reservation.OccurrenceCount;
             _activeInstances[reservation.Slot] = instance;
             _activeInstanceCount++;
             _activeOccurrenceCount = checked(_activeOccurrenceCount + reservation.OccurrenceCount);
+
+            if (orderedInsertionIndex >= 0)
+            {
+                InsertActiveInstanceByOrdinal(instance, orderedInsertionIndex);
+            }
         }
     }
 
@@ -288,6 +307,11 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
                 if (!ReferenceEquals(_activeInstances[index], instance))
                 {
                     continue;
+                }
+
+                if (instance.EntityCount != 0)
+                {
+                    RemoveActiveInstanceByOrdinal(instance);
                 }
 
                 _activeInstances[index] = null;
@@ -354,18 +378,32 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
 
         lock (_instanceGate)
         {
-            foreach (var candidate in _activeInstances)
+            var low = 0;
+            var high = _activeOrderedInstanceCount;
+
+            while (low < high)
             {
-                if (candidate is null)
+                var middle = low + ((high - low) / 2);
+                var candidate = _activeInstancesByFirstEntityOrdinal[middle]
+                    ?? throw new InvalidOperationException("The ordered Scene instance index contains an empty entry.");
+
+                if (candidate.FirstEntityIdentityOrdinal <= identityOrdinal)
                 {
-                    continue;
+                    low = middle + 1;
                 }
+                else
+                {
+                    high = middle;
+                }
+            }
 
-                var firstEntityIdentityOrdinal = candidate.FirstEntityIdentityOrdinal;
+            if (low > 0)
+            {
+                var candidate = _activeInstancesByFirstEntityOrdinal[low - 1]
+                    ?? throw new InvalidOperationException("The ordered Scene instance index contains an empty entry.");
+                var entityOrdinalOffset = identityOrdinal - candidate.FirstEntityIdentityOrdinal;
 
-                if ((candidate.EntityCount > 0)
-                    && (identityOrdinal >= firstEntityIdentityOrdinal)
-                    && ((identityOrdinal - firstEntityIdentityOrdinal) < (uint)candidate.EntityCount))
+                if (entityOrdinalOffset < (uint)candidate.EntityCount)
                 {
                     instance = candidate;
                     return true;
@@ -418,5 +456,85 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         _pendingRequestHead = (_pendingRequestHead + 1) % _pendingRequests.Length;
         _pendingRequestCount--;
         return request;
+    }
+
+    private int FindActiveInstanceInsertionIndex(SceneInstance instance)
+    {
+        var firstEntityIdentityOrdinal = instance.FirstEntityIdentityOrdinal;
+        var low = 0;
+        var high = _activeOrderedInstanceCount;
+
+        while (low < high)
+        {
+            var middle = low + ((high - low) / 2);
+            var candidate = _activeInstancesByFirstEntityOrdinal[middle]
+                ?? throw new InvalidOperationException("The ordered Scene instance index contains an empty entry.");
+
+            if (candidate.FirstEntityIdentityOrdinal < firstEntityIdentityOrdinal)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        if ((low < _activeOrderedInstanceCount)
+            && (_activeInstancesByFirstEntityOrdinal[low]?.FirstEntityIdentityOrdinal == firstEntityIdentityOrdinal))
+        {
+            throw new InvalidOperationException("Two active Scene instances share an Entity identity ordinal range.");
+        }
+
+        return low;
+    }
+
+    private void InsertActiveInstanceByOrdinal(SceneInstance instance, int index)
+    {
+        Array.Copy(
+            _activeInstancesByFirstEntityOrdinal,
+            index,
+            _activeInstancesByFirstEntityOrdinal,
+            index + 1,
+            _activeOrderedInstanceCount - index);
+        _activeInstancesByFirstEntityOrdinal[index] = instance;
+        _activeOrderedInstanceCount++;
+    }
+
+    private void RemoveActiveInstanceByOrdinal(SceneInstance instance)
+    {
+        var firstEntityIdentityOrdinal = instance.FirstEntityIdentityOrdinal;
+        var low = 0;
+        var high = _activeOrderedInstanceCount;
+
+        while (low < high)
+        {
+            var middle = low + ((high - low) / 2);
+            var candidate = _activeInstancesByFirstEntityOrdinal[middle]
+                ?? throw new InvalidOperationException("The ordered Scene instance index contains an empty entry.");
+
+            if (candidate.FirstEntityIdentityOrdinal < firstEntityIdentityOrdinal)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        if ((low >= _activeOrderedInstanceCount)
+            || !ReferenceEquals(_activeInstancesByFirstEntityOrdinal[low], instance))
+        {
+            throw new InvalidOperationException("The ordered Scene instance index lost an active instance.");
+        }
+
+        Array.Copy(
+            _activeInstancesByFirstEntityOrdinal,
+            low + 1,
+            _activeInstancesByFirstEntityOrdinal,
+            low,
+            _activeOrderedInstanceCount - low - 1);
+        _activeInstancesByFirstEntityOrdinal[--_activeOrderedInstanceCount] = null;
     }
 }

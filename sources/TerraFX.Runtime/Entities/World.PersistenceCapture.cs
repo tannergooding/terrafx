@@ -193,6 +193,60 @@ public sealed partial class World
         return new AttachmentStateCaptureEnumerator(this, lease);
     }
 
+    internal EntityStateCaptureEnumerator CreateCanonicalEntityStateEnumerator(
+        WorldPersistenceCaptureLease lease,
+        Span<EntityStateCaptureRow> destination)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(this))
+        {
+            throw new ArgumentException("The persistence capture lease belongs to another World.", nameof(lease));
+        }
+
+        var entityCount = _entitySlots.LiveEntityCount;
+
+        if (destination.Length != entityCount)
+        {
+            throw new ArgumentException("The Entity-row destination must match the exact live Entity count.", nameof(destination));
+        }
+
+        var source = new EntityStateCaptureEnumerator(this, lease);
+        var rowIndex = 0;
+
+        while (source.MoveNext())
+        {
+            if (rowIndex >= destination.Length)
+            {
+                throw new InvalidOperationException("The committed work plan contains more Entity rows than the live Entity count.");
+            }
+
+            destination[rowIndex++] = new EntityStateCaptureRow(
+                source.CurrentEntity,
+                source.CurrentEntityId,
+                source.CurrentAssignmentOrdinal,
+                source.CurrentSceneInstanceId,
+                source.CurrentArchetype);
+        }
+
+        if (rowIndex != entityCount)
+        {
+            throw new InvalidOperationException("The committed work plan does not contain every live Entity row.");
+        }
+
+        destination.Sort(EntityStateCaptureRowComparer.Instance);
+
+        for (var index = 1; index < destination.Length; index++)
+        {
+            if (destination[index - 1].EntityId == destination[index].EntityId)
+            {
+                throw new InvalidOperationException("The committed Entity rows contain a duplicate stable identity.");
+            }
+        }
+
+        return new EntityStateCaptureEnumerator(this, lease, destination, isCanonicalOrder: true);
+    }
+
     internal ComponentStateCaptureEnumerator CreateComponentStateEnumerator(WorldPersistenceCaptureLease lease)
     {
         lease.ValidateCurrent();
@@ -239,6 +293,18 @@ public sealed partial class World
         }
 
         return new SystemStateCaptureEnumerator(this, lease);
+    }
+
+    internal int GetPersistenceEntityCount(WorldPersistenceCaptureLease lease)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(this))
+        {
+            throw new ArgumentException("The persistence capture lease belongs to another World.", nameof(lease));
+        }
+
+        return _entitySlots.LiveEntityCount;
     }
 
     internal void ReleasePersistenceCaptureLease(WorldPersistenceCaptureLease lease)

@@ -313,6 +313,35 @@ internal sealed class WorldPersistenceCaptureTests
     }
 
     [Test]
+    public void EnumeratesEntityRowsInCanonicalEntityIdOrder()
+    {
+        using var world = CreateWorld();
+        var highId = Guid.Parse("10000000-0000-0000-0000-000000000001");
+        var middleId = Guid.Parse("00000002-0000-0000-0000-000000000002");
+        var lowId = Guid.Parse("00000001-0000-0000-0000-000000000003");
+        _ = world.CreateEntity(new EntityDescription(persistentId: highId));
+        _ = world.CreateEntity(new EntityDescription(persistentId: middleId));
+        _ = world.CreateEntity(new EntityDescription(persistentId: lowId));
+        _ = world.Step();
+
+        using var lease = world.AcquirePersistenceCaptureLease();
+        Assert.That(lease.GetEntityStateCount(), Is.EqualTo(3));
+        var captureRows = new World.EntityStateCaptureRow[3];
+        var entities = lease.GetCanonicalEntityStateEnumerator(captureRows);
+        Assert.That(entities.MoveNext(), Is.True);
+        Assert.That(entities.CurrentEntityId, Is.EqualTo(lowId));
+        Assert.That(entities.CurrentAssignmentOrdinal, Is.EqualTo(3u));
+        Assert.That(entities.CurrentSceneInstanceId, Is.Null);
+        Assert.That(entities.MoveNext(), Is.True);
+        Assert.That(entities.CurrentEntityId, Is.EqualTo(middleId));
+        Assert.That(entities.CurrentAssignmentOrdinal, Is.EqualTo(2u));
+        Assert.That(entities.MoveNext(), Is.True);
+        Assert.That(entities.CurrentEntityId, Is.EqualTo(highId));
+        Assert.That(entities.CurrentAssignmentOrdinal, Is.EqualTo(1u));
+        Assert.That(entities.MoveNext(), Is.False);
+    }
+
+    [Test]
     public void EnumeratesPersistentComponentsInStableWorkPlanOrder()
     {
         using var world = CreateSceneWorld();
