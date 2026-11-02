@@ -12,17 +12,28 @@ namespace TerraFX.Graphics.Vulkan;
 
 internal static class SpirvReflectionValidator
 {
+    private const uint BuiltInFragCoord = 15;
+    private const uint BuiltInFragDepth = 22;
+    private const uint BuiltInInstanceIndex = 43;
+    private const uint BuiltInPosition = 0;
+    private const uint BuiltInVertexIndex = 42;
     private const uint CapabilityMatrix = 0;
     private const uint CapabilityShader = 1;
     private const uint DecorationArrayStride = 6;
     private const uint DecorationBinding = 33;
     private const uint DecorationBlock = 2;
     private const uint DecorationBufferBlock = 3;
+    private const uint DecorationBuiltIn = 11;
+    private const uint DecorationCentroid = 16;
     private const uint DecorationColMajor = 5;
     private const uint DecorationDescriptorSet = 34;
+    private const uint DecorationFlat = 14;
+    private const uint DecorationLocation = 30;
     private const uint DecorationMatrixStride = 7;
+    private const uint DecorationNoPerspective = 13;
     private const uint DecorationOffset = 35;
     private const uint DecorationRowMajor = 4;
+    private const uint DecorationSample = 17;
     private const uint ExecutionModelCompute = 5;
     private const uint ExecutionModelFragment = 4;
     private const uint ExecutionModelVertex = 0;
@@ -51,6 +62,8 @@ internal static class SpirvReflectionValidator
     private const ushort OpTypeStruct = 30;
     private const ushort OpTypeVector = 23;
     private const ushort OpVariable = 59;
+    private const uint StorageClassInput = 1;
+    private const uint StorageClassOutput = 3;
     private const uint StorageClassStorageBuffer = 12;
     private const uint StorageClassUniform = 2;
     private const uint StorageClassUniformConstant = 0;
@@ -79,7 +92,8 @@ internal static class SpirvReflectionValidator
         bytecode.UseWindow(0, checked((int)byteLength), ref copyAction);
 
         var module = Parse(words);
-        _ = FindEntryPoint(module, shader, index);
+        var entryPoint = FindEntryPoint(module, shader, index);
+        ValidateStageIo(module, entryPoint, shader, index);
         var resources = new List<ShaderResourceSignature>();
         ReadResources(module, index, resources);
         CompareResources(shader.Reflection, resources, index);
@@ -90,7 +104,7 @@ internal static class SpirvReflectionValidator
     {
         var value = decoration switch {
             DecorationBlock or DecorationBufferBlock => 1u,
-            DecorationArrayStride or DecorationBinding or DecorationDescriptorSet
+            DecorationArrayStride or DecorationBinding or DecorationBuiltIn or DecorationDescriptorSet or DecorationLocation
                 => GetDecorationLiteral(operands, target, decoration),
             _ => 0u,
         };
@@ -127,6 +141,32 @@ internal static class SpirvReflectionValidator
                 SetUniqueValue(ref targetDecorations.DescriptorSet, value, target, decoration);
                 break;
             }
+
+            case DecorationBuiltIn:
+            {
+                SetUniqueValue(ref targetDecorations.BuiltIn, value, target, decoration);
+                break;
+            }
+
+            case DecorationLocation:
+            {
+                SetUniqueValue(ref targetDecorations.Location, value, target, decoration);
+                break;
+            }
+
+            case DecorationFlat:
+            case DecorationNoPerspective:
+            case DecorationCentroid:
+            case DecorationSample:
+            {
+                if (!operands.IsEmpty)
+                {
+                    throw new ArgumentException($"SPIR-V stage-I/O decoration {decoration} on id {target} must not have operands.");
+                }
+
+                targetDecorations.SetStageIoDecoration(decoration);
+                break;
+            }
         }
     }
 
@@ -137,7 +177,17 @@ internal static class SpirvReflectionValidator
         uint decoration,
         ReadOnlySpan<uint> operands)
     {
-        if (decoration is not (DecorationMatrixStride or DecorationOffset or DecorationRowMajor or DecorationColMajor))
+        if (decoration is not (
+                DecorationMatrixStride
+                or DecorationOffset
+                or DecorationRowMajor
+                or DecorationColMajor
+                or DecorationBuiltIn
+                or DecorationLocation
+                or DecorationFlat
+                or DecorationNoPerspective
+                or DecorationCentroid
+                or DecorationSample))
         {
             return;
         }
@@ -159,19 +209,93 @@ internal static class SpirvReflectionValidator
 
             SetUniqueValue(ref memberDecorations.MatrixMajor, decoration, structureId, decoration);
         }
+        else if (decoration is DecorationFlat or DecorationNoPerspective or DecorationCentroid or DecorationSample)
+        {
+            if (!operands.IsEmpty)
+            {
+                throw new ArgumentException($"SPIR-V stage-I/O decoration {decoration} on structure {structureId} must not have operands.");
+            }
+
+            memberDecorations.SetStageIoDecoration(decoration);
+        }
         else
         {
             var value = GetDecorationLiteral(operands, structureId, decoration);
 
-            if (decoration == DecorationOffset)
+            switch (decoration)
             {
-                SetUniqueValue(ref memberDecorations.Offset, value, structureId, decoration);
-            }
-            else
-            {
-                SetUniqueValue(ref memberDecorations.MatrixStride, value, structureId, decoration);
+                case DecorationOffset:
+                {
+                    SetUniqueValue(ref memberDecorations.Offset, value, structureId, decoration);
+                    break;
+                }
+
+                case DecorationMatrixStride:
+                {
+                    SetUniqueValue(ref memberDecorations.MatrixStride, value, structureId, decoration);
+                    break;
+                }
+
+                case DecorationBuiltIn:
+                {
+                    SetUniqueValue(ref memberDecorations.BuiltIn, value, structureId, decoration);
+                    break;
+                }
+
+                case DecorationLocation:
+                {
+                    SetUniqueValue(ref memberDecorations.Location, value, structureId, decoration);
+                    break;
+                }
             }
         }
+    }
+
+    private static void AddStageIoDeclaration(
+        Module module,
+        List<StageIoDeclaration> declarations,
+        uint typeId,
+        uint? builtIn,
+        uint? location,
+        bool isFlat,
+        bool isNoPerspective,
+        bool isCentroid,
+        bool isSample)
+    {
+        if ((builtIn is null) == (location is null))
+        {
+            throw new ArgumentException("SPIR-V stage-I/O declarations must have exactly one of BuiltIn or Location.");
+        }
+
+        if (isFlat && isNoPerspective)
+        {
+            throw new ArgumentException("SPIR-V stage-I/O declarations cannot be both Flat and NoPerspective.");
+        }
+
+        if (isCentroid || isSample)
+        {
+            throw new NotSupportedException("Centroid and sample-qualified stage I/O are not supported by the Vulkan pipeline baseline.");
+        }
+
+        var type = GetType(module, typeId);
+
+        if (type.Opcode is not (OpTypeFloat or OpTypeInt or OpTypeVector))
+        {
+            throw new NotSupportedException("SPIR-V stage I/O must use supported scalar or vector values.");
+        }
+
+        var valueType = GetRecordValueType(module, type, new MemberDecorations()).ValueType;
+        var interpolation = isFlat
+            ? ShaderInterpolation.Flat
+            : isNoPerspective
+                ? ShaderInterpolation.NoPerspective
+                : ShaderInterpolation.Smooth;
+
+        declarations.Add(new StageIoDeclaration(
+            builtIn,
+            location,
+            valueType,
+            interpolation));
     }
 
     private static void AddType(Module module, ushort opcode, ReadOnlySpan<uint> operands)
@@ -330,6 +454,62 @@ internal static class SpirvReflectionValidator
         }
 
         return decorations;
+    }
+
+    private static uint? GetExpectedBuiltIn(ShaderIoSignature signature, ShaderStage stage, bool isInput)
+    {
+        if (signature.SemanticIndex != 0)
+        {
+            return null;
+        }
+
+        if (StringComparer.OrdinalIgnoreCase.Equals(signature.SemanticName, "SV_Position"))
+        {
+            return (stage, isInput) switch {
+                (ShaderStage.Vertex, false) => BuiltInPosition,
+                (ShaderStage.Pixel, true) => BuiltInFragCoord,
+                _ => null,
+            };
+        }
+
+        if (stage == ShaderStage.Vertex && isInput)
+        {
+            if (StringComparer.OrdinalIgnoreCase.Equals(signature.SemanticName, "SV_VertexID"))
+            {
+                return BuiltInVertexIndex;
+            }
+
+            if (StringComparer.OrdinalIgnoreCase.Equals(signature.SemanticName, "SV_InstanceID"))
+            {
+                return BuiltInInstanceIndex;
+            }
+        }
+
+        if (stage == ShaderStage.Pixel
+            && !isInput
+            && StringComparer.OrdinalIgnoreCase.Equals(signature.SemanticName, "SV_Depth"))
+        {
+            return BuiltInFragDepth;
+        }
+
+        return null;
+    }
+
+    private static int? GetExpectedLocation(ShaderIoSignature signature, ShaderStage stage, bool isInput)
+    {
+        if (signature.Location is int location)
+        {
+            return location;
+        }
+
+        if (!isInput
+            && (stage == ShaderStage.Pixel)
+            && StringComparer.OrdinalIgnoreCase.Equals(signature.SemanticName, "SV_Target"))
+        {
+            return signature.SemanticIndex;
+        }
+
+        return null;
     }
 
     private static MemberDecorations GetMemberDecorations(Module module, uint structureId, uint memberIndex)
@@ -696,6 +876,7 @@ internal static class SpirvReflectionValidator
                 }
 
                 var interfaceIds = new HashSet<uint>();
+                var interfaceIdArray = new uint[operands.Length - interfaceStart];
 
                 for (var index = interfaceStart; index < operands.Length; index++)
                 {
@@ -705,10 +886,12 @@ internal static class SpirvReflectionValidator
                     {
                         throw new ArgumentException("SPIR-V OpEntryPoint has a duplicate interface id.");
                     }
+
+                    interfaceIdArray[index - interfaceStart] = operands[index];
                 }
 
                 EnsureId(module, operands[1]);
-                module.EntryPoints.Add(new EntryPoint(operands[0], name));
+                module.EntryPoints.Add(new EntryPoint(operands[0], name, interfaceIdArray));
                 break;
             }
 
@@ -868,6 +1051,149 @@ internal static class SpirvReflectionValidator
         }
     }
 
+    private static void ValidateStageIo(
+        Module module,
+        EntryPoint entryPoint,
+        ShaderBytecodeInput shader,
+        int shaderIndex)
+    {
+        if (shader.Stage == ShaderStage.Compute)
+        {
+            return;
+        }
+
+        var actualInputs = new List<StageIoDeclaration>();
+        var actualOutputs = new List<StageIoDeclaration>();
+
+        foreach (var interfaceId in entryPoint.InterfaceIds)
+        {
+            if (!module.Variables.TryGetValue(interfaceId, out var variable))
+            {
+                throw new ArgumentException($"SPIR-V entry-point interface id {interfaceId} is not a variable.");
+            }
+
+            var isInput = variable.StorageClass == StorageClassInput;
+            var isOutput = variable.StorageClass == StorageClassOutput;
+
+            if (!isInput && !isOutput)
+            {
+                continue;
+            }
+
+            var pointerType = GetType(module, variable.ResultType);
+
+            if ((pointerType.Opcode != OpTypePointer) || (pointerType.Operands[1] != variable.StorageClass))
+            {
+                throw new ArgumentException($"SPIR-V stage-I/O variable id {variable.ResultId} has an incompatible pointer type.");
+            }
+
+            var valueType = GetType(module, pointerType.Operands[2]);
+            var declarations = isInput ? actualInputs : actualOutputs;
+
+            if (valueType.Opcode == OpTypeStruct)
+            {
+                for (var memberIndex = 0; memberIndex < valueType.Operands.Length - 1; memberIndex++)
+                {
+                    var memberKey = new MemberKey(valueType.Operands[0], checked((uint)memberIndex));
+                    var memberDecorations = module.MemberDecorations.TryGetValue(memberKey, out var existing)
+                        ? existing
+                        : new MemberDecorations();
+                    AddStageIoDeclaration(
+                        module,
+                        declarations,
+                        valueType.Operands[memberIndex + 1],
+                        memberDecorations.BuiltIn,
+                        memberDecorations.Location,
+                        memberDecorations.IsFlat,
+                        memberDecorations.IsNoPerspective,
+                        memberDecorations.IsCentroid,
+                        memberDecorations.IsSample);
+                }
+            }
+            else
+            {
+                var decorations = GetDecorations(module, variable.ResultId);
+                AddStageIoDeclaration(
+                    module,
+                    declarations,
+                    pointerType.Operands[2],
+                    decorations.BuiltIn,
+                    decorations.Location,
+                    decorations.IsFlat,
+                    decorations.IsNoPerspective,
+                    decorations.IsCentroid,
+                    decorations.IsSample);
+            }
+        }
+
+        ValidateStageIoSet(
+            actualInputs,
+            shader.Reflection.Inputs,
+            shader.Stage,
+            isInput: true,
+            shaderIndex);
+        ValidateStageIoSet(
+            actualOutputs,
+            shader.Reflection.Outputs,
+            shader.Stage,
+            isInput: false,
+            shaderIndex);
+    }
+
+    private static void ValidateStageIoSet(
+        List<StageIoDeclaration> actual,
+        System.Collections.Immutable.ImmutableArray<ShaderIoSignature> expected,
+        ShaderStage stage,
+        bool isInput,
+        int shaderIndex)
+    {
+        if (actual.Count != expected.Length)
+        {
+            throw new ArgumentException(
+                $"SPIR-V shader input at index {shaderIndex} declares a different number of stage-I/O values than its reflection metadata.");
+        }
+
+        var matched = new bool[expected.Length];
+
+        foreach (var declaration in actual)
+        {
+            var matchedIndex = -1;
+
+            for (var index = 0; index < expected.Length; index++)
+            {
+                if (matched[index] || (expected[index].ValueType != declaration.ValueType))
+                {
+                    continue;
+                }
+
+                if (declaration.BuiltIn is uint builtIn)
+                {
+                    if ((expected[index].Location is null)
+                        && (GetExpectedBuiltIn(expected[index], stage, isInput) == builtIn))
+                    {
+                        matchedIndex = index;
+                        break;
+                    }
+                }
+                else if ((GetExpectedLocation(expected[index], stage, isInput) is int expectedLocation)
+                    && (declaration.Location == checked((uint)expectedLocation))
+                    && (expected[index].Interpolation == declaration.Interpolation))
+                {
+                    matchedIndex = index;
+                    break;
+                }
+            }
+
+            if (matchedIndex < 0)
+            {
+                throw new ArgumentException(
+                    $"SPIR-V shader input at index {shaderIndex} declares a stage-I/O value that does not match its reflection metadata.");
+            }
+
+            matched[matchedIndex] = true;
+        }
+    }
+
     private static void ValidateUniformBlockLayouts(Module module, ShaderReflection reflection, int shaderIndex)
     {
         var visitedStructureIds = new HashSet<uint>();
@@ -968,29 +1294,104 @@ internal static class SpirvReflectionValidator
     {
         internal uint? ArrayStride;
         internal uint? Binding;
+        internal uint? BuiltIn;
         internal uint? DescriptorSet;
         internal bool HasBlock;
         internal bool HasBufferBlock;
+        internal bool IsCentroid;
+        internal bool IsFlat;
+        internal bool IsNoPerspective;
+        internal bool IsSample;
+        internal uint? Location;
+
+        internal void SetStageIoDecoration(uint decoration)
+        {
+            switch (decoration)
+            {
+                case DecorationFlat:
+                {
+                    IsFlat = true;
+                    break;
+                }
+
+                case DecorationNoPerspective:
+                {
+                    IsNoPerspective = true;
+                    break;
+                }
+
+                case DecorationCentroid:
+                {
+                    IsCentroid = true;
+                    break;
+                }
+
+                case DecorationSample:
+                {
+                    IsSample = true;
+                    break;
+                }
+            }
+        }
     }
 
     private sealed class EntryPoint
     {
-        internal EntryPoint(uint executionModel, string name)
+        internal EntryPoint(uint executionModel, string name, uint[] interfaceIds)
         {
             ExecutionModel = executionModel;
+            InterfaceIds = interfaceIds;
             Name = name;
         }
 
         internal uint ExecutionModel { get; }
+
+        internal uint[] InterfaceIds { get; }
 
         internal string Name { get; }
     }
 
     private sealed class MemberDecorations
     {
+        internal uint? BuiltIn;
+        internal bool IsCentroid;
+        internal bool IsFlat;
+        internal bool IsNoPerspective;
+        internal bool IsSample;
+        internal uint? Location;
         internal uint? MatrixMajor;
         internal uint? MatrixStride;
         internal uint? Offset;
+
+        internal void SetStageIoDecoration(uint decoration)
+        {
+            switch (decoration)
+            {
+                case DecorationFlat:
+                {
+                    IsFlat = true;
+                    break;
+                }
+
+                case DecorationNoPerspective:
+                {
+                    IsNoPerspective = true;
+                    break;
+                }
+
+                case DecorationCentroid:
+                {
+                    IsCentroid = true;
+                    break;
+                }
+
+                case DecorationSample:
+                {
+                    IsSample = true;
+                    break;
+                }
+            }
+        }
     }
 
     private readonly record struct MemberKey(uint StructureId, uint MemberIndex);
@@ -1025,6 +1426,12 @@ internal static class SpirvReflectionValidator
         int ByteLength,
         int ArrayCount,
         int ArrayStride);
+
+    private readonly record struct StageIoDeclaration(
+        uint? BuiltIn,
+        uint? Location,
+        ShaderValueType ValueType,
+        ShaderInterpolation Interpolation);
 
     private sealed class TypeDeclaration
     {

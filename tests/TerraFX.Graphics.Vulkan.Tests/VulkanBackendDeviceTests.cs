@@ -202,6 +202,24 @@ internal sealed class VulkanBackendDeviceTests
             bindingLayoutVersion: 1);
     }
 
+    private static ShaderReflection CreateShaderReflectionWithStageIo(
+        ShaderReflection reflection,
+        ImmutableArray<ShaderIoSignature> inputs,
+        ImmutableArray<ShaderIoSignature> outputs)
+        => new(
+            reflection.Stage,
+            reflection.EntryPoint,
+            reflection.CompilerIdentity,
+            inputs,
+            outputs,
+            reflection.Resources,
+            reflection.RecordLayouts,
+            reflection.RequiredCapabilities,
+            reflection.BindingLayoutVersion,
+            reflection.GroupSizeX,
+            reflection.GroupSizeY,
+            reflection.GroupSizeZ);
+
     private static VulkanBackendDevice CreateVulkanDeviceForNativeSmokeTest()
     {
         try
@@ -1397,6 +1415,84 @@ internal sealed class VulkanBackendDeviceTests
         Assert.That(
             () => SpirvReflectionValidator.Validate(description.Shaders[1], pixelLease, index: 1),
             Throws.ArgumentException);
+    }
+
+    [TestCase(0)]
+    [TestCase(1)]
+    [TestCase(2)]
+    [TestCase(3)]
+    [TestCase(4)]
+    public void SpirvPreflightRejectsStageIoMetadataMismatchesWithoutCreatingDevice(int mismatch)
+    {
+        var fixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
+
+        if (string.IsNullOrWhiteSpace(fixtureDirectory))
+        {
+            Assert.Ignore("The compiled M04 shader fixture is not selected through TERRAFX_M04_SHADER_FIXTURE_DIRECTORY.");
+            return;
+        }
+
+        using var vertexStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.vertex.spv"));
+        using var pixelStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.pixel-sampled-frame.spv"));
+        using var vertexLease = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
+        using var pixelLease = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
+        var description = CreateShaderFixtureDescription(
+            vertexLease,
+            pixelLease,
+            usesSampledResources: true);
+        var shaderIndex = mismatch == 0 ? 0 : 1;
+        var original = description.Shaders[shaderIndex].Reflection;
+        var inputs = original.Inputs;
+        var outputs = original.Outputs;
+
+        switch (mismatch)
+        {
+            case 0:
+            {
+                inputs = [new ShaderIoSignature("SV_InstanceID", 0, null, ShaderValueType.UInt1, ShaderInterpolation.Flat)];
+                break;
+            }
+
+            case 1:
+            {
+                outputs = [new ShaderIoSignature("SV_Target", 1, null, ShaderValueType.Float4, ShaderInterpolation.Smooth)];
+                break;
+            }
+
+            case 2:
+            {
+                outputs = [new ShaderIoSignature("SV_Target", 0, null, ShaderValueType.Float3, ShaderInterpolation.Smooth)];
+                break;
+            }
+
+            case 3:
+            {
+                outputs = [new ShaderIoSignature("SV_Target", 0, null, ShaderValueType.Float4, ShaderInterpolation.Flat)];
+                break;
+            }
+
+            case 4:
+            {
+                outputs = [];
+                break;
+            }
+
+            default:
+            {
+                throw new ArgumentOutOfRangeException(nameof(mismatch));
+            }
+        }
+
+        var reflection = CreateShaderReflectionWithStageIo(original, inputs, outputs);
+        var lease = (shaderIndex == 0) ? vertexLease : pixelLease;
+        var shader = new ShaderBytecodeInput(original.Stage, ShaderBinaryFormat.SpirV, lease, reflection);
+
+        _ = Assert.Throws<ArgumentException>(
+            () => SpirvReflectionValidator.Validate(shader, lease, shaderIndex));
     }
 
     [Test]
