@@ -65,7 +65,9 @@ internal sealed class VulkanBackendDeviceTests
         bool includesFrameUniformBuffer = true,
         bool includesStorageResources = false,
         int sampledImageBinding = 0,
-        int sampledImageArrayCount = 1)
+        int sampledImageArrayCount = 1,
+        int frameColorByteOffset = 0,
+        int frameRecordByteLength = 16)
     {
         var compilerIdentity = CreateShaderCompilerIdentity();
         var pixelResources = ImmutableArray.CreateBuilder<ShaderResourceSignature>();
@@ -95,11 +97,11 @@ internal sealed class VulkanBackendDeviceTests
             ? [
                 new ShaderRecordLayout(
                     "FrameData",
-                    16,
+                    frameRecordByteLength,
                     [new ShaderFieldLayout(
                         "color",
                         ShaderValueType.Float4,
-                        0,
+                        frameColorByteOffset,
                         16,
                         1,
                         0)]),
@@ -1324,6 +1326,37 @@ internal sealed class VulkanBackendDeviceTests
             pixelLease,
             usesSampledResources: true,
             includesFrameUniformBuffer: false);
+
+        Assert.That(
+            () => SpirvReflectionValidator.Validate(description.Shaders[1], pixelLease, index: 1),
+            Throws.ArgumentException);
+    }
+
+    [Test]
+    public void SpirvPreflightRejectsUniformRecordOffsetMismatchWithoutCreatingDevice()
+    {
+        var fixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
+
+        if (string.IsNullOrWhiteSpace(fixtureDirectory))
+        {
+            Assert.Ignore("The compiled M04 shader fixture is not selected through TERRAFX_M04_SHADER_FIXTURE_DIRECTORY.");
+            return;
+        }
+
+        using var vertexStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.vertex.spv"));
+        using var pixelStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.pixel-sampled-frame.spv"));
+        using var vertexLease = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
+        using var pixelLease = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
+        var description = CreateShaderFixtureDescription(
+            vertexLease,
+            pixelLease,
+            usesSampledResources: true,
+            frameColorByteOffset: 4,
+            frameRecordByteLength: 32);
 
         Assert.That(
             () => SpirvReflectionValidator.Validate(description.Shaders[1], pixelLease, index: 1),

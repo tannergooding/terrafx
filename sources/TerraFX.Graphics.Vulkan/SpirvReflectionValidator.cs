@@ -19,6 +19,8 @@ internal static class SpirvReflectionValidator
     private const uint DecorationBlock = 2;
     private const uint DecorationBufferBlock = 3;
     private const uint DecorationDescriptorSet = 34;
+    private const uint DecorationMatrixStride = 7;
+    private const uint DecorationOffset = 35;
     private const uint ExecutionModelCompute = 5;
     private const uint ExecutionModelFragment = 4;
     private const uint ExecutionModelVertex = 0;
@@ -34,6 +36,7 @@ internal static class SpirvReflectionValidator
     private const ushort OpEntryPoint = 15;
     private const ushort OpGroupDecorate = 74;
     private const ushort OpGroupMemberDecorate = 75;
+    private const ushort OpMemberDecorate = 72;
     private const ushort OpTypeArray = 28;
     private const ushort OpTypeFloat = 22;
     private const ushort OpTypeImage = 25;
@@ -78,6 +81,7 @@ internal static class SpirvReflectionValidator
         var resources = new List<ShaderResourceSignature>();
         ReadResources(module, index, resources);
         CompareResources(shader.Reflection, resources, index);
+        ValidateUniformBlockLayouts(module, shader.Reflection, index);
     }
 
     private static void AddDecoration(Module module, uint target, uint decoration, ReadOnlySpan<uint> operands)
@@ -121,6 +125,37 @@ internal static class SpirvReflectionValidator
                 SetUniqueValue(ref targetDecorations.DescriptorSet, value, target, decoration);
                 break;
             }
+        }
+    }
+
+    private static void AddMemberDecoration(
+        Module module,
+        uint structureId,
+        uint memberIndex,
+        uint decoration,
+        ReadOnlySpan<uint> operands)
+    {
+        if (decoration is not (DecorationMatrixStride or DecorationOffset))
+        {
+            return;
+        }
+
+        var value = GetDecorationLiteral(operands, structureId, decoration);
+        var key = new MemberKey(structureId, memberIndex);
+
+        if (!module.MemberDecorations.TryGetValue(key, out var memberDecorations))
+        {
+            memberDecorations = new MemberDecorations();
+            module.MemberDecorations.Add(key, memberDecorations);
+        }
+
+        if (decoration == DecorationOffset)
+        {
+            SetUniqueValue(ref memberDecorations.Offset, value, structureId, decoration);
+        }
+        else
+        {
+            SetUniqueValue(ref memberDecorations.MatrixStride, value, structureId, decoration);
         }
     }
 
@@ -282,6 +317,99 @@ internal static class SpirvReflectionValidator
         return decorations;
     }
 
+    private static MemberDecorations GetMemberDecorations(Module module, uint structureId, uint memberIndex)
+    {
+        if (!module.MemberDecorations.TryGetValue(new MemberKey(structureId, memberIndex), out var decorations))
+        {
+            throw new ArgumentException($"SPIR-V block member {memberIndex} of structure {structureId} has no reflected offset.");
+        }
+
+        return decorations;
+    }
+
+    private static RecordField GetRecordField(Module module, uint memberTypeId, MemberDecorations memberDecorations)
+    {
+        if (memberDecorations.Offset is not uint offset)
+        {
+            throw new ArgumentException("SPIR-V block members must declare an explicit byte offset.");
+        }
+
+        var type = GetType(module, memberTypeId);
+        var arrayCount = 1;
+        var arrayStride = 0;
+
+        if (type.Opcode == OpTypeRuntimeArray)
+        {
+            throw new NotSupportedException("Runtime-sized SPIR-V block members are not supported.");
+        }
+
+        if (type.Opcode == OpTypeArray)
+        {
+            arrayCount = checked((int)GetArrayLength(module, type.Operands[2]));
+
+            if (arrayCount > 1)
+            {
+                var decorations = GetDecorations(module, type.Operands[0]);
+                arrayStride = checked((int)(decorations.ArrayStride
+                    ?? throw new ArgumentException("SPIR-V block arrays must declare an ArrayStride.")));
+            }
+
+            type = GetType(module, type.Operands[1]);
+
+            if (type.Opcode is OpTypeArray or OpTypeRuntimeArray)
+            {
+                throw new NotSupportedException("Nested SPIR-V block arrays are not supported by reflection metadata.");
+            }
+        }
+
+        var (valueType, byteLength) = GetRecordValueType(module, type, memberDecorations);
+        return new RecordField(
+            checked((int)offset),
+            valueType,
+            byteLength,
+            arrayCount,
+            arrayStride);
+    }
+
+    private static (ShaderValueType ValueType, int ByteLength) GetRecordValueType(
+        Module module,
+        TypeDeclaration type,
+        MemberDecorations memberDecorations)
+    {
+        if (type.Opcode == OpTypeMatrix)
+        {
+            if (memberDecorations.MatrixStride is null)
+            {
+                throw new ArgumentException("SPIR-V matrix members must declare a MatrixStride.");
+            }
+
+            throw new NotSupportedException(
+                "SPIR-V matrix-major layout cannot be compared to shader record metadata that has no major-order field.");
+        }
+
+        if (type.Opcode == OpTypeVector)
+        {
+            var (scalarType, scalarByteLength) = GetScalarValueType(module, type.Operands[1]);
+            var componentCount = type.Operands[2];
+            var valueType = (scalarType, componentCount) switch {
+                (ShaderValueType.Float1, 2) => ShaderValueType.Float2,
+                (ShaderValueType.Float1, 3) => ShaderValueType.Float3,
+                (ShaderValueType.Float1, 4) => ShaderValueType.Float4,
+                (ShaderValueType.Int1, 2) => ShaderValueType.Int2,
+                (ShaderValueType.Int1, 3) => ShaderValueType.Int3,
+                (ShaderValueType.Int1, 4) => ShaderValueType.Int4,
+                (ShaderValueType.UInt1, 2) => ShaderValueType.UInt2,
+                (ShaderValueType.UInt1, 3) => ShaderValueType.UInt3,
+                (ShaderValueType.UInt1, 4) => ShaderValueType.UInt4,
+                _ => throw new NotSupportedException("SPIR-V block vectors must have two, three, or four supported components."),
+            };
+
+            return (valueType, checked((int)componentCount * scalarByteLength));
+        }
+
+        return GetScalarValueType(module, type.Operands[0]);
+    }
+
     private static ShaderResourceSignature GetResourceBinding(
         ShaderBindingGroup group,
         uint nativeBinding,
@@ -395,6 +523,27 @@ internal static class SpirvReflectionValidator
         return (kind, checked((int)arrayCount));
     }
 
+    private static (ShaderValueType ValueType, int ByteLength) GetScalarValueType(Module module, uint typeId)
+    {
+        var type = GetType(module, typeId);
+
+        if ((type.Opcode == OpTypeFloat) && (type.Operands[1] == 32))
+        {
+            return (ShaderValueType.Float1, sizeof(float));
+        }
+
+        if ((type.Opcode == OpTypeInt) && (type.Operands[1] == 32))
+        {
+            return type.Operands[2] switch {
+                0 => (ShaderValueType.UInt1, sizeof(uint)),
+                1 => (ShaderValueType.Int1, sizeof(int)),
+                _ => throw new ArgumentException("SPIR-V integer signedness must be zero or one."),
+            };
+        }
+
+        throw new NotSupportedException("SPIR-V block scalar types must be 32-bit floating-point or integer values.");
+    }
+
     private static TypeDeclaration GetType(Module module, uint typeId)
     {
         if (!module.Types.TryGetValue(typeId, out var type))
@@ -407,6 +556,34 @@ internal static class SpirvReflectionValidator
 
     private static bool IsDescriptorStorageClass(uint storageClass)
         => storageClass is StorageClassUniformConstant or StorageClassUniform or StorageClassStorageBuffer;
+
+    private static bool MatchesRecordLayout(
+        ShaderRecordLayout expected,
+        ReadOnlySpan<RecordField> actualFields,
+        long actualByteLength)
+    {
+        if ((expected.ByteLength < actualByteLength) || (expected.Fields.Length != actualFields.Length))
+        {
+            return false;
+        }
+
+        for (var index = 0; index < actualFields.Length; index++)
+        {
+            var actual = actualFields[index];
+            var expectedField = expected.Fields[index];
+
+            if ((expectedField.ByteOffset != actual.ByteOffset)
+                || (expectedField.ValueType != actual.ValueType)
+                || (expectedField.ByteLength != actual.ByteLength)
+                || (expectedField.ArrayCount != actual.ArrayCount)
+                || (expectedField.ArrayStride != actual.ArrayStride))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     private static Module Parse(uint[] words)
     {
@@ -551,6 +728,14 @@ internal static class SpirvReflectionValidator
                 break;
             }
 
+            case OpMemberDecorate:
+            {
+                RequireOperandCount(operands, 3, "OpMemberDecorate");
+                EnsureId(module, operands[0]);
+                AddMemberDecoration(module, operands[0], operands[1], operands[2], operands[3..]);
+                break;
+            }
+
             case OpDecorationGroup:
             case OpGroupDecorate:
             case OpGroupMemberDecorate:
@@ -647,6 +832,87 @@ internal static class SpirvReflectionValidator
         }
     }
 
+    private static void ValidateUniformBlockLayouts(Module module, ShaderReflection reflection, int shaderIndex)
+    {
+        var visitedStructureIds = new HashSet<uint>();
+        var matchedRecordLayouts = new bool[reflection.RecordLayouts.Length];
+
+        foreach (var variable in module.Variables.Values)
+        {
+            if (variable.StorageClass != StorageClassUniform)
+            {
+                continue;
+            }
+
+            var pointerType = GetType(module, variable.ResultType);
+
+            if (pointerType.Opcode != OpTypePointer)
+            {
+                throw new ArgumentException($"SPIR-V uniform variable id {variable.ResultId} has no pointer type.");
+            }
+
+            var typeId = pointerType.Operands[2];
+            var type = GetType(module, typeId);
+
+            while (type.Opcode == OpTypeArray)
+            {
+                typeId = type.Operands[1];
+                type = GetType(module, typeId);
+            }
+
+            if (type.Opcode == OpTypeRuntimeArray)
+            {
+                throw new NotSupportedException("Runtime-sized SPIR-V uniform block arrays are not supported.");
+            }
+
+            if (type.Opcode != OpTypeStruct)
+            {
+                throw new ArgumentException($"SPIR-V uniform variable id {variable.ResultId} does not reference a block structure.");
+            }
+
+            if (!GetDecorations(module, typeId).HasBlock || !visitedStructureIds.Add(typeId))
+            {
+                continue;
+            }
+
+            var fields = new RecordField[type.Operands.Length - 1];
+            long actualByteLength = 0;
+
+            for (var memberIndex = 0; memberIndex < fields.Length; memberIndex++)
+            {
+                var memberDecorations = GetMemberDecorations(module, typeId, checked((uint)memberIndex));
+                var field = GetRecordField(module, type.Operands[memberIndex + 1], memberDecorations);
+                var fieldEnd = checked((long)field.ByteOffset
+                    + ((long)(field.ArrayCount - 1) * field.ArrayStride)
+                    + field.ByteLength);
+                fields[memberIndex] = field;
+                actualByteLength = Math.Max(actualByteLength, fieldEnd);
+            }
+
+            Array.Sort(fields, static (left, right) => left.ByteOffset.CompareTo(right.ByteOffset));
+
+            var matched = false;
+
+            for (var recordIndex = 0; recordIndex < reflection.RecordLayouts.Length; recordIndex++)
+            {
+                if (!matchedRecordLayouts[recordIndex]
+                    && MatchesRecordLayout(reflection.RecordLayouts[recordIndex], fields, actualByteLength))
+                {
+                    matchedRecordLayouts[recordIndex] = true;
+                    matched = true;
+                    break;
+                }
+            }
+
+            if (!matched)
+            {
+                throw new ArgumentException(
+                    $"SPIR-V shader input at index {shaderIndex} declares a uniform block layout that does not match its reflection metadata.",
+                    nameof(reflection));
+            }
+        }
+    }
+
     private readonly struct BytecodeCopyAction : IAction<ReadOnlySpan<byte>>
     {
         private readonly uint[] _destination;
@@ -684,6 +950,14 @@ internal static class SpirvReflectionValidator
         internal string Name { get; }
     }
 
+    private sealed class MemberDecorations
+    {
+        internal uint? MatrixStride;
+        internal uint? Offset;
+    }
+
+    private readonly record struct MemberKey(uint StructureId, uint MemberIndex);
+
     private sealed class Module
     {
         internal bool HasShaderCapability;
@@ -701,10 +975,19 @@ internal static class SpirvReflectionValidator
 
         internal uint IdBound { get; }
 
+        internal Dictionary<MemberKey, MemberDecorations> MemberDecorations { get; } = [];
+
         internal Dictionary<uint, TypeDeclaration> Types { get; } = [];
 
         internal Dictionary<uint, Variable> Variables { get; } = [];
     }
+
+    private readonly record struct RecordField(
+        int ByteOffset,
+        ShaderValueType ValueType,
+        int ByteLength,
+        int ArrayCount,
+        int ArrayStride);
 
     private sealed class TypeDeclaration
     {
