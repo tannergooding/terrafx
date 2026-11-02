@@ -148,6 +148,82 @@ internal sealed class WorldPersistenceCaptureTests
     }
 
     [Test]
+    public void CapturesIdentityHistoryIncludingRetiredAssignmentsAndBranches()
+    {
+        using var world = CreateWorld();
+        var firstEntity = world.CreateEntity(new EntityDescription());
+        var firstEntityId = world.GetEntityId(firstEntity);
+        _ = world.Step();
+
+        var rootBranchId = world.IdentityBranchId;
+        var worldGuid = world.WorldGuid;
+        var lineageId = world.ReplayLineageId;
+        var branchCreatedAtNextTick = world.NextTickIndex;
+        var branchId = Guid.NewGuid();
+        world.BeginIdentityBranch(branchId);
+        var secondEntity = world.CreateEntity(new EntityDescription());
+        var secondEntityId = world.GetEntityId(secondEntity);
+        _ = world.Step();
+        world.DestroyEntity(secondEntity, HierarchyDestroyMode.DetachChildrenKeepWorld);
+        _ = world.Step();
+
+        using var lease = world.AcquirePersistenceCaptureLease();
+        var history = lease.GetIdentityHistoryCapture();
+        Assert.That(history.WorldGuid, Is.EqualTo(worldGuid));
+        Assert.That(history.ReplayLineageId, Is.EqualTo(lineageId));
+        Assert.That(history.ActiveBranchId, Is.EqualTo(branchId));
+        Assert.That(history.IssuanceNamespaceId, Is.EqualTo(branchId));
+        Assert.That(history.AssignmentCount, Is.EqualTo(2));
+        Assert.That(history.NextAssignmentOrdinal, Is.EqualTo(3));
+        Assert.That(history.PageCount, Is.EqualTo(1));
+        Assert.That(history.BranchCount, Is.EqualTo(2));
+
+        var branches = history.GetBranchEnumerator();
+        Assert.That(branches.MoveNext(), Is.True);
+        Assert.That(branches.CurrentDirectoryIndex, Is.EqualTo(0));
+        Assert.That(branches.CurrentBranchId, Is.EqualTo(rootBranchId));
+        Assert.That(branches.CurrentNamespaceId, Is.EqualTo(worldGuid));
+        Assert.That(branches.CurrentLineageId, Is.EqualTo(lineageId));
+        Assert.That(branches.CurrentParentBranchId, Is.Null);
+        Assert.That(branches.CurrentCreatedAtNextTick, Is.Zero);
+        Assert.That(branches.CurrentFirstAssignmentOrdinal, Is.EqualTo(1));
+        Assert.That(branches.CurrentKind, Is.EqualTo((byte)1));
+        Assert.That(branches.MoveNext(), Is.True);
+        Assert.That(branches.CurrentDirectoryIndex, Is.EqualTo(1));
+        Assert.That(branches.CurrentBranchId, Is.EqualTo(branchId));
+        Assert.That(branches.CurrentNamespaceId, Is.EqualTo(branchId));
+        Assert.That(branches.CurrentLineageId, Is.EqualTo(lineageId));
+        Assert.That(branches.CurrentParentBranchId, Is.EqualTo(rootBranchId));
+        Assert.That(branches.CurrentCreatedAtNextTick, Is.EqualTo(branchCreatedAtNextTick));
+        Assert.That(branches.CurrentFirstAssignmentOrdinal, Is.EqualTo(2));
+        Assert.That(branches.CurrentKind, Is.EqualTo((byte)2));
+        Assert.That(branches.MoveNext(), Is.False);
+
+        var assignments = history.GetAssignmentEnumerator();
+        Assert.That(assignments.MoveNext(), Is.True);
+        Assert.That(assignments.CurrentAssignmentOrdinal, Is.EqualTo(1));
+        Assert.That(assignments.CurrentStableId, Is.EqualTo(firstEntityId));
+        Assert.That(assignments.CurrentDirectoryIndex, Is.EqualTo(0));
+        Assert.That(assignments.CurrentKind, Is.EqualTo((byte)1));
+        Assert.That(assignments.CurrentOrigin, Is.EqualTo((byte)1));
+        Assert.That(assignments.CurrentMetadata, Is.EqualTo(0x5400u));
+        Assert.That(assignments.CurrentIsLive, Is.True);
+        Assert.That(assignments.CurrentPageIndex, Is.Zero);
+        Assert.That(assignments.CurrentPageOffset, Is.Zero);
+        Assert.That(assignments.MoveNext(), Is.True);
+        Assert.That(assignments.CurrentAssignmentOrdinal, Is.EqualTo(2));
+        Assert.That(assignments.CurrentStableId, Is.EqualTo(secondEntityId));
+        Assert.That(assignments.CurrentDirectoryIndex, Is.EqualTo(1));
+        Assert.That(assignments.CurrentKind, Is.EqualTo((byte)1));
+        Assert.That(assignments.CurrentOrigin, Is.EqualTo((byte)1));
+        Assert.That(assignments.CurrentMetadata, Is.EqualTo(0x1401u));
+        Assert.That(assignments.CurrentIsLive, Is.False);
+        Assert.That(assignments.CurrentPageIndex, Is.Zero);
+        Assert.That(assignments.CurrentPageOffset, Is.EqualTo(1));
+        Assert.That(assignments.MoveNext(), Is.False);
+    }
+
+    [Test]
     public void EnumeratesCommittedEntitiesAndArchetypeMembership()
     {
         using var world = CreateSceneWorld();
@@ -168,7 +244,7 @@ internal sealed class WorldPersistenceCaptureTests
         var enumerator = lease.GetEntityStateEnumerator();
         var observations = new Dictionary<
             Guid,
-            (uint AssignmentOrdinal, int PersistentCount, ContentSchemaReference? PersistentSchema, int TransientCount, int TagCount)>(2);
+            (uint AssignmentOrdinal, int PersistentCount, ContentSchemaReference? PersistentSchema, Guid? SceneInstanceId, int TransientCount, int TagCount)>(2);
 
         while (enumerator.MoveNext())
         {
@@ -180,6 +256,7 @@ internal sealed class WorldPersistenceCaptureTests
                 enumerator.CurrentAssignmentOrdinal,
                 persistentCount,
                 persistentSchema,
+                enumerator.CurrentSceneInstanceId,
                 enumerator.CurrentTransientSchemaCount,
                 enumerator.CurrentTagCount);
             Assert.That(observations.TryAdd(enumerator.CurrentEntityId, observation), Is.True);
@@ -188,10 +265,10 @@ internal sealed class WorldPersistenceCaptureTests
         Assert.That(observations.Count, Is.EqualTo(2));
         Assert.That(
             observations[firstEntityId],
-            Is.EqualTo((1U, 1, (ContentSchemaReference?)componentSchema, 0, 0)));
+            Is.EqualTo((1U, 1, (ContentSchemaReference?)componentSchema, (Guid?)null, 0, 0)));
         Assert.That(
             observations[secondEntityId],
-            Is.EqualTo((2U, 0, (ContentSchemaReference?)null, 0, 0)));
+            Is.EqualTo((2U, 0, (ContentSchemaReference?)null, (Guid?)null, 0, 0)));
     }
 
     [Test]

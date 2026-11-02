@@ -134,6 +134,12 @@ internal ref struct WorldPersistenceCaptureLease
         return _world.CreateEntityStateEnumerator(this);
     }
 
+    internal readonly World.IdentityHistoryCapture GetIdentityHistoryCapture()
+    {
+        ValidateCurrent();
+        return new World.IdentityHistoryCapture(_world, this);
+    }
+
     internal readonly World.ResourceStateCaptureEnumerator GetResourceStateEnumerator()
     {
         ValidateCurrent();

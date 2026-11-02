@@ -193,6 +193,18 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         return true;
     }
 
+    public bool TryGetSceneInstanceId(World world, Entity entity, out Guid sceneInstanceId)
+    {
+        if (TryGetInstanceForEntity(world, entity, out var instance) && (instance is not null))
+        {
+            sceneInstanceId = instance.SceneInstanceId;
+            return true;
+        }
+
+        sceneInstanceId = Guid.Empty;
+        return false;
+    }
+
     internal void CommitReservation(SceneInstanceReservation reservation, SceneInstance instance)
     {
         ArgumentNullException.ThrowIfNull(reservation);

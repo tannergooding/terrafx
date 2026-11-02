@@ -33,4 +33,6 @@ internal interface IWorldSceneParticipant
         Entity entity);
 
     bool TryGetCameraData(World world, Entity entity, out WorldCameraData camera);
+
+    bool TryGetSceneInstanceId(World world, Entity entity, out Guid sceneInstanceId);
 }
