@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="TerraFX.Graphics.Vulkan.Tests" Key="$(AssemblyOriginatorPublicKey)" />
+    <InternalsVisibleTo Include="TerraFX.Runtime.Tests" Key="$(AssemblyOriginatorPublicKey)" />
     <ProjectReference Include="..\TerraFX.Graphics\TerraFX.Graphics.csproj" />
     <ProjectReference Include="..\TerraFX.Runtime\TerraFX.Runtime.csproj" />
     <Content Include="ShaderToolchainManifest.json" CopyToOutputDirectory="PreserveNewest" />

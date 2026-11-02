@@ -12,6 +12,7 @@ using NUnit.Framework;
 using TerraFX;
 using TerraFX.Assets;
 using TerraFX.Buffers;
+using TerraFX.Content.Tools;
 using TerraFX.Graphics;
 using TerraFX.Graphics.D3D12;
 using TerraFX.Graphics.Vulkan;
@@ -54,63 +55,9 @@ internal sealed partial class EngineHostOptionsTests
     private static GraphicsPipelineDescription CreateD3D12ResourcePipelineDescription(
         BufferReadLease<byte> vertexBytecode,
         BufferReadLease<byte> pixelBytecode,
-        bool includeStorageResources,
-        int sampledImageBinding = 0)
+        ShaderReflection vertexReflection,
+        ShaderReflection pixelReflection)
     {
-        var compilerIdentity = CreateShaderCompilerIdentity();
-        var pixelEntryPoint = includeStorageResources
-            ? "PSSampledFrameStorageMain"
-            : "PSSampledFrameMain";
-        ImmutableArray<ShaderResourceSignature> pixelResources = includeStorageResources
-            ? [
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1),
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, sampledImageBinding, ShaderResourceKind.SampledImage, 1),
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, 1),
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 1, ShaderResourceKind.StorageImage, 1),
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.Sampler, 1),
-            ]
-            : [
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1),
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, sampledImageBinding, ShaderResourceKind.SampledImage, 1),
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.Sampler, 1),
-            ];
-        var vertexReflection = new ShaderReflection(
-            ShaderStage.Vertex,
-            "VSMain",
-            compilerIdentity,
-            [new ShaderIoSignature("SV_VertexID", 0, null, ShaderValueType.UInt1, ShaderInterpolation.Flat)],
-            [new ShaderIoSignature("SV_Position", 0, null, ShaderValueType.Float4, ShaderInterpolation.Smooth)],
-            [],
-            [],
-            [],
-            bindingLayoutVersion: 1,
-            groupSizeX: 0,
-            groupSizeY: 0,
-            groupSizeZ: 0);
-        var pixelReflection = new ShaderReflection(
-            ShaderStage.Pixel,
-            pixelEntryPoint,
-            compilerIdentity,
-            [],
-            [new ShaderIoSignature("SV_Target", 0, null, ShaderValueType.Float4, ShaderInterpolation.Smooth)],
-            pixelResources,
-            [
-                new ShaderRecordLayout(
-                    "FrameData",
-                    16,
-                    [new ShaderFieldLayout(
-                        "color",
-                        ShaderValueType.Float4,
-                        0,
-                        16,
-                        1,
-                        0)]),
-            ],
-            [],
-            bindingLayoutVersion: 1,
-            groupSizeX: 0,
-            groupSizeY: 0,
-            groupSizeZ: 0);
         var vertexShader = new ShaderBytecodeInput(
             ShaderStage.Vertex,
             ShaderBinaryFormat.Dxil,
@@ -156,15 +103,50 @@ internal sealed partial class EngineHostOptionsTests
             ShutdownTimeout = shutdownTimeout ?? TimeSpan.FromSeconds(5),
         };
 
-    private static ShaderCompilerIdentity CreateShaderCompilerIdentity()
+    private static ShaderReflection CreateReflectionWithResourceBinding(
+        ShaderReflection reflection,
+        ShaderResourceKind kind,
+        int binding)
     {
-        var digest = Convert.FromHexString("C6E82B70C14552F1DD58E4A79C93EEAB1567EEB0A9EE63A51564C410429BCE3E");
-        return new ShaderCompilerIdentity(
-            "Microsoft.Direct3D.DXC",
-            "1.8.2505.1",
-            "1.8.2505.32",
-            "win-x64",
-            ImmutableCollectionsMarshal.AsImmutableArray(digest));
+        var resources = ImmutableArray.CreateBuilder<ShaderResourceSignature>(reflection.Resources.Length);
+        var hasMatchingResource = false;
+
+        foreach (var resource in reflection.Resources)
+        {
+            if (resource.Kind == kind)
+            {
+                if (hasMatchingResource)
+                {
+                    throw new InvalidOperationException("The selected shader resource kind is ambiguous.");
+                }
+
+                resources.Add(new ShaderResourceSignature(resource.Group, binding, resource.Kind, resource.ArrayCount));
+                hasMatchingResource = true;
+            }
+            else
+            {
+                resources.Add(resource);
+            }
+        }
+
+        if (!hasMatchingResource)
+        {
+            throw new InvalidOperationException("The selected shader resource kind is absent.");
+        }
+
+        return new ShaderReflection(
+            reflection.Stage,
+            reflection.EntryPoint,
+            reflection.CompilerIdentity,
+            reflection.Inputs,
+            reflection.Outputs,
+            resources.MoveToImmutable(),
+            reflection.RecordLayouts,
+            reflection.RequiredCapabilities,
+            reflection.BindingLayoutVersion,
+            reflection.GroupSizeX,
+            reflection.GroupSizeY,
+            reflection.GroupSizeZ);
     }
 
     [Test]
@@ -283,20 +265,24 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(capabilities.DriverVersion, Is.Not.Empty);
             Assert.That(capabilities.ApiVersion.Major, Is.GreaterThan(0));
 
-            var dxilFixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_DXIL_FIXTURE_DIRECTORY");
+            var shaderFixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
 
-            if (!string.IsNullOrWhiteSpace(dxilFixtureDirectory))
+            if (!string.IsNullOrWhiteSpace(shaderFixtureDirectory))
             {
                 using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
-                    dxilFixtureDirectory,
+                    shaderFixtureDirectory,
                     "M04OffscreenTriangle.vertex.dxil"));
                 using var pixelBytecodeStorage = CreateBytecodeStorage(Path.Combine(
-                    dxilFixtureDirectory,
+                    shaderFixtureDirectory,
                     "M04OffscreenTriangle.pixel-sampled-frame-storage.dxil"));
                 using var vertexBytecode = vertexBytecodeStorage.AcquireReadLease(0, vertexBytecodeStorage.Length);
                 using var pixelBytecode = pixelBytecodeStorage.AcquireReadLease(0, pixelBytecodeStorage.Length);
+                var vertexReflection = M04ShaderFixtureCompiler.ReadTypedReflection(shaderFixtureDirectory, "vertex");
+                var pixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(
+                    shaderFixtureDirectory,
+                    "pixel-sampled-frame-storage");
                 using var pipeline = graphicsDevice.CreatePipelineAsync(
-                    CreateD3D12ResourcePipelineDescription(vertexBytecode, pixelBytecode, includeStorageResources: true),
+                    CreateD3D12ResourcePipelineDescription(vertexBytecode, pixelBytecode, vertexReflection, pixelReflection),
                     CancellationToken.None)
                     .GetAwaiter()
                     .GetResult();
@@ -600,11 +586,11 @@ internal sealed partial class EngineHostOptionsTests
             return;
         }
 
-        var dxilFixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_DXIL_FIXTURE_DIRECTORY");
+        var shaderFixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
 
-        if (string.IsNullOrWhiteSpace(dxilFixtureDirectory))
+        if (string.IsNullOrWhiteSpace(shaderFixtureDirectory))
         {
-            Assert.Ignore("Set TERRAFX_M04_DXIL_FIXTURE_DIRECTORY to run the D3D12 descriptor-set witness.");
+            Assert.Ignore("Set TERRAFX_M04_SHADER_FIXTURE_DIRECTORY to run the D3D12 descriptor-set witness.");
             return;
         }
 
@@ -649,27 +635,36 @@ internal sealed partial class EngineHostOptionsTests
             using (device)
             {
                 using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
-                    dxilFixtureDirectory,
+                    shaderFixtureDirectory,
                     "M04OffscreenTriangle.vertex.dxil"));
                 using var pixelBytecodeStorage = CreateBytecodeStorage(Path.Combine(
-                    dxilFixtureDirectory,
+                    shaderFixtureDirectory,
                     "M04OffscreenTriangle.pixel-sampled-frame.dxil"));
                 using var vertexBytecode = vertexBytecodeStorage.AcquireReadLease(0, vertexBytecodeStorage.Length);
                 using var pixelBytecode = pixelBytecodeStorage.AcquireReadLease(0, pixelBytecodeStorage.Length);
+                var vertexReflection = M04ShaderFixtureCompiler.ReadTypedReflection(shaderFixtureDirectory, "vertex");
+                var pixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(
+                    shaderFixtureDirectory,
+                    "pixel-sampled-frame");
+                var mismatchedPixelReflection = CreateReflectionWithResourceBinding(
+                    pixelReflection,
+                    ShaderResourceKind.SampledImage,
+                    1);
                 _ = Assert.Throws<ArgumentException>(() => {
                     using var mismatchedPipeline = device.CreatePipeline(
                         CreateD3D12ResourcePipelineDescription(
                             vertexBytecode,
                             pixelBytecode,
-                            includeStorageResources: false,
-                            sampledImageBinding: 1),
+                            vertexReflection,
+                            mismatchedPixelReflection),
                         [vertexBytecode, pixelBytecode]);
                 });
                 using var pipeline = device.CreatePipeline(
                     CreateD3D12ResourcePipelineDescription(
                         vertexBytecode,
                         pixelBytecode,
-                        includeStorageResources: false),
+                        vertexReflection,
+                        pixelReflection),
                     [vertexBytecode, pixelBytecode]);
                 using var uniformBuffer = device.CreateBuffer(
                     new BufferDescription(
@@ -763,14 +758,18 @@ internal sealed partial class EngineHostOptionsTests
                 TestContext.WriteLine("D3D12 wrote CBV, SRV, and sampler tables and retained every native owner until descriptor-set disposal.");
 
                 using var storagePixelBytecodeStorage = CreateBytecodeStorage(Path.Combine(
-                    dxilFixtureDirectory,
+                    shaderFixtureDirectory,
                     "M04OffscreenTriangle.pixel-sampled-frame-storage.dxil"));
                 using var storagePixelBytecode = storagePixelBytecodeStorage.AcquireReadLease(0, storagePixelBytecodeStorage.Length);
+                var storagePixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(
+                    shaderFixtureDirectory,
+                    "pixel-sampled-frame-storage");
                 using var storagePipeline = device.CreatePipeline(
                     CreateD3D12ResourcePipelineDescription(
                         vertexBytecode,
                         storagePixelBytecode,
-                        includeStorageResources: true),
+                        vertexReflection,
+                        storagePixelReflection),
                     [vertexBytecode, storagePixelBytecode]);
                 using var storageUniformBuffer = device.CreateBuffer(
                     new BufferDescription(
