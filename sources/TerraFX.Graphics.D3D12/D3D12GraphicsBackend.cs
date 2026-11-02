@@ -356,12 +356,7 @@ public static unsafe class D3D12GraphicsBackend
         }
 
         private static D3D12_RESOURCE_STATES GetInitialResourceState(GpuMemoryKind memoryKind)
-            => memoryKind switch {
-                GpuMemoryKind.DeviceLocal => D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON,
-                GpuMemoryKind.Upload => D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_GENERIC_READ,
-                GpuMemoryKind.Readback => D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_DEST,
-                _ => throw new ArgumentOutOfRangeException(nameof(memoryKind)),
-            };
+            => D3D12GraphResourceStateMapper.GetInitialState(memoryKind);
 
         private static ImmutableArray<GraphicsMemoryHeapCapabilities> GetMemoryHeaps(
             IDXGIAdapter1* adapter,
