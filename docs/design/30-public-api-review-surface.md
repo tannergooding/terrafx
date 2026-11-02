@@ -7144,6 +7144,12 @@ public sealed class UiSnapshot : IDisposable
     public void Dispose();
 }
 
+public readonly struct UiInputDisposition
+{
+    internal UiInputDisposition(InputClass capturedClasses);
+    public InputClass CapturedClasses { get; }
+}
+
 public sealed class UiTree : IDisposable
 {
     public UiTree(UiTreeOptions options, InputContextId inputContextId);
@@ -7392,6 +7398,8 @@ The default `WindowOptions` `ClientSize` is 1280 x 720 logical units, `MinimumCl
 Clipboard requests carry the target window, a positive maximum UTF-8 byte limit no greater than 1 MiB, and an optional one-use `UserGestureToken`. Clipboard responses use `ClipboardStatus`; `Text` is present only for `Completed`, and empty text means an actually empty selection. Permission denial, unsupported protocol, expiry, timeout, invalid data, oversize and protocol cancellation remain distinct statuses. Cancellation of the task is separate from a protocol `Canceled` response. No native clipboard storage is returned to the caller.
 
 `UiTree` is a retained owner-thread tree, not a collection of arbitrary executable widgets. `UiElementDescription` names the widget/layout/style/accessibility schema in [25](25-ui-text-and-editor-tools.md). The root's `InputContextId` is from `TerraFX.Input`; the tree consumes copied input after native callbacks have returned and returns an event-time disposition. The tree is limited to 131,072 nodes and depth 256. `Layout` returns `Complete` or a domain `LayoutNotConverged`/overflow response; it never advertises a stale prior layout as current. `BuildSnapshot` returns immutable ordered draw/hit-test data retaining its font/texture versions. `SetText`, `SetChecked`, and `SetSliderValue` validate against the element's registered kind; mismatches throw before mutation.
+
+`UiInputDisposition` is an immutable event-time result. Its default value captures no classes; `CapturedClasses` accepts only `InputClass.None`, `Keyboard`, `Pointing`, and `Gamepad` bits. Version 0.1 intentionally does not expose widget handles or per-control lease IDs. The UI tree reports the relevant class while it owns a capture; Runtime copies that result to the gameplay event before enqueue, and each timeline retains capture for a non-neutral control through its matching neutral/up so rearming is recipient-local.
 
 `EditorSession` owns an edit world distinct from each play world. `EditorTransaction.Validate` returns an editor-specific validation response; `Commit` applies one all-target transaction at a boundary. `Undo`/`Redo` are session operations and return their own receipts. `StartPlayAsync` clones validated authoring state into a fresh world; stopping it cannot mutate the edit world. Inspector operations use registered schema/unit/range/ownership validators, never reflective field writes. [25's authoring mapping](25-ui-text-and-editor-tools.md#authoring-presentation-and-conversion) defines degree/Euler presentation, quantity/frame/bearing semantics and nonmutating preferences; it adds no public runtime angle, unit or coordinate signature. The editor, trust policy and migration/reload contracts are [25](25-ui-text-and-editor-tools.md) and [26](26-csharp-systems-plugins-and-hot-reload.md).
 

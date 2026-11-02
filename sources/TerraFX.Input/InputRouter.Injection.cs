@@ -18,6 +18,7 @@ public sealed partial class InputRouter
     private readonly Dictionary<InputControlKey, long> _digitalControlDownTimestamps = [];
     private readonly Dictionary<InputControlKey, bool> _digitalControlStates = [];
     private readonly Dictionary<InputControlKey, HashSet<InputDeviceHandle>> _physicalDigitalSources = [];
+    private readonly HashSet<InputControlKey> _uiConsumedControls = [];
     private long _firstUnacceptedHostSequence;
     private readonly Queue<InputControlEnvelope> _inputControlInbox = [];
     private readonly Queue<InputEnvelope> _inputInbox = [];
@@ -933,11 +934,17 @@ public sealed partial class InputRouter
     internal InputRoutingReceipt EnqueuePhysicalEvent(
         PhysicalInputEvent inputEvent,
         ushort? playerSlot,
+        InputClass uiCapturedClasses,
         out long discardedInputCount)
     {
         EnsureOwnerThread();
         ArgumentNullException.ThrowIfNull(inputEvent);
         discardedInputCount = 0;
+
+        if ((uiCapturedClasses & ~(InputClass.Keyboard | InputClass.Pointing | InputClass.Gamepad)) != 0)
+        {
+            return CreateInputRejection("InvalidUiDisposition", "/UiDisposition/CapturedClasses");
+        }
 
         if (_recipientKind != InputRecipientKind.SimulationTimeline)
         {
@@ -1060,9 +1067,16 @@ public sealed partial class InputRouter
             inputEvent.HostTimestamp,
             inputEvent.HostSequence,
             Math.Max(assignedTick, _nextOpenTick),
-            late || (assignedTick < _nextOpenTick));
+            late || (assignedTick < _nextOpenTick),
+            uiCapturedClasses);
         return EnqueueInputEnvelope(envelope, inputEvent.HostTimestamp, inputEvent.HostSequence, assignedTick, late);
     }
+
+    internal InputRoutingReceipt EnqueuePhysicalEvent(
+        PhysicalInputEvent inputEvent,
+        ushort? playerSlot,
+        out long discardedInputCount)
+        => EnqueuePhysicalEvent(inputEvent, playerSlot, InputClass.None, out discardedInputCount);
 
     internal InputRoutingReceipt ReconcileHeadlessInputState(
         ImmutableArray<InputInjection> heldInputs,
@@ -1618,8 +1632,15 @@ public sealed partial class InputRouter
 
         var hasPhysicalSources = _physicalDigitalSources.TryGetValue(envelope.Control, out var physicalSources)
             && (physicalSources.Count != 0);
+        var controlIsNeutral = isNeutral && !IsControlDown(envelope.Control) && !hasPhysicalSources;
+        var wasUiConsumed = _uiConsumedControls.Contains(envelope.Control);
+        var capturesControl = (envelope.UiCapturedClasses & GetInputClass(envelope.Control)) != 0;
+        var beganUiConsumption = capturesControl
+            && !controlIsNeutral
+            && _uiConsumedControls.Add(envelope.Control);
+        var endedUiConsumption = controlIsNeutral && _uiConsumedControls.Remove(envelope.Control);
 
-        if (wasUnreconciled && isNeutral && !IsControlDown(envelope.Control) && !hasPhysicalSources)
+        if (wasUnreconciled && controlIsNeutral)
         {
             _ = _unreconciledControls.Remove(envelope.Control);
         }
@@ -1629,10 +1650,19 @@ public sealed partial class InputRouter
             DisarmBindingsForControl(envelope.Control);
         }
 
-        if (changed || wasUnreconciled)
+        if (beganUiConsumption)
+        {
+            DisarmBindingsForControl(envelope.Control);
+        }
+
+        if (changed || wasUnreconciled || beganUiConsumption || (wasUiConsumed && endedUiConsumption))
         {
             var affectedControls = UpdateAffectedBindingStates(envelope.Control, envelope);
-            RecomputeAffectedActions(affectedControls, envelope.HostSequence, envelope.AssignedTick);
+            RecomputeAffectedActions(
+                affectedControls,
+                envelope.HostSequence,
+                envelope.AssignedTick,
+                beganUiConsumption ? InputCancellationReason.InputConsumed : null);
         }
     }
 
@@ -1881,6 +1911,7 @@ public sealed partial class InputRouter
                 continue;
             }
 
+            _ = _uiConsumedControls.Remove(entry.Key);
             var envelope = new InputEnvelope(
                 physicalEvent,
                 entry.Key,
@@ -1997,6 +2028,7 @@ public sealed partial class InputRouter
         _digitalControlDownTimestamps.Clear();
         _digitalControlStates.Clear();
         _physicalDigitalSources.Clear();
+        _uiConsumedControls.Clear();
         _inputControlInbox.Clear();
         _inputInbox.Clear();
         _inputInboxTail = null;
@@ -2031,6 +2063,8 @@ public sealed partial class InputRouter
         {
             _ = _physicalDigitalSources.Remove(control);
         }
+
+        _ = _uiConsumedControls.RemoveWhere(key => MatchesInputScope(key, inputClasses, playerSlot));
 
         foreach (var control in _digitalControlDownTimestamps.Keys.Where(key => MatchesInputScope(key, inputClasses, playerSlot)).ToArray())
         {
@@ -2367,6 +2401,7 @@ public sealed partial class InputRouter
         _inputInboxTail = null;
         _digitalControlStates.Clear();
         _physicalDigitalSources.Clear();
+        _uiConsumedControls.Clear();
         _scalarControlValues.Clear();
         _vectorControlValues.Clear();
         MarkUnreconciledControls(InputClass.Keyboard | InputClass.Pointing | InputClass.Gamepad, playerSlot: null);
@@ -3553,6 +3588,7 @@ public sealed partial class InputRouter
             _lastHostTimestamp = hostTimestamp;
             AssignedTick = assignedTick;
             Late = late;
+            UiCapturedClasses = InputClass.None;
         }
 
         internal InputEnvelope(
@@ -3561,7 +3597,8 @@ public sealed partial class InputRouter
             long hostTimestamp,
             long hostSequence,
             long assignedTick,
-            bool late)
+            bool late,
+            InputClass uiCapturedClasses = InputClass.None)
         {
             PhysicalEvent = physicalEvent;
             Control = control;
@@ -3571,6 +3608,7 @@ public sealed partial class InputRouter
             _lastHostTimestamp = hostTimestamp;
             AssignedTick = assignedTick;
             Late = late;
+            UiCapturedClasses = uiCapturedClasses;
         }
 
         internal long AssignedTick { get; }
@@ -3596,6 +3634,8 @@ public sealed partial class InputRouter
         internal PhysicalInputEvent? PhysicalEvent { get; }
 
         internal long ReplacementCount => _replacementCount;
+
+        internal InputClass UiCapturedClasses { get; }
 
         internal bool CanCoalesceWith(InputEnvelope next)
         {
