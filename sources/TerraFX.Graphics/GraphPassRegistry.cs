@@ -64,6 +64,21 @@ internal sealed class GraphPassRegistry
         return passId;
     }
 
+    internal bool IsRegistered(RenderPassId passId)
+    {
+        EnsureOwnerThread();
+
+        foreach (var pass in _passes)
+        {
+            if (pass.Id == passId)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     internal bool TryOrder(
         ImmutableArray<GraphResourceAccess> accesses,
         out ImmutableArray<RenderPassId> orderedPasses)

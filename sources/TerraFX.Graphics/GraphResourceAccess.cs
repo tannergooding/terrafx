@@ -7,13 +7,15 @@ namespace TerraFX.Graphics;
 internal readonly struct GraphResourceAccess
 {
     private readonly GraphBufferRange _bufferRange;
+    private readonly bool _contentsValid;
     private readonly GraphTextureRange _textureRange;
 
     internal GraphResourceAccess(
         RenderPassId passId,
         GraphBufferVersion version,
         GraphBufferRange range,
-        bool isWrite)
+        bool isWrite,
+        bool contentsValid = true)
     {
         if (!passId.IsValid)
         {
@@ -33,6 +35,7 @@ internal readonly struct GraphResourceAccess
         PassId = passId;
         ResourceId = version.ResourceId;
         Version = version.Version;
+        _contentsValid = contentsValid;
         _bufferRange = range;
         _textureRange = default;
     }
@@ -41,7 +44,8 @@ internal readonly struct GraphResourceAccess
         RenderPassId passId,
         GraphTextureVersion version,
         GraphTextureRange range,
-        bool isWrite)
+        bool isWrite,
+        bool contentsValid = true)
     {
         if (!passId.IsValid)
         {
@@ -61,9 +65,12 @@ internal readonly struct GraphResourceAccess
         PassId = passId;
         ResourceId = version.ResourceId;
         Version = version.Version;
+        _contentsValid = contentsValid;
         _bufferRange = default;
         _textureRange = range;
     }
+
+    internal bool ContentsValid => _contentsValid;
 
     internal uint DeviceEpoch { get; }
 

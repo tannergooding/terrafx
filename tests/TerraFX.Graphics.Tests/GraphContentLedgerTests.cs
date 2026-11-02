@@ -45,31 +45,36 @@ internal sealed class GraphContentLedgerTests
         var ledger = new GraphTextureContentLedger(initialVersion, contentsValid: false);
         var writtenRange = new GraphTextureRange(0, 2, 0, 2, TextureAspect.Color);
 
-        _ = Assert.Throws<InvalidOperationException>(
-            () => ledger.WriteAttachment(initialVersion, writtenRange, AttachmentLoadAction.Load, AttachmentStoreAction.Store));
+        (var uninitializedLoad, var loadContentsValid) = ledger.WriteAttachment(
+            initialVersion,
+            writtenRange,
+            AttachmentLoadAction.Load,
+            AttachmentStoreAction.Store);
+        Assert.That(loadContentsValid, Is.False);
 
         var firstWrite = ledger.WriteAttachment(
-            initialVersion,
+            uninitializedLoad,
             new GraphTextureRange(0, 1, 0, 2, TextureAspect.Color),
             AttachmentLoadAction.Clear,
-            AttachmentStoreAction.Store);
+            AttachmentStoreAction.Store).Version;
         var secondWrite = ledger.WriteAttachment(
             firstWrite,
             new GraphTextureRange(1, 1, 0, 2, TextureAspect.Color),
             AttachmentLoadAction.Clear,
-            AttachmentStoreAction.Store);
+            AttachmentStoreAction.Store).Version;
         Assert.That(ledger.IsInitialized(secondWrite, writtenRange), Is.True);
 
-        var loadedWrite = ledger.WriteAttachment(
+        var (loadedWrite, loadedContentsValid) = ledger.WriteAttachment(
             secondWrite,
             new GraphTextureRange(1, 1, 1, 1, TextureAspect.Color),
             AttachmentLoadAction.Load,
             AttachmentStoreAction.Store);
+        Assert.That(loadedContentsValid, Is.True);
         var discardedWrite = ledger.WriteAttachment(
             loadedWrite,
             new GraphTextureRange(1, 1, 1, 1, TextureAspect.Color),
             AttachmentLoadAction.DontCare,
-            AttachmentStoreAction.Discard);
+            AttachmentStoreAction.Discard).Version;
 
         Assert.That(ledger.IsInitialized(discardedWrite, new GraphTextureRange(0, 1, 0, 2, TextureAspect.Color)), Is.True);
         Assert.That(ledger.IsInitialized(discardedWrite, new GraphTextureRange(1, 1, 0, 1, TextureAspect.Color)), Is.True);

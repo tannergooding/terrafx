@@ -20,6 +20,10 @@ internal sealed class GraphPassRegistryTests
         Assert.That(first.Value, Is.Zero);
         Assert.That(second.IsValid, Is.True);
         Assert.That(second.Value, Is.EqualTo(1));
+        Assert.That(registry.IsRegistered(first), Is.True);
+        Assert.That(registry.IsRegistered(second), Is.True);
+        Assert.That(registry.IsRegistered(new RenderPassId(9, 2)), Is.False);
+        Assert.That(registry.IsRegistered(new RenderPassId(10, 0)), Is.False);
         Assert.That(registry.Passes, Has.Length.EqualTo(2));
         Assert.That(registry.Passes[1].Description.Predecessors, Is.EqualTo(ImmutableArray.Create(first)));
     }

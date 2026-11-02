@@ -60,7 +60,7 @@ internal sealed class GraphTextureContentLedger
         return nextVersion;
     }
 
-    internal GraphTextureVersion WriteAttachment(
+    internal (GraphTextureVersion Version, bool LoadContentsValid) WriteAttachment(
         GraphTextureVersion previousVersion,
         GraphTextureRange range,
         AttachmentLoadAction loadAction,
@@ -84,10 +84,7 @@ internal sealed class GraphTextureContentLedger
             throw new InvalidOperationException("An attachment write must advance the current graph version.");
         }
 
-        if ((loadAction == AttachmentLoadAction.Load) && !previousCoverage.Covers(range))
-        {
-            throw new InvalidOperationException("Loading an attachment requires initialized contents over its complete range.");
-        }
+        var loadContentsValid = (loadAction != AttachmentLoadAction.Load) || previousCoverage.Covers(range);
 
         var nextVersion = new GraphTextureVersion(
             previousVersion.DeviceEpoch,
@@ -97,18 +94,18 @@ internal sealed class GraphTextureContentLedger
             previousVersion.Range);
         var nextCoverage = previousCoverage.Clone();
 
-        if (storeAction == AttachmentStoreAction.Store)
-        {
-            nextCoverage.Add(range);
-        }
-        else
+        if (storeAction == AttachmentStoreAction.Discard)
         {
             nextCoverage.Remove(range);
+        }
+        else if (loadAction != AttachmentLoadAction.Load)
+        {
+            nextCoverage.Add(range);
         }
 
         _coverageByVersion.Add(nextVersion, nextCoverage);
         _currentVersion = nextVersion;
-        return nextVersion;
+        return (nextVersion, loadContentsValid);
     }
 
     private GraphTextureRangeCoverage GetCoverage(GraphTextureVersion version)
