@@ -72,6 +72,13 @@ dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --confi
 dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Release
 ```
 
+Run the D3D12 graph resource-state mapping tests:
+
+```powershell
+dotnet test .\tests\TerraFX.Graphics.D3D12.Tests\TerraFX.Graphics.D3D12.Tests.csproj --configuration Debug
+dotnet test .\tests\TerraFX.Graphics.D3D12.Tests\TerraFX.Graphics.D3D12.Tests.csproj --configuration Release
+```
+
 Build the D3D12 package to compile its adapter enumeration and capability reporting path. This does not initialize a device or qualify native startup:
 
 ```powershell
@@ -148,7 +155,7 @@ The fixture-dependent tests create and retire an internal graphics pipeline with
 
 ### Vulkan GraphicsDevice startup through the host issuer
 
-This focused Runtime test supplies a real `PlatformHostOwner`-issued identity to `GraphicsDevice.CreateAsync`, starts an OffscreenNative device through `VulkanGraphicsBackend.CreateRegistration`, records the reported adapter/driver/API and validation-layer environment in the TRX output, then shuts down the device and platform owner:
+This focused Runtime test supplies a real `PlatformHostOwner`-issued identity to `GraphicsDevice.CreateAsync`, starts an OffscreenNative device through `VulkanGraphicsBackend.CreateRegistration`, records the reported adapter/driver/API and validation-layer environment in the TRX output, then uses `CreateBufferAsync`, `UploadBufferAsync`, and `ReadbackBufferAsync` to verify an exact 32-byte round trip before shutting down the device and platform owner:
 
 ```powershell
 $env:VULKAN_SDK = 'C:\VulkanSDK\1.4.328.1'
@@ -158,7 +165,7 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~EngineHostOptionsTests"
 ```
 
-This verifies the internal startup port with the sealed `GraphicsDevice` facade; it does not exercise `EngineHost`, Persistence service initialization, resource requests through the facade, or graph submission. The test explicitly skips when the Vulkan loader or a qualifying device is unavailable.
+This verifies the internal startup port and public buffer-resource request path with the sealed `GraphicsDevice` facade; it does not exercise `EngineHost`, Persistence service initialization, texture/sampler/pipeline requests through the facade, or graph submission. The test explicitly skips when the Vulkan loader or a qualifying device is unavailable.
 
 ### Retained AssetLease lifetime
 

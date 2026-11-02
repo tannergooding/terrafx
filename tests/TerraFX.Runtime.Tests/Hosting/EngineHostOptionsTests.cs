@@ -193,6 +193,10 @@ internal sealed class EngineHostOptionsTests
     }
 
     [Test]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "The synchronous waits complete native requests before resource disposal, and the PlatformHostOwner must be used on its creating test thread.")]
     public void CreatesAndShutsDownVulkanGraphicsDeviceUsingHostIssuedIdentity()
     {
         var registration = VulkanGraphicsBackend.CreateRegistration();
@@ -250,6 +254,48 @@ internal sealed class EngineHostOptionsTests
             TestContext.WriteLine(
                 $"VULKAN_SDK={Environment.GetEnvironmentVariable("VULKAN_SDK") ?? "(unset)"}; "
                 + $"VK_INSTANCE_LAYERS={Environment.GetEnvironmentVariable("VK_INSTANCE_LAYERS") ?? "(unset)"}");
+
+            GpuBuffer? buffer = null;
+
+            try
+            {
+                buffer = graphicsDevice.CreateBufferAsync(
+                    new BufferDescription(
+                        256,
+                        BufferUsage.CopySource | BufferUsage.CopyDestination,
+                        GpuMemoryKind.DeviceLocal,
+                        structuredStride: null,
+                        debugName: "graphics-device-startup-roundtrip"))
+                    .GetAwaiter()
+                    .GetResult();
+                Assert.That(buffer.Handle.IsValid, Is.True);
+                Assert.That(buffer.Handle.OwnerId, Is.EqualTo(platformOwner.OwnerId));
+                Assert.That(buffer.Handle.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
+                var payload = new byte[32];
+
+                for (var index = 0; index < payload.Length; index++)
+                {
+                    payload[index] = unchecked((byte)((index * 29) + 7));
+                }
+
+                var upload = graphicsDevice.UploadBufferAsync(buffer, 64, payload).GetAwaiter().GetResult();
+                Assert.That(upload.Status, Is.EqualTo(UploadStatus.Ready));
+                Assert.That(upload.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
+                var completedFence = upload.CompletedFence
+                    ?? throw new InvalidOperationException("A ready Vulkan upload has no completed fence.");
+                Assert.That(completedFence, Is.GreaterThan(0));
+
+                using var readback = graphicsDevice.ReadbackBufferAsync(buffer, 64, payload.Length).GetAwaiter().GetResult();
+                using var readLease = readback.AcquireReadLease(0, payload.Length);
+                var actual = new byte[payload.Length];
+                var copyAction = new ReadbackCopyAction(actual);
+                readLease.UseWindow(0, payload.Length, ref copyAction);
+                Assert.That(actual, Is.EqualTo(payload));
+            }
+            finally
+            {
+                buffer?.Dispose();
+            }
         }
         finally
         {
@@ -553,5 +599,18 @@ internal sealed class EngineHostOptionsTests
         Assert.That(window.IsValid, Is.True);
         Assert.That(window.OwnerId, Is.EqualTo(ownerId));
         Assert.That(staleCloseRejected, Is.True);
+    }
+
+    private readonly struct ReadbackCopyAction : IAction<ReadOnlySpan<byte>>
+    {
+        private readonly byte[] _destination;
+
+        internal ReadbackCopyAction(byte[] destination)
+        {
+            _destination = destination;
+        }
+
+        public readonly void Invoke(scoped ReadOnlySpan<byte> argument)
+            => argument.CopyTo(_destination);
     }
 }
