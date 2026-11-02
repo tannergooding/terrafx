@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
+using System.Threading;
 using TerraFX;
 using TerraFX.Platform;
 
@@ -24,13 +25,13 @@ internal sealed class PlatformHostOwner
     private readonly PlatformHost _platform;
     private readonly HostProfile _profile;
 
-    private PlatformHostOwner(uint ownerId, HostProfile profile, PlatformHost platform)
+    private PlatformHostOwner(uint ownerId, HostProfile profile, PlatformHost platform, TimeProvider timeProvider)
     {
         _ownerId = ownerId;
         _platform = platform;
         _profile = profile;
         _ownerThreadId = Environment.CurrentManagedThreadId;
-        _inputBroker = new PlatformInputBroker(ownerId);
+        _inputBroker = new PlatformInputBroker(ownerId, timeProvider);
         _activeMonitorHandles = [];
         _activeWindowHandles = [];
         _nativeMonitorHandles = [];
@@ -56,8 +57,9 @@ internal sealed class PlatformHostOwner
     {
         ArgumentNullException.ThrowIfNull(options);
         var ownerId = OwnerIdAllocator.Allocate();
-        var platform = new PlatformHost(ownerId, options.Platform, options.ClipboardServicePolicy);
-        var owner = new PlatformHostOwner(ownerId, options.Profile, platform);
+        var timeProvider = TimeProvider.System;
+        var platform = new PlatformHost(ownerId, options.Platform, options.ClipboardServicePolicy, timeProvider);
+        var owner = new PlatformHostOwner(ownerId, options.Profile, platform, timeProvider);
 
         try
         {

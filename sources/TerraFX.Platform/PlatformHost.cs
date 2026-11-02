@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Threading;
 using TerraFX;
 
 namespace TerraFX.Platform;
@@ -16,9 +17,14 @@ public sealed class PlatformHost
     /// <param name="ownerId">The nonzero identity issued by the Runtime host owner.</param>
     /// <param name="backend">The explicitly selected platform backend.</param>
     /// <param name="clipboardPolicy">The host's clipboard service admission policy.</param>
-    internal PlatformHost(uint ownerId, PlatformBackend backend, ClipboardServicePolicy clipboardPolicy)
+    /// <param name="timeProvider">The host's private monotonic timestamp source.</param>
+    internal PlatformHost(
+        uint ownerId,
+        PlatformBackend backend,
+        ClipboardServicePolicy clipboardPolicy,
+        TimeProvider? timeProvider = null)
     {
-        _backend = PlatformBackendFactory.Create(backend, ownerId, clipboardPolicy);
+        _backend = PlatformBackendFactory.Create(backend, ownerId, clipboardPolicy, timeProvider);
     }
 
     /// <summary>Gets the owner's clipboard capability state.</summary>

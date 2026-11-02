@@ -535,6 +535,7 @@ internal sealed unsafe partial class WindowsPlatformBackend
         ushort downFlag,
         ushort upFlag,
         MouseButtonValue button,
+        long monotonicTimestamp,
         long nativeTimestamp,
         PhysicalInputEventDiagnostic diagnostics)
     {
@@ -549,7 +550,8 @@ internal sealed unsafe partial class WindowsPlatformBackend
                 IsDown: true,
                 NativeTimestamp: nativeTimestamp,
                 NativeClockDomain: WindowsMessageTimeClockDomain,
-                Diagnostics: diagnostics));
+                Diagnostics: diagnostics,
+                MonotonicTimestamp: monotonicTimestamp));
         }
 
         if ((buttonFlags & upFlag) != 0)
@@ -563,7 +565,8 @@ internal sealed unsafe partial class WindowsPlatformBackend
                 IsDown: false,
                 NativeTimestamp: nativeTimestamp,
                 NativeClockDomain: WindowsMessageTimeClockDomain,
-                Diagnostics: diagnostics));
+                Diagnostics: diagnostics,
+                MonotonicTimestamp: monotonicTimestamp));
         }
     }
 
@@ -574,6 +577,8 @@ internal sealed unsafe partial class WindowsPlatformBackend
             throw new InvalidOperationException("Windows delivered WM_INPUT without a raw-input handle.");
         }
 
+        var monotonicTimestamp = _timeProvider.GetTimestamp();
+        var (nativeTimestamp, diagnostics) = GetNativeMessageTimestamp();
         var rawInput = default(NativeRawInput);
         var inputSize = 0u;
         var requiredSize = GetRawInputDataNative(
@@ -638,10 +643,12 @@ internal sealed unsafe partial class WindowsPlatformBackend
                 PhysicalInputEventKind.DeviceAdded,
                 null,
                 rawInput.Header.Device,
-                deviceKind));
+                deviceKind,
+                NativeTimestamp: nativeTimestamp,
+                NativeClockDomain: WindowsMessageTimeClockDomain,
+                Diagnostics: diagnostics,
+                MonotonicTimestamp: monotonicTimestamp));
         }
-
-        var (nativeTimestamp, diagnostics) = GetNativeMessageTimestamp();
 
         if (deviceKind == PlatformInputDeviceKind.Keyboard)
         {
@@ -649,6 +656,7 @@ internal sealed unsafe partial class WindowsPlatformBackend
                 state,
                 rawInput.Header.Device,
                 rawInput.Data.Keyboard,
+                monotonicTimestamp,
                 nativeTimestamp,
                 diagnostics);
         }
@@ -658,6 +666,7 @@ internal sealed unsafe partial class WindowsPlatformBackend
                 state,
                 rawInput.Header.Device,
                 rawInput.Data.Mouse,
+                monotonicTimestamp,
                 nativeTimestamp,
                 diagnostics);
         }
@@ -670,6 +679,7 @@ internal sealed unsafe partial class WindowsPlatformBackend
             throw new InvalidOperationException("Windows reported a raw-input device change without a device identity.");
         }
 
+        var monotonicTimestamp = _timeProvider.GetTimestamp();
         var (nativeTimestamp, diagnostics) = GetNativeMessageTimestamp();
         PhysicalInputEventKind kind;
         PlatformInputDeviceKind deviceKind;
@@ -710,13 +720,15 @@ internal sealed unsafe partial class WindowsPlatformBackend
             deviceKind,
             NativeTimestamp: nativeTimestamp,
             NativeClockDomain: WindowsMessageTimeClockDomain,
-            Diagnostics: diagnostics));
+            Diagnostics: diagnostics,
+            MonotonicTimestamp: monotonicTimestamp));
     }
 
     private void CaptureRawKeyboard(
         WindowState state,
         nint nativeDevice,
         NativeRawKeyboard keyboard,
+        long monotonicTimestamp,
         long nativeTimestamp,
         PhysicalInputEventDiagnostic diagnostics)
     {
@@ -738,13 +750,15 @@ internal sealed unsafe partial class WindowsPlatformBackend
             IsDown: isDown,
             NativeTimestamp: nativeTimestamp,
             NativeClockDomain: WindowsMessageTimeClockDomain,
-            Diagnostics: diagnostics));
+            Diagnostics: diagnostics,
+            MonotonicTimestamp: monotonicTimestamp));
     }
 
     private void CaptureRawMouse(
         WindowState state,
         nint nativeDevice,
         NativeRawMouse mouse,
+        long monotonicTimestamp,
         long nativeTimestamp,
         PhysicalInputEventDiagnostic diagnostics)
     {
@@ -760,7 +774,8 @@ internal sealed unsafe partial class WindowsPlatformBackend
                 PointerContentScale: pointerContentScale,
                 NativeTimestamp: nativeTimestamp,
                 NativeClockDomain: WindowsMessageTimeClockDomain,
-                Diagnostics: diagnostics));
+                Diagnostics: diagnostics,
+                MonotonicTimestamp: monotonicTimestamp));
         }
         else if ((mouse.LastX != 0) || (mouse.LastY != 0))
         {
@@ -772,14 +787,15 @@ internal sealed unsafe partial class WindowsPlatformBackend
                 PointerDelta: new Vector2(mouse.LastX, mouse.LastY),
                 NativeTimestamp: nativeTimestamp,
                 NativeClockDomain: WindowsMessageTimeClockDomain,
-                Diagnostics: diagnostics));
+                Diagnostics: diagnostics,
+                MonotonicTimestamp: monotonicTimestamp));
         }
 
-        CaptureMouseButton(state.Window, nativeDevice, mouse.ButtonFlags, RawMouseButton1Down, RawMouseButton1Up, MouseButtonValue.Primary, nativeTimestamp, diagnostics);
-        CaptureMouseButton(state.Window, nativeDevice, mouse.ButtonFlags, RawMouseButton2Down, RawMouseButton2Up, MouseButtonValue.Secondary, nativeTimestamp, diagnostics);
-        CaptureMouseButton(state.Window, nativeDevice, mouse.ButtonFlags, RawMouseButton3Down, RawMouseButton3Up, MouseButtonValue.Middle, nativeTimestamp, diagnostics);
-        CaptureMouseButton(state.Window, nativeDevice, mouse.ButtonFlags, RawMouseButton4Down, RawMouseButton4Up, MouseButtonValue.Auxiliary1, nativeTimestamp, diagnostics);
-        CaptureMouseButton(state.Window, nativeDevice, mouse.ButtonFlags, RawMouseButton5Down, RawMouseButton5Up, MouseButtonValue.Auxiliary2, nativeTimestamp, diagnostics);
+        CaptureMouseButton(state.Window, nativeDevice, mouse.ButtonFlags, RawMouseButton1Down, RawMouseButton1Up, MouseButtonValue.Primary, monotonicTimestamp, nativeTimestamp, diagnostics);
+        CaptureMouseButton(state.Window, nativeDevice, mouse.ButtonFlags, RawMouseButton2Down, RawMouseButton2Up, MouseButtonValue.Secondary, monotonicTimestamp, nativeTimestamp, diagnostics);
+        CaptureMouseButton(state.Window, nativeDevice, mouse.ButtonFlags, RawMouseButton3Down, RawMouseButton3Up, MouseButtonValue.Middle, monotonicTimestamp, nativeTimestamp, diagnostics);
+        CaptureMouseButton(state.Window, nativeDevice, mouse.ButtonFlags, RawMouseButton4Down, RawMouseButton4Up, MouseButtonValue.Auxiliary1, monotonicTimestamp, nativeTimestamp, diagnostics);
+        CaptureMouseButton(state.Window, nativeDevice, mouse.ButtonFlags, RawMouseButton5Down, RawMouseButton5Up, MouseButtonValue.Auxiliary2, monotonicTimestamp, nativeTimestamp, diagnostics);
 
         if ((mouse.ButtonFlags & RawMouseVerticalWheel) != 0)
         {
@@ -792,7 +808,8 @@ internal sealed unsafe partial class WindowsPlatformBackend
                 ScrollUnit: PointerScrollUnit.Detents,
                 NativeTimestamp: nativeTimestamp,
                 NativeClockDomain: WindowsMessageTimeClockDomain,
-                Diagnostics: diagnostics));
+                Diagnostics: diagnostics,
+                MonotonicTimestamp: monotonicTimestamp));
         }
 
         if ((mouse.ButtonFlags & RawMouseHorizontalWheel) != 0)
@@ -806,12 +823,14 @@ internal sealed unsafe partial class WindowsPlatformBackend
                 ScrollUnit: PointerScrollUnit.Detents,
                 NativeTimestamp: nativeTimestamp,
                 NativeClockDomain: WindowsMessageTimeClockDomain,
-                Diagnostics: diagnostics));
+                Diagnostics: diagnostics,
+                MonotonicTimestamp: monotonicTimestamp));
         }
     }
 
     private void CaptureWindowFocus(WindowState state, PhysicalInputEventKind kind)
     {
+        var monotonicTimestamp = _timeProvider.GetTimestamp();
         var (nativeTimestamp, diagnostics) = GetNativeMessageTimestamp();
         CaptureNativeInputSample(new PlatformInputSample(
             kind,
@@ -820,7 +839,8 @@ internal sealed unsafe partial class WindowsPlatformBackend
             PlatformInputDeviceKind.Unknown,
             NativeTimestamp: nativeTimestamp,
             NativeClockDomain: WindowsMessageTimeClockDomain,
-            Diagnostics: diagnostics));
+            Diagnostics: diagnostics,
+            MonotonicTimestamp: monotonicTimestamp));
     }
 
     private void CreateNativeWindow(WindowState state, nint monitor)

@@ -39,12 +39,16 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
     private readonly int _ownerThreadId;
     private readonly WindowsPlatformOwnerInitialization _platformOwner;
     private readonly WindowsRawInputRegistration _rawInputRegistration;
+    private readonly TimeProvider _timeProvider;
 
     [SuppressMessage(
         "Usage",
         "CA1031:Do not catch general exception types",
         Justification = "A partially initialized Windows input owner must release or quarantine its process-wide native admission.")]
-    internal WindowsPlatformBackend(uint ownerId, ClipboardServicePolicy clipboardPolicy)
+    internal WindowsPlatformBackend(
+        uint ownerId,
+        ClipboardServicePolicy clipboardPolicy,
+        TimeProvider? timeProvider = null)
     {
         ArgumentOutOfRangeException.ThrowIfZero(ownerId);
         ArgumentOutOfRangeException.ThrowIfGreaterThan((int)clipboardPolicy, (int)ClipboardServicePolicy.Required);
@@ -100,6 +104,7 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
             ?? throw new InvalidOperationException("The Windows Platform owner was not initialized.");
         _rawInputRegistration = rawInputRegistration
             ?? throw new InvalidOperationException("The Windows Raw Input registration was not initialized.");
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _ownerId = ownerId;
         _ownerThreadId = _platformOwner.OwnerThreadId;
         _windowClassName = windowClassName;

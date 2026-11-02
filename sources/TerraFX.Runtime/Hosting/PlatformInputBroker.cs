@@ -50,7 +50,8 @@ internal sealed class PlatformInputBroker
             sample.DeviceKind,
             NativeTimestamp: sample.NativeTimestamp,
             NativeClockDomain: sample.NativeClockDomain,
-            Diagnostics: sample.Diagnostics);
+            Diagnostics: sample.Diagnostics,
+            MonotonicTimestamp: sample.MonotonicTimestamp);
 
     private static bool IsDeviceScoped(PhysicalInputEventKind kind)
         => kind is PhysicalInputEventKind.KeyDown
@@ -118,6 +119,8 @@ internal sealed class PlatformInputBroker
                 throw new InvalidOperationException("A pointer input sample has a non-pointer device class.");
             }
 
+            var hostTimestamp = GetHostTimestamp(sample.MonotonicTimestamp);
+
             if (sample.Window is { } window)
             {
                 if (!window.IsValid || (window.OwnerId != _ownerId))
@@ -158,7 +161,7 @@ internal sealed class PlatformInputBroker
             {
                 if (isNewDevice)
                 {
-                    events.Add(CreatePhysicalInputEvent(sample, device));
+                    events.Add(CreatePhysicalInputEvent(sample, device, hostTimestamp));
                 }
 
                 continue;
@@ -171,7 +174,7 @@ internal sealed class PlatformInputBroker
                     throw new InvalidOperationException("A device-removal sample has no issued device handle.");
                 }
 
-                events.Add(CreatePhysicalInputEvent(sample, removedDevice));
+                events.Add(CreatePhysicalInputEvent(sample, removedDevice, hostTimestamp));
                 RemoveDevice(sample.NativeDeviceIdentity, removedDevice);
                 continue;
             }
@@ -183,10 +186,13 @@ internal sealed class PlatformInputBroker
                     throw new InvalidOperationException("A native input sample has no issued device handle.");
                 }
 
-                events.Add(CreatePhysicalInputEvent(CreateDeviceLifecycleSample(sample, PhysicalInputEventKind.DeviceAdded), addedDevice));
+                events.Add(CreatePhysicalInputEvent(
+                    CreateDeviceLifecycleSample(sample, PhysicalInputEventKind.DeviceAdded),
+                    addedDevice,
+                    hostTimestamp));
             }
 
-            events.Add(CreatePhysicalInputEvent(sample, device));
+            events.Add(CreatePhysicalInputEvent(sample, device, hostTimestamp));
         }
 
         return new PlatformInputCaptureBatch(events.ToImmutable(), discardedSampleCount);
@@ -211,7 +217,8 @@ internal sealed class PlatformInputBroker
 
     private PhysicalInputEvent CreatePhysicalInputEvent(
         PlatformInputSample sample,
-        InputDeviceHandle? device)
+        InputDeviceHandle? device,
+        long hostTimestamp)
     {
         PhysicalInputValue? value = null;
 
@@ -287,7 +294,6 @@ internal sealed class PlatformInputBroker
             }
         }
 
-        var hostTimestamp = GetHostTimestamp();
         var hostSequence = _sequenceLease.Allocate();
 
         return new PhysicalInputEvent(
@@ -380,9 +386,9 @@ internal sealed class PlatformInputBroker
         return handle;
     }
 
-    private long GetHostTimestamp()
+    private long GetHostTimestamp(long monotonicTimestamp)
     {
-        var timestamp = _timeProvider.GetElapsedTime(_originTimestamp, _timeProvider.GetTimestamp()).Ticks;
+        var timestamp = _timeProvider.GetElapsedTime(_originTimestamp, monotonicTimestamp).Ticks;
 
         if (timestamp < _lastHostTimestamp)
         {

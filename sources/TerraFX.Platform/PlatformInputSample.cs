@@ -24,4 +24,5 @@ internal readonly record struct PlatformInputSample(
     PointerScrollUnit? ScrollUnit = null,
     long? NativeTimestamp = null,
     string? NativeClockDomain = null,
-    PhysicalInputEventDiagnostic Diagnostics = PhysicalInputEventDiagnostic.None);
+    PhysicalInputEventDiagnostic Diagnostics = PhysicalInputEventDiagnostic.None,
+    long MonotonicTimestamp = 0);

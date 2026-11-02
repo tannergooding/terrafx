@@ -25,21 +25,24 @@ internal sealed class PlatformInputBrokerTests
                 nativeDevice,
                 PlatformInputDeviceKind.Unknown,
                 NativeTimestamp: 10,
-                NativeClockDomain: "test-clock"),
+                NativeClockDomain: "test-clock",
+                MonotonicTimestamp: 2),
             new PlatformInputSample(
                 PhysicalInputEventKind.DeviceRemoved,
                 null,
                 nativeDevice,
                 PlatformInputDeviceKind.Unknown,
                 NativeTimestamp: 11,
-                NativeClockDomain: "test-clock"),
+                NativeClockDomain: "test-clock",
+                MonotonicTimestamp: 2),
             new PlatformInputSample(
                 PhysicalInputEventKind.DeviceAdded,
                 null,
                 nativeDevice,
                 PlatformInputDeviceKind.Unknown,
                 NativeTimestamp: 12,
-                NativeClockDomain: "test-clock"));
+                NativeClockDomain: "test-clock",
+                MonotonicTimestamp: 3));
 
         var captured = broker.Capture(new PlatformInputSampleBatch(samples, DiscardedSampleCount: 2), static _ => true);
 
@@ -60,8 +63,11 @@ internal sealed class PlatformInputBrokerTests
         Assert.That(replacement.Device?.Generation, Is.EqualTo(added.Device?.Generation + 1));
         Assert.That(added.HostSequence, Is.LessThan(removed.HostSequence));
         Assert.That(removed.HostSequence, Is.LessThan(replacement.HostSequence));
-        Assert.That(added.HostTimestamp, Is.LessThan(removed.HostTimestamp));
+        Assert.That(added.HostTimestamp, Is.EqualTo(removed.HostTimestamp));
         Assert.That(removed.HostTimestamp, Is.LessThan(replacement.HostTimestamp));
+        Assert.That(added.HostTimestamp, Is.EqualTo(1));
+        Assert.That(removed.HostTimestamp, Is.EqualTo(1));
+        Assert.That(replacement.HostTimestamp, Is.EqualTo(2));
         Assert.That(added.NativeTimestamp, Is.EqualTo(10));
         Assert.That(removed.NativeTimestamp, Is.EqualTo(11));
         broker.Retire();
