@@ -321,11 +321,20 @@ public sealed partial class InputRouter
     }
 
     private static bool IsDigitalRelease(InputEnvelope envelope)
-        => envelope.Injection.Kind switch {
-            InputInjectionKind.KeyboardKey => envelope.Injection.KeyEventKind == InputKeyEventKind.Up,
-            InputInjectionKind.GamepadButton => !envelope.Injection.IsDown.GetValueOrDefault(),
-            _ => false,
-        };
+    {
+        if (envelope.Injection is { } injection)
+        {
+            return injection.Kind switch {
+                InputInjectionKind.KeyboardKey => injection.KeyEventKind == InputKeyEventKind.Up,
+                InputInjectionKind.GamepadButton => !injection.IsDown.GetValueOrDefault(),
+                _ => false,
+            };
+        }
+
+        return envelope.PhysicalEvent?.Kind is PhysicalInputEventKind.KeyUp
+            or PhysicalInputEventKind.PointerButtonUp
+            or PhysicalInputEventKind.GamepadButtonUp;
+    }
 
     private static bool IsInputEnvelopeBeforeControl(InputEnvelope input, InputControlEnvelope control)
         => (input.HostTimestamp < control.HostTimestamp)
@@ -340,6 +349,28 @@ public sealed partial class InputRouter
             InputInjectionKind.GamepadStick => (injection.StickValue.GetValueOrDefault().X == 0.0f)
                 && (injection.StickValue.GetValueOrDefault().Y == 0.0f),
             InputInjectionKind.GamepadTrigger => injection.TriggerValue.GetValueOrDefault() == 0.0f,
+            _ => false,
+        };
+    }
+
+    private static bool IsNeutralInput(PhysicalInputEvent inputEvent)
+    {
+        if (inputEvent.Kind is PhysicalInputEventKind.KeyUp
+            or PhysicalInputEventKind.PointerButtonUp
+            or PhysicalInputEventKind.GamepadButtonUp)
+        {
+            return true;
+        }
+
+        if (inputEvent.Value is not { } value)
+        {
+            return false;
+        }
+
+        return inputEvent.Kind switch {
+            PhysicalInputEventKind.GamepadAxis => value.AxisValue == 0.0f,
+            PhysicalInputEventKind.GamepadStick => value.StickValue is { X: 0.0f, Y: 0.0f },
+            PhysicalInputEventKind.GamepadTrigger => value.TriggerValue == 0.0f,
             _ => false,
         };
     }
@@ -529,6 +560,84 @@ public sealed partial class InputRouter
         }
 
         UpdateAxisActionState(mapState.Map.MapId, actionState, hostSequence, assignedTick, axisX, axisY, cancellationReason);
+    }
+
+    private static bool TryGetControlKey(
+        PhysicalInputEvent inputEvent,
+        ushort? playerSlot,
+        out InputControlKey control)
+    {
+        control = default;
+
+        switch (inputEvent.Kind)
+        {
+            case PhysicalInputEventKind.KeyDown:
+            case PhysicalInputEventKind.KeyUp:
+            case PhysicalInputEventKind.KeyRepeat:
+            case PhysicalInputEventKind.PointerButtonDown:
+            case PhysicalInputEventKind.PointerButtonUp:
+            {
+                if ((playerSlot is not null)
+                    || (inputEvent.Value is not { Kind: PhysicalInputValueKind.Digital, DigitalControl: { } digitalControl }))
+                {
+                    return false;
+                }
+
+                control = GetControlKey(digitalControl);
+                return GetInputClass(control) is InputClass.Keyboard or InputClass.Pointing;
+            }
+
+            case PhysicalInputEventKind.GamepadButtonDown:
+            case PhysicalInputEventKind.GamepadButtonUp:
+            {
+                if ((playerSlot is not { } slot)
+                    || (inputEvent.Value is not { Kind: PhysicalInputValueKind.GamepadButton, GamepadButton: { } button }))
+                {
+                    return false;
+                }
+
+                control = new InputControlKey(InputControlKind.GamepadButton, 0, 0, null, slot, (int)button);
+                return true;
+            }
+
+            case PhysicalInputEventKind.GamepadAxis:
+            {
+                if ((playerSlot is not { } slot)
+                    || (inputEvent.Value is not { Kind: PhysicalInputValueKind.GamepadAxis, Axis: { } axis }))
+                {
+                    return false;
+                }
+
+                control = new InputControlKey(InputControlKind.GamepadAxis, 0, 0, null, slot, (int)axis);
+                return true;
+            }
+
+            case PhysicalInputEventKind.GamepadStick:
+            {
+                if ((playerSlot is not { } slot)
+                    || (inputEvent.Value is not { Kind: PhysicalInputValueKind.GamepadStick, Stick: { } stick }))
+                {
+                    return false;
+                }
+
+                control = new InputControlKey(InputControlKind.GamepadStick, 0, 0, null, slot, (int)stick);
+                return true;
+            }
+
+            case PhysicalInputEventKind.GamepadTrigger:
+            {
+                if ((playerSlot is not { } slot)
+                    || (inputEvent.Value is not { Kind: PhysicalInputValueKind.GamepadTrigger, Trigger: { } trigger }))
+                {
+                    return false;
+                }
+
+                control = new InputControlKey(InputControlKind.GamepadTrigger, 0, 0, null, slot, (int)trigger);
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static void UpdateAxisActionState(
@@ -730,57 +839,117 @@ public sealed partial class InputRouter
             return CreateInputRejection("InvalidRecipient", "/RecipientKind");
         }
 
-        if (_isPaused)
-        {
-            return CreateInputRejection("Paused", "/Recipient");
-        }
-
-        if ((hostSequence <= _lastSeenHostSequence) || (hostTimestamp < _lastSeenHostTimestamp))
-        {
-            _lastSeenHostSequence = Math.Max(hostSequence, _lastSeenHostSequence);
-            return CreateInputRejection("InvalidEventOrder", "/HostSequence");
-        }
-
-        _lastSeenHostSequence = hostSequence;
-        _lastSeenHostTimestamp = hostTimestamp;
-
         var effectiveLate = late || (assignedTick < _nextOpenTick);
         var effectiveTick = Math.Max(assignedTick, _nextOpenTick);
-
-        if (_inputOverflowed)
-        {
-            RecordUnacceptedSequence(hostSequence);
-            return CreateInputCapacityFailure(hostSequence, effectiveTick, effectiveLate);
-        }
-
-        if (effectiveTick < _lastAssignedInputTick)
-        {
-            return CreateInputRejection("InvalidTickOrder", "/AssignedTick");
-        }
 
         var control = GetControlKey(injection);
         var envelope = new InputEnvelope(injection, control, hostTimestamp, hostSequence, effectiveTick, effectiveLate);
 
-        if ((_inputInboxTail is { } tail)
-            && CanCoalesceInputEnvelope(tail, envelope)
-            && tail.TryCoalesceWith(envelope))
+        return EnqueueInputEnvelope(envelope, hostTimestamp, hostSequence, assignedTick, late);
+    }
+
+    internal InputRoutingReceipt EnqueuePhysicalEvent(
+        PhysicalInputEvent inputEvent,
+        ushort? playerSlot,
+        out long discardedInputCount)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(inputEvent);
+        discardedInputCount = 0;
+
+        if (_recipientKind != InputRecipientKind.SimulationTimeline)
         {
-            _lastAssignedInputTick = effectiveTick;
-            return new InputRoutingReceipt(InputRoutingStatus.Applied, _recipientId, hostSequence, effectiveTick, null, effectiveLate);
+            return CreateInputRejection("InvalidRecipient", "/RecipientKind");
         }
 
-        if (_inputInbox.Count >= MaximumPendingInputEvents)
+        if (inputEvent.Kind == PhysicalInputEventKind.FocusLost)
         {
-            _inputOverflowed = true;
-            RecordUnacceptedSequence(hostSequence);
-            return CreateInputCapacityFailure(hostSequence, effectiveTick, effectiveLate);
+            if (playerSlot is not null)
+            {
+                return CreateInputRejection("InvalidPlayerSlot", "/PlayerSlot");
+            }
+
+            return CancelInputState(
+                InputCancellationReason.FocusLost,
+                InputClass.Keyboard | InputClass.Pointing,
+                playerSlot: null,
+                inputEvent.HostTimestamp,
+                inputEvent.HostSequence,
+                out discardedInputCount);
         }
 
-        _inputInbox.Enqueue(envelope);
-        _inputInboxTail = envelope;
-        _lastAssignedInputTick = effectiveTick;
+        if (inputEvent.Kind == PhysicalInputEventKind.DeviceRemoved)
+        {
+            if (playerSlot is null)
+            {
+                return CreateInputRejection("UnassignedDevice", "/PlayerSlot");
+            }
 
-        return new InputRoutingReceipt(InputRoutingStatus.Applied, _recipientId, hostSequence, effectiveTick, null, effectiveLate);
+            return CancelInputState(
+                InputCancellationReason.DeviceRemoved,
+                InputClass.Gamepad,
+                playerSlot,
+                inputEvent.HostTimestamp,
+                inputEvent.HostSequence,
+                out discardedInputCount);
+        }
+
+        var isGamepadEvent = inputEvent.Kind is PhysicalInputEventKind.GamepadButtonDown
+            or PhysicalInputEventKind.GamepadButtonUp
+            or PhysicalInputEventKind.GamepadAxis
+            or PhysicalInputEventKind.GamepadStick
+            or PhysicalInputEventKind.GamepadTrigger;
+
+        if (isGamepadEvent && (playerSlot is null))
+        {
+            return CreateInputRejection("UnassignedDevice", "/PlayerSlot");
+        }
+
+        if (!isGamepadEvent && (playerSlot is not null))
+        {
+            return CreateInputRejection("InvalidPlayerSlot", "/PlayerSlot");
+        }
+
+        if (!TryGetControlKey(inputEvent, playerSlot, out var control))
+        {
+            return CreateInputRejection("UnsupportedPhysicalEvent", "/Kind");
+        }
+
+        var segment = _simulationClockSegment;
+
+        if (!segment.IsValid)
+        {
+            return CreateInputRejection("ClockSegmentUnavailable", "/ClockSegment");
+        }
+
+        if (inputEvent.HostTimestamp < segment.HostTimestampStartTicks)
+        {
+            return CreateInputRejection("InvalidEventOrder", "/HostTimestamp");
+        }
+
+        if ((inputEvent.HostTimestamp == segment.HostTimestampStartTicks)
+            && (inputEvent.HostSequence < segment.HostSequenceStart))
+        {
+            return CreateInputRejection("InvalidEventOrder", "/HostSequence");
+        }
+
+        if (!segment.TryGetTickIndexForHostEvent(
+            inputEvent.HostTimestamp,
+            inputEvent.HostSequence,
+            out var assignedTick,
+            out var late))
+        {
+            return CreateInputRejection("NoEligibleTick", "/ClockSegment");
+        }
+
+        var envelope = new InputEnvelope(
+            inputEvent,
+            control,
+            inputEvent.HostTimestamp,
+            inputEvent.HostSequence,
+            Math.Max(assignedTick, _nextOpenTick),
+            late || (assignedTick < _nextOpenTick));
+        return EnqueueInputEnvelope(envelope, inputEvent.HostTimestamp, inputEvent.HostSequence, assignedTick, late);
     }
 
     internal InputRoutingReceipt ReconcileHeadlessInputState(
@@ -1193,50 +1362,113 @@ public sealed partial class InputRouter
         var changed = false;
         var wasUnreconciled = _unreconciledControls.Contains(envelope.Control);
 
-        switch (envelope.Injection.Kind)
+        if (envelope.Injection is { } injection)
         {
-            case InputInjectionKind.KeyboardKey:
+            switch (injection.Kind)
             {
-                if (envelope.Injection.KeyEventKind == InputKeyEventKind.Repeat)
+                case InputInjectionKind.KeyboardKey:
+                {
+                    if (injection.KeyEventKind == InputKeyEventKind.Repeat)
+                    {
+                        return;
+                    }
+
+                    var isDown = injection.KeyEventKind == InputKeyEventKind.Down;
+                    changed = SetDigitalControlState(envelope.Control, isDown, envelope.HostTimestamp);
+                    break;
+                }
+
+                case InputInjectionKind.GamepadButton:
+                {
+                    changed = SetDigitalControlState(
+                        envelope.Control,
+                        injection.IsDown.GetValueOrDefault(),
+                        envelope.HostTimestamp);
+                    break;
+                }
+
+                case InputInjectionKind.GamepadAxis:
+                {
+                    changed = SetScalarControlValue(envelope.Control, injection.AxisValue.GetValueOrDefault());
+                    break;
+                }
+
+                case InputInjectionKind.GamepadStick:
+                {
+                    var value = NormalizeStick(injection.StickValue.GetValueOrDefault());
+                    changed = SetVectorControlValue(envelope.Control, value.X, value.Y);
+                    break;
+                }
+
+                case InputInjectionKind.GamepadTrigger:
+                {
+                    changed = SetScalarControlValue(envelope.Control, injection.TriggerValue.GetValueOrDefault());
+                    break;
+                }
+            }
+        }
+        else if (envelope.PhysicalEvent is { } physicalEvent)
+        {
+            var value = physicalEvent.Value
+                ?? throw new InvalidOperationException("An admitted action-state physical event has no control value.");
+
+            switch (physicalEvent.Kind)
+            {
+                case PhysicalInputEventKind.KeyDown:
+                case PhysicalInputEventKind.PointerButtonDown:
+                case PhysicalInputEventKind.GamepadButtonDown:
+                {
+                    changed = SetDigitalControlState(envelope.Control, isDown: true, physicalEvent.HostTimestamp);
+                    break;
+                }
+
+                case PhysicalInputEventKind.KeyUp:
+                case PhysicalInputEventKind.PointerButtonUp:
+                case PhysicalInputEventKind.GamepadButtonUp:
+                {
+                    changed = SetDigitalControlState(envelope.Control, isDown: false, physicalEvent.HostTimestamp);
+                    break;
+                }
+
+                case PhysicalInputEventKind.KeyRepeat:
                 {
                     return;
                 }
 
-                var isDown = envelope.Injection.KeyEventKind == InputKeyEventKind.Down;
-                changed = SetDigitalControlState(envelope.Control, isDown, envelope.HostTimestamp);
-                break;
-            }
+                case PhysicalInputEventKind.GamepadAxis:
+                {
+                    changed = SetScalarControlValue(envelope.Control, value.AxisValue.GetValueOrDefault());
+                    break;
+                }
 
-            case InputInjectionKind.GamepadButton:
-            {
-                changed = SetDigitalControlState(
-                    envelope.Control,
-                    envelope.Injection.IsDown.GetValueOrDefault(),
-                    envelope.HostTimestamp);
-                break;
-            }
+                case PhysicalInputEventKind.GamepadStick:
+                {
+                    var stick = NormalizeStick(value.StickValue.GetValueOrDefault());
+                    changed = SetVectorControlValue(envelope.Control, stick.X, stick.Y);
+                    break;
+                }
 
-            case InputInjectionKind.GamepadAxis:
-            {
-                changed = SetScalarControlValue(envelope.Control, envelope.Injection.AxisValue.GetValueOrDefault());
-                break;
-            }
+                case PhysicalInputEventKind.GamepadTrigger:
+                {
+                    changed = SetScalarControlValue(envelope.Control, value.TriggerValue.GetValueOrDefault());
+                    break;
+                }
 
-            case InputInjectionKind.GamepadStick:
-            {
-                var value = NormalizeStick(envelope.Injection.StickValue.GetValueOrDefault());
-                changed = SetVectorControlValue(envelope.Control, value.X, value.Y);
-                break;
-            }
-
-            case InputInjectionKind.GamepadTrigger:
-            {
-                changed = SetScalarControlValue(envelope.Control, envelope.Injection.TriggerValue.GetValueOrDefault());
-                break;
+                default:
+                {
+                    throw new InvalidOperationException("An admitted physical input event has no action-state mapping.");
+                }
             }
         }
+        else
+        {
+            throw new InvalidOperationException("An admitted input envelope has no value.");
+        }
 
-        var isNeutral = IsNeutralInput(envelope.Injection);
+        var isNeutral = (envelope.Injection is { } injectionValue)
+            ? IsNeutralInput(injectionValue)
+            : IsNeutralInput(envelope.PhysicalEvent
+                ?? throw new InvalidOperationException("An admitted input envelope has no physical event."));
 
         if (wasUnreconciled && isNeutral)
         {
@@ -1386,7 +1618,9 @@ public sealed partial class InputRouter
 
     private bool CanCoalesceInputEnvelope(InputEnvelope previous, InputEnvelope next)
     {
-        if ((_inputInbox.Count != 1)
+        if ((previous.Injection is not { } previousInjection)
+            || (next.Injection is not { } nextInjection)
+            || (_inputInbox.Count != 1)
             || (_inputControlInbox.Count != 0)
             || !previous.CanCoalesceWith(next))
         {
@@ -1426,8 +1660,8 @@ public sealed partial class InputRouter
 
                 if (binding.Kind == BindingKind.AxisThreshold)
                 {
-                    if (GetThresholdBindingDown(bindingState, previous.Injection) != bindingState.IsDown
-                        || GetThresholdBindingDown(bindingState, next.Injection) != bindingState.IsDown)
+                    if (GetThresholdBindingDown(bindingState, previousInjection) != bindingState.IsDown
+                        || GetThresholdBindingDown(bindingState, nextInjection) != bindingState.IsDown)
                     {
                         return false;
                     }
@@ -1441,8 +1675,8 @@ public sealed partial class InputRouter
                 }
 
                 var actionState = mapState.ActionStates[binding.ActionId];
-                var previousMagnitude = GetBindingAxisMagnitude(binding, previous.Injection);
-                var nextMagnitude = GetBindingAxisMagnitude(binding, next.Injection);
+                var previousMagnitude = GetBindingAxisMagnitude(binding, previousInjection);
+                var nextMagnitude = GetBindingAxisMagnitude(binding, nextInjection);
                 var pressThreshold = actionState.Definition.DownPressThreshold ?? 0.55f;
                 var releaseThreshold = actionState.Definition.DownReleaseThreshold ?? 0.45f;
 
@@ -1639,6 +1873,65 @@ public sealed partial class InputRouter
         }
 
         return discardedInputCount;
+    }
+
+    private InputRoutingReceipt EnqueueInputEnvelope(
+        InputEnvelope envelope,
+        long hostTimestamp,
+        long hostSequence,
+        long assignedTick,
+        bool late)
+    {
+        EnsureOwnerThread();
+
+        if (_isPaused)
+        {
+            return CreateInputRejection("Paused", "/Recipient");
+        }
+
+        if ((hostSequence <= _lastSeenHostSequence) || (hostTimestamp < _lastSeenHostTimestamp))
+        {
+            _lastSeenHostSequence = Math.Max(hostSequence, _lastSeenHostSequence);
+            return CreateInputRejection("InvalidEventOrder", "/HostSequence");
+        }
+
+        _lastSeenHostSequence = hostSequence;
+        _lastSeenHostTimestamp = hostTimestamp;
+
+        var effectiveLate = late || (assignedTick < _nextOpenTick);
+        var effectiveTick = Math.Max(assignedTick, _nextOpenTick);
+
+        if (_inputOverflowed)
+        {
+            RecordUnacceptedSequence(hostSequence);
+            return CreateInputCapacityFailure(hostSequence, effectiveTick, effectiveLate);
+        }
+
+        if (effectiveTick < _lastAssignedInputTick)
+        {
+            return CreateInputRejection("InvalidTickOrder", "/AssignedTick");
+        }
+
+        if ((_inputInboxTail is { } tail)
+            && CanCoalesceInputEnvelope(tail, envelope)
+            && tail.TryCoalesceWith(envelope))
+        {
+            _lastAssignedInputTick = effectiveTick;
+            return new InputRoutingReceipt(InputRoutingStatus.Applied, _recipientId, hostSequence, effectiveTick, null, effectiveLate);
+        }
+
+        if (_inputInbox.Count >= MaximumPendingInputEvents)
+        {
+            _inputOverflowed = true;
+            RecordUnacceptedSequence(hostSequence);
+            return CreateInputCapacityFailure(hostSequence, effectiveTick, effectiveLate);
+        }
+
+        _inputInbox.Enqueue(envelope);
+        _inputInboxTail = envelope;
+        _lastAssignedInputTick = effectiveTick;
+
+        return new InputRoutingReceipt(InputRoutingStatus.Applied, _recipientId, hostSequence, effectiveTick, null, effectiveLate);
     }
 
     private ImmutableArray<InputControlKey> GetConsumptionControls(InputBindingRuntimeState bindingState)
@@ -2802,48 +3095,82 @@ public sealed partial class InputRouter
         MouseButton,
     }
 
-    private sealed class InputEnvelope(
-        InputInjection injection,
-        InputControlKey control,
-        long hostTimestamp,
-        long hostSequence,
-        long assignedTick,
-        bool late)
+    private sealed class InputEnvelope
     {
-        private InputInjection _injection = injection;
-        private long _lastHostSequence = hostSequence;
-        private long _lastHostTimestamp = hostTimestamp;
+        private InputInjection? _injection;
+        private long _lastHostSequence;
+        private long _lastHostTimestamp;
         private long _replacementCount;
 
-        internal long AssignedTick { get; } = assignedTick;
+        internal InputEnvelope(
+            InputInjection injection,
+            InputControlKey control,
+            long hostTimestamp,
+            long hostSequence,
+            long assignedTick,
+            bool late)
+        {
+            _injection = injection;
+            Control = control;
+            FirstHostSequence = hostSequence;
+            FirstHostTimestamp = hostTimestamp;
+            _lastHostSequence = hostSequence;
+            _lastHostTimestamp = hostTimestamp;
+            AssignedTick = assignedTick;
+            Late = late;
+        }
 
-        internal InputControlKey Control { get; } = control;
+        internal InputEnvelope(
+            PhysicalInputEvent physicalEvent,
+            InputControlKey control,
+            long hostTimestamp,
+            long hostSequence,
+            long assignedTick,
+            bool late)
+        {
+            PhysicalEvent = physicalEvent;
+            Control = control;
+            FirstHostSequence = hostSequence;
+            FirstHostTimestamp = hostTimestamp;
+            _lastHostSequence = hostSequence;
+            _lastHostTimestamp = hostTimestamp;
+            AssignedTick = assignedTick;
+            Late = late;
+        }
 
-        internal long FirstHostSequence { get; } = hostSequence;
+        internal long AssignedTick { get; }
 
-        internal long FirstHostTimestamp { get; } = hostTimestamp;
+        internal InputControlKey Control { get; }
+
+        internal long FirstHostSequence { get; }
+
+        internal long FirstHostTimestamp { get; }
 
         internal long HostSequence => _lastHostSequence;
 
         internal long HostTimestamp => _lastHostTimestamp;
 
-        internal InputInjection Injection => _injection;
-
-        internal bool Late { get; } = late;
+        internal InputInjection? Injection => _injection;
 
         internal long LastHostSequence => _lastHostSequence;
 
         internal long LastHostTimestamp => _lastHostTimestamp;
 
+        internal bool Late { get; }
+
+        internal PhysicalInputEvent? PhysicalEvent { get; }
+
         internal long ReplacementCount => _replacementCount;
 
         internal bool CanCoalesceWith(InputEnvelope next)
         {
-            return (Control == next.Control)
+            return (_injection is { } injection)
+                && (next._injection is { } nextInjection)
+                && (Control == next.Control)
                 && (AssignedTick == next.AssignedTick)
                 && (Late == next.Late)
-                && (Injection.Kind == next.Injection.Kind)
-                && (Injection.Kind is InputInjectionKind.GamepadAxis
+                && (injection.Kind == nextInjection.Kind)
+                && (injection.Kind is InputInjectionKind.GamepadAxis
                     or InputInjectionKind.GamepadStick
                     or InputInjectionKind.GamepadTrigger);
         }
@@ -2856,7 +3183,7 @@ public sealed partial class InputRouter
             }
 
             var replacementCount = checked(_replacementCount + next.ReplacementCount + 1);
-            _injection = next.Injection;
+            _injection = next._injection;
             _lastHostSequence = next.LastHostSequence;
             _lastHostTimestamp = next.LastHostTimestamp;
             _replacementCount = replacementCount;

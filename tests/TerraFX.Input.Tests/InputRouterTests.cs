@@ -93,6 +93,62 @@ internal sealed class InputRouterTests
     }
 
     [Test]
+    public void AppliesSharedPhysicalKeyboardCaptureAtRecipientLocalTicks()
+    {
+        var firstRouter = CreateRouter(InputRecipientKind.SimulationTimeline, recipientId: 31);
+        var secondRouter = CreateRouter(InputRecipientKind.SimulationTimeline, recipientId: 32);
+        var mapId = Guid.NewGuid();
+        var action = new ActionDefinition(Guid.NewGuid(), "Move", InputActionKind.Digital);
+        var context = new ContextDefinition(Guid.NewGuid(), 0);
+        var binding = new BindingDefinition(Guid.NewGuid(), action.ActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(new KeyboardControl(7, 4)),
+        };
+        var map = new InputActionMapV1(1, mapId, 1, 1, [action], [context], [binding]);
+
+        var firstMapResponse = firstRouter.RegisterMap(map);
+        var secondMapResponse = secondRouter.RegisterMap(map);
+        Assert.That(firstMapResponse.Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(secondMapResponse.Status, Is.EqualTo(InputMapStatus.Registered));
+        var segmentSequence = Math.Max(
+            firstMapResponse.HostSequence.GetValueOrDefault(),
+            secondMapResponse.HostSequence.GetValueOrDefault()) + 1;
+        var firstSegment = new SimulationClockSegment(1, 0, segmentSequence, 0, 0.0, 60, 0, 1.0f, isPaused: false);
+        var secondSegment = new SimulationClockSegment(1, 0, segmentSequence, 0, 0.0, 60, 1, 1.0f, isPaused: false);
+        firstRouter.SetSimulationClockSegment(in firstSegment);
+        secondRouter.SetSimulationClockSegment(in secondSegment);
+
+        var inputEvent = new PhysicalInputEvent(
+            PhysicalInputEventKind.KeyDown,
+            166_666,
+            segmentSequence,
+            device: new InputDeviceHandle(1, 0, 1),
+            window: new WindowHandle(1, 0, 1),
+            value: new PhysicalInputValue(new DigitalControl(new KeyboardControl(7, 4)), isDown: true));
+
+        var firstReceipt = firstRouter.EnqueuePhysicalEvent(inputEvent, playerSlot: null, discardedInputCount: out _);
+        var secondReceipt = secondRouter.EnqueuePhysicalEvent(inputEvent, playerSlot: null, discardedInputCount: out _);
+
+        Assert.That(firstReceipt.Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(firstReceipt.AssignedTick, Is.EqualTo(0));
+        Assert.That(firstReceipt.Late, Is.False);
+        Assert.That(secondReceipt.Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(secondReceipt.AssignedTick, Is.EqualTo(1));
+        Assert.That(secondReceipt.Late, Is.True);
+
+        var firstSnapshot = firstRouter.PublishSimulationActionSnapshot(0);
+        var secondSnapshot = secondRouter.PublishSimulationActionSnapshot(1);
+        Assert.That(firstSnapshot.Actions[0].IsDownAtEnd, Is.True);
+        Assert.That(firstSnapshot.Actions[0].Transitions[0].HostSequence, Is.EqualTo(inputEvent.HostSequence));
+        Assert.That(firstSnapshot.Actions[0].Transitions[0].AssignedTick, Is.EqualTo(0));
+        Assert.That(secondSnapshot.Actions[0].IsDownAtEnd, Is.True);
+        Assert.That(secondSnapshot.Actions[0].Transitions[0].HostSequence, Is.EqualTo(inputEvent.HostSequence));
+        Assert.That(secondSnapshot.Actions[0].Transitions[0].AssignedTick, Is.EqualTo(1));
+
+        firstRouter.Dispose();
+        secondRouter.Dispose();
+    }
+
+    [Test]
     public void AppliesTimelineClockSegmentsAndReportsLateAssignment()
     {
         var sequenceLease = new HostEventSequenceLease();
@@ -213,6 +269,55 @@ internal sealed class InputRouterTests
     }
 
     [Test]
+    public void AssignsSharedPhysicalGamepadCaptureToEachRecipientsOwnPlayerSlot()
+    {
+        var firstRouter = CreateRouter(InputRecipientKind.SimulationTimeline, recipientId: 41);
+        var secondRouter = CreateRouter(InputRecipientKind.SimulationTimeline, recipientId: 42);
+        var mapId = Guid.NewGuid();
+        var actionId = Guid.NewGuid();
+        var context = new ContextDefinition(Guid.NewGuid(), 0);
+        var action = new ActionDefinition(actionId, "Jump", InputActionKind.Digital);
+        var firstBinding = new BindingDefinition(Guid.NewGuid(), actionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(playerSlot: 3, GamepadButtonValue.South),
+        };
+        var secondBinding = new BindingDefinition(Guid.NewGuid(), actionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(playerSlot: 5, GamepadButtonValue.South),
+        };
+        var firstMap = new InputActionMapV1(1, mapId, 1, 1, [action], [context], [firstBinding]);
+        var secondMap = new InputActionMapV1(1, mapId, 1, 1, [action], [context], [secondBinding]);
+
+        var firstMapResponse = firstRouter.RegisterMap(firstMap);
+        var secondMapResponse = secondRouter.RegisterMap(secondMap);
+        Assert.That(firstMapResponse.Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(secondMapResponse.Status, Is.EqualTo(InputMapStatus.Registered));
+        var segmentSequence = Math.Max(
+            firstMapResponse.HostSequence.GetValueOrDefault(),
+            secondMapResponse.HostSequence.GetValueOrDefault()) + 1;
+        var segment = new SimulationClockSegment(1, 0, segmentSequence, 0, 0.0, 60, 0, 1.0f, isPaused: false);
+        firstRouter.SetSimulationClockSegment(in segment);
+        secondRouter.SetSimulationClockSegment(in segment);
+
+        var inputEvent = new PhysicalInputEvent(
+            PhysicalInputEventKind.GamepadButtonDown,
+            166_666,
+            segmentSequence,
+            device: new InputDeviceHandle(1, 0, 1),
+            value: new PhysicalInputValue(GamepadButtonValue.South, isDown: true));
+
+        var firstReceipt = firstRouter.EnqueuePhysicalEvent(inputEvent, playerSlot: 3, discardedInputCount: out _);
+        var secondReceipt = secondRouter.EnqueuePhysicalEvent(inputEvent, playerSlot: 5, discardedInputCount: out _);
+        Assert.That(firstReceipt.Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(secondReceipt.Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(firstReceipt.HostSequence, Is.EqualTo(secondReceipt.HostSequence));
+
+        Assert.That(firstRouter.PublishSimulationActionSnapshot(0).Actions[0].IsDownAtEnd, Is.True);
+        Assert.That(secondRouter.PublishSimulationActionSnapshot(0).Actions[0].IsDownAtEnd, Is.True);
+
+        firstRouter.Dispose();
+        secondRouter.Dispose();
+    }
+
+    [Test]
     public void CancelsFocusScopedInputWithoutClearingGamepadState()
     {
         var sequenceLease = new HostEventSequenceLease();
@@ -253,13 +358,14 @@ internal sealed class InputRouterTests
 
         router.BeginHostControlBoundary(1, 3);
         Assert.That(router.EnqueueHeadlessInjection(new InputInjection(key, InputKeyEventKind.Down), 3, sequenceLease.Allocate(), 1).Status, Is.EqualTo(InputRoutingStatus.Applied));
-        var cancellation = router.CancelInputState(
-            InputCancellationReason.FocusLost,
-            InputClass.Keyboard | InputClass.Pointing,
+        var cancellation = router.EnqueuePhysicalEvent(
+            new PhysicalInputEvent(
+                PhysicalInputEventKind.FocusLost,
+                3,
+                sequenceLease.Allocate(),
+                window: new WindowHandle(1, 0, 1)),
             playerSlot: null,
-            hostTimestamp: 3,
-            hostSequence: sequenceLease.Allocate(),
-            out var discardedInputCount);
+            discardedInputCount: out var discardedInputCount);
         Assert.That(cancellation.Status, Is.EqualTo(InputRoutingStatus.Applied));
         Assert.That(discardedInputCount, Is.EqualTo(1));
 
@@ -337,13 +443,14 @@ internal sealed class InputRouterTests
 
         router.BeginHostControlBoundary(1, 3);
         Assert.That(router.EnqueueHeadlessInjection(new InputInjection(1, GamepadButtonValue.South, true), 3, sequenceLease.Allocate(), 1).Status, Is.EqualTo(InputRoutingStatus.Applied));
-        var cancellation = router.CancelInputState(
-            InputCancellationReason.DeviceRemoved,
-            InputClass.Gamepad,
+        var cancellation = router.EnqueuePhysicalEvent(
+            new PhysicalInputEvent(
+                PhysicalInputEventKind.DeviceRemoved,
+                3,
+                sequenceLease.Allocate(),
+                device: new InputDeviceHandle(1, 0, 1)),
             playerSlot: 1,
-            hostTimestamp: 3,
-            hostSequence: sequenceLease.Allocate(),
-            out var discardedInputCount);
+            discardedInputCount: out var discardedInputCount);
         Assert.That(cancellation.Status, Is.EqualTo(InputRoutingStatus.Applied));
         Assert.That(discardedInputCount, Is.EqualTo(1));
 
@@ -1735,6 +1842,38 @@ internal sealed class InputRouterTests
 
         Assert.That(response.Status, Is.EqualTo(InputMapStatus.CapacityExceeded));
         Assert.That(response.HostSequence, Is.Null);
+        router.Dispose();
+    }
+
+    [Test]
+    public void RejectsPhysicalEventsWithInvalidRecipientSlotAssignments()
+    {
+        var router = CreateRouter(InputRecipientKind.SimulationTimeline, recipientId: 51);
+        var gamepadEvent = new PhysicalInputEvent(
+            PhysicalInputEventKind.GamepadButtonDown,
+            0,
+            1,
+            device: new InputDeviceHandle(1, 0, 1),
+            value: new PhysicalInputValue(GamepadButtonValue.South, isDown: true));
+        var gamepadReceipt = router.EnqueuePhysicalEvent(gamepadEvent, playerSlot: null, discardedInputCount: out _);
+        Assert.That(gamepadReceipt.Status, Is.EqualTo(InputRoutingStatus.Rejected));
+        Assert.That(gamepadReceipt.Rejection?.Code, Is.EqualTo("UnassignedDevice"));
+        Assert.That(gamepadReceipt.HostSequence, Is.Null);
+
+        var keyEvent = new PhysicalInputEvent(
+            PhysicalInputEventKind.KeyDown,
+            0,
+            1,
+            device: new InputDeviceHandle(1, 0, 1),
+            window: new WindowHandle(1, 0, 1),
+            value: new PhysicalInputValue(
+                new DigitalControl(new KeyboardControl(7, 4)),
+                isDown: true));
+        var keyReceipt = router.EnqueuePhysicalEvent(keyEvent, playerSlot: 3, discardedInputCount: out _);
+        Assert.That(keyReceipt.Status, Is.EqualTo(InputRoutingStatus.Rejected));
+        Assert.That(keyReceipt.Rejection?.Code, Is.EqualTo("InvalidPlayerSlot"));
+        Assert.That(keyReceipt.HostSequence, Is.Null);
+
         router.Dispose();
     }
 

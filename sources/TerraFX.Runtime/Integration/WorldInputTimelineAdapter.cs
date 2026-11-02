@@ -87,6 +87,18 @@ internal sealed class WorldInputTimelineAdapter
         return _router.EnqueueHeadlessInjection(injection, hostTimestamp, hostSequence);
     }
 
+    internal InputRoutingReceipt EnqueueCapturedPhysicalEvent(
+        PhysicalInputEvent inputEvent,
+        ushort? playerSlot,
+        out long discardedInputCount)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(inputEvent);
+        _ = _world.CurrentFrame3;
+        return _router.EnqueuePhysicalEvent(inputEvent, playerSlot, out discardedInputCount);
+    }
+
     internal InputRoutingReceipt InjectHeadlessInput(InputInjection injection, long hostTimestamp)
     {
         EnsureOwnerThread();
