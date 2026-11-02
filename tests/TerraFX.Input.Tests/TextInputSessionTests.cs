@@ -85,10 +85,18 @@ internal sealed class TextInputSessionTests
                 new TextInputChange(TextInputChangeKind.CompositionUpdated, "x", 1, 0),
             ]);
         var focusSequence = sequenceLease.Allocate();
-        router.RecordTextInputCapture(11, focusSequence);
-        session.EndForNativeControl(focusSequence, 11, TextCompositionCancelReason.FocusLost);
+        var focusLost = new PhysicalInputEvent(
+            PhysicalInputEventKind.FocusLost,
+            11,
+            focusSequence,
+            window: s_window);
+        var focusReceipt = router.EnqueueHostPhysicalEvent(focusLost, out var discardedInputCount);
 
+        Assert.That(focusReceipt.Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(focusReceipt.AssignedTick, Is.Null);
+        Assert.That(discardedInputCount, Is.Zero);
         Assert.That(session.IsActive, Is.False);
+        Assert.That(router.ServiceInputControlBoundary(), Is.Empty);
         Assert.That(session.TryReadBatch(out var first), Is.True);
         Assert.That(first!.Changes[0].Kind, Is.EqualTo(TextInputChangeKind.CompositionStarted));
         Assert.That(session.TryReadBatch(out var focusCanceled), Is.True);

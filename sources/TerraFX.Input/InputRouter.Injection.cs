@@ -931,6 +931,69 @@ public sealed partial class InputRouter
         return EnqueueInputEnvelope(envelope, hostTimestamp, hostSequence, assignedTick, late);
     }
 
+    internal InputRoutingReceipt EnqueueHostPhysicalEvent(
+        PhysicalInputEvent inputEvent,
+        out long discardedInputCount)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(inputEvent);
+        discardedInputCount = 0;
+
+        if (_recipientKind != InputRecipientKind.HostLiveUI)
+        {
+            return CreateInputRejection("InvalidRecipient", "/RecipientKind");
+        }
+
+        if ((inputEvent.Window is not { } window) || (window != _window))
+        {
+            throw new InvalidOperationException("The host physical event does not match this HostLiveUI window route.");
+        }
+
+        if (inputEvent.Kind == PhysicalInputEventKind.FocusLost)
+        {
+            var cancellation = CancelInputState(
+                InputCancellationReason.FocusLost,
+                InputClass.Keyboard | InputClass.Pointing,
+                playerSlot: null,
+                inputEvent.HostTimestamp,
+                inputEvent.HostSequence,
+                out discardedInputCount);
+            _activeTextSession?.EndForNativeControl(
+                inputEvent.HostSequence,
+                inputEvent.HostTimestamp,
+                TextCompositionCancelReason.FocusLost);
+            return cancellation;
+        }
+
+        if (inputEvent.Kind is not PhysicalInputEventKind.KeyDown
+            and not PhysicalInputEventKind.KeyRepeat
+            and not PhysicalInputEventKind.KeyUp
+            and not PhysicalInputEventKind.PointerButtonDown
+            and not PhysicalInputEventKind.PointerButtonUp)
+        {
+            return CreateInputRejection("UnsupportedPhysicalEvent", "/Kind");
+        }
+
+        if (!TryGetControlKey(inputEvent, playerSlot: null, out var control))
+        {
+            return CreateInputRejection("UnsupportedPhysicalEvent", "/Kind");
+        }
+
+        var envelope = new InputEnvelope(
+            inputEvent,
+            control,
+            inputEvent.HostTimestamp,
+            inputEvent.HostSequence,
+            assignedTick: null,
+            late: false);
+        return EnqueueInputEnvelope(
+            envelope,
+            inputEvent.HostTimestamp,
+            inputEvent.HostSequence,
+            assignedTick: null,
+            late: false);
+    }
+
     internal InputRoutingReceipt EnqueuePhysicalEvent(
         PhysicalInputEvent inputEvent,
         ushort? playerSlot,
@@ -1326,9 +1389,10 @@ public sealed partial class InputRouter
     {
         EnsureOwnerThread();
         var transitions = ImmutableArray.CreateBuilder<InputActionTransition>();
-        var appliedCommand = false;
+        var isHostLiveUi = _recipientKind == InputRecipientKind.HostLiveUI;
+        var appliedWork = false;
 
-        if ((_recipientKind == InputRecipientKind.HostLiveUI) && (_inputControlInbox.Count != 0))
+        if (isHostLiveUi && ((_inputControlInbox.Count != 0) || (_inputInbox.Count != 0)))
         {
             foreach (var mapState in _maps.Values)
             {
@@ -1339,19 +1403,51 @@ public sealed partial class InputRouter
             }
         }
 
-        while (_inputControlInbox.TryPeek(out var control))
+        while (true)
         {
-            if (_inputInbox.TryPeek(out var input) && IsInputEnvelopeBeforeControl(input, control))
+            InputEnvelope? input = null;
+            var inputReady = isHostLiveUi
+                && !_inputOverflowed
+                && _inputInbox.TryPeek(out input);
+            var controlReady = _inputControlInbox.TryPeek(out var control);
+
+            if (!inputReady && !controlReady)
+            {
+                break;
+            }
+
+            if (inputReady && (!controlReady || IsInputEnvelopeBeforeControl(input!, control!)))
+            {
+                var dequeuedInput = _inputInbox.Dequeue();
+
+                if (ReferenceEquals(_inputInboxTail, dequeuedInput))
+                {
+                    _inputInboxTail = null;
+                }
+
+                ApplyInputEnvelope(dequeuedInput);
+                appliedWork = true;
+                continue;
+            }
+
+            if (!controlReady)
+            {
+                break;
+            }
+
+            if (!isHostLiveUi
+                && _inputInbox.TryPeek(out input)
+                && IsInputEnvelopeBeforeControl(input, control!))
             {
                 break;
             }
 
             _ = _inputControlInbox.Dequeue();
-            transitions.AddRange(ApplyInputControlEnvelope(control, assignedTick: null));
-            appliedCommand = true;
+            transitions.AddRange(ApplyInputControlEnvelope(control!, assignedTick: null));
+            appliedWork = true;
         }
 
-        if (appliedCommand && (_recipientKind == InputRecipientKind.HostLiveUI))
+        if (appliedWork && isHostLiveUi)
         {
             PublishHostActionSnapshot();
         }
@@ -2110,7 +2206,7 @@ public sealed partial class InputRouter
         return count;
     }
 
-    private InputRoutingReceipt CreateInputCapacityFailure(long hostSequence, long assignedTick, bool late = false)
+    private InputRoutingReceipt CreateInputCapacityFailure(long hostSequence, long? assignedTick, bool late = false)
         => new InputRoutingReceipt(
             InputRoutingStatus.CapacityExceeded,
             _recipientId,
@@ -2209,7 +2305,7 @@ public sealed partial class InputRouter
         InputEnvelope envelope,
         long hostTimestamp,
         long hostSequence,
-        long assignedTick,
+        long? assignedTick,
         bool late)
     {
         EnsureOwnerThread();
@@ -2228,8 +2324,11 @@ public sealed partial class InputRouter
         _lastSeenHostSequence = hostSequence;
         _lastSeenHostTimestamp = hostTimestamp;
 
-        var effectiveLate = late || (assignedTick < _nextOpenTick);
-        var effectiveTick = Math.Max(assignedTick, _nextOpenTick);
+        var effectiveLate = assignedTick is { } requestedTick
+            && (late || (requestedTick < _nextOpenTick));
+        long? effectiveTick = assignedTick is { } tick
+            ? Math.Max(tick, _nextOpenTick)
+            : null;
 
         if (_inputOverflowed)
         {
@@ -2248,7 +2347,7 @@ public sealed partial class InputRouter
             return CreateInputCapacityFailure(hostSequence, effectiveTick, effectiveLate);
         }
 
-        if (effectiveTick < _lastAssignedInputTick)
+        if ((effectiveTick is { } assignedInputTick) && (assignedInputTick < _lastAssignedInputTick))
         {
             return CreateInputRejection("InvalidTickOrder", "/AssignedTick");
         }
@@ -2257,7 +2356,11 @@ public sealed partial class InputRouter
             && CanCoalesceInputEnvelope(tail, envelope)
             && tail.TryCoalesceWith(envelope))
         {
-            _lastAssignedInputTick = effectiveTick;
+            if (effectiveTick is { } coalescedTick)
+            {
+                _lastAssignedInputTick = coalescedTick;
+            }
+
             return new InputRoutingReceipt(InputRoutingStatus.Applied, _recipientId, hostSequence, effectiveTick, null, effectiveLate);
         }
 
@@ -2270,7 +2373,11 @@ public sealed partial class InputRouter
 
         _inputInbox.Enqueue(envelope);
         _inputInboxTail = envelope;
-        _lastAssignedInputTick = effectiveTick;
+
+        if (effectiveTick is { } admittedTick)
+        {
+            _lastAssignedInputTick = admittedTick;
+        }
 
         return new InputRoutingReceipt(InputRoutingStatus.Applied, _recipientId, hostSequence, effectiveTick, null, effectiveLate);
     }
@@ -2607,7 +2714,8 @@ public sealed partial class InputRouter
                 InputEnvelope? envelope = null;
                 var inputReady = !_inputOverflowed
                     && _inputInbox.TryPeek(out envelope)
-                    && (envelope.AssignedTick <= assignedTick);
+                    && (envelope.AssignedTick is { } envelopeTick)
+                    && (envelopeTick <= assignedTick);
                 var controlReady = _inputControlInbox.TryPeek(out var control)
                     && (control.AssignedTick is { } controlTick)
                     && (controlTick <= assignedTick);
@@ -2798,7 +2906,7 @@ public sealed partial class InputRouter
     private void RecomputeAffectedActions(
         HashSet<InputControlKey> changedControls,
         long hostSequence,
-        long assignedTick,
+        long? assignedTick,
         InputCancellationReason? cancellationReason = null)
     {
         foreach (var mapState in _maps.Values.OrderBy(static state => state.Map.MapId.ToString("D"), StringComparer.Ordinal))
@@ -3596,7 +3704,7 @@ public sealed partial class InputRouter
             InputControlKey control,
             long hostTimestamp,
             long hostSequence,
-            long assignedTick,
+            long? assignedTick,
             bool late,
             InputClass uiCapturedClasses = InputClass.None)
         {
@@ -3611,7 +3719,7 @@ public sealed partial class InputRouter
             UiCapturedClasses = uiCapturedClasses;
         }
 
-        internal long AssignedTick { get; }
+        internal long? AssignedTick { get; }
 
         internal InputControlKey Control { get; }
 

@@ -3,8 +3,10 @@
 using System;
 using NUnit.Framework;
 using TerraFX.Entities;
+using TerraFX.Hosting;
 using TerraFX.Input;
 using TerraFX.Integration;
+using TerraFX.Platform;
 
 namespace TerraFX.Runtime.Tests.Entities;
 
@@ -179,6 +181,87 @@ internal sealed class WorldInputTimelineAdapterTests
     }
 
     [Test]
+    public void RoutesCapturedPhysicalUiDispositionToTimelineAtRecipientTick()
+    {
+        using var world = CreateWorld(initialTimeScale: 1.0f);
+        var adapter = new WorldInputTimelineAdapter(world);
+        var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());
+
+        try
+        {
+            var action = new ActionDefinition(Guid.NewGuid(), "Jump", InputActionKind.Digital);
+            var context = new ContextDefinition(Guid.NewGuid(), 0);
+            var binding = new BindingDefinition(Guid.NewGuid(), action.ActionId, 1, BindingKind.Button) {
+                Control = new DigitalControl(playerSlot: 1, GamepadButtonValue.South),
+            };
+            var map = new InputActionMapV1(1, Guid.NewGuid(), 1, 1, [action], [context], [binding]);
+            Assert.That(adapter.Router.RegisterMap(map).Status, Is.EqualTo(InputMapStatus.Registered));
+            _ = adapter.BeginPumpBoundary(hostTimestamp: 0, isPaused: false);
+
+            var nativeDevice = (nint)71;
+            var capture = broker.Capture(
+                new PlatformInputSampleBatch(
+                    [
+                        new PlatformInputSample(
+                            PhysicalInputEventKind.DeviceAdded,
+                            null,
+                            nativeDevice,
+                            PlatformInputDeviceKind.Gamepad,
+                            MonotonicTimestamp: 2),
+                        new PlatformInputSample(
+                            PhysicalInputEventKind.GamepadButtonDown,
+                            null,
+                            nativeDevice,
+                            PlatformInputDeviceKind.Gamepad,
+                            GamepadButton: GamepadButtonValue.South,
+                            IsDown: true,
+                            MonotonicTimestamp: 2),
+                        new PlatformInputSample(
+                            PhysicalInputEventKind.GamepadButtonUp,
+                            null,
+                            nativeDevice,
+                            PlatformInputDeviceKind.Gamepad,
+                            GamepadButton: GamepadButtonValue.South,
+                            IsDown: false,
+                            MonotonicTimestamp: 2),
+                    ],
+                    DiscardedSampleCount: 0),
+                static _ => true);
+            Assert.That(capture.Events, Has.Length.EqualTo(3));
+
+            var down = adapter.EnqueueCapturedPhysicalEventWithUiDisposition(
+                capture.Events[1],
+                1,
+                InputClass.Gamepad,
+                out var downDiscarded);
+            var up = adapter.EnqueueCapturedPhysicalEventWithUiDisposition(
+                capture.Events[2],
+                1,
+                InputClass.None,
+                out var upDiscarded);
+
+            Assert.That(down.Status, Is.EqualTo(InputRoutingStatus.Applied));
+            Assert.That(up.Status, Is.EqualTo(InputRoutingStatus.Applied));
+            Assert.That(down.AssignedTick, Is.Zero);
+            Assert.That(up.AssignedTick, Is.Zero);
+            Assert.That(downDiscarded, Is.Zero);
+            Assert.That(upDiscarded, Is.Zero);
+
+            var snapshot = adapter.PublishInputStage(0);
+            Assert.That(snapshot.AssignedTick, Is.Zero);
+            Assert.That(snapshot.Actions[0].IsDownAtEnd, Is.False);
+            Assert.That(snapshot.Actions[0].PressedThisTick, Is.False);
+            Assert.That(snapshot.Actions[0].ReleasedThisTick, Is.False);
+            Assert.That(snapshot.Actions[0].Transitions, Is.Empty);
+        }
+        finally
+        {
+            broker.Retire();
+            _ = adapter.DisposeAndGetTransitions();
+        }
+    }
+
+    [Test]
     public void RoutesSharedCaptureThroughRecipientClocks()
     {
         using var firstWorld = CreateWorld(initialTimeScale: 1.0f);
@@ -218,5 +301,14 @@ internal sealed class WorldInputTimelineAdapterTests
             _ = firstAdapter.DisposeAndGetTransitions();
             _ = secondAdapter.DisposeAndGetTransitions();
         }
+    }
+
+    private sealed class IncrementingTimeProvider : TimeProvider
+    {
+        private long _timestamp;
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override long GetTimestamp() => ++_timestamp;
     }
 }
