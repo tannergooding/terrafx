@@ -11,6 +11,7 @@ internal sealed class VulkanBackendBuffer : IGraphicsBackendBuffer
     private long _allocationSizeBytes;
     private VkBuffer _buffer;
     private BufferDescription _description;
+    private int _descriptorSetReferenceCount;
     private bool _isDisposed;
     private bool _isStaging;
     private VkDeviceMemory _memory;
@@ -46,6 +47,8 @@ internal sealed class VulkanBackendBuffer : IGraphicsBackendBuffer
 
     internal BufferDescription Description => _description;
 
+    internal int DescriptorSetReferenceCount => _descriptorSetReferenceCount;
+
     internal bool IsDisposed => _isDisposed;
 
     internal bool IsStaging => _isStaging;
@@ -77,4 +80,17 @@ internal sealed class VulkanBackendBuffer : IGraphicsBackendBuffer
         _memoryProperties = default;
         _memoryTypeIndex = 0;
     }
+
+    internal void ReleaseDescriptorSet()
+    {
+        if (_descriptorSetReferenceCount <= 0)
+        {
+            throw new InvalidOperationException("The Vulkan buffer has no retained descriptor sets.");
+        }
+
+        _descriptorSetReferenceCount--;
+    }
+
+    internal void RetainDescriptorSet()
+        => _descriptorSetReferenceCount = checked(_descriptorSetReferenceCount + 1);
 }

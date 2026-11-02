@@ -194,6 +194,82 @@ internal sealed class VulkanBackendDeviceTests
     }
 
     [Test]
+    public void OffscreenNativeDeviceAllocatesAndPopulatesUniformBufferDescriptorSet()
+    {
+        var fixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
+
+        if (string.IsNullOrWhiteSpace(fixtureDirectory))
+        {
+            Assert.Ignore("The compiled M04 shader fixture is not selected through TERRAFX_M04_SHADER_FIXTURE_DIRECTORY.");
+            return;
+        }
+
+        using var device = CreateVulkanDeviceForNativeSmokeTest();
+        using var vertexStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.vertex.spv"));
+        using var pixelStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.pixel.spv"));
+        using var vertexLease = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
+        using var pixelLease = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
+        using var pipeline = device.CreatePipeline(
+            CreateShaderFixtureDescription(vertexLease, pixelLease),
+            [vertexLease, pixelLease]);
+        using var buffer = device.CreateBuffer(
+            new BufferDescription(
+                16,
+                BufferUsage.Uniform,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: null,
+                debugName: "frame-data"));
+        Assert.That(
+            () => device.CreateUniformBufferDescriptorSet(
+                pipeline,
+                [new VulkanBackendUniformBufferBinding(
+                    ShaderBindingGroup.Frame,
+                    1,
+                    buffer,
+                    0,
+                    16)]),
+            Throws.ArgumentException);
+        Assert.That(
+            () => device.CreateUniformBufferDescriptorSet(
+                pipeline,
+                [new VulkanBackendUniformBufferBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    buffer,
+                    0,
+                    17)]),
+            Throws.ArgumentException);
+        using var descriptorSet = device.CreateUniformBufferDescriptorSet(
+            pipeline,
+            [new VulkanBackendUniformBufferBinding(
+                ShaderBindingGroup.Frame,
+                0,
+                buffer,
+                0,
+                16)]);
+
+        Assert.That(descriptorSet.IsDisposed, Is.False);
+        Assert.That(
+            device.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("live descriptor sets"));
+        Assert.That(
+            pipeline.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("descriptor sets remain live"));
+        Assert.That(
+            buffer.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("descriptor sets remain live"));
+
+        descriptorSet.Dispose();
+        buffer.Dispose();
+        pipeline.Dispose();
+        device.Dispose();
+    }
+
+    [Test]
     public void OffscreenNativeDeviceAllocatesAndReleasesATexture()
     {
         try

@@ -2,6 +2,8 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -15,6 +17,30 @@ namespace TerraFX.Graphics.Vulkan;
 internal sealed unsafe partial class VulkanBackendDevice
 {
     private int _livePipelineCount;
+
+    private static ImmutableArray<ShaderResourceSignature> GetPipelineResources(
+        ImmutableArray<ShaderBytecodeInput> shaderInputs)
+    {
+        var resources = ImmutableArray.CreateBuilder<ShaderResourceSignature>();
+        var uniqueResources = new HashSet<ShaderResourceSignature>();
+
+        for (var shaderIndex = 0; shaderIndex < shaderInputs.Length; shaderIndex++)
+        {
+            var shaderResources = shaderInputs[shaderIndex].Reflection.Resources;
+
+            for (var resourceIndex = 0; resourceIndex < shaderResources.Length; resourceIndex++)
+            {
+                var resource = shaderResources[resourceIndex];
+
+                if (uniqueResources.Add(resource))
+                {
+                    resources.Add(resource);
+                }
+            }
+        }
+
+        return resources.ToImmutable();
+    }
 
     internal VulkanBackendPipeline CreatePipeline(
         PipelineDescription description,
@@ -83,7 +109,12 @@ internal sealed unsafe partial class VulkanBackendDevice
                 _ => throw new ArgumentOutOfRangeException(nameof(description)),
             };
             ownsPipeline = true;
-            var result = new VulkanBackendPipeline(this, pipeline, pipelineLayout, descriptorSetLayouts);
+            var result = new VulkanBackendPipeline(
+                this,
+                pipeline,
+                pipelineLayout,
+                descriptorSetLayouts,
+                GetPipelineResources(shaderInputs));
             _livePipelineCount = checked(_livePipelineCount + 1);
             ownsPipeline = false;
             ownsPipelineLayout = false;
@@ -135,6 +166,12 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
 
         ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+        if (pipeline.DescriptorSetReferenceCount != 0)
+        {
+            throw new InvalidOperationException("Vulkan pipeline retirement cannot release layouts while descriptor sets remain live.");
+        }
+
         VulkanApi.vkDestroyPipeline(_device, pipeline.Pipeline, null);
         VulkanApi.vkDestroyPipelineLayout(_device, pipeline.PipelineLayout, null);
         DestroyDescriptorSetLayouts(pipeline.DescriptorSetLayouts);

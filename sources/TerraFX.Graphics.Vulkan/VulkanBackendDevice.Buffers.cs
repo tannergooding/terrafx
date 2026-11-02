@@ -151,6 +151,11 @@ internal sealed unsafe partial class VulkanBackendDevice
             return;
         }
 
+        if (buffer.DescriptorSetReferenceCount != 0)
+        {
+            throw new InvalidOperationException("Vulkan buffer retirement cannot release storage while descriptor sets remain live.");
+        }
+
         if (_hasUncertainSubmission)
         {
             throw new InvalidOperationException("Vulkan buffer retirement cannot release storage while submission completion is uncertain.");
