@@ -372,7 +372,7 @@ internal static class M04ShaderFixtureCompiler
             throw new InvalidDataException($"DXC reflection from the compiled DXIL does not contain the expected {stageName} entry-point output.");
         }
 
-        if ((stageName is "pixel" or "pixel-sampled")
+        if ((stageName == "pixel")
             && (!text.Contains("cbuffer FrameData", StringComparison.Ordinal)
                 || !text.Contains("float4 color", StringComparison.Ordinal)
                 || !text.Contains("FrameData                         cbuffer", StringComparison.Ordinal)))
@@ -487,7 +487,7 @@ internal static class M04ShaderFixtureCompiler
             throw new InvalidDataException($"SPIRV-Cross reported mode '{mode}' for the {stageName} shader stage.");
         }
 
-        if (stageName is "pixel" or "pixel-sampled")
+        if (stageName == "pixel")
         {
             ValidatePixelUniformBufferReflection(root);
         }

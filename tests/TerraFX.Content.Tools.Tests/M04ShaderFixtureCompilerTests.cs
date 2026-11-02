@@ -97,7 +97,6 @@ internal sealed class M04ShaderFixtureCompilerTests
             AssertReflectedEntryPoint(pixelReflection, "PSMain", "frag");
             AssertReflectedFrameUniformBuffer(pixelReflection);
             AssertReflectedEntryPoint(sampledPixelReflection, "PSSampledMain", "frag");
-            AssertReflectedFrameUniformBuffer(sampledPixelReflection);
             AssertReflectedSampledResources(sampledPixelReflection);
         }
         finally

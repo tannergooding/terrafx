@@ -66,12 +66,25 @@ internal sealed class VulkanBackendDeviceTests
         var compilerIdentity = CreateShaderCompilerIdentity();
         ImmutableArray<ShaderResourceSignature> pixelResources = usesSampledResources
             ? [
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1),
                 new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.SampledImage, 1),
                 new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.Sampler, 1),
             ]
             : [
                 new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1),
+            ];
+        ImmutableArray<ShaderRecordLayout> pixelRecordLayouts = usesSampledResources
+            ? []
+            : [
+                new ShaderRecordLayout(
+                    "FrameData",
+                    16,
+                    [new ShaderFieldLayout(
+                        "color",
+                        ShaderValueType.Float4,
+                        0,
+                        16,
+                        1,
+                        0)]),
             ];
         var vertexReflection = new ShaderReflection(
             ShaderStage.Vertex,
@@ -93,16 +106,7 @@ internal sealed class VulkanBackendDeviceTests
             [],
             [new ShaderIoSignature("SV_Target", 0, null, ShaderValueType.Float4, ShaderInterpolation.Smooth)],
             pixelResources,
-            [new ShaderRecordLayout(
-                "FrameData",
-                16,
-                [new ShaderFieldLayout(
-                    "color",
-                    ShaderValueType.Float4,
-                    0,
-                    16,
-                    1,
-                    0)])],
+            pixelRecordLayouts,
             [],
             bindingLayoutVersion: 1,
             groupSizeX: 0,
@@ -485,9 +489,8 @@ internal sealed class VulkanBackendDeviceTests
 
         Assert.That(pipeline.IsDisposed, Is.False);
         Assert.That(pipeline.DescriptorSetLayouts.Length, Is.EqualTo(1));
-        Assert.That(pipeline.Resources.Length, Is.EqualTo(3));
+        Assert.That(pipeline.Resources.Length, Is.EqualTo(2));
 
-        var hasFrameUniformBuffer = false;
         var hasSampledImage = false;
         var hasSampler = false;
 
@@ -504,12 +507,6 @@ internal sealed class VulkanBackendDeviceTests
 
             switch (resource.Kind)
             {
-                case ShaderResourceKind.UniformBuffer:
-                {
-                    hasFrameUniformBuffer = true;
-                    break;
-                }
-
                 case ShaderResourceKind.SampledImage:
                 {
                     hasSampledImage = true;
@@ -524,7 +521,6 @@ internal sealed class VulkanBackendDeviceTests
             }
         }
 
-        Assert.That(hasFrameUniformBuffer, Is.True);
         Assert.That(hasSampledImage, Is.True);
         Assert.That(hasSampler, Is.True);
     }
