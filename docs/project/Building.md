@@ -91,11 +91,13 @@ dotnet build .\sources\TerraFX.Graphics.D3D12\TerraFX.Graphics.D3D12.csproj --co
 The focused Runtime test attempts D3D12 startup through the registration using a `PlatformHostOwner`-issued identity:
 
 ```powershell
+dotnet .\artifacts\bin\sources\TerraFX.Content.Tools\Debug\net11.0\TerraFX.Content.Tools.dll compile-m04-dxil .\artifacts\shader-fixtures\m04-d3d12-resources
+$env:TERRAFX_M04_DXIL_FIXTURE_DIRECTORY = (Resolve-Path .\artifacts\shader-fixtures\m04-d3d12-resources).Path
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~CreatesAndShutsDownD3D12GraphicsDeviceUsingHostIssuedIdentity"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~CreatesAndShutsDownD3D12GraphicsDeviceUsingHostIssuedIdentity"
 ```
 
-On the current Windows 11 x64 host, the native test passes on the AMD Radeon RX 7900 XTX (vendor `1002`, device `744C`, UMD `002000007D0F1B75`). D3D12 admits sampled D32 depth through an `R32_TYPELESS` resource, with `D32_FLOAT` depth and `R32_FLOAT` sampled view formats; the witness creates a real depth/sampled texture and verifies an exact upload/readback round trip. The same test also round-trips a 4x4x2 RGBA8 volume to exercise multi-slice copy-footprint bounds. This does not yet create DSV/SRV descriptors or execute a shader that samples depth, so it is not the public graph/pipeline witness.
+On the current Windows 11 x64 host, the native test passes on the AMD Radeon RX 7900 XTX (vendor `1002`, device `744C`, UMD `002000007D0F1B75`). D3D12 admits sampled D32 depth through an `R32_TYPELESS` resource, with `D32_FLOAT` depth and `R32_FLOAT` sampled view formats; the witness creates a real depth/sampled texture and verifies an exact upload/readback round trip. The same test round-trips a 4x4x2 RGBA8 volume and creates a resource-bearing PSO/root signature from the compiled DXIL fixture, using root tables for CBV/SRV/UAV/sampler register classes. Descriptor heap writes, shader execution, and graph submission remain unimplemented, so this is not the public graph/pipeline witness.
 
 ### Platform owner contracts
 

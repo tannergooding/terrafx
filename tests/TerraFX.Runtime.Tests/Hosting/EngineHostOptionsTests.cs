@@ -39,6 +39,89 @@ internal sealed class EngineHostOptionsTests
         return new AssetStoreOptions(Path.GetFullPath("content.epkg"), new byte[32], registration);
     }
 
+    private static OwnedBuffer<byte> CreateBytecodeStorage(string path)
+    {
+        var bytecode = File.ReadAllBytes(path);
+        var storage = UnmanagedBuffer<byte>.Allocate(
+            bytecode.Length,
+            new BufferAllocationOptions(bytecode.Length, alignment: 1));
+        storage.CopyFrom(bytecode.AsSpan(), 0);
+        return storage.TransferToOwnedBuffer();
+    }
+
+    private static GraphicsPipelineDescription CreateD3D12ResourcePipelineDescription(
+        BufferReadLease<byte> vertexBytecode,
+        BufferReadLease<byte> pixelBytecode)
+    {
+        var compilerIdentity = CreateShaderCompilerIdentity();
+        var vertexReflection = new ShaderReflection(
+            ShaderStage.Vertex,
+            "VSMain",
+            compilerIdentity,
+            [new ShaderIoSignature("SV_VertexID", 0, null, ShaderValueType.UInt1, ShaderInterpolation.Flat)],
+            [new ShaderIoSignature("SV_Position", 0, null, ShaderValueType.Float4, ShaderInterpolation.Smooth)],
+            [],
+            [],
+            [],
+            bindingLayoutVersion: 1,
+            groupSizeX: 0,
+            groupSizeY: 0,
+            groupSizeZ: 0);
+        var pixelReflection = new ShaderReflection(
+            ShaderStage.Pixel,
+            "PSSampledFrameStorageMain",
+            compilerIdentity,
+            [],
+            [new ShaderIoSignature("SV_Target", 0, null, ShaderValueType.Float4, ShaderInterpolation.Smooth)],
+            [
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1),
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.SampledImage, 1),
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, 1),
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 1, ShaderResourceKind.StorageImage, 1),
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.Sampler, 1),
+            ],
+            [
+                new ShaderRecordLayout(
+                    "FrameData",
+                    16,
+                    [new ShaderFieldLayout(
+                        "color",
+                        ShaderValueType.Float4,
+                        0,
+                        16,
+                        1,
+                        0)]),
+            ],
+            [],
+            bindingLayoutVersion: 1,
+            groupSizeX: 0,
+            groupSizeY: 0,
+            groupSizeZ: 0);
+        var vertexShader = new ShaderBytecodeInput(
+            ShaderStage.Vertex,
+            ShaderBinaryFormat.Dxil,
+            vertexBytecode,
+            vertexReflection);
+        var pixelShader = new ShaderBytecodeInput(
+            ShaderStage.Pixel,
+            ShaderBinaryFormat.Dxil,
+            pixelBytecode,
+            pixelReflection);
+
+        return new GraphicsPipelineDescription(
+            [vertexShader, pixelShader],
+            [],
+            vertexStride: 0,
+            [TextureFormat.Rgba8Unorm],
+            depthTargetFormat: null,
+            PrimitiveTopology.TriangleList,
+            PipelineBlendMode.Opaque,
+            PipelineDepthMode.Disabled,
+            PipelineCullMode.None,
+            frontFaceClockwise: false,
+            bindingLayoutVersion: 1);
+    }
+
     private static EngineHostOptions CreateHeadlessOptions(
         AssetStoreOptions assetStoreOptions,
         int? cpuWorkerCount = null,
@@ -58,6 +141,17 @@ internal sealed class EngineHostOptionsTests
             ClipboardServicePolicy = clipboardServicePolicy ?? ClipboardServicePolicy.NotRequested,
             ShutdownTimeout = shutdownTimeout ?? TimeSpan.FromSeconds(5),
         };
+
+    private static ShaderCompilerIdentity CreateShaderCompilerIdentity()
+    {
+        var digest = Convert.FromHexString("C6E82B70C14552F1DD58E4A79C93EEAB1567EEB0A9EE63A51564C410429BCE3E");
+        return new ShaderCompilerIdentity(
+            "Microsoft.Direct3D.DXC",
+            "1.8.2505.1",
+            "1.8.2505.32",
+            "win-x64",
+            ImmutableCollectionsMarshal.AsImmutableArray(digest));
+    }
 
     [Test]
     public void AcceptsExplicitD3D12RegistrationsWithoutActivatingDevices()
@@ -174,6 +268,30 @@ internal sealed class EngineHostOptionsTests
             Assert.That(capabilities.DriverName, Is.Not.Empty);
             Assert.That(capabilities.DriverVersion, Is.Not.Empty);
             Assert.That(capabilities.ApiVersion.Major, Is.GreaterThan(0));
+
+            var dxilFixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_DXIL_FIXTURE_DIRECTORY");
+
+            if (!string.IsNullOrWhiteSpace(dxilFixtureDirectory))
+            {
+                using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
+                    dxilFixtureDirectory,
+                    "M04OffscreenTriangle.vertex.dxil"));
+                using var pixelBytecodeStorage = CreateBytecodeStorage(Path.Combine(
+                    dxilFixtureDirectory,
+                    "M04OffscreenTriangle.pixel-sampled-frame-storage.dxil"));
+                using var vertexBytecode = vertexBytecodeStorage.AcquireReadLease(0, vertexBytecodeStorage.Length);
+                using var pixelBytecode = pixelBytecodeStorage.AcquireReadLease(0, pixelBytecodeStorage.Length);
+                using var pipeline = graphicsDevice.CreatePipelineAsync(
+                    CreateD3D12ResourcePipelineDescription(vertexBytecode, pixelBytecode),
+                    CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                Assert.That(pipeline.Handle.IsValid, Is.True);
+                Assert.That(pipeline.Handle.OwnerId, Is.EqualTo(platformOwner.OwnerId));
+                Assert.That(pipeline.Handle.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
+                TestContext.WriteLine("D3D12 created a resource-bearing PSO and root signature from compiled DXIL.");
+            }
+
             using var depthTexture = graphicsDevice.CreateTextureAsync(
                 new TextureDescription(
                     TextureDimension.Dimension2D,

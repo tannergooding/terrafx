@@ -2141,11 +2141,6 @@ public static unsafe class D3D12GraphicsBackend
                         throw new NotSupportedException("The D3D12 backend requires DXIL shader bytecode.");
                     }
 
-                    if (!shaderInputs[index].Reflection.Resources.IsEmpty)
-                    {
-                        throw new NotSupportedException("D3D12 pipelines with shader resource bindings are not implemented.");
-                    }
-
                     if (!shaderInputs[index].Reflection.RequiredCapabilities.IsEmpty)
                     {
                         throw new NotSupportedException("D3D12 shader capability requirements are not yet qualified.");
@@ -2166,7 +2161,7 @@ public static unsafe class D3D12GraphicsBackend
                         shaderBytecode[index] = CopyShaderBytecode(bytecodeLeases[index], out shaderBytecodeLengths[index]);
                     }
 
-                    rootSignature = CreateEmptyRootSignature(device);
+                    rootSignature = CreateDescriptorRootSignature(device, shaderInputs);
 
                     if (description is GraphicsPipelineDescription selectedGraphicsDescription)
                     {
@@ -2347,9 +2342,101 @@ public static unsafe class D3D12GraphicsBackend
                 };
             }
 
-            private static ID3D12RootSignature* CreateEmptyRootSignature(ID3D12Device* device)
+            private static ID3D12RootSignature* CreateDescriptorRootSignature(
+                ID3D12Device* device,
+                ImmutableArray<ShaderBytecodeInput> shaderInputs)
             {
+                var resources = new List<ShaderResourceSignature>();
+
+                for (var shaderIndex = 0; shaderIndex < shaderInputs.Length; shaderIndex++)
+                {
+                    var shaderResources = shaderInputs[shaderIndex].Reflection.Resources;
+
+                    for (var resourceIndex = 0; resourceIndex < shaderResources.Length; resourceIndex++)
+                    {
+                        var resource = shaderResources[resourceIndex];
+                        var resourceTableIndex = GetD3D12TableIndex(resource);
+                        var existingResourceFound = false;
+
+                        for (var existingIndex = 0; existingIndex < resources.Count; existingIndex++)
+                        {
+                            var existingResource = resources[existingIndex];
+
+                            if ((GetD3D12TableIndex(existingResource) == resourceTableIndex)
+                                && (existingResource.Binding == resource.Binding))
+                            {
+                                if ((existingResource.Kind != resource.Kind)
+                                    || (existingResource.ArrayCount != resource.ArrayCount))
+                                {
+                                    throw new ArgumentException("Shader stages disagree on a D3D12 register binding.", nameof(shaderInputs));
+                                }
+
+                                existingResourceFound = true;
+                                break;
+                            }
+                        }
+
+                        if (!existingResourceFound)
+                        {
+                            resources.Add(resource);
+                        }
+                    }
+                }
+
+                resources.Sort(CompareResources);
+                var descriptorRanges = stackalloc D3D12_DESCRIPTOR_RANGE[Math.Max(1, resources.Count)];
+                var rangeStarts = stackalloc int[16];
+                var rangeCounts = stackalloc uint[16];
+                NativeMemory.Clear(rangeStarts, checked((nuint)16 * (nuint)sizeof(int)));
+                NativeMemory.Clear(rangeCounts, checked((nuint)16 * (nuint)sizeof(uint)));
+                var descriptorRangeCount = 0;
+
+                for (var index = 0; index < resources.Count; index++)
+                {
+                    var resource = resources[index];
+                    var tableIndex = GetD3D12TableIndex(resource);
+
+                    if (rangeCounts[tableIndex] == 0)
+                    {
+                        rangeStarts[tableIndex] = descriptorRangeCount;
+                    }
+
+                    var descriptorRange = default(D3D12_DESCRIPTOR_RANGE);
+                    descriptorRange.RangeType = GetD3D12DescriptorRangeType(resource.Kind);
+                    descriptorRange.NumDescriptors = checked((uint)resource.ArrayCount);
+                    descriptorRange.BaseShaderRegister = checked((uint)resource.Binding);
+                    descriptorRange.RegisterSpace = checked((uint)GetD3D12RegisterSpace(resource.Group));
+                    descriptorRange.OffsetInDescriptorsFromTableStart = uint.MaxValue;
+                    descriptorRanges[descriptorRangeCount++] = descriptorRange;
+                    rangeCounts[tableIndex] = checked(rangeCounts[tableIndex] + 1);
+                }
+
+                var rootParameters = stackalloc D3D12_ROOT_PARAMETER[16];
+                NativeMemory.Clear(rootParameters, checked((nuint)16 * (nuint)sizeof(D3D12_ROOT_PARAMETER)));
+                var rootParameterCount = 0;
+
+                for (var tableIndex = 0; tableIndex < 16; tableIndex++)
+                {
+                    if (rangeCounts[tableIndex] == 0)
+                    {
+                        continue;
+                    }
+
+                    var rootParameter = default(D3D12_ROOT_PARAMETER);
+                    rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE.D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                    rootParameter.ShaderVisibility = D3D12_SHADER_VISIBILITY.D3D12_SHADER_VISIBILITY_ALL;
+                    var descriptorTable = rootParameter.Anonymous.DescriptorTable;
+                    descriptorTable.NumDescriptorRanges = rangeCounts[tableIndex];
+                    descriptorTable.pDescriptorRanges = descriptorRanges + rangeStarts[tableIndex];
+                    var anonymous = rootParameter.Anonymous;
+                    anonymous.DescriptorTable = descriptorTable;
+                    rootParameter.Anonymous = anonymous;
+                    rootParameters[rootParameterCount++] = rootParameter;
+                }
+
                 var rootSignatureDescription = new D3D12_ROOT_SIGNATURE_DESC {
+                    NumParameters = checked((uint)rootParameterCount),
+                    pParameters = rootParameterCount == 0 ? null : rootParameters,
                     Flags = D3D12_ROOT_SIGNATURE_FLAGS.D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
                 };
                 ID3DBlob* signatureBlob = null;
@@ -2404,6 +2491,52 @@ public static unsafe class D3D12GraphicsBackend
                     {
                         _ = signatureBlob->Release();
                     }
+                }
+
+                static int CompareResources(ShaderResourceSignature left, ShaderResourceSignature right)
+                {
+                    var tableComparison = GetD3D12TableIndex(left).CompareTo(GetD3D12TableIndex(right));
+                    return (tableComparison != 0)
+                        ? tableComparison
+                        : left.Binding.CompareTo(right.Binding);
+                }
+
+                static D3D12_DESCRIPTOR_RANGE_TYPE GetD3D12DescriptorRangeType(ShaderResourceKind kind)
+                {
+                    return kind switch {
+                        ShaderResourceKind.UniformBuffer => D3D12_DESCRIPTOR_RANGE_TYPE.D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
+                        ShaderResourceKind.SampledImage => D3D12_DESCRIPTOR_RANGE_TYPE.D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+                        ShaderResourceKind.StorageImage or ShaderResourceKind.StorageBuffer => D3D12_DESCRIPTOR_RANGE_TYPE.D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
+                        ShaderResourceKind.Sampler => D3D12_DESCRIPTOR_RANGE_TYPE.D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
+                        _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+                    };
+                }
+
+                static int GetD3D12RegisterClassIndex(ShaderResourceKind kind)
+                {
+                    return kind switch {
+                        ShaderResourceKind.UniformBuffer => 0,
+                        ShaderResourceKind.SampledImage => 1,
+                        ShaderResourceKind.StorageImage or ShaderResourceKind.StorageBuffer => 2,
+                        ShaderResourceKind.Sampler => 3,
+                        _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+                    };
+                }
+
+                static int GetD3D12RegisterSpace(ShaderBindingGroup group)
+                {
+                    return group switch {
+                        ShaderBindingGroup.Frame => 0,
+                        ShaderBindingGroup.Material => 1,
+                        ShaderBindingGroup.ObjectData => 2,
+                        ShaderBindingGroup.Pass => 3,
+                        _ => throw new ArgumentOutOfRangeException(nameof(group)),
+                    };
+                }
+
+                static int GetD3D12TableIndex(ShaderResourceSignature resource)
+                {
+                    return checked((GetD3D12RegisterSpace(resource.Group) * 4) + GetD3D12RegisterClassIndex(resource.Kind));
                 }
             }
 
