@@ -100,6 +100,10 @@ internal sealed class PlatformHostOwner
         _platform.CloseWindow(window);
     }
 
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "A created native window must be retired if its first owner-thread metrics snapshot cannot be published.")]
     internal WindowHandle CreateWindow(WindowOptions options)
     {
         EnsureOwnerThread();
@@ -133,17 +137,36 @@ internal sealed class PlatformHostOwner
             throw new InvalidOperationException("The PlatformHost issued a duplicate window identity.");
         }
 
-        var created = false;
+        var nativeWindowCreated = false;
+        var creationCompleted = false;
 
         try
         {
             _platform.CreateWindow(window, options, nativeMonitorHandle);
-            created = true;
+            nativeWindowCreated = true;
+            RefreshWindowMetrics(window);
+            creationCompleted = true;
             return window;
+        }
+        catch (Exception creationException)
+        {
+            if (nativeWindowCreated)
+            {
+                try
+                {
+                    _platform.CloseWindow(window);
+                }
+                catch (Exception cleanupException)
+                {
+                    throw new AggregateException(creationException, cleanupException);
+                }
+            }
+
+            throw;
         }
         finally
         {
-            if (!created)
+            if (!creationCompleted)
             {
                 _ = _activeWindowHandles.Remove(window);
             }
@@ -239,6 +262,11 @@ internal sealed class PlatformHostOwner
             RefreshMonitorSnapshot();
         }
 
+        foreach (var window in _activeWindowHandles)
+        {
+            RefreshWindowMetrics(window);
+        }
+
         return _inputBroker.Capture(_platform.DrainInputSamples(), _activeWindowHandles.Contains);
     }
 
@@ -293,6 +321,35 @@ internal sealed class PlatformHostOwner
         _platform.SetMonitorHandles(immutableHandles);
         _activeMonitorHandles = activeMonitorHandles;
         _nativeMonitorHandles = nativeMonitorHandles;
+    }
+
+    private void RefreshWindowMetrics(WindowHandle window)
+    {
+        var nativeMetrics = _platform.GetNativeWindowMetrics(window);
+        var previousMetrics = _platform.GetWindowMetricsSnapshot(window);
+
+        if (previousMetrics is not null
+            && (previousMetrics.ClientPixelSize == nativeMetrics.ClientPixelSize)
+            && previousMetrics.LogicalClientSize.Equals(nativeMetrics.LogicalClientSize)
+            && previousMetrics.ContentScale.Equals(nativeMetrics.ContentScale)
+            && (previousMetrics.EffectiveDpi == nativeMetrics.EffectiveDpi)
+            && (previousMetrics.DpiSource == nativeMetrics.DpiSource)
+            && (previousMetrics.DpiConfidence == nativeMetrics.DpiConfidence))
+        {
+            return;
+        }
+
+        var metrics = new WindowMetrics(
+            nativeMetrics.LogicalClientSize,
+            nativeMetrics.ClientPixelSize,
+            nativeMetrics.ContentScale,
+            nativeMetrics.EffectiveDpi,
+            nativeMetrics.DpiSource,
+            nativeMetrics.DpiConfidence,
+            previousMetrics?.SurfaceEpoch ?? 0,
+            previousMetrics?.SwapchainEpoch ?? 0);
+
+        _platform.SetWindowMetrics(window, metrics);
     }
 
     private void ThrowIfDisposed()

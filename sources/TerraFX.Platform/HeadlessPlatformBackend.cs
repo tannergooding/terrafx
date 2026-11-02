@@ -130,6 +130,13 @@ internal sealed class HeadlessPlatformBackend : IPlatformBackend
         return [];
     }
 
+    public PlatformNativeWindowMetrics GetNativeWindowMetrics(WindowHandle window)
+    {
+        EnsureOwnerThread();
+        _ = window;
+        throw new NotSupportedException("The Headless platform does not create windows.");
+    }
+
     public void Pump()
     {
         EnsureOwnerThread();

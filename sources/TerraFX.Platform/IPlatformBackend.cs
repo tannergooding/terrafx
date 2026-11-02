@@ -32,6 +32,8 @@ internal interface IPlatformBackend : IDisposable
 
     ImmutableArray<PlatformMonitorInfo> GetMonitorInfo();
 
+    PlatformNativeWindowMetrics GetNativeWindowMetrics(WindowHandle window);
+
     void Pump();
 
     void SetMonitorHandles(ImmutableArray<MonitorHandle> monitorHandles);

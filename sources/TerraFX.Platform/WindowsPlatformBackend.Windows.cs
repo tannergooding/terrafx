@@ -160,6 +160,10 @@ internal sealed unsafe partial class WindowsPlatformBackend
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool DestroyWindowNative(nint window);
 
+    [LibraryImport("user32.dll", EntryPoint = "GetClientRect", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetClientRectNative(nint window, NativeRect* rect);
+
     [LibraryImport("user32.dll", EntryPoint = "GetDpiForWindow", SetLastError = true)]
     private static partial uint GetDpiForWindowNative(nint window);
 
@@ -465,6 +469,46 @@ internal sealed unsafe partial class WindowsPlatformBackend
         }
 
         return closeRequests.ToImmutable();
+    }
+
+    public PlatformNativeWindowMetrics GetNativeWindowMetrics(WindowHandle window)
+    {
+        EnsureOwnerThread();
+        var state = FindWindowState(window);
+
+        if ((state is null) || state.IsClosing || state.NativeDestroyed || (state.NativeWindow == 0))
+        {
+            throw new InvalidOperationException("The window handle is stale or no longer active.");
+        }
+
+        var clientRect = default(NativeRect);
+
+        if (!GetClientRectNative(state.NativeWindow, &clientRect))
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Windows could not read the client extent.");
+        }
+
+        var dpi = GetDpiForWindowNative(state.NativeWindow);
+
+        if (dpi == 0)
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Windows did not report DPI for the live window.");
+        }
+
+        var width = checked(clientRect.Right - clientRect.Left);
+        var height = checked(clientRect.Bottom - clientRect.Top);
+        var pixelSize = new PixelSize(width, height);
+        var scale = dpi / 96.0f;
+        var contentScale = new Vector2(scale, scale);
+        var logicalSize = new Vector2(width / scale, height / scale);
+
+        return new PlatformNativeWindowMetrics(
+            logicalSize,
+            pixelSize,
+            contentScale,
+            dpi,
+            DpiSource.WindowsPerMonitorV2,
+            DpiConfidence.Reported);
     }
 
     public bool TryGetNativeWindowBinding(WindowHandle window, out PlatformNativeWindowBinding binding)

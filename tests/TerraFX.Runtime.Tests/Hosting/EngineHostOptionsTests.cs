@@ -15,6 +15,7 @@ using TerraFX.Graphics;
 using TerraFX.Graphics.D3D12;
 using TerraFX.Graphics.Vulkan;
 using TerraFX.Hosting;
+using TerraFX.Numerics;
 using TerraFX.Platform;
 
 namespace TerraFX.Runtime.Tests.Hosting;
@@ -1224,23 +1225,44 @@ internal sealed class EngineHostOptionsTests
             GraphicsBackend.D3D12,
             D3D12GraphicsBackend.CreateRegistration(),
             CreateAssetStoreOptions());
-        var completion = new TaskCompletionSource<(WindowHandle Window, uint OwnerId, bool StaleCloseRejected)>(
+        var completion = new TaskCompletionSource<(
+            WindowHandle Window,
+            uint OwnerId,
+            bool StaleCloseRejected,
+            bool StaleMetricsRejected,
+            WindowMetrics? Metrics)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() => {
             PlatformHostOwner? owner = null;
             var window = default(WindowHandle);
             var ownerId = 0U;
             var staleCloseRejected = false;
+            var staleMetricsRejected = false;
+            WindowMetrics? metrics = null;
             Exception? failure = null;
 
             try
             {
                 owner = PlatformHostOwner.Create(options);
                 ownerId = owner.OwnerId;
-                window = owner.CreateWindow(new WindowOptions("TerraFX hidden window witness") { Visible = false });
+                window = owner.CreateWindow(new WindowOptions("TerraFX hidden window witness") {
+                    ClientSize = new Vector2(640.0f, 480.0f),
+                    Visible = false,
+                });
+                metrics = owner.Platform.GetMetrics(window);
                 _ = owner.Pump();
+                metrics = owner.Platform.GetMetrics(window);
                 owner.CloseWindow(window);
                 _ = owner.Pump();
+
+                try
+                {
+                    _ = owner.Platform.GetMetrics(window);
+                }
+                catch (InvalidOperationException)
+                {
+                    staleMetricsRejected = true;
+                }
 
                 try
                 {
@@ -1269,7 +1291,7 @@ internal sealed class EngineHostOptionsTests
 
             if (failure is null)
             {
-                _ = completion.TrySetResult((window, ownerId, staleCloseRejected));
+                _ = completion.TrySetResult((window, ownerId, staleCloseRejected, staleMetricsRejected, metrics));
             }
             else
             {
@@ -1279,12 +1301,34 @@ internal sealed class EngineHostOptionsTests
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
 
-        var (window, ownerId, staleCloseRejected) = await completion.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        var (window, ownerId, staleCloseRejected, staleMetricsRejected, metrics) =
+            await completion.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
         Assert.That(thread.Join(TimeSpan.FromSeconds(5)), Is.True);
         Assert.That(ownerId, Is.GreaterThan(0));
         Assert.That(window.IsValid, Is.True);
         Assert.That(window.OwnerId, Is.EqualTo(ownerId));
         Assert.That(staleCloseRejected, Is.True);
+        Assert.That(staleMetricsRejected, Is.True);
+
+        var actualMetrics = metrics
+            ?? throw new InvalidOperationException("The Windows Platform owner did not publish the window metrics snapshot.");
+        var effectiveDpi = actualMetrics.EffectiveDpi
+            ?? throw new InvalidOperationException("The Windows Platform owner did not report the effective window DPI.");
+        var expectedScale = effectiveDpi / 96.0f;
+        Assert.That(actualMetrics.ClientPixelSize.Width, Is.GreaterThan(0));
+        Assert.That(actualMetrics.ClientPixelSize.Height, Is.GreaterThan(0));
+        Assert.That(actualMetrics.DpiSource, Is.EqualTo(DpiSource.WindowsPerMonitorV2));
+        Assert.That(actualMetrics.DpiConfidence, Is.EqualTo(DpiConfidence.Reported));
+        Assert.That(actualMetrics.ContentScale.X, Is.EqualTo(expectedScale).Within(0.0001f));
+        Assert.That(actualMetrics.ContentScale.Y, Is.EqualTo(expectedScale).Within(0.0001f));
+        Assert.That(actualMetrics.LogicalClientSize.X, Is.EqualTo(640.0f).Within(0.5f));
+        Assert.That(actualMetrics.LogicalClientSize.Y, Is.EqualTo(480.0f).Within(0.5f));
+        Assert.That(actualMetrics.LogicalClientSize.X * actualMetrics.ContentScale.X,
+            Is.EqualTo(actualMetrics.ClientPixelSize.Width).Within(0.01f));
+        Assert.That(actualMetrics.LogicalClientSize.Y * actualMetrics.ContentScale.Y,
+            Is.EqualTo(actualMetrics.ClientPixelSize.Height).Within(0.01f));
+        Assert.That(actualMetrics.SurfaceEpoch, Is.Zero);
+        Assert.That(actualMetrics.SwapchainEpoch, Is.Zero);
     }
 
     private readonly struct ReadbackCopyAction : IAction<ReadOnlySpan<byte>>

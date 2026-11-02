@@ -112,6 +112,13 @@ dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --confi
 dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Release
 ```
 
+On Windows 11 x64, run the hidden-HWND owner witness for live client metrics, PMv2 scale/provenance, pre-surface zero epochs, and stale-handle rejection:
+
+```powershell
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.EngineHostOptionsTests.WindowsPlatformOwnerWitnessesHiddenWindowCreationAndRetirement"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.EngineHostOptionsTests.WindowsPlatformOwnerWitnessesHiddenWindowCreationAndRetirement"
+```
+
 ### Offline M04 shader fixture
 
 Run the bounded process and toolchain-manifest regressions. On Windows x64, set `VULKAN_SDK` to the pinned 1.4.328.1 SDK to execute the SPIR-V compile/reflection test; when it is unset, that one test is reported as skipped:
