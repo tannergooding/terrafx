@@ -14,7 +14,9 @@ namespace TerraFX.Content.Tools;
 internal static class M04ShaderReflectionReader
 {
     private const uint CapabilityDescriptorIndexingMaximum = 5312;
-    private const uint CapabilityDescriptorIndexingMinimum = 5306;
+    private const uint CapabilityDescriptorIndexingMinimum = 5303;
+    private const uint CapabilityDynamicDescriptorIndexingMaximum = 31;
+    private const uint CapabilityDynamicDescriptorIndexingMinimum = 28;
     private const uint CapabilityFloat16 = 9;
     private const uint CapabilityFloat64 = 10;
     private const uint CapabilityGeometry = 2;
@@ -444,6 +446,8 @@ internal static class M04ShaderReflectionReader
                     CapabilityGeometry => ShaderCapability.GeometryShader,
                     CapabilityTessellation => ShaderCapability.Tessellation,
                     CapabilityRuntimeDescriptorArray or CapabilityShaderNonUniform => ShaderCapability.DescriptorIndexing,
+                    _ when capability is >= CapabilityDynamicDescriptorIndexingMinimum and <= CapabilityDynamicDescriptorIndexingMaximum
+                        => ShaderCapability.DescriptorIndexing,
                     _ when capability is >= CapabilityGroupNonUniformMinimum and <= CapabilityGroupNonUniformMaximum
                         => ShaderCapability.WaveOperations,
                     _ when capability is >= CapabilityDescriptorIndexingMinimum and <= CapabilityDescriptorIndexingMaximum

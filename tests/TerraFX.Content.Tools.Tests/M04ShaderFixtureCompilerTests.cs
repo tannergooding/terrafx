@@ -563,7 +563,22 @@ internal sealed class M04ShaderFixtureCompilerTests
             }
             """;
 
-        var reflection = ReadSyntheticTypedReflection(dxilReflection, spirvReflection, 2, 3, 9, 10, 61, 64, 5302);
+        var reflection = ReadSyntheticTypedReflection(
+            dxilReflection,
+            spirvReflection,
+            2,
+            3,
+            9,
+            10,
+            28,
+            31,
+            61,
+            64,
+            5302,
+            5303,
+            5305,
+            5306,
+            5312);
 
         Assert.That(reflection.RecordLayouts.Length, Is.EqualTo(1));
         Assert.That(reflection.RecordLayouts[0].Name, Is.EqualTo("FrameData"));
@@ -635,7 +650,7 @@ internal sealed class M04ShaderFixtureCompilerTests
             () => ReadSyntheticTypedReflection(dxilReflection, spirvReflection, 8),
             Throws.TypeOf<NotSupportedException>());
         Assert.That(
-            () => ReadSyntheticTypedReflection(dxilReflection, spirvReflection, 5303),
+            () => ReadSyntheticTypedReflection(dxilReflection, spirvReflection, 5297),
             Throws.TypeOf<NotSupportedException>());
     }
 }
