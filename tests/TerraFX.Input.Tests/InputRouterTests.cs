@@ -1252,6 +1252,77 @@ internal sealed class InputRouterTests
     }
 
     [Test]
+    public void LatchesPhysicalInputOverflowAndCancelsTheActiveAction()
+    {
+        var router = CreateRouter(InputRecipientKind.SimulationTimeline, recipientId: 6);
+        var action = new ActionDefinition(Guid.NewGuid(), "Move", InputActionKind.Digital);
+        var context = new ContextDefinition(Guid.NewGuid(), 0);
+        var keyboard = new KeyboardControl(7, 4);
+        var binding = new BindingDefinition(Guid.NewGuid(), action.ActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(keyboard),
+        };
+        var map = new InputActionMapV1(1, Guid.NewGuid(), 1, 1, [action], [context], [binding]);
+
+        var mapResponse = router.RegisterMap(map);
+        Assert.That(mapResponse.Status, Is.EqualTo(InputMapStatus.Registered));
+        var sequenceLease = new HostEventSequenceLease();
+        var segmentSequence = sequenceLease.Allocate();
+        var segment = new SimulationClockSegment(1, 0, segmentSequence, 0, 0.0, 60, 0, 1.0f, isPaused: false);
+        router.SetSimulationClockSegment(in segment);
+
+        var downEvent = new PhysicalInputEvent(
+            PhysicalInputEventKind.KeyDown,
+            166_666,
+            segmentSequence,
+            device: new InputDeviceHandle(1, 0, 1),
+            window: new WindowHandle(1, 0, 1),
+            value: new PhysicalInputValue(new DigitalControl(keyboard), isDown: true));
+        Assert.That(router.EnqueuePhysicalEvent(downEvent, playerSlot: null, discardedInputCount: out _).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.PublishSimulationActionSnapshot(0).Actions[0].IsDownAtEnd, Is.True);
+
+        for (var index = 0; index < 4096; index++)
+        {
+            var repeatEvent = new PhysicalInputEvent(
+                PhysicalInputEventKind.KeyRepeat,
+                166_666,
+                sequenceLease.Allocate(),
+                device: new InputDeviceHandle(1, 0, 1),
+                window: new WindowHandle(1, 0, 1),
+                value: new PhysicalInputValue(new DigitalControl(keyboard), isDown: true));
+            var receipt = router.EnqueuePhysicalEvent(repeatEvent, playerSlot: null, discardedInputCount: out _);
+
+            if (receipt.Status != InputRoutingStatus.Applied)
+            {
+                Assert.Fail($"Physical event {index} was rejected before the recipient inbox reached capacity.");
+            }
+        }
+
+        var overflowEvent = new PhysicalInputEvent(
+            PhysicalInputEventKind.KeyRepeat,
+            166_666,
+            sequenceLease.Allocate(),
+            device: new InputDeviceHandle(1, 0, 1),
+            window: new WindowHandle(1, 0, 1),
+            value: new PhysicalInputValue(new DigitalControl(keyboard), isDown: true));
+        var overflowReceipt = router.EnqueuePhysicalEvent(
+            overflowEvent,
+            playerSlot: null,
+            discardedInputCount: out _);
+        Assert.That(overflowReceipt.Status, Is.EqualTo(InputRoutingStatus.CapacityExceeded));
+
+        var overflowResult = router.ServiceHostControlBoundary();
+        Assert.That(overflowResult, Is.Not.Null);
+        Assert.That(overflowResult!.FirstUnacceptedHostSequence, Is.EqualTo(overflowEvent.HostSequence));
+        Assert.That(overflowResult.LastUnacceptedHostSequence, Is.EqualTo(overflowEvent.HostSequence));
+        Assert.That(overflowResult.Transitions, Has.Length.EqualTo(1));
+        Assert.That(overflowResult.Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+        Assert.That(overflowResult.Transitions[0].CancellationReason, Is.EqualTo(InputCancellationReason.InputOverflow));
+        Assert.That(overflowResult.Transitions[0].HostSequence, Is.EqualTo(overflowEvent.HostSequence));
+
+        router.Dispose();
+    }
+
+    [Test]
     public void OrdersContextActivationsAcrossCancellationControls()
     {
         var sequenceLease = new HostEventSequenceLease();
