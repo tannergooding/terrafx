@@ -21,6 +21,25 @@ internal sealed class M04ShaderFixtureCompilerTests
         Assert.That(entryPoints[0].GetProperty("mode").GetString(), Is.EqualTo(stage));
     }
 
+    private static void AssertReflectedFrameUniformBuffer(JsonDocument reflection)
+    {
+        var root = reflection.RootElement;
+        var uniformBuffers = root.GetProperty("ubos");
+        Assert.That(uniformBuffers.GetArrayLength(), Is.EqualTo(1));
+        Assert.That(uniformBuffers[0].GetProperty("name").GetString(), Is.EqualTo("type.FrameData"));
+        Assert.That(uniformBuffers[0].GetProperty("block_size").GetInt32(), Is.EqualTo(16));
+        Assert.That(uniformBuffers[0].GetProperty("set").GetInt32(), Is.EqualTo(0));
+        Assert.That(uniformBuffers[0].GetProperty("binding").GetInt32(), Is.EqualTo(0));
+
+        var typeIdentifier = uniformBuffers[0].GetProperty("type").GetString()
+            ?? throw new InvalidDataException("SPIRV-Cross omitted the FrameData type identifier.");
+        var frameDataType = root.GetProperty("types").GetProperty(typeIdentifier);
+        Assert.That(frameDataType.GetProperty("members").GetArrayLength(), Is.EqualTo(1));
+        Assert.That(frameDataType.GetProperty("members")[0].GetProperty("name").GetString(), Is.EqualTo("color"));
+        Assert.That(frameDataType.GetProperty("members")[0].GetProperty("type").GetString(), Is.EqualTo("vec4"));
+        Assert.That(frameDataType.GetProperty("members")[0].GetProperty("offset").GetInt32(), Is.EqualTo(0));
+    }
+
     [Test]
     public async Task CompileAsyncProducesValidatedDxilSpirvAndReflectionWithPinnedSdk()
     {
@@ -53,6 +72,7 @@ internal sealed class M04ShaderFixtureCompilerTests
                 await File.ReadAllTextAsync(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel.reflection.json")).ConfigureAwait(false));
             AssertReflectedEntryPoint(vertexReflection, "VSMain", "vert");
             AssertReflectedEntryPoint(pixelReflection, "PSMain", "frag");
+            AssertReflectedFrameUniformBuffer(pixelReflection);
         }
         finally
         {
@@ -91,6 +111,9 @@ internal sealed class M04ShaderFixtureCompilerTests
             Assert.That(vertexReflection.Contains("SV_Position", StringComparison.Ordinal), Is.True);
             Assert.That(pixelReflection.Contains("EntryFunctionName: PSMain", StringComparison.Ordinal), Is.True);
             Assert.That(pixelReflection.Contains("SV_Target", StringComparison.Ordinal), Is.True);
+            Assert.That(pixelReflection.Contains("cbuffer FrameData", StringComparison.Ordinal), Is.True);
+            Assert.That(pixelReflection.Contains("float4 color", StringComparison.Ordinal), Is.True);
+            Assert.That(pixelReflection.Contains("FrameData                         cbuffer", StringComparison.Ordinal), Is.True);
         }
         finally
         {

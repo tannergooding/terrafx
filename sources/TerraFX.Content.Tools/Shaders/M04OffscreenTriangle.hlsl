@@ -3,6 +3,12 @@ struct VertexOutput
     float4 position : SV_Position;
 };
 
+[[vk::binding(0, 0)]]
+cbuffer FrameData : register(b0, space0)
+{
+    float4 color;
+};
+
 VertexOutput VSMain(uint vertexId : SV_VertexID)
 {
     float2 positions[3] = {
@@ -18,5 +24,5 @@ VertexOutput VSMain(uint vertexId : SV_VertexID)
 
 float4 PSMain(VertexOutput input) : SV_Target0
 {
-    return float4(1.0, 0.0, 1.0, 1.0);
+    return color;
 }

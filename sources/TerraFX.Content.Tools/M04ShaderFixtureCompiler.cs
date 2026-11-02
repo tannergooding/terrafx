@@ -350,6 +350,72 @@ internal static class M04ShaderFixtureCompiler
         {
             throw new InvalidDataException($"DXC reflection from the compiled DXIL does not contain the expected {stageName} entry-point output.");
         }
+
+        if ((stageName == "pixel")
+            && (!text.Contains("cbuffer FrameData", StringComparison.Ordinal)
+                || !text.Contains("float4 color", StringComparison.Ordinal)
+                || !text.Contains("FrameData                         cbuffer", StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException("DXC reflection from the compiled pixel DXIL does not contain the FrameData uniform buffer.");
+        }
+    }
+
+    private static void ValidatePixelUniformBufferReflection(JsonElement root)
+    {
+        if (!root.TryGetProperty("ubos", out var uniformBuffers)
+            || (uniformBuffers.ValueKind != JsonValueKind.Array)
+            || (uniformBuffers.GetArrayLength() != 1))
+        {
+            throw new InvalidDataException("SPIRV-Cross reflection must report exactly one FrameData uniform buffer.");
+        }
+
+        var uniformBuffer = uniformBuffers[0];
+
+        if (!uniformBuffer.TryGetProperty("type", out var typeIdentifierElement)
+            || (typeIdentifierElement.ValueKind != JsonValueKind.String)
+            || !uniformBuffer.TryGetProperty("name", out var nameElement)
+            || (nameElement.ValueKind != JsonValueKind.String)
+            || !StringComparer.Ordinal.Equals(nameElement.GetString(), "type.FrameData")
+            || !uniformBuffer.TryGetProperty("block_size", out var blockSizeElement)
+            || (blockSizeElement.ValueKind != JsonValueKind.Number)
+            || (blockSizeElement.GetInt32() != 16)
+            || !uniformBuffer.TryGetProperty("set", out var setElement)
+            || (setElement.ValueKind != JsonValueKind.Number)
+            || (setElement.GetInt32() != 0)
+            || !uniformBuffer.TryGetProperty("binding", out var bindingElement)
+            || (bindingElement.ValueKind != JsonValueKind.Number)
+            || (bindingElement.GetInt32() != 0))
+        {
+            throw new InvalidDataException("SPIRV-Cross reflection does not match the FrameData set, binding, or block-size contract.");
+        }
+
+        var typeIdentifier = typeIdentifierElement.GetString()
+            ?? throw new InvalidDataException("SPIRV-Cross omitted the FrameData type identifier.");
+
+        if (!root.TryGetProperty("types", out var types)
+            || (types.ValueKind != JsonValueKind.Object)
+            || !types.TryGetProperty(typeIdentifier, out var type)
+            || !type.TryGetProperty("members", out var members)
+            || (members.ValueKind != JsonValueKind.Array)
+            || (members.GetArrayLength() != 1))
+        {
+            throw new InvalidDataException("SPIRV-Cross reflection does not contain the FrameData member layout.");
+        }
+
+        var member = members[0];
+
+        if (!member.TryGetProperty("name", out var memberName)
+            || (memberName.ValueKind != JsonValueKind.String)
+            || !StringComparer.Ordinal.Equals(memberName.GetString(), "color")
+            || !member.TryGetProperty("type", out var memberType)
+            || (memberType.ValueKind != JsonValueKind.String)
+            || !StringComparer.Ordinal.Equals(memberType.GetString(), "vec4")
+            || !member.TryGetProperty("offset", out var memberOffset)
+            || (memberOffset.ValueKind != JsonValueKind.Number)
+            || (memberOffset.GetInt32() != 0))
+        {
+            throw new InvalidDataException("SPIRV-Cross reflection does not match the FrameData color field layout.");
+        }
     }
 
     private static void ValidateReflection(string json, string entryPoint, string stageName)
@@ -385,6 +451,11 @@ internal static class M04ShaderFixtureCompiler
         if (!expectedMode)
         {
             throw new InvalidDataException($"SPIRV-Cross reported mode '{mode}' for the {stageName} shader stage.");
+        }
+
+        if (stageName == "pixel")
+        {
+            ValidatePixelUniformBufferReflection(root);
         }
     }
 

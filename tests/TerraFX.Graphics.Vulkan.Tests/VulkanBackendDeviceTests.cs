@@ -82,8 +82,17 @@ internal sealed class VulkanBackendDeviceTests
             compilerIdentity,
             [],
             [new ShaderIoSignature("SV_Target", 0, null, ShaderValueType.Float4, ShaderInterpolation.Smooth)],
-            [],
-            [],
+            [new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1)],
+            [new ShaderRecordLayout(
+                "FrameData",
+                16,
+                [new ShaderFieldLayout(
+                    "color",
+                    ShaderValueType.Float4,
+                    0,
+                    16,
+                    1,
+                    0)])],
             [],
             bindingLayoutVersion: 1,
             groupSizeX: 0,
@@ -355,6 +364,7 @@ internal sealed class VulkanBackendDeviceTests
                 PipelineBlendMode.PremultipliedAlpha),
             [vertexLease, pixelLease]);
         Assert.That(pipeline.IsDisposed, Is.False);
+        Assert.That(pipeline.DescriptorSetLayouts.Length, Is.EqualTo(1));
         Assert.That(
             device.Dispose,
             Throws.InvalidOperationException.With.Message.Contains("live pipeline owners"));

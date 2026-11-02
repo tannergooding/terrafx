@@ -7,6 +7,7 @@ namespace TerraFX.Graphics.Vulkan;
 
 internal sealed class VulkanBackendPipeline : IGraphicsBackendPipeline
 {
+    private readonly VkDescriptorSetLayout[] _descriptorSetLayouts;
     private bool _isDisposed;
     private readonly VulkanBackendDevice _owner;
     private VkPipeline _pipeline;
@@ -15,13 +16,18 @@ internal sealed class VulkanBackendPipeline : IGraphicsBackendPipeline
     internal VulkanBackendPipeline(
         VulkanBackendDevice owner,
         VkPipeline pipeline,
-        VkPipelineLayout pipelineLayout)
+        VkPipelineLayout pipelineLayout,
+        VkDescriptorSetLayout[] descriptorSetLayouts)
     {
         ArgumentNullException.ThrowIfNull(owner);
+        ArgumentNullException.ThrowIfNull(descriptorSetLayouts);
         _owner = owner;
         _pipeline = pipeline;
         _pipelineLayout = pipelineLayout;
+        _descriptorSetLayouts = descriptorSetLayouts;
     }
+
+    internal ReadOnlySpan<VkDescriptorSetLayout> DescriptorSetLayouts => _descriptorSetLayouts;
 
     internal bool IsDisposed => _isDisposed;
 
@@ -42,6 +48,7 @@ internal sealed class VulkanBackendPipeline : IGraphicsBackendPipeline
     internal void MarkDisposed()
     {
         _isDisposed = true;
+        Array.Clear(_descriptorSetLayouts);
         _pipeline = default;
         _pipelineLayout = default;
     }

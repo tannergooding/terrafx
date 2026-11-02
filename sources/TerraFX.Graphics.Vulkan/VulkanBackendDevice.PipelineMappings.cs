@@ -48,6 +48,37 @@ internal sealed unsafe partial class VulkanBackendDevice
             _ => throw new ArgumentOutOfRangeException(nameof(cullMode)),
         };
 
+    private static uint GetNativeDescriptorBinding(ShaderResourceSignature resource)
+    {
+        var bindingClassOffset = resource.Kind switch {
+            ShaderResourceKind.UniformBuffer => 0,
+            ShaderResourceKind.SampledImage => 16,
+            ShaderResourceKind.StorageImage or ShaderResourceKind.StorageBuffer => 32,
+            ShaderResourceKind.Sampler => 40,
+            _ => throw new ArgumentOutOfRangeException(nameof(resource)),
+        };
+        return checked((uint)(bindingClassOffset + resource.Binding));
+    }
+
+    private static uint GetNativeDescriptorSetIndex(ShaderBindingGroup group)
+        => group switch {
+            ShaderBindingGroup.Frame => 0,
+            ShaderBindingGroup.Material => 1,
+            ShaderBindingGroup.ObjectData => 2,
+            ShaderBindingGroup.Pass => 3,
+            _ => throw new ArgumentOutOfRangeException(nameof(group)),
+        };
+
+    private static VkDescriptorType GetNativeDescriptorType(ShaderResourceKind kind)
+        => kind switch {
+            ShaderResourceKind.UniformBuffer => VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            ShaderResourceKind.SampledImage => VkDescriptorType.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            ShaderResourceKind.StorageImage => VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            ShaderResourceKind.StorageBuffer => VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            ShaderResourceKind.Sampler => VkDescriptorType.VK_DESCRIPTOR_TYPE_SAMPLER,
+            _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+        };
+
     private static VkShaderStageFlags GetNativeShaderStage(ShaderStage stage)
         => stage switch {
             ShaderStage.Vertex => VkShaderStageFlags.VK_SHADER_STAGE_VERTEX_BIT,
@@ -89,11 +120,9 @@ internal sealed unsafe partial class VulkanBackendDevice
             throw new ArgumentException($"The Vulkan shader input at index {index} is inconsistent.", nameof(shader));
         }
 
-        if (!shader.Reflection.Resources.IsEmpty
-            || !shader.Reflection.RecordLayouts.IsEmpty
-            || !shader.Reflection.RequiredCapabilities.IsEmpty)
+        if (!shader.Reflection.RequiredCapabilities.IsEmpty)
         {
-            throw new NotSupportedException("The Vulkan pipeline baseline does not implement shader resources or nonbaseline capabilities.");
+            throw new NotSupportedException("The Vulkan pipeline baseline does not implement nonbaseline shader capabilities.");
         }
 
         if (shader.Reflection.EntryPoint.Contains('\0', StringComparison.Ordinal))

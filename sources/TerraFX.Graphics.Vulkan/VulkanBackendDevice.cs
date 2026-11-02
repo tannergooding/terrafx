@@ -754,6 +754,11 @@ internal sealed unsafe partial class VulkanBackendDevice : IDisposable
             throw new InvalidOperationException("The Vulkan device still has live pipeline owners.");
         }
 
+        if (_liveDescriptorSetLayoutCount != 0)
+        {
+            throw new InvalidOperationException("The Vulkan device still has live descriptor set layouts.");
+        }
+
         ThrowIfFailed(VulkanApi.vkDeviceWaitIdle(_device), "vkDeviceWaitIdle");
         VulkanApi.vkDestroySemaphore(_device, _timelineSemaphore, null);
         VulkanApi.vkDestroyCommandPool(_device, _commandPool, null);

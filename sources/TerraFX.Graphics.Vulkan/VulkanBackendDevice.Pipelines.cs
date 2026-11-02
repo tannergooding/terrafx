@@ -55,8 +55,9 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
 
         var shaderModules = new VkShaderModule[shaderInputs.Length];
-        var pipelineLayout = CreatePipelineLayout();
+        var (pipelineLayout, descriptorSetLayouts) = CreatePipelineLayout(shaderInputs);
         var ownsPipelineLayout = true;
+        var ownsDescriptorSetLayouts = true;
         var createdShaderModuleCount = 0;
         VkPipeline pipeline = default;
         var ownsPipeline = false;
@@ -82,10 +83,11 @@ internal sealed unsafe partial class VulkanBackendDevice
                 _ => throw new ArgumentOutOfRangeException(nameof(description)),
             };
             ownsPipeline = true;
-            var result = new VulkanBackendPipeline(this, pipeline, pipelineLayout);
+            var result = new VulkanBackendPipeline(this, pipeline, pipelineLayout, descriptorSetLayouts);
             _livePipelineCount = checked(_livePipelineCount + 1);
             ownsPipeline = false;
             ownsPipelineLayout = false;
+            ownsDescriptorSetLayouts = false;
             return result;
         }
         finally
@@ -103,6 +105,11 @@ internal sealed unsafe partial class VulkanBackendDevice
             if (ownsPipelineLayout)
             {
                 VulkanApi.vkDestroyPipelineLayout(_device, pipelineLayout, null);
+            }
+
+            if (ownsDescriptorSetLayouts)
+            {
+                DestroyDescriptorSetLayouts(descriptorSetLayouts);
             }
         }
     }
@@ -130,6 +137,7 @@ internal sealed unsafe partial class VulkanBackendDevice
         ObjectDisposedException.ThrowIf(_isDisposed, this);
         VulkanApi.vkDestroyPipeline(_device, pipeline.Pipeline, null);
         VulkanApi.vkDestroyPipelineLayout(_device, pipeline.PipelineLayout, null);
+        DestroyDescriptorSetLayouts(pipeline.DescriptorSetLayouts);
         pipeline.MarkDisposed();
         _livePipelineCount = checked(_livePipelineCount - 1);
     }
@@ -292,17 +300,6 @@ internal sealed unsafe partial class VulkanBackendDevice
                 "vkCreateGraphicsPipelines");
             return pipeline;
         }
-    }
-
-    private VkPipelineLayout CreatePipelineLayout()
-    {
-        var createInfo = default(VkPipelineLayoutCreateInfo);
-        createInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        VkPipelineLayout pipelineLayout = default;
-        ThrowIfFailed(
-            VulkanApi.vkCreatePipelineLayout(_device, &createInfo, null, &pipelineLayout),
-            "vkCreatePipelineLayout");
-        return pipelineLayout;
     }
 
     [SuppressMessage(
