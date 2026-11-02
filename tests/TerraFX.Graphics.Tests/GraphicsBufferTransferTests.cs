@@ -256,6 +256,58 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task GraphImportOptionsCompareWithOwnerStateAndReportPendingUses()
+    {
+        var backendDevice = new FakeBackendDevice();
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var buffer = await graphicsDevice.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
+
+        try
+        {
+            var range = new GraphBufferRange(0, buffer.ByteLength);
+            (var idleStateMatches, var idleContentsMatch, var idleLastUseSequence, var idleIsIdle) =
+                buffer.ResourceOwner.EvaluateGraphImportOptions(
+                range,
+                new GraphImportOptions(
+                    GraphResourceState.Undefined,
+                    contentsValid: false,
+                    GraphImportCompletionPolicy.RequireIdle));
+            Assert.That(idleStateMatches, Is.True);
+            Assert.That(idleContentsMatch, Is.True);
+            Assert.That(idleLastUseSequence, Is.Zero);
+            Assert.That(idleIsIdle, Is.True);
+
+            using var use = buffer.ResourceOwner.AcquireUse(nameof(buffer));
+            (var pendingStateMatches, var pendingContentsMatch, var pendingLastUseSequence, var pendingIsIdle) =
+                buffer.ResourceOwner.EvaluateGraphImportOptions(
+                range,
+                new GraphImportOptions(
+                    GraphResourceState.Undefined,
+                    contentsValid: false,
+                    GraphImportCompletionPolicy.WaitForLastUse));
+            Assert.That(pendingStateMatches, Is.True);
+            Assert.That(pendingContentsMatch, Is.True);
+            Assert.That(pendingLastUseSequence, Is.EqualTo(use.Sequence));
+            Assert.That(pendingIsIdle, Is.False);
+
+            (var mismatchStateMatches, var mismatchContentsMatch, _, _) =
+                buffer.ResourceOwner.EvaluateGraphImportOptions(
+                range,
+                new GraphImportOptions(
+                    GraphResourceState.General,
+                    contentsValid: false,
+                    GraphImportCompletionPolicy.RequireIdle));
+            Assert.That(mismatchStateMatches, Is.False);
+            Assert.That(mismatchContentsMatch, Is.True);
+        }
+        finally
+        {
+            buffer.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     [SuppressMessage(
         "Usage",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",

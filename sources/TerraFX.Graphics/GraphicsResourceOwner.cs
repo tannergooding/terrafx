@@ -143,6 +143,32 @@ internal sealed class GraphicsResourceOwner : IDisposable
         }
     }
 
+    internal (bool StateMatches, bool ContentsMatch, long LastUseSequence, bool IsIdle) EvaluateGraphImportOptions(
+        GraphBufferRange range,
+        GraphImportOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        (var actualState, var contentsValid, var lastUseSequence, var isIdle) = CaptureGraphImportState(range);
+        return (
+            options.InitialState == actualState,
+            options.ContentsValid == contentsValid,
+            lastUseSequence,
+            isIdle);
+    }
+
+    internal (bool StateMatches, bool ContentsMatch, long LastUseSequence, bool IsIdle) EvaluateGraphImportOptions(
+        GraphTextureRange range,
+        GraphImportOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        (var actualState, var contentsValid, var lastUseSequence, var isIdle) = CaptureGraphImportState(range);
+        return (
+            options.InitialState == actualState,
+            options.ContentsValid == contentsValid,
+            lastUseSequence,
+            isIdle);
+    }
+
     internal (GraphResourceState State, bool ContentsValid) GetGraphImportState(GraphBufferRange range)
     {
         (var state, var contentsValid, _, _) = CaptureGraphImportState(range);
