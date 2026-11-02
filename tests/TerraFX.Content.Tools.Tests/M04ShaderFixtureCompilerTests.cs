@@ -3,6 +3,7 @@
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -12,6 +13,56 @@ namespace TerraFX.Content.Tools.Tests;
 [TestFixture]
 internal sealed class M04ShaderFixtureCompilerTests
 {
+    private static void AssertReflectedEntryPoint(JsonDocument reflection, string name, string stage)
+    {
+        var entryPoints = reflection.RootElement.GetProperty("entryPoints");
+        Assert.That(entryPoints.GetArrayLength(), Is.EqualTo(1));
+        Assert.That(entryPoints[0].GetProperty("name").GetString(), Is.EqualTo(name));
+        Assert.That(entryPoints[0].GetProperty("mode").GetString(), Is.EqualTo(stage));
+    }
+
+    [Test]
+    public async Task CompileAsyncProducesValidatedDxilSpirvAndReflectionWithPinnedSdk()
+    {
+        if (!OperatingSystem.IsWindows() || (RuntimeInformation.ProcessArchitecture != Architecture.X64))
+        {
+            Assert.Ignore("The pinned DXC package is licensed for Windows x64 use only.");
+        }
+
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("VULKAN_SDK")))
+        {
+            Assert.Ignore("The pinned Vulkan SDK is not selected through VULKAN_SDK.");
+        }
+
+        var outputDirectory = Path.Combine(Path.GetTempPath(), $"TerraFX.Content.Tools.Tests-{Guid.NewGuid():N}");
+
+        try
+        {
+            await M04ShaderFixtureCompiler.CompileAsync(outputDirectory, CancellationToken.None).ConfigureAwait(false);
+
+            var files = Directory.GetFiles(outputDirectory);
+            Assert.That(files.Length, Is.EqualTo(8));
+            Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.vertex.dxil")).Length, Is.GreaterThan(0));
+            Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel.dxil")).Length, Is.GreaterThan(0));
+            Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.vertex.spv")).Length, Is.GreaterThan(0));
+            Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel.spv")).Length, Is.GreaterThan(0));
+
+            using var vertexReflection = JsonDocument.Parse(
+                await File.ReadAllTextAsync(Path.Combine(outputDirectory, "M04OffscreenTriangle.vertex.reflection.json")).ConfigureAwait(false));
+            using var pixelReflection = JsonDocument.Parse(
+                await File.ReadAllTextAsync(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel.reflection.json")).ConfigureAwait(false));
+            AssertReflectedEntryPoint(vertexReflection, "VSMain", "vert");
+            AssertReflectedEntryPoint(pixelReflection, "PSMain", "frag");
+        }
+        finally
+        {
+            if (Directory.Exists(outputDirectory))
+            {
+                Directory.Delete(outputDirectory, recursive: true);
+            }
+        }
+    }
+
     [Test]
     public async Task CompileDxilAsyncProducesValidatedStageArtifactsWithoutVulkanSdk()
     {
