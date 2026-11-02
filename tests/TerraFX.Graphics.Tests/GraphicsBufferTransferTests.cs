@@ -308,6 +308,106 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task GraphResourceImportRegistryTracksBufferRangeMembershipAndOverlaps()
+    {
+        var backendDevice = new FakeBackendDevice();
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var buffer = await graphicsDevice.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
+        var registry = new GraphResourceImportRegistry(graphicsDevice, graphOwnerId: 7);
+        var options = new GraphImportOptions(
+            GraphResourceState.Undefined,
+            contentsValid: false,
+            GraphImportCompletionPolicy.RequireIdle);
+
+        try
+        {
+            var firstVersion = registry.ImportBuffer(buffer, new GraphBufferRange(0, 4), options);
+            var secondVersion = registry.ImportBuffer(buffer, new GraphBufferRange(4, 4), options);
+            var firstImport = registry.GetBufferImport(firstVersion);
+            var secondImport = registry.GetBufferImport(secondVersion);
+
+            Assert.That(firstVersion.Version, Is.Zero);
+            Assert.That(secondVersion.Version, Is.Zero);
+            Assert.That(firstVersion.ResourceId, Is.Not.EqualTo(secondVersion.ResourceId));
+            Assert.That(firstImport.CaptureValidation().IsAdmissible, Is.True);
+            Assert.That(firstImport.HasOverlappingImport, Is.False);
+            Assert.That(secondImport.HasOverlappingImport, Is.False);
+
+            var overlappingVersion = registry.ImportBuffer(buffer, new GraphBufferRange(2, 2), options);
+            var overlappingImport = registry.GetBufferImport(overlappingVersion);
+            Assert.That(firstImport.HasOverlappingImport, Is.True);
+            Assert.That(secondImport.HasOverlappingImport, Is.False);
+            Assert.That(overlappingImport.CaptureValidation().IsAdmissible, Is.False);
+
+            var staleRegistry = new GraphResourceImportRegistry(graphicsDevice, graphOwnerId: 8);
+            var staleVersion = staleRegistry.ImportBuffer(buffer, new GraphBufferRange(0, 1), options);
+            _ = await graphicsDevice.UploadBufferAsync(buffer, destinationOffset: 0, [1]).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var staleValidation = staleRegistry.GetBufferImport(staleVersion).CaptureValidation();
+            Assert.That(staleValidation.StateMatches, Is.False);
+            Assert.That(staleValidation.ContentsMatch, Is.False);
+        }
+        finally
+        {
+            buffer.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task GraphResourceImportRegistryTracksTextureSubresourceMembership()
+    {
+        var backendDevice = new FakeBackendDevice();
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var textureDescription = new TextureDescription(
+            TextureDimension.Dimension2D,
+            4,
+            4,
+            1,
+            2,
+            3,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.Sampled,
+            string.Empty);
+        var texture = await graphicsDevice.CreateTextureAsync(textureDescription).ConfigureAwait(false);
+        var registry = new GraphResourceImportRegistry(graphicsDevice, graphOwnerId: 7);
+        var options = new GraphImportOptions(
+            GraphResourceState.Undefined,
+            contentsValid: false,
+            GraphImportCompletionPolicy.RequireIdle);
+
+        try
+        {
+            var firstVersion = registry.ImportTexture(
+                texture,
+                new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
+                options);
+            var secondVersion = registry.ImportTexture(
+                texture,
+                new GraphTextureRange(0, 1, 1, 1, TextureAspect.Color),
+                options);
+            var firstImport = registry.GetTextureImport(firstVersion);
+            var secondImport = registry.GetTextureImport(secondVersion);
+            Assert.That(firstImport.CaptureValidation().IsAdmissible, Is.True);
+            Assert.That(firstImport.HasOverlappingImport, Is.False);
+            Assert.That(secondImport.HasOverlappingImport, Is.False);
+
+            var overlapVersion = registry.ImportTexture(
+                texture,
+                new GraphTextureRange(0, 1, 0, 2, TextureAspect.Color),
+                options);
+            var overlapImport = registry.GetTextureImport(overlapVersion);
+            Assert.That(firstImport.HasOverlappingImport, Is.True);
+            Assert.That(secondImport.HasOverlappingImport, Is.True);
+            Assert.That(overlapImport.CaptureValidation().IsAdmissible, Is.False);
+        }
+        finally
+        {
+            texture.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     [SuppressMessage(
         "Usage",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
