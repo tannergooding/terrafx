@@ -60,9 +60,19 @@ internal sealed class VulkanBackendDeviceTests
     private static GraphicsPipelineDescription CreateShaderFixtureDescription(
         BufferReadLease<byte> vertexBytecode,
         BufferReadLease<byte> pixelBytecode,
-        PipelineBlendMode blendMode = PipelineBlendMode.Opaque)
+        PipelineBlendMode blendMode = PipelineBlendMode.Opaque,
+        bool usesSampledResources = false)
     {
         var compilerIdentity = CreateShaderCompilerIdentity();
+        ImmutableArray<ShaderResourceSignature> pixelResources = usesSampledResources
+            ? [
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1),
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.SampledImage, 1),
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.Sampler, 1),
+            ]
+            : [
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1),
+            ];
         var vertexReflection = new ShaderReflection(
             ShaderStage.Vertex,
             "VSMain",
@@ -78,11 +88,11 @@ internal sealed class VulkanBackendDeviceTests
             groupSizeZ: 0);
         var pixelReflection = new ShaderReflection(
             ShaderStage.Pixel,
-            "PSMain",
+            usesSampledResources ? "PSSampledMain" : "PSMain",
             compilerIdentity,
             [],
             [new ShaderIoSignature("SV_Target", 0, null, ShaderValueType.Float4, ShaderInterpolation.Smooth)],
-            [new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1)],
+            pixelResources,
             [new ShaderRecordLayout(
                 "FrameData",
                 16,
@@ -444,6 +454,79 @@ internal sealed class VulkanBackendDeviceTests
         Assert.That(
             device.Dispose,
             Throws.InvalidOperationException.With.Message.Contains("live pipeline owners"));
+    }
+
+    [Test]
+    public void OffscreenNativeDeviceCreatesSampledImageAndSamplerPipelineLayoutFromFixture()
+    {
+        var fixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
+
+        if (string.IsNullOrWhiteSpace(fixtureDirectory))
+        {
+            Assert.Ignore("The compiled M04 shader fixture is not selected through TERRAFX_M04_SHADER_FIXTURE_DIRECTORY.");
+            return;
+        }
+
+        using var device = CreateVulkanDeviceForNativeSmokeTest();
+        using var vertexStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.vertex.spv"));
+        using var pixelStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.pixel-sampled.spv"));
+        using var vertexLease = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
+        using var pixelLease = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
+        using var pipeline = device.CreatePipeline(
+            CreateShaderFixtureDescription(
+                vertexLease,
+                pixelLease,
+                usesSampledResources: true),
+            [vertexLease, pixelLease]);
+
+        Assert.That(pipeline.IsDisposed, Is.False);
+        Assert.That(pipeline.DescriptorSetLayouts.Length, Is.EqualTo(1));
+        Assert.That(pipeline.Resources.Length, Is.EqualTo(3));
+
+        var hasFrameUniformBuffer = false;
+        var hasSampledImage = false;
+        var hasSampler = false;
+
+        for (var index = 0; index < pipeline.Resources.Length; index++)
+        {
+            var resource = pipeline.Resources[index];
+
+            if ((resource.Group != ShaderBindingGroup.Frame)
+                || (resource.Binding != 0)
+                || (resource.ArrayCount != 1))
+            {
+                continue;
+            }
+
+            switch (resource.Kind)
+            {
+                case ShaderResourceKind.UniformBuffer:
+                {
+                    hasFrameUniformBuffer = true;
+                    break;
+                }
+
+                case ShaderResourceKind.SampledImage:
+                {
+                    hasSampledImage = true;
+                    break;
+                }
+
+                case ShaderResourceKind.Sampler:
+                {
+                    hasSampler = true;
+                    break;
+                }
+            }
+        }
+
+        Assert.That(hasFrameUniformBuffer, Is.True);
+        Assert.That(hasSampledImage, Is.True);
+        Assert.That(hasSampler, Is.True);
     }
 
     [Test]

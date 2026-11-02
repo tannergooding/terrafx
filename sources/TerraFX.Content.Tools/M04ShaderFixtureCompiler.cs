@@ -13,6 +13,7 @@ namespace TerraFX.Content.Tools;
 internal static class M04ShaderFixtureCompiler
 {
     private const string ShaderEntryPointPixel = "PSMain";
+    private const string ShaderEntryPointSampledPixel = "PSSampledMain";
     private const string ShaderEntryPointVertex = "VSMain";
     private const string ShaderFileName = "M04OffscreenTriangle.hlsl";
     private static readonly string[] s_versionArguments = ["--version"];
@@ -87,6 +88,17 @@ internal static class M04ShaderFixtureCompiler
                 "ps_6_0",
                 "pixel",
                 cancellationToken).ConfigureAwait(false);
+            await CompileStageAsync(
+                manifest,
+                dxcExecutable,
+                spirvCrossExecutable,
+                spirvValidationExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointSampledPixel,
+                "ps_6_0",
+                "pixel-sampled",
+                cancellationToken).ConfigureAwait(false);
 
             cancellationToken.ThrowIfCancellationRequested();
             Directory.Move(stagingDirectory, finalOutputDirectory);
@@ -157,6 +169,15 @@ internal static class M04ShaderFixtureCompiler
                 ShaderEntryPointPixel,
                 "ps_6_0",
                 "pixel",
+                cancellationToken).ConfigureAwait(false);
+            await CompileDxilStageAsync(
+                manifest,
+                dxcExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointSampledPixel,
+                "ps_6_0",
+                "pixel-sampled",
                 cancellationToken).ConfigureAwait(false);
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -340,7 +361,7 @@ internal static class M04ShaderFixtureCompiler
     {
         var expectedOutputSemantic = stageName switch {
             "vertex" => "SV_Position",
-            "pixel" => "SV_Target",
+            "pixel" or "pixel-sampled" => "SV_Target",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
         };
 
@@ -351,13 +372,26 @@ internal static class M04ShaderFixtureCompiler
             throw new InvalidDataException($"DXC reflection from the compiled DXIL does not contain the expected {stageName} entry-point output.");
         }
 
-        if ((stageName == "pixel")
+        if ((stageName is "pixel" or "pixel-sampled")
             && (!text.Contains("cbuffer FrameData", StringComparison.Ordinal)
                 || !text.Contains("float4 color", StringComparison.Ordinal)
                 || !text.Contains("FrameData                         cbuffer", StringComparison.Ordinal)))
         {
             throw new InvalidDataException("DXC reflection from the compiled pixel DXIL does not contain the FrameData uniform buffer.");
         }
+
+        if ((stageName == "pixel-sampled")
+            && (!text.Contains("FrameTexture", StringComparison.Ordinal)
+                || !text.Contains("FrameSampler", StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException("DXC reflection from the compiled sampled pixel DXIL does not contain its image and sampler.");
+        }
+    }
+
+    private static void ValidatePixelSampledResourceReflection(JsonElement root)
+    {
+        ValidateSampledResource(root, "separate_images", "FrameTexture", 16);
+        ValidateSampledResource(root, "separate_samplers", "FrameSampler", 40);
     }
 
     private static void ValidatePixelUniformBufferReflection(JsonElement root)
@@ -444,7 +478,7 @@ internal static class M04ShaderFixtureCompiler
         var mode = modeElement.GetString();
         var expectedMode = stageName switch {
             "vertex" => mode is "vert" or "vertex",
-            "pixel" => mode is "frag" or "fragment",
+            "pixel" or "pixel-sampled" => mode is "frag" or "fragment",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
         };
 
@@ -453,9 +487,39 @@ internal static class M04ShaderFixtureCompiler
             throw new InvalidDataException($"SPIRV-Cross reported mode '{mode}' for the {stageName} shader stage.");
         }
 
-        if (stageName == "pixel")
+        if (stageName is "pixel" or "pixel-sampled")
         {
             ValidatePixelUniformBufferReflection(root);
+        }
+
+        if (stageName == "pixel-sampled")
+        {
+            ValidatePixelSampledResourceReflection(root);
+        }
+    }
+
+    private static void ValidateSampledResource(JsonElement root, string collectionName, string expectedName, int expectedBinding)
+    {
+        if (!root.TryGetProperty(collectionName, out var resources)
+            || (resources.ValueKind != JsonValueKind.Array)
+            || (resources.GetArrayLength() != 1))
+        {
+            throw new InvalidDataException($"SPIRV-Cross reflection must report one {expectedName} resource.");
+        }
+
+        var resource = resources[0];
+
+        if (!resource.TryGetProperty("name", out var nameElement)
+            || (nameElement.ValueKind != JsonValueKind.String)
+            || !StringComparer.Ordinal.Equals(nameElement.GetString(), expectedName)
+            || !resource.TryGetProperty("set", out var setElement)
+            || (setElement.ValueKind != JsonValueKind.Number)
+            || (setElement.GetInt32() != 0)
+            || !resource.TryGetProperty("binding", out var bindingElement)
+            || (bindingElement.ValueKind != JsonValueKind.Number)
+            || (bindingElement.GetInt32() != expectedBinding))
+        {
+            throw new InvalidDataException($"SPIRV-Cross reflection does not match the {expectedName} descriptor binding.");
         }
     }
 
