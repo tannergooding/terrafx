@@ -90,7 +90,7 @@ dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --confi
 
 ### Offline M04 shader fixture
 
-Run the bounded process and toolchain-manifest regressions:
+Run the bounded process and toolchain-manifest regressions. On Windows x64, set `VULKAN_SDK` to the pinned 1.4.328.1 SDK to execute the SPIR-V compile/reflection test; when it is unset, that one test is reported as skipped:
 
 ```powershell
 dotnet test .\tests\TerraFX.Content.Tools.Tests\TerraFX.Content.Tools.Tests.csproj --configuration Debug
