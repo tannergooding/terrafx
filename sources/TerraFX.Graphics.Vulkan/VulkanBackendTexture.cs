@@ -9,6 +9,7 @@ namespace TerraFX.Graphics.Vulkan;
 internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
 {
     private TextureDescription _description;
+    private int _descriptorSetReferenceCount;
     private VkImage _image;
     private bool[] _initialized;
     private bool _isDisposed;
@@ -37,6 +38,8 @@ internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
     }
 
     internal TextureDescription Description => _description;
+
+    internal int DescriptorSetReferenceCount => _descriptorSetReferenceCount;
 
     internal VkImage Image => _image;
 
@@ -67,6 +70,7 @@ internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
         _description = null!;
         _image = default;
         _isDisposed = true;
+        _descriptorSetReferenceCount = 0;
         _initialized = [];
         _layouts = [];
         _memory = default;
@@ -75,6 +79,19 @@ internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
 
     internal void MarkInitialized(TextureSubresource subresource)
         => _initialized[GetSubresourceIndex(subresource)] = true;
+
+    internal void ReleaseDescriptorSet()
+    {
+        if (_descriptorSetReferenceCount <= 0)
+        {
+            throw new InvalidOperationException("The Vulkan texture has no retained descriptor sets.");
+        }
+
+        _descriptorSetReferenceCount--;
+    }
+
+    internal void RetainDescriptorSet()
+        => _descriptorSetReferenceCount = checked(_descriptorSetReferenceCount + 1);
 
     internal void SetLayout(TextureSubresource subresource, VkImageLayout layout)
         => _layouts[GetSubresourceIndex(subresource)] = layout;

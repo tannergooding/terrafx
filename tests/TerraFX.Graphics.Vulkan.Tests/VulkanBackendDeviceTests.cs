@@ -284,6 +284,109 @@ internal sealed class VulkanBackendDeviceTests
     }
 
     [Test]
+    public void OffscreenNativeDeviceAllocatesAndPopulatesVulkanImageSamplerDescriptorSet()
+    {
+        var fixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
+
+        if (string.IsNullOrWhiteSpace(fixtureDirectory))
+        {
+            Assert.Ignore("The compiled M04 shader fixture is not selected through TERRAFX_M04_SHADER_FIXTURE_DIRECTORY.");
+            return;
+        }
+
+        using var device = CreateVulkanDeviceForNativeSmokeTest();
+        using var vertexStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.vertex.spv"));
+        using var pixelStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.pixel-sampled.spv"));
+        using var vertexLease = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
+        using var pixelLease = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
+        using var pipeline = device.CreatePipeline(
+            CreateShaderFixtureDescription(
+                vertexLease,
+                pixelLease,
+                usesSampledResources: true),
+            [vertexLease, pixelLease]);
+        using var texture = device.CreateTexture(
+            new TextureDescription(
+                TextureDimension.Dimension2D,
+                1,
+                1,
+                depth: 1,
+                arrayLayers: 1,
+                mipLevels: 1,
+                TextureFormat.Rgba8Unorm,
+                TextureUsage.Sampled | TextureUsage.CopySource | TextureUsage.CopyDestination,
+                "sampled-descriptor-texture"));
+        var sourceBytes = new byte[] { 0x11, 0x32, 0x53, 0xF4 };
+        var sourceStorage = UnmanagedBuffer<byte>.Allocate(
+            sourceBytes.Length,
+            new BufferAllocationOptions(sourceBytes.Length, alignment: 1));
+        sourceStorage.CopyFrom(sourceBytes.AsSpan(), 0);
+
+        using var ownedSource = sourceStorage.TransferToOwnedBuffer();
+        using var sourceLease = ownedSource.AcquireReadLease(0, sourceBytes.Length);
+        var subresource = new TextureSubresource(0, 0, TextureAspect.Color);
+        Assert.That(
+            device.UploadTexture(
+                texture,
+                subresource,
+                sourceLease,
+                0,
+                new TextureDataLayout(rowPitch: 4, slicePitch: 4)),
+            Is.GreaterThan(0));
+        using var sampler = device.CreateSampler(
+            new SamplerDescription(
+                SamplerFilter.Linear,
+                SamplerFilter.Linear,
+                SamplerFilter.None,
+                SamplerAddressMode.Clamp,
+                SamplerAddressMode.Clamp,
+                SamplerAddressMode.Clamp,
+                maximumAnisotropy: 1.0f),
+            effectiveMaximumAnisotropy: 1.0f);
+
+        Assert.That(
+            () => device.CreateSampledImageSamplerDescriptorSet(
+                pipeline,
+                [new VulkanBackendSampledImageBinding(ShaderBindingGroup.Frame, 1, texture)],
+                [new VulkanBackendSamplerBinding(ShaderBindingGroup.Frame, 0, sampler)]),
+            Throws.ArgumentException);
+        Assert.That(
+            () => device.CreateSampledImageSamplerDescriptorSet(
+                pipeline,
+                [new VulkanBackendSampledImageBinding(ShaderBindingGroup.Frame, 0, texture)],
+                []),
+            Throws.ArgumentException);
+
+        using var descriptorSet = device.CreateSampledImageSamplerDescriptorSet(
+            pipeline,
+            [new VulkanBackendSampledImageBinding(ShaderBindingGroup.Frame, 0, texture)],
+            [new VulkanBackendSamplerBinding(ShaderBindingGroup.Frame, 0, sampler)]);
+        Assert.That(descriptorSet.IsDisposed, Is.False);
+        Assert.That(
+            device.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("live descriptor sets"));
+        Assert.That(
+            pipeline.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("descriptor sets remain live"));
+        Assert.That(
+            texture.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("descriptor sets remain live"));
+        Assert.That(
+            sampler.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("descriptor sets remain live"));
+
+        descriptorSet.Dispose();
+        texture.Dispose();
+        sampler.Dispose();
+        pipeline.Dispose();
+        device.Dispose();
+    }
+
+    [Test]
     public void OffscreenNativeDeviceAllocatesAndReleasesATexture()
     {
         try

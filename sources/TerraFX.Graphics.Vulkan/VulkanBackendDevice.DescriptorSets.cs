@@ -203,7 +203,10 @@ internal sealed unsafe partial class VulkanBackendDevice
                 pipeline,
                 descriptorPool,
                 descriptorSet,
-                retainedBuffers);
+                retainedBuffers,
+                [],
+                [],
+                []);
             pipeline.RetainDescriptorSet();
             var retainedBufferCount = 0;
 
@@ -262,9 +265,24 @@ internal sealed unsafe partial class VulkanBackendDevice
         ObjectDisposedException.ThrowIf(_isDisposed, this);
         VulkanApi.vkDestroyDescriptorPool(_device, descriptorSet.DescriptorPool, null);
 
+        foreach (var imageView in descriptorSet.ImageViews)
+        {
+            VulkanApi.vkDestroyImageView(_device, imageView, null);
+        }
+
         foreach (var buffer in descriptorSet.Buffers)
         {
             buffer.ReleaseDescriptorSet();
+        }
+
+        foreach (var texture in descriptorSet.Textures)
+        {
+            texture.ReleaseDescriptorSet();
+        }
+
+        foreach (var sampler in descriptorSet.Samplers)
+        {
+            sampler.ReleaseDescriptorSet();
         }
 
         descriptorSet.Pipeline.ReleaseDescriptorSet();

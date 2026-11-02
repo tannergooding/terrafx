@@ -98,6 +98,11 @@ internal sealed unsafe partial class VulkanBackendDevice
             return;
         }
 
+        if (texture.DescriptorSetReferenceCount != 0)
+        {
+            throw new InvalidOperationException("Vulkan texture retirement cannot release storage while descriptor sets remain live.");
+        }
+
         if (_hasUncertainSubmission)
         {
             throw new InvalidOperationException("Vulkan texture retirement cannot release storage while submission completion is uncertain.");

@@ -10,25 +10,37 @@ internal sealed class VulkanBackendDescriptorSet : IDisposable
     private readonly VulkanBackendBuffer[] _buffers;
     private VkDescriptorPool _descriptorPool;
     private VkDescriptorSet _descriptorSet;
+    private readonly VkImageView[] _imageViews;
     private bool _isDisposed;
     private readonly VulkanBackendDevice _owner;
     private readonly VulkanBackendPipeline _pipeline;
+    private readonly VulkanBackendSampler[] _samplers;
+    private readonly VulkanBackendTexture[] _textures;
 
     internal VulkanBackendDescriptorSet(
         VulkanBackendDevice owner,
         VulkanBackendPipeline pipeline,
         VkDescriptorPool descriptorPool,
         VkDescriptorSet descriptorSet,
-        VulkanBackendBuffer[] buffers)
+        VulkanBackendBuffer[] buffers,
+        VulkanBackendTexture[] textures,
+        VulkanBackendSampler[] samplers,
+        VkImageView[] imageViews)
     {
         ArgumentNullException.ThrowIfNull(owner);
         ArgumentNullException.ThrowIfNull(pipeline);
         ArgumentNullException.ThrowIfNull(buffers);
+        ArgumentNullException.ThrowIfNull(textures);
+        ArgumentNullException.ThrowIfNull(samplers);
+        ArgumentNullException.ThrowIfNull(imageViews);
         _owner = owner;
         _pipeline = pipeline;
         _descriptorPool = descriptorPool;
         _descriptorSet = descriptorSet;
         _buffers = buffers;
+        _textures = textures;
+        _samplers = samplers;
+        _imageViews = imageViews;
     }
 
     internal ReadOnlySpan<VulkanBackendBuffer> Buffers => _buffers;
@@ -37,11 +49,17 @@ internal sealed class VulkanBackendDescriptorSet : IDisposable
 
     internal VkDescriptorSet DescriptorSet => _descriptorSet;
 
+    internal ReadOnlySpan<VkImageView> ImageViews => _imageViews;
+
     internal bool IsDisposed => _isDisposed;
 
     internal VulkanBackendDevice Owner => _owner;
 
     internal VulkanBackendPipeline Pipeline => _pipeline;
+
+    internal ReadOnlySpan<VulkanBackendSampler> Samplers => _samplers;
+
+    internal ReadOnlySpan<VulkanBackendTexture> Textures => _textures;
 
     public void Dispose()
     {
@@ -54,6 +72,9 @@ internal sealed class VulkanBackendDescriptorSet : IDisposable
     internal void MarkDisposed()
     {
         Array.Clear(_buffers);
+        Array.Clear(_textures);
+        Array.Clear(_samplers);
+        Array.Clear(_imageViews);
         _descriptorPool = default;
         _descriptorSet = default;
         _isDisposed = true;

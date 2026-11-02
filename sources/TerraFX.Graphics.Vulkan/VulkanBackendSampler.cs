@@ -7,6 +7,7 @@ namespace TerraFX.Graphics.Vulkan;
 
 internal sealed class VulkanBackendSampler : IGraphicsBackendSampler
 {
+    private int _descriptorSetReferenceCount;
     private bool _isDisposed;
     private readonly VulkanBackendDevice _owner;
     private VkSampler _sampler;
@@ -17,6 +18,8 @@ internal sealed class VulkanBackendSampler : IGraphicsBackendSampler
         _owner = owner;
         _sampler = sampler;
     }
+
+    internal int DescriptorSetReferenceCount => _descriptorSetReferenceCount;
 
     internal bool IsDisposed => _isDisposed;
 
@@ -35,6 +38,20 @@ internal sealed class VulkanBackendSampler : IGraphicsBackendSampler
     internal void MarkDisposed()
     {
         _isDisposed = true;
+        _descriptorSetReferenceCount = 0;
         _sampler = default;
     }
+
+    internal void ReleaseDescriptorSet()
+    {
+        if (_descriptorSetReferenceCount <= 0)
+        {
+            throw new InvalidOperationException("The Vulkan sampler has no retained descriptor sets.");
+        }
+
+        _descriptorSetReferenceCount--;
+    }
+
+    internal void RetainDescriptorSet()
+        => _descriptorSetReferenceCount = checked(_descriptorSetReferenceCount + 1);
 }
