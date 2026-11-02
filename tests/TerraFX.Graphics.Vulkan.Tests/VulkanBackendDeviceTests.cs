@@ -68,6 +68,52 @@ internal sealed class VulkanBackendDeviceTests
     }
 
     [Test]
+    public void OffscreenNativeDeviceAllocatesAndReleasesATexture()
+    {
+        try
+        {
+            using var device = VulkanBackendDevice.Create(
+                GraphicsDeviceProfile.OffscreenNative,
+                CancellationToken.None);
+            using (var texture = device.CreateTexture(
+                new TextureDescription(
+                    TextureDimension.Dimension2D,
+                    64,
+                    32,
+                    depth: 1,
+                    arrayLayers: 2,
+                    mipLevels: 2,
+                    format: TextureFormat.Rgba8Unorm,
+                    usage: TextureUsage.CopySource | TextureUsage.CopyDestination,
+                    debugName: "texture-allocation")))
+            {
+                Assert.That(texture.Description.Width, Is.EqualTo(64));
+                Assert.That(texture.Description.ArrayLayers, Is.EqualTo(2));
+                Assert.That(
+                    texture.GetLayout(new TextureSubresource(1, 1, TextureAspect.Color)),
+                    Is.EqualTo(VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED));
+                Assert.That(
+                    device.Dispose,
+                    Throws.InvalidOperationException.With.Message.Contains("live texture owners"));
+            }
+
+            device.Dispose();
+        }
+        catch (DllNotFoundException exception)
+        {
+            Assert.Ignore($"No Vulkan loader is installed: {exception.Message}");
+        }
+        catch (EntryPointNotFoundException exception)
+        {
+            Assert.Ignore($"The installed Vulkan loader lacks a required entry point: {exception.Message}");
+        }
+        catch (NotSupportedException exception)
+        {
+            Assert.Ignore($"No available Vulkan device satisfies the texture allocation smoke test: {exception.Message}");
+        }
+    }
+
+    [Test]
     public void OffscreenNativeDeviceAllocatesEachBufferMemoryKindAndRetainsLiveOwners()
     {
         try

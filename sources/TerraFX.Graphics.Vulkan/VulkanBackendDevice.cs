@@ -486,15 +486,54 @@ internal sealed unsafe partial class VulkanBackendDevice : IDisposable
             + checked((int)Marshal.OffsetOf<VkPhysicalDeviceMemoryProperties>("memoryTypes")));
 
     private static VkImageUsageFlags GetNativeImageUsage(TextureUsage usage)
-        => usage switch {
-            TextureUsage.Sampled => VkImageUsageFlags.VK_IMAGE_USAGE_SAMPLED_BIT,
-            TextureUsage.Storage => VkImageUsageFlags.VK_IMAGE_USAGE_STORAGE_BIT,
-            TextureUsage.ColorAttachment => VkImageUsageFlags.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-            TextureUsage.DepthAttachment => VkImageUsageFlags.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-            TextureUsage.CopySource => VkImageUsageFlags.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-            TextureUsage.CopyDestination => VkImageUsageFlags.VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            _ => throw new ArgumentOutOfRangeException(nameof(usage)),
-        };
+    {
+        const TextureUsage knownUsages =
+            TextureUsage.Sampled
+            | TextureUsage.Storage
+            | TextureUsage.ColorAttachment
+            | TextureUsage.DepthAttachment
+            | TextureUsage.CopySource
+            | TextureUsage.CopyDestination;
+
+        if ((usage == TextureUsage.None) || ((usage & ~knownUsages) != 0))
+        {
+            throw new ArgumentOutOfRangeException(nameof(usage));
+        }
+
+        var nativeUsages = default(VkImageUsageFlags);
+
+        if ((usage & TextureUsage.Sampled) != 0)
+        {
+            nativeUsages |= VkImageUsageFlags.VK_IMAGE_USAGE_SAMPLED_BIT;
+        }
+
+        if ((usage & TextureUsage.Storage) != 0)
+        {
+            nativeUsages |= VkImageUsageFlags.VK_IMAGE_USAGE_STORAGE_BIT;
+        }
+
+        if ((usage & TextureUsage.ColorAttachment) != 0)
+        {
+            nativeUsages |= VkImageUsageFlags.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        }
+
+        if ((usage & TextureUsage.DepthAttachment) != 0)
+        {
+            nativeUsages |= VkImageUsageFlags.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        }
+
+        if ((usage & TextureUsage.CopySource) != 0)
+        {
+            nativeUsages |= VkImageUsageFlags.VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        }
+
+        if ((usage & TextureUsage.CopyDestination) != 0)
+        {
+            nativeUsages |= VkImageUsageFlags.VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        }
+
+        return nativeUsages;
+    }
 
     private static string ReadDeviceName(VkPhysicalDeviceProperties properties)
     {
@@ -685,6 +724,11 @@ internal sealed unsafe partial class VulkanBackendDevice : IDisposable
         if (_liveBufferCount != 0)
         {
             throw new InvalidOperationException("The Vulkan device still has live buffer owners.");
+        }
+
+        if (_liveTextureCount != 0)
+        {
+            throw new InvalidOperationException("The Vulkan device still has live texture owners.");
         }
 
         ThrowIfFailed(VulkanApi.vkDeviceWaitIdle(_device), "vkDeviceWaitIdle");

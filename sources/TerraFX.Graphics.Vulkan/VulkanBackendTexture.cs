@@ -1,0 +1,78 @@
+// Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
+
+using System;
+using TerraFX.Graphics;
+using TerraFX.Interop.Vulkan;
+
+namespace TerraFX.Graphics.Vulkan;
+
+internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
+{
+    private TextureDescription _description;
+    private VkImage _image;
+    private bool _isDisposed;
+    private VkImageLayout[] _layouts;
+    private VkDeviceMemory _memory;
+    private uint _memoryTypeIndex;
+    private readonly VulkanBackendDevice _owner;
+
+    internal VulkanBackendTexture(
+        VulkanBackendDevice owner,
+        VkImage image,
+        TextureDescription description,
+        VkDeviceMemory memory,
+        uint memoryTypeIndex)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentNullException.ThrowIfNull(description);
+        _owner = owner;
+        _image = image;
+        _description = description;
+        _memory = memory;
+        _memoryTypeIndex = memoryTypeIndex;
+        _layouts = new VkImageLayout[checked(description.MipLevels * description.ArrayLayers)];
+        Array.Fill(_layouts, VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED);
+    }
+
+    internal TextureDescription Description => _description;
+
+    internal VkImage Image => _image;
+
+    internal bool IsDisposed => _isDisposed;
+
+    internal VkDeviceMemory Memory => _memory;
+
+    internal uint MemoryTypeIndex => _memoryTypeIndex;
+
+    internal VulkanBackendDevice Owner => _owner;
+
+    public void Dispose()
+    {
+        if (!_isDisposed)
+        {
+            _owner.DestroyTexture(this);
+        }
+    }
+
+    internal VkImageLayout GetLayout(TextureSubresource subresource)
+        => _layouts[GetSubresourceIndex(subresource)];
+
+    internal void MarkDisposed()
+    {
+        _description = null!;
+        _image = default;
+        _isDisposed = true;
+        _layouts = [];
+        _memory = default;
+        _memoryTypeIndex = 0;
+    }
+
+    internal void SetLayout(TextureSubresource subresource, VkImageLayout layout)
+        => _layouts[GetSubresourceIndex(subresource)] = layout;
+
+    private int GetSubresourceIndex(TextureSubresource subresource)
+    {
+        _ = GraphicsDevice.GetTextureSubresourceExtent(_description, subresource);
+        return checked((subresource.ArrayLayer * _description.MipLevels) + subresource.MipLevel);
+    }
+}
