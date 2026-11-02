@@ -13,6 +13,34 @@ namespace TerraFX.Content.Tools.Tests;
 [TestFixture]
 internal sealed class M04ShaderFixtureCompilerTests
 {
+    private static void AssertDxilResourceBinding(
+        string reflection,
+        string resourceName,
+        string expectedType,
+        string expectedFormat,
+        string expectedDimension,
+        string expectedBinding)
+    {
+        foreach (var line in reflection.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (!line.StartsWith($"; {resourceName}", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var columns = line.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            Assert.That(columns.Length, Is.EqualTo(8));
+            Assert.That(columns[1], Is.EqualTo(resourceName));
+            Assert.That(columns[2], Is.EqualTo(expectedType));
+            Assert.That(columns[3], Is.EqualTo(expectedFormat));
+            Assert.That(columns[4], Is.EqualTo(expectedDimension));
+            Assert.That(columns[6], Is.EqualTo(expectedBinding));
+            return;
+        }
+
+        throw new InvalidDataException($"DXIL reflection omitted the resource binding for '{resourceName}'.");
+    }
+
     private static void AssertReflectedEntryPoint(JsonDocument reflection, string name, string stage)
     {
         var entryPoints = reflection.RootElement.GetProperty("entryPoints");
@@ -184,6 +212,11 @@ internal sealed class M04ShaderFixtureCompilerTests
             Assert.That(sampledFrameStoragePixelReflection.Contains("FrameStorageBuffer", StringComparison.Ordinal), Is.True);
             Assert.That(sampledFrameStoragePixelReflection.Contains("FrameStorageImage", StringComparison.Ordinal), Is.True);
             Assert.That(sampledFrameStoragePixelReflection.Contains("cbuffer FrameData", StringComparison.Ordinal), Is.True);
+            AssertDxilResourceBinding(sampledFrameStoragePixelReflection, "FrameData", "cbuffer", "NA", "NA", "cb0");
+            AssertDxilResourceBinding(sampledFrameStoragePixelReflection, "FrameSampler", "sampler", "NA", "NA", "s0");
+            AssertDxilResourceBinding(sampledFrameStoragePixelReflection, "FrameTexture", "texture", "f32", "2d", "t0");
+            AssertDxilResourceBinding(sampledFrameStoragePixelReflection, "FrameStorageBuffer", "UAV", "struct", "r/w", "u0");
+            AssertDxilResourceBinding(sampledFrameStoragePixelReflection, "FrameStorageImage", "UAV", "u32", "2d", "u1");
         }
         finally
         {
