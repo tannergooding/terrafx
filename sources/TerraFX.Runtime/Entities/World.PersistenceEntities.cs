@@ -7,6 +7,29 @@ namespace TerraFX.Entities;
 
 public sealed partial class World
 {
+    private static void ReadIdentityAssignment(World world, uint ordinal, out Guid stableId, out uint metadata)
+    {
+        Span<byte> record = stackalloc byte[StableIdentityLedger.RecordSize];
+        world._identityLedger.CopyRecord(ordinal, record);
+        var locator = BinaryPrimitives.ReadUInt32LittleEndian(record[16..]);
+        metadata = BinaryPrimitives.ReadUInt32LittleEndian(record[20..]);
+        var kind = (metadata >> 10) & 3;
+        var origin = (metadata >> 12) & 3;
+        var directoryIndex = metadata & 0x3FF;
+        var isLive = (metadata & (1u << 14)) != 0;
+        stableId = new Guid(record[..16], bigEndian: true);
+
+        if ((metadata & ~0x7FFFu) != 0
+            || (kind is not 1 and not 2)
+            || (origin is < 1 or > 3)
+            || (directoryIndex >= (uint)world._identityBranchCount)
+            || (isLive != (locator != 0))
+            || (stableId == Guid.Empty))
+        {
+            throw new InvalidOperationException("The identity ledger contains an invalid persistence record.");
+        }
+    }
+
     internal ref struct EntityStateCaptureEnumerator
     {
         private readonly World _world;
@@ -224,7 +247,6 @@ public sealed partial class World
     internal ref struct IdentityAssignmentCaptureEnumerator
     {
         private const uint LiveMask = 1u << 14;
-        private const uint MetadataMask = 0x7FFF;
 
         private readonly World _world;
         private readonly WorldPersistenceCaptureLease _lease;
@@ -336,25 +358,7 @@ public sealed partial class World
             }
 
             var nextOrdinal = checked(_currentOrdinal + 1);
-            Span<byte> record = stackalloc byte[StableIdentityLedger.RecordSize];
-            _world._identityLedger.CopyRecord(nextOrdinal, record);
-            var locator = BinaryPrimitives.ReadUInt32LittleEndian(record[16..]);
-            var metadata = BinaryPrimitives.ReadUInt32LittleEndian(record[20..]);
-            var kind = (metadata >> 10) & 3;
-            var origin = (metadata >> 12) & 3;
-            var directoryIndex = metadata & 0x3FF;
-            var isLive = (metadata & LiveMask) != 0;
-            var stableId = new Guid(record[..16], bigEndian: true);
-
-            if ((metadata & ~MetadataMask) != 0
-                || (kind is not 1 and not 2)
-                || (origin is < 1 or > 3)
-                || (directoryIndex >= (uint)_world._identityBranchCount)
-                || (isLive != (locator != 0))
-                || (stableId == Guid.Empty))
-            {
-                throw new InvalidOperationException("The identity ledger contains an invalid persistence record.");
-            }
+            ReadIdentityAssignment(_world, nextOrdinal, out var stableId, out var metadata);
 
             _currentOrdinal = nextOrdinal;
             _currentMetadata = metadata;
@@ -572,13 +576,7 @@ public sealed partial class World
         }
 
         internal readonly int PageCount
-        {
-            get
-            {
-                ValidateCurrent();
-                return _world._identityLedger.LedgerPageCount;
-            }
-        }
+            => GetValidatedPageCount();
 
         internal readonly Guid ReplayLineageId
         {
@@ -598,6 +596,31 @@ public sealed partial class World
             }
         }
 
+        internal readonly long CopyPage(int pageIndex, scoped Span<Guid> stableIds, scoped Span<uint> metadata)
+        {
+            var recordCount = GetPageRecordCount(pageIndex);
+
+            if (stableIds.Length != recordCount)
+            {
+                throw new ArgumentException("The stable-ID destination must match the exact identity-page length.", nameof(stableIds));
+            }
+
+            if (metadata.Length != recordCount)
+            {
+                throw new ArgumentException("The metadata destination must match the exact identity-page length.", nameof(metadata));
+            }
+
+            var firstOrdinal = checked(((long)pageIndex * StableIdentityLedger.RecordsPerPage) + 1);
+
+            for (var index = 0; index < recordCount; index++)
+            {
+                var ordinal = checked((uint)(firstOrdinal + index));
+                ReadIdentityAssignment(_world, ordinal, out stableIds[index], out metadata[index]);
+            }
+
+            return firstOrdinal;
+        }
+
         internal readonly IdentityAssignmentCaptureEnumerator GetAssignmentEnumerator()
         {
             ValidateCurrent();
@@ -608,6 +631,33 @@ public sealed partial class World
         {
             ValidateCurrent();
             return new IdentityBranchCaptureEnumerator(_world, _lease);
+        }
+
+        internal readonly int GetPageRecordCount(int pageIndex)
+        {
+            var pageCount = GetValidatedPageCount();
+            ArgumentOutOfRangeException.ThrowIfNegative(pageIndex);
+            ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(pageIndex, pageCount);
+
+            var firstAssignmentIndex = checked(pageIndex * StableIdentityLedger.RecordsPerPage);
+            return Math.Min(
+                StableIdentityLedger.RecordsPerPage,
+                _world._identityLedger.AssignmentCount - firstAssignmentIndex);
+        }
+
+        private readonly int GetValidatedPageCount()
+        {
+            ValidateCurrent();
+
+            var assignmentCount = _world._identityLedger.AssignmentCount;
+            var expectedPageCount = checked((int)(((long)assignmentCount + StableIdentityLedger.RecordsPerPage - 1) / StableIdentityLedger.RecordsPerPage));
+
+            if (_world._identityLedger.LedgerPageCount != expectedPageCount)
+            {
+                throw new InvalidOperationException("The identity ledger page count does not match its assignment count.");
+            }
+
+            return expectedPageCount;
         }
 
         private readonly void ValidateCurrent()

@@ -221,6 +221,47 @@ internal sealed class WorldPersistenceCaptureTests
         Assert.That(assignments.CurrentPageIndex, Is.Zero);
         Assert.That(assignments.CurrentPageOffset, Is.EqualTo(1));
         Assert.That(assignments.MoveNext(), Is.False);
+
+        var stableIds = new Guid[2];
+        var metadata = new uint[2];
+        Assert.That(history.GetPageRecordCount(0), Is.EqualTo(2));
+        Assert.That(history.CopyPage(0, stableIds, metadata), Is.EqualTo(1));
+        Assert.That(stableIds, Is.EqualTo([firstEntityId, secondEntityId]));
+        Assert.That(metadata, Is.EqualTo([0x5400u, 0x1401u]));
+    }
+
+    [Test]
+    public void CopiesIdentityHistoryAcrossCanonicalPageBoundary()
+    {
+        using var world = CreateWorld();
+        var expectedIds = new Guid[StableIdentityLedger.RecordsPerPage + 1];
+
+        for (var index = 0; index < expectedIds.Length; index++)
+        {
+            var entity = world.CreateEntity(new EntityDescription());
+            expectedIds[index] = world.GetEntityId(entity);
+        }
+
+        _ = world.Step();
+
+        using var lease = world.AcquirePersistenceCaptureLease();
+        var history = lease.GetIdentityHistoryCapture();
+        Assert.That(history.PageCount, Is.EqualTo(2));
+        Assert.That(history.GetPageRecordCount(0), Is.EqualTo(StableIdentityLedger.RecordsPerPage));
+        Assert.That(history.GetPageRecordCount(1), Is.EqualTo(1));
+
+        var firstPageIds = new Guid[StableIdentityLedger.RecordsPerPage];
+        var firstPageMetadata = new uint[StableIdentityLedger.RecordsPerPage];
+        Assert.That(history.CopyPage(0, firstPageIds, firstPageMetadata), Is.EqualTo(1));
+        Assert.That(firstPageIds[0], Is.EqualTo(expectedIds[0]));
+        Assert.That(firstPageIds[^1], Is.EqualTo(expectedIds[StableIdentityLedger.RecordsPerPage - 1]));
+        Assert.That(firstPageMetadata, Has.All.EqualTo(0x5400u));
+
+        var finalPageIds = new Guid[1];
+        var finalPageMetadata = new uint[1];
+        Assert.That(history.CopyPage(1, finalPageIds, finalPageMetadata), Is.EqualTo(StableIdentityLedger.RecordsPerPage + 1L));
+        Assert.That(finalPageIds[0], Is.EqualTo(expectedIds[^1]));
+        Assert.That(finalPageMetadata, Is.EqualTo([0x5400u]));
     }
 
     [Test]
