@@ -64,8 +64,9 @@ internal static class M04ShaderReflectionReader
             throw new InvalidDataException("DXIL and SPIRV-Cross reflection name different entry points.");
         }
 
-        var imageTypes = SpirvImageTypeReader.Read(spirvBytecode);
+        var (imageTypes, descriptorArrayCounts) = SpirvImageTypeReader.Read(spirvBytecode);
         var resources = ParseResources(root, imageTypes);
+        SpirvImageTypeReader.ValidateDescriptorArrayCounts(resources, descriptorArrayCounts);
         ValidateDxilResourceBindings(dxilReflection, resources);
         var inputs = ParseDxilSignatures(dxilReflection, "Input signature:", stage, isInput: true);
         var outputs = ParseDxilSignatures(dxilReflection, "Output signature:", stage, isInput: false);
@@ -275,6 +276,15 @@ internal static class M04ShaderReflectionReader
             ShaderResourceKind.StorageBuffer or ShaderResourceKind.StorageImage => 32,
             ShaderResourceKind.Sampler => 40,
             _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+        };
+
+    private static int GetDescriptorSet(ShaderBindingGroup group)
+        => group switch {
+            ShaderBindingGroup.Frame => 0,
+            ShaderBindingGroup.Material => 1,
+            ShaderBindingGroup.ObjectData => 2,
+            ShaderBindingGroup.Pass => 3,
+            _ => throw new ArgumentOutOfRangeException(nameof(group)),
         };
 
     private static int? GetExpectedLocation(ShaderIoSignature signature, ShaderStage stage, bool isInput)
@@ -1289,6 +1299,7 @@ internal static class M04ShaderReflectionReader
         private const uint ImageFormatR32i = 24;
         private const uint ImageFormatR32ui = 33;
         private const uint ImageFormatUnknown = 0;
+        private const ushort OpConstant = 43;
         private const ushort OpDecorate = 71;
         private const ushort OpTypeArray = 28;
         private const ushort OpTypeFloat = 22;
@@ -1316,14 +1327,17 @@ internal static class M04ShaderReflectionReader
                     _ => throw new NotSupportedException($"SPIRV-Cross texture type '{type}' has no supported SPIR-V dimension mapping."),
                 };
 
-        internal static Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage, string Dimension, string? Format)> Read(
+        internal static (
+            Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage, string Dimension, string? Format)> ImageTypes,
+            Dictionary<(int DescriptorSet, int Binding), int> ArrayCounts) Read(
             ReadOnlySpan<byte> bytecode)
         {
             var words = GetSpirvWords(bytecode);
             var scalarFormats = new Dictionary<uint, string>();
             var pointerTypes = new Dictionary<uint, uint>();
             var imageTypes = new Dictionary<uint, (uint SampledTypeId, uint Dimension, uint Sampled, uint Format)>();
-            var arrayElementTypes = new Dictionary<uint, uint>();
+            var arrayElementTypes = new Dictionary<uint, (uint ElementTypeId, uint LengthId, bool IsRuntime)>();
+            var arrayLengths = new Dictionary<uint, uint>();
             var decorations = new Dictionary<uint, (int? DescriptorSet, int? Binding)>();
             var variables = new List<(uint PointerType, uint Id, uint StorageClass)>();
 
@@ -1387,7 +1401,10 @@ internal static class M04ShaderReflectionReader
 
                     case OpTypeArray:
                     {
-                        if ((wordCount != 4) || !arrayElementTypes.TryAdd(words[cursor + 1], words[cursor + 2]))
+                        if ((wordCount != 4)
+                            || !arrayElementTypes.TryAdd(
+                                words[cursor + 1],
+                                (words[cursor + 2], words[cursor + 3], IsRuntime: false)))
                         {
                             throw new InvalidDataException("SPIR-V OpTypeArray has an invalid operand count or duplicate result ID.");
                         }
@@ -1397,9 +1414,22 @@ internal static class M04ShaderReflectionReader
 
                     case OpTypeRuntimeArray:
                     {
-                        if ((wordCount != 3) || !arrayElementTypes.TryAdd(words[cursor + 1], words[cursor + 2]))
+                        if ((wordCount != 3)
+                            || !arrayElementTypes.TryAdd(
+                                words[cursor + 1],
+                                (words[cursor + 2], LengthId: 0, IsRuntime: true)))
                         {
                             throw new InvalidDataException("SPIR-V OpTypeRuntimeArray has an invalid operand count or duplicate result ID.");
+                        }
+
+                        break;
+                    }
+
+                    case OpConstant:
+                    {
+                        if ((wordCount < 4) || ((wordCount == 4) && !arrayLengths.TryAdd(words[cursor + 2], words[cursor + 3])))
+                        {
+                            throw new InvalidDataException("SPIR-V OpConstant has an invalid operand count or duplicate 32-bit result ID.");
                         }
 
                         break;
@@ -1484,41 +1514,61 @@ internal static class M04ShaderReflectionReader
             }
 
             var imageFormats = new Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage, string Dimension, string? Format)>();
+            var descriptorArrayCounts = new Dictionary<(int DescriptorSet, int Binding), int>();
 
             foreach (var (pointerType, variableId, storageClass) in variables)
             {
-                if (storageClass != StorageClassUniformConstant)
+                if (!decorations.TryGetValue(variableId, out var decoration))
                 {
                     continue;
                 }
 
+                if ((decoration.DescriptorSet is not int descriptorSet)
+                    || (decoration.Binding is not int binding))
+                {
+                    throw new InvalidDataException("A SPIR-V descriptor variable must have both set and binding decorations.");
+                }
+
                 if (!pointerTypes.TryGetValue(pointerType, out var typeId))
                 {
-                    throw new InvalidDataException("A SPIR-V UniformConstant variable has no reflected pointer type.");
+                    throw new InvalidDataException("A SPIR-V descriptor variable has no reflected pointer type.");
                 }
 
                 var visitedArrayTypes = new HashSet<uint>();
+                var descriptorArrayCount = 1;
 
-                while (arrayElementTypes.TryGetValue(typeId, out var elementTypeId))
+                while (arrayElementTypes.TryGetValue(typeId, out var arrayType))
                 {
                     if (!visitedArrayTypes.Add(typeId))
                     {
                         throw new InvalidDataException("The reflected SPIR-V descriptor type contains an array cycle.");
                     }
 
-                    typeId = elementTypeId;
+                    if (arrayType.IsRuntime)
+                    {
+                        throw new NotSupportedException("Runtime-sized descriptor arrays are not supported.");
+                    }
+
+                    if (!arrayLengths.TryGetValue(arrayType.LengthId, out var descriptorCount)
+                        || (descriptorCount == 0)
+                        || (descriptorCount > int.MaxValue))
+                    {
+                        throw new InvalidDataException("SPIR-V descriptor-array lengths must be positive 32-bit constants.");
+                    }
+
+                    descriptorArrayCount = checked(descriptorArrayCount * (int)descriptorCount);
+                    typeId = arrayType.ElementTypeId;
                 }
 
-                if (!imageTypes.TryGetValue(typeId, out var imageType))
+                if (!descriptorArrayCounts.TryAdd((descriptorSet, binding), descriptorArrayCount))
+                {
+                    throw new InvalidDataException("The reflected SPIR-V module contains duplicate descriptor identities.");
+                }
+
+                if ((storageClass != StorageClassUniformConstant)
+                    || !imageTypes.TryGetValue(typeId, out var imageType))
                 {
                     continue;
-                }
-
-                if (!decorations.TryGetValue(variableId, out var decoration)
-                    || (decoration.DescriptorSet is not int descriptorSet)
-                    || (decoration.Binding is not int binding))
-                {
-                    throw new InvalidDataException("A SPIR-V image variable omitted its descriptor set or binding.");
                 }
 
                 if (!scalarFormats.TryGetValue(imageType.SampledTypeId, out var componentFormat)
@@ -1558,7 +1608,40 @@ internal static class M04ShaderReflectionReader
                 }
             }
 
-            return imageFormats;
+            return (imageFormats, descriptorArrayCounts);
+        }
+
+        internal static void ValidateDescriptorArrayCounts(
+            ImmutableArray<ReflectedResource> resources,
+            Dictionary<(int DescriptorSet, int Binding), int> spirvArrayCounts)
+        {
+            var reflectedArrayCounts = new Dictionary<(int DescriptorSet, int Binding), int>();
+
+            foreach (var resource in resources)
+            {
+                var descriptor = (
+                    GetDescriptorSet(resource.Signature.Group),
+                    checked(resource.Signature.Binding + GetBindingOffset(resource.Signature.Kind)));
+
+                if (!reflectedArrayCounts.TryAdd(descriptor, resource.Signature.ArrayCount))
+                {
+                    throw new InvalidDataException("SPIRV-Cross contains duplicate descriptor identities.");
+                }
+            }
+
+            if (reflectedArrayCounts.Count != spirvArrayCounts.Count)
+            {
+                throw new InvalidDataException("SPIR-V and SPIRV-Cross report different descriptor counts.");
+            }
+
+            foreach (var (descriptor, arrayCount) in reflectedArrayCounts)
+            {
+                if (!spirvArrayCounts.TryGetValue(descriptor, out var spirvArrayCount)
+                    || (arrayCount != spirvArrayCount))
+                {
+                    throw new InvalidDataException("SPIR-V and SPIRV-Cross report different descriptor-array counts.");
+                }
+            }
         }
     }
 

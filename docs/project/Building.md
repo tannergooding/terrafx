@@ -159,6 +159,8 @@ The typed reflection converter cross-checks SPIRV-Cross uniform-buffer records a
 
 For sampled and storage images, the converter resolves the descriptor-decorated `OpTypeImage` through SPIR-V pointer/array types and compares its supported dimension and 32-bit component class (`f32`, `i32`, or `u32`) with SPIRV-Cross and DXIL resource reflection. For storage images it also cross-checks the SPIR-V image-format enumerant against SPIRV-Cross and DXIL for `r32f`, `r32i`, and `r32ui`; this does not establish sampled texture API view-format compatibility or cover every image shape/format.
 
+For every resource in the supported SPIRV-Cross descriptor collections, the converter compares raw SPIR-V `OpVariable` descriptor set/binding and fixed array count with SPIRV-Cross metadata; runtime-sized or specialization-sized descriptor arrays reject. This verifies reflected array extents only, not public descriptor-array element binding semantics.
+
 `ShaderReflection.RequiredCapabilities` includes the selected nonbaseline SPIR-V mappings for geometry, tessellation, Float16, Float64, GroupNonUniform operations, and descriptor indexing, including core dynamic descriptor-array indexing and extension nonuniform/runtime-array capabilities. Baseline `Matrix`/`Shader` declarations are omitted; unsupported capability declarations (including Float16Buffer) reject rather than disappearing from typed reflection. The current GraphicsDevice/backends reject every nonempty capability requirement until a matching device-feature mapping is qualified, so parsed requirements are not execution support.
 
 ### Vulkan OffscreenNative backend tests
