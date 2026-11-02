@@ -14,6 +14,7 @@ internal static class M04ShaderFixtureCompiler
 {
     private const string ShaderEntryPointPixel = "PSMain";
     private const string ShaderEntryPointSampledFramePixel = "PSSampledFrameMain";
+    private const string ShaderEntryPointSampledFrameStoragePixel = "PSSampledFrameStorageMain";
     private const string ShaderEntryPointSampledPixel = "PSSampledMain";
     private const string ShaderEntryPointVertex = "VSMain";
     private const string ShaderFileName = "M04OffscreenTriangle.hlsl";
@@ -111,6 +112,17 @@ internal static class M04ShaderFixtureCompiler
                 "ps_6_0",
                 "pixel-sampled-frame",
                 cancellationToken).ConfigureAwait(false);
+            await CompileStageAsync(
+                manifest,
+                dxcExecutable,
+                spirvCrossExecutable,
+                spirvValidationExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointSampledFrameStoragePixel,
+                "ps_6_0",
+                "pixel-sampled-frame-storage",
+                cancellationToken).ConfigureAwait(false);
 
             cancellationToken.ThrowIfCancellationRequested();
             Directory.Move(stagingDirectory, finalOutputDirectory);
@@ -199,6 +211,15 @@ internal static class M04ShaderFixtureCompiler
                 ShaderEntryPointSampledFramePixel,
                 "ps_6_0",
                 "pixel-sampled-frame",
+                cancellationToken).ConfigureAwait(false);
+            await CompileDxilStageAsync(
+                manifest,
+                dxcExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointSampledFrameStoragePixel,
+                "ps_6_0",
+                "pixel-sampled-frame-storage",
                 cancellationToken).ConfigureAwait(false);
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -382,7 +403,7 @@ internal static class M04ShaderFixtureCompiler
     {
         var expectedOutputSemantic = stageName switch {
             "vertex" => "SV_Position",
-            "pixel" or "pixel-sampled" or "pixel-sampled-frame" => "SV_Target",
+            "pixel" or "pixel-sampled" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => "SV_Target",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
         };
 
@@ -393,7 +414,7 @@ internal static class M04ShaderFixtureCompiler
             throw new InvalidDataException($"DXC reflection from the compiled DXIL does not contain the expected {stageName} entry-point output.");
         }
 
-        if ((stageName is "pixel" or "pixel-sampled-frame")
+        if ((stageName is "pixel" or "pixel-sampled-frame" or "pixel-sampled-frame-storage")
             && (!text.Contains("cbuffer FrameData", StringComparison.Ordinal)
                 || !text.Contains("float4 color", StringComparison.Ordinal)
                 || !text.Contains("FrameData                         cbuffer", StringComparison.Ordinal)))
@@ -401,11 +422,18 @@ internal static class M04ShaderFixtureCompiler
             throw new InvalidDataException("DXC reflection from the compiled pixel DXIL does not contain the FrameData uniform buffer.");
         }
 
-        if ((stageName is "pixel-sampled" or "pixel-sampled-frame")
+        if ((stageName is "pixel-sampled" or "pixel-sampled-frame" or "pixel-sampled-frame-storage")
             && (!text.Contains("FrameTexture", StringComparison.Ordinal)
                 || !text.Contains("FrameSampler", StringComparison.Ordinal)))
         {
             throw new InvalidDataException("DXC reflection from the compiled sampled pixel DXIL does not contain its image and sampler.");
+        }
+
+        if ((stageName == "pixel-sampled-frame-storage")
+            && (!text.Contains("FrameStorageBuffer", StringComparison.Ordinal)
+                || !text.Contains("FrameStorageImage", StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException("DXC reflection from the compiled storage pixel DXIL does not contain its storage resources.");
         }
     }
 
@@ -413,6 +441,20 @@ internal static class M04ShaderFixtureCompiler
     {
         ValidateSampledResource(root, "separate_images", "FrameTexture", 16);
         ValidateSampledResource(root, "separate_samplers", "FrameSampler", 40);
+    }
+
+    private static void ValidatePixelStorageResourceReflection(JsonElement root)
+    {
+        ValidateSampledResource(root, "ssbos", "FrameStorageBuffer", 32);
+        ValidateSampledResource(root, "images", "FrameStorageImage", 33);
+        var storageImages = root.GetProperty("images");
+
+        if (!storageImages[0].TryGetProperty("format", out var formatElement)
+            || (formatElement.ValueKind != JsonValueKind.String)
+            || !StringComparer.Ordinal.Equals(formatElement.GetString(), "r32ui"))
+        {
+            throw new InvalidDataException("SPIRV-Cross reflection does not match the FrameStorageImage format.");
+        }
     }
 
     private static void ValidatePixelUniformBufferReflection(JsonElement root)
@@ -499,7 +541,7 @@ internal static class M04ShaderFixtureCompiler
         var mode = modeElement.GetString();
         var expectedMode = stageName switch {
             "vertex" => mode is "vert" or "vertex",
-            "pixel" or "pixel-sampled" or "pixel-sampled-frame" => mode is "frag" or "fragment",
+            "pixel" or "pixel-sampled" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => mode is "frag" or "fragment",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
         };
 
@@ -508,14 +550,19 @@ internal static class M04ShaderFixtureCompiler
             throw new InvalidDataException($"SPIRV-Cross reported mode '{mode}' for the {stageName} shader stage.");
         }
 
-        if (stageName is "pixel" or "pixel-sampled-frame")
+        if (stageName is "pixel" or "pixel-sampled-frame" or "pixel-sampled-frame-storage")
         {
             ValidatePixelUniformBufferReflection(root);
         }
 
-        if (stageName is "pixel-sampled" or "pixel-sampled-frame")
+        if (stageName is "pixel-sampled" or "pixel-sampled-frame" or "pixel-sampled-frame-storage")
         {
             ValidatePixelSampledResourceReflection(root);
+        }
+
+        if (stageName == "pixel-sampled-frame-storage")
+        {
+            ValidatePixelStorageResourceReflection(root);
         }
     }
 

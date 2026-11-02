@@ -62,7 +62,8 @@ internal sealed class VulkanBackendDeviceTests
         BufferReadLease<byte> pixelBytecode,
         PipelineBlendMode blendMode = PipelineBlendMode.Opaque,
         bool usesSampledResources = false,
-        bool includesFrameUniformBuffer = true)
+        bool includesFrameUniformBuffer = true,
+        bool includesStorageResources = false)
     {
         var compilerIdentity = CreateShaderCompilerIdentity();
         var pixelResources = ImmutableArray.CreateBuilder<ShaderResourceSignature>();
@@ -76,6 +77,12 @@ internal sealed class VulkanBackendDeviceTests
         {
             pixelResources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.SampledImage, 1));
             pixelResources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.Sampler, 1));
+        }
+
+        if (includesStorageResources)
+        {
+            pixelResources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, 1));
+            pixelResources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 1, ShaderResourceKind.StorageImage, 1));
         }
 
         ImmutableArray<ShaderRecordLayout> pixelRecordLayouts = includesFrameUniformBuffer
@@ -92,10 +99,11 @@ internal sealed class VulkanBackendDeviceTests
                         0)]),
             ]
             : [];
-        var pixelEntryPoint = (usesSampledResources, includesFrameUniformBuffer) switch {
-            (false, true) => "PSMain",
-            (true, false) => "PSSampledMain",
-            (true, true) => "PSSampledFrameMain",
+        var pixelEntryPoint = (usesSampledResources, includesFrameUniformBuffer, includesStorageResources) switch {
+            (false, true, false) => "PSMain",
+            (true, false, false) => "PSSampledMain",
+            (true, true, false) => "PSSampledFrameMain",
+            (true, true, true) => "PSSampledFrameStorageMain",
             _ => throw new ArgumentException("A pixel shader fixture must declare a Frame UBO or sampled image and sampler."),
         };
         var vertexReflection = new ShaderReflection(
@@ -483,7 +491,9 @@ internal sealed class VulkanBackendDeviceTests
             () => device.CreateFrameDescriptorSet(
                 pipeline,
                 [],
+                [],
                 imageBindings,
+                [],
                 samplerBindings),
             Throws.ArgumentException);
 
@@ -495,7 +505,9 @@ internal sealed class VulkanBackendDeviceTests
                 buffer,
                 0,
                 16)],
+            [],
             imageBindings,
+            [],
             samplerBindings);
         Assert.That(descriptorSet.IsDisposed, Is.False);
         Assert.That(descriptorSet.Buffers.Length, Is.EqualTo(1));
@@ -520,6 +532,185 @@ internal sealed class VulkanBackendDeviceTests
         descriptorSet.Dispose();
         buffer.Dispose();
         texture.Dispose();
+        sampler.Dispose();
+        pipeline.Dispose();
+        device.Dispose();
+    }
+
+    [Test]
+    public void OffscreenNativeDeviceAllocatesAndPopulatesVulkanStorageDescriptorSet()
+    {
+        var fixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
+
+        if (string.IsNullOrWhiteSpace(fixtureDirectory))
+        {
+            Assert.Ignore("The compiled M04 shader fixture is not selected through TERRAFX_M04_SHADER_FIXTURE_DIRECTORY.");
+            return;
+        }
+
+        using var device = CreateVulkanDeviceForNativeSmokeTest();
+        using var vertexStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.vertex.spv"));
+        using var pixelStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.pixel-sampled-frame-storage.spv"));
+        using var vertexLease = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
+        using var pixelLease = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
+        using var pipeline = device.CreatePipeline(
+            CreateShaderFixtureDescription(
+                vertexLease,
+                pixelLease,
+                usesSampledResources: true,
+                includesStorageResources: true),
+            [vertexLease, pixelLease]);
+        using var uniformBuffer = device.CreateBuffer(
+            new BufferDescription(
+                16,
+                BufferUsage.Uniform,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: null,
+                debugName: "storage-fixture-frame-data"));
+        using var storageBuffer = device.CreateBuffer(
+            new BufferDescription(
+                16,
+                BufferUsage.Storage,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: 4,
+                debugName: "storage-fixture-buffer"));
+        using var sampledTexture = device.CreateTexture(
+            new TextureDescription(
+                TextureDimension.Dimension2D,
+                1,
+                1,
+                depth: 1,
+                arrayLayers: 1,
+                mipLevels: 1,
+                TextureFormat.Rgba8Unorm,
+                TextureUsage.Sampled | TextureUsage.CopySource | TextureUsage.CopyDestination,
+                "storage-fixture-sampled-texture"));
+        using var storageTexture = device.CreateTexture(
+            new TextureDescription(
+                TextureDimension.Dimension2D,
+                1,
+                1,
+                depth: 1,
+                arrayLayers: 1,
+                mipLevels: 1,
+                TextureFormat.R32UInt,
+                TextureUsage.Storage | TextureUsage.CopySource | TextureUsage.CopyDestination,
+                "storage-fixture-storage-texture"));
+        var sourceBytes = new byte[] { 0x11, 0x32, 0x53, 0xF4 };
+        var sourceStorage = UnmanagedBuffer<byte>.Allocate(
+            sourceBytes.Length,
+            new BufferAllocationOptions(sourceBytes.Length, alignment: 1));
+        sourceStorage.CopyFrom(sourceBytes.AsSpan(), 0);
+
+        using var ownedSource = sourceStorage.TransferToOwnedBuffer();
+        using var sourceLease = ownedSource.AcquireReadLease(0, sourceBytes.Length);
+        var subresource = new TextureSubresource(0, 0, TextureAspect.Color);
+        var layout = new TextureDataLayout(rowPitch: 4, slicePitch: 4);
+        Assert.That(device.UploadTexture(sampledTexture, subresource, sourceLease, 0, layout), Is.GreaterThan(0));
+        Assert.That(device.UploadTexture(storageTexture, subresource, sourceLease, 0, layout), Is.GreaterThan(0));
+        using var sampler = device.CreateSampler(
+            new SamplerDescription(
+                SamplerFilter.Linear,
+                SamplerFilter.Linear,
+                SamplerFilter.None,
+                SamplerAddressMode.Clamp,
+                SamplerAddressMode.Clamp,
+                SamplerAddressMode.Clamp,
+                maximumAnisotropy: 1.0f),
+            effectiveMaximumAnisotropy: 1.0f);
+        var uniformBufferBindings = ImmutableArray.Create(new VulkanBackendUniformBufferBinding(
+            ShaderBindingGroup.Frame,
+            0,
+            uniformBuffer,
+            0,
+            16));
+        var storageBufferBindings = ImmutableArray.Create(new VulkanBackendStorageBufferBinding(
+            ShaderBindingGroup.Frame,
+            0,
+            storageBuffer,
+            0,
+            16));
+        var imageBindings = ImmutableArray.Create(new VulkanBackendSampledImageBinding(
+            ShaderBindingGroup.Frame,
+            0,
+            sampledTexture));
+        var storageImageBindings = ImmutableArray.Create(new VulkanBackendStorageImageBinding(
+            ShaderBindingGroup.Frame,
+            1,
+            storageTexture));
+        var samplerBindings = ImmutableArray.Create(new VulkanBackendSamplerBinding(
+            ShaderBindingGroup.Frame,
+            0,
+            sampler));
+
+        Assert.That(
+            () => device.CreateFrameDescriptorSet(
+                pipeline,
+                uniformBufferBindings,
+                storageBufferBindings,
+                imageBindings,
+                [],
+                samplerBindings),
+            Throws.ArgumentException);
+        Assert.That(
+            () => device.CreateFrameDescriptorSet(
+                pipeline,
+                uniformBufferBindings,
+                [new VulkanBackendStorageBufferBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    uniformBuffer,
+                    0,
+                    16)],
+                imageBindings,
+                storageImageBindings,
+                samplerBindings),
+            Throws.ArgumentException);
+
+        using var descriptorSet = device.CreateFrameDescriptorSet(
+            pipeline,
+            uniformBufferBindings,
+            storageBufferBindings,
+            imageBindings,
+            storageImageBindings,
+            samplerBindings);
+        Assert.That(pipeline.Resources.Length, Is.EqualTo(5));
+        Assert.That(descriptorSet.IsDisposed, Is.False);
+        Assert.That(descriptorSet.Buffers.Length, Is.EqualTo(2));
+        Assert.That(descriptorSet.Textures.Length, Is.EqualTo(2));
+        Assert.That(descriptorSet.Samplers.Length, Is.EqualTo(1));
+        Assert.That(descriptorSet.ImageViews.Length, Is.EqualTo(2));
+        Assert.That(
+            device.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("live descriptor sets"));
+        Assert.That(
+            pipeline.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("descriptor sets remain live"));
+        Assert.That(
+            uniformBuffer.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("descriptor sets remain live"));
+        Assert.That(
+            storageBuffer.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("descriptor sets remain live"));
+        Assert.That(
+            sampledTexture.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("descriptor sets remain live"));
+        Assert.That(
+            storageTexture.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("descriptor sets remain live"));
+        Assert.That(
+            sampler.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("descriptor sets remain live"));
+
+        descriptorSet.Dispose();
+        uniformBuffer.Dispose();
+        storageBuffer.Dispose();
+        sampledTexture.Dispose();
+        storageTexture.Dispose();
         sampler.Dispose();
         pipeline.Dispose();
         device.Dispose();
