@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Threading;
@@ -113,6 +114,132 @@ internal sealed class WorldSystemStatefulFactoryTests
 
         Assert.That(binding.Descriptor.Fields, Has.Length.EqualTo(1));
         Assert.That(binding.Descriptor.Fields[0].Path.Segments, Has.Length.EqualTo(2));
+    }
+
+    [Test]
+    public void StatefulFactoryCapturesCommittedStateThroughCaptureLease()
+    {
+        var assignment = new ContentSchemaIdentityAssignment("application/system-state/counter-capture/v1");
+        var schemaReference = new ContentSchemaReference(
+            assignment.SchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+        var field = new ContentFieldDescriptor(
+            1,
+            7,
+            0,
+            true,
+            1,
+            1,
+            [],
+            0,
+            ContentUnit.None,
+            ContentReferenceKind.None,
+            ContentAuthoring.None,
+            null);
+        var metadata = new DataSchema(
+            schemaReference,
+            assignment,
+            ContentSchemaRole.SystemState,
+            ContentSchemaOwner.Application,
+            ContentSchemaStorage.NotComponent,
+            ContentTransientRestore.NotApplicable,
+            [field]);
+        var schemas = new CompiledContentSchemaRegistry([metadata]);
+        var schema = WorldSystemSchema<ProbeSystem>.FromRegistry(schemas, schemaReference);
+        var runtimePath = new WorldSystemSourcePath(["Counter"]);
+        var authorPath = new WorldSystemSourcePath(["Counter"]);
+        var sourceState = new WorldSystemSourceStateDeclaration(
+            typeof(ProbeSystem),
+            [
+                new WorldSystemSourceLeaf(
+                    runtimePath,
+                    typeof(int),
+                    WorldSystemSourcePurpose.Authoritative),
+            ]);
+        var counts = new CallbackCounts();
+        var systemId = Guid.NewGuid();
+        var binding = WorldSystemFactoryBinding.Stateful<
+            ProbeSystem,
+            ProbeAuthor,
+            StatefulCreate,
+            StatefulDefaults,
+            StatefulRelease>(
+            Guid.NewGuid(),
+            1,
+            schema,
+            sourceState,
+            [
+                WorldSystemFieldBinding<ProbeSystem, ProbeAuthor>.Scalar<int, SystemCounterReader, AuthorCounterReader>(
+                    schema.Fields[0],
+                    [runtimePath],
+                    [authorPath],
+                    new SystemCounterReader(counts),
+                    default),
+            ],
+            new StatefulCreate(counts),
+            new StatefulDefaults(counts),
+            new StatefulStateCodec(counts),
+            new StatefulRelease(counts));
+        var builder = new WorldRegistrationBuilder(schemas);
+        _ = builder.RegisterSystem(
+            new SystemDescription(
+                systemId,
+                0,
+                SimulationStage.Input,
+                [],
+                [],
+                [],
+                SystemThreadMode.OwnerThread),
+            new StatefulFactory(binding));
+        var registration = builder.Build();
+        using var world = World.Create(new WorldOptions(registration) {
+            CpuWorkerCount = 0,
+            InitialReplayLineageId = Guid.NewGuid(),
+            WorldGuid = Guid.NewGuid(),
+        });
+        _ = world.Step();
+
+        using var lease = world.AcquirePersistenceCaptureLease();
+        var enumerator = lease.GetSystemStateEnumerator();
+        Assert.That(enumerator.MoveNext(), Is.True);
+        Assert.That(enumerator.CurrentIndex, Is.EqualTo(0));
+        Assert.That(enumerator.CurrentSystemId, Is.EqualTo(systemId));
+        Assert.That(enumerator.CurrentSchema, Is.EqualTo(schemaReference));
+
+        var byteCount = lease.CountSystemStateRecord(enumerator.CurrentIndex, CancellationToken.None);
+        Assert.That(byteCount, Is.EqualTo((nint)sizeof(int)));
+        var encoded = new byte[checked((int)byteCount)];
+        var written = lease.WriteSystemStateRecord(
+            enumerator.CurrentIndex,
+            encoded,
+            CancellationToken.None);
+        var expected = new byte[sizeof(int)];
+        BinaryPrimitives.WriteInt32LittleEndian(expected, 42);
+
+        Assert.That(written, Is.EqualTo(byteCount));
+        Assert.That(encoded, Is.EqualTo(expected));
+        Assert.That(counts.CountedCounter, Is.EqualTo(42));
+        Assert.That(counts.CountedSystemId, Is.EqualTo(systemId));
+        Assert.That(counts.CountedSchema, Is.EqualTo(schemaReference));
+        Assert.That(counts.WrittenCounter, Is.EqualTo(42));
+        Assert.That(counts.WrittenSystemId, Is.EqualTo(systemId));
+        Assert.That(counts.WrittenSchema, Is.EqualTo(schemaReference));
+        Assert.That(enumerator.MoveNext(), Is.False);
+
+        var staleCurrentRejected = false;
+
+        try
+        {
+            _ = enumerator.CurrentSystemId;
+        }
+        catch (InvalidOperationException)
+        {
+            staleCurrentRejected = true;
+        }
+
+        Assert.That(staleCurrentRejected, Is.True);
     }
 
     [Test]
@@ -243,6 +370,12 @@ internal sealed class WorldSystemStatefulFactoryTests
 
     private sealed class CallbackCounts
     {
+        internal int CountedCounter { get; set; }
+
+        internal ContentSchemaReference CountedSchema { get; set; }
+
+        internal Guid CountedSystemId { get; set; }
+
         internal List<string> Events { get; } = [];
 
         internal bool FailValidation { get; set; }
@@ -254,6 +387,12 @@ internal sealed class WorldSystemStatefulFactoryTests
         internal int ValidatedCounter { get; set; }
 
         internal InvalidOperationException ValidationFailure { get; } = new("The stateful system validation failed.");
+
+        internal int WrittenCounter { get; set; }
+
+        internal ContentSchemaReference WrittenSchema { get; set; }
+
+        internal Guid WrittenSystemId { get; set; }
     }
 
     private readonly record struct ProbeAuthor(int Counter);
@@ -332,7 +471,13 @@ internal sealed class WorldSystemStatefulFactoryTests
         }
 
         public nint Count(ProbeSystem system, WorldSystemCaptureBinding binding, CancellationToken cancellationToken)
-            => throw new NotSupportedException();
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _counts.CountedCounter = system.Counter;
+            _counts.CountedSchema = binding.Schema;
+            _counts.CountedSystemId = binding.SystemId;
+            return sizeof(int);
+        }
 
         public WorldSystemReadResult<ProbeAuthor> Read(
             scoped ReadOnlySpan<byte> source,
@@ -370,7 +515,15 @@ internal sealed class WorldSystemStatefulFactoryTests
             scoped Span<byte> destination,
             WorldSystemCaptureBinding binding,
             CancellationToken cancellationToken)
-            => throw new NotSupportedException();
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ArgumentOutOfRangeException.ThrowIfLessThan(destination.Length, sizeof(int));
+            BinaryPrimitives.WriteInt32LittleEndian(destination, system.Counter);
+            _counts.WrittenCounter = system.Counter;
+            _counts.WrittenSchema = binding.Schema;
+            _counts.WrittenSystemId = binding.SystemId;
+            return sizeof(int);
+        }
     }
 
     private readonly struct SystemCounterReader : IWorldSystemValueReader<ProbeSystem, int>

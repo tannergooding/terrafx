@@ -8,6 +8,7 @@ namespace TerraFX.Entities;
 
 internal sealed class WorldSystemFactoryStatefulFamily<TSystem, TAuthor, TCreate, TDefaults, TRelease> :
     IWorldSystemFactoryDispatch,
+    IWorldSystemCaptureDispatch,
     IWorldSystemCreateControl,
     IWorldSystemDefaultsControl,
     IWorldSystemReleaseControl,
@@ -59,6 +60,28 @@ internal sealed class WorldSystemFactoryStatefulFamily<TSystem, TAuthor, TCreate
             : throw new InvalidOperationException("The World system instance does not match the captured closed type.");
     }
 
+    nint IWorldSystemCaptureDispatch.Count(
+        IWorldSystem system,
+        Guid systemId,
+        WorldSystemCaptureBinding binding,
+        CancellationToken cancellationToken)
+    {
+        var typedSystem = ValidateCaptureOperation(system, systemId, binding);
+        var count = _codec.Count(typedSystem, binding, cancellationToken);
+
+        if (binding.Failure is { } failure)
+        {
+            throw failure;
+        }
+
+        if (count < 0)
+        {
+            throw new InvalidOperationException("The system codec returned a negative encoded byte count.");
+        }
+
+        return count;
+    }
+
     IWorldSystem IWorldSystemCreateControl.Invoke()
         => _create.Invoke() ?? throw new InvalidOperationException("The system creation callback returned null.");
 
@@ -104,6 +127,48 @@ internal sealed class WorldSystemFactoryStatefulFamily<TSystem, TAuthor, TCreate
             binding.Revoke();
             context.Revoke();
         }
+    }
+
+    private TSystem ValidateCaptureOperation(
+        IWorldSystem system,
+        Guid systemId,
+        WorldSystemCaptureBinding binding)
+    {
+        ArgumentNullException.ThrowIfNull(binding);
+        ArgumentOutOfRangeException.ThrowIfEqual(systemId, Guid.Empty);
+        var typedSystem = ValidateSystem(system);
+        var schema = Descriptor.StateSchema
+            ?? throw new InvalidOperationException("A stateless system has no capture schema.");
+
+        if ((binding.Schema != schema) || (binding.SystemId != systemId))
+        {
+            throw new ArgumentException("The system capture binding does not match the selected registration.", nameof(binding));
+        }
+
+        return typedSystem;
+    }
+
+    nint IWorldSystemCaptureDispatch.Write(
+        IWorldSystem system,
+        Guid systemId,
+        scoped Span<byte> destination,
+        WorldSystemCaptureBinding binding,
+        CancellationToken cancellationToken)
+    {
+        var typedSystem = ValidateCaptureOperation(system, systemId, binding);
+        var written = _codec.Write(typedSystem, destination, binding, cancellationToken);
+
+        if (binding.Failure is { } failure)
+        {
+            throw failure;
+        }
+
+        if ((written < 0) || (written > destination.Length))
+        {
+            throw new InvalidOperationException("The system codec reported an invalid encoded byte count.");
+        }
+
+        return written;
     }
 
     private sealed class ValidationContext : IWorldSystemValidationContext

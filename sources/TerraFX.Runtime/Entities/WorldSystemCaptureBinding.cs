@@ -36,6 +36,8 @@ public sealed class WorldSystemCaptureBinding
         }
     }
 
+    internal Exception? Failure => _context.Failure;
+
     /// <summary>Reads the stable identity for one declared live-Entity reference.</summary>
     /// <param name="referenceField">The selected Entity-reference field descriptor.</param>
     /// <param name="entity">The live same-World Entity.</param>

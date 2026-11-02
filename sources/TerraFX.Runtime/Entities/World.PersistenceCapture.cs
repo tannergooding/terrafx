@@ -120,6 +120,35 @@ public sealed partial class World
         return count;
     }
 
+    internal nint CountSystemStateRecord(
+        WorldPersistenceCaptureLease lease,
+        int systemIndex,
+        CancellationToken cancellationToken)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(this))
+        {
+            throw new ArgumentException("The persistence capture lease belongs to another World.", nameof(lease));
+        }
+
+        var registration = GetSystemCaptureRegistration(systemIndex, out var system, out var dispatch);
+        var context = new SystemStateCaptureContext(this, registration);
+        var binding = new WorldSystemCaptureBinding(context);
+
+        try
+        {
+            var count = dispatch.Count(system, registration.Description.SystemId, binding, cancellationToken);
+            lease.ValidateCurrent();
+            return count;
+        }
+        finally
+        {
+            binding.Revoke();
+            context.Revoke();
+        }
+    }
+
     internal ComponentStateCaptureEnumerator CreateComponentStateEnumerator(WorldPersistenceCaptureLease lease)
     {
         lease.ValidateCurrent();
@@ -142,6 +171,18 @@ public sealed partial class World
         }
 
         return new ResourceStateCaptureEnumerator(this, lease);
+    }
+
+    internal SystemStateCaptureEnumerator CreateSystemStateEnumerator(WorldPersistenceCaptureLease lease)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(this))
+        {
+            throw new ArgumentException("The persistence capture lease belongs to another World.", nameof(lease));
+        }
+
+        return new SystemStateCaptureEnumerator(this, lease);
     }
 
     internal void ReleasePersistenceCaptureLease(WorldPersistenceCaptureLease lease)
@@ -242,6 +283,41 @@ public sealed partial class World
         return written;
     }
 
+    internal nint WriteSystemStateRecord(
+        WorldPersistenceCaptureLease lease,
+        int systemIndex,
+        scoped Span<byte> destination,
+        CancellationToken cancellationToken)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(this))
+        {
+            throw new ArgumentException("The persistence capture lease belongs to another World.", nameof(lease));
+        }
+
+        var registration = GetSystemCaptureRegistration(systemIndex, out var system, out var dispatch);
+        var context = new SystemStateCaptureContext(this, registration);
+        var binding = new WorldSystemCaptureBinding(context);
+
+        try
+        {
+            var written = dispatch.Write(
+                system,
+                registration.Description.SystemId,
+                destination,
+                binding,
+                cancellationToken);
+            lease.ValidateCurrent();
+            return written;
+        }
+        finally
+        {
+            binding.Revoke();
+            context.Revoke();
+        }
+    }
+
     private IComponentCaptureRegistration GetComponentCaptureRegistration(
         Entity entity,
         ContentSchemaReference schema,
@@ -276,6 +352,27 @@ public sealed partial class World
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(resourceIndex, Registration.Resources.Length);
         storage = _resourceStorage[resourceIndex];
         return Registration.Resources[resourceIndex];
+    }
+
+    private SystemRegistration GetSystemCaptureRegistration(
+        int systemIndex,
+        out IWorldSystem system,
+        out IWorldSystemCaptureDispatch dispatch)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(systemIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(systemIndex, Registration.Systems.Length);
+        var registration = Registration.Systems[systemIndex];
+
+        if (registration.Factory.Descriptor.StateSchema is null)
+        {
+            throw new ArgumentException("Only stateful system registrations have capture records.", nameof(systemIndex));
+        }
+
+        dispatch = registration.Factory.Dispatch as IWorldSystemCaptureDispatch
+            ?? throw new InvalidOperationException("The stateful system registration has no capture codec dispatch.");
+        system = _systemInstances[systemIndex]
+            ?? throw new InvalidOperationException("The stateful system registration has no live World instance.");
+        return registration;
     }
 
     internal sealed class ComponentStateCaptureContext : IComponentCaptureContext
@@ -479,6 +576,182 @@ public sealed partial class World
             if (!_hasCurrent)
             {
                 throw new InvalidOperationException("The resource capture enumerator has no current record.");
+            }
+        }
+    }
+
+    internal sealed class SystemStateCaptureContext : IWorldSystemCaptureContext
+    {
+        private readonly WorldSystemFactoryDescriptor _descriptor;
+        private Exception? _failure;
+        private bool _isActive = true;
+        private World? _world;
+
+        internal SystemStateCaptureContext(World world, SystemRegistration registration)
+        {
+            ArgumentNullException.ThrowIfNull(world);
+            ArgumentNullException.ThrowIfNull(registration);
+
+            if (registration.Factory.Descriptor.StateSchema is null)
+            {
+                throw new ArgumentException("A system capture context requires a stateful registration.", nameof(registration));
+            }
+
+            _world = world;
+            _descriptor = registration.Factory.Descriptor;
+            OwnerThreadId = world._ownerThreadId;
+            SystemId = registration.Description.SystemId;
+        }
+
+        public Exception? Failure => _failure;
+
+        public bool IsActive => _isActive && (_world is not null);
+
+        public int OwnerThreadId { get; }
+
+        public ContentSchemaReference Schema => _descriptor.StateSchema
+            ?? throw new InvalidOperationException("A stateless system has no capture schema.");
+
+        public Guid SystemId { get; }
+
+        public Guid GetEntityId(WorldSystemFieldDescriptor referenceField, Entity entity)
+        {
+            EnsureActive();
+            ArgumentNullException.ThrowIfNull(referenceField);
+
+            if (!IsRegisteredEntityReferenceField(referenceField) || !entity.IsValid)
+            {
+                throw RecordFailure(new ArgumentException(
+                    "The selected field or Entity does not match this system capture operation.",
+                    nameof(referenceField)));
+            }
+
+            var world = _world
+                ?? throw RecordFailure(new InvalidOperationException("The system capture context has expired."));
+            var entityId = world.GetEntityId(entity);
+
+            if (entityId == Guid.Empty)
+            {
+                throw RecordFailure(new InvalidOperationException("The system capture context returned an empty Entity identity."));
+            }
+
+            return entityId;
+        }
+
+        public Exception RecordFailure(Exception exception)
+        {
+            ArgumentNullException.ThrowIfNull(exception);
+            _failure ??= exception;
+            return _failure;
+        }
+
+        internal void Revoke()
+        {
+            _world = null;
+            _isActive = false;
+        }
+
+        private void EnsureActive()
+        {
+            if (!IsActive)
+            {
+                throw RecordFailure(new InvalidOperationException("The system capture context has expired."));
+            }
+
+            if (Environment.CurrentManagedThreadId != OwnerThreadId)
+            {
+                throw RecordFailure(new InvalidOperationException("The system capture context is restricted to its issuing thread."));
+            }
+        }
+
+        private bool IsRegisteredEntityReferenceField(WorldSystemFieldDescriptor referenceField)
+        {
+            if ((referenceField.StateSchema != Schema)
+                || (referenceField.Field.WireKind != 11)
+                || (referenceField.Field.Reference != ContentReferenceKind.Entity))
+            {
+                return false;
+            }
+
+            foreach (var field in _descriptor.Fields)
+            {
+                if (ReferenceEquals(field, referenceField))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
+    internal ref struct SystemStateCaptureEnumerator
+    {
+        private readonly World _world;
+        private readonly WorldPersistenceCaptureLease _lease;
+        private int _systemIndex;
+        private bool _hasCurrent;
+
+        internal SystemStateCaptureEnumerator(World world, WorldPersistenceCaptureLease lease)
+        {
+            _world = world;
+            _lease = lease;
+            _systemIndex = -1;
+            _hasCurrent = false;
+        }
+
+        internal readonly int CurrentIndex
+        {
+            get
+            {
+                ValidateCurrent();
+                return _systemIndex;
+            }
+        }
+
+        internal readonly ContentSchemaReference CurrentSchema
+        {
+            get
+            {
+                ValidateCurrent();
+                return _world.Registration.Systems[_systemIndex].Factory.Descriptor.StateSchema
+                    ?? throw new InvalidOperationException("The current system capture record has no schema.");
+            }
+        }
+
+        internal readonly Guid CurrentSystemId
+        {
+            get
+            {
+                ValidateCurrent();
+                return _world.Registration.Systems[_systemIndex].Description.SystemId;
+            }
+        }
+
+        internal bool MoveNext()
+        {
+            _lease.ValidateCurrent();
+            _hasCurrent = false;
+
+            while (++_systemIndex < _world.Registration.Systems.Length)
+            {
+                if (_world.Registration.Systems[_systemIndex].Factory.Descriptor.StateSchema is not null)
+                {
+                    _hasCurrent = true;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private readonly void ValidateCurrent()
+        {
+            _lease.ValidateCurrent();
+
+            if (!_hasCurrent)
+            {
+                throw new InvalidOperationException("The system capture enumerator has no current record.");
             }
         }
     }
