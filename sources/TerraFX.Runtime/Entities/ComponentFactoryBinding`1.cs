@@ -248,6 +248,26 @@ public sealed class ComponentFactoryBinding<T>
         }
     }
 
+    internal nint CountStateRecord(
+        in T value,
+        IComponentCaptureContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        if (!context.IsActive || (context.OwnerThreadId != Environment.CurrentManagedThreadId))
+        {
+            throw new InvalidOperationException("The component capture context is expired or used from another thread.");
+        }
+
+        if (_providerRoots is not IComponentCaptureRoot captureRoot)
+        {
+            throw new InvalidOperationException("The captured component factory has no state-capture root.");
+        }
+
+        return captureRoot.Count(in value, context, cancellationToken);
+    }
+
     internal T CreateDefault(SpatialSettings spatialSettings)
     {
         if (_providerRoots is not IDefaultProviderRoot defaultRoot)
@@ -359,7 +379,28 @@ public sealed class ComponentFactoryBinding<T>
         defaultRoot.ValidateEntityReferences(in value, world, excludedEntity, parameterName);
     }
 
-    private sealed class CapturedProviderRoots<TAuthor> : IDefaultProviderRoot, IRestoreProviderRoot
+    internal nint WriteStateRecord(
+        in T value,
+        scoped Span<byte> destination,
+        IComponentCaptureContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        if (!context.IsActive || (context.OwnerThreadId != Environment.CurrentManagedThreadId))
+        {
+            throw new InvalidOperationException("The component capture context is expired or used from another thread.");
+        }
+
+        if (_providerRoots is not IComponentCaptureRoot captureRoot)
+        {
+            throw new InvalidOperationException("The captured component factory has no state-capture root.");
+        }
+
+        return captureRoot.Write(in value, destination, context, cancellationToken);
+    }
+
+    private sealed class CapturedProviderRoots<TAuthor> : IComponentCaptureRoot, IDefaultProviderRoot, IRestoreProviderRoot
     {
         internal readonly IComponentStateCodec<T, TAuthor> Codec;
 
@@ -383,6 +424,28 @@ public sealed class ComponentFactoryBinding<T>
             Restorer = restorer;
             Codec = codec;
             Fields = fields;
+        }
+
+        public nint Count(in T value, IComponentCaptureContext context, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var binding = new ComponentCaptureBinding(context);
+
+            try
+            {
+                var count = Codec.Count(in value, binding, cancellationToken);
+
+                if (count < 0)
+                {
+                    throw new InvalidOperationException("The component state codec returned a negative encoded byte count.");
+                }
+
+                return count;
+            }
+            finally
+            {
+                binding.Revoke();
+            }
         }
 
         public T CreateDefault(ComponentDefaultBinding binding)
@@ -483,6 +546,32 @@ public sealed class ComponentFactoryBinding<T>
                 field.ValidateEntityReferences(in value, world, excludedEntity, parameterName);
             }
         }
+
+        public nint Write(
+            in T value,
+            scoped Span<byte> destination,
+            IComponentCaptureContext context,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var binding = new ComponentCaptureBinding(context);
+
+            try
+            {
+                var written = Codec.Write(in value, destination, binding, cancellationToken);
+
+                if ((written < 0) || (written > destination.Length))
+                {
+                    throw new InvalidOperationException("The component state codec returned an invalid encoded byte count.");
+                }
+
+                return written;
+            }
+            finally
+            {
+                binding.Revoke();
+            }
+        }
     }
 
     private sealed class DefaultContext : IComponentDefaultContext
@@ -502,6 +591,17 @@ public sealed class ComponentFactoryBinding<T>
         public SpatialSettings SpatialSettings { get; }
 
         internal void Revoke() => Volatile.Write(ref _isActive, false);
+    }
+
+    private interface IComponentCaptureRoot
+    {
+        nint Count(in T value, IComponentCaptureContext context, CancellationToken cancellationToken);
+
+        nint Write(
+            in T value,
+            scoped Span<byte> destination,
+            IComponentCaptureContext context,
+            CancellationToken cancellationToken);
     }
 
     private interface IDefaultProviderRoot

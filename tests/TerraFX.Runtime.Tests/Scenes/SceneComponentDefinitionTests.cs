@@ -171,6 +171,56 @@ internal sealed class SceneComponentDefinitionTests
     }
 
     [Test]
+    public void CapturesRegisteredComponentStateThroughCountAndWriteCodecRoots()
+    {
+        var schemas = new CompiledContentSchemaRegistry([
+            .. CoreContentSchemaCatalogue.PrimitiveSchemas,
+            .. CoreContentSchemaCatalogue.FoundationSchemas,
+            .. NativeAssetSchemaCatalogue.Schemas,
+            .. SceneSchemaCatalogue.Schemas,
+        ]);
+        var builder = new WorldRegistrationBuilder(schemas);
+        _ = builder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+        var registration = builder.Build();
+        var componentRegistration = registration.TryGetComponentType<SceneComponentDefinitions.LocalTransformComponent>(out var component)
+            ? component ?? throw new InvalidOperationException("The LocalTransform registration was null.")
+            : throw new InvalidOperationException("The LocalTransform component was not registered.");
+        var spatialSettings = new SpatialSettings(1, 12);
+        var column = componentRegistration.CreateColumn(1);
+        var initialization = componentRegistration.CreateInitializedValue(
+            ComponentInitialization.Defaults<SceneComponentDefinitions.LocalTransformComponent>(),
+            spatialSettings);
+        componentRegistration.InitializeColumn(column, 0, initialization, spatialSettings);
+
+        var captureContext = new CaptureContext();
+        var byteCount = componentRegistration.CountStateRecord(
+            column,
+            0,
+            captureContext,
+            CancellationToken.None);
+        Assert.That(byteCount > 0, Is.True);
+
+        var firstWrite = new byte[checked((int)byteCount)];
+        var firstWritten = componentRegistration.WriteStateRecord(
+            column,
+            0,
+            firstWrite,
+            captureContext,
+            CancellationToken.None);
+        var secondWrite = new byte[firstWrite.Length];
+        var secondWritten = componentRegistration.WriteStateRecord(
+            column,
+            0,
+            secondWrite,
+            captureContext,
+            CancellationToken.None);
+
+        Assert.That(firstWritten, Is.EqualTo(byteCount));
+        Assert.That(secondWritten, Is.EqualTo(byteCount));
+        Assert.That(secondWrite, Is.EqualTo(firstWrite));
+    }
+
+    [Test]
     public void ReadsAndRestoresLocalTransformFromItsCanonicalComponentRecord()
     {
         var schemas = new CompiledContentSchemaRegistry([
@@ -234,6 +284,16 @@ internal sealed class SceneComponentDefinitionTests
         Assert.That(result.TryGetInitialization(out _), Is.False);
         Assert.That(result.Diagnostics, Has.Length.EqualTo(1));
         Assert.That(result.Diagnostics[0].Code, Is.EqualTo("ComponentRead.SchemaMismatch"));
+    }
+
+    private sealed class CaptureContext : IComponentCaptureContext
+    {
+        public bool IsActive => true;
+
+        public int OwnerThreadId => Environment.CurrentManagedThreadId;
+
+        public Guid GetEntityId(ComponentFieldDescriptor referenceField, Entity entity)
+            => throw new InvalidOperationException("LocalTransform does not contain Entity references.");
     }
 
     private sealed class RestoreContext : IComponentRestoreContext

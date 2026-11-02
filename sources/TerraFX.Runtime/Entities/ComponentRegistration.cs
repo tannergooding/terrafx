@@ -7,7 +7,7 @@ using System.Threading;
 
 namespace TerraFX.Entities;
 
-internal sealed class ComponentRegistration<T> : IComponentRegistration
+internal sealed class ComponentRegistration<T> : IComponentCaptureRegistration
     where T : unmanaged
 {
     internal ComponentRegistration(ComponentSchema<T> schema, ComponentFactoryBinding<T> binding)
@@ -66,6 +66,19 @@ internal sealed class ComponentRegistration<T> : IComponentRegistration
         ArgumentOutOfRangeException.ThrowIfNegative(sourceRow);
         ArgumentOutOfRangeException.ThrowIfNegative(destinationRow);
         ((T[])destinationColumn)[destinationRow] = ((T[])sourceColumn)[sourceRow];
+    }
+
+    public nint CountStateRecord(
+        object column,
+        int row,
+        IComponentCaptureContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(column);
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentOutOfRangeException.ThrowIfNegative(row);
+        var value = ((T[])column)[row];
+        return Binding.CountStateRecord(in value, context, cancellationToken);
     }
 
     public object CreateColumn(int capacity)
@@ -261,6 +274,20 @@ internal sealed class ComponentRegistration<T> : IComponentRegistration
         ref var mutableValue = ref Unsafe.AsRef(in value);
         ref var typedValue = ref Unsafe.As<TValue, T>(ref mutableValue);
         return Binding.Validate(in typedValue, cancellationToken);
+    }
+
+    public nint WriteStateRecord(
+        object column,
+        int row,
+        scoped Span<byte> destination,
+        IComponentCaptureContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(column);
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentOutOfRangeException.ThrowIfNegative(row);
+        var value = ((T[])column)[row];
+        return Binding.WriteStateRecord(in value, destination, context, cancellationToken);
     }
 
     internal T CreateDefault(SpatialSettings spatialSettings)
