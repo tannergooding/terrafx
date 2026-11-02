@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Immutable;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Input;
@@ -12,6 +13,18 @@ namespace TerraFX.Input.Tests;
 internal sealed class TextInputSessionTests
 {
     private static readonly WindowHandle s_window = new(7, 0, 1);
+
+    private static ImmutableArray<TextInputChange> CreateCompositionChanges(int count)
+    {
+        var changes = ImmutableArray.CreateBuilder<TextInputChange>(count);
+
+        for (var index = 0; index < count; index++)
+        {
+            changes.Add(new TextInputChange(TextInputChangeKind.CompositionStarted));
+        }
+
+        return changes.MoveToImmutable();
+    }
 
     private static TextInputSessionOptions CreateOptions(
         WindowHandle window,
@@ -255,6 +268,49 @@ internal sealed class TextInputSessionTests
         }
 
         Assert.That(readCount, Is.EqualTo(65));
+        router.Dispose();
+    }
+
+    [Test]
+    public void TextTransactionChangeCountAcceptsExactMaximum()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = CreateRouter(sequenceLease, s_window);
+        var session = router.BeginTextSession(CreateOptions(s_window, 1, null, 0, 0));
+
+        Assert.That(
+            session.PublishNativeBatch(
+                10,
+                sequenceLease.Allocate(),
+                1,
+                CreateCompositionChanges(TextInputBatchBudget.MaximumPendingChanges)),
+            Is.EqualTo(TextInputBatchPublishStatus.Published));
+        Assert.That(session.IsActive, Is.True);
+        Assert.That(session.TryReadBatch(out var batch), Is.True);
+        Assert.That(batch!.Changes, Has.Length.EqualTo(TextInputBatchBudget.MaximumPendingChanges));
+
+        session.Dispose();
+        router.Dispose();
+    }
+
+    [Test]
+    public void TextTransactionChangeCountOverflowUsesRecipientRecovery()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = CreateRouter(sequenceLease, s_window);
+        var session = router.BeginTextSession(CreateOptions(s_window, 1, null, 0, 0));
+
+        Assert.That(
+            session.PublishNativeBatch(
+                10,
+                sequenceLease.Allocate(),
+                1,
+                CreateCompositionChanges(TextInputBatchBudget.MaximumPendingChanges + 1)),
+            Is.EqualTo(TextInputBatchPublishStatus.CapacityExceeded));
+        Assert.That(session.IsActive, Is.False);
+        Assert.That(session.LastDiagnostic?.Code, Is.EqualTo("TextInput.Overflow"));
+        Assert.That(session.TryReadBatch(out _), Is.False);
+        Assert.That(router.ServiceHostControlBoundary(), Is.Not.Null);
         router.Dispose();
     }
 }

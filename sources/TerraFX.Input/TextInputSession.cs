@@ -320,17 +320,9 @@ public sealed class TextInputSession : IDisposable
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(hostSequence);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(baseDocumentRevision);
 
-        if (changes.IsDefaultOrEmpty || (changes.Length > TextInputBatchBudget.MaximumPendingChanges))
+        if (changes.IsDefaultOrEmpty)
         {
             throw new ArgumentException("A native text transaction must contain a bounded initialized change array.", nameof(changes));
-        }
-
-        foreach (var change in changes)
-        {
-            if (change.Kind == TextInputChangeKind.Invalid)
-            {
-                throw new ArgumentException("A native text transaction cannot contain default change values.", nameof(changes));
-            }
         }
 
         if ((hostSequence <= _lastHostSequence) || (hostTimestamp < _lastHostTimestamp))
@@ -358,6 +350,14 @@ public sealed class TextInputSession : IDisposable
                 hostTimestamp,
                 hostSequence,
                 "The native text transaction exceeded the per-recipient change limit.");
+        }
+
+        foreach (var change in changes)
+        {
+            if (change.Kind == TextInputChangeKind.Invalid)
+            {
+                throw new ArgumentException("A native text transaction cannot contain default change values.", nameof(changes));
+            }
         }
 
         var inputTextBytes = 0;
