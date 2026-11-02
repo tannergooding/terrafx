@@ -523,7 +523,7 @@ internal sealed class M04ShaderFixtureCompilerTests
             0x07230203,
             0x00010000,
             0,
-            12,
+            16,
             0,
             (3U << 16) | 22U, 1, 32,
             (4U << 16) | 23U, 2, 1, 4,
@@ -535,12 +535,14 @@ internal sealed class M04ShaderFixtureCompilerTests
             (4U << 16) | 71U, 5, 33, 0,
             (4U << 16) | 21U, 6, 32, 0,
             (4U << 16) | 43U, 6, 7, 2,
+            (4U << 16) | 43U, 6, 12, 3,
             (9U << 16) | 25U, 8, 1, 1, 0, 0, 0, 1, 0,
             (4U << 16) | 28U, 9, 8, 7,
-            (4U << 16) | 32U, 10, 0, 9,
-            (4U << 16) | 59U, 10, 11, 0,
-            (4U << 16) | 71U, 11, 34, 0,
-            (4U << 16) | 71U, 11, 33, 16,
+            (4U << 16) | 28U, 13, 9, 12,
+            (4U << 16) | 32U, 14, 0, 13,
+            (4U << 16) | 59U, 14, 15, 0,
+            (4U << 16) | 71U, 15, 34, 0,
+            (4U << 16) | 71U, 15, 33, 16,
         ];
         var spirvBytecode = MemoryMarshal.AsBytes(spirvWords.AsSpan()).ToArray();
         const string dxilReflection = """
@@ -575,7 +577,7 @@ internal sealed class M04ShaderFixtureCompilerTests
             ; Name                                 Type  Format         Dim      ID      HLSL Bind  Count
             ; ------------------------------ ---------- ------- ----------- ------- -------------- ------
             ; FrameData                         cbuffer      NA          NA     CB0            cb0     1
-            ; FrameTexture                      texture     f32          2d      T0             t0     2
+            ; FrameTexture                      texture     f32          2d      T0             t0     6
             """;
         const string spirvReflection = """
             {
@@ -588,8 +590,8 @@ internal sealed class M04ShaderFixtureCompilerTests
                 "name": "FrameTexture",
                 "set": 0,
                 "binding": 16,
-                "array": [2],
-                "array_size_is_literal": [true]
+                "array": [2, 3],
+                "array_size_is_literal": [true, true]
               }],
               "types": {
                 "_3": {
@@ -612,7 +614,7 @@ internal sealed class M04ShaderFixtureCompilerTests
             compilerIdentity);
 
         Assert.That(reflection.Resources, Does.Contain(
-            new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.SampledImage, 2)));
+            new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.SampledImage, 6)));
 
         var mismatchedSpirvCross = JsonNode.Parse(spirvReflection) as JsonObject
             ?? throw new InvalidDataException("The sampled SPIRV-Cross reflection root must be an object.");
@@ -620,8 +622,8 @@ internal sealed class M04ShaderFixtureCompilerTests
             ?? throw new InvalidDataException("The sampled SPIRV-Cross image collection must be an array.");
         var sampledImage = sampledImages[0] as JsonObject
             ?? throw new InvalidDataException("The sampled SPIRV-Cross image fixture must be an object.");
-        sampledImage["array"] = new JsonArray(JsonValue.Create(3));
-        var mismatchedDxilReflection = ReplaceDxilResourceColumn(dxilReflection, "FrameTexture", 6, "3");
+        sampledImage["array"] = new JsonArray(JsonValue.Create(1), JsonValue.Create(7));
+        var mismatchedDxilReflection = ReplaceDxilResourceColumn(dxilReflection, "FrameTexture", 6, "7");
 
         Assert.That(
             () => M04ShaderReflectionReader.Read(
