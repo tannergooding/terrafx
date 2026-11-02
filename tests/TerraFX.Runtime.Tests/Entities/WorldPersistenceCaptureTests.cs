@@ -1,9 +1,12 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Threading;
 using NUnit.Framework;
 using TerraFX;
+using TerraFX.Assets;
 using TerraFX.Entities;
+using TerraFX.Scenes;
 
 namespace TerraFX.Runtime.Tests.Entities;
 
@@ -91,5 +94,50 @@ internal sealed class WorldPersistenceCaptureTests
         }
 
         _ = world.Step();
+    }
+
+    [Test]
+    public void CapturePersistentComponentRecordFromCommittedWorld()
+    {
+        var schemas = new CompiledContentSchemaRegistry([
+            .. CoreContentSchemaCatalogue.PrimitiveSchemas,
+            .. CoreContentSchemaCatalogue.FoundationSchemas,
+            .. NativeAssetSchemaCatalogue.Schemas,
+            .. SceneSchemaCatalogue.Schemas,
+        ]);
+        var registrationBuilder = new WorldRegistrationBuilder(schemas);
+        _ = registrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+        var registration = registrationBuilder.Build();
+        using var world = World.Create(new WorldOptions(registration) {
+            CpuWorkerCount = 0,
+            InitialReplayLineageId = Guid.NewGuid(),
+            WorldGuid = Guid.NewGuid(),
+        });
+        var entity = world.CreateEntity(new EntityDescription());
+        world.Add<SceneComponentDefinitions.LocalTransformComponent>(entity);
+        _ = world.Step();
+
+        var componentAssignment = new ContentSchemaIdentityAssignment("scene/local-transform");
+        var componentSchema = new ContentSchemaReference(
+            componentAssignment.SchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+        using var lease = world.AcquirePersistenceCaptureLease();
+        var byteCount = lease.CountComponentStateRecord(entity, componentSchema, CancellationToken.None);
+        Assert.That(byteCount > 0, Is.True);
+
+        var encoded = new byte[checked((int)byteCount)];
+        var written = lease.WriteComponentStateRecord(entity, componentSchema, encoded, CancellationToken.None);
+        var expected = TerraFX.Runtime.Tests.Scenes.SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+            componentAssignment.SchemaId,
+            1,
+            0,
+            TerraFX.Runtime.Tests.Scenes.SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 15, 0, 0, 0),
+            TerraFX.Runtime.Tests.Scenes.SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(2, 17, 0, 0, 0, 1),
+            TerraFX.Runtime.Tests.Scenes.SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(3, 15, 1, 1, 1));
+
+        Assert.That(written, Is.EqualTo(byteCount));
+        Assert.That(encoded, Is.EqualTo(expected));
     }
 }

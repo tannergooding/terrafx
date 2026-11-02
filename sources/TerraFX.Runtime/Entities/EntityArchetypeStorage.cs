@@ -338,6 +338,18 @@ internal sealed class EntityArchetypeStorage
         return partitionCount;
     }
 
+    internal nint CountStateRecord(
+        int componentIndex,
+        int chunkIndex,
+        int row,
+        IComponentCaptureContext context,
+        CancellationToken cancellationToken)
+    {
+        var registration = GetComponentCaptureRegistration(componentIndex);
+        var column = GetColumnSlice(componentIndex, chunkIndex, row, length: 1);
+        return registration.CountStateRecord(column, row, context, cancellationToken);
+    }
+
     internal void DiscardUncommittedStorage()
     {
         if (_entityCount != 0)
@@ -772,6 +784,19 @@ internal sealed class EntityArchetypeStorage
             spatialSettings);
     }
 
+    internal nint WriteStateRecord(
+        int componentIndex,
+        int chunkIndex,
+        int row,
+        scoped Span<byte> destination,
+        IComponentCaptureContext context,
+        CancellationToken cancellationToken)
+    {
+        var registration = GetComponentCaptureRegistration(componentIndex);
+        var column = GetColumnSlice(componentIndex, chunkIndex, row, length: 1);
+        return registration.WriteStateRecord(column, row, destination, context, cancellationToken);
+    }
+
     private int FindAvailableChunkIndex()
     {
         for (var summaryIndex = 0; summaryIndex < _availableChunkSummary.Length; summaryIndex++)
@@ -828,6 +853,14 @@ internal sealed class EntityArchetypeStorage
         }
 
         return chunk._columns[componentIndex];
+    }
+
+    private IComponentCaptureRegistration GetComponentCaptureRegistration(int componentIndex)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(componentIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(componentIndex, _components.Length);
+        return _components[componentIndex] as IComponentCaptureRegistration
+            ?? throw new InvalidOperationException("The component registration has no state-capture codec root.");
     }
 
     private bool IsCapacityValid(int requiredEntityCount)

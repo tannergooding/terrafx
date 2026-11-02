@@ -147,6 +147,13 @@ internal sealed class ComponentRegistration<T> : IComponentCaptureRegistration
         }
     }
 
+    public bool IsEntityReferenceField(ComponentFieldDescriptor referenceField)
+    {
+        ArgumentNullException.ThrowIfNull(referenceField);
+        return (referenceField.ComponentSchema == SchemaReference)
+            && Binding.IsEntityReferencePath(referenceField.Path);
+    }
+
     public bool IsEntityReferencePath(ComponentFieldPath path)
     {
         ArgumentNullException.ThrowIfNull(path);

@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Threading;
 using TerraFX;
 using TerraFX.Numerics;
 
@@ -77,6 +78,15 @@ internal ref struct WorldPersistenceCaptureLease
 
     internal readonly Guid WorldGuid => _worldGuid;
 
+    internal readonly nint CountComponentStateRecord(
+        Entity entity,
+        ContentSchemaReference schema,
+        CancellationToken cancellationToken)
+    {
+        ValidateCurrent();
+        return _world.CountComponentStateRecord(this, entity, schema, cancellationToken);
+    }
+
     internal void Dispose()
     {
         if (_isDisposed)
@@ -99,5 +109,15 @@ internal ref struct WorldPersistenceCaptureLease
         }
 
         _world.ValidatePersistenceCaptureLease(this);
+    }
+
+    internal readonly nint WriteComponentStateRecord(
+        Entity entity,
+        ContentSchemaReference schema,
+        scoped Span<byte> destination,
+        CancellationToken cancellationToken)
+    {
+        ValidateCurrent();
+        return _world.WriteComponentStateRecord(this, entity, schema, destination, cancellationToken);
     }
 }

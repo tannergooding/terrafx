@@ -13,6 +13,8 @@ internal interface IComponentCaptureRegistration : IComponentRegistration
         IComponentCaptureContext context,
         CancellationToken cancellationToken);
 
+    bool IsEntityReferenceField(ComponentFieldDescriptor referenceField);
+
     nint WriteStateRecord(
         object column,
         int row,
