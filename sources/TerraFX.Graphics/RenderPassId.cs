@@ -24,6 +24,8 @@ public readonly struct RenderPassId : IEquatable<RenderPassId>
     /// <summary>Gets the zero-based pass ordinal.</summary>
     public int Value => _value;
 
+    internal uint GraphOwnerId => _graphOwnerId;
+
     /// <summary>Negates pass-identity equality.</summary>
     public static bool operator !=(RenderPassId left, RenderPassId right) => !left.Equals(right);
 
