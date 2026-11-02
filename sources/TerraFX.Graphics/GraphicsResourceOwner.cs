@@ -113,32 +113,46 @@ internal sealed class GraphicsResourceOwner : IDisposable
         }
     }
 
-    internal (long LastUseSequence, bool IsIdle) CaptureUseSnapshot()
+    internal (GraphResourceState State, bool ContentsValid, long LastUseSequence, bool IsIdle) CaptureGraphImportState(
+        GraphBufferRange range)
     {
+        ObjectDisposedException.ThrowIf(!IsLiveForNewWork, typeof(GpuBuffer));
+
         lock (_useGate)
         {
-            return (_nextUseSequence, _activeUseSequences.Count == 0);
+            (var state, var contentsValid) = (_graphState
+                ?? throw new InvalidOperationException("The Graphics resource does not support graph import."))
+                .GetBufferState(range);
+            ObjectDisposedException.ThrowIf(!IsLiveForNewWork, typeof(GpuBuffer));
+            return (state, contentsValid, _nextUseSequence, _activeUseSequences.Count == 0);
+        }
+    }
+
+    internal (GraphResourceState State, bool ContentsValid, long LastUseSequence, bool IsIdle) CaptureGraphImportState(
+        GraphTextureRange range)
+    {
+        ObjectDisposedException.ThrowIf(!IsLiveForNewWork, typeof(GpuTexture));
+
+        lock (_useGate)
+        {
+            (var state, var contentsValid) = (_graphState
+                ?? throw new InvalidOperationException("The Graphics resource does not support graph import."))
+                .GetTextureState(range);
+            ObjectDisposedException.ThrowIf(!IsLiveForNewWork, typeof(GpuTexture));
+            return (state, contentsValid, _nextUseSequence, _activeUseSequences.Count == 0);
         }
     }
 
     internal (GraphResourceState State, bool ContentsValid) GetGraphImportState(GraphBufferRange range)
     {
-        ObjectDisposedException.ThrowIf(!IsLiveForNewWork, typeof(GpuBuffer));
-        var state = (_graphState
-            ?? throw new InvalidOperationException("The Graphics resource does not support graph import."))
-            .GetBufferState(range);
-        ObjectDisposedException.ThrowIf(!IsLiveForNewWork, typeof(GpuBuffer));
-        return state;
+        (var state, var contentsValid, _, _) = CaptureGraphImportState(range);
+        return (state, contentsValid);
     }
 
     internal (GraphResourceState State, bool ContentsValid) GetGraphImportState(GraphTextureRange range)
     {
-        ObjectDisposedException.ThrowIf(!IsLiveForNewWork, typeof(GpuTexture));
-        var state = (_graphState
-            ?? throw new InvalidOperationException("The Graphics resource does not support graph import."))
-            .GetTextureState(range);
-        ObjectDisposedException.ThrowIf(!IsLiveForNewWork, typeof(GpuTexture));
-        return state;
+        (var state, var contentsValid, _, _) = CaptureGraphImportState(range);
+        return (state, contentsValid);
     }
 
     internal void MarkQuarantined()

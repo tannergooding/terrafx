@@ -317,10 +317,13 @@ internal sealed class GraphicsBufferTransferTests
         {
             using var firstUse = buffer.ResourceOwner.AcquireUse(nameof(buffer));
             using var secondUse = buffer.ResourceOwner.AcquireUse(nameof(buffer));
-            (var lastUseSequence, var isIdle) = buffer.ResourceOwner.CaptureUseSnapshot();
+            (var state, var contentsValid, var lastUseSequence, var isIdle) =
+                buffer.ResourceOwner.CaptureGraphImportState(new GraphBufferRange(0, buffer.ByteLength));
             var firstUseCompletion = buffer.ResourceOwner.WaitForUsesAsync(firstUse.Sequence);
             var allUseCompletion = buffer.ResourceOwner.WaitForUsesAsync(lastUseSequence);
 
+            Assert.That(state, Is.EqualTo(GraphResourceState.Undefined));
+            Assert.That(contentsValid, Is.False);
             Assert.That(lastUseSequence, Is.EqualTo(secondUse.Sequence));
             Assert.That(isIdle, Is.False);
             Assert.That(firstUseCompletion.IsCompleted, Is.False);
@@ -333,11 +336,11 @@ internal sealed class GraphicsBufferTransferTests
             firstUse.Dispose();
             await firstUseCompletion.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             await allUseCompletion.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            Assert.That(buffer.ResourceOwner.CaptureUseSnapshot().IsIdle, Is.True);
+            Assert.That(buffer.ResourceOwner.CaptureGraphImportState(new GraphBufferRange(0, buffer.ByteLength)).IsIdle, Is.True);
 
             using var laterUse = buffer.ResourceOwner.AcquireUse(nameof(buffer));
             await buffer.ResourceOwner.WaitForUsesAsync(lastUseSequence).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            Assert.That(buffer.ResourceOwner.CaptureUseSnapshot().IsIdle, Is.False);
+            Assert.That(buffer.ResourceOwner.CaptureGraphImportState(new GraphBufferRange(0, buffer.ByteLength)).IsIdle, Is.False);
         }
         finally
         {
@@ -435,9 +438,12 @@ internal sealed class GraphicsBufferTransferTests
 
         try
         {
-            (var initialState, var initialContentsValid) = buffer.ResourceOwner.GetGraphImportState(new GraphBufferRange(0, buffer.ByteLength));
+            (var initialState, var initialContentsValid, var initialLastUseSequence, var initialIsIdle) =
+                buffer.ResourceOwner.CaptureGraphImportState(new GraphBufferRange(0, buffer.ByteLength));
             Assert.That(initialState, Is.EqualTo(GraphResourceState.Undefined));
             Assert.That(initialContentsValid, Is.False);
+            Assert.That(initialLastUseSequence, Is.Zero);
+            Assert.That(initialIsIdle, Is.True);
 
             var source = new byte[] { 1, 2, 3, 4 };
             var uploadTask = graphicsDevice.UploadBufferAsync(buffer, destinationOffset: 2, source);
@@ -449,12 +455,18 @@ internal sealed class GraphicsBufferTransferTests
             Assert.That(receipt.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
             Assert.That(receipt.CompletedFence, Is.EqualTo(1));
 
-            (var uploadedState, var uploadedContentsValid) = buffer.ResourceOwner.GetGraphImportState(new GraphBufferRange(2, 4));
-            (var untouchedState, var untouchedContentsValid) = buffer.ResourceOwner.GetGraphImportState(new GraphBufferRange(0, 2));
+            (var uploadedState, var uploadedContentsValid, var lastUseSequence, var isIdle) =
+                buffer.ResourceOwner.CaptureGraphImportState(new GraphBufferRange(2, 4));
+            (var untouchedState, var untouchedContentsValid, var untouchedSequence, var untouchedIsIdle) =
+                buffer.ResourceOwner.CaptureGraphImportState(new GraphBufferRange(0, 2));
             Assert.That(uploadedState, Is.EqualTo(GraphResourceState.General));
             Assert.That(uploadedContentsValid, Is.True);
             Assert.That(untouchedState, Is.EqualTo(GraphResourceState.General));
             Assert.That(untouchedContentsValid, Is.False);
+            Assert.That(lastUseSequence, Is.EqualTo(1));
+            Assert.That(isIdle, Is.True);
+            Assert.That(untouchedSequence, Is.EqualTo(1));
+            Assert.That(untouchedIsIdle, Is.True);
 
             using var readback = await graphicsDevice.ReadbackBufferAsync(buffer, sourceOffset: 1, byteLength: 6)
                 .WaitAsync(TimeSpan.FromSeconds(5))
@@ -689,9 +701,12 @@ internal sealed class GraphicsBufferTransferTests
 
         try
         {
-            (var initialState, var initialContentsValid) = texture.ResourceOwner.GetGraphImportState(graphRange);
+            (var initialState, var initialContentsValid, var initialLastUseSequence, var initialIsIdle) =
+                texture.ResourceOwner.CaptureGraphImportState(graphRange);
             Assert.That(initialState, Is.EqualTo(GraphResourceState.Undefined));
             Assert.That(initialContentsValid, Is.False);
+            Assert.That(initialLastUseSequence, Is.Zero);
+            Assert.That(initialIsIdle, Is.True);
 
             var receipt = await graphicsDevice.UploadTextureAsync(
                 texture,
@@ -702,9 +717,12 @@ internal sealed class GraphicsBufferTransferTests
 
             Assert.That(receipt.Status, Is.EqualTo(UploadStatus.Ready));
             Assert.That(receipt.CompletedFence, Is.EqualTo(1));
-            (var uploadedState, var uploadedContentsValid) = texture.ResourceOwner.GetGraphImportState(graphRange);
+            (var uploadedState, var uploadedContentsValid, var lastUseSequence, var isIdle) =
+                texture.ResourceOwner.CaptureGraphImportState(graphRange);
             Assert.That(uploadedState, Is.EqualTo(GraphResourceState.General));
             Assert.That(uploadedContentsValid, Is.True);
+            Assert.That(lastUseSequence, Is.EqualTo(1));
+            Assert.That(isIdle, Is.True);
 
             sourceLease.Dispose();
             sourceLeaseDisposed = true;
