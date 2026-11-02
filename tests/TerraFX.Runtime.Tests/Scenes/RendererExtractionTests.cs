@@ -14,6 +14,7 @@ using TerraFX.Graphics;
 using TerraFX.Numerics;
 using TerraFX.Rendering;
 using TerraFX.Scenes;
+using RenderFrameDimension = TerraFX.Rendering.RenderFrameDimension;
 
 namespace TerraFX.Runtime.Tests.Scenes;
 

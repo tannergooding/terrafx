@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Immutable;
 using System.IO;
 using System.Security.Cryptography;
 using NUnit.Framework;
@@ -209,6 +210,55 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(zeroMaskSnapshot.SpriteDraws, Is.Empty);
             Assert.That(zeroMaskSnapshot.SpriteCameraOrders[0].DrawIndices, Is.Empty);
             Assert.That(zeroMaskSnapshot.AssetPins, Is.Null);
+
+            var allLayersCamera = new SceneComponentDefinitions.CameraComponent(
+                (byte)CameraProjectionKind.Perspective,
+                float.Pi / 3.0f,
+                10.0f,
+                0.1f,
+                (byte)CameraFarMode.Finite,
+                new SceneComponentDefinitions.OptionalSingle(1000.0f),
+                default,
+                new Vector4(0.0f, 0.0f, 1.0f, 1.0f),
+                (byte)(CameraClearFlags.Color | CameraClearFlags.Depth),
+                new Vector4(0.0f, 0.0f, 0.0f, 1.0f),
+                layerMask: ulong.MaxValue,
+                order: 0);
+            world.Set(sceneEntities[0], in allLayersCamera);
+            var lightTransform = new SceneComponentDefinitions.LocalTransformComponent(
+                Vector3.Zero,
+                Quaternion.Identity,
+                Vector3.One);
+            var lightRootPosition = new SceneComponentDefinitions.RootPositionComponent(default);
+            var pointLight = new RenderComponentDefinitions.PointLightComponent(
+                Vector3.One,
+                1000.0f,
+                10.0f,
+                ulong.MaxValue);
+            ImmutableArray<ComponentInitialization> lightComponents = [
+                ComponentInitialization.Value(in lightTransform),
+                ComponentInitialization.Value(in lightRootPosition),
+                ComponentInitialization.Value(in pointLight),
+            ];
+
+            for (var index = 0; index < 257; index++)
+            {
+                _ = world.CreateEntity(new EntityDescription(components: lightComponents));
+            }
+
+            var capacityPublication = world.Step().Publication;
+            var capacityResponse = renderer.Extract(
+                world,
+                new RenderExtractionOptions3D(
+                    capacityPublication.Frame3,
+                    options.TargetExtent,
+                    options.CameraIds));
+            Assert.That(capacityResponse.Status, Is.EqualTo(RenderExtractionStatus.CapacityExceeded));
+            Assert.That(capacityResponse.Snapshot, Is.Null);
+            Assert.That(capacityResponse.LimitDiagnostic?.LimitKind, Is.EqualTo(RenderExtractionLimitKind.Lights));
+            Assert.That(capacityResponse.LimitDiagnostic?.Requested, Is.EqualTo(257));
+            Assert.That(capacityResponse.LimitDiagnostic?.Limit, Is.EqualTo(256));
+            Assert.That(capacityResponse.Diagnostics, Is.Empty);
 
             var retainedSceneInstanceId = sceneInstances[0].SceneInstanceId;
             var assetPins = snapshot.AssetPins
