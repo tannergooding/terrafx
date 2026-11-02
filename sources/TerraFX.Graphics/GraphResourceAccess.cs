@@ -174,6 +174,49 @@ internal readonly struct GraphResourceAccess
 
     internal RenderPassId PassId { get; }
 
+    internal GraphResourceState RequiredState
+    {
+        get
+        {
+            if (_attachmentUsage is TextureUsage attachmentUsage)
+            {
+                return attachmentUsage switch {
+                    TerraFX.Graphics.TextureUsage.ColorAttachment => GraphResourceState.ColorAttachment,
+                    TerraFX.Graphics.TextureUsage.DepthAttachment => GraphResourceState.DepthWrite,
+                    _ => throw new InvalidOperationException("The attachment access has no supported graph state."),
+                };
+            }
+
+            if (_bufferUsage is GraphBufferUsage bufferUsage)
+            {
+                return bufferUsage switch {
+                    GraphBufferUsage.VertexRead => GraphResourceState.VertexRead,
+                    GraphBufferUsage.IndexRead => GraphResourceState.IndexRead,
+                    GraphBufferUsage.UniformRead => GraphResourceState.UniformRead,
+                    GraphBufferUsage.StorageRead => GraphResourceState.StorageRead,
+                    GraphBufferUsage.StorageWrite => GraphResourceState.StorageWrite,
+                    GraphBufferUsage.CopySource => GraphResourceState.CopySource,
+                    GraphBufferUsage.CopyDestination => GraphResourceState.CopyDestination,
+                    _ => throw new InvalidOperationException("The buffer access has no supported graph state."),
+                };
+            }
+
+            if (_textureUsage is GraphTextureUsage textureUsage)
+            {
+                return textureUsage switch {
+                    GraphTextureUsage.SampledRead => GraphResourceState.ShaderSampledRead,
+                    GraphTextureUsage.StorageRead => GraphResourceState.StorageRead,
+                    GraphTextureUsage.StorageWrite => GraphResourceState.StorageWrite,
+                    GraphTextureUsage.CopySource => GraphResourceState.CopySource,
+                    GraphTextureUsage.CopyDestination => GraphResourceState.CopyDestination,
+                    _ => throw new InvalidOperationException("The texture access has no supported graph state."),
+                };
+            }
+
+            throw new InvalidOperationException("The graph resource access has no declared usage.");
+        }
+    }
+
     internal ulong ResourceId { get; }
 
     internal GraphTextureUsage? TextureUsage => _textureUsage;
