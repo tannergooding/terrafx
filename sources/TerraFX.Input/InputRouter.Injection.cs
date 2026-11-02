@@ -380,6 +380,18 @@ public sealed partial class InputRouter
             && (injection.Kind != InputInjectionKind.KeyboardKey
                 || injection.KeyEventKind == InputKeyEventKind.Down);
 
+    private static bool IsNonNeutralInput(PhysicalInputValue value)
+    {
+        return value.Kind switch {
+            PhysicalInputValueKind.Digital or PhysicalInputValueKind.GamepadButton => value.IsDown == true,
+            PhysicalInputValueKind.GamepadAxis => value.AxisValue is { } axisValue && axisValue != 0.0f,
+            PhysicalInputValueKind.GamepadStick => value.StickValue is { } stickValue
+                && ((stickValue.X != 0.0f) || (stickValue.Y != 0.0f)),
+            PhysicalInputValueKind.GamepadTrigger => value.TriggerValue is { } triggerValue && triggerValue != 0.0f,
+            _ => false,
+        };
+    }
+
     private static bool IsValidCancellationRequest(
         InputCancellationReason reason,
         InputClass inputClasses,
@@ -628,6 +640,74 @@ public sealed partial class InputRouter
             {
                 if ((playerSlot is not { } slot)
                     || (inputEvent.Value is not { Kind: PhysicalInputValueKind.GamepadTrigger, Trigger: { } trigger }))
+                {
+                    return false;
+                }
+
+                control = new InputControlKey(InputControlKind.GamepadTrigger, 0, 0, null, slot, (int)trigger);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryGetControlKey(
+        PhysicalInputValue inputValue,
+        ushort? playerSlot,
+        out InputControlKey control)
+    {
+        control = default;
+
+        switch (inputValue.Kind)
+        {
+            case PhysicalInputValueKind.Digital:
+            {
+                if ((playerSlot is not null) || (inputValue.DigitalControl is not { } digitalControl))
+                {
+                    return false;
+                }
+
+                control = GetControlKey(digitalControl);
+                return GetInputClass(control) is InputClass.Keyboard or InputClass.Pointing;
+            }
+
+            case PhysicalInputValueKind.GamepadButton:
+            {
+                if ((playerSlot is not { } slot) || (inputValue.GamepadButton is not { } button))
+                {
+                    return false;
+                }
+
+                control = new InputControlKey(InputControlKind.GamepadButton, 0, 0, null, slot, (int)button);
+                return true;
+            }
+
+            case PhysicalInputValueKind.GamepadAxis:
+            {
+                if ((playerSlot is not { } slot) || (inputValue.Axis is not { } axis))
+                {
+                    return false;
+                }
+
+                control = new InputControlKey(InputControlKind.GamepadAxis, 0, 0, null, slot, (int)axis);
+                return true;
+            }
+
+            case PhysicalInputValueKind.GamepadStick:
+            {
+                if ((playerSlot is not { } slot) || (inputValue.Stick is not { } stick))
+                {
+                    return false;
+                }
+
+                control = new InputControlKey(InputControlKind.GamepadStick, 0, 0, null, slot, (int)stick);
+                return true;
+            }
+
+            case PhysicalInputValueKind.GamepadTrigger:
+            {
+                if ((playerSlot is not { } slot) || (inputValue.Trigger is not { } trigger))
                 {
                     return false;
                 }
@@ -894,6 +974,34 @@ public sealed partial class InputRouter
                 out discardedInputCount);
         }
 
+        if (inputEvent.Kind == PhysicalInputEventKind.StateReconciliation)
+        {
+            var isDeviceSource = inputEvent.Device is not null;
+
+            if (isDeviceSource && (playerSlot is null))
+            {
+                return CreateInputRejection("UnassignedDevice", "/PlayerSlot");
+            }
+
+            if (!isDeviceSource && (playerSlot is not null))
+            {
+                return CreateInputRejection("InvalidPlayerSlot", "/PlayerSlot");
+            }
+
+            var inputClasses = isDeviceSource
+                ? InputClass.Gamepad
+                : InputClass.Keyboard | InputClass.Pointing;
+
+            return ReconcileInputState(
+                [],
+                inputClasses,
+                playerSlot,
+                inputEvent.HostTimestamp,
+                inputEvent.HostSequence,
+                out discardedInputCount,
+                physicalInputs: inputEvent.ReconciliationState);
+        }
+
         var isGamepadEvent = inputEvent.Kind is PhysicalInputEventKind.GamepadButtonDown
             or PhysicalInputEventKind.GamepadButtonUp
             or PhysicalInputEventKind.GamepadAxis
@@ -1081,15 +1189,18 @@ public sealed partial class InputRouter
         ushort? playerSlot,
         long hostTimestamp,
         long hostSequence,
-        out long discardedInputCount)
+        out long discardedInputCount,
+        ImmutableArray<PhysicalInputValue> physicalInputs = default)
     {
         EnsureOwnerThread();
         ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
         ArgumentOutOfRangeException.ThrowIfLessThan(hostSequence, 1);
         discardedInputCount = 0;
+        var physicalInputCount = physicalInputs.IsDefault ? 0 : physicalInputs.Length;
+        var reconciliationInputCount = (long)heldInputs.Length + physicalInputCount;
 
         if (heldInputs.IsDefault
-            || (heldInputs.Length > MaximumPendingReconciliationInputs)
+            || (reconciliationInputCount > MaximumPendingReconciliationInputs)
             || _inputOverflowed
             || !IsValidReconciliationScope(inputClasses, playerSlot, _isPaused))
         {
@@ -1101,7 +1212,7 @@ public sealed partial class InputRouter
             return CreateRoutingRejection("InvalidReconciliation", "/PauseBoundary");
         }
 
-        if (heldInputs.Length > (MaximumPendingReconciliationInputs - _pendingReconciliationInputCount))
+        if (reconciliationInputCount > (MaximumPendingReconciliationInputs - _pendingReconciliationInputCount))
         {
             return CreateRoutingCapacityFailure("/Reconciliation");
         }
@@ -1117,6 +1228,20 @@ public sealed partial class InputRouter
                 || !reconciledControls.Add(GetControlKey(input)))
             {
                 return CreateRoutingRejection("InvalidReconciliation", "/State");
+            }
+        }
+
+        if (!physicalInputs.IsDefault)
+        {
+            foreach (var input in physicalInputs)
+            {
+                if (!IsNonNeutralInput(input)
+                    || !TryGetControlKey(input, playerSlot, out var inputControl)
+                    || !MatchesInputScope(inputControl, inputClasses, playerSlot)
+                    || !reconciledControls.Add(inputControl))
+                {
+                    return CreateRoutingRejection("InvalidReconciliation", "/State");
+                }
             }
         }
 
@@ -1146,11 +1271,12 @@ public sealed partial class InputRouter
             heldInputs,
             hostTimestamp,
             hostSequence,
-            hostTick);
+            hostTick,
+            physicalInputs);
 
         discardedInputCount = DiscardPendingInputCopies(inputClasses, playerSlot);
         _inputControlInbox.Enqueue(envelope);
-        _pendingReconciliationInputCount += heldInputs.Length;
+        _pendingReconciliationInputCount += checked((int)reconciliationInputCount);
         RecordHostControlSequence(hostSequence);
         _hostControlTimestamp = hostTimestamp;
         _lastSeenHostTimestamp = hostTimestamp;
@@ -1530,15 +1656,66 @@ public sealed partial class InputRouter
             }
         }
 
+        if (!control.PhysicalReconciliationInputs.IsDefault)
+        {
+            foreach (var input in control.PhysicalReconciliationInputs)
+            {
+                if (!TryGetControlKey(input, control.PlayerSlot, out var inputControl))
+                {
+                    throw new InvalidOperationException("An admitted physical reconciliation value has no control key.");
+                }
+
+                switch (input.Kind)
+                {
+                    case PhysicalInputValueKind.Digital:
+                    case PhysicalInputValueKind.GamepadButton:
+                    {
+                        _digitalControlStates.Add(inputControl, true);
+                        _digitalControlDownTimestamps.Add(inputControl, control.HostTimestamp);
+                        break;
+                    }
+
+                    case PhysicalInputValueKind.GamepadAxis:
+                    {
+                        _scalarControlValues.Add(inputControl, NormalizeZero(input.AxisValue.GetValueOrDefault()));
+                        break;
+                    }
+
+                    case PhysicalInputValueKind.GamepadStick:
+                    {
+                        var stick = NormalizeStick(input.StickValue.GetValueOrDefault());
+                        _vectorControlValues.Add(inputControl, (stick.X, stick.Y));
+                        break;
+                    }
+
+                    case PhysicalInputValueKind.GamepadTrigger:
+                    {
+                        _scalarControlValues.Add(inputControl, NormalizeZero(input.TriggerValue.GetValueOrDefault()));
+                        break;
+                    }
+
+                    default:
+                    {
+                        throw new InvalidOperationException("An admitted physical reconciliation value has an unknown kind.");
+                    }
+                }
+            }
+        }
+
         UpdateBindingsForScope(control.InputClasses, control.PlayerSlot);
         RefreshAllConsumptionLeases();
 
-        if (control.ReconciliationInputs.Length > _pendingReconciliationInputCount)
+        var physicalReconciliationInputCount = control.PhysicalReconciliationInputs.IsDefault
+            ? 0
+            : control.PhysicalReconciliationInputs.Length;
+        var reconciliationInputCount = control.ReconciliationInputs.Length + physicalReconciliationInputCount;
+
+        if (reconciliationInputCount > _pendingReconciliationInputCount)
         {
             throw new InvalidOperationException("The pending reconciliation input count is inconsistent.");
         }
 
-        _pendingReconciliationInputCount -= control.ReconciliationInputs.Length;
+        _pendingReconciliationInputCount -= reconciliationInputCount;
         return RecomputeAllActions(control.HostSequence, assignedTick, cancellationReason: null);
     }
 
@@ -3047,7 +3224,8 @@ public sealed partial class InputRouter
         ImmutableArray<InputInjection> reconciliationInputs,
         long hostTimestamp,
         long hostSequence,
-        long? assignedTick)
+        long? assignedTick,
+        ImmutableArray<PhysicalInputValue> physicalReconciliationInputs = default)
     {
         internal long? AssignedTick { get; } = assignedTick;
 
@@ -3070,6 +3248,8 @@ public sealed partial class InputRouter
         internal Guid MapId { get; } = mapId;
 
         internal ulong NewMask { get; } = newMask;
+
+        internal ImmutableArray<PhysicalInputValue> PhysicalReconciliationInputs { get; } = physicalReconciliationInputs;
 
         internal ushort? PlayerSlot { get; } = playerSlot;
 

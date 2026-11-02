@@ -185,6 +185,13 @@ internal sealed class PhysicalInputEventTests
             device,
             reconciliationState: default));
         _ = Assert.Throws<ArgumentException>(() => new PhysicalInputEvent(
+            PhysicalInputEventKind.StateReconciliation,
+            1,
+            1,
+            device,
+            window,
+            reconciliationState: []));
+        _ = Assert.Throws<ArgumentException>(() => new PhysicalInputEvent(
             PhysicalInputEventKind.KeyDown,
             1,
             1,

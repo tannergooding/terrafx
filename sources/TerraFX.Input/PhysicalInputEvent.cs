@@ -342,7 +342,7 @@ public sealed class PhysicalInputEvent
 
             case PhysicalInputEventKind.StateReconciliation:
             {
-                Ensure((device is not null) || (window is not null), kind);
+                Ensure((device is null) != (window is null), kind);
                 Ensure(reconciliationState.IsDefault == false, kind);
                 Ensure(value is null && pointerPosition is null && pointerDelta is null && pointerContentScale is null
                     && scrollValue is null && scrollUnit is null && playerSlot is null && !hasNativeKeyboardCode, kind);
