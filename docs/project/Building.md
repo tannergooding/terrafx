@@ -112,7 +112,7 @@ dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --confi
 dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Release
 ```
 
-On Windows 11 x64, run the hidden-HWND owner witness for live client metrics, PMv2 scale/provenance, pre-surface zero epochs, and stale-handle rejection:
+On Windows 11 x64, run the hidden-HWND owner witness for live client metrics, PMv2 scale/provenance, native resize refresh and snapshot replacement, pre-surface zero epochs, and stale-handle rejection:
 
 ```powershell
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.EngineHostOptionsTests.WindowsPlatformOwnerWitnessesHiddenWindowCreationAndRetirement"

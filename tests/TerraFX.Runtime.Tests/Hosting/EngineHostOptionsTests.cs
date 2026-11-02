@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -21,7 +22,7 @@ using TerraFX.Platform;
 namespace TerraFX.Runtime.Tests.Hosting;
 
 [TestFixture]
-internal sealed class EngineHostOptionsTests
+internal sealed partial class EngineHostOptionsTests
 {
     private static AssetStoreOptions CreateAssetStoreOptions()
     {
@@ -1230,7 +1231,8 @@ internal sealed class EngineHostOptionsTests
             uint OwnerId,
             bool StaleCloseRejected,
             bool StaleMetricsRejected,
-            WindowMetrics? Metrics)>(
+            WindowMetrics? InitialMetrics,
+            WindowMetrics? ResizedMetrics)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() => {
             PlatformHostOwner? owner = null;
@@ -1238,7 +1240,8 @@ internal sealed class EngineHostOptionsTests
             var ownerId = 0U;
             var staleCloseRejected = false;
             var staleMetricsRejected = false;
-            WindowMetrics? metrics = null;
+            WindowMetrics? initialMetrics = null;
+            WindowMetrics? resizedMetrics = null;
             Exception? failure = null;
 
             try
@@ -1249,9 +1252,29 @@ internal sealed class EngineHostOptionsTests
                     ClientSize = new Vector2(640.0f, 480.0f),
                     Visible = false,
                 });
-                metrics = owner.Platform.GetMetrics(window);
                 _ = owner.Pump();
-                metrics = owner.Platform.GetMetrics(window);
+                initialMetrics = owner.Platform.GetMetrics(window);
+
+                var binding = owner.GetNativeWindowBinding(window);
+
+                if (!WindowsTestNativeMethods.SetWindowPos(
+                    binding.NativeWindowOrSurface,
+                    insertAfter: 0,
+                    x: 0,
+                    y: 0,
+                    width: 900,
+                    height: 700,
+                    flags: WindowsTestNativeMethods.WindowPositionNoMove
+                        | WindowsTestNativeMethods.WindowPositionNoZOrder
+                        | WindowsTestNativeMethods.WindowPositionNoActivate))
+                {
+                    throw new Win32Exception(
+                        Marshal.GetLastPInvokeError(),
+                        "The Windows metrics witness could not resize its hidden HWND.");
+                }
+
+                _ = owner.Pump();
+                resizedMetrics = owner.Platform.GetMetrics(window);
                 owner.CloseWindow(window);
                 _ = owner.Pump();
 
@@ -1291,7 +1314,13 @@ internal sealed class EngineHostOptionsTests
 
             if (failure is null)
             {
-                _ = completion.TrySetResult((window, ownerId, staleCloseRejected, staleMetricsRejected, metrics));
+                _ = completion.TrySetResult((
+                    window,
+                    ownerId,
+                    staleCloseRejected,
+                    staleMetricsRejected,
+                    initialMetrics,
+                    resizedMetrics));
             }
             else
             {
@@ -1301,7 +1330,7 @@ internal sealed class EngineHostOptionsTests
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
 
-        var (window, ownerId, staleCloseRejected, staleMetricsRejected, metrics) =
+        var (window, ownerId, staleCloseRejected, staleMetricsRejected, initialMetrics, resizedMetrics) =
             await completion.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
         Assert.That(thread.Join(TimeSpan.FromSeconds(5)), Is.True);
         Assert.That(ownerId, Is.GreaterThan(0));
@@ -1310,25 +1339,51 @@ internal sealed class EngineHostOptionsTests
         Assert.That(staleCloseRejected, Is.True);
         Assert.That(staleMetricsRejected, Is.True);
 
-        var actualMetrics = metrics
-            ?? throw new InvalidOperationException("The Windows Platform owner did not publish the window metrics snapshot.");
-        var effectiveDpi = actualMetrics.EffectiveDpi
+        var actualInitialMetrics = initialMetrics
+            ?? throw new InvalidOperationException("The Windows Platform owner did not publish the initial metrics snapshot.");
+        var actualResizedMetrics = resizedMetrics
+            ?? throw new InvalidOperationException("The Windows Platform owner did not publish the resized metrics snapshot.");
+        var effectiveDpi = actualResizedMetrics.EffectiveDpi
             ?? throw new InvalidOperationException("The Windows Platform owner did not report the effective window DPI.");
         var expectedScale = effectiveDpi / 96.0f;
-        Assert.That(actualMetrics.ClientPixelSize.Width, Is.GreaterThan(0));
-        Assert.That(actualMetrics.ClientPixelSize.Height, Is.GreaterThan(0));
-        Assert.That(actualMetrics.DpiSource, Is.EqualTo(DpiSource.WindowsPerMonitorV2));
-        Assert.That(actualMetrics.DpiConfidence, Is.EqualTo(DpiConfidence.Reported));
-        Assert.That(actualMetrics.ContentScale.X, Is.EqualTo(expectedScale).Within(0.0001f));
-        Assert.That(actualMetrics.ContentScale.Y, Is.EqualTo(expectedScale).Within(0.0001f));
-        Assert.That(actualMetrics.LogicalClientSize.X, Is.EqualTo(640.0f).Within(0.5f));
-        Assert.That(actualMetrics.LogicalClientSize.Y, Is.EqualTo(480.0f).Within(0.5f));
-        Assert.That(actualMetrics.LogicalClientSize.X * actualMetrics.ContentScale.X,
-            Is.EqualTo(actualMetrics.ClientPixelSize.Width).Within(0.01f));
-        Assert.That(actualMetrics.LogicalClientSize.Y * actualMetrics.ContentScale.Y,
-            Is.EqualTo(actualMetrics.ClientPixelSize.Height).Within(0.01f));
-        Assert.That(actualMetrics.SurfaceEpoch, Is.Zero);
-        Assert.That(actualMetrics.SwapchainEpoch, Is.Zero);
+        Assert.That(actualInitialMetrics.ClientPixelSize.Width, Is.GreaterThan(0));
+        Assert.That(actualInitialMetrics.ClientPixelSize.Height, Is.GreaterThan(0));
+        Assert.That(actualInitialMetrics.DpiSource, Is.EqualTo(DpiSource.WindowsPerMonitorV2));
+        Assert.That(actualInitialMetrics.DpiConfidence, Is.EqualTo(DpiConfidence.Reported));
+        Assert.That(actualInitialMetrics.LogicalClientSize.X, Is.EqualTo(640.0f).Within(0.5f));
+        Assert.That(actualInitialMetrics.LogicalClientSize.Y, Is.EqualTo(480.0f).Within(0.5f));
+        Assert.That(actualResizedMetrics, Is.Not.SameAs(actualInitialMetrics));
+        Assert.That(actualResizedMetrics.ClientPixelSize.Width, Is.GreaterThan(actualInitialMetrics.ClientPixelSize.Width));
+        Assert.That(actualResizedMetrics.ClientPixelSize.Height, Is.GreaterThan(actualInitialMetrics.ClientPixelSize.Height));
+        Assert.That(actualResizedMetrics.DpiSource, Is.EqualTo(DpiSource.WindowsPerMonitorV2));
+        Assert.That(actualResizedMetrics.DpiConfidence, Is.EqualTo(DpiConfidence.Reported));
+        Assert.That(actualResizedMetrics.ContentScale.X, Is.EqualTo(expectedScale).Within(0.0001f));
+        Assert.That(actualResizedMetrics.ContentScale.Y, Is.EqualTo(expectedScale).Within(0.0001f));
+        Assert.That(actualResizedMetrics.LogicalClientSize.X * actualResizedMetrics.ContentScale.X,
+            Is.EqualTo(actualResizedMetrics.ClientPixelSize.Width).Within(0.01f));
+        Assert.That(actualResizedMetrics.LogicalClientSize.Y * actualResizedMetrics.ContentScale.Y,
+            Is.EqualTo(actualResizedMetrics.ClientPixelSize.Height).Within(0.01f));
+        Assert.That(actualResizedMetrics.SurfaceEpoch, Is.Zero);
+        Assert.That(actualResizedMetrics.SwapchainEpoch, Is.Zero);
+    }
+
+    private static partial class WindowsTestNativeMethods
+    {
+        internal const uint WindowPositionNoActivate = 0x0010;
+        internal const uint WindowPositionNoMove = 0x0002;
+        internal const uint WindowPositionNoZOrder = 0x0004;
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport("user32.dll", EntryPoint = "SetWindowPos", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool SetWindowPos(
+            nint window,
+            nint insertAfter,
+            int x,
+            int y,
+            int width,
+            int height,
+            uint flags);
     }
 
     private readonly struct ReadbackCopyAction : IAction<ReadOnlySpan<byte>>
