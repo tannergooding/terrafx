@@ -9,6 +9,7 @@ using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using TerraFX;
+using TerraFX.Input;
 using TerraFX.Numerics;
 
 namespace TerraFX.Platform;
@@ -17,13 +18,41 @@ internal sealed unsafe partial class WindowsPlatformBackend
 {
     private const int CreateWindowDefaultPosition = int.MinValue;
     private const uint MonitorDefaultToPrimary = 0x00000001;
+    private const uint RawInputCommandInput = 0x10000003;
+    private const uint RawInputTypeKeyboard = 1;
+    private const uint RawInputTypeMouse = 0;
+    private const ushort RawMouseButton1Down = 0x0001;
+    private const ushort RawMouseButton1Up = 0x0002;
+    private const ushort RawMouseButton2Down = 0x0004;
+    private const ushort RawMouseButton2Up = 0x0008;
+    private const ushort RawMouseButton3Down = 0x0010;
+    private const ushort RawMouseButton3Up = 0x0020;
+    private const ushort RawMouseButton4Down = 0x0040;
+    private const ushort RawMouseButton4Up = 0x0080;
+    private const ushort RawMouseButton5Down = 0x0100;
+    private const ushort RawMouseButton5Up = 0x0200;
+    private const ushort RawMouseHorizontalWheel = 0x0800;
+    private const ushort RawMouseMoveAbsolute = 0x0001;
+    private const ushort RawMouseVerticalWheel = 0x0400;
+    private const ushort RawMouseVirtualDesktop = 0x0002;
+    private const ushort RawMouseWheelDelta = 120;
+    private const uint SystemMetricScreenHeight = 1;
+    private const uint SystemMetricScreenWidth = 0;
+    private const uint SystemMetricVirtualScreenHeight = 79;
+    private const uint SystemMetricVirtualScreenLeft = 76;
+    private const uint SystemMetricVirtualScreenTop = 77;
+    private const uint SystemMetricVirtualScreenWidth = 78;
     private const uint WindowClassHorizontalRedraw = 0x0002;
     private const uint WindowClassVerticalRedraw = 0x0001;
     private const uint WindowMessageClose = 0x0010;
     private const uint WindowMessageDisplayChange = 0x007E;
     private const uint WindowMessageDpiChanged = 0x02E0;
     private const uint WindowMessageGetMinMaxInfo = 0x0024;
+    private const uint WindowMessageInput = 0x00FF;
+    private const uint WindowMessageInputDeviceChange = 0x00FE;
+    private const uint WindowMessageKillFocus = 0x0008;
     private const uint WindowMessageNcDestroy = 0x0082;
+    private const uint WindowMessageSetFocus = 0x0007;
     private const uint WindowPositionNoActivate = 0x0010;
     private const uint WindowPositionNoZOrder = 0x0004;
     private const uint WindowResizableStyleMask = 0x00050000;
@@ -31,6 +60,7 @@ internal sealed unsafe partial class WindowsPlatformBackend
     private const string WindowStatePropertyName = "TerraFX.Platform.WindowState";
     private const uint WindowStyleOverlapped = 0x00CF0000;
     private const uint WindowStylePopup = 0x80000000;
+    private const string WindowsMessageTimeClockDomain = "win32.message-time-ms";
     private readonly string _windowClassName;
     private bool _windowClassRegistered;
     private nint _windowInstance;
@@ -133,11 +163,22 @@ internal sealed unsafe partial class WindowsPlatformBackend
     [LibraryImport("user32.dll", EntryPoint = "GetDpiForWindow", SetLastError = true)]
     private static partial uint GetDpiForWindowNative(nint window);
 
+    [LibraryImport("user32.dll", EntryPoint = "GetMessageTime")]
+    private static partial int GetMessageTimeNative();
+
     [LibraryImport("kernel32.dll", EntryPoint = "GetModuleHandleW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
     private static partial nint GetModuleHandleNative(string? moduleName);
 
     [LibraryImport("user32.dll", EntryPoint = "GetPropW", StringMarshalling = StringMarshalling.Utf16)]
     private static partial nint GetPropertyNative(nint window, string name);
+
+    [LibraryImport("user32.dll", EntryPoint = "GetRawInputData", SetLastError = true)]
+    private static partial uint GetRawInputDataNative(
+        nint rawInput,
+        uint command,
+        NativeRawInput* data,
+        uint* size,
+        uint headerSize);
 
     private static int GetScaledClientExtent(float logicalExtent, uint dpi)
     {
@@ -166,6 +207,10 @@ internal sealed unsafe partial class WindowsPlatformBackend
 
     [LibraryImport("user32.dll", EntryPoint = "RemovePropW", StringMarshalling = StringMarshalling.Utf16)]
     private static partial nint RemovePropertyNative(nint window, string name);
+
+    [LibraryImport("user32.dll", EntryPoint = "ScreenToClient", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool ScreenToClientNative(nint window, NativePoint* point);
 
     [LibraryImport("user32.dll", EntryPoint = "SetPropW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -273,11 +318,35 @@ internal sealed unsafe partial class WindowsPlatformBackend
                     return 0;
                 }
 
+                case WindowMessageInput:
+                {
+                    state.Owner.CaptureRawInput(state, lParam);
+                    break;
+                }
+
+                case WindowMessageInputDeviceChange:
+                {
+                    state.Owner.CaptureRawInputDeviceChange((uint)wParam, lParam);
+                    break;
+                }
+
+                case WindowMessageKillFocus:
+                {
+                    state.Owner.CaptureWindowFocus(state, PhysicalInputEventKind.FocusLost);
+                    break;
+                }
+
                 case WindowMessageNcDestroy:
                 {
                     state.NativeDestroyed = true;
                     _ = RemovePropertyNative(window, WindowStatePropertyName);
                     state.PropertyAttached = false;
+                    break;
+                }
+
+                case WindowMessageSetFocus:
+                {
+                    state.Owner.CaptureWindowFocus(state, PhysicalInputEventKind.FocusGained);
                     break;
                 }
             }
@@ -287,7 +356,9 @@ internal sealed unsafe partial class WindowsPlatformBackend
         catch (Exception exception)
         {
             state?.CaptureCallbackFailure(exception);
-            return 0;
+            return message == WindowMessageInput
+                ? DefWindowProcNative(window, message, wParam, lParam)
+                : 0;
         }
     }
 
@@ -455,6 +526,301 @@ internal sealed unsafe partial class WindowsPlatformBackend
         var minimum = (NativeMinMaxInfo*)minimumMaximumInfo;
         minimum->MinimumTrackSize.X = Math.Max(minimum->MinimumTrackSize.X, rect.Right - rect.Left);
         minimum->MinimumTrackSize.Y = Math.Max(minimum->MinimumTrackSize.Y, rect.Bottom - rect.Top);
+    }
+
+    private void CaptureMouseButton(
+        WindowHandle window,
+        nint nativeDevice,
+        ushort buttonFlags,
+        ushort downFlag,
+        ushort upFlag,
+        MouseButtonValue button,
+        long nativeTimestamp,
+        PhysicalInputEventDiagnostic diagnostics)
+    {
+        if ((buttonFlags & downFlag) != 0)
+        {
+            CaptureNativeInputSample(new PlatformInputSample(
+                PhysicalInputEventKind.PointerButtonDown,
+                window,
+                nativeDevice,
+                PlatformInputDeviceKind.Pointer,
+                MouseButton: button,
+                IsDown: true,
+                NativeTimestamp: nativeTimestamp,
+                NativeClockDomain: WindowsMessageTimeClockDomain,
+                Diagnostics: diagnostics));
+        }
+
+        if ((buttonFlags & upFlag) != 0)
+        {
+            CaptureNativeInputSample(new PlatformInputSample(
+                PhysicalInputEventKind.PointerButtonUp,
+                window,
+                nativeDevice,
+                PlatformInputDeviceKind.Pointer,
+                MouseButton: button,
+                IsDown: false,
+                NativeTimestamp: nativeTimestamp,
+                NativeClockDomain: WindowsMessageTimeClockDomain,
+                Diagnostics: diagnostics));
+        }
+    }
+
+    private void CaptureRawInput(WindowState state, nint rawInputHandle)
+    {
+        if (rawInputHandle == 0)
+        {
+            throw new InvalidOperationException("Windows delivered WM_INPUT without a raw-input handle.");
+        }
+
+        var rawInput = default(NativeRawInput);
+        var inputSize = 0u;
+        var requiredSize = GetRawInputDataNative(
+            rawInputHandle,
+            RawInputCommandInput,
+            null,
+            &inputSize,
+            checked((uint)sizeof(NativeRawInputHeader)));
+
+        if (requiredSize == uint.MaxValue)
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Windows could not query the raw-input packet size.");
+        }
+
+        if ((inputSize < sizeof(NativeRawInputHeader))
+            || (inputSize > sizeof(NativeRawInput)))
+        {
+            throw new InvalidOperationException("Windows reported an unexpected raw-input packet size.");
+        }
+
+        var copiedSize = GetRawInputDataNative(
+            rawInputHandle,
+            RawInputCommandInput,
+            &rawInput,
+            &inputSize,
+            checked((uint)sizeof(NativeRawInputHeader)));
+
+        if (copiedSize == uint.MaxValue)
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Windows could not read the raw-input packet.");
+        }
+
+        if ((copiedSize != inputSize) || (rawInput.Header.Size != inputSize))
+        {
+            throw new InvalidOperationException("Windows returned an incomplete raw-input packet.");
+        }
+
+        if (rawInput.Header.Device == 0)
+        {
+            throw new InvalidOperationException("Windows delivered raw input without a device identity.");
+        }
+
+        var deviceKind = rawInput.Header.Type switch {
+            RawInputTypeKeyboard => PlatformInputDeviceKind.Keyboard,
+            RawInputTypeMouse => PlatformInputDeviceKind.Pointer,
+            _ => throw new InvalidOperationException("Windows delivered a raw-input device class that was not registered."),
+        };
+
+        if (_knownInputDevices.TryGetValue(rawInput.Header.Device, out var knownKind))
+        {
+            if ((knownKind != PlatformInputDeviceKind.Unknown) && (knownKind != deviceKind))
+            {
+                throw new InvalidOperationException("Windows changed the class of a live raw-input device identity.");
+            }
+
+            _knownInputDevices[rawInput.Header.Device] = deviceKind;
+        }
+        else
+        {
+            _knownInputDevices.Add(rawInput.Header.Device, deviceKind);
+            CaptureNativeInputSample(new PlatformInputSample(
+                PhysicalInputEventKind.DeviceAdded,
+                null,
+                rawInput.Header.Device,
+                deviceKind));
+        }
+
+        var (nativeTimestamp, diagnostics) = GetNativeMessageTimestamp();
+
+        if (deviceKind == PlatformInputDeviceKind.Keyboard)
+        {
+            CaptureRawKeyboard(
+                state,
+                rawInput.Header.Device,
+                rawInput.Data.Keyboard,
+                nativeTimestamp,
+                diagnostics);
+        }
+        else
+        {
+            CaptureRawMouse(
+                state,
+                rawInput.Header.Device,
+                rawInput.Data.Mouse,
+                nativeTimestamp,
+                diagnostics);
+        }
+    }
+
+    private void CaptureRawInputDeviceChange(uint change, nint nativeDevice)
+    {
+        if (nativeDevice == 0)
+        {
+            throw new InvalidOperationException("Windows reported a raw-input device change without a device identity.");
+        }
+
+        var (nativeTimestamp, diagnostics) = GetNativeMessageTimestamp();
+        PhysicalInputEventKind kind;
+        PlatformInputDeviceKind deviceKind;
+
+        switch (change)
+        {
+            case 1:
+            {
+                if (!_knownInputDevices.TryAdd(nativeDevice, PlatformInputDeviceKind.Unknown))
+                {
+                    return;
+                }
+
+                kind = PhysicalInputEventKind.DeviceAdded;
+                deviceKind = PlatformInputDeviceKind.Unknown;
+                break;
+            }
+
+            case 2:
+            {
+                kind = PhysicalInputEventKind.DeviceRemoved;
+                deviceKind = _knownInputDevices.Remove(nativeDevice, out var knownKind)
+                    ? knownKind
+                    : PlatformInputDeviceKind.Unknown;
+                break;
+            }
+
+            default:
+            {
+                return;
+            }
+        }
+
+        CaptureNativeInputSample(new PlatformInputSample(
+            kind,
+            null,
+            nativeDevice,
+            deviceKind,
+            NativeTimestamp: nativeTimestamp,
+            NativeClockDomain: WindowsMessageTimeClockDomain,
+            Diagnostics: diagnostics));
+    }
+
+    private void CaptureRawKeyboard(
+        WindowState state,
+        nint nativeDevice,
+        NativeRawKeyboard keyboard,
+        long nativeTimestamp,
+        PhysicalInputEventDiagnostic diagnostics)
+    {
+        var isDown = (keyboard.Flags & WindowsRawInputDecoder.RawKeyboardBreak) == 0;
+        var hasUsage = WindowsRawInputDecoder.TryMapKeyboardUsage(keyboard.MakeCode, keyboard.Flags, out var usage);
+        var nativeScanCode = (uint)keyboard.MakeCode
+            | ((keyboard.Flags & WindowsRawInputDecoder.RawKeyboardE0) != 0 ? 0x00010000u : 0u)
+            | ((keyboard.Flags & WindowsRawInputDecoder.RawKeyboardE1) != 0 ? 0x00020000u : 0u);
+
+        CaptureNativeInputSample(new PlatformInputSample(
+            isDown ? PhysicalInputEventKind.KeyDown : PhysicalInputEventKind.KeyUp,
+            state.Window,
+            nativeDevice,
+            PlatformInputDeviceKind.Keyboard,
+            NativeUsagePage: hasUsage ? 0x0007 : null,
+            NativeUsage: hasUsage ? usage : null,
+            NativeScanCode: nativeScanCode,
+            NativeVirtualKey: keyboard.VirtualKey,
+            IsDown: isDown,
+            NativeTimestamp: nativeTimestamp,
+            NativeClockDomain: WindowsMessageTimeClockDomain,
+            Diagnostics: diagnostics));
+    }
+
+    private void CaptureRawMouse(
+        WindowState state,
+        nint nativeDevice,
+        NativeRawMouse mouse,
+        long nativeTimestamp,
+        PhysicalInputEventDiagnostic diagnostics)
+    {
+        if ((mouse.Flags & RawMouseMoveAbsolute) != 0)
+        {
+            var (pointerPosition, pointerContentScale) = GetAbsolutePointerPosition(state, mouse);
+            CaptureNativeInputSample(new PlatformInputSample(
+                PhysicalInputEventKind.PointerAbsoluteMotion,
+                state.Window,
+                nativeDevice,
+                PlatformInputDeviceKind.Pointer,
+                PointerPosition: pointerPosition,
+                PointerContentScale: pointerContentScale,
+                NativeTimestamp: nativeTimestamp,
+                NativeClockDomain: WindowsMessageTimeClockDomain,
+                Diagnostics: diagnostics));
+        }
+        else if ((mouse.LastX != 0) || (mouse.LastY != 0))
+        {
+            CaptureNativeInputSample(new PlatformInputSample(
+                PhysicalInputEventKind.PointerRelativeMotion,
+                state.Window,
+                nativeDevice,
+                PlatformInputDeviceKind.Pointer,
+                PointerDelta: new Vector2(mouse.LastX, mouse.LastY),
+                NativeTimestamp: nativeTimestamp,
+                NativeClockDomain: WindowsMessageTimeClockDomain,
+                Diagnostics: diagnostics));
+        }
+
+        CaptureMouseButton(state.Window, nativeDevice, mouse.ButtonFlags, RawMouseButton1Down, RawMouseButton1Up, MouseButtonValue.Primary, nativeTimestamp, diagnostics);
+        CaptureMouseButton(state.Window, nativeDevice, mouse.ButtonFlags, RawMouseButton2Down, RawMouseButton2Up, MouseButtonValue.Secondary, nativeTimestamp, diagnostics);
+        CaptureMouseButton(state.Window, nativeDevice, mouse.ButtonFlags, RawMouseButton3Down, RawMouseButton3Up, MouseButtonValue.Middle, nativeTimestamp, diagnostics);
+        CaptureMouseButton(state.Window, nativeDevice, mouse.ButtonFlags, RawMouseButton4Down, RawMouseButton4Up, MouseButtonValue.Auxiliary1, nativeTimestamp, diagnostics);
+        CaptureMouseButton(state.Window, nativeDevice, mouse.ButtonFlags, RawMouseButton5Down, RawMouseButton5Up, MouseButtonValue.Auxiliary2, nativeTimestamp, diagnostics);
+
+        if ((mouse.ButtonFlags & RawMouseVerticalWheel) != 0)
+        {
+            CaptureNativeInputSample(new PlatformInputSample(
+                PhysicalInputEventKind.VerticalScroll,
+                state.Window,
+                nativeDevice,
+                PlatformInputDeviceKind.Pointer,
+                ScrollValue: (short)mouse.ButtonData / (float)RawMouseWheelDelta,
+                ScrollUnit: PointerScrollUnit.Detents,
+                NativeTimestamp: nativeTimestamp,
+                NativeClockDomain: WindowsMessageTimeClockDomain,
+                Diagnostics: diagnostics));
+        }
+
+        if ((mouse.ButtonFlags & RawMouseHorizontalWheel) != 0)
+        {
+            CaptureNativeInputSample(new PlatformInputSample(
+                PhysicalInputEventKind.HorizontalScroll,
+                state.Window,
+                nativeDevice,
+                PlatformInputDeviceKind.Pointer,
+                ScrollValue: (short)mouse.ButtonData / (float)RawMouseWheelDelta,
+                ScrollUnit: PointerScrollUnit.Detents,
+                NativeTimestamp: nativeTimestamp,
+                NativeClockDomain: WindowsMessageTimeClockDomain,
+                Diagnostics: diagnostics));
+        }
+    }
+
+    private void CaptureWindowFocus(WindowState state, PhysicalInputEventKind kind)
+    {
+        var (nativeTimestamp, diagnostics) = GetNativeMessageTimestamp();
+        CaptureNativeInputSample(new PlatformInputSample(
+            kind,
+            state.Window,
+            0,
+            PlatformInputDeviceKind.Unknown,
+            NativeTimestamp: nativeTimestamp,
+            NativeClockDomain: WindowsMessageTimeClockDomain,
+            Diagnostics: diagnostics));
     }
 
     private void CreateNativeWindow(WindowState state, nint monitor)
@@ -673,6 +1039,68 @@ internal sealed unsafe partial class WindowsPlatformBackend
         internal NativePoint MaximumPosition;
         internal NativePoint MinimumTrackSize;
         internal NativePoint MaximumTrackSize;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRawInput
+    {
+        internal NativeRawInputHeader Header;
+        internal NativeRawInputData Data;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct NativeRawInputData
+    {
+        [FieldOffset(0)]
+        internal NativeRawMouse Mouse;
+
+        [FieldOffset(0)]
+        internal NativeRawKeyboard Keyboard;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRawInputHeader
+    {
+        internal uint Type;
+        internal uint Size;
+        internal nint Device;
+        internal nuint WParam;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRawKeyboard
+    {
+        internal ushort MakeCode;
+        internal ushort Flags;
+        internal ushort Reserved;
+        internal ushort VirtualKey;
+        internal uint Message;
+        internal uint ExtraInformation;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct NativeRawMouse
+    {
+        [FieldOffset(0)]
+        internal ushort Flags;
+
+        [FieldOffset(4)]
+        internal ushort ButtonFlags;
+
+        [FieldOffset(6)]
+        internal ushort ButtonData;
+
+        [FieldOffset(8)]
+        internal uint RawButtons;
+
+        [FieldOffset(12)]
+        internal int LastX;
+
+        [FieldOffset(16)]
+        internal int LastY;
+
+        [FieldOffset(20)]
+        internal uint ExtraInformation;
     }
 
     [StructLayout(LayoutKind.Sequential)]

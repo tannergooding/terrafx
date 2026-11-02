@@ -24,6 +24,8 @@ internal interface IPlatformBackend : IDisposable
 
     void CreateWindow(WindowHandle window, WindowOptions options, nint nativeMonitorHandle);
 
+    PlatformInputSampleBatch DrainInputSamples();
+
     ImmutableArray<WindowHandle> DrainWindowCloseRequests();
 
     ImmutableArray<MonitorHandle> GetMonitorHandles();

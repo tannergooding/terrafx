@@ -161,6 +161,14 @@ internal sealed class PlatformHostOwner
         _isDisposed = true;
     }
 
+    internal PlatformInputSampleBatch DrainInputSamples()
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        ThrowIfStopping();
+        return _platform.DrainInputSamples();
+    }
+
     internal ImmutableArray<WindowHandle> DrainWindowCloseRequests()
     {
         EnsureOwnerThread();

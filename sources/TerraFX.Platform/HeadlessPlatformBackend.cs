@@ -106,6 +106,12 @@ internal sealed class HeadlessPlatformBackend : IPlatformBackend
         _ = Interlocked.Exchange(ref _isDisposed, 1);
     }
 
+    public PlatformInputSampleBatch DrainInputSamples()
+    {
+        EnsureOwnerThread();
+        return new PlatformInputSampleBatch([], 0);
+    }
+
     public ImmutableArray<WindowHandle> DrainWindowCloseRequests()
     {
         EnsureOwnerThread();

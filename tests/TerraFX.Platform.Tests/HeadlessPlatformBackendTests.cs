@@ -18,6 +18,7 @@ internal sealed class HeadlessPlatformBackendTests
         Assert.That(headless.Backend, Is.EqualTo(PlatformBackend.Headless));
         Assert.That(headless.DisplayStatus, Is.EqualTo(PlatformServiceStatus.NotRequested));
         Assert.That(headless.PhysicalInputStatus, Is.EqualTo(PlatformServiceStatus.NotRequested));
+        Assert.That(headless.DrainInputSamples().Samples, Is.Empty);
         Assert.That(headless.AudioStatus, Is.EqualTo(PlatformServiceStatus.NotRequested));
         Assert.That(headless.ClipboardStatus, Is.EqualTo(ClipboardServiceStatus.NotRequested));
         Assert.That(optionalClipboard.ClipboardStatus, Is.EqualTo(ClipboardServiceStatus.Unsupported));

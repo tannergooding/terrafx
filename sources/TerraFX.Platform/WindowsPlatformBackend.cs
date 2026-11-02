@@ -11,6 +11,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Threading;
 using TerraFX;
+using TerraFX.Input;
 
 namespace TerraFX.Platform;
 
@@ -25,14 +26,24 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
     private static WindowsPlatformBackend? s_quarantinedBackend;
     private readonly ClipboardServiceStatus _clipboardStatus;
     private PlatformServiceStatus _displayStatus = PlatformServiceStatus.Unavailable;
+    private bool _hasNativeMessageTimestamp;
+    private readonly PlatformInputSampleQueue _inputSamples;
     private int _isDisposed;
+    private readonly Dictionary<nint, PlatformInputDeviceKind> _knownInputDevices;
     private int _lastMonitorCount;
+    private uint _lastNativeMessageTimestamp;
     private ImmutableArray<MonitorHandle> _monitorHandles = [];
     private int _monitorTopologyChanged;
+    private ulong _nativeMessageTimestampEpoch;
     private readonly uint _ownerId;
     private readonly int _ownerThreadId;
     private readonly WindowsPlatformOwnerInitialization _platformOwner;
+    private readonly WindowsRawInputRegistration _rawInputRegistration;
 
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "A partially initialized Windows input owner must release or quarantine its process-wide native admission.")]
     internal WindowsPlatformBackend(uint ownerId, ClipboardServicePolicy clipboardPolicy)
     {
         ArgumentOutOfRangeException.ThrowIfZero(ownerId);
@@ -57,12 +68,26 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
             s_isAdmissionReserved = true;
         }
 
+        WindowsPlatformOwnerInitialization? platformOwner = null;
+        WindowsRawInputRegistration? rawInputRegistration = null;
+
         try
         {
-            _platformOwner = WindowsPlatformOwnerInitialization.Initialize();
+            platformOwner = WindowsPlatformOwnerInitialization.Initialize();
+            rawInputRegistration = WindowsRawInputRegistration.Register(platformOwner);
         }
-        catch
+        catch (Exception initializationException)
         {
+            try
+            {
+                rawInputRegistration?.Dispose();
+                platformOwner?.Dispose();
+            }
+            catch (Exception cleanupException)
+            {
+                throw new AggregateException(initializationException, cleanupException);
+            }
+
             lock (s_admissionGate)
             {
                 s_isAdmissionReserved = false;
@@ -71,10 +96,16 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
             throw;
         }
 
+        _platformOwner = platformOwner
+            ?? throw new InvalidOperationException("The Windows Platform owner was not initialized.");
+        _rawInputRegistration = rawInputRegistration
+            ?? throw new InvalidOperationException("The Windows Raw Input registration was not initialized.");
         _ownerId = ownerId;
         _ownerThreadId = _platformOwner.OwnerThreadId;
         _windowClassName = windowClassName;
         _windows = windows;
+        _inputSamples = new PlatformInputSampleQueue(_ownerThreadId);
+        _knownInputDevices = [];
         _clipboardStatus = clipboardPolicy == ClipboardServicePolicy.Optional
             ? ClipboardServiceStatus.Unsupported
             : ClipboardServiceStatus.NotRequested;
@@ -124,7 +155,7 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
         get
         {
             EnsureOwnerThread();
-            return PlatformServiceStatus.Unsupported;
+            return PlatformServiceStatus.Available;
         }
     }
 
@@ -210,6 +241,7 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
         try
         {
             DisposeWindows();
+            _rawInputRegistration.Dispose();
             _platformOwner.Dispose();
         }
         catch (Exception)
@@ -230,6 +262,12 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
             s_isAdmissionReserved = false;
             s_quarantinedBackend = null;
         }
+    }
+
+    public PlatformInputSampleBatch DrainInputSamples()
+    {
+        EnsureOwnerThread();
+        return _inputSamples.Drain();
     }
 
     public ImmutableArray<MonitorHandle> GetMonitorHandles()
@@ -343,6 +381,9 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
         return Interlocked.Exchange(ref _monitorTopologyChanged, 0) != 0;
     }
 
+    private void CaptureNativeInputSample(PlatformInputSample sample)
+        => _ = _inputSamples.TryEnqueue(in sample);
+
     private void EnsureOwnerThread()
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
@@ -353,6 +394,37 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
         }
 
         _platformOwner.EnsureOwnerThread();
+    }
+
+    private (long Timestamp, PhysicalInputEventDiagnostic Diagnostics) GetNativeMessageTimestamp()
+    {
+        var currentTimestamp = unchecked((uint)GetMessageTimeNative());
+        var diagnostics = PhysicalInputEventDiagnostic.None;
+
+        if (_hasNativeMessageTimestamp)
+        {
+            if (currentTimestamp < _lastNativeMessageTimestamp)
+            {
+                var decrease = _lastNativeMessageTimestamp - currentTimestamp;
+
+                if (decrease > 0x80000000u)
+                {
+                    _nativeMessageTimestampEpoch = checked(_nativeMessageTimestampEpoch + (1UL << 32));
+                }
+                else
+                {
+                    diagnostics = PhysicalInputEventDiagnostic.TimestampUncertain;
+                }
+            }
+            else if ((currentTimestamp - _lastNativeMessageTimestamp) > 0x80000000u)
+            {
+                diagnostics = PhysicalInputEventDiagnostic.TimestampUncertain;
+            }
+        }
+
+        _hasNativeMessageTimestamp = true;
+        _lastNativeMessageTimestamp = currentTimestamp;
+        return (checked((long)(_nativeMessageTimestampEpoch + currentTimestamp)), diagnostics);
     }
 
     private sealed class MonitorEnumerationContext

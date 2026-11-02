@@ -36,6 +36,9 @@ public sealed class PlatformHost
 
     internal void DisposeFromOwner() => _backend.Dispose();
 
+    internal PlatformInputSampleBatch DrainInputSamples()
+        => _backend.DrainInputSamples();
+
     internal ImmutableArray<WindowHandle> DrainWindowCloseRequests()
         => _backend.DrainWindowCloseRequests();
 
