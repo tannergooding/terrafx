@@ -1,20 +1,26 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace TerraFX.Graphics;
 
 internal sealed class GraphicsResourceOwner : IDisposable
 {
     private int _activeUseCount;
+    private readonly SortedSet<long> _activeUseSequences = [];
     private readonly GraphicsResourceAllocationInfo? _allocationInfo;
     private readonly IGraphicsBackendResource _backendResource;
     private readonly GraphicsDevice _device;
     private readonly GraphicsResourceGraphState? _graphState;
+    private long _nextUseSequence;
     private readonly GraphicsOwnerRequestQueue.GraphicsRetirementReservation _retirementReservation;
     // 0 is live, 1 is retirement requested, 2 is retiring, and 3 is retired or quarantined.
     private int _retirementState;
+    private readonly List<UseCompletionWaiter> _useCompletionWaiters = [];
+    private readonly Lock _useGate = new();
 
     internal GraphicsResourceOwner(
         GraphicsDevice device,
@@ -85,22 +91,33 @@ internal sealed class GraphicsResourceOwner : IDisposable
                 throw new ObjectDisposedException(parameterName, "The Graphics resource no longer accepts new work.");
             }
 
-            _ = Interlocked.Increment(ref _activeUseCount);
-
-            if (IsLiveForNewWork)
+            lock (_useGate)
             {
-                try
+                if (!IsLiveForNewWork)
                 {
-                    return new UseLease(this);
+                    continue;
                 }
-                catch
-                {
-                    ReleaseUse();
-                    throw;
-                }
-            }
 
-            ReleaseUse();
+                var sequence = checked(_nextUseSequence + 1);
+                var lease = new UseLease(this, sequence);
+
+                if (!_activeUseSequences.Add(sequence))
+                {
+                    throw new InvalidOperationException("The Graphics resource use sequence was reused.");
+                }
+
+                _nextUseSequence = sequence;
+                _ = Interlocked.Increment(ref _activeUseCount);
+                return lease;
+            }
+        }
+    }
+
+    internal (long LastUseSequence, bool IsIdle) CaptureUseSnapshot()
+    {
+        lock (_useGate)
+        {
+            return (_nextUseSequence, _activeUseSequences.Count == 0);
         }
     }
 
@@ -155,34 +172,80 @@ internal sealed class GraphicsResourceOwner : IDisposable
 
     internal bool TryBeginRetirement()
     {
-        while (true)
+        lock (_useGate)
         {
             if (HasActiveUses)
             {
                 return false;
             }
 
-            var currentState = Volatile.Read(ref _retirementState);
-
-            if (currentState >= 2)
+            while (true)
             {
-                return false;
-            }
+                var currentState = Volatile.Read(ref _retirementState);
 
-            if (Interlocked.CompareExchange(ref _retirementState, 2, currentState) == currentState)
-            {
-                return true;
+                if (currentState >= 2)
+                {
+                    return false;
+                }
+
+                if (Interlocked.CompareExchange(ref _retirementState, 2, currentState) == currentState)
+                {
+                    return true;
+                }
             }
         }
     }
 
-    private void ReleaseUse()
+    internal Task WaitForUsesAsync(long sequence)
     {
-        var activeUseCount = Interlocked.Decrement(ref _activeUseCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(sequence);
 
-        if (activeUseCount < 0)
+        lock (_useGate)
         {
-            throw new InvalidOperationException("A Graphics resource use credit was released more than once.");
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(sequence, _nextUseSequence);
+
+            if (!HasActiveUseAtOrBefore(sequence))
+            {
+                return Task.CompletedTask;
+            }
+
+            var waiter = new UseCompletionWaiter(sequence);
+            _useCompletionWaiters.Add(waiter);
+            return waiter.Task;
+        }
+    }
+
+    private bool HasActiveUseAtOrBefore(long sequence)
+        => (_activeUseSequences.Count != 0) && (_activeUseSequences.Min <= sequence);
+
+    private void ReleaseUse(long sequence)
+    {
+        int activeUseCount;
+
+        lock (_useGate)
+        {
+            if (!_activeUseSequences.Remove(sequence))
+            {
+                throw new InvalidOperationException("A Graphics resource use credit was released more than once.");
+            }
+
+            activeUseCount = Interlocked.Decrement(ref _activeUseCount);
+
+            if (activeUseCount < 0)
+            {
+                throw new InvalidOperationException("The Graphics resource active-use count became negative.");
+            }
+
+            for (var index = _useCompletionWaiters.Count - 1; index >= 0; index--)
+            {
+                var waiter = _useCompletionWaiters[index];
+
+                if (!HasActiveUseAtOrBefore(waiter.Sequence))
+                {
+                    _useCompletionWaiters.RemoveAt(index);
+                    _ = waiter.Completion.TrySetResult();
+                }
+            }
         }
 
         if ((activeUseCount == 0) && IsRetirementRequested)
@@ -194,16 +257,38 @@ internal sealed class GraphicsResourceOwner : IDisposable
     internal sealed class UseLease : IDisposable
     {
         private GraphicsResourceOwner? _owner;
+        private readonly long _sequence;
 
-        internal UseLease(GraphicsResourceOwner owner)
+        internal UseLease(GraphicsResourceOwner owner, long sequence)
         {
+            ArgumentNullException.ThrowIfNull(owner);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sequence);
             _owner = owner;
+            _sequence = sequence;
         }
+
+        internal long Sequence => _sequence;
 
         public void Dispose()
         {
             var owner = Interlocked.Exchange(ref _owner, null);
-            owner?.ReleaseUse();
+            owner?.ReleaseUse(_sequence);
         }
+    }
+
+    private sealed class UseCompletionWaiter
+    {
+        internal UseCompletionWaiter(long sequence)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sequence);
+            Sequence = sequence;
+            Completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        internal TaskCompletionSource Completion { get; }
+
+        internal long Sequence { get; }
+
+        internal Task Task => Completion.Task;
     }
 }

@@ -307,6 +307,46 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task ResourceUseWaitersObserveOnlyTheirCapturedSequence()
+    {
+        var backendDevice = new FakeBackendDevice();
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var buffer = await graphicsDevice.CreateBufferAsync(CreateBufferDescription()).ConfigureAwait(false);
+
+        try
+        {
+            using var firstUse = buffer.ResourceOwner.AcquireUse(nameof(buffer));
+            using var secondUse = buffer.ResourceOwner.AcquireUse(nameof(buffer));
+            (var lastUseSequence, var isIdle) = buffer.ResourceOwner.CaptureUseSnapshot();
+            var firstUseCompletion = buffer.ResourceOwner.WaitForUsesAsync(firstUse.Sequence);
+            var allUseCompletion = buffer.ResourceOwner.WaitForUsesAsync(lastUseSequence);
+
+            Assert.That(lastUseSequence, Is.EqualTo(secondUse.Sequence));
+            Assert.That(isIdle, Is.False);
+            Assert.That(firstUseCompletion.IsCompleted, Is.False);
+            Assert.That(allUseCompletion.IsCompleted, Is.False);
+
+            secondUse.Dispose();
+            Assert.That(firstUseCompletion.IsCompleted, Is.False);
+            Assert.That(allUseCompletion.IsCompleted, Is.False);
+
+            firstUse.Dispose();
+            await firstUseCompletion.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await allUseCompletion.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.That(buffer.ResourceOwner.CaptureUseSnapshot().IsIdle, Is.True);
+
+            using var laterUse = buffer.ResourceOwner.AcquireUse(nameof(buffer));
+            await buffer.ResourceOwner.WaitForUsesAsync(lastUseSequence).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.That(buffer.ResourceOwner.CaptureUseSnapshot().IsIdle, Is.False);
+        }
+        finally
+        {
+            buffer.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task SamplerCreationCancellationRetiresAfterBackendCreation()
     {
         using var cancellationSource = new CancellationTokenSource();
