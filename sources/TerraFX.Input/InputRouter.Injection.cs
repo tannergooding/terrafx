@@ -17,6 +17,7 @@ public sealed partial class InputRouter
     private readonly Dictionary<InputControlKey, List<InputConsumptionLease>> _consumptionLeases = [];
     private readonly Dictionary<InputControlKey, long> _digitalControlDownTimestamps = [];
     private readonly Dictionary<InputControlKey, bool> _digitalControlStates = [];
+    private readonly Dictionary<InputControlKey, HashSet<InputDeviceHandle>> _physicalDigitalSources = [];
     private long _firstUnacceptedHostSequence;
     private readonly Queue<InputControlEnvelope> _inputControlInbox = [];
     private readonly Queue<InputEnvelope> _inputInbox = [];
@@ -333,7 +334,8 @@ public sealed partial class InputRouter
 
         return envelope.PhysicalEvent?.Kind is PhysicalInputEventKind.KeyUp
             or PhysicalInputEventKind.PointerButtonUp
-            or PhysicalInputEventKind.GamepadButtonUp;
+            or PhysicalInputEventKind.GamepadButtonUp
+            or PhysicalInputEventKind.DeviceRemoved;
     }
 
     private static bool IsInputEnvelopeBeforeControl(InputEnvelope input, InputControlEnvelope control)
@@ -960,18 +962,20 @@ public sealed partial class InputRouter
 
         if (inputEvent.Kind == PhysicalInputEventKind.DeviceRemoved)
         {
-            if (playerSlot is null)
+            if (playerSlot is { } slot)
             {
-                return CreateInputRejection("UnassignedDevice", "/PlayerSlot");
+                return CancelInputState(
+                    InputCancellationReason.DeviceRemoved,
+                    InputClass.Gamepad,
+                    slot,
+                    inputEvent.HostTimestamp,
+                    inputEvent.HostSequence,
+                    out discardedInputCount);
             }
 
-            return CancelInputState(
-                InputCancellationReason.DeviceRemoved,
-                InputClass.Gamepad,
-                playerSlot,
-                inputEvent.HostTimestamp,
-                inputEvent.HostSequence,
-                out discardedInputCount);
+            var removedDevice = inputEvent.Device
+                ?? throw new InvalidOperationException("A physical device-removal event has no device identity.");
+            return QueuePhysicalDeviceRemoval(removedDevice, inputEvent.HostTimestamp, inputEvent.HostSequence, out discardedInputCount);
         }
 
         if (inputEvent.Kind == PhysicalInputEventKind.StateReconciliation)
@@ -1110,6 +1114,7 @@ public sealed partial class InputRouter
         }
 
         _digitalControlStates.Clear();
+        _physicalDigitalSources.Clear();
         _digitalControlDownTimestamps.Clear();
         _scalarControlValues.Clear();
         _vectorControlValues.Clear();
@@ -1470,6 +1475,11 @@ public sealed partial class InputRouter
                 return ApplyInputReconciliationEnvelope(control, assignedTick);
             }
 
+            case InputControlCommandKind.RemovePhysicalDevice:
+            {
+                return ApplyPhysicalDeviceRemovalEnvelope(control, assignedTick);
+            }
+
             case InputControlCommandKind.SetActiveContextMask:
             {
                 return ApplyContextMaskEnvelope(control, assignedTick);
@@ -1540,7 +1550,9 @@ public sealed partial class InputRouter
                 case PhysicalInputEventKind.PointerButtonDown:
                 case PhysicalInputEventKind.GamepadButtonDown:
                 {
-                    changed = SetDigitalControlState(envelope.Control, isDown: true, physicalEvent.HostTimestamp);
+                    var device = physicalEvent.Device
+                        ?? throw new InvalidOperationException("An admitted physical digital event has no device identity.");
+                    changed = SetPhysicalDigitalControlState(envelope.Control, isDown: true, device, physicalEvent.HostTimestamp);
                     break;
                 }
 
@@ -1548,13 +1560,25 @@ public sealed partial class InputRouter
                 case PhysicalInputEventKind.PointerButtonUp:
                 case PhysicalInputEventKind.GamepadButtonUp:
                 {
-                    changed = SetDigitalControlState(envelope.Control, isDown: false, physicalEvent.HostTimestamp);
+                    var device = physicalEvent.Device
+                        ?? throw new InvalidOperationException("An admitted physical digital event has no device identity.");
+                    changed = SetPhysicalDigitalControlState(envelope.Control, isDown: false, device, physicalEvent.HostTimestamp);
                     break;
                 }
 
                 case PhysicalInputEventKind.KeyRepeat:
                 {
-                    return;
+                    var device = physicalEvent.Device
+                        ?? throw new InvalidOperationException("An admitted physical key repeat has no device identity.");
+                    changed = SetPhysicalDigitalControlState(envelope.Control, isDown: true, device, physicalEvent.HostTimestamp);
+
+                    if (changed)
+                    {
+                        _ = _unreconciledControls.Add(envelope.Control);
+                        DisarmBindingsForControl(envelope.Control);
+                    }
+
+                    break;
                 }
 
                 case PhysicalInputEventKind.GamepadAxis:
@@ -1592,7 +1616,10 @@ public sealed partial class InputRouter
             : IsNeutralInput(envelope.PhysicalEvent
                 ?? throw new InvalidOperationException("An admitted input envelope has no physical event."));
 
-        if (wasUnreconciled && isNeutral)
+        var hasPhysicalSources = _physicalDigitalSources.TryGetValue(envelope.Control, out var physicalSources)
+            && (physicalSources.Count != 0);
+
+        if (wasUnreconciled && isNeutral && !IsControlDown(envelope.Control) && !hasPhysicalSources)
         {
             _ = _unreconciledControls.Remove(envelope.Control);
         }
@@ -1812,6 +1839,67 @@ public sealed partial class InputRouter
         }
     }
 
+    private ImmutableArray<InputActionTransition> ApplyPhysicalDeviceRemovalEnvelope(
+        InputControlEnvelope control,
+        long? assignedTick)
+    {
+        if ((control.PhysicalSourceDevice is not { IsValid: true } device)
+            || (control.CancellationReason != InputCancellationReason.DeviceRemoved)
+            || (control.InputClasses != (InputClass.Keyboard | InputClass.Pointing))
+            || (control.PlayerSlot is not null))
+        {
+            throw new InvalidOperationException("An admitted physical-device removal command has an invalid scope.");
+        }
+
+        var effectiveTick = assignedTick
+            ?? control.AssignedTick
+            ?? throw new InvalidOperationException("An admitted physical-device removal command has no assigned tick.");
+        var physicalEvent = new PhysicalInputEvent(
+            PhysicalInputEventKind.DeviceRemoved,
+            control.HostTimestamp,
+            control.HostSequence,
+            device: device);
+        var changed = false;
+
+        foreach (var entry in _physicalDigitalSources.ToArray())
+        {
+            if (!MatchesInputScope(entry.Key, control.InputClasses, control.PlayerSlot)
+                || !entry.Value.Remove(device))
+            {
+                continue;
+            }
+
+            if (entry.Value.Count != 0)
+            {
+                continue;
+            }
+
+            _ = _physicalDigitalSources.Remove(entry.Key);
+
+            if (!SetDigitalControlState(entry.Key, isDown: false, control.HostTimestamp))
+            {
+                continue;
+            }
+
+            var envelope = new InputEnvelope(
+                physicalEvent,
+                entry.Key,
+                control.HostTimestamp,
+                control.HostSequence,
+                effectiveTick,
+                late: false);
+            _ = UpdateAffectedBindingStates(entry.Key, envelope);
+            changed = true;
+        }
+
+        return changed
+            ? RecomputeAllActions(
+                control.HostSequence,
+                effectiveTick,
+                InputCancellationReason.DeviceRemoved)
+            : [];
+    }
+
     private bool CanCoalesceInputEnvelope(InputEnvelope previous, InputEnvelope next)
     {
         if ((previous.Injection is not { } previousInjection)
@@ -1908,6 +1996,7 @@ public sealed partial class InputRouter
         _consumptionLeases.Clear();
         _digitalControlDownTimestamps.Clear();
         _digitalControlStates.Clear();
+        _physicalDigitalSources.Clear();
         _inputControlInbox.Clear();
         _inputInbox.Clear();
         _inputInboxTail = null;
@@ -1936,6 +2025,11 @@ public sealed partial class InputRouter
         foreach (var control in _digitalControlStates.Keys.Where(key => MatchesInputScope(key, inputClasses, playerSlot)).ToArray())
         {
             _ = _digitalControlStates.Remove(control);
+        }
+
+        foreach (var control in _physicalDigitalSources.Keys.Where(key => MatchesInputScope(key, inputClasses, playerSlot)).ToArray())
+        {
+            _ = _physicalDigitalSources.Remove(control);
         }
 
         foreach (var control in _digitalControlDownTimestamps.Keys.Where(key => MatchesInputScope(key, inputClasses, playerSlot)).ToArray())
@@ -2043,14 +2137,20 @@ public sealed partial class InputRouter
         }
     }
 
-    private long DiscardPendingInputCopies(InputClass inputClasses, ushort? playerSlot)
+    private long DiscardPendingInputCopies(
+        InputClass inputClasses,
+        ushort? playerSlot,
+        InputDeviceHandle? physicalDevice = null)
     {
         var retainedInputs = new Queue<InputEnvelope>(_inputInbox.Count);
         long discardedInputCount = 0;
 
         while (_inputInbox.TryDequeue(out var envelope))
         {
-            if (MatchesInputScope(envelope.Control, inputClasses, playerSlot))
+            var matchesDevice = physicalDevice is not { } targetDevice
+                || (envelope.PhysicalEvent?.Device is { } sourceDevice && (sourceDevice == targetDevice));
+
+            if (matchesDevice && MatchesInputScope(envelope.Control, inputClasses, playerSlot))
             {
                 discardedInputCount = checked(discardedInputCount + envelope.ReplacementCount + 1);
             }
@@ -2266,6 +2366,7 @@ public sealed partial class InputRouter
         _inputInbox.Clear();
         _inputInboxTail = null;
         _digitalControlStates.Clear();
+        _physicalDigitalSources.Clear();
         _scalarControlValues.Clear();
         _vectorControlValues.Clear();
         MarkUnreconciledControls(InputClass.Keyboard | InputClass.Pointing | InputClass.Gamepad, playerSlot: null);
@@ -2506,6 +2607,79 @@ public sealed partial class InputRouter
         return snapshot;
     }
 
+    private InputRoutingReceipt QueuePhysicalDeviceRemoval(
+        InputDeviceHandle device,
+        long hostTimestamp,
+        long hostSequence,
+        out long discardedInputCount)
+    {
+        EnsureOwnerThread();
+        ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
+        ArgumentOutOfRangeException.ThrowIfLessThan(hostSequence, 1);
+        discardedInputCount = 0;
+
+        if (!device.IsValid)
+        {
+            return CreateRoutingRejection("InvalidDevice", "/Device");
+        }
+
+        if (_recipientKind != InputRecipientKind.SimulationTimeline)
+        {
+            return CreateRoutingRejection("InvalidRecipient", "/RecipientKind");
+        }
+
+        if (_isPaused)
+        {
+            return CreateRoutingRejection("Paused", "/Recipient");
+        }
+
+        if ((hostSequence <= _lastSeenHostSequence)
+            || (hostTimestamp < _hostControlTimestamp)
+            || (hostTimestamp < _lastSeenHostTimestamp))
+        {
+            return CreateRoutingRejection("InvalidEventOrder", "/HostSequence");
+        }
+
+        if (!CanAdmitControlCommand() || (_inputControlInbox.Count >= MaximumControlCommandsPerBoundary))
+        {
+            return CreateRoutingCapacityFailure("/InputControl");
+        }
+
+        var hostTick = _nextOpenTick;
+        var envelope = new InputControlEnvelope(
+            InputControlCommandKind.RemovePhysicalDevice,
+            Guid.Empty,
+            0,
+            0,
+            [],
+            _lastInsertionSequence,
+            InputClass.Keyboard | InputClass.Pointing,
+            null,
+            InputCancellationReason.DeviceRemoved,
+            [],
+            hostTimestamp,
+            hostSequence,
+            hostTick,
+            physicalSourceDevice: device);
+
+        discardedInputCount = DiscardPendingInputCopies(
+            InputClass.Keyboard | InputClass.Pointing,
+            playerSlot: null,
+            physicalDevice: device);
+        _inputControlInbox.Enqueue(envelope);
+        RecordHostControlSequence(hostSequence);
+        _hostControlTimestamp = hostTimestamp;
+        _lastSeenHostTimestamp = hostTimestamp;
+        _controlCommandsInBoundary++;
+
+        return new InputRoutingReceipt(
+            InputRoutingStatus.Applied,
+            _recipientId,
+            hostSequence,
+            hostTick,
+            null);
+    }
+
     private void RebuildOrderedContexts()
     {
         var contexts = new List<InputContextOrder>();
@@ -2586,7 +2760,11 @@ public sealed partial class InputRouter
         ];
     }
 
-    private void RecomputeAffectedActions(HashSet<InputControlKey> changedControls, long hostSequence, long assignedTick)
+    private void RecomputeAffectedActions(
+        HashSet<InputControlKey> changedControls,
+        long hostSequence,
+        long assignedTick,
+        InputCancellationReason? cancellationReason = null)
     {
         foreach (var mapState in _maps.Values.OrderBy(static state => state.Map.MapId.ToString("D"), StringComparer.Ordinal))
         {
@@ -2618,16 +2796,17 @@ public sealed partial class InputRouter
 
                 if (isAffected)
                 {
-                    InputCancellationReason? cancellationReason = mapState.ActionStates[action.ActionId].IsDownAtEnd
-                        && HasActiveConsumedBinding(mapState, action)
-                        ? InputCancellationReason.InputConsumed
-                        : null;
+                    var actionCancellationReason = cancellationReason
+                        ?? (mapState.ActionStates[action.ActionId].IsDownAtEnd
+                            && HasActiveConsumedBinding(mapState, action)
+                            ? InputCancellationReason.InputConsumed
+                            : null);
                     ProcessActionEvent(
                         mapState,
                         action,
                         hostSequence,
                         assignedTick,
-                        cancellationReason,
+                        actionCancellationReason,
                         _consumptionLeases);
                 }
             }
@@ -2839,6 +3018,47 @@ public sealed partial class InputRouter
         }
 
         return true;
+    }
+
+    private bool SetPhysicalDigitalControlState(
+        InputControlKey control,
+        bool isDown,
+        InputDeviceHandle device,
+        long hostTimestamp)
+    {
+        var wasDown = IsControlDown(control);
+
+        if (isDown)
+        {
+            if (!_physicalDigitalSources.TryGetValue(control, out var sources))
+            {
+                sources = [];
+                _physicalDigitalSources.Add(control, sources);
+            }
+
+            if (!sources.Add(device))
+            {
+                return false;
+            }
+        }
+        else if (_physicalDigitalSources.TryGetValue(control, out var existingSources))
+        {
+            if (!existingSources.Remove(device))
+            {
+                return false;
+            }
+
+            if (existingSources.Count == 0)
+            {
+                _ = _physicalDigitalSources.Remove(control);
+            }
+        }
+
+        var isDownAfter = _physicalDigitalSources.TryGetValue(control, out var activeSources)
+            && (activeSources.Count != 0);
+
+        return (wasDown != isDownAfter)
+            && SetDigitalControlState(control, isDownAfter, hostTimestamp);
     }
 
     private bool SetScalarControlValue(InputControlKey control, float value)
@@ -3239,6 +3459,7 @@ public sealed partial class InputRouter
     {
         CancelInput,
         ReconcileInput,
+        RemovePhysicalDevice,
         SetActiveContextMask,
     }
 
@@ -3256,7 +3477,8 @@ public sealed partial class InputRouter
         long hostTimestamp,
         long hostSequence,
         long? assignedTick,
-        ImmutableArray<PhysicalInputValue> physicalReconciliationInputs = default)
+        ImmutableArray<PhysicalInputValue> physicalReconciliationInputs = default,
+        InputDeviceHandle? physicalSourceDevice = null)
     {
         internal long? AssignedTick { get; } = assignedTick;
 
@@ -3281,6 +3503,8 @@ public sealed partial class InputRouter
         internal ulong NewMask { get; } = newMask;
 
         internal ImmutableArray<PhysicalInputValue> PhysicalReconciliationInputs { get; } = physicalReconciliationInputs;
+
+        internal InputDeviceHandle? PhysicalSourceDevice { get; } = physicalSourceDevice;
 
         internal ushort? PlayerSlot { get; } = playerSlot;
 
