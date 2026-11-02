@@ -264,6 +264,8 @@ Compare actual staged commands to the complete record **before** structural iden
 
 ## 2. Crash-safe writes
 
+`SaveOptions` names one absolute checkpoint destination and a `SaveDurabilityPolicy`; it does not select `Standard` or `StrictLocal`, which comes from the exact World profile. `RequireDurable` is the default. `BestEffort` is an explicit opt-in that may return `BestEffortCommitted` only when the platform cannot provide the requested durable replacement guarantee.
+
 `Single`-writer save channel per target path (capacity 8). Capture the exact snapshot version and allocate a checked monotonically increasing positive `long` transaction generation for that target; refusal precedes I/O at exhaustion. A separate random `Guid` identifies the unique `CreateNew` temporary sibling but does not determine transaction order. Flush payload and metadata to durable file via `FileStream.Flush(true)`, validate digest/length, then atomically replace the target on the same filesystem with previous backup. Concurrent generation checks prevent an older async completion overwriting newer state.
 
 On Windows, use `File.Replace` when the destination exists or a same-volume atomic move for the first write. On Linux, use rename plus directory fsync through a private native adapter where supported. A cross-volume/network filesystem without supported guarantees returns `DurabilityUnsupported` unless the caller explicitly selects documented `BestEffort` mode; never claim universal power-loss atomicity.

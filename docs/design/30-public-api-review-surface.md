@@ -7205,6 +7205,20 @@ public enum SaveStatus
     Rejected
 }
 
+public enum SaveDurabilityPolicy
+{
+    None = 0,
+    RequireDurable = 1,
+    BestEffort = 2
+}
+
+public sealed class SaveOptions
+{
+    public SaveOptions(string absoluteSavePath, SaveDurabilityPolicy durabilityPolicy = SaveDurabilityPolicy.RequireDurable);
+    public string AbsoluteSavePath { get; }
+    public SaveDurabilityPolicy DurabilityPolicy { get; }
+}
+
 public sealed class SaveReceipt
 {
     internal SaveReceipt(SaveStatus status, long? transactionGeneration, Diagnostic? diagnostic);
