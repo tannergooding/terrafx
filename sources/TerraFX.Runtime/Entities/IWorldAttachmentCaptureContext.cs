@@ -6,6 +6,8 @@ namespace TerraFX.Entities;
 
 internal interface IWorldAttachmentCaptureContext
 {
+    WorldAttachmentFactoryDescriptor Descriptor { get; }
+
     Exception? Failure { get; }
 
     bool IsActive { get; }

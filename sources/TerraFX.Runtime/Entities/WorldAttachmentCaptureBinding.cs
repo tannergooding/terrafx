@@ -16,6 +16,10 @@ public sealed class WorldAttachmentCaptureBinding
         _context = context;
     }
 
+    internal WorldAttachmentFactoryDescriptor Descriptor => _context.Descriptor;
+
+    internal Exception? Failure => _context.Failure;
+
     /// <summary>Reads the stable identity for one declared live-Entity reference.</summary>
     /// <param name="referenceField">The selected Entity-reference field descriptor.</param>
     /// <param name="entity">The live same-World Entity.</param>
@@ -51,6 +55,9 @@ public sealed class WorldAttachmentCaptureBinding
             throw _context.RecordFailure(exception);
         }
     }
+
+    internal bool IsBoundTo(WorldAttachmentFactoryDescriptor descriptor)
+        => ReferenceEquals(_context.Descriptor, descriptor);
 
     internal void Revoke() => _isActive = false;
 

@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Threading;
 
 namespace TerraFX.Entities;
 
@@ -14,6 +15,12 @@ internal interface IWorldAttachmentRegistration
 
     Type ValueType { get; }
 
+    nint CountStateRecord(
+        object value,
+        Guid? ownerEntityId,
+        WorldAttachmentCaptureBinding binding,
+        CancellationToken cancellationToken);
+
     void Release(object value, WorldAttachmentReleaseBinding binding);
 
     ImmutableArray<Diagnostic> Validate(World world, object value);
@@ -21,4 +28,11 @@ internal interface IWorldAttachmentRegistration
     void ValidateEntityReferences(World world, object value, Entity excludedEntity);
 
     void ValidateEntityReferences(World world, object value, IReadOnlySet<Entity> excludedEntities);
+
+    nint WriteStateRecord(
+        object value,
+        Guid? ownerEntityId,
+        scoped Span<byte> destination,
+        WorldAttachmentCaptureBinding binding,
+        CancellationToken cancellationToken);
 }

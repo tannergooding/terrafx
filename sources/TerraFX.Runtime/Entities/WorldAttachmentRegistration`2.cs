@@ -33,6 +33,28 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
 
     internal WorldAttachmentFactoryBinding<T, TAuthor> Binding => _binding;
 
+    public nint CountStateRecord(
+        object value,
+        Guid? ownerEntityId,
+        WorldAttachmentCaptureBinding binding,
+        CancellationToken cancellationToken)
+    {
+        var attachment = ValidateCaptureOperation(value, ownerEntityId, binding);
+        var count = _binding.Provider.Count(attachment, binding, cancellationToken);
+
+        if (binding.Failure is { } failure)
+        {
+            throw failure;
+        }
+
+        if (count < 0)
+        {
+            throw new InvalidOperationException("The attachment provider returned a negative encoded byte count.");
+        }
+
+        return count;
+    }
+
     public void Release(object value, WorldAttachmentReleaseBinding binding)
     {
         ArgumentNullException.ThrowIfNull(value);
@@ -95,6 +117,55 @@ internal sealed class WorldAttachmentRegistration<T, TAuthor> : IWorldAttachment
     {
         ArgumentNullException.ThrowIfNull(excludedEntities);
         ValidateEntityReferences(world, value, excludedEntity: null, excludedEntities: excludedEntities);
+    }
+
+    public nint WriteStateRecord(
+        object value,
+        Guid? ownerEntityId,
+        scoped Span<byte> destination,
+        WorldAttachmentCaptureBinding binding,
+        CancellationToken cancellationToken)
+    {
+        var attachment = ValidateCaptureOperation(value, ownerEntityId, binding);
+        var written = _binding.Provider.Write(attachment, destination, binding, cancellationToken);
+
+        if (binding.Failure is { } failure)
+        {
+            throw failure;
+        }
+
+        if ((written < 0) || (written > destination.Length))
+        {
+            throw new InvalidOperationException("The attachment provider reported an invalid encoded byte count.");
+        }
+
+        return written;
+    }
+
+    private T ValidateCaptureOperation(
+        object value,
+        Guid? ownerEntityId,
+        WorldAttachmentCaptureBinding binding)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        ArgumentNullException.ThrowIfNull(binding);
+
+        if (value is not T attachment)
+        {
+            throw new ArgumentException("The captured attachment does not match its registered CLR type.", nameof(value));
+        }
+
+        if (Scope == AttachmentScope.World != (ownerEntityId is null) || ownerEntityId == Guid.Empty)
+        {
+            throw new ArgumentException("The attachment owner identity does not match its registered scope.", nameof(ownerEntityId));
+        }
+
+        if (!binding.IsBoundTo(Descriptor))
+        {
+            throw new ArgumentException("The attachment capture binding belongs to another registered family.", nameof(binding));
+        }
+
+        return attachment;
     }
 
     private void ValidateEntityReferences(

@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 
 namespace TerraFX.Entities;
@@ -60,6 +61,37 @@ public sealed partial class World
             _activePersistenceCaptureLeaseSequence = 0;
             _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
             throw;
+        }
+    }
+
+    internal nint CountAttachmentStateRecord(
+        WorldPersistenceCaptureLease lease,
+        int attachmentIndex,
+        CancellationToken cancellationToken)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(this))
+        {
+            throw new ArgumentException("The persistence capture lease belongs to another World.", nameof(lease));
+        }
+
+        var entry = GetAttachmentCaptureEntry(attachmentIndex);
+        var registration = entry.Registration
+            ?? throw new InvalidOperationException("The transferred attachment has no captured state provider.");
+        var context = new AttachmentStateCaptureContext(this, registration.Descriptor);
+        var binding = new WorldAttachmentCaptureBinding(context);
+
+        try
+        {
+            var count = RunAttachmentCaptureCount(registration, entry, binding, cancellationToken);
+            lease.ValidateCurrent();
+            return count;
+        }
+        finally
+        {
+            binding.Revoke();
+            context.Revoke();
         }
     }
 
@@ -149,6 +181,18 @@ public sealed partial class World
         }
     }
 
+    internal AttachmentStateCaptureEnumerator CreateAttachmentStateEnumerator(WorldPersistenceCaptureLease lease)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(this))
+        {
+            throw new ArgumentException("The persistence capture lease belongs to another World.", nameof(lease));
+        }
+
+        return new AttachmentStateCaptureEnumerator(this, lease);
+    }
+
     internal ComponentStateCaptureEnumerator CreateComponentStateEnumerator(WorldPersistenceCaptureLease lease)
     {
         lease.ValidateCurrent();
@@ -220,6 +264,38 @@ public sealed partial class World
             || (publication.NextTickIndex != lease.NextTickIndex))
         {
             throw new InvalidOperationException("The committed publication changed during persistence capture.");
+        }
+    }
+
+    internal nint WriteAttachmentStateRecord(
+        WorldPersistenceCaptureLease lease,
+        int attachmentIndex,
+        scoped Span<byte> destination,
+        CancellationToken cancellationToken)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(this))
+        {
+            throw new ArgumentException("The persistence capture lease belongs to another World.", nameof(lease));
+        }
+
+        var entry = GetAttachmentCaptureEntry(attachmentIndex);
+        var registration = entry.Registration
+            ?? throw new InvalidOperationException("The transferred attachment has no captured state provider.");
+        var context = new AttachmentStateCaptureContext(this, registration.Descriptor);
+        var binding = new WorldAttachmentCaptureBinding(context);
+
+        try
+        {
+            var written = RunAttachmentCaptureWrite(registration, entry, destination, binding, cancellationToken);
+            lease.ValidateCurrent();
+            return written;
+        }
+        finally
+        {
+            binding.Revoke();
+            context.Revoke();
         }
     }
 
@@ -318,6 +394,40 @@ public sealed partial class World
         }
     }
 
+    private WorldAttachmentTable.AttachmentEntry GetAttachmentCaptureEntry(int attachmentIndex)
+    {
+        var entry = _attachments.GetEntry(attachmentIndex);
+
+        if (entry.Ownership != AttachmentOwnership.Transferred)
+        {
+            throw new ArgumentException("Only transferred authoritative attachments can be captured.", nameof(attachmentIndex));
+        }
+
+        var registration = entry.Registration
+            ?? throw new InvalidOperationException("The transferred attachment has no captured state provider.");
+        var value = entry.Value
+            ?? throw new InvalidOperationException("The transferred attachment has no value.");
+        var valueType = entry.ValueType
+            ?? throw new InvalidOperationException("The transferred attachment has no CLR type key.");
+
+        if ((registration.ValueType != valueType)
+            || !valueType.IsInstanceOfType(value)
+            || registration.Scope == AttachmentScope.World != (entry.OwnerEntityId is null)
+            || (entry.OwnerEntityId == Guid.Empty)
+            || !Registration.TryGetAttachment(registration.Scope, valueType, out var registered)
+            || !ReferenceEquals(registered, registration))
+        {
+            throw new InvalidOperationException("The attachment table entry does not match its frozen World registration.");
+        }
+
+        if ((entry.OwnerEntityId is { } ownerEntityId) && !TryGetEntity(ownerEntityId, out _))
+        {
+            throw new InvalidOperationException("An Entity-scoped attachment owner is not live in this World.");
+        }
+
+        return entry;
+    }
+
     private IComponentCaptureRegistration GetComponentCaptureRegistration(
         Entity entity,
         ContentSchemaReference schema,
@@ -373,6 +483,282 @@ public sealed partial class World
         system = _systemInstances[systemIndex]
             ?? throw new InvalidOperationException("The stateful system registration has no live World instance.");
         return registration;
+    }
+
+    [SuppressMessage("Usage", "CA1031:Do not catch general exception types", Justification = "The capture wrapper must preserve the first sticky reentrancy failure and revoke the attachment callback boundary.")]
+    private nint RunAttachmentCaptureCount(
+        IWorldAttachmentRegistration registration,
+        WorldAttachmentTable.AttachmentEntry entry,
+        WorldAttachmentCaptureBinding binding,
+        CancellationToken cancellationToken)
+    {
+        StartAttachmentCallback();
+        nint count = 0;
+        Exception? callbackFailure = null;
+
+        try
+        {
+            count = registration.CountStateRecord(
+                entry.Value ?? throw new InvalidOperationException("The transferred attachment has no value."),
+                entry.OwnerEntityId,
+                binding,
+                cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            callbackFailure = exception;
+        }
+        finally
+        {
+            StopAttachmentCallback();
+        }
+
+        var stickyFailure = Interlocked.Exchange(ref _attachmentCallbackStickyFailure, null);
+
+        if (stickyFailure is not null)
+        {
+            throw stickyFailure;
+        }
+
+        if (callbackFailure is not null)
+        {
+            throw callbackFailure;
+        }
+
+        return count;
+    }
+
+    [SuppressMessage("Usage", "CA1031:Do not catch general exception types", Justification = "The capture wrapper must preserve the first sticky reentrancy failure and revoke the attachment callback boundary.")]
+    private nint RunAttachmentCaptureWrite(
+        IWorldAttachmentRegistration registration,
+        WorldAttachmentTable.AttachmentEntry entry,
+        scoped Span<byte> destination,
+        WorldAttachmentCaptureBinding binding,
+        CancellationToken cancellationToken)
+    {
+        StartAttachmentCallback();
+        nint written = 0;
+        Exception? callbackFailure = null;
+
+        try
+        {
+            written = registration.WriteStateRecord(
+                entry.Value ?? throw new InvalidOperationException("The transferred attachment has no value."),
+                entry.OwnerEntityId,
+                destination,
+                binding,
+                cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            callbackFailure = exception;
+        }
+        finally
+        {
+            StopAttachmentCallback();
+        }
+
+        var stickyFailure = Interlocked.Exchange(ref _attachmentCallbackStickyFailure, null);
+
+        if (stickyFailure is not null)
+        {
+            throw stickyFailure;
+        }
+
+        if (callbackFailure is not null)
+        {
+            throw callbackFailure;
+        }
+
+        return written;
+    }
+
+    internal sealed class AttachmentStateCaptureContext : IWorldAttachmentCaptureContext
+    {
+        private readonly WorldAttachmentFactoryDescriptor _descriptor;
+        private Exception? _failure;
+        private bool _isActive = true;
+        private World? _world;
+
+        internal AttachmentStateCaptureContext(World world, WorldAttachmentFactoryDescriptor descriptor)
+        {
+            ArgumentNullException.ThrowIfNull(world);
+            ArgumentNullException.ThrowIfNull(descriptor);
+            _world = world;
+            _descriptor = descriptor;
+            OwnerThreadId = world._ownerThreadId;
+        }
+
+        public WorldAttachmentFactoryDescriptor Descriptor => _descriptor;
+
+        public Exception? Failure => _failure;
+
+        public bool IsActive => _isActive && (_world is not null);
+
+        public int OwnerThreadId { get; }
+
+        public Guid GetEntityId(WorldAttachmentFieldDescriptor referenceField, Entity entity)
+        {
+            EnsureActive();
+            ArgumentNullException.ThrowIfNull(referenceField);
+
+            if (!IsRegisteredEntityReferenceField(referenceField) || !entity.IsValid)
+            {
+                throw RecordFailure(new ArgumentException(
+                    "The selected field or Entity does not match this attachment capture operation.",
+                    nameof(referenceField)));
+            }
+
+            var world = _world
+                ?? throw RecordFailure(new InvalidOperationException("The attachment capture context has expired."));
+            _ = world.GetLiveArchetype(entity, out _, out _);
+            var entityId = world._identityLedger.GetAssignedId(IdentityKind.Entity, entity.Index);
+
+            if (entityId == Guid.Empty)
+            {
+                throw RecordFailure(new InvalidOperationException("The attachment capture context returned an empty Entity identity."));
+            }
+
+            return entityId;
+        }
+
+        public Exception RecordFailure(Exception exception)
+        {
+            ArgumentNullException.ThrowIfNull(exception);
+            _failure ??= exception;
+            return _failure;
+        }
+
+        internal void Revoke()
+        {
+            _world = null;
+            _isActive = false;
+        }
+
+        private void EnsureActive()
+        {
+            var world = _world
+                ?? throw RecordFailure(new InvalidOperationException("The attachment capture context has expired."));
+
+            if (!_isActive || (Environment.CurrentManagedThreadId != OwnerThreadId))
+            {
+                throw RecordFailure(new InvalidOperationException("The attachment capture context has expired or is restricted to its issuing thread."));
+            }
+
+            if (Volatile.Read(ref world._isAttachmentCallbackActive) == 0)
+            {
+                throw RecordFailure(new InvalidOperationException("The attachment capture context is not within its provider callback."));
+            }
+        }
+
+        private bool IsRegisteredEntityReferenceField(WorldAttachmentFieldDescriptor referenceField)
+        {
+            if ((referenceField.Schema != _descriptor.Schema)
+                || (referenceField.Field.WireKind != 11)
+                || (referenceField.Field.Reference != ContentReferenceKind.Entity))
+            {
+                return false;
+            }
+
+            foreach (var field in _descriptor.Fields)
+            {
+                if (ReferenceEquals(field, referenceField))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
+    internal ref struct AttachmentStateCaptureEnumerator
+    {
+        private readonly World _world;
+        private readonly WorldPersistenceCaptureLease _lease;
+        private int _entryIndex;
+        private bool _hasCurrent;
+        private WorldAttachmentTable.AttachmentEntry _currentEntry;
+
+        internal AttachmentStateCaptureEnumerator(World world, WorldPersistenceCaptureLease lease)
+        {
+            _world = world;
+            _lease = lease;
+            _entryIndex = -1;
+            _hasCurrent = false;
+            _currentEntry = default;
+        }
+
+        internal readonly int CurrentIndex
+        {
+            get
+            {
+                ValidateCurrent();
+                return _entryIndex;
+            }
+        }
+
+        internal readonly Guid? CurrentOwnerEntityId
+        {
+            get
+            {
+                ValidateCurrent();
+                return _currentEntry.OwnerEntityId;
+            }
+        }
+
+        internal readonly ContentSchemaReference CurrentSchema
+        {
+            get
+            {
+                ValidateCurrent();
+                return _currentEntry.Registration?.Descriptor.Schema
+                    ?? throw new InvalidOperationException("The current attachment capture record has no registration.");
+            }
+        }
+
+        internal readonly AttachmentScope CurrentScope
+        {
+            get
+            {
+                ValidateCurrent();
+                return _currentEntry.Registration?.Scope
+                    ?? throw new InvalidOperationException("The current attachment capture record has no registration.");
+            }
+        }
+
+        internal bool MoveNext()
+        {
+            _lease.ValidateCurrent();
+            _hasCurrent = false;
+            _currentEntry = default;
+
+            while (++_entryIndex < _world._attachments.Count)
+            {
+                var entry = _world._attachments.GetEntry(_entryIndex);
+
+                if (entry.Ownership != AttachmentOwnership.Transferred)
+                {
+                    continue;
+                }
+
+                _currentEntry = _world.GetAttachmentCaptureEntry(_entryIndex);
+                _hasCurrent = true;
+                return true;
+            }
+
+            return false;
+        }
+
+        private readonly void ValidateCurrent()
+        {
+            _lease.ValidateCurrent();
+
+            if (!_hasCurrent)
+            {
+                throw new InvalidOperationException("The attachment capture enumerator has no current record.");
+            }
+        }
     }
 
     internal sealed class ComponentStateCaptureContext : IComponentCaptureContext

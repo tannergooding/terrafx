@@ -106,6 +106,13 @@ internal sealed class WorldAttachmentTable
         return checked(ArrayBytes(newCapacity) - _ownedByteReservation);
     }
 
+    internal AttachmentEntry GetEntry(int entryIndex)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(entryIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(entryIndex, _count);
+        return _entries[entryIndex];
+    }
+
     internal bool HasTransferredOwner(Guid ownerEntityId)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(ownerEntityId, Guid.Empty);

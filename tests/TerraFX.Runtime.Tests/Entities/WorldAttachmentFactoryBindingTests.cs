@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Buffers.Binary;
 using System.Collections.Immutable;
 using System.Threading;
 using NUnit.Framework;
@@ -77,6 +78,7 @@ internal sealed class WorldAttachmentFactoryBindingTests
             schema,
             [valueBinding, targetBinding],
             provider);
+        provider.TargetField = binding.Descriptor.Fields[1];
 
         Assert.That(binding.Descriptor.Schema, Is.EqualTo(schema));
         Assert.That(binding.Descriptor.FactoryVersion, Is.EqualTo(1));
@@ -127,6 +129,8 @@ internal sealed class WorldAttachmentFactoryBindingTests
             WorldGuid = Guid.NewGuid(),
         });
         var target = world.CreateEntity(new EntityDescription());
+        var captureOwner = world.CreateEntity(new EntityDescription());
+        var captureOwnerId = world.GetEntityId(captureOwner);
         Assert.That(
             () => world.SetAttachment(new ProbeAttachment { Target = target }, AttachmentOwnership.CallerOwned),
             Throws.ArgumentException);
@@ -145,15 +149,74 @@ internal sealed class WorldAttachmentFactoryBindingTests
         provider.CaughtReentrancyFailure = null;
         Assert.That(world.TryGetAttachment<ProbeAttachment>(out _), Is.False);
 
+        var entityScoped = new ProbeAttachment { Counter = 11, Target = target };
+        world.SetAttachment(captureOwner, entityScoped, AttachmentOwnership.Transferred);
         var first = new ProbeAttachment { Counter = 12, Target = target };
         world.SetAttachment(first, AttachmentOwnership.Transferred);
         Assert.That(world.TryGetAttachment<ProbeAttachment>(out var stored), Is.True);
         Assert.That(stored, Is.SameAs(first));
         Assert.That(provider.ReleaseCount, Is.Zero);
 
+        var targetId = world.GetEntityId(target);
+        _ = world.Step();
+
+        using (var lease = world.AcquirePersistenceCaptureLease())
+        {
+            var enumerator = lease.GetAttachmentStateEnumerator();
+            var capturedRecordCount = 0;
+            var capturedWorldScope = false;
+            var capturedEntityScope = false;
+
+            while (enumerator.MoveNext())
+            {
+                var scope = enumerator.CurrentScope;
+                var ownerEntityId = enumerator.CurrentOwnerEntityId;
+                long expectedCounter;
+
+                if (scope == AttachmentScope.World)
+                {
+                    Assert.That(ownerEntityId, Is.Null);
+                    capturedWorldScope = true;
+                    expectedCounter = 12;
+                }
+                else
+                {
+                    Assert.That(scope, Is.EqualTo(AttachmentScope.Entity));
+                    Assert.That(ownerEntityId, Is.EqualTo(captureOwnerId));
+                    capturedEntityScope = true;
+                    expectedCounter = 11;
+                }
+
+                Assert.That(enumerator.CurrentSchema, Is.EqualTo(schema));
+                var byteCount = lease.CountAttachmentStateRecord(enumerator.CurrentIndex, CancellationToken.None);
+                Assert.That(byteCount, Is.EqualTo((nint)(sizeof(long) + 1 + 16)));
+                var encoded = new byte[checked((int)byteCount)];
+                var written = lease.WriteAttachmentStateRecord(
+                    enumerator.CurrentIndex,
+                    encoded,
+                    CancellationToken.None);
+                var expected = new byte[sizeof(long) + 1 + 16];
+                BinaryPrimitives.WriteInt64LittleEndian(expected, expectedCounter);
+                expected[sizeof(long)] = 1;
+                _ = targetId.TryWriteBytes(expected.AsSpan(sizeof(long) + 1), bigEndian: true, out var guidBytesWritten);
+
+                Assert.That(guidBytesWritten, Is.EqualTo(16));
+                Assert.That(written, Is.EqualTo(byteCount));
+                Assert.That(encoded, Is.EqualTo(expected));
+                capturedRecordCount++;
+            }
+
+            Assert.That(capturedRecordCount, Is.EqualTo(2));
+            Assert.That(capturedWorldScope, Is.True);
+            Assert.That(capturedEntityScope, Is.True);
+        }
+
+        Assert.That(world.RemoveAttachment<ProbeAttachment>(captureOwner), Is.True);
+        Assert.That(provider.ReleaseCount, Is.EqualTo(1));
+
         var second = new ProbeAttachment { Counter = 13, Target = target };
         world.SetAttachment(second, AttachmentOwnership.Transferred);
-        Assert.That(provider.ReleaseCount, Is.EqualTo(1));
+        Assert.That(provider.ReleaseCount, Is.EqualTo(2));
         Assert.That(provider.LastReleasedValue, Is.SameAs(first));
         Assert.That(provider.LastReleaseBinding!.WorldGuid, Is.EqualTo(world.WorldGuid));
         Assert.That(provider.LastReleaseBinding.ReplacementInstallationId, Is.GreaterThan(0));
@@ -178,7 +241,7 @@ internal sealed class WorldAttachmentFactoryBindingTests
 
         Assert.That(world.RemoveAttachment<ProbeAttachment>(), Is.True);
         Assert.That(world.RemoveAttachment<ProbeAttachment>(), Is.False);
-        Assert.That(provider.ReleaseCount, Is.EqualTo(3));
+        Assert.That(provider.ReleaseCount, Is.EqualTo(4));
         Assert.That(provider.LastReleasedValue, Is.SameAs(third));
         Assert.That(provider.LastReleaseBinding!.ReplacementInstallationId, Is.Null);
 
@@ -198,7 +261,7 @@ internal sealed class WorldAttachmentFactoryBindingTests
         Assert.That(provider.LastReleasedValue, Is.SameAs(entityValue));
         Assert.That(provider.LastReleaseBinding!.Scope, Is.EqualTo(AttachmentScope.Entity));
         Assert.That(provider.LastReleaseBinding.OwnerEntityId, Is.EqualTo(entityOwnerId));
-        Assert.That(provider.ReleaseCount, Is.EqualTo(4));
+        Assert.That(provider.ReleaseCount, Is.EqualTo(5));
 
         var referencedTarget = world.CreateEntity(new EntityDescription());
         var referencedTargetId = world.GetEntityId(referencedTarget);
@@ -249,7 +312,7 @@ internal sealed class WorldAttachmentFactoryBindingTests
         Assert.That(disposalException.PrimaryFailure.Scope, Is.EqualTo(AttachmentScope.World));
         Assert.That(disposalException.PrimaryFailure.OwnerEntityId, Is.Null);
         Assert.That(provider.LastReleaseBinding!.ReplacementInstallationId, Is.Null);
-        Assert.That(provider.ReleaseCount, Is.EqualTo(72));
+        Assert.That(provider.ReleaseCount, Is.EqualTo(73));
     }
 
     [Test]
@@ -308,11 +371,26 @@ internal sealed class WorldAttachmentFactoryBindingTests
 
         internal Exception? ReleaseFailure { get; set; }
 
+        internal WorldAttachmentFieldDescriptor? TargetField { get; set; }
+
         public nint Count(
             ProbeAttachment value,
             WorldAttachmentCaptureBinding binding,
             CancellationToken cancellationToken)
-            => throw new NotSupportedException();
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var byteCount = sizeof(long) + 1;
+
+            if (value.Target is { } target)
+            {
+                _ = binding.GetEntityId(
+                    TargetField ?? throw new InvalidOperationException("The attachment target field was not captured."),
+                    target);
+                byteCount += 16;
+            }
+
+            return byteCount;
+        }
 
         public WorldAttachmentReadResult<ProbeAuthor> Read(
             scoped ReadOnlySpan<byte> source,
@@ -363,7 +441,25 @@ internal sealed class WorldAttachmentFactoryBindingTests
             scoped Span<byte> destination,
             WorldAttachmentCaptureBinding binding,
             CancellationToken cancellationToken)
-            => throw new NotSupportedException();
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Guid? targetId = (value.Target is { } target)
+                ? binding.GetEntityId(
+                    TargetField ?? throw new InvalidOperationException("The attachment target field was not captured."),
+                    target)
+                : null;
+            var byteCount = sizeof(long) + 1 + (targetId is null ? 0 : 16);
+            ArgumentOutOfRangeException.ThrowIfLessThan(destination.Length, byteCount);
+            BinaryPrimitives.WriteInt64LittleEndian(destination, value.Counter);
+            destination[sizeof(long)] = targetId is null ? (byte)0 : (byte)1;
+
+            if (targetId is { } entityId)
+            {
+                _ = entityId.TryWriteBytes(destination.Slice(sizeof(long) + 1, 16), bigEndian: true, out _);
+            }
+
+            return byteCount;
+        }
     }
 
     private readonly struct AttachmentTargetReader : IComponentOptionalReader<ProbeAttachment, Entity>

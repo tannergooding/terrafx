@@ -78,6 +78,12 @@ internal ref struct WorldPersistenceCaptureLease
 
     internal readonly Guid WorldGuid => _worldGuid;
 
+    internal readonly nint CountAttachmentStateRecord(int attachmentIndex, CancellationToken cancellationToken)
+    {
+        ValidateCurrent();
+        return _world.CountAttachmentStateRecord(this, attachmentIndex, cancellationToken);
+    }
+
     internal readonly nint CountComponentStateRecord(
         Entity entity,
         ContentSchemaReference schema,
@@ -110,6 +116,12 @@ internal ref struct WorldPersistenceCaptureLease
         _isDisposed = true;
     }
 
+    internal readonly World.AttachmentStateCaptureEnumerator GetAttachmentStateEnumerator()
+    {
+        ValidateCurrent();
+        return _world.CreateAttachmentStateEnumerator(this);
+    }
+
     internal readonly World.ComponentStateCaptureEnumerator GetComponentStateEnumerator()
     {
         ValidateCurrent();
@@ -139,6 +151,15 @@ internal ref struct WorldPersistenceCaptureLease
         }
 
         _world.ValidatePersistenceCaptureLease(this);
+    }
+
+    internal readonly nint WriteAttachmentStateRecord(
+        int attachmentIndex,
+        scoped Span<byte> destination,
+        CancellationToken cancellationToken)
+    {
+        ValidateCurrent();
+        return _world.WriteAttachmentStateRecord(this, attachmentIndex, destination, cancellationToken);
     }
 
     internal readonly nint WriteComponentStateRecord(
