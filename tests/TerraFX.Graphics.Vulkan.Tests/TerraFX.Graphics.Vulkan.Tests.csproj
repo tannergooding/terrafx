@@ -3,6 +3,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <ProjectReference Include="..\..\sources\TerraFX.Content.Tools\TerraFX.Content.Tools.csproj" />
     <ProjectReference Include="..\..\sources\TerraFX.Graphics.Vulkan\TerraFX.Graphics.Vulkan.csproj" />
   </ItemGroup>
 

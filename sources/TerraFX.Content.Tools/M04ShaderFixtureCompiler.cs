@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using TerraFX.Graphics;
 
 namespace TerraFX.Content.Tools;
 
@@ -18,6 +19,13 @@ internal static class M04ShaderFixtureCompiler
     private const string ShaderEntryPointSampledPixel = "PSSampledMain";
     private const string ShaderEntryPointVertex = "VSMain";
     private const string ShaderFileName = "M04OffscreenTriangle.hlsl";
+    private static readonly string[] s_stageNames = [
+        "vertex",
+        "pixel",
+        "pixel-sampled",
+        "pixel-sampled-frame",
+        "pixel-sampled-frame-storage",
+    ];
     private static readonly string[] s_versionArguments = ["--version"];
 
     internal static async Task CompileAsync(string outputDirectory, CancellationToken cancellationToken)
@@ -123,6 +131,11 @@ internal static class M04ShaderFixtureCompiler
                 "ps_6_0",
                 "pixel-sampled-frame-storage",
                 cancellationToken).ConfigureAwait(false);
+
+            foreach (var stageName in s_stageNames)
+            {
+                _ = ReadTypedReflection(stagingDirectory, stageName);
+            }
 
             cancellationToken.ThrowIfCancellationRequested();
             Directory.Move(stagingDirectory, finalOutputDirectory);
@@ -232,6 +245,41 @@ internal static class M04ShaderFixtureCompiler
                 Directory.Delete(stagingDirectory, recursive: true);
             }
         }
+    }
+
+    internal static ShaderReflection ReadTypedReflection(string outputDirectory, string stageName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(stageName);
+
+        var entryPoint = stageName switch {
+            "vertex" => ShaderEntryPointVertex,
+            "pixel" => ShaderEntryPointPixel,
+            "pixel-sampled" => ShaderEntryPointSampledPixel,
+            "pixel-sampled-frame" => ShaderEntryPointSampledFramePixel,
+            "pixel-sampled-frame-storage" => ShaderEntryPointSampledFrameStoragePixel,
+            _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
+        };
+        var outputRoot = Path.GetFullPath(outputDirectory);
+        var dxilReflection = File.ReadAllText(Path.Combine(
+            outputRoot,
+            $"M04OffscreenTriangle.{stageName}.dxil-reflection.txt"));
+        var spirvReflection = File.ReadAllText(Path.Combine(
+            outputRoot,
+            $"M04OffscreenTriangle.{stageName}.reflection.json"));
+        var spirvBytecode = File.ReadAllBytes(Path.Combine(
+            outputRoot,
+            $"M04OffscreenTriangle.{stageName}.spv"));
+        var manifest = LoadManifest(AppContext.BaseDirectory);
+
+        ValidateDxilReflection(dxilReflection, entryPoint, stageName);
+        ValidateReflection(spirvReflection, entryPoint, stageName);
+
+        return M04ShaderReflectionReader.Read(
+            dxilReflection,
+            spirvReflection,
+            spirvBytecode,
+            manifest.CompilerIdentity);
     }
 
     internal static async Task VerifyDxcAsync(CancellationToken cancellationToken)

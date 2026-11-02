@@ -1,12 +1,14 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Immutable;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
+using TerraFX.Graphics;
 
 namespace TerraFX.Content.Tools.Tests;
 
@@ -39,6 +41,24 @@ internal sealed class M04ShaderFixtureCompilerTests
         }
 
         throw new InvalidDataException($"DXIL reflection omitted the resource binding for '{resourceName}'.");
+    }
+
+    private static void AssertFrameDataRecord(ShaderReflection reflection)
+    {
+        Assert.That(reflection.RecordLayouts.Length, Is.EqualTo(1));
+        var record = reflection.RecordLayouts[0];
+        Assert.That(record.Name, Is.EqualTo("FrameData"));
+        Assert.That(record.ByteLength, Is.EqualTo(16));
+        Assert.That(record.Fields.Length, Is.EqualTo(1));
+        Assert.That(
+            record.Fields[0],
+            Is.EqualTo(new ShaderFieldLayout(
+                "color",
+                ShaderValueType.Float4,
+                byteOffset: 0,
+                byteLength: 16,
+                arrayCount: 1,
+                arrayStride: 0)));
     }
 
     private static void AssertReflectedEntryPoint(JsonDocument reflection, string name, string stage)
@@ -149,6 +169,55 @@ internal sealed class M04ShaderFixtureCompilerTests
             AssertReflectedFrameUniformBuffer(sampledFrameStoragePixelReflection);
             AssertReflectedSampledResources(sampledFrameStoragePixelReflection);
             AssertReflectedStorageResources(sampledFrameStoragePixelReflection);
+
+            var typedVertexReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "vertex");
+            var typedPixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "pixel");
+            var typedSampledReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "pixel-sampled");
+            var typedSampledFrameReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "pixel-sampled-frame");
+            var typedStorageReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "pixel-sampled-frame-storage");
+
+            Assert.That(typedVertexReflection.Stage, Is.EqualTo(ShaderStage.Vertex));
+            Assert.That(typedVertexReflection.EntryPoint, Is.EqualTo("VSMain"));
+            Assert.That(
+                typedVertexReflection.Inputs,
+                Is.EqualTo(ImmutableArray.Create(new ShaderIoSignature(
+                    "SV_VertexID",
+                    0,
+                    location: null,
+                    ShaderValueType.UInt1,
+                    ShaderInterpolation.Flat))));
+            Assert.That(
+                typedVertexReflection.Outputs,
+                Is.EqualTo(ImmutableArray.Create(new ShaderIoSignature(
+                    "SV_Position",
+                    0,
+                    location: null,
+                    ShaderValueType.Float4,
+                    ShaderInterpolation.NoPerspective))));
+
+            Assert.That(typedPixelReflection.Stage, Is.EqualTo(ShaderStage.Pixel));
+            Assert.That(typedPixelReflection.EntryPoint, Is.EqualTo("PSMain"));
+            Assert.That(typedPixelReflection.Resources, Does.Contain(
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1)));
+            AssertFrameDataRecord(typedPixelReflection);
+
+            Assert.That(typedSampledReflection.EntryPoint, Is.EqualTo("PSSampledMain"));
+            Assert.That(typedSampledReflection.Resources, Does.Contain(
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.SampledImage, 1)));
+            Assert.That(typedSampledReflection.Resources, Does.Contain(
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.Sampler, 1)));
+
+            Assert.That(typedSampledFrameReflection.EntryPoint, Is.EqualTo("PSSampledFrameMain"));
+            Assert.That(typedSampledFrameReflection.RecordLayouts.Length, Is.EqualTo(1));
+            Assert.That(typedSampledFrameReflection.Resources.Length, Is.EqualTo(3));
+
+            Assert.That(typedStorageReflection.EntryPoint, Is.EqualTo("PSSampledFrameStorageMain"));
+            Assert.That(typedStorageReflection.Resources.Length, Is.EqualTo(5));
+            Assert.That(typedStorageReflection.Resources, Does.Contain(
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, 1)));
+            Assert.That(typedStorageReflection.Resources, Does.Contain(
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 1, ShaderResourceKind.StorageImage, 1)));
+            AssertFrameDataRecord(typedStorageReflection);
         }
         finally
         {

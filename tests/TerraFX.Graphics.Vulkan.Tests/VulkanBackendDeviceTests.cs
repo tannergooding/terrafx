@@ -8,6 +8,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using NUnit.Framework;
 using TerraFX.Buffers;
+using TerraFX.Content.Tools;
 using TerraFX.Graphics;
 using TerraFX.Graphics.Vulkan;
 using TerraFX.Interop.Vulkan;
@@ -202,6 +203,28 @@ internal sealed class VulkanBackendDeviceTests
             bindingLayoutVersion: 1);
     }
 
+    private static GraphicsPipelineDescription CreateShaderPipelineDescription(
+        BufferReadLease<byte> vertexBytecode,
+        ShaderReflection vertexReflection,
+        BufferReadLease<byte> pixelBytecode,
+        ShaderReflection pixelReflection,
+        PipelineBlendMode blendMode)
+        => new(
+            [
+                new ShaderBytecodeInput(ShaderStage.Vertex, ShaderBinaryFormat.SpirV, vertexBytecode, vertexReflection),
+                new ShaderBytecodeInput(ShaderStage.Pixel, ShaderBinaryFormat.SpirV, pixelBytecode, pixelReflection),
+            ],
+            [],
+            vertexStride: 0,
+            [TextureFormat.Rgba8Unorm],
+            depthTargetFormat: null,
+            PrimitiveTopology.TriangleList,
+            blendMode,
+            PipelineDepthMode.Disabled,
+            PipelineCullMode.None,
+            frontFaceClockwise: false,
+            bindingLayoutVersion: 1);
+
     private static ShaderReflection CreateShaderReflectionWithStageIo(
         ShaderReflection reflection,
         ImmutableArray<ShaderIoSignature> inputs,
@@ -219,6 +242,19 @@ internal sealed class VulkanBackendDeviceTests
             reflection.GroupSizeX,
             reflection.GroupSizeY,
             reflection.GroupSizeZ);
+
+    private static GraphicsPipelineDescription CreateTypedShaderFixtureDescription(
+        string fixtureDirectory,
+        string pixelStageName,
+        BufferReadLease<byte> vertexBytecode,
+        BufferReadLease<byte> pixelBytecode,
+        PipelineBlendMode blendMode = PipelineBlendMode.Opaque)
+        => CreateShaderPipelineDescription(
+            vertexBytecode,
+            M04ShaderFixtureCompiler.ReadTypedReflection(fixtureDirectory, "vertex"),
+            pixelBytecode,
+            M04ShaderFixtureCompiler.ReadTypedReflection(fixtureDirectory, pixelStageName),
+            blendMode);
 
     private static VulkanBackendDevice CreateVulkanDeviceForNativeSmokeTest()
     {
@@ -311,7 +347,7 @@ internal sealed class VulkanBackendDeviceTests
         using var vertexLease = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
         using var pixelLease = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
         using var pipeline = device.CreatePipeline(
-            CreateShaderFixtureDescription(vertexLease, pixelLease),
+            CreateTypedShaderFixtureDescription(fixtureDirectory, "pixel", vertexLease, pixelLease),
             [vertexLease, pixelLease]);
         using var buffer = device.CreateBuffer(
             new BufferDescription(
@@ -387,11 +423,11 @@ internal sealed class VulkanBackendDeviceTests
         using var vertexLease = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
         using var pixelLease = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
         using var pipeline = device.CreatePipeline(
-            CreateShaderFixtureDescription(
+            CreateTypedShaderFixtureDescription(
+                fixtureDirectory,
+                "pixel-sampled",
                 vertexLease,
-                pixelLease,
-                usesSampledResources: true,
-                includesFrameUniformBuffer: false),
+                pixelLease),
             [vertexLease, pixelLease]);
         using var texture = device.CreateTexture(
             new TextureDescription(
@@ -491,10 +527,11 @@ internal sealed class VulkanBackendDeviceTests
         using var vertexLease = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
         using var pixelLease = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
         using var pipeline = device.CreatePipeline(
-            CreateShaderFixtureDescription(
+            CreateTypedShaderFixtureDescription(
+                fixtureDirectory,
+                "pixel-sampled-frame",
                 vertexLease,
-                pixelLease,
-                usesSampledResources: true),
+                pixelLease),
             [vertexLease, pixelLease]);
         using var buffer = device.CreateBuffer(
             new BufferDescription(
@@ -621,11 +658,11 @@ internal sealed class VulkanBackendDeviceTests
         using var vertexLease = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
         using var pixelLease = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
         using var pipeline = device.CreatePipeline(
-            CreateShaderFixtureDescription(
+            CreateTypedShaderFixtureDescription(
+                fixtureDirectory,
+                "pixel-sampled-frame-storage",
                 vertexLease,
-                pixelLease,
-                usesSampledResources: true,
-                includesStorageResources: true),
+                pixelLease),
             [vertexLease, pixelLease]);
         using var uniformBuffer = device.CreateBuffer(
             new BufferDescription(
@@ -944,7 +981,9 @@ internal sealed class VulkanBackendDeviceTests
         using var vertexLease = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
         using var pixelLease = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
         using var pipeline = device.CreatePipeline(
-            CreateShaderFixtureDescription(
+            CreateTypedShaderFixtureDescription(
+                fixtureDirectory,
+                "pixel",
                 vertexLease,
                 pixelLease,
                 PipelineBlendMode.PremultipliedAlpha),
@@ -954,6 +993,39 @@ internal sealed class VulkanBackendDeviceTests
         Assert.That(
             device.Dispose,
             Throws.InvalidOperationException.With.Message.Contains("live pipeline owners"));
+    }
+
+    [Test]
+    public void OffscreenNativeDeviceCreatesPipelineFromTypedCompiledReflection()
+    {
+        var fixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
+
+        if (string.IsNullOrWhiteSpace(fixtureDirectory))
+        {
+            Assert.Ignore("The compiled M04 shader fixture is not selected through TERRAFX_M04_SHADER_FIXTURE_DIRECTORY.");
+            return;
+        }
+
+        using var device = CreateVulkanDeviceForNativeSmokeTest();
+        using var vertexStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.vertex.spv"));
+        using var pixelStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.pixel-sampled-frame-storage.spv"));
+        using var vertexLease = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
+        using var pixelLease = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
+
+        using var pipeline = device.CreatePipeline(
+            CreateTypedShaderFixtureDescription(
+                fixtureDirectory,
+                "pixel-sampled-frame-storage",
+                vertexLease,
+                pixelLease),
+            [vertexLease, pixelLease]);
+
+        Assert.That(pipeline.IsDisposed, Is.False);
+        Assert.That(pipeline.DescriptorSetLayouts.Length, Is.EqualTo(1));
     }
 
     [Test]
@@ -977,11 +1049,11 @@ internal sealed class VulkanBackendDeviceTests
         using var vertexLease = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
         using var pixelLease = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
         using var pipeline = device.CreatePipeline(
-            CreateShaderFixtureDescription(
+            CreateTypedShaderFixtureDescription(
+                fixtureDirectory,
+                "pixel-sampled",
                 vertexLease,
-                pixelLease,
-                usesSampledResources: true,
-                includesFrameUniformBuffer: false),
+                pixelLease),
             [vertexLease, pixelLease]);
 
         Assert.That(pipeline.IsDisposed, Is.False);
