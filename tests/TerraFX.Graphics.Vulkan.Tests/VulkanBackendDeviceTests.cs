@@ -1,6 +1,9 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Immutable;
+using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using NUnit.Framework;
 using TerraFX.Buffers;
@@ -29,6 +32,111 @@ internal sealed class VulkanBackendDeviceTests
         var copyAction = new ReadbackCopyAction(actual);
         lease.UseWindow(0, actual.Length, ref copyAction);
         Assert.That(actual, Is.EqualTo(expected));
+    }
+
+    private static OwnedBuffer<byte> CreateBytecodeStorage(byte[] bytecode)
+    {
+        var storage = UnmanagedBuffer<byte>.Allocate(
+            bytecode.Length,
+            new BufferAllocationOptions(bytecode.Length, alignment: 1));
+        storage.CopyFrom(bytecode.AsSpan(), 0);
+        return storage.TransferToOwnedBuffer();
+    }
+
+    private static OwnedBuffer<byte> CreateBytecodeStorage(string path)
+        => CreateBytecodeStorage(File.ReadAllBytes(path));
+
+    private static ShaderCompilerIdentity CreateShaderCompilerIdentity()
+    {
+        var digest = Convert.FromHexString("C6E82B70C14552F1DD58E4A79C93EEAB1567EEB0A9EE63A51564C410429BCE3E");
+        return new ShaderCompilerIdentity(
+            "Microsoft.Direct3D.DXC",
+            "1.8.2505.1",
+            "1.8.2505.32",
+            "win-x64",
+            ImmutableCollectionsMarshal.AsImmutableArray(digest));
+    }
+
+    private static GraphicsPipelineDescription CreateShaderFixtureDescription(
+        BufferReadLease<byte> vertexBytecode,
+        BufferReadLease<byte> pixelBytecode,
+        PipelineBlendMode blendMode = PipelineBlendMode.Opaque)
+    {
+        var compilerIdentity = CreateShaderCompilerIdentity();
+        var vertexReflection = new ShaderReflection(
+            ShaderStage.Vertex,
+            "VSMain",
+            compilerIdentity,
+            [new ShaderIoSignature("SV_VertexID", 0, null, ShaderValueType.UInt1, ShaderInterpolation.Flat)],
+            [new ShaderIoSignature("SV_Position", 0, null, ShaderValueType.Float4, ShaderInterpolation.Smooth)],
+            [],
+            [],
+            [],
+            bindingLayoutVersion: 1,
+            groupSizeX: 0,
+            groupSizeY: 0,
+            groupSizeZ: 0);
+        var pixelReflection = new ShaderReflection(
+            ShaderStage.Pixel,
+            "PSMain",
+            compilerIdentity,
+            [],
+            [new ShaderIoSignature("SV_Target", 0, null, ShaderValueType.Float4, ShaderInterpolation.Smooth)],
+            [],
+            [],
+            [],
+            bindingLayoutVersion: 1,
+            groupSizeX: 0,
+            groupSizeY: 0,
+            groupSizeZ: 0);
+        var vertexShader = new ShaderBytecodeInput(
+            ShaderStage.Vertex,
+            ShaderBinaryFormat.SpirV,
+            vertexBytecode,
+            vertexReflection);
+        var pixelShader = new ShaderBytecodeInput(
+            ShaderStage.Pixel,
+            ShaderBinaryFormat.SpirV,
+            pixelBytecode,
+            pixelReflection);
+
+        return new GraphicsPipelineDescription(
+            [vertexShader, pixelShader],
+            [],
+            vertexStride: 0,
+            [TextureFormat.Rgba8Unorm],
+            depthTargetFormat: null,
+            PrimitiveTopology.TriangleList,
+            blendMode,
+            PipelineDepthMode.Disabled,
+            PipelineCullMode.None,
+            frontFaceClockwise: false,
+            bindingLayoutVersion: 1);
+    }
+
+    private static VulkanBackendDevice CreateVulkanDeviceForPipelineSmokeTest()
+    {
+        try
+        {
+            return VulkanBackendDevice.Create(
+                GraphicsDeviceProfile.OffscreenNative,
+                CancellationToken.None);
+        }
+        catch (DllNotFoundException exception)
+        {
+            Assert.Ignore($"No Vulkan loader is installed: {exception.Message}");
+            throw;
+        }
+        catch (EntryPointNotFoundException exception)
+        {
+            Assert.Ignore($"The installed Vulkan loader lacks a required entry point: {exception.Message}");
+            throw;
+        }
+        catch (NotSupportedException exception)
+        {
+            Assert.Ignore($"No available Vulkan device satisfies the pipeline smoke test: {exception.Message}");
+            throw;
+        }
     }
 
     [Test]
@@ -218,6 +326,68 @@ internal sealed class VulkanBackendDeviceTests
         {
             Assert.Ignore($"No available Vulkan device satisfies the sampler smoke test: {exception.Message}");
         }
+    }
+
+    [Test]
+    public void OffscreenNativeDeviceCreatesPipelineFromCompiledShaderFixture()
+    {
+        var fixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
+
+        if (string.IsNullOrWhiteSpace(fixtureDirectory))
+        {
+            Assert.Ignore("The compiled M04 shader fixture is not selected through TERRAFX_M04_SHADER_FIXTURE_DIRECTORY.");
+            return;
+        }
+
+        using var device = CreateVulkanDeviceForPipelineSmokeTest();
+        using var vertexStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.vertex.spv"));
+        using var pixelStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.pixel.spv"));
+        using var vertexLease = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
+        using var pixelLease = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
+        using var pipeline = device.CreatePipeline(
+            CreateShaderFixtureDescription(
+                vertexLease,
+                pixelLease,
+                PipelineBlendMode.PremultipliedAlpha),
+            [vertexLease, pixelLease]);
+        Assert.That(pipeline.IsDisposed, Is.False);
+        Assert.That(
+            device.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("live pipeline owners"));
+    }
+
+    [Test]
+    public void OffscreenNativeDevicePipelineCreationFailureReleasesPartialObjects()
+    {
+        var fixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
+
+        if (string.IsNullOrWhiteSpace(fixtureDirectory))
+        {
+            Assert.Ignore("The compiled M04 shader fixture is not selected through TERRAFX_M04_SHADER_FIXTURE_DIRECTORY.");
+            return;
+        }
+
+        using var device = CreateVulkanDeviceForPipelineSmokeTest();
+        using var vertexStorage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.vertex.spv"));
+        var invalidPixelBytecode = File.ReadAllBytes(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.pixel.spv"));
+        invalidPixelBytecode[0] = 0;
+        using var pixelStorage = CreateBytecodeStorage(invalidPixelBytecode);
+        using var vertexLease = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
+        using var pixelLease = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
+        var description = CreateShaderFixtureDescription(vertexLease, pixelLease);
+
+        Assert.That(
+            () => device.CreatePipeline(description, [vertexLease, pixelLease]),
+            Throws.ArgumentException);
+        device.Dispose();
     }
 
     [Test]

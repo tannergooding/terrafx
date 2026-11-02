@@ -121,6 +121,20 @@ dotnet .\artifacts\bin\sources\TerraFX.Content.Tools\Debug\net11.0\TerraFX.Conte
 
 The command emits per-stage DXIL with DXC reflection dumped from the binary, Vulkan 1.3 SPIR-V with SPIRV-Cross JSON reflection, and validates each SPIR-V module with `spirv-val`. The output directory must not already exist. Microsoft DXC is licensed for Windows-only use; Linux Vulkan consumers use the cooked SPIR-V and do not execute the Linux DXC archive.
 
+### Vulkan OffscreenNative backend tests
+
+After compiling the M04 shader fixture, point the Vulkan tests at its output directory. To enable the installed Vulkan validation layer, set its manifest directory and layer name as shown:
+
+```powershell
+$env:TERRAFX_M04_SHADER_FIXTURE_DIRECTORY = (Resolve-Path .\artifacts\shader-fixtures\m04-offscreen-triangle).Path
+$env:VK_LAYER_PATH = 'C:\VulkanSDK\1.4.328.1\Bin'
+$env:VK_INSTANCE_LAYERS = 'VK_LAYER_KHRONOS_validation'
+dotnet test .\tests\TerraFX.Graphics.Vulkan.Tests\TerraFX.Graphics.Vulkan.Tests.csproj --configuration Debug
+dotnet test .\tests\TerraFX.Graphics.Vulkan.Tests\TerraFX.Graphics.Vulkan.Tests.csproj --configuration Release
+```
+
+The fixture-dependent tests create and retire an internal resource-free graphics pipeline from the compiled SPIR-V and verify cleanup after invalid second-stage bytecode. They exercise `VulkanBackendDevice` directly, not the public `GraphicsDevice`, descriptor binding, graph submission, or presentation path. If the fixture environment variable is unset, those focused pipeline tests are skipped; a successful run with zero selected/executed cases is not evidence.
+
 ### Retained AssetLease lifetime
 
 Run the focused retained-handle, lease-capacity, package-replacement, and store-disposal regressions:
