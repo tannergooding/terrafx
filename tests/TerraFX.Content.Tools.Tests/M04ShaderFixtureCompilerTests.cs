@@ -131,6 +131,30 @@ internal sealed class M04ShaderFixtureCompilerTests
             Throws.TypeOf<InvalidDataException>());
     }
 
+    private static string ReplaceDxilResourceColumn(string reflection, string resourceName, int columnIndex, string replacement)
+    {
+        var lines = reflection.Split('\n');
+        var prefix = $"; {resourceName}";
+
+        for (var index = 0; index < lines.Length; index++)
+        {
+            var line = lines[index].Trim();
+
+            if (!line.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var columns = line[1..].Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            Assert.That(columns.Length, Is.EqualTo(7));
+            columns[columnIndex] = replacement;
+            lines[index] = $"; {string.Join(' ', columns)}";
+            return string.Join('\n', lines);
+        }
+
+        throw new InvalidDataException($"DXIL reflection omitted the resource binding for '{resourceName}'.");
+    }
+
     [Test]
     public async Task CompileAsyncProducesValidatedDxilSpirvAndReflectionWithPinnedSdk()
     {
@@ -234,6 +258,44 @@ internal sealed class M04ShaderFixtureCompilerTests
             Assert.That(typedStorageReflection.Resources, Does.Contain(
                 new ShaderResourceSignature(ShaderBindingGroup.Frame, 1, ShaderResourceKind.StorageImage, 1)));
             AssertFrameDataRecord(typedStorageReflection);
+
+            var storageDxilReflection = await File.ReadAllTextAsync(
+                Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-frame-storage.dxil-reflection.txt")).ConfigureAwait(false);
+            var storageSpirvReflection = await File.ReadAllTextAsync(
+                Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-frame-storage.reflection.json")).ConfigureAwait(false);
+            var storageSpirvBytecode = await File.ReadAllBytesAsync(
+                Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-frame-storage.spv")).ConfigureAwait(false);
+            var mismatchedStorageImageFormat = JsonNode.Parse(storageSpirvReflection) as JsonObject
+                ?? throw new InvalidDataException("The storage SPIRV-Cross reflection root must be an object.");
+            var mismatchedStorageImages = mismatchedStorageImageFormat["images"] as JsonArray
+                ?? throw new InvalidDataException("The storage SPIRV-Cross image collection must be an array.");
+            var storageImage = mismatchedStorageImages[0] as JsonObject
+                ?? throw new InvalidDataException("The storage SPIRV-Cross image fixture must be an object.");
+            storageImage["format"] = "r32f";
+            AssertTypedReflectionRejects(
+                storageDxilReflection,
+                mismatchedStorageImageFormat.ToJsonString(),
+                storageSpirvBytecode,
+                typedStorageReflection.CompilerIdentity);
+
+            var mismatchedStorageImageDimension = JsonNode.Parse(storageSpirvReflection) as JsonObject
+                ?? throw new InvalidDataException("The storage SPIRV-Cross reflection root must be an object.");
+            var dimensionMismatchImages = mismatchedStorageImageDimension["images"] as JsonArray
+                ?? throw new InvalidDataException("The storage SPIRV-Cross image collection must be an array.");
+            var dimensionMismatchImage = dimensionMismatchImages[0] as JsonObject
+                ?? throw new InvalidDataException("The storage SPIRV-Cross image fixture must be an object.");
+            dimensionMismatchImage["type"] = "uimage3D";
+            AssertTypedReflectionRejects(
+                storageDxilReflection,
+                mismatchedStorageImageDimension.ToJsonString(),
+                storageSpirvBytecode,
+                typedStorageReflection.CompilerIdentity);
+
+            AssertTypedReflectionRejects(
+                ReplaceDxilResourceColumn(storageDxilReflection, "FrameStorageBuffer", 3, "2d"),
+                storageSpirvReflection,
+                storageSpirvBytecode,
+                typedStorageReflection.CompilerIdentity);
 
             var pixelDxilReflection = await File.ReadAllTextAsync(
                 Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel.dxil-reflection.txt")).ConfigureAwait(false);

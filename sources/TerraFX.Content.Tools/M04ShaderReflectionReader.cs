@@ -107,10 +107,23 @@ internal static class M04ShaderReflectionReader
         foreach (var resource in collection.EnumerateArray())
         {
             var name = NormalizeResourceName(GetRequiredString(resource, "name"));
+            var spirvType = GetRequiredString(resource, "type");
             var descriptorSet = GetRequiredInt32(resource, "set");
             var nativeBinding = GetRequiredInt32(resource, "binding");
             var group = GetGroup(descriptorSet);
             var binding = checked(nativeBinding - GetBindingOffset(kind));
+            string? format = null;
+
+            if (resource.TryGetProperty("format", out var formatElement))
+            {
+                if ((formatElement.ValueKind != JsonValueKind.String)
+                    || string.IsNullOrWhiteSpace(formatElement.GetString()))
+                {
+                    throw new InvalidDataException("SPIRV-Cross resource formats must be nonempty strings when present.");
+                }
+
+                format = formatElement.GetString();
+            }
 
             if (binding < 0)
             {
@@ -119,18 +132,23 @@ internal static class M04ShaderReflectionReader
 
             if (kind == ShaderResourceKind.StorageImage)
             {
-                var type = GetRequiredString(resource, "type");
-
-                if (!type.Contains("image", StringComparison.OrdinalIgnoreCase)
-                    || type.Contains("sampler", StringComparison.OrdinalIgnoreCase))
+                if (!spirvType.Contains("image", StringComparison.OrdinalIgnoreCase)
+                    || spirvType.Contains("sampler", StringComparison.OrdinalIgnoreCase))
                 {
                     throw new NotSupportedException("The selected M04 reflection reader does not convert combined image-sampler resources.");
+                }
+
+                if (format is null)
+                {
+                    throw new InvalidDataException("SPIRV-Cross storage-image reflection must include its format.");
                 }
             }
 
             resources.Add(new ReflectedResource(
                 name,
-                new ShaderResourceSignature(group, binding, kind, GetArrayCount(resource))));
+                new ShaderResourceSignature(group, binding, kind, GetArrayCount(resource)),
+                spirvType,
+                format));
         }
     }
 
@@ -636,6 +654,50 @@ internal static class M04ShaderReflectionReader
 
     private static void ValidateDxilResourceBindings(string text, ImmutableArray<ReflectedResource> resources)
     {
+        static string GetTextureDimension(string type)
+        {
+            return type switch {
+                "texture1D" or "itexture1D" or "utexture1D" => "1d",
+                "texture2D" or "itexture2D" or "utexture2D" => "2d",
+                "texture3D" or "itexture3D" or "utexture3D" => "3d",
+                "textureCube" or "itextureCube" or "utextureCube" => "cube",
+                _ => throw new NotSupportedException($"SPIRV-Cross texture type '{type}' has no supported DXIL dimension mapping."),
+            };
+        }
+
+        static string GetStorageImageDimension(string type)
+        {
+            return type switch {
+                "image1D" or "iimage1D" or "uimage1D" => "1d",
+                "image2D" or "iimage2D" or "uimage2D" => "2d",
+                "image3D" or "iimage3D" or "uimage3D" => "3d",
+                "imageCube" or "iimageCube" or "uimageCube" => "cube",
+                _ => throw new NotSupportedException($"SPIRV-Cross storage-image type '{type}' has no supported DXIL dimension mapping."),
+            };
+        }
+
+        static string GetDxilStorageImageFormat(string? format)
+        {
+            return format switch {
+                "r32f" => "f32",
+                "r32i" => "i32",
+                "r32ui" => "u32",
+                _ => throw new NotSupportedException($"SPIRV-Cross storage-image format '{format}' has no supported DXIL format mapping."),
+            };
+        }
+
+        static (string Type, string? Format, string Dimension) GetDxilResourceShape(ReflectedResource resource)
+        {
+            return resource.Signature.Kind switch {
+                ShaderResourceKind.UniformBuffer => ("cbuffer", "NA", "NA"),
+                ShaderResourceKind.SampledImage => ("texture", null, GetTextureDimension(resource.SpirvType)),
+                ShaderResourceKind.StorageBuffer => ("UAV", "struct", "r/w"),
+                ShaderResourceKind.StorageImage => ("UAV", GetDxilStorageImageFormat(resource.Format), GetStorageImageDimension(resource.SpirvType)),
+                ShaderResourceKind.Sampler => ("sampler", "NA", "NA"),
+                _ => throw new ArgumentOutOfRangeException(nameof(resource)),
+            };
+        }
+
         var rows = ParseTableRows(text, "Resource Bindings:", occurrence: 0, required: true);
 
         if (rows.Count != resources.Length)
@@ -686,6 +748,16 @@ internal static class M04ShaderReflectionReader
             if (matchedIndex < 0)
             {
                 throw new InvalidDataException($"DXIL resource '{resourceName}' does not match the typed SPIRV-Cross bindings.");
+            }
+
+            var matchedResource = resources[matchedIndex];
+            var expectedShape = GetDxilResourceShape(matchedResource);
+
+            if (!StringComparer.Ordinal.Equals(row[1], expectedShape.Type)
+                || ((expectedShape.Format is not null) && !StringComparer.Ordinal.Equals(row[2], expectedShape.Format))
+                || !StringComparer.Ordinal.Equals(row[3], expectedShape.Dimension))
+            {
+                throw new InvalidDataException($"DXIL resource '{resourceName}' does not match the SPIRV-Cross resource type, format, or dimension.");
             }
 
             matched[matchedIndex] = true;
@@ -776,5 +848,9 @@ internal static class M04ShaderReflectionReader
         }
     }
 
-    private readonly record struct ReflectedResource(string Name, ShaderResourceSignature Signature);
+    private readonly record struct ReflectedResource(
+        string Name,
+        ShaderResourceSignature Signature,
+        string SpirvType,
+        string? Format);
 }
