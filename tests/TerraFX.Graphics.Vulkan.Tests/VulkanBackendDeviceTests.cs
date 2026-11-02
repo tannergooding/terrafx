@@ -401,6 +401,49 @@ internal sealed class VulkanBackendDeviceTests
     }
 
     [Test]
+    public void OffscreenNativeDeviceStagingBudgetAdmitsExactDedicatedBoundary()
+    {
+        const int exactBudgetByteLength = 128 * 1024 * 1024;
+        const int overBudgetByteLength = exactBudgetByteLength + 1;
+        var payload = new byte[overBudgetByteLength];
+        payload[0] = 0x42;
+        payload[exactBudgetByteLength - 1] = 0x17;
+        payload[exactBudgetByteLength] = 0x9C;
+
+        using var device = CreateVulkanDeviceForNativeSmokeTest();
+
+        if (device.Capabilities.Limits.MaximumBufferByteLength < overBudgetByteLength)
+        {
+            Assert.Ignore("The selected Vulkan device cannot allocate the destination required by the staging-budget boundary test.");
+            return;
+        }
+
+        using var destination = device.CreateBuffer(
+            new BufferDescription(
+                overBudgetByteLength,
+                BufferUsage.CopySource | BufferUsage.CopyDestination,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: null,
+                debugName: "exact staging-budget boundary destination"));
+        Assert.That(
+            device.UploadBuffer(destination, 0, payload.AsSpan(0, exactBudgetByteLength)),
+            Is.GreaterThan(0));
+        using (var prefixReadback = device.ReadbackBuffer(destination, 0, 1))
+        {
+            AssertReadback(prefixReadback, [0x42]);
+        }
+
+        using (var boundaryReadback = device.ReadbackBuffer(destination, exactBudgetByteLength - 1, 1))
+        {
+            AssertReadback(boundaryReadback, [0x17]);
+        }
+
+        Assert.That(
+            () => device.UploadBuffer(destination, 0, payload),
+            Throws.InvalidOperationException.With.Message.Contains("staging budget is exhausted"));
+    }
+
+    [Test]
     public void OffscreenNativeDeviceStagingBudgetRejectsOversizedUploadAndRecovers()
     {
         const int uploadByteLength = 65 * 1024 * 1024;
