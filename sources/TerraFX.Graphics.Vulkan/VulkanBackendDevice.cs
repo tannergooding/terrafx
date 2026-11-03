@@ -282,6 +282,8 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
             allocateInfo.commandBufferCount = 1;
             VkCommandBuffer commandBuffer = default;
             ThrowIfFailed(VulkanApi.vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer), "vkAllocateCommandBuffers");
+            afterNativeObjectAcquired?.Invoke(VulkanBackendStartupStage.CommandBufferAllocated);
+            cancellationToken.ThrowIfCancellationRequested();
             return commandBuffer;
         }
         catch
