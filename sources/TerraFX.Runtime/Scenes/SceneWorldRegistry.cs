@@ -345,6 +345,41 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         return false;
     }
 
+    internal void CopyPersistenceInstances(
+        WorldPersistenceCaptureLease lease,
+        scoped Span<SceneInstance> destination)
+    {
+        ValidatePersistenceCaptureLease(lease);
+
+        lock (_instanceGate)
+        {
+            if (destination.Length != _activeInstanceCount)
+            {
+                throw new ArgumentException("The Scene instance destination must match the exact active instance count.", nameof(destination));
+            }
+
+            var destinationIndex = 0;
+
+            for (var index = 0; index < _activeInstances.Length; index++)
+            {
+                if (_activeInstances[index] is { } instance)
+                {
+                    if (destinationIndex >= destination.Length)
+                    {
+                        throw new InvalidOperationException("The active Scene instance table contains more entries than its reported count.");
+                    }
+
+                    destination[destinationIndex++] = instance;
+                }
+            }
+
+            if (destinationIndex != destination.Length)
+            {
+                throw new InvalidOperationException("The active Scene instance table does not contain every reported instance.");
+            }
+        }
+    }
+
     internal void EnsureBoundTo(World world)
     {
         ArgumentNullException.ThrowIfNull(world);
@@ -353,6 +388,16 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         if (!ReferenceEquals(world, _world))
         {
             throw new ArgumentException("The Scene registry belongs to another exact World binding.", nameof(world));
+        }
+    }
+
+    internal int GetPersistenceInstanceCount(WorldPersistenceCaptureLease lease)
+    {
+        ValidatePersistenceCaptureLease(lease);
+
+        lock (_instanceGate)
+        {
+            return _activeInstanceCount;
         }
     }
 
@@ -614,5 +659,23 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
             low,
             _activeOrderedInstanceCount - low - 1);
         _activeInstancesByFirstEntityOrdinal[--_activeOrderedInstanceCount] = null;
+    }
+
+    private void ValidatePersistenceCaptureLease(WorldPersistenceCaptureLease lease)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(_world))
+        {
+            throw new ArgumentException("The capture lease belongs to another World.", nameof(lease));
+        }
+
+        lock (_requestGate)
+        {
+            if (!_isPersistenceCaptureActive)
+            {
+                throw new InvalidOperationException("Scene instance enumeration requires an active persistence capture.");
+            }
+        }
     }
 }

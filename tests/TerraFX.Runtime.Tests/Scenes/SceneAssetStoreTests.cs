@@ -2329,6 +2329,12 @@ internal sealed partial class SceneAssetStoreTests
                     Is.EqualTo(expectedSceneAssetIds));
                 using (var captureLease = world.AcquirePersistenceCaptureLease())
                 {
+                    var sceneRegistry = sceneSupport.GetParticipant(world) as SceneWorldRegistry
+                        ?? throw new InvalidOperationException("The active Scene participant is not a Scene registry.");
+                    var activeSceneInstances = new SceneInstance[sceneRegistry.GetPersistenceInstanceCount(captureLease)];
+                    sceneRegistry.CopyPersistenceInstances(captureLease, activeSceneInstances);
+                    Assert.That(activeSceneInstances, Has.Length.EqualTo(1));
+                    Assert.That(activeSceneInstances[0], Is.SameAs(instance));
                     Assert.That(instance.OccurrenceCount, Is.EqualTo(2));
                     var capturedChildAddress = new SceneEntityAddress([placementId], childEntityId);
                     Assert.That(instance.TryGetEntity(rootEntityId, out var capturedRootEntity), Is.True);

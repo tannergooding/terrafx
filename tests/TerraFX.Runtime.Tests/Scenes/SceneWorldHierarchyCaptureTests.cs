@@ -213,6 +213,22 @@ internal sealed class SceneWorldHierarchyCaptureTests
     }
 
     [Test]
+    public void EnumeratesAnEmptySceneInstanceSetUnderTheCaptureLease()
+    {
+        var builder = new WorldRegistrationBuilder(CreateSchemaRegistry());
+        var sceneSupport = SceneSupport.CreateRegistration();
+        _ = builder.RegisterSceneSupport(sceneSupport);
+        using var world = World.Create(new WorldOptions(builder.Build()));
+        _ = world.Step();
+        using var lease = world.AcquirePersistenceCaptureLease();
+        var registry = sceneSupport.GetParticipant(world) as SceneWorldRegistry
+            ?? throw new InvalidOperationException("The active Scene participant is not a Scene registry.");
+
+        Assert.That(registry.GetPersistenceInstanceCount(lease), Is.Zero);
+        registry.CopyPersistenceInstances(lease, []);
+    }
+
+    [Test]
     public void WritesCanonicalEmptyWorldHierarchy()
     {
         var limits = EbinReadLimits.Foundation;
