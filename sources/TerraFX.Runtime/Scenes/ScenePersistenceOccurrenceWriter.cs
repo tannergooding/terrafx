@@ -150,6 +150,7 @@ internal static class ScenePersistenceOccurrenceWriter
     private static EbinWriteStatus AddGuidField(
         uint tag,
         Guid value,
+        ushort flags,
         Span<EbinFieldSource> fields,
         ref int fieldCount,
         Span<byte> payloadStorage,
@@ -163,7 +164,7 @@ internal static class ScenePersistenceOccurrenceWriter
             return status;
         }
 
-        fields[fieldCount++] = new EbinFieldSource(tag, 11, 1, 1, new EbinPayloadSlice(payloadOffset, fieldBytes));
+        fields[fieldCount++] = new EbinFieldSource(tag, 11, flags, 1, new EbinPayloadSlice(payloadOffset, fieldBytes));
         payloadOffset = checked(payloadOffset + fieldBytes);
         return EbinWriteStatus.Complete;
     }
@@ -190,7 +191,7 @@ internal static class ScenePersistenceOccurrenceWriter
 
         fields[fieldCount++] = new EbinFieldSource(1, 3, 1, 1, new EbinPayloadSlice(payloadBytes, fieldBytes));
         payloadBytes = checked(payloadBytes + fieldBytes);
-        status = AddGuidField(2, schemaId, fields, ref fieldCount, payloadStorage, ref payloadBytes, out diagnostic);
+        status = AddGuidField(2, schemaId, 1, fields, ref fieldCount, payloadStorage, ref payloadBytes, out diagnostic);
 
         if (status is not EbinWriteStatus.Complete)
         {
@@ -268,6 +269,7 @@ internal static class ScenePersistenceOccurrenceWriter
         status = AddGuidField(
             2,
             occurrence.OccurrenceId,
+            1,
             fields,
             ref fieldCount,
             payloadStorage,
@@ -311,9 +313,17 @@ internal static class ScenePersistenceOccurrenceWriter
         if (occurrence.ParentOccurrenceIndex >= 0)
         {
             var parentId = plan.Occurrences[occurrence.ParentOccurrenceIndex].OccurrenceId;
+
+            if (parentId == Guid.Empty)
+            {
+                diagnostic = CreateDiagnostic("scene-occurrence-parent-id", 0, 1);
+                return EbinWriteStatus.InvalidRecord;
+            }
+
             status = AddGuidField(
                 4,
                 parentId,
+                0,
                 fields,
                 ref fieldCount,
                 payloadStorage,
@@ -328,6 +338,7 @@ internal static class ScenePersistenceOccurrenceWriter
             status = AddGuidField(
                 5,
                 occurrence.PlacementId,
+                0,
                 fields,
                 ref fieldCount,
                 payloadStorage,

@@ -2266,6 +2266,11 @@ internal sealed partial class SceneAssetStoreTests
 
                 Assert.That(receipt.Status, Is.EqualTo(SceneActivationStatus.Activated));
                 uint[] expectedSceneAssetIds = [checked((uint)sceneAssetIdValue), checked((uint)prefabAssetIdValue)];
+                var rootOccurrence = SceneOccurrenceIdentity.CreateRootOccurrence(new AssetId(sceneAssetIdValue));
+                var childOccurrence = SceneOccurrenceIdentity.CreatePrefabOccurrence(
+                    rootOccurrence,
+                    placementId,
+                    new AssetId(prefabAssetIdValue));
                 _ = world.Step();
                 Assert.That(
                     CaptureSceneAssetIds(world),
@@ -2299,15 +2304,34 @@ internal sealed partial class SceneAssetStoreTests
                             occurrenceDiagnostic?.Category);
                         Assert.That(occurrenceDiagnostic, Is.Null);
                         Assert.That(bytesWritten, Is.EqualTo(recordBytes));
+                        var assertions = (occurrenceIndex == 0)
+                            ? new SceneOccurrenceRecordAssertions(
+                                rootOccurrence,
+                                checked((uint)sceneAssetIdValue),
+                                new ContentSchemaIdentityAssignment("native/scene").SchemaId,
+                                placementPathLength: 0,
+                                placementPathTail: null,
+                                parentOccurrenceId: null,
+                                placementId: null)
+                            : new SceneOccurrenceRecordAssertions(
+                                childOccurrence,
+                                checked((uint)prefabAssetIdValue),
+                                new ContentSchemaIdentityAssignment("native/prefab").SchemaId,
+                                placementPathLength: 1,
+                                placementPathTail: placementId,
+                                parentOccurrenceId: rootOccurrence,
+                                placementId: placementId);
                         Assert.That(
-                            EbinStructuralReader.Validate(
+                            EbinStructuralReader.Read(
                                 destination,
                                 EbinReadLimits.Foundation,
                                 EbinReadPolicy.Canonical,
+                                ref assertions,
                                 out var bytesConsumed,
                                 out var readDiagnostic),
                             Is.EqualTo(EbinReadStatus.Complete));
                         Assert.That(readDiagnostic, Is.Null);
+                        Assert.That(assertions.IsMatch, Is.True);
                         Assert.That(bytesConsumed, Is.EqualTo(destination.Length));
                     }
                 }
@@ -2331,11 +2355,6 @@ internal sealed partial class SceneAssetStoreTests
 
                 var childProvenance = provenance
                     ?? throw new InvalidOperationException("The nested Scene Entity has no provenance.");
-                var rootOccurrence = SceneOccurrenceIdentity.CreateRootOccurrence(new AssetId(sceneAssetIdValue));
-                var childOccurrence = SceneOccurrenceIdentity.CreatePrefabOccurrence(
-                    rootOccurrence,
-                    placementId,
-                    new AssetId(prefabAssetIdValue));
                 Guid[] expectedPlacementPath = [placementId];
 
                 Assert.That(childProvenance.SceneInstanceId, Is.EqualTo(instance.SceneInstanceId));
