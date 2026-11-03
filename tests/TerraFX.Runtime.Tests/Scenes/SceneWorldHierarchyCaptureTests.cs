@@ -178,6 +178,71 @@ internal sealed class SceneWorldHierarchyCaptureTests
                 Assert.That(readDiagnostic, Is.Null);
                 Assert.That(assertions.IsMatch, Is.True);
                 Assert.That(bytesConsumed, Is.EqualTo(hierarchyRecord.Length));
+
+                var emptyInstancesPayload = new byte[16];
+                Assert.That(
+                    EbinPayloadWriter.WriteRecordArray(
+                        [],
+                        [],
+                        limits,
+                        emptyInstancesPayload,
+                        out var emptyInstancesBytesWritten,
+                        out var scenesDiagnostic),
+                    Is.EqualTo(EbinWriteStatus.Complete),
+                    scenesDiagnostic?.Category);
+                Assert.That(scenesDiagnostic, Is.Null);
+                Assert.That(emptyInstancesBytesWritten, Is.EqualTo(emptyInstancesPayload.Length));
+                var scenesRootPayload = new byte[checked(emptyInstancesPayload.Length + hierarchyRecord.Length)];
+                Assert.That(
+                    ScenePersistenceScenesWriter.Measure(
+                        instanceCount: 0,
+                        emptyInstancesPayload,
+                        hierarchyRecord,
+                        limits,
+                        scenesRootPayload,
+                        out var scenesWorkspace,
+                        out scenesDiagnostic),
+                    Is.EqualTo(EbinWriteStatus.Complete),
+                    scenesDiagnostic?.Category);
+                Assert.That(scenesDiagnostic, Is.Null);
+                var scenesReservationBytes = checked(scenesWorkspace.WorkspaceBytes - hierarchyRecord.Length);
+                Assert.That(lease.TryReserveAdmissionBytes(scenesReservationBytes, out var scenesReservation), Is.True);
+                Assert.That(scenesReservation, Is.Not.Null);
+
+                using (scenesReservation)
+                {
+                    var scenesCandidateStorage = new byte[scenesWorkspace.RecordBytes];
+                    var scenesRecord = new byte[scenesWorkspace.RecordBytes];
+                    Assert.That(
+                        ScenePersistenceScenesWriter.Write(
+                            scenesWorkspace,
+                            instanceCount: 0,
+                            emptyInstancesPayload,
+                            hierarchyRecord,
+                            limits,
+                            scenesRootPayload,
+                            scenesCandidateStorage,
+                            scenesRecord,
+                            out var scenesBytesWritten,
+                            out scenesDiagnostic),
+                        Is.EqualTo(EbinWriteStatus.Complete),
+                        scenesDiagnostic?.Category);
+                    Assert.That(scenesDiagnostic, Is.Null);
+                    Assert.That(scenesBytesWritten, Is.EqualTo(scenesRecord.Length));
+                    var scenesAssertions = new ScenePersistenceScenesRecordAssertions(hierarchyRecord);
+                    Assert.That(
+                        EbinStructuralReader.Read(
+                            scenesRecord,
+                            limits,
+                            EbinReadPolicy.Canonical,
+                            ref scenesAssertions,
+                            out var scenesBytesConsumed,
+                            out var scenesReadDiagnostic),
+                        Is.EqualTo(EbinReadStatus.Complete));
+                    Assert.That(scenesReadDiagnostic, Is.Null);
+                    Assert.That(scenesAssertions.IsMatch, Is.True);
+                    Assert.That(scenesBytesConsumed, Is.EqualTo(scenesRecord.Length));
+                }
             }
         }
     }
