@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.IO;
@@ -18,6 +19,8 @@ namespace TerraFX.Graphics.Vulkan.Tests;
 [TestFixture]
 internal sealed class VulkanBackendDeviceTests
 {
+    private static readonly ConcurrentBag<VulkanBackendDevice> s_quarantinedDevices = [];
+
     private static void AppendSpirvInstruction(List<uint> words, ushort opcode, params uint[] operands)
     {
         words.Add((checked((uint)operands.Length + 1) << 16) | opcode);
@@ -256,12 +259,14 @@ internal sealed class VulkanBackendDeviceTests
             M04ShaderFixtureCompiler.ReadTypedReflection(fixtureDirectory, pixelStageName),
             blendMode);
 
-    private static VulkanBackendDevice CreateVulkanDeviceForNativeSmokeTest()
+    private static VulkanBackendDevice CreateVulkanDeviceForNativeSmokeTest(
+        Func<VkResult, VkResult>? transferWaitResultOverride = null)
     {
         try
         {
             return VulkanBackendDevice.Create(
                 GraphicsDeviceProfile.OffscreenNative,
+                transferWaitResultOverride,
                 CancellationToken.None);
         }
         catch (DllNotFoundException exception)
@@ -1646,6 +1651,40 @@ internal sealed class VulkanBackendDeviceTests
         var shader = new ShaderBytecodeInput(ShaderStage.Pixel, ShaderBinaryFormat.SpirV, lease, reflection);
 
         _ = Assert.Throws<NotSupportedException>(() => SpirvReflectionValidator.Validate(shader, lease, index: 0));
+    }
+
+    [Test]
+    [Order(int.MaxValue)]
+    public void VulkanWaitTimeoutAfterNativeSignalQuarantinesBufferAndDevice()
+    {
+        var observedWaitResult = default(VkResult);
+        var device = CreateVulkanDeviceForNativeSmokeTest(waitResult => {
+            observedWaitResult = waitResult;
+            return waitResult == VkResult.VK_SUCCESS ? VkResult.VK_TIMEOUT : waitResult;
+        });
+        s_quarantinedDevices.Add(device);
+
+        var buffer = device.CreateBuffer(
+            new BufferDescription(
+                16,
+                BufferUsage.CopyDestination,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: null,
+                debugName: "uncertain-transfer"));
+        byte[] payload = [0x42, 0x17, 0x9C, 0xA5];
+
+        Assert.That(
+            () => device.UploadBuffer(buffer, 0, payload),
+            Throws.InvalidOperationException.With.Message.Contains("vkWaitSemaphores"));
+        Assert.That(observedWaitResult, Is.EqualTo(VkResult.VK_SUCCESS));
+        Assert.That(buffer.IsDisposed, Is.False);
+        Assert.That(
+            buffer.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("submission completion is uncertain"));
+        Assert.That(buffer.IsDisposed, Is.False);
+        Assert.That(
+            device.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("submission completion is uncertain"));
     }
 
     private readonly struct ReadbackCopyAction : IAction<ReadOnlySpan<byte>>

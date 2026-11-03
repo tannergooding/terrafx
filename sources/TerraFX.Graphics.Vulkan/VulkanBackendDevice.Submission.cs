@@ -454,9 +454,14 @@ internal sealed unsafe partial class VulkanBackendDevice
             var semaphore = _timelineSemaphore;
             waitInfo.pSemaphores = &semaphore;
             waitInfo.pValues = &signalValue;
-            ThrowIfFailed(
-                VulkanApi.vkWaitSemaphores(_device, &waitInfo, TransferWaitTimeoutNanoseconds),
-                "vkWaitSemaphores");
+            var waitResult = VulkanApi.vkWaitSemaphores(_device, &waitInfo, TransferWaitTimeoutNanoseconds);
+
+            if (_transferWaitResultOverride is not null)
+            {
+                waitResult = _transferWaitResultOverride(waitResult);
+            }
+
+            ThrowIfFailed(waitResult, "vkWaitSemaphores");
             _hasUncertainSubmission = false;
             return checked((long)signalValue);
         }

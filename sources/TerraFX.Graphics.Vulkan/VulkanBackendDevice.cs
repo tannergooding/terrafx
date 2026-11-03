@@ -27,6 +27,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
     private readonly VkQueue _queue;
     private readonly uint _queueFamilyIndex;
     private readonly VkSemaphore _timelineSemaphore;
+    private readonly Func<VkResult, VkResult>? _transferWaitResultOverride;
 
     private VulkanBackendDevice(
         VkInstance instance,
@@ -38,7 +39,8 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         VkCommandPool commandPool,
         VkCommandBuffer commandBuffer,
         VkSemaphore timelineSemaphore,
-        GraphicsCapabilities capabilities)
+        GraphicsCapabilities capabilities,
+        Func<VkResult, VkResult>? transferWaitResultOverride)
     {
         _instance = instance;
         _physicalDevice = physicalDevice;
@@ -49,6 +51,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         _commandPool = commandPool;
         _commandBuffer = commandBuffer;
         _timelineSemaphore = timelineSemaphore;
+        _transferWaitResultOverride = transferWaitResultOverride;
         Capabilities = capabilities;
     }
 
@@ -61,7 +64,20 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
 
     internal static VulkanBackendDevice Create(
         GraphicsDeviceProfile profile,
+        Func<VkResult, VkResult>? transferWaitResultOverride,
+        CancellationToken cancellationToken)
+        => Create(profile, GraphicsPlatformKind.None, transferWaitResultOverride, cancellationToken);
+
+    internal static VulkanBackendDevice Create(
+        GraphicsDeviceProfile profile,
         GraphicsPlatformKind platformKind,
+        CancellationToken cancellationToken)
+        => Create(profile, platformKind, transferWaitResultOverride: null, cancellationToken);
+
+    internal static VulkanBackendDevice Create(
+        GraphicsDeviceProfile profile,
+        GraphicsPlatformKind platformKind,
+        Func<VkResult, VkResult>? transferWaitResultOverride,
         CancellationToken cancellationToken)
     {
         GraphicsDevice.ValidateStartupProfile(GraphicsBackend.Vulkan, profile, platformKind);
@@ -137,7 +153,8 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                     commandPool,
                     commandBuffer,
                     timelineSemaphore,
-                    capabilities);
+                    capabilities,
+                    transferWaitResultOverride);
                 transferred = true;
                 hasInstance = false;
                 hasDevice = false;
