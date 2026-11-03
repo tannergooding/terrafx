@@ -320,6 +320,42 @@ internal sealed class SceneExpansionPlan : IDisposable
         }
     }
 
+    internal int CopyOccurrencePlacementPath(int occurrenceIndex, scoped Span<Guid> destination)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfNegative(occurrenceIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(occurrenceIndex, _occurrences.Length);
+        var pathLength = 0;
+        var currentIndex = occurrenceIndex;
+
+        while (_occurrences[currentIndex].ParentOccurrenceIndex >= 0)
+        {
+            pathLength++;
+            currentIndex = _occurrences[currentIndex].ParentOccurrenceIndex;
+        }
+
+        if (pathLength > 32)
+        {
+            throw new InvalidOperationException("A retained Scene occurrence path exceeds the reviewed placement-depth bound.");
+        }
+
+        if (destination.Length < pathLength)
+        {
+            throw new ArgumentException("The occurrence-path workspace is smaller than the exact path.", nameof(destination));
+        }
+
+        currentIndex = occurrenceIndex;
+
+        for (var index = pathLength - 1; index >= 0; index--)
+        {
+            var occurrence = _occurrences[currentIndex];
+            destination[index] = occurrence.PlacementId;
+            currentIndex = occurrence.ParentOccurrenceIndex;
+        }
+
+        return pathLength;
+    }
+
     internal int GetEntityAssignmentOrdinal(int expandedEntityIndex)
     {
         ThrowIfDisposed();

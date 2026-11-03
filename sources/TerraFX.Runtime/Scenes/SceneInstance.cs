@@ -296,11 +296,57 @@ public sealed class SceneInstance
         return (Volatile.Read(ref _isActive) == 1) ? plan?.GetPreparedAssets<TResource>() : null;
     }
 
+    internal EbinWriteStatus MeasurePersistenceOccurrenceRecord(
+        WorldPersistenceCaptureLease lease,
+        int occurrenceIndex,
+        out int recordBytes,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(_world))
+        {
+            throw new ArgumentException("The capture lease belongs to another World.", nameof(lease));
+        }
+
+        return ScenePersistenceOccurrenceWriter.Measure(
+            GetActivePlan(),
+            occurrenceIndex,
+            WorldPersistenceEbinLimits.Create(_world.Options),
+            out recordBytes,
+            out diagnostic);
+    }
+
     internal void RevokeFromWorld()
     {
         _ = Interlocked.Exchange(ref _isActive, 0);
         _ = Interlocked.Exchange(ref _externalBindings, null);
         Interlocked.Exchange(ref _plan, null)?.Dispose();
+    }
+
+    internal EbinWriteStatus WritePersistenceOccurrenceRecord(
+        WorldPersistenceCaptureLease lease,
+        int occurrenceIndex,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(_world))
+        {
+            throw new ArgumentException("The capture lease belongs to another World.", nameof(lease));
+        }
+
+        return ScenePersistenceOccurrenceWriter.Write(
+            GetActivePlan(),
+            occurrenceIndex,
+            WorldPersistenceEbinLimits.Create(_world.Options),
+            candidateStorage,
+            destination,
+            out bytesWritten,
+            out diagnostic);
     }
 
     private SceneExpansionPlan GetActivePlan()

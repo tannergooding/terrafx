@@ -2270,6 +2270,48 @@ internal sealed partial class SceneAssetStoreTests
                 Assert.That(
                     CaptureSceneAssetIds(world),
                     Is.EqualTo(expectedSceneAssetIds));
+                using (var captureLease = world.AcquirePersistenceCaptureLease())
+                {
+                    Assert.That(instance.OccurrenceCount, Is.EqualTo(2));
+
+                    for (var occurrenceIndex = 0; occurrenceIndex < instance.OccurrenceCount; occurrenceIndex++)
+                    {
+                        Assert.That(
+                            instance.MeasurePersistenceOccurrenceRecord(
+                                captureLease,
+                                occurrenceIndex,
+                                out var recordBytes,
+                                out var occurrenceDiagnostic),
+                            Is.EqualTo(EbinWriteStatus.Complete),
+                            occurrenceDiagnostic?.Category);
+                        Assert.That(occurrenceDiagnostic, Is.Null);
+                        var candidateStorage = new byte[recordBytes];
+                        var destination = new byte[recordBytes];
+                        Assert.That(
+                            instance.WritePersistenceOccurrenceRecord(
+                                captureLease,
+                                occurrenceIndex,
+                                candidateStorage,
+                                destination,
+                                out var bytesWritten,
+                                out occurrenceDiagnostic),
+                            Is.EqualTo(EbinWriteStatus.Complete),
+                            occurrenceDiagnostic?.Category);
+                        Assert.That(occurrenceDiagnostic, Is.Null);
+                        Assert.That(bytesWritten, Is.EqualTo(recordBytes));
+                        Assert.That(
+                            EbinStructuralReader.Validate(
+                                destination,
+                                EbinReadLimits.Foundation,
+                                EbinReadPolicy.Canonical,
+                                out var bytesConsumed,
+                                out var readDiagnostic),
+                            Is.EqualTo(EbinReadStatus.Complete));
+                        Assert.That(readDiagnostic, Is.Null);
+                        Assert.That(bytesConsumed, Is.EqualTo(destination.Length));
+                    }
+                }
+
                 Assert.That(instance.TryGetEntity(childEntityId, out _), Is.False);
                 Assert.That(instance.TryGetEntity(rootEntityId, out var root), Is.True);
                 var address = new SceneEntityAddress([placementId], childEntityId);
