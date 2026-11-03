@@ -636,6 +636,9 @@ public sealed partial class World
             }
         }
 
+        internal readonly bool IsBoundTo(World world)
+            => ReferenceEquals(_world, world);
+
         internal bool MoveNext()
         {
             _lease.ValidateCurrent();

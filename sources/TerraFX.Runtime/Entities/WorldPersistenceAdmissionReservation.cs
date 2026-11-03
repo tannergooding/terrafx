@@ -74,4 +74,37 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
                 out diagnostic);
         }
     }
+
+    internal EbinWriteStatus WriteIdentityBranchRecord(
+        World world,
+        in World.IdentityBranchCaptureEnumerator branch,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+
+        lock (_disposeGate)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            if (!ReferenceEquals(_world, world) || !branch.IsBoundTo(world))
+            {
+                throw new ArgumentException("The identity-branch capture and reservation must belong to this exact World.", nameof(world));
+            }
+
+            if (checked((long)candidateStorage.Length + destination.Length) > _bytes)
+            {
+                throw new ArgumentException("The persistence reservation does not cover both identity-branch workspaces.", nameof(candidateStorage));
+            }
+
+            return WorldPersistenceIdentityBranchWriter.Write(
+                in branch,
+                candidateStorage,
+                destination,
+                out bytesWritten,
+                out diagnostic);
+        }
+    }
 }

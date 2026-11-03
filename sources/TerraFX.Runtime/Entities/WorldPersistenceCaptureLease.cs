@@ -192,6 +192,21 @@ internal ref struct WorldPersistenceCaptureLease
             out diagnostic);
     }
 
+    internal readonly EbinWriteStatus MeasureIdentityBranchRecord(
+        in World.IdentityBranchCaptureEnumerator branch,
+        out int recordBytes,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ValidateCurrent();
+
+        if (!branch.IsBoundTo(_world))
+        {
+            throw new ArgumentException("The identity-branch capture belongs to another World.", nameof(branch));
+        }
+
+        return WorldPersistenceIdentityBranchWriter.Measure(in branch, out recordBytes, out diagnostic);
+    }
+
     internal readonly bool TryReserveAdmissionBytes(
         long bytes,
         out WorldPersistenceAdmissionReservation? reservation)
@@ -241,6 +256,25 @@ internal ref struct WorldPersistenceCaptureLease
         return reservation.WriteConfigurationRecord(
             _world,
             _world.Options,
+            candidateStorage,
+            destination,
+            out bytesWritten,
+            out diagnostic);
+    }
+
+    internal readonly EbinWriteStatus WriteIdentityBranchRecord(
+        WorldPersistenceAdmissionReservation reservation,
+        in World.IdentityBranchCaptureEnumerator branch,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ValidateCurrent();
+        ArgumentNullException.ThrowIfNull(reservation);
+        return reservation.WriteIdentityBranchRecord(
+            _world,
+            in branch,
             candidateStorage,
             destination,
             out bytesWritten,
