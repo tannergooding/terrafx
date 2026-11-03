@@ -12,9 +12,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
+using TerraFX.Animation;
 using TerraFX.Assets;
 using TerraFX.Entities;
+using TerraFX.Graphics;
 using TerraFX.Scenes;
+using TerraFX.Runtime.Tests.Entities;
 
 namespace TerraFX.Runtime.Tests.Scenes;
 
@@ -2637,6 +2640,80 @@ internal sealed partial class SceneAssetStoreTests
                             Assert.That(instanceDiagnostic, Is.Null);
                             Assert.That(sceneInstancesArrayBytesWritten, Is.EqualTo(sceneInstancesArrayPayload.Length));
                             Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(sceneInstancesArrayPayload), Is.EqualTo(1));
+
+                            var worldHierarchyRecord = SceneInstanceRecordFixtureBuilder.CreateWorldHierarchyRecord(world, captureLease);
+                            var scenesRootPayload = new byte[sceneInstancesArrayPayload.Length + worldHierarchyRecord.Length];
+                            Assert.That(
+                                ScenePersistenceScenesWriter.Measure(
+                                    activeSceneInstances.Length,
+                                    sceneInstancesArrayPayload,
+                                    worldHierarchyRecord,
+                                    EbinReadLimits.Foundation,
+                                    scenesRootPayload,
+                                    out var scenesWorkspace,
+                                    out var scenesDiagnostic),
+                                Is.EqualTo(EbinWriteStatus.Complete),
+                                scenesDiagnostic?.Category);
+                            Assert.That(scenesDiagnostic, Is.Null);
+                            var scenesCandidateStorage = new byte[scenesWorkspace.RecordBytes];
+                            var scenesRecord = new byte[scenesWorkspace.RecordBytes];
+                            Assert.That(
+                                ScenePersistenceScenesWriter.Write(
+                                    scenesWorkspace,
+                                    activeSceneInstances.Length,
+                                    sceneInstancesArrayPayload,
+                                    worldHierarchyRecord,
+                                    EbinReadLimits.Foundation,
+                                    scenesRootPayload,
+                                    scenesCandidateStorage,
+                                    scenesRecord,
+                                    out var scenesBytesWritten,
+                                    out scenesDiagnostic),
+                                Is.EqualTo(EbinWriteStatus.Complete),
+                                scenesDiagnostic?.Category);
+                            Assert.That(scenesDiagnostic, Is.Null);
+                            Assert.That(scenesBytesWritten, Is.EqualTo(scenesRecord.Length));
+
+                            var ecsRecord = WorldPersistenceEcsTestHelper.CopyEcsRecord(world, in captureLease);
+                            var scanSchemas = new CompiledContentSchemaRegistry([
+                                .. schemas.Schemas,
+                                .. StandaloneContinuationSchemaCatalogue.Schemas,
+                                .. AnimationSchemaCatalogue.Schemas,
+                                .. RenderingSchemaCatalogue.Schemas,
+                                WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
+                                    "application/world-root-test/tag/v1",
+                                    ContentSchemaRole.EntityTag,
+                                    0),
+                                WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
+                                    "application/world-root-test/system-state/v1",
+                                    ContentSchemaRole.SystemState,
+                                    7),
+                                WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
+                                    "application/world-root-test/resource-state/v1",
+                                    ContentSchemaRole.ResourceState,
+                                    23,
+                                    4),
+                                WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
+                                    "application/world-root-test/attachment-state/v1",
+                                    ContentSchemaRole.AttachmentState,
+                                    8),
+                            ]);
+                            var persistenceLimits = WorldPersistenceEbinLimits.Create(world.Options);
+                            var referenceCount = WorldPersistenceAssetIdSetWriter.MeasureReferenceCount(
+                                scanSchemas,
+                                ecsRecord,
+                                scenesRecord,
+                                persistenceLimits);
+                            var assetIds = new uint[referenceCount];
+                            var uniqueAssetCount = WorldPersistenceAssetIdSetWriter.CopySortedUniqueAssetIds(
+                                scanSchemas,
+                                ecsRecord,
+                                scenesRecord,
+                                persistenceLimits,
+                                assetIds);
+                            uint[] expectedAssetIds = [checked((uint)prefabAssetIdValue), checked((uint)sceneAssetIdValue)];
+                            Array.Sort(expectedAssetIds);
+                            Assert.That(assetIds.AsSpan(0, uniqueAssetCount).ToArray(), Is.EqualTo(expectedAssetIds));
                         }
                     }
                 }

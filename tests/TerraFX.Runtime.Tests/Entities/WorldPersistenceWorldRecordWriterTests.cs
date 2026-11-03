@@ -18,7 +18,7 @@ namespace TerraFX.Runtime.Tests.Entities;
 [TestFixture]
 internal sealed class WorldPersistenceWorldRecordWriterTests
 {
-    private static DataSchema CreateApplicationSchema(string name, ContentSchemaRole role, ushort wireKind, ushort elementKind = 0)
+    internal static DataSchema CreateApplicationSchema(string name, ContentSchemaRole role, ushort wireKind, ushort elementKind = 0)
     {
         var assignment = new ContentSchemaIdentityAssignment(name);
         var schema = new ContentSchemaReference(assignment.SchemaId, 1, 0, ContentSchemaScope.Content);

@@ -57,6 +57,21 @@ internal static class WorldPersistenceEcsTestHelper
         return bytesWritten;
     }
 
+    internal static byte[] CopyEcsRecord(World world, in WorldPersistenceCaptureLease lease)
+    {
+        var assertions = new EcsRecordCopyAction();
+        var bytesWritten = CaptureEcsRecord(world, in lease, ref assertions);
+        var record = assertions.Record
+            ?? throw new InvalidOperationException("The capture helper did not return the actual ECS record.");
+
+        if (record.Length != bytesWritten)
+        {
+            throw new InvalidOperationException("The captured ECS record length changed during copying.");
+        }
+
+        return record;
+    }
+
     private static void AllocateWriteBuffers(
         ref WorldPersistenceEcsBuffers buffers,
         WorldPersistenceEcsWorkspaceRequirements workspace)
@@ -107,5 +122,13 @@ internal static class WorldPersistenceEcsTestHelper
         buffers.IdentityPageMetadata = new uint[pageRecords];
         buffers.IdentityPagePayloadStorage = new byte[pageWorkspaceBytes];
         return buffers;
+    }
+
+    private struct EcsRecordCopyAction : IAction<EbinRecordReadView>
+    {
+        internal byte[]? Record { get; private set; }
+
+        public void Invoke(scoped EbinRecordReadView record)
+            => Record = record.EncodedBytes.ToArray();
     }
 }
