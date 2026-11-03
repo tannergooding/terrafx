@@ -188,6 +188,7 @@ internal ref struct WorldPersistenceCaptureLease
         ValidateCurrent();
         return WorldPersistenceConfigurationWriter.Measure(
             _world.Options,
+            WorldPersistenceEbinLimits.Create(_world.Options),
             out recordBytes,
             out diagnostic);
     }
@@ -204,7 +205,38 @@ internal ref struct WorldPersistenceCaptureLease
             throw new ArgumentException("The identity-branch capture belongs to another World.", nameof(branch));
         }
 
-        return WorldPersistenceIdentityBranchWriter.Measure(in branch, out recordBytes, out diagnostic);
+        return WorldPersistenceIdentityBranchWriter.Measure(
+            in branch,
+            WorldPersistenceEbinLimits.Create(_world.Options),
+            out recordBytes,
+            out diagnostic);
+    }
+
+    internal readonly EbinWriteStatus MeasureIdentityPageRecord(
+        in World.IdentityHistoryCapture history,
+        int pageIndex,
+        scoped Span<Guid> stableIds,
+        scoped Span<uint> metadata,
+        scoped Span<byte> payloadStorage,
+        out int recordBytes,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ValidateCurrent();
+
+        if (!history.IsBoundTo(_world))
+        {
+            throw new ArgumentException("The identity-history capture belongs to another World.", nameof(history));
+        }
+
+        return WorldPersistenceIdentityPageWriter.Measure(
+            in history,
+            WorldPersistenceEbinLimits.Create(_world.Options),
+            pageIndex,
+            stableIds,
+            metadata,
+            payloadStorage,
+            out recordBytes,
+            out diagnostic);
     }
 
     internal readonly bool TryReserveAdmissionBytes(
@@ -275,6 +307,33 @@ internal ref struct WorldPersistenceCaptureLease
         return reservation.WriteIdentityBranchRecord(
             _world,
             in branch,
+            candidateStorage,
+            destination,
+            out bytesWritten,
+            out diagnostic);
+    }
+
+    internal readonly EbinWriteStatus WriteIdentityPageRecord(
+        WorldPersistenceAdmissionReservation reservation,
+        in World.IdentityHistoryCapture history,
+        int pageIndex,
+        scoped Span<Guid> stableIds,
+        scoped Span<uint> metadata,
+        scoped Span<byte> payloadStorage,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ValidateCurrent();
+        ArgumentNullException.ThrowIfNull(reservation);
+        return reservation.WriteIdentityPageRecord(
+            _world,
+            in history,
+            pageIndex,
+            stableIds,
+            metadata,
+            payloadStorage,
             candidateStorage,
             destination,
             out bytesWritten,

@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Runtime.InteropServices;
 using System.Threading;
 
 namespace TerraFX.Entities;
@@ -68,6 +69,7 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
 
             return WorldPersistenceConfigurationWriter.Write(
                 options,
+                WorldPersistenceEbinLimits.Create(options),
                 candidateStorage,
                 destination,
                 out bytesWritten,
@@ -101,6 +103,56 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
 
             return WorldPersistenceIdentityBranchWriter.Write(
                 in branch,
+                WorldPersistenceEbinLimits.Create(world.Options),
+                candidateStorage,
+                destination,
+                out bytesWritten,
+                out diagnostic);
+        }
+    }
+
+    internal EbinWriteStatus WriteIdentityPageRecord(
+        World world,
+        in World.IdentityHistoryCapture history,
+        int pageIndex,
+        scoped Span<Guid> stableIds,
+        scoped Span<uint> metadata,
+        scoped Span<byte> payloadStorage,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+
+        lock (_disposeGate)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            if (!ReferenceEquals(_world, world) || !history.IsBoundTo(world))
+            {
+                throw new ArgumentException("The identity-history capture and reservation must belong to this exact World.", nameof(world));
+            }
+
+            var workspaceBytes = checked(
+                (long)MemoryMarshal.AsBytes(stableIds).Length
+                + MemoryMarshal.AsBytes(metadata).Length
+                + payloadStorage.Length
+                + candidateStorage.Length
+                + destination.Length);
+
+            if (workspaceBytes > _bytes)
+            {
+                throw new ArgumentException("The persistence reservation does not cover every identity-page workspace.", nameof(stableIds));
+            }
+
+            return WorldPersistenceIdentityPageWriter.Write(
+                in history,
+                WorldPersistenceEbinLimits.Create(world.Options),
+                pageIndex,
+                stableIds,
+                metadata,
+                payloadStorage,
                 candidateStorage,
                 destination,
                 out bytesWritten,

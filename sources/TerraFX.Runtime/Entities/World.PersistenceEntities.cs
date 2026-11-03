@@ -813,6 +813,9 @@ public sealed partial class World
                 _world._identityLedger.AssignmentCount - firstAssignmentIndex);
         }
 
+        internal readonly bool IsBoundTo(World world)
+            => ReferenceEquals(_world, world);
+
         private readonly int GetValidatedPageCount()
         {
             ValidateCurrent();

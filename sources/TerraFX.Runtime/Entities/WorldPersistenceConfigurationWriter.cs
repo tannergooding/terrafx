@@ -12,6 +12,7 @@ internal static class WorldPersistenceConfigurationWriter
 
     internal static EbinWriteStatus Measure(
         WorldOptions options,
+        EbinReadLimits limits,
         out int recordBytes,
         out EbinStructuralDiagnostic? diagnostic)
     {
@@ -32,11 +33,12 @@ internal static class WorldPersistenceConfigurationWriter
             minor: 0,
             fields[..fieldCount],
             payloadStorage[..payloadBytes]);
-        return EbinStructuralWriter.Measure(in source, EbinReadLimits.Foundation, out recordBytes, out diagnostic);
+        return EbinStructuralWriter.Measure(in source, limits, out recordBytes, out diagnostic);
     }
 
     internal static EbinWriteStatus Write(
         WorldOptions options,
+        EbinReadLimits limits,
         scoped Span<byte> candidateStorage,
         scoped Span<byte> destination,
         out int bytesWritten,
@@ -61,7 +63,7 @@ internal static class WorldPersistenceConfigurationWriter
             payloadStorage[..payloadBytes]);
         return EbinStructuralWriter.Write(
             in source,
-            EbinReadLimits.Foundation,
+            limits,
             candidateStorage,
             destination,
             out bytesWritten,

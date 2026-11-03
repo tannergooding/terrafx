@@ -11,6 +11,7 @@ internal static class WorldPersistenceIdentityBranchWriter
 
     internal static EbinWriteStatus Measure(
         in World.IdentityBranchCaptureEnumerator branch,
+        EbinReadLimits limits,
         out int recordBytes,
         out EbinStructuralDiagnostic? diagnostic)
     {
@@ -36,11 +37,12 @@ internal static class WorldPersistenceIdentityBranchWriter
             minor: 0,
             fields[..fieldCount],
             payloadStorage[..payloadBytes]);
-        return EbinStructuralWriter.Measure(in source, EbinReadLimits.Foundation, out recordBytes, out diagnostic);
+        return EbinStructuralWriter.Measure(in source, limits, out recordBytes, out diagnostic);
     }
 
     internal static EbinWriteStatus Write(
         in World.IdentityBranchCaptureEnumerator branch,
+        EbinReadLimits limits,
         scoped Span<byte> candidateStorage,
         scoped Span<byte> destination,
         out int bytesWritten,
@@ -70,7 +72,7 @@ internal static class WorldPersistenceIdentityBranchWriter
             payloadStorage[..payloadBytes]);
         return EbinStructuralWriter.Write(
             in source,
-            EbinReadLimits.Foundation,
+            limits,
             candidateStorage,
             destination,
             out bytesWritten,
