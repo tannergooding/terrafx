@@ -1814,6 +1814,10 @@ internal sealed partial class SceneAssetStoreTests
     }
 
     [Test]
+    [SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "ActivateAsync detaches the expansion plan before returning; the awaited request owns it independently of PreparedScene.")]
     public async Task SceneLoaderAllowsExplicitNullForOptionalRootSlot()
     {
         const int sceneAssetIdValue = 3;
@@ -1838,15 +1842,58 @@ internal sealed partial class SceneAssetStoreTests
                 var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
                 _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
                 using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
+                var loader = new SceneLoader(world, assets);
                 var options = new SceneLoadOptions {
                     ExternalBindings = [new SceneExternalBinding(slotId, target: null)],
                 };
-                using var prepared = new SceneLoader(world, assets)
+                using var prepared = loader
                     .PrepareAsync(new AssetId(sceneAssetIdValue), options)
                     .GetAwaiter()
                     .GetResult();
 
                 Assert.That(prepared.AssetId, Is.EqualTo(new AssetId(sceneAssetIdValue)));
+                var activation = loader.ActivateAsync(prepared);
+                world.PumpControlBoundary();
+                var receipt = await activation.ConfigureAwait(false);
+                Assert.That(receipt.Status, Is.EqualTo(SceneActivationStatus.Activated));
+                var instance = receipt.Instance
+                    ?? throw new InvalidOperationException("The explicit-null Scene activation omitted its instance.");
+                _ = world.Step();
+                using var captureLease = world.AcquirePersistenceCaptureLease();
+                var externalBindings = instance.GetExternalBindingCaptureRows();
+                Assert.That(externalBindings.Length, Is.EqualTo(1));
+                Assert.That(externalBindings[0].BindingId, Is.EqualTo(slotId));
+                Assert.That(externalBindings[0].TargetEntityId, Is.Null);
+                Assert.That(
+                    ScenePersistenceExternalBindingArrayWriter.Measure(
+                        externalBindings,
+                        EbinReadLimits.Foundation,
+                        out var recordStorageBytes,
+                        out var candidateBytes,
+                        out var payloadBytes,
+                        out var diagnostic),
+                    Is.EqualTo(EbinWriteStatus.Complete),
+                    diagnostic?.Category);
+                Assert.That(diagnostic, Is.Null);
+                var slices = new EbinPayloadSlice[externalBindings.Length];
+                var recordStorage = new byte[recordStorageBytes];
+                var candidateStorage = new byte[candidateBytes];
+                var payload = new byte[payloadBytes];
+                Assert.That(
+                    ScenePersistenceExternalBindingArrayWriter.Write(
+                        externalBindings,
+                        EbinReadLimits.Foundation,
+                        slices,
+                        recordStorage,
+                        candidateStorage,
+                        payload,
+                        out var payloadBytesWritten,
+                        out diagnostic),
+                    Is.EqualTo(EbinWriteStatus.Complete),
+                    diagnostic?.Category);
+                Assert.That(diagnostic, Is.Null);
+                Assert.That(payloadBytesWritten, Is.EqualTo(payloadBytes));
+                Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(payload), Is.EqualTo(1));
             }
             finally
             {
