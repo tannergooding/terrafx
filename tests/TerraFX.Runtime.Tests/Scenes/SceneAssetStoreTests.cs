@@ -1860,7 +1860,7 @@ internal sealed partial class SceneAssetStoreTests
                     ?? throw new InvalidOperationException("The explicit-null Scene activation omitted its instance.");
                 _ = world.Step();
                 using var captureLease = world.AcquirePersistenceCaptureLease();
-                var externalBindings = instance.GetExternalBindingCaptureRows();
+                var externalBindings = instance.GetExternalBindingCaptureRows(captureLease);
                 Assert.That(externalBindings.Length, Is.EqualTo(1));
                 Assert.That(externalBindings[0].BindingId, Is.EqualTo(slotId));
                 Assert.That(externalBindings[0].TargetEntityId, Is.Null);
@@ -2275,11 +2275,13 @@ internal sealed partial class SceneAssetStoreTests
         var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
         var childEntityId = new Guid("10000000-0000-4000-8000-000000000002");
         var placementId = new Guid("40000000-0000-4000-8000-000000000002");
+        var externalSlotId = new Guid("30000000-0000-4000-8000-000000000092");
         var scene = SceneAssetReaderTests.Fixtures.CreateSceneWithChildPlacement(
             new AssetId(sceneAssetIdValue),
             rootEntityId,
             placementId,
-            SceneAssetReaderTests.Fixtures.CreateRootPose(childEntityId, includeRootPosition: false));
+            SceneAssetReaderTests.Fixtures.CreateRootPose(childEntityId, includeRootPosition: false),
+            [CreateExternalSlot(externalSlotId, required: false, allowNull: true, [])]);
         var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
             new AssetId(prefabAssetIdValue),
             entityId: childEntityId);
@@ -2301,8 +2303,11 @@ internal sealed partial class SceneAssetStoreTests
                 _ = worldRegistrationBuilder.RegisterSceneSupport(sceneSupport);
                 using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
                 var loader = new SceneLoader(world, assets);
+                var options = new SceneLoadOptions {
+                    ExternalBindings = [new SceneExternalBinding(externalSlotId, target: null)],
+                };
                 using var prepared = loader
-                    .PrepareAsync(new AssetId(sceneAssetIdValue), new SceneLoadOptions())
+                    .PrepareAsync(new AssetId(sceneAssetIdValue), options)
                     .GetAwaiter()
                     .GetResult();
                 var activation = loader.ActivateAsync(prepared);
@@ -2336,6 +2341,11 @@ internal sealed partial class SceneAssetStoreTests
                     instance.CopyPersistenceEntityIds(captureLease, capturedEntityIds);
                     Assert.That(capturedEntityIds, Is.EquivalentTo(expectedLiveEntityIds));
                     Assert.That(capturedEntityIds[0], Is.Not.EqualTo(capturedEntityIds[1]));
+                    var firstEntityIdBytes = capturedEntityIds[0].ToByteArray(bigEndian: true);
+                    var secondEntityIdBytes = capturedEntityIds[1].ToByteArray(bigEndian: true);
+                    Assert.That(firstEntityIdBytes.AsSpan().SequenceCompareTo(secondEntityIdBytes), Is.LessThan(0));
+
+                    var occurrenceRecords = new byte[instance.OccurrenceCount][];
 
                     for (var occurrenceIndex = 0; occurrenceIndex < instance.OccurrenceCount; occurrenceIndex++)
                     {
@@ -2362,6 +2372,7 @@ internal sealed partial class SceneAssetStoreTests
                             occurrenceDiagnostic?.Category);
                         Assert.That(occurrenceDiagnostic, Is.Null);
                         Assert.That(bytesWritten, Is.EqualTo(recordBytes));
+                        occurrenceRecords[occurrenceIndex] = destination;
                         var assertions = (occurrenceIndex == 0)
                             ? new SceneOccurrenceRecordAssertions(
                                 rootOccurrence,
@@ -2393,7 +2404,10 @@ internal sealed partial class SceneAssetStoreTests
                         Assert.That(bytesConsumed, Is.EqualTo(destination.Length));
                     }
 
+                    var occurrenceArrayPayload = SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayPayload(occurrenceRecords);
                     Assert.That(instance.EntityCount, Is.EqualTo(2));
+
+                    var bindingRecords = new byte[instance.EntityCount][];
 
                     for (var expandedEntityIndex = 0; expandedEntityIndex < instance.EntityCount; expandedEntityIndex++)
                     {
@@ -2420,6 +2434,7 @@ internal sealed partial class SceneAssetStoreTests
                             bindingDiagnostic?.Category);
                         Assert.That(bindingDiagnostic, Is.Null);
                         Assert.That(bytesWritten, Is.EqualTo(recordBytes));
+                        bindingRecords[expandedEntityIndex] = destination;
                         var bindingAssertions = new SceneEntityBindingRecordAssertions();
                         Assert.That(
                             EbinStructuralReader.Read(
@@ -2433,6 +2448,138 @@ internal sealed partial class SceneAssetStoreTests
                         Assert.That(bindingReadDiagnostic, Is.Null);
                         Assert.That(bindingAssertions.IsMatch, Is.True);
                         Assert.That(bindingBytesConsumed, Is.EqualTo(destination.Length));
+                    }
+
+                    var bindingsArrayPayload = SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayPayload(bindingRecords);
+                    var externalBindings = instance.GetExternalBindingCaptureRows(captureLease);
+                    Assert.That(externalBindings.Length, Is.EqualTo(1));
+                    Assert.That(externalBindings[0].BindingId, Is.EqualTo(externalSlotId));
+                    Assert.That(externalBindings[0].TargetEntityId, Is.Null);
+                    Assert.That(
+                        ScenePersistenceExternalBindingArrayWriter.Measure(
+                            externalBindings,
+                            EbinReadLimits.Foundation,
+                            out var externalRecordStorageBytes,
+                            out var externalCandidateBytes,
+                            out var externalArrayPayloadBytes,
+                            out var externalDiagnostic),
+                        Is.EqualTo(EbinWriteStatus.Complete),
+                        externalDiagnostic?.Category);
+                    Assert.That(externalDiagnostic, Is.Null);
+                    var externalSlices = new EbinPayloadSlice[externalBindings.Length];
+                    var externalRecordStorage = new byte[externalRecordStorageBytes];
+                    var externalCandidateStorage = new byte[externalCandidateBytes];
+                    var externalBindingsArrayPayload = new byte[externalArrayPayloadBytes];
+                    Assert.That(
+                        ScenePersistenceExternalBindingArrayWriter.Write(
+                            externalBindings,
+                            EbinReadLimits.Foundation,
+                            externalSlices,
+                            externalRecordStorage,
+                            externalCandidateStorage,
+                            externalBindingsArrayPayload,
+                            out var externalPayloadBytesWritten,
+                            out externalDiagnostic),
+                        Is.EqualTo(EbinWriteStatus.Complete),
+                        externalDiagnostic?.Category);
+                    Assert.That(externalDiagnostic, Is.Null);
+                    Assert.That(externalPayloadBytesWritten, Is.EqualTo(externalArrayPayloadBytes));
+
+                    var entityIdsArrayPayload = new byte[checked(32 + (capturedEntityIds.Length * 16))];
+                    Assert.That(
+                        EbinPayloadWriter.WriteFixedArray(
+                            capturedEntityIds.AsSpan(),
+                            EbinReadLimits.Foundation,
+                            entityIdsArrayPayload,
+                            out var entityIdsArrayPayloadBytes,
+                            out var entityIdsDiagnostic),
+                        Is.EqualTo(EbinWriteStatus.Complete),
+                        entityIdsDiagnostic?.Category);
+                    Assert.That(entityIdsDiagnostic, Is.Null);
+                    entityIdsArrayPayload = entityIdsArrayPayload[..entityIdsArrayPayloadBytes];
+
+                    var plan = instance.GetPersistencePlan(captureLease);
+                    Assert.That(
+                        ScenePersistenceOccurrenceWriter.MeasureSourceAssetReference(
+                            plan,
+                            0,
+                            EbinReadLimits.Foundation,
+                            out var sourceRecordBytes,
+                            out var sourceDiagnostic),
+                        Is.EqualTo(EbinWriteStatus.Complete),
+                        sourceDiagnostic?.Category);
+                    Assert.That(sourceDiagnostic, Is.Null);
+                    var rootPayloadStorage = new byte[checked(
+                        16
+                        + sourceRecordBytes
+                        + entityIdsArrayPayload.Length
+                        + bindingsArrayPayload.Length
+                        + externalBindingsArrayPayload.Length
+                        + sizeof(long)
+                        + occurrenceArrayPayload.Length)];
+                    Assert.That(
+                        ScenePersistenceSceneInstanceWriter.Measure(
+                            instance,
+                            captureLease,
+                            entityIdsArrayPayload,
+                            bindingsArrayPayload,
+                            externalBindingsArrayPayload,
+                            occurrenceArrayPayload,
+                            EbinReadLimits.Foundation,
+                            rootPayloadStorage,
+                            out var instanceWorkspace,
+                            out var instanceDiagnostic),
+                        Is.EqualTo(EbinWriteStatus.Complete),
+                        instanceDiagnostic?.Category);
+                    Assert.That(instanceDiagnostic, Is.Null);
+                    Assert.That(instanceWorkspace.SourceRecordBytes, Is.EqualTo(sourceRecordBytes));
+                    Assert.That(captureLease.TryReserveAdmissionBytes(instanceWorkspace.WorkspaceBytes, out var reservation), Is.True);
+                    using (reservation)
+                    {
+                        var instanceCandidateStorage = new byte[instanceWorkspace.RecordBytes];
+                        var instanceRecord = new byte[instanceWorkspace.RecordBytes];
+                        Assert.That(
+                            ScenePersistenceSceneInstanceWriter.Write(
+                                instance,
+                                captureLease,
+                                instanceWorkspace,
+                                entityIdsArrayPayload,
+                                bindingsArrayPayload,
+                                externalBindingsArrayPayload,
+                                occurrenceArrayPayload,
+                                EbinReadLimits.Foundation,
+                                rootPayloadStorage,
+                                instanceCandidateStorage,
+                                instanceRecord,
+                                out var instanceBytesWritten,
+                                out instanceDiagnostic),
+                            Is.EqualTo(EbinWriteStatus.Complete),
+                            instanceDiagnostic?.Category);
+                        Assert.That(instanceDiagnostic, Is.Null);
+                        Assert.That(instanceBytesWritten, Is.EqualTo(instanceRecord.Length));
+                        var instanceAssertions = new SceneInstanceRecordAssertions(
+                            instance.SceneInstanceId,
+                            checked((uint)sceneAssetIdValue),
+                            new ContentSchemaIdentityAssignment("native/scene").SchemaId,
+                            capturedEntityIds,
+                            bindingsArrayPayload,
+                            externalBindingsArrayPayload,
+                            externalBindings.Length,
+                            occurrenceArrayPayload,
+                            instance.OccurrenceCount,
+                            instance.GetPersistenceAssignmentOrdinal(captureLease));
+                        Assert.That(
+                            EbinStructuralReader.Read(
+                                instanceRecord,
+                                EbinReadLimits.Foundation,
+                                EbinReadPolicy.Canonical,
+                                ref instanceAssertions,
+                                out var instanceBytesConsumed,
+                                out var instanceReadDiagnostic),
+                            Is.EqualTo(EbinReadStatus.Complete));
+                        Assert.That(instanceReadDiagnostic, Is.Null);
+                        Assert.That(instanceAssertions.IsMatch, Is.True);
+                        Assert.That(instanceBytesConsumed, Is.EqualTo(instanceRecord.Length));
                     }
                 }
 

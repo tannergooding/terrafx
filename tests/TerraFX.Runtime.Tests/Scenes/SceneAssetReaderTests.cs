@@ -831,7 +831,8 @@ internal sealed class SceneAssetReaderTests
             AssetId assetId,
             Guid rootEntityId,
             Guid placementId,
-            byte[] rootPose)
+            byte[] rootPose,
+            byte[][]? externalSlots = null)
         {
             var entity = CreateRootEntity(rootEntityId);
             var placement = CreatePrefabPlacement(
@@ -869,7 +870,7 @@ internal sealed class SceneAssetReaderTests
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(4, placement),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(6),
                 SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(7),
-                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8));
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8, externalSlots ?? []));
         }
 
         private static byte[] CreateEntitySelector(Guid entityId, byte scope = 1, Guid[]? placementPath = null)

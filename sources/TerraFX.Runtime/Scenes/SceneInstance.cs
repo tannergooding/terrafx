@@ -333,8 +333,10 @@ public sealed class SceneInstance
         }
     }
 
-    internal ReadOnlySpan<SceneExternalBindingCaptureRow> GetExternalBindingCaptureRows()
+    internal ReadOnlySpan<SceneExternalBindingCaptureRow> GetExternalBindingCaptureRows(WorldPersistenceCaptureLease lease)
     {
+        ValidatePersistenceLease(lease);
+
         if (Volatile.Read(ref _isActive) != 1)
         {
             throw new InvalidOperationException("Scene external-binding capture requires an active Scene instance.");
@@ -346,6 +348,25 @@ public sealed class SceneInstance
 
     internal int GetPersistenceAssetIdCount()
         => GetActivePlan().Occurrences.Length;
+
+    internal uint GetPersistenceAssignmentOrdinal(WorldPersistenceCaptureLease lease)
+    {
+        ValidatePersistenceLease(lease);
+
+        if (!_world.IdentityLedger.TryFind(_sceneInstanceId, out var assignmentOrdinal)
+            || (assignmentOrdinal == 0))
+        {
+            throw new InvalidOperationException("The active SceneInstance identity has no live assignment ordinal.");
+        }
+
+        return assignmentOrdinal;
+    }
+
+    internal SceneExpansionPlan GetPersistencePlan(WorldPersistenceCaptureLease lease)
+    {
+        ValidatePersistenceLease(lease);
+        return GetActivePlan();
+    }
 
     internal TResource? GetPreparedAssets<TResource>()
         where TResource : class
@@ -486,5 +507,15 @@ public sealed class SceneInstance
             _firstEntityIdentityOrdinal
             + (uint)plan.GetEntityAssignmentOrdinal(expandedEntityIndex));
         return _world.TryGetEntityByIdentityOrdinal(assignmentOrdinal, out entity);
+    }
+
+    private void ValidatePersistenceLease(WorldPersistenceCaptureLease lease)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(_world))
+        {
+            throw new ArgumentException("The capture lease belongs to another World.", nameof(lease));
+        }
     }
 }
