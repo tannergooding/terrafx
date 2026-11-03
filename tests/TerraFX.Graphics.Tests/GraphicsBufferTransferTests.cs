@@ -880,6 +880,21 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task GraphicsDeviceShutdownQuarantinesBackendWhenDisposalFails()
+    {
+        var backendDevice = new FakeBackendDevice(throwOnDispose: true);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var shutdown = graphicsDevice.ShutdownAsync();
+        var exception = Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await shutdown.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false))
+            ?? throw new InvalidOperationException("Backend disposal failure returned no shutdown exception.");
+
+        Assert.That(exception.Message, Is.EqualTo("The fake backend disposal failed."));
+        Assert.That(graphicsDevice.Status, Is.EqualTo(GraphicsDeviceStatus.Stopping));
+        Assert.That(backendDevice.DeviceDisposalCount, Is.EqualTo(1));
+    }
+
+    [Test]
     public async Task GraphicsDeviceStartupCancellationDisposesCreatedBackend()
     {
         using var createEntered = new ManualResetEventSlim(initialState: false);
