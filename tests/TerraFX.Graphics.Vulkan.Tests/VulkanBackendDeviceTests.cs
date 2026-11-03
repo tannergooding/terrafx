@@ -262,7 +262,7 @@ internal sealed class VulkanBackendDeviceTests
     private static VulkanBackendDevice CreateVulkanDeviceForNativeSmokeTest(
         Func<VkResult, VkResult>? transferWaitResultOverride = null,
         Action<VulkanBackendStartupStage>? afterNativeObjectAcquired = null,
-        Func<VkResult, VkResult>? commandBufferAllocationResultOverride = null,
+        Func<VulkanBackendStartupStage, VkResult, VkResult>? startupNativeResultOverride = null,
         CancellationToken cancellationToken = default)
     {
         try
@@ -271,7 +271,7 @@ internal sealed class VulkanBackendDeviceTests
                 GraphicsDeviceProfile.OffscreenNative,
                 transferWaitResultOverride,
                 afterNativeObjectAcquired,
-                commandBufferAllocationResultOverride,
+                startupNativeResultOverride,
                 cancellationToken);
         }
         catch (DllNotFoundException exception)
@@ -1659,14 +1659,19 @@ internal sealed class VulkanBackendDeviceTests
     }
 
     [Test]
-    [Order(int.MaxValue - 2)]
+    [Order(int.MaxValue - 3)]
     public void VulkanCommandBufferAllocationFailureReleasesStartupObjects()
     {
         var observedAllocationResult = default(VkResult);
 
         Assert.That(
             () => CreateVulkanDeviceForNativeSmokeTest(
-                commandBufferAllocationResultOverride: allocationResult => {
+                startupNativeResultOverride: (stage, allocationResult) => {
+                    if (stage != VulkanBackendStartupStage.CommandBufferAllocated)
+                    {
+                        return allocationResult;
+                    }
+
                     observedAllocationResult = allocationResult;
                     return allocationResult == VkResult.VK_SUCCESS
                         ? VkResult.VK_ERROR_OUT_OF_HOST_MEMORY
@@ -1675,6 +1680,34 @@ internal sealed class VulkanBackendDeviceTests
             Throws.InvalidOperationException.With.Message.Contains(
                 "vkAllocateCommandBuffers failed with VkResult VK_ERROR_OUT_OF_HOST_MEMORY"));
         Assert.That(observedAllocationResult, Is.EqualTo(VkResult.VK_SUCCESS));
+
+        using var device = CreateVulkanDeviceForNativeSmokeTest();
+        Assert.That(device.Capabilities.Backend, Is.EqualTo(GraphicsBackend.Vulkan));
+        Assert.That(device.Capabilities.AdapterName, Is.Not.Empty);
+    }
+
+    [Test]
+    [Order(int.MaxValue - 2)]
+    public void VulkanCommandPoolCreationFailureReleasesStartupObjects()
+    {
+        var observedCreateResult = default(VkResult);
+
+        Assert.That(
+            () => CreateVulkanDeviceForNativeSmokeTest(
+                startupNativeResultOverride: (stage, createResult) => {
+                    if (stage != VulkanBackendStartupStage.CommandPoolCreated)
+                    {
+                        return createResult;
+                    }
+
+                    observedCreateResult = createResult;
+                    return createResult == VkResult.VK_SUCCESS
+                        ? VkResult.VK_ERROR_OUT_OF_HOST_MEMORY
+                        : createResult;
+                }),
+            Throws.InvalidOperationException.With.Message.Contains(
+                "vkCreateCommandPool failed with VkResult VK_ERROR_OUT_OF_HOST_MEMORY"));
+        Assert.That(observedCreateResult, Is.EqualTo(VkResult.VK_SUCCESS));
 
         using var device = CreateVulkanDeviceForNativeSmokeTest();
         Assert.That(device.Capabilities.Backend, Is.EqualTo(GraphicsBackend.Vulkan));
@@ -1722,7 +1755,7 @@ internal sealed class VulkanBackendDeviceTests
     [TestCase(VulkanBackendStartupStage.CommandBufferAllocated)]
     [TestCase(VulkanBackendStartupStage.CommandBufferCreated)]
     [TestCase(VulkanBackendStartupStage.TimelineSemaphoreCreated)]
-    [Order(int.MaxValue - 4)]
+    [Order(int.MaxValue - 5)]
     public void VulkanStartupCancellationAfterNativeObjectAcquisitionReleasesHandles(
         VulkanBackendStartupStage stage)
     {
@@ -1748,7 +1781,7 @@ internal sealed class VulkanBackendDeviceTests
     [TestCase(VulkanBackendStartupStage.CommandBufferAllocated)]
     [TestCase(VulkanBackendStartupStage.CommandBufferCreated)]
     [TestCase(VulkanBackendStartupStage.TimelineSemaphoreCreated)]
-    [Order(int.MaxValue - 3)]
+    [Order(int.MaxValue - 4)]
     public void VulkanStartupFailureAfterNativeObjectAcquisitionReleasesHandles(
         VulkanBackendStartupStage stage)
     {

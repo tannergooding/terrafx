@@ -78,14 +78,14 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         GraphicsDeviceProfile profile,
         Func<VkResult, VkResult>? transferWaitResultOverride,
         Action<VulkanBackendStartupStage>? afterNativeObjectAcquired,
-        Func<VkResult, VkResult>? commandBufferAllocationResultOverride,
+        Func<VulkanBackendStartupStage, VkResult, VkResult>? startupNativeResultOverride,
         CancellationToken cancellationToken)
         => Create(
             profile,
             GraphicsPlatformKind.None,
             transferWaitResultOverride,
             afterNativeObjectAcquired,
-            commandBufferAllocationResultOverride,
+            startupNativeResultOverride,
             cancellationToken);
 
     internal static VulkanBackendDevice Create(
@@ -108,7 +108,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
             platformKind,
             transferWaitResultOverride: null,
             afterNativeObjectAcquired: null,
-            commandBufferAllocationResultOverride: null,
+            startupNativeResultOverride: null,
             cancellationToken);
 
     internal static VulkanBackendDevice Create(
@@ -122,7 +122,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
             platformKind,
             transferWaitResultOverride,
             afterNativeObjectAcquired,
-            commandBufferAllocationResultOverride: null,
+            startupNativeResultOverride: null,
             cancellationToken);
 
     internal static VulkanBackendDevice Create(
@@ -130,7 +130,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         GraphicsPlatformKind platformKind,
         Func<VkResult, VkResult>? transferWaitResultOverride,
         Action<VulkanBackendStartupStage>? afterNativeObjectAcquired,
-        Func<VkResult, VkResult>? commandBufferAllocationResultOverride,
+        Func<VulkanBackendStartupStage, VkResult, VkResult>? startupNativeResultOverride,
         CancellationToken cancellationToken)
     {
         GraphicsDevice.ValidateStartupProfile(GraphicsBackend.Vulkan, profile, platformKind);
@@ -200,7 +200,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                     device,
                     queueFamilyIndex,
                     afterNativeObjectAcquired,
-                    commandBufferAllocationResultOverride,
+                    startupNativeResultOverride,
                     cancellationToken,
                     out commandPool);
                 hasCommandPool = true;
@@ -289,7 +289,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         VkDevice device,
         uint queueFamilyIndex,
         Action<VulkanBackendStartupStage>? afterNativeObjectAcquired,
-        Func<VkResult, VkResult>? commandBufferAllocationResultOverride,
+        Func<VulkanBackendStartupStage, VkResult, VkResult>? startupNativeResultOverride,
         CancellationToken cancellationToken,
         out VkCommandPool commandPool)
     {
@@ -299,7 +299,26 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         poolCreateInfo.queueFamilyIndex = queueFamilyIndex;
         commandPool = default;
         var createdCommandPool = default(VkCommandPool);
-        ThrowIfFailed(VulkanApi.vkCreateCommandPool(device, &poolCreateInfo, null, &createdCommandPool), "vkCreateCommandPool");
+        var nativeCommandPoolResult = VulkanApi.vkCreateCommandPool(device, &poolCreateInfo, null, &createdCommandPool);
+        var commandPoolResult = nativeCommandPoolResult;
+
+        if ((nativeCommandPoolResult == VkResult.VK_SUCCESS) && (startupNativeResultOverride is not null))
+        {
+            commandPoolResult = startupNativeResultOverride(
+                VulkanBackendStartupStage.CommandPoolCreated,
+                nativeCommandPoolResult);
+        }
+
+        if (commandPoolResult != VkResult.VK_SUCCESS)
+        {
+            if (nativeCommandPoolResult == VkResult.VK_SUCCESS)
+            {
+                VulkanApi.vkDestroyCommandPool(device, createdCommandPool, null);
+            }
+
+            ThrowIfFailed(commandPoolResult, "vkCreateCommandPool");
+        }
+
         commandPool = createdCommandPool;
 
         try
@@ -315,9 +334,11 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
             VkCommandBuffer commandBuffer = default;
             var allocationResult = VulkanApi.vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer);
 
-            if (commandBufferAllocationResultOverride is not null)
+            if ((allocationResult == VkResult.VK_SUCCESS) && (startupNativeResultOverride is not null))
             {
-                allocationResult = commandBufferAllocationResultOverride(allocationResult);
+                allocationResult = startupNativeResultOverride(
+                    VulkanBackendStartupStage.CommandBufferAllocated,
+                    allocationResult);
             }
 
             ThrowIfFailed(allocationResult, "vkAllocateCommandBuffers");
