@@ -2,10 +2,15 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Threading;
 using NUnit.Framework;
 using TerraFX;
+using TerraFX.Animation;
+using TerraFX.Assets;
 using TerraFX.Entities;
+using TerraFX.Graphics;
 using TerraFX.Scenes;
 
 namespace TerraFX.Runtime.Tests.Entities;
@@ -13,10 +18,83 @@ namespace TerraFX.Runtime.Tests.Entities;
 [TestFixture]
 internal sealed class WorldPersistenceWorldRecordWriterTests
 {
+    private static DataSchema CreateApplicationSchema(string name, ContentSchemaRole role, ushort wireKind, ushort elementKind = 0)
+    {
+        var assignment = new ContentSchemaIdentityAssignment(name);
+        var schema = new ContentSchemaReference(assignment.SchemaId, 1, 0, ContentSchemaScope.Content);
+        ImmutableArray<ContentFieldDescriptor> fields = (role is ContentSchemaRole.EntityTag)
+            ? []
+            : [
+                new ContentFieldDescriptor(
+                1,
+                wireKind,
+                elementKind,
+                true,
+                1,
+                1,
+                [],
+                0,
+                ContentUnit.None,
+                ContentReferenceKind.None,
+                ContentAuthoring.None,
+                null),
+            ];
+        return new DataSchema(
+            schema,
+            assignment,
+            role,
+            ContentSchemaOwner.Application,
+            ContentSchemaStorage.NotComponent,
+            ContentTransientRestore.NotApplicable,
+            fields);
+    }
+
     [Test]
     public void ComposesCanonicalWorldFromCapturedEmptySubsystems()
     {
-        var registration = new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build();
+        DataSchema[] schemaRows = [
+            .. CoreContentSchemaCatalogue.PrimitiveSchemas,
+            .. CoreContentSchemaCatalogue.FoundationSchemas,
+            .. NativeAssetSchemaCatalogue.Schemas,
+            .. SceneSchemaCatalogue.Schemas,
+            .. AnimationSchemaCatalogue.Schemas,
+            .. RenderingSchemaCatalogue.Schemas,
+            .. StandaloneContinuationSchemaCatalogue.Schemas,
+            CreateApplicationSchema("application/world-root-test/tag/v1", ContentSchemaRole.EntityTag, 0),
+            CreateApplicationSchema("application/world-root-test/system-state/v1", ContentSchemaRole.SystemState, 7),
+            CreateApplicationSchema("application/world-root-test/resource-state/v1", ContentSchemaRole.ResourceState, 23, 4),
+            CreateApplicationSchema("application/world-root-test/attachment-state/v1", ContentSchemaRole.AttachmentState, 8),
+        ];
+        var missingReferences = new List<string>();
+
+        foreach (var schema in schemaRows)
+        {
+            foreach (var field in schema.Fields)
+            {
+                foreach (var nestedSchema in field.NestedSchemas)
+                {
+                    var isRegistered = false;
+
+                    foreach (var candidate in schemaRows)
+                    {
+                        if (candidate.Schema == nestedSchema)
+                        {
+                            isRegistered = true;
+                            break;
+                        }
+                    }
+
+                    if (!isRegistered)
+                    {
+                        missingReferences.Add($"{schema.Schema.SchemaId}:{field.Tag}->{nestedSchema.SchemaId}/{nestedSchema.Major}/{nestedSchema.Minor}/{nestedSchema.Scope}");
+                    }
+                }
+            }
+        }
+
+        Assert.That(missingReferences, Is.Empty, string.Join(Environment.NewLine, missingReferences));
+        var schemas = new CompiledContentSchemaRegistry([.. schemaRows]);
+        var registration = new WorldRegistrationBuilder(schemas).Build();
         using var world = World.Create(new WorldOptions(registration) {
             CpuWorkerCount = 0,
             InitialReplayLineageId = Guid.NewGuid(),
@@ -217,7 +295,20 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             diagnostic?.ToString());
         var scenesRecord = scenesDestination[..scenesBytesWritten];
 
-        uint[] assetIds = [];
+        var referenceCount = WorldPersistenceAssetIdSetWriter.MeasureReferenceCount(
+            schemas,
+            ecsRecord,
+            scenesRecord,
+            limits);
+        Assert.That(referenceCount, Is.Zero);
+        var assetIds = new uint[referenceCount];
+        var assetIdCount = WorldPersistenceAssetIdSetWriter.CopySortedUniqueAssetIds(
+            schemas,
+            ecsRecord,
+            scenesRecord,
+            limits,
+            assetIds);
+        Assert.That(assetIdCount, Is.Zero);
 
         var controlSlices = new EbinPayloadSlice[lease.ControlRecordCount];
         Assert.That(
@@ -295,7 +386,7 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
         Assert.That(registrationBytesWritten, Is.EqualTo(registrationRecord.Length));
 
         var sources = new WorldPersistenceWorldRecordSources(
-            assetIds,
+            assetIds.AsSpan(0, assetIdCount),
             clockRecord,
             configurationRecord,
             lease.ControlRecordCount,
