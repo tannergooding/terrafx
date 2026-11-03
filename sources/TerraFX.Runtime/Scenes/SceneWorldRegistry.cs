@@ -88,6 +88,39 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
             + pendingRequestObjectBytes);
     }
 
+    public void CopySceneAssetIds(Span<uint> destination)
+    {
+        lock (_instanceGate)
+        {
+            var assetIdCount = 0;
+
+            for (var index = 0; index < _activeInstances.Length; index++)
+            {
+                if (_activeInstances[index] is { } instance)
+                {
+                    assetIdCount = checked(assetIdCount + instance.GetPersistenceAssetIdCount());
+                }
+            }
+
+            if (destination.Length != assetIdCount)
+            {
+                throw new ArgumentException("The Scene AssetId destination must match the exact active occurrence count.", nameof(destination));
+            }
+
+            var destinationOffset = 0;
+
+            for (var index = 0; index < _activeInstances.Length; index++)
+            {
+                if (_activeInstances[index] is { } instance)
+                {
+                    var occurrenceCount = instance.GetPersistenceAssetIdCount();
+                    instance.CopyPersistenceAssetIds(destination.Slice(destinationOffset, occurrenceCount));
+                    destinationOffset = checked(destinationOffset + occurrenceCount);
+                }
+            }
+        }
+    }
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
@@ -136,6 +169,24 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         lock (_requestGate)
         {
             _isPersistenceCaptureActive = false;
+        }
+    }
+
+    public int GetSceneAssetIdCount()
+    {
+        lock (_instanceGate)
+        {
+            var count = 0;
+
+            for (var index = 0; index < _activeInstances.Length; index++)
+            {
+                if (_activeInstances[index] is { } instance)
+                {
+                    count = checked(count + instance.GetPersistenceAssetIdCount());
+                }
+            }
+
+            return count;
         }
     }
 

@@ -54,6 +54,14 @@ internal sealed partial class SceneAssetStoreTests
         }
     }
 
+    private static uint[] CaptureSceneAssetIds(World world)
+    {
+        using var lease = world.AcquirePersistenceCaptureLease();
+        var assetIds = new uint[lease.GetSceneAssetIdCount()];
+        lease.CopySceneAssetIds(assetIds);
+        return assetIds;
+    }
+
     private static byte[] CreateEntityReferenceBindingToExternalSlot(
         Guid entityId,
         ContentSchemaReference componentSchema,
@@ -2257,6 +2265,11 @@ internal sealed partial class SceneAssetStoreTests
                     ?? throw new InvalidOperationException("The nested Scene activation did not return its instance.");
 
                 Assert.That(receipt.Status, Is.EqualTo(SceneActivationStatus.Activated));
+                uint[] expectedSceneAssetIds = [checked((uint)sceneAssetIdValue), checked((uint)prefabAssetIdValue)];
+                _ = world.Step();
+                Assert.That(
+                    CaptureSceneAssetIds(world),
+                    Is.EqualTo(expectedSceneAssetIds));
                 Assert.That(instance.TryGetEntity(childEntityId, out _), Is.False);
                 Assert.That(instance.TryGetEntity(rootEntityId, out var root), Is.True);
                 var address = new SceneEntityAddress([placementId], childEntityId);

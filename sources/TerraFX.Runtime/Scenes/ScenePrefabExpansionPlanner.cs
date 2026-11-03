@@ -1933,6 +1933,11 @@ internal static class ScenePrefabExpansionPlanner
             requiredBytes = checked(requiredBytes + ArrayBytes(_entityCount, sizeof(int)));
             requiredBytes = checked(requiredBytes + ArrayBytes(_occurrenceCount, Unsafe.SizeOf<Guid>()));
             requiredBytes = checked(requiredBytes + ArrayBytes(_occurrenceCount, sizeof(int)));
+            requiredBytes = checked(
+                requiredBytes
+                + ArrayBytes(
+                    _limits.RootExternalBindingCount,
+                    Unsafe.SizeOf<SceneExternalBindingCaptureRow>()));
             requiredBytes = checked(requiredBytes + (checked((long)prefabLeases.Count) * 256L));
             return checked(requiredBytes + 2048L);
         }

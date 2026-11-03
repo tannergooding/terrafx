@@ -36,6 +36,10 @@ internal static class SceneActivationExecutor
                 bindingDiagnostics);
         }
 
+        var externalBindingCaptureRows = SceneInstance.CaptureExternalBindings(
+            world,
+            request.Options.ExternalBindings);
+
         if (request.Options.SceneInstanceId is Guid requestedId
             && world.IdentityLedger.TryFind(requestedId, out _))
         {
@@ -80,7 +84,11 @@ internal static class SceneActivationExecutor
                             candidates,
                             cancellationToken);
                         cancellationToken.ThrowIfCancellationRequested();
-                        candidateInstance = new SceneInstance(world, registry, plan);
+                        candidateInstance = new SceneInstance(
+                            world,
+                            registry,
+                            plan,
+                            externalBindingCaptureRows);
                         return descriptions;
                     },
                     parentEntityIndices: plan.EntityParentIndices,

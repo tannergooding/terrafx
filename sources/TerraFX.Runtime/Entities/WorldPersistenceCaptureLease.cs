@@ -127,6 +127,19 @@ internal ref struct WorldPersistenceCaptureLease
 
     internal readonly Guid WorldGuid => _worldGuid;
 
+    internal readonly void CopySceneAssetIds(scoped Span<uint> destination)
+    {
+        ValidateCurrent();
+        var count = _sceneParticipant?.GetSceneAssetIdCount() ?? 0;
+
+        if (destination.Length != count)
+        {
+            throw new ArgumentException("The Scene AssetId destination must match the exact active occurrence count.", nameof(destination));
+        }
+
+        _sceneParticipant?.CopySceneAssetIds(destination);
+    }
+
     internal readonly nint CountAttachmentStateRecord(int attachmentIndex, CancellationToken cancellationToken)
     {
         ValidateCurrent();
@@ -232,6 +245,12 @@ internal ref struct WorldPersistenceCaptureLease
     {
         ValidateCurrent();
         return _world.CreateResourceStateEnumerator(this);
+    }
+
+    internal readonly int GetSceneAssetIdCount()
+    {
+        ValidateCurrent();
+        return _sceneParticipant?.GetSceneAssetIdCount() ?? 0;
     }
 
     internal readonly int GetSystemStateCount()

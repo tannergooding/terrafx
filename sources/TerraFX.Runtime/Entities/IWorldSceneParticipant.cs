@@ -14,9 +14,13 @@ internal interface IWorldSceneParticipant
 
     long OwnedByteReservation { get; }
 
+    void CopySceneAssetIds(Span<uint> destination);
+
     void Dispose();
 
     void EndPersistenceCapture();
+
+    int GetSceneAssetIdCount();
 
     ImmutableArray<WorldHierarchyDetachUpdate> PrepareHierarchyDetachment(
         int ancestorNodeCount,

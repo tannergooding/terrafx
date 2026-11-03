@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using System.Threading.Tasks;
@@ -13,6 +14,7 @@ namespace TerraFX.Scenes;
 /// <summary>Identifies one activated Scene within its exact World.</summary>
 public sealed class SceneInstance
 {
+    private SceneExternalBindingCaptureRow[]? _externalBindings;
     private uint _firstEntityIdentityOrdinal;
     private int _isActive;
     private readonly int _occurrenceCount;
@@ -21,14 +23,20 @@ public sealed class SceneInstance
     private Guid _sceneInstanceId;
     private readonly World _world;
 
-    internal SceneInstance(World world, SceneWorldRegistry registry, SceneExpansionPlan plan)
+    internal SceneInstance(
+        World world,
+        SceneWorldRegistry registry,
+        SceneExpansionPlan plan,
+        SceneExternalBindingCaptureRow[] externalBindings)
     {
         ArgumentNullException.ThrowIfNull(world);
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(externalBindings);
         _world = world;
         _registry = registry;
         _plan = plan;
+        _externalBindings = externalBindings;
         _occurrenceCount = plan.Occurrences.Length;
         AssetId = plan.SceneAssetId;
     }
@@ -44,6 +52,33 @@ public sealed class SceneInstance
     internal uint FirstEntityIdentityOrdinal => _firstEntityIdentityOrdinal;
 
     internal int OccurrenceCount => _occurrenceCount;
+
+    internal static SceneExternalBindingCaptureRow[] CaptureExternalBindings(
+        World world,
+        ImmutableArray<SceneExternalBinding> externalBindings)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+
+        if (externalBindings.IsDefault)
+        {
+            throw new ArgumentException("The external-binding array must be initialized.", nameof(externalBindings));
+        }
+
+        var captureRows = new SceneExternalBindingCaptureRow[externalBindings.Length];
+
+        for (var index = 0; index < externalBindings.Length; index++)
+        {
+            var binding = externalBindings[index]
+                ?? throw new ArgumentException("The external-binding array cannot contain null.", nameof(externalBindings));
+            Guid? targetEntityId = binding.Target is Entity target ? world.GetEntityId(target) : null;
+            captureRows[index] = new SceneExternalBindingCaptureRow(binding.SlotId, targetEntityId);
+        }
+
+        Array.Sort(
+            captureRows,
+            static (left, right) => FoundationCatalogue.CompareRfc(left.BindingId, right.BindingId));
+        return captureRows;
+    }
 
     /// <summary>Begins a typed hierarchy transaction scoped to this exact Scene instance.</summary>
     /// <returns>The unsubmitted transaction.</returns>
@@ -224,6 +259,36 @@ public sealed class SceneInstance
         Volatile.Write(ref _isActive, 1);
     }
 
+    internal void CopyPersistenceAssetIds(Span<uint> destination)
+    {
+        var plan = GetActivePlan();
+        var occurrences = plan.Occurrences;
+
+        if (destination.Length != occurrences.Length)
+        {
+            throw new ArgumentException("The Scene AssetId destination must match the exact occurrence count.", nameof(destination));
+        }
+
+        for (var index = 0; index < occurrences.Length; index++)
+        {
+            destination[index] = checked((uint)occurrences[index].AssetId.Value);
+        }
+    }
+
+    internal ReadOnlySpan<SceneExternalBindingCaptureRow> GetExternalBindingCaptureRows()
+    {
+        if (Volatile.Read(ref _isActive) != 1)
+        {
+            throw new InvalidOperationException("Scene external-binding capture requires an active Scene instance.");
+        }
+
+        return Volatile.Read(ref _externalBindings)
+            ?? throw new ObjectDisposedException(nameof(SceneInstance));
+    }
+
+    internal int GetPersistenceAssetIdCount()
+        => GetActivePlan().Occurrences.Length;
+
     internal TResource? GetPreparedAssets<TResource>()
         where TResource : class
     {
@@ -234,7 +299,19 @@ public sealed class SceneInstance
     internal void RevokeFromWorld()
     {
         _ = Interlocked.Exchange(ref _isActive, 0);
+        _ = Interlocked.Exchange(ref _externalBindings, null);
         Interlocked.Exchange(ref _plan, null)?.Dispose();
+    }
+
+    private SceneExpansionPlan GetActivePlan()
+    {
+        if (Volatile.Read(ref _isActive) != 1)
+        {
+            throw new InvalidOperationException("Scene persistence capture requires an active Scene instance.");
+        }
+
+        return Volatile.Read(ref _plan)
+            ?? throw new ObjectDisposedException(nameof(SceneInstance));
     }
 
     private bool TryGetLiveEntity(SceneExpansionPlan plan, int expandedEntityIndex, out Entity entity)

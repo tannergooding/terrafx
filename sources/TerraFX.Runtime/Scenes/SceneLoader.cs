@@ -107,7 +107,8 @@ public sealed class SceneLoader
             options.MaximumPrefabDepth,
             options.MaximumHierarchyDepth,
             _world.MaximumOwnedStateBytes,
-            bytes => _world.TryReserveSceneStorage(_registry, bytes));
+            bytes => _world.TryReserveSceneStorage(_registry, bytes),
+            rootExternalBindingCount: options.ExternalBindings.Length);
         var plan = await ScenePrefabExpansionPlanner.PrepareAsync(
             _assets,
             sceneId,
