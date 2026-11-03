@@ -100,4 +100,38 @@ internal sealed class WorldPersistenceAdmissionTests
         Assert.That(replacement, Is.Not.Null);
         replacement!.Dispose();
     }
+
+    [Test]
+    public void ReservationBoundsSimultaneousOperationWorkspaces()
+    {
+        using var world = CreateWorld(4096);
+        Assert.That(world.TryReservePersistenceAdmissionBytes(4096, out var reservation), Is.True);
+        using var reservationScope = reservation
+            ?? throw new InvalidOperationException("The persistence admission reservation was not created.");
+        using var firstUse = reservationScope.AcquireUse(world, 3072);
+
+        var rejected = false;
+
+        try
+        {
+            _ = reservationScope.AcquireUse(world, 2048);
+        }
+        catch (ArgumentException)
+        {
+            rejected = true;
+        }
+
+        Assert.That(rejected, Is.True);
+        using var secondUse = reservationScope.AcquireUse(world, 1024);
+        reservationScope.Dispose();
+        Assert.That(world.TryReservePersistenceAdmissionBytes(1, out var refused), Is.False);
+        Assert.That(refused, Is.Null);
+        refused?.Dispose();
+
+        secondUse.Dispose();
+        firstUse.Dispose();
+        Assert.That(world.TryReservePersistenceAdmissionBytes(1, out var replacement), Is.True);
+        Assert.That(replacement, Is.Not.Null);
+        replacement!.Dispose();
+    }
 }

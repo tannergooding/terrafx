@@ -9,6 +9,7 @@ namespace TerraFX.Entities;
 internal sealed class WorldPersistenceAdmissionReservation : IDisposable
 {
     private int _activeUseCount;
+    private long _activeWorkspaceBytes;
     private readonly long _bytes;
     private readonly Lock _disposeGate = new();
     private readonly WorldDomainReservation _domainReservation;
@@ -56,26 +57,30 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
                 throw new ArgumentException("The persistence reservation belongs to another World.", nameof(world));
             }
 
-            if (workspaceBytes > _bytes)
+            if (workspaceBytes > (_bytes - _activeWorkspaceBytes))
             {
-                throw new ArgumentException("The persistence reservation does not cover the operation workspaces.", nameof(workspaceBytes));
+                throw new ArgumentException("The persistence reservation does not cover the simultaneous operation workspaces.", nameof(workspaceBytes));
             }
 
             _activeUseCount = checked(_activeUseCount + 1);
-            return new UseScope(this);
+            _activeWorkspaceBytes = checked(_activeWorkspaceBytes + workspaceBytes);
+            return new UseScope(this, workspaceBytes);
         }
     }
 
-    internal void ReleaseUse()
+    internal void ReleaseUse(long workspaceBytes)
     {
         lock (_disposeGate)
         {
-            if (_activeUseCount <= 0)
+            if ((_activeUseCount <= 0)
+                || (workspaceBytes < 0)
+                || (workspaceBytes > _activeWorkspaceBytes))
             {
                 throw new InvalidOperationException("The persistence reservation has no active operation use.");
             }
 
             _activeUseCount--;
+            _activeWorkspaceBytes -= workspaceBytes;
 
             if (_isDisposed && (_activeUseCount == 0))
             {
@@ -562,10 +567,12 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
 
     internal ref struct UseScope
     {
+        private long _workspaceBytes;
         private WorldPersistenceAdmissionReservation? _reservation;
 
-        internal UseScope(WorldPersistenceAdmissionReservation reservation)
+        internal UseScope(WorldPersistenceAdmissionReservation reservation, long workspaceBytes)
         {
+            _workspaceBytes = workspaceBytes;
             _reservation = reservation;
         }
 
@@ -573,7 +580,13 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
         {
             var reservation = _reservation;
             _reservation = null;
-            reservation?.ReleaseUse();
+
+            if (reservation is not null)
+            {
+                var workspaceBytes = _workspaceBytes;
+                _workspaceBytes = 0;
+                reservation.ReleaseUse(workspaceBytes);
+            }
         }
     }
 }
