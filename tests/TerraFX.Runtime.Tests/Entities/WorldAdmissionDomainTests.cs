@@ -235,6 +235,16 @@ internal sealed class WorldAdmissionDomainTests
     }
 
     [Test]
+    public void WorldReservationCanForbidAdditionalGrowth()
+    {
+        using var domain = new WorldAdmissionDomain(8 * 1024 * 1024);
+        Assert.That(domain.TryReserveWorld(4096, 0, out var reservation), Is.True);
+
+        using var exactReservation = reservation!;
+        Assert.That(exactReservation.TryReserveAdditional(1), Is.False);
+    }
+
+    [Test]
     public void WorldReservationGrowthCannotExceedItsOwnedStateCeiling()
     {
         using var domain = new WorldAdmissionDomain(16 * 1024 * 1024);

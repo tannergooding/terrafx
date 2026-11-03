@@ -19,6 +19,7 @@ public sealed partial class World : IDisposable
 
     private HashSet<Entity>? _activeCommandExcludedEntityHandles;
     private HashSet<Entity>? _activeCommandProjectedEntityHandles;
+    private long _activePersistenceAdmissionBytes;
     private readonly long[] _activeQueryEpochs;
     private readonly int[] _activeQueryWriteGrants;
     private int _activeSystemInvocationCount;
@@ -78,6 +79,7 @@ public sealed partial class World : IDisposable
     private readonly uint _ownerId;
     private readonly int _ownerThreadId;
     private readonly bool _ownsAdmissionDomain;
+    private readonly Lock _persistenceAdmissionGate = new();
     private long _publicationSequence;
     private WorldArchetype?[] _queryArchetypes;
     private readonly WorldGuidRegistry _registry;
@@ -1073,9 +1075,12 @@ public sealed partial class World : IDisposable
 
             lock (_sceneStorageGate)
             {
-                if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                lock (_persistenceAdmissionGate)
                 {
-                    return;
+                    if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                    {
+                        return;
+                    }
                 }
             }
 

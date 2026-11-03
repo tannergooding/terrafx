@@ -574,7 +574,7 @@ public sealed class WorldAdmissionDomain : IDisposable
     internal bool TryReserveWorld(long bytes, long maximumAdditionalBytes, out WorldDomainReservation? reservation)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumAdditionalBytes);
+        ArgumentOutOfRangeException.ThrowIfNegative(maximumAdditionalBytes);
 
         using var growthScope = ReentrantGate.EnterScope(ref _growthGate);
 
