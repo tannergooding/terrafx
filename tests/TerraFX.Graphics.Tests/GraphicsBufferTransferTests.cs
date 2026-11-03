@@ -25,11 +25,11 @@ internal sealed class GraphicsBufferTransferTests
             structuredStride: null,
             debugName: "Buffer transfer test");
 
-    private static GraphicsCapabilities CreateCapabilities()
+    private static GraphicsCapabilities CreateCapabilities(bool includeShaderModel6 = true)
     {
-        var features = ImmutableArray.Create(
-            GraphicsFeature.Direct3DFeatureLevel12,
-            GraphicsFeature.ShaderModel6);
+        ImmutableArray<GraphicsFeature> features = includeShaderModel6
+            ? [GraphicsFeature.Direct3DFeatureLevel12, GraphicsFeature.ShaderModel6]
+            : [GraphicsFeature.Direct3DFeatureLevel12];
         const TextureUsage CopyUsages = TextureUsage.CopySource | TextureUsage.CopyDestination;
         var formats = ImmutableArray.Create(
             new GraphicsFormatCapabilities(TextureFormat.Rgba8Unorm, TextureUsage.Sampled | TextureUsage.ColorAttachment | CopyUsages, [1]),
@@ -879,6 +879,23 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task GraphicsDeviceStartupDisposesBackendWhenCapabilityAdmissionFails()
+    {
+        var backendDevice = new FakeBackendDevice(capabilities: CreateCapabilities(includeShaderModel6: false));
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var startup = GraphicsDevice.CreateAsync(
+            ownerId: 31,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None);
+
+        _ = Assert.ThrowsAsync<NotSupportedException>(
+            async () => await startup.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+        Assert.That(backendDevice.DeviceDisposalCount, Is.EqualTo(1));
+    }
+
+    [Test]
     [SuppressMessage(
         "Usage",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
@@ -1501,17 +1518,18 @@ internal sealed class GraphicsBufferTransferTests
 
     private sealed class FakeBackendDevice : IGraphicsBackendDevice
     {
+        private readonly GraphicsCapabilities _capabilities;
         private ManualResetEventSlim? _continueSamplerCreation;
         private readonly ManualResetEventSlim? _continueUpload;
         private ManualResetEventSlim? _samplerCreationEntered;
         private ManualResetEventSlim? _samplerDisposed;
         private readonly ManualResetEventSlim? _uploadEntered;
-        private readonly GraphicsCapabilities _capabilities = CreateCapabilities();
         private readonly List<byte[]> _buffers = [];
         private readonly long? _bufferAllocationSizeBytes;
         private int _bufferCreationCount;
         private int _bufferDisposalCount;
         private long _completedFence;
+        private int _deviceDisposalCount;
         private int _effectiveSamplerAnisotropyBits;
         private byte[]? _lastBufferBytes;
         private int _remainingBufferCreationFailures;
@@ -1528,7 +1546,8 @@ internal sealed class GraphicsBufferTransferTests
             long? textureAllocationSizeBytes = null,
             int textureCreationFailureCount = 0,
             long? bufferAllocationSizeBytes = null,
-            int bufferCreationFailureCount = 0)
+            int bufferCreationFailureCount = 0,
+            GraphicsCapabilities? capabilities = null)
         {
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(textureBudgetBytes);
             ArgumentOutOfRangeException.ThrowIfNegative(textureCreationFailureCount);
@@ -1549,6 +1568,7 @@ internal sealed class GraphicsBufferTransferTests
             _remainingTextureCreationFailures = textureCreationFailureCount;
             _bufferAllocationSizeBytes = bufferAllocationSizeBytes;
             _remainingBufferCreationFailures = bufferCreationFailureCount;
+            _capabilities = capabilities ?? CreateCapabilities();
         }
 
         internal FakeBackendDevice(ManualResetEventSlim uploadEntered, ManualResetEventSlim continueUpload)
@@ -1556,6 +1576,7 @@ internal sealed class GraphicsBufferTransferTests
             _uploadEntered = uploadEntered;
             _continueUpload = continueUpload;
             _textureBudgetBytes = 3L * 1024 * 1024 * 1024;
+            _capabilities = CreateCapabilities();
         }
 
         public GraphicsCapabilities Capabilities => _capabilities;
@@ -1563,6 +1584,8 @@ internal sealed class GraphicsBufferTransferTests
         internal int BufferCreationCount => Volatile.Read(ref _bufferCreationCount);
 
         internal int BufferDisposalCount => Volatile.Read(ref _bufferDisposalCount);
+
+        internal int DeviceDisposalCount => Volatile.Read(ref _deviceDisposalCount);
 
         internal float EffectiveSamplerAnisotropy
             => BitConverter.Int32BitsToSingle(Volatile.Read(ref _effectiveSamplerAnisotropyBits));
@@ -1634,6 +1657,7 @@ internal sealed class GraphicsBufferTransferTests
 
         public void Dispose()
         {
+            _ = Interlocked.Increment(ref _deviceDisposalCount);
         }
 
         public GraphicsResourceAllocationInfo GetBufferAllocationInfo(BufferDescription description)
