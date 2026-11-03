@@ -64,6 +64,44 @@ internal static class WorldPersistenceRegistrationWriter
         return EbinStructuralWriter.Measure(in source, limits, out recordBytes, out diagnostic);
     }
 
+    internal static EbinWriteStatus MeasureWorkspace(
+        WorldRegistration registration,
+        scoped ReadOnlySpan<byte> componentsArrayPayload,
+        scoped ReadOnlySpan<byte> tagsArrayPayload,
+        scoped ReadOnlySpan<byte> systemsArrayPayload,
+        scoped ReadOnlySpan<byte> resourcesArrayPayload,
+        EbinReadLimits limits,
+        scoped Span<byte> rootPayloadStorage,
+        out WorldPersistenceRegistrationWorkspaceRequirements workspace,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        var status = Measure(
+            registration,
+            componentsArrayPayload,
+            tagsArrayPayload,
+            systemsArrayPayload,
+            resourcesArrayPayload,
+            limits,
+            rootPayloadStorage,
+            out var rootPayloadBytes,
+            out var recordBytes,
+            out diagnostic);
+        workspace = default;
+
+        if (status is EbinWriteStatus.Complete)
+        {
+            workspace = new WorldPersistenceRegistrationWorkspaceRequirements(
+                componentsArrayPayload.Length,
+                tagsArrayPayload.Length,
+                systemsArrayPayload.Length,
+                resourcesArrayPayload.Length,
+                rootPayloadBytes,
+                recordBytes);
+        }
+
+        return status;
+    }
+
     internal static EbinWriteStatus Write(
         WorldRegistration registration,
         scoped ReadOnlySpan<byte> componentsArrayPayload,

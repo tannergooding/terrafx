@@ -407,6 +407,80 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
         }
     }
 
+    internal EbinWriteStatus WriteRegistrationRecord(
+        World world,
+        WorldPersistenceCaptureLease lease,
+        WorldPersistenceRegistrationWorkspaceRequirements workspace,
+        scoped ReadOnlySpan<byte> componentsArrayPayload,
+        scoped ReadOnlySpan<byte> tagsArrayPayload,
+        scoped ReadOnlySpan<byte> systemsArrayPayload,
+        scoped ReadOnlySpan<byte> resourcesArrayPayload,
+        scoped Span<byte> rootPayloadStorage,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        lease.ValidateCurrent();
+
+        if (!ReferenceEquals(_world, world) || !lease.IsBoundTo(world))
+        {
+            throw new ArgumentException("The capture lease and reservation must belong to this exact World.", nameof(lease));
+        }
+
+        var limits = WorldPersistenceEbinLimits.Create(world.Options);
+        var status = WorldPersistenceRegistrationWriter.MeasureWorkspace(
+            world.Registration,
+            componentsArrayPayload,
+            tagsArrayPayload,
+            systemsArrayPayload,
+            resourcesArrayPayload,
+            limits,
+            rootPayloadStorage,
+            out var measuredWorkspace,
+            out diagnostic);
+        bytesWritten = 0;
+
+        if (status is not EbinWriteStatus.Complete)
+        {
+            return status;
+        }
+
+        if (!workspace.Matches(measuredWorkspace))
+        {
+            diagnostic = new EbinStructuralDiagnostic(
+                new ContentSchemaIdentityAssignment("state/registration").SchemaId,
+                0,
+                "registration-workspace-mismatch",
+                null,
+                0,
+                1,
+                EbinStructuralDiagnosticSource.Construction);
+            return EbinWriteStatus.InvalidRecord;
+        }
+
+        if ((candidateStorage.Length != workspace.RecordBytes)
+            || (destination.Length != workspace.RecordBytes))
+        {
+            throw new ArgumentException("The registration root record workspaces must match the measured extent.");
+        }
+
+        using var activeUse = AcquireUse(world, workspace.WorkspaceBytes);
+        return WorldPersistenceRegistrationWriter.Write(
+            world.Registration,
+            componentsArrayPayload,
+            tagsArrayPayload,
+            systemsArrayPayload,
+            resourcesArrayPayload,
+            limits,
+            rootPayloadStorage,
+            candidateStorage,
+            destination,
+            out bytesWritten,
+            out diagnostic);
+    }
+
     private void ReleaseCharge()
     {
         if (_isChargeReleased)

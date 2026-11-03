@@ -432,6 +432,28 @@ internal ref struct WorldPersistenceCaptureLease
             out diagnostic);
     }
 
+    internal readonly EbinWriteStatus MeasureRegistrationRecord(
+        scoped ReadOnlySpan<byte> componentsArrayPayload,
+        scoped ReadOnlySpan<byte> tagsArrayPayload,
+        scoped ReadOnlySpan<byte> systemsArrayPayload,
+        scoped ReadOnlySpan<byte> resourcesArrayPayload,
+        scoped Span<byte> rootPayloadStorage,
+        out WorldPersistenceRegistrationWorkspaceRequirements workspace,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ValidateCurrent();
+        return WorldPersistenceRegistrationWriter.MeasureWorkspace(
+            _world.Registration,
+            componentsArrayPayload,
+            tagsArrayPayload,
+            systemsArrayPayload,
+            resourcesArrayPayload,
+            WorldPersistenceEbinLimits.Create(_world.Options),
+            rootPayloadStorage,
+            out workspace,
+            out diagnostic);
+    }
+
     internal readonly bool TryReserveAdmissionBytes(
         long bytes,
         out WorldPersistenceAdmissionReservation? reservation)
@@ -644,6 +666,36 @@ internal ref struct WorldPersistenceCaptureLease
             stableIds,
             metadata,
             payloadStorage,
+            candidateStorage,
+            destination,
+            out bytesWritten,
+            out diagnostic);
+    }
+
+    internal readonly EbinWriteStatus WriteRegistrationRecord(
+        WorldPersistenceAdmissionReservation reservation,
+        WorldPersistenceRegistrationWorkspaceRequirements workspace,
+        scoped ReadOnlySpan<byte> componentsArrayPayload,
+        scoped ReadOnlySpan<byte> tagsArrayPayload,
+        scoped ReadOnlySpan<byte> systemsArrayPayload,
+        scoped ReadOnlySpan<byte> resourcesArrayPayload,
+        scoped Span<byte> rootPayloadStorage,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ValidateCurrent();
+        ArgumentNullException.ThrowIfNull(reservation);
+        return reservation.WriteRegistrationRecord(
+            _world,
+            this,
+            workspace,
+            componentsArrayPayload,
+            tagsArrayPayload,
+            systemsArrayPayload,
+            resourcesArrayPayload,
+            rootPayloadStorage,
             candidateStorage,
             destination,
             out bytesWritten,

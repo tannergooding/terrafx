@@ -330,41 +330,6 @@ internal sealed class WorldResourceSchemaTests
             registrationDiagnostic?.Category);
         Assert.That(emptyArrayBytes, Is.EqualTo(emptyArrayPayload.Length));
         var rootPayloadStorage = new byte[checked((3 * emptyArrayPayload.Length) + registrationArrayPayload.Length)];
-        Assert.That(
-            WorldPersistenceRegistrationWriter.Measure(
-                registration,
-                emptyArrayPayload,
-                emptyArrayPayload,
-                emptyArrayPayload,
-                registrationArrayPayload,
-                EbinReadLimits.Foundation,
-                rootPayloadStorage,
-                out var rootPayloadBytes,
-                out var rootRecordBytes,
-                out registrationDiagnostic),
-            Is.EqualTo(EbinWriteStatus.Complete),
-            registrationDiagnostic?.Category);
-        Assert.That(registrationDiagnostic, Is.Null);
-        Assert.That(rootPayloadBytes, Is.EqualTo(rootPayloadStorage.Length));
-        var rootCandidateStorage = new byte[rootRecordBytes];
-        var rootDestination = new byte[rootRecordBytes];
-        Assert.That(
-            WorldPersistenceRegistrationWriter.Write(
-                registration,
-                emptyArrayPayload,
-                emptyArrayPayload,
-                emptyArrayPayload,
-                registrationArrayPayload,
-                EbinReadLimits.Foundation,
-                rootPayloadStorage,
-                rootCandidateStorage,
-                rootDestination,
-                out var rootBytesWritten,
-                out registrationDiagnostic),
-            Is.EqualTo(EbinWriteStatus.Complete),
-            registrationDiagnostic?.Category);
-        Assert.That(registrationDiagnostic, Is.Null);
-        Assert.That(rootBytesWritten, Is.EqualTo(rootRecordBytes));
         using var world = World.Create(new WorldOptions(registration) {
             CpuWorkerCount = 0,
             InitialReplayLineageId = Guid.NewGuid(),
@@ -373,6 +338,43 @@ internal sealed class WorldResourceSchemaTests
         _ = world.Step();
 
         using var lease = world.AcquirePersistenceCaptureLease();
+        Assert.That(
+            lease.MeasureRegistrationRecord(
+                emptyArrayPayload,
+                emptyArrayPayload,
+                emptyArrayPayload,
+                registrationArrayPayload,
+                rootPayloadStorage,
+                out var registrationRootWorkspace,
+                out registrationDiagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            registrationDiagnostic?.Category);
+        Assert.That(registrationDiagnostic, Is.Null);
+        Assert.That(registrationRootWorkspace.RootPayloadBytes, Is.EqualTo(rootPayloadStorage.Length));
+        Assert.That(
+            lease.TryReserveAdmissionBytes(registrationRootWorkspace.WorkspaceBytes, out var registrationReservation),
+            Is.True);
+        using var admittedRegistrationReservation = registrationReservation
+            ?? throw new InvalidOperationException("The registration root admission reservation was not created.");
+        var rootCandidateStorage = new byte[registrationRootWorkspace.RecordBytes];
+        var rootDestination = new byte[registrationRootWorkspace.RecordBytes];
+        Assert.That(
+            lease.WriteRegistrationRecord(
+                admittedRegistrationReservation,
+                registrationRootWorkspace,
+                emptyArrayPayload,
+                emptyArrayPayload,
+                emptyArrayPayload,
+                registrationArrayPayload,
+                rootPayloadStorage,
+                rootCandidateStorage,
+                rootDestination,
+                out var rootBytesWritten,
+                out registrationDiagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            registrationDiagnostic?.Category);
+        Assert.That(registrationDiagnostic, Is.Null);
+        Assert.That(rootBytesWritten, Is.EqualTo(registrationRootWorkspace.RecordBytes));
         var enumerator = lease.GetResourceStateEnumerator();
         Assert.That(enumerator.MoveNext(), Is.True);
         Assert.That(enumerator.CurrentIndex, Is.EqualTo(0));
