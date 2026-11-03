@@ -1194,14 +1194,27 @@ internal sealed class VulkanBackendDeviceTests
         Assert.That(
             device.UploadBuffer(destination, 0, payload.AsSpan(0, exactBudgetByteLength)),
             Is.GreaterThan(0));
-        using (var prefixReadback = device.ReadbackBuffer(destination, 0, 1))
+
+        using (var exactReadback = device.ReadbackBuffer(destination, 0, exactBudgetByteLength))
+        using (var exactReadLease = exactReadback.AcquireReadLease(0, exactBudgetByteLength))
         {
-            AssertReadback(prefixReadback, [0x42]);
+            var prefix = new byte[1];
+            var prefixCopyAction = new ReadbackCopyAction(prefix);
+            exactReadLease.UseWindow(0, 1, ref prefixCopyAction);
+            Assert.That(prefix[0], Is.EqualTo(0x42));
+
+            var boundary = new byte[1];
+            var boundaryCopyAction = new ReadbackCopyAction(boundary);
+            exactReadLease.UseWindow(exactBudgetByteLength - 1, 1, ref boundaryCopyAction);
+            Assert.That(boundary[0], Is.EqualTo(0x17));
         }
 
-        using (var boundaryReadback = device.ReadbackBuffer(destination, exactBudgetByteLength - 1, 1))
+        Assert.That(
+            () => device.ReadbackBuffer(destination, 0, overBudgetByteLength),
+            Throws.InvalidOperationException.With.Message.Contains("staging budget is exhausted"));
+        using (var recoveryReadback = device.ReadbackBuffer(destination, 0, 1))
         {
-            AssertReadback(boundaryReadback, [0x17]);
+            AssertReadback(recoveryReadback, [0x42]);
         }
 
         Assert.That(
