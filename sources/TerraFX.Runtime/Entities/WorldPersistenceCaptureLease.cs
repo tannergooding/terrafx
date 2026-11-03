@@ -181,6 +181,14 @@ internal ref struct WorldPersistenceCaptureLease
     internal readonly bool IsBoundTo(World world)
         => ReferenceEquals(_world, world);
 
+    internal readonly bool TryReserveAdmissionBytes(
+        long bytes,
+        out WorldPersistenceAdmissionReservation? reservation)
+    {
+        ValidateCurrent();
+        return _world.TryReservePersistenceAdmissionBytes(bytes, out reservation);
+    }
+
     internal readonly void ValidateCurrent()
     {
         if (_isDisposed)
