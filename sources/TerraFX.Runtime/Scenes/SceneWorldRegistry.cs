@@ -19,6 +19,7 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
     private int _activeOrderedInstanceCount;
     private readonly Lock _instanceGate = new();
     private int _isDisposed;
+    private bool _isPersistenceCaptureActive;
     private readonly int _maximumActiveSceneInstances;
     private readonly int _maximumPendingOwnerRequests;
     private readonly int _maximumSceneOccurrences;
@@ -130,6 +131,14 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         }
     }
 
+    public void EndPersistenceCapture()
+    {
+        lock (_requestGate)
+        {
+            _isPersistenceCaptureActive = false;
+        }
+    }
+
     public ImmutableArray<WorldHierarchyDetachUpdate> PrepareHierarchyDetachment(
         int ancestorNodeCount,
         ReadOnlyMemory<WorldHierarchyNodeSnapshot> nodes)
@@ -175,6 +184,24 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
     {
         EnsureBoundTo(world);
         return SceneHierarchyTransform.ResolveEntityTransform(world, frame, entity);
+    }
+
+    public bool TryBeginPersistenceCapture()
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
+
+        lock (_requestGate)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
+
+            if (_isPersistenceCaptureActive || (_pendingRequestCount != 0))
+            {
+                return false;
+            }
+
+            _isPersistenceCaptureActive = true;
+            return true;
+        }
     }
 
     public bool TryGetCameraData(World world, Entity entity, out WorldCameraData camera)
@@ -331,7 +358,7 @@ internal sealed class SceneWorldRegistry : IWorldSceneParticipant
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
 
-            if (_pendingRequestCount == _pendingRequests.Length)
+            if (_isPersistenceCaptureActive || (_pendingRequestCount == _pendingRequests.Length))
             {
                 return false;
             }

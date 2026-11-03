@@ -26,9 +26,19 @@ public sealed partial class World
         }
 
         _isPersistenceCaptureLeaseActive = true;
+        IWorldSceneParticipant? sceneParticipant = null;
+        var sceneCaptureActive = false;
 
         try
         {
+            sceneParticipant = _sceneParticipant;
+
+            if ((sceneParticipant is not null) && !sceneParticipant.TryBeginPersistenceCapture())
+            {
+                throw new InvalidOperationException("Persistence capture requires an empty, quiescent Scene owner-request queue.");
+            }
+
+            sceneCaptureActive = sceneParticipant is not null;
             var publication = Volatile.Read(ref _committedPublication)
                 ?? throw new InvalidOperationException("Persistence capture requires a committed World publication.");
 
@@ -61,10 +71,16 @@ public sealed partial class World
                 _initialFrame3,
                 _initialFrame2,
                 frameCohort.Frame3,
-                frameCohort.Frame2);
+                frameCohort.Frame2,
+                sceneCaptureActive ? sceneParticipant : null);
         }
         catch
         {
+            if (sceneCaptureActive && (sceneParticipant is not null))
+            {
+                sceneParticipant.EndPersistenceCapture();
+            }
+
             _isPersistenceCaptureLeaseActive = false;
             _activePersistenceCaptureLeaseSequence = 0;
             _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);

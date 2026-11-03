@@ -16,6 +16,8 @@ internal interface IWorldSceneParticipant
 
     void Dispose();
 
+    void EndPersistenceCapture();
+
     ImmutableArray<WorldHierarchyDetachUpdate> PrepareHierarchyDetachment(
         int ancestorNodeCount,
         ReadOnlyMemory<WorldHierarchyNodeSnapshot> nodes);
@@ -31,6 +33,8 @@ internal interface IWorldSceneParticipant
         World world,
         SpatialFrame3 frame,
         Entity entity);
+
+    bool TryBeginPersistenceCapture();
 
     bool TryGetCameraData(World world, Entity entity, out WorldCameraData camera);
 

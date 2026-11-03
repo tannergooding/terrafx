@@ -22,6 +22,7 @@ internal ref struct WorldPersistenceCaptureLease
     private readonly long _nextTickIndex;
     private readonly long _publicationSequence;
     private readonly long _sequence;
+    private readonly IWorldSceneParticipant? _sceneParticipant;
     private readonly int _tickRate;
     private readonly float _timeScale;
     private readonly long _timeScaleSegmentSequence;
@@ -47,7 +48,8 @@ internal ref struct WorldPersistenceCaptureLease
         SpatialFrame3 initialFrame3,
         SpatialFrame2? initialFrame2,
         SpatialFrame3 frame3,
-        SpatialFrame2? frame2)
+        SpatialFrame2? frame2,
+        IWorldSceneParticipant? sceneParticipant)
     {
         ArgumentNullException.ThrowIfNull(world);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sequence);
@@ -81,6 +83,7 @@ internal ref struct WorldPersistenceCaptureLease
         _initialFrame2 = initialFrame2;
         Frame3 = frame3;
         Frame2 = frame2;
+        _sceneParticipant = sceneParticipant;
         _isDisposed = false;
     }
 
@@ -160,6 +163,7 @@ internal ref struct WorldPersistenceCaptureLease
 
         _world.ReleasePersistenceCaptureLease(this);
         _isDisposed = true;
+        _sceneParticipant?.EndPersistenceCapture();
     }
 
     internal readonly int GetAttachmentStateCount()
