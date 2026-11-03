@@ -5,6 +5,7 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.IO;
+using System.Runtime.InteropServices;
 
 namespace TerraFX.Assets;
 
@@ -13,6 +14,37 @@ internal static class AssetReferenceScanner
     private const int MaximumDepth = 64;
     private const int MaximumReferences = 1_048_576;
     private static readonly DataSchema s_assetReferenceSchema = FindAssetReferenceSchema();
+
+    internal static int CopyAssetIds(
+        scoped EbinRecordReadView record,
+        DataSchema schema,
+        CompiledContentSchemaRegistry schemas,
+        scoped Span<uint> destination)
+    {
+        ArgumentNullException.ThrowIfNull(schema);
+        ArgumentNullException.ThrowIfNull(schemas);
+
+        if (MemoryMarshal.AsBytes(destination).Overlaps(record.EncodedBytes))
+        {
+            throw new ArgumentException("The AssetId destination must not overlap the encoded record.", nameof(destination));
+        }
+
+        var copiedCount = 0;
+        VisitRecord(record, schema, schemas, null, null, destination, true, ref copiedCount, 0);
+        return copiedCount;
+    }
+
+    internal static int CountAssetIds(
+        scoped EbinRecordReadView record,
+        DataSchema schema,
+        CompiledContentSchemaRegistry schemas)
+    {
+        ArgumentNullException.ThrowIfNull(schema);
+        ArgumentNullException.ThrowIfNull(schemas);
+        var referenceCount = 0;
+        VisitRecord(record, schema, schemas, null, null, [], false, ref referenceCount, 0);
+        return referenceCount;
+    }
 
     internal static ImmutableArray<AssetReference> Scan(
         scoped EbinRecordReadView record,
@@ -23,8 +55,54 @@ internal static class AssetReferenceScanner
         ArgumentNullException.ThrowIfNull(schemas);
         var references = new List<AssetReference>();
         var seen = new HashSet<AssetReference>();
-        VisitRecord(record, schema, schemas, references, seen, 0);
+        var referenceCount = 0;
+        VisitRecord(record, schema, schemas, references, seen, [], false, ref referenceCount, 0);
         return [.. references];
+    }
+
+    private static void AddReference(
+        AssetReference reference,
+        List<AssetReference>? references,
+        HashSet<AssetReference>? seen,
+        scoped Span<uint> destination,
+        bool copyAssetIds,
+        ref int referenceCount)
+    {
+        if (references is not null)
+        {
+            if (seen is null)
+            {
+                throw new InvalidOperationException("The asset-reference set has no uniqueness tracker.");
+            }
+
+            if (seen.Contains(reference))
+            {
+                return;
+            }
+        }
+
+        if (referenceCount == MaximumReferences)
+        {
+            throw new InvalidDataException("The asset-reference count exceeds the admitted limit.");
+        }
+
+        if (copyAssetIds)
+        {
+            if (referenceCount >= destination.Length)
+            {
+                throw new InvalidOperationException("The AssetId destination is smaller than the measured reference count.");
+            }
+
+            destination[referenceCount] = checked((uint)reference.AssetId.Value);
+        }
+
+        if (references is not null)
+        {
+            _ = seen!.Add(reference);
+            references.Add(reference);
+        }
+
+        referenceCount++;
     }
 
     private static DataSchema FindAssetReferenceSchema()
@@ -84,8 +162,11 @@ internal static class AssetReferenceScanner
         scoped EbinRecordReadView nestedRecord,
         ContentFieldDescriptor field,
         CompiledContentSchemaRegistry schemas,
-        List<AssetReference> references,
-        HashSet<AssetReference> seen,
+        List<AssetReference>? references,
+        HashSet<AssetReference>? seen,
+        scoped Span<uint> destination,
+        bool copyAssetIds,
+        ref int referenceCount,
         int depth)
     {
         var header = nestedRecord.Header;
@@ -133,15 +214,27 @@ internal static class AssetReferenceScanner
             throw new InvalidDataException("Asset reference annotations require the native asset-reference wrapper.");
         }
 
-        VisitRecord(nestedRecord, nestedSchema, schemas, references, seen, depth + 1);
+        VisitRecord(
+            nestedRecord,
+            nestedSchema,
+            schemas,
+            references,
+            seen,
+            destination,
+            copyAssetIds,
+            ref referenceCount,
+            depth + 1);
     }
 
     private static void VisitRecord(
         scoped EbinRecordReadView record,
         DataSchema schema,
         CompiledContentSchemaRegistry schemas,
-        List<AssetReference> references,
-        HashSet<AssetReference> seen,
+        List<AssetReference>? references,
+        HashSet<AssetReference>? seen,
+        scoped Span<uint> destination,
+        bool copyAssetIds,
+        ref int referenceCount,
         int depth)
     {
         if (depth >= MaximumDepth)
@@ -160,19 +253,13 @@ internal static class AssetReferenceScanner
 
         if (schema.Schema == s_assetReferenceSchema.Schema)
         {
-            var reference = ReadReference(record);
-
-            if (!seen.Contains(reference))
-            {
-                if (references.Count == MaximumReferences)
-                {
-                    throw new InvalidDataException("The asset-reference count exceeds the admitted limit.");
-                }
-
-                _ = seen.Add(reference);
-                references.Add(reference);
-            }
-
+            AddReference(
+                ReadReference(record),
+                references,
+                seen,
+                destination,
+                copyAssetIds,
+                ref referenceCount);
             return;
         }
 
@@ -215,6 +302,9 @@ internal static class AssetReferenceScanner
                     schemas,
                     references,
                     seen,
+                    destination,
+                    copyAssetIds,
+                    ref referenceCount,
                     depth);
             }
             else if (field.Kind == 24)
@@ -229,6 +319,9 @@ internal static class AssetReferenceScanner
                         schemas,
                         references,
                         seen,
+                        destination,
+                        copyAssetIds,
+                        ref referenceCount,
                         depth);
                 }
             }
