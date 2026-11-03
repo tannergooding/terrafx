@@ -267,6 +267,104 @@ internal sealed class WorldResourceSchemaTests
             new ResourceFactoryProvider(factory.RegistrationBinding),
             codec);
         var registration = builder.Build();
+        Assert.That(
+            WorldPersistenceResourceRegistrationArrayWriter.Measure(
+                registration,
+                EbinReadLimits.Foundation,
+                out var registrationWorkspace,
+                out var registrationDiagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            registrationDiagnostic?.Category);
+        Assert.That(registrationDiagnostic, Is.Null);
+        var registrationSlices = new EbinPayloadSlice[registrationWorkspace.RecordCount];
+        var registrationStorage = new byte[registrationWorkspace.RecordStorageBytes];
+        var registrationCandidate = new byte[registrationWorkspace.MaximumCandidateBytes];
+        var registrationArrayPayload = new byte[registrationWorkspace.ArrayPayloadBytes];
+        Assert.That(
+            WorldPersistenceResourceRegistrationArrayWriter.Write(
+                registration,
+                EbinReadLimits.Foundation,
+                registrationWorkspace,
+                registrationSlices,
+                registrationStorage,
+                registrationCandidate,
+                registrationArrayPayload,
+                out var registrationPayloadBytes,
+                out registrationDiagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            registrationDiagnostic?.Category);
+        Assert.That(registrationDiagnostic, Is.Null);
+        Assert.That(registrationPayloadBytes, Is.EqualTo(registrationWorkspace.ArrayPayloadBytes));
+        Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(registrationArrayPayload), Is.EqualTo(1));
+        var rowStart = BinaryPrimitives.ReadUInt64LittleEndian(registrationArrayPayload.AsSpan(8));
+        var rowEnd = BinaryPrimitives.ReadUInt64LittleEndian(registrationArrayPayload.AsSpan(16));
+        var assertions = new ResourceRegistrationArrayAssertions(
+            resourceId,
+            description.PartitionCount,
+            description.AllowParallelAccess,
+            factory.Descriptor.Schema,
+            factory.Descriptor.FactoryId,
+            factory.Descriptor.FactoryVersion);
+        Assert.That(
+            EbinStructuralReader.Read(
+                registrationArrayPayload.AsSpan(checked((int)rowStart), checked((int)(rowEnd - rowStart))),
+                EbinReadLimits.Foundation,
+                EbinReadPolicy.Canonical,
+                ref assertions,
+                out var rowBytes,
+                out var rowDiagnostic),
+            Is.EqualTo(EbinReadStatus.Complete));
+        Assert.That(rowDiagnostic, Is.Null);
+        Assert.That(assertions.IsMatch, Is.True);
+        Assert.That(rowBytes, Is.EqualTo(checked((int)(rowEnd - rowStart))));
+        var emptyArrayPayload = new byte[16];
+        Assert.That(
+            EbinPayloadWriter.WriteRecordArray(
+                [],
+                [],
+                EbinReadLimits.Foundation,
+                emptyArrayPayload,
+                out var emptyArrayBytes,
+                out registrationDiagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            registrationDiagnostic?.Category);
+        Assert.That(emptyArrayBytes, Is.EqualTo(emptyArrayPayload.Length));
+        var rootPayloadStorage = new byte[checked((3 * emptyArrayPayload.Length) + registrationArrayPayload.Length)];
+        Assert.That(
+            WorldPersistenceRegistrationWriter.Measure(
+                registration,
+                emptyArrayPayload,
+                emptyArrayPayload,
+                emptyArrayPayload,
+                registrationArrayPayload,
+                EbinReadLimits.Foundation,
+                rootPayloadStorage,
+                out var rootPayloadBytes,
+                out var rootRecordBytes,
+                out registrationDiagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            registrationDiagnostic?.Category);
+        Assert.That(registrationDiagnostic, Is.Null);
+        Assert.That(rootPayloadBytes, Is.EqualTo(rootPayloadStorage.Length));
+        var rootCandidateStorage = new byte[rootRecordBytes];
+        var rootDestination = new byte[rootRecordBytes];
+        Assert.That(
+            WorldPersistenceRegistrationWriter.Write(
+                registration,
+                emptyArrayPayload,
+                emptyArrayPayload,
+                emptyArrayPayload,
+                registrationArrayPayload,
+                EbinReadLimits.Foundation,
+                rootPayloadStorage,
+                rootCandidateStorage,
+                rootDestination,
+                out var rootBytesWritten,
+                out registrationDiagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            registrationDiagnostic?.Category);
+        Assert.That(registrationDiagnostic, Is.Null);
+        Assert.That(rootBytesWritten, Is.EqualTo(rootRecordBytes));
         using var world = World.Create(new WorldOptions(registration) {
             CpuWorkerCount = 0,
             InitialReplayLineageId = Guid.NewGuid(),
@@ -564,6 +662,62 @@ internal sealed class WorldResourceSchemaTests
     private readonly struct ResourcePartitionReader : IComponentValueReader<ulong, ulong>
     {
         public ulong Get(in ulong value) => value;
+    }
+
+    private struct ResourceRegistrationArrayAssertions : IAction<EbinRecordReadView>
+    {
+        private readonly bool _allowParallelAccess;
+        private readonly int _factoryVersion;
+        private readonly Guid _factoryId;
+        private readonly int _partitionCount;
+        private readonly Guid _resourceId;
+        private readonly ContentSchemaReference _schema;
+
+        internal ResourceRegistrationArrayAssertions(
+            Guid resourceId,
+            int partitionCount,
+            bool allowParallelAccess,
+            ContentSchemaReference schema,
+            Guid factoryId,
+            int factoryVersion)
+        {
+            _allowParallelAccess = allowParallelAccess;
+            _factoryVersion = factoryVersion;
+            _factoryId = factoryId;
+            _partitionCount = partitionCount;
+            _resourceId = resourceId;
+            _schema = schema;
+            IsMatch = false;
+        }
+
+        internal bool IsMatch { get; private set; }
+
+        public void Invoke(scoped EbinRecordReadView record)
+        {
+            IsMatch = (record.Header.SchemaId == new ContentSchemaIdentityAssignment("state/resource-registration").SchemaId)
+                && (record.Header.Major == 1)
+                && (record.Header.Minor == 0)
+                && (record.FieldCount == 6);
+
+            if (!IsMatch)
+            {
+                return;
+            }
+
+            var resourceId = record.GetField(0);
+            var partitionCount = record.GetField(1);
+            var allowParallelAccess = record.GetField(2);
+            var stateSchema = record.GetRecord(4);
+            var factoryId = record.GetField(4);
+            var factoryVersion = record.GetField(5);
+            IsMatch = (new Guid(resourceId.Payload, bigEndian: true) == _resourceId)
+                && (BinaryPrimitives.ReadUInt32LittleEndian(partitionCount.Payload) == (uint)_partitionCount)
+                && (allowParallelAccess.Payload[0] == (_allowParallelAccess ? (byte)1 : (byte)0))
+                && (stateSchema.Header.SchemaId == new ContentSchemaIdentityAssignment("content/schema-ref").SchemaId)
+                && (new Guid(stateSchema.GetField(0).Payload, bigEndian: true) == _schema.SchemaId)
+                && (new Guid(factoryId.Payload, bigEndian: true) == _factoryId)
+                && (BinaryPrimitives.ReadUInt32LittleEndian(factoryVersion.Payload) == (uint)_factoryVersion);
+        }
     }
 
     private sealed class ResourceStateCodec : IWorldResourceStateCodec<ulong, ImmutableArray<ulong>>

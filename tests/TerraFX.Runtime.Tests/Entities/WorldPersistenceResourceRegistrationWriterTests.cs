@@ -50,6 +50,42 @@ internal sealed class WorldPersistenceResourceRegistrationWriterTests
         Assert.That(diagnostic?.Category, Is.EqualTo("resource-registration-metadata"));
     }
 
+    [Test]
+    public void WritesCanonicalEmptyResourceRegistrationArray()
+    {
+        var registration = new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build();
+        Assert.That(
+            WorldPersistenceResourceRegistrationArrayWriter.Measure(
+                registration,
+                EbinReadLimits.Foundation,
+                out var workspace,
+                out var diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.Category);
+        Assert.That(diagnostic, Is.Null);
+        Assert.That(workspace.RecordCount, Is.Zero);
+        Assert.That(workspace.RecordStorageBytes, Is.Zero);
+        Assert.That(workspace.MaximumCandidateBytes, Is.Zero);
+        Assert.That(workspace.ArrayPayloadBytes, Is.EqualTo(16));
+        var payload = new byte[workspace.ArrayPayloadBytes];
+        Assert.That(
+            WorldPersistenceResourceRegistrationArrayWriter.Write(
+                registration,
+                EbinReadLimits.Foundation,
+                workspace,
+                [],
+                [],
+                [],
+                payload,
+                out var payloadBytes,
+                out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.Category);
+        Assert.That(diagnostic, Is.Null);
+        Assert.That(payloadBytes, Is.EqualTo(16));
+        Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(payload), Is.Zero);
+    }
+
     [TestCase(false)]
     [TestCase(true)]
     public void WritesCanonicalResourceRegistration(bool allowParallelAccess)
