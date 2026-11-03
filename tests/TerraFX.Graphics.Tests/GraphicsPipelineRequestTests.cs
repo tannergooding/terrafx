@@ -245,6 +245,49 @@ internal sealed class GraphicsPipelineRequestTests
         }
     }
 
+    [Test]
+    public async Task DeviceLossResponseMarksOwnerLostAndRejectsFuturePipelineRequests()
+    {
+        using var continuePipelineCreation = new ManualResetEventSlim(initialState: true);
+        using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
+        const int nativeError = unchecked((int)0x887A0005);
+        var backendDevice = new FakeBackendDevice(
+            CreateCapabilities(),
+            pipelineCreationEntered,
+            continuePipelineCreation,
+            new GraphicsDeviceLostException(nativeError));
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var graphicsDevice = await GraphicsDevice.CreateAsync(
+            ownerId: 50,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        var bufferOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        var callerBytecodeLease = bufferOwner.AcquireRead(0, 4);
+
+        try
+        {
+            var description = CreateComputePipelineDescription(callerBytecodeLease, []);
+            _ = Assert.ThrowsAsync<GraphicsDeviceLostException>(
+                async () => await graphicsDevice.CreatePipelineAsync(description)
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+
+            Assert.That(graphicsDevice.Status, Is.EqualTo(GraphicsDeviceStatus.Lost));
+            Assert.That(backendDevice.PipelineCreationCount, Is.EqualTo(1));
+            _ = Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await graphicsDevice.CreatePipelineAsync(description)
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+            Assert.That(backendDevice.PipelineCreationCount, Is.EqualTo(1));
+        }
+        finally
+        {
+            callerBytecodeLease.Dispose();
+            bufferOwner.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
     [TestCase(ShaderCapability.Float16)]
     [TestCase(ShaderCapability.DoublePrecision)]
     [TestCase(ShaderCapability.WaveOperations)]
@@ -490,16 +533,19 @@ internal sealed class GraphicsPipelineRequestTests
         private long _observedBytecodeLength;
         private int _pipelineCreationCount;
         private readonly ManualResetEventSlim _pipelineCreationEntered;
+        private readonly Exception? _pipelineCreationException;
         private int _pipelineDisposalCount;
 
         internal FakeBackendDevice(
             GraphicsCapabilities capabilities,
             ManualResetEventSlim pipelineCreationEntered,
-            ManualResetEventSlim continuePipelineCreation)
+            ManualResetEventSlim continuePipelineCreation,
+            Exception? pipelineCreationException = null)
         {
             _capabilities = capabilities;
             _pipelineCreationEntered = pipelineCreationEntered;
             _continuePipelineCreation = continuePipelineCreation;
+            _pipelineCreationException = pipelineCreationException;
         }
 
         public GraphicsCapabilities Capabilities => _capabilities;
@@ -523,6 +569,12 @@ internal sealed class GraphicsPipelineRequestTests
             }
 
             _ = Interlocked.Increment(ref _pipelineCreationCount);
+
+            if (_pipelineCreationException is Exception pipelineCreationException)
+            {
+                throw pipelineCreationException;
+            }
+
             _pipelineCreationEntered.Set();
 
             if (!_continuePipelineCreation.Wait(TimeSpan.FromSeconds(10)))

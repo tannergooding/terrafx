@@ -629,6 +629,11 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
     {
         if (result != VkResult.VK_SUCCESS)
         {
+            if (result == VkResult.VK_ERROR_DEVICE_LOST)
+            {
+                throw new GraphicsDeviceLostException((int)result);
+            }
+
             throw new InvalidOperationException($"{operation} failed with VkResult {result} ({(int)result}).");
         }
     }

@@ -1656,11 +1656,46 @@ internal sealed class VulkanBackendDeviceTests
         _ = Assert.Throws<NotSupportedException>(() => SpirvReflectionValidator.Validate(shader, lease, index: 0));
     }
 
+    [Test]
+    [Order(int.MaxValue)]
+    public void VulkanDeviceLostAfterNativeSignalRetainsBufferAndDevice()
+    {
+        var observedWaitResult = default(VkResult);
+        var device = CreateVulkanDeviceForNativeSmokeTest(waitResult => {
+            observedWaitResult = waitResult;
+            return waitResult == VkResult.VK_SUCCESS ? VkResult.VK_ERROR_DEVICE_LOST : waitResult;
+        });
+        s_quarantinedDevices.Add(device);
+
+        var buffer = device.CreateBuffer(
+            new BufferDescription(
+                16,
+                BufferUsage.CopyDestination,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: null,
+                debugName: "device-lost-transfer"));
+        byte[] payload = [0x42, 0x17, 0x9C, 0xA5];
+
+        Assert.That(
+            () => device.UploadBuffer(buffer, 0, payload),
+            Throws.InstanceOf<COMException>().With.Message.Contains(
+                $"native error 0x{unchecked((int)VkResult.VK_ERROR_DEVICE_LOST):X8}"));
+        Assert.That(observedWaitResult, Is.EqualTo(VkResult.VK_SUCCESS));
+        Assert.That(buffer.IsDisposed, Is.False);
+        Assert.That(
+            buffer.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("submission completion is uncertain"));
+        Assert.That(buffer.IsDisposed, Is.False);
+        Assert.That(
+            device.Dispose,
+            Throws.InvalidOperationException.With.Message.Contains("submission completion is uncertain"));
+    }
+
     [TestCase(VulkanBackendStartupStage.InstanceCreated)]
     [TestCase(VulkanBackendStartupStage.LogicalDeviceCreated)]
     [TestCase(VulkanBackendStartupStage.CommandPoolCreated)]
     [TestCase(VulkanBackendStartupStage.TimelineSemaphoreCreated)]
-    [Order(int.MaxValue - 2)]
+    [Order(int.MaxValue - 3)]
     public void VulkanStartupCancellationAfterNativeObjectAcquisitionReleasesHandles(
         VulkanBackendStartupStage stage)
     {
@@ -1684,7 +1719,7 @@ internal sealed class VulkanBackendDeviceTests
     [TestCase(VulkanBackendStartupStage.LogicalDeviceCreated)]
     [TestCase(VulkanBackendStartupStage.CommandPoolCreated)]
     [TestCase(VulkanBackendStartupStage.TimelineSemaphoreCreated)]
-    [Order(int.MaxValue - 1)]
+    [Order(int.MaxValue - 2)]
     public void VulkanStartupFailureAfterNativeObjectAcquisitionReleasesHandles(
         VulkanBackendStartupStage stage)
     {
@@ -1704,7 +1739,7 @@ internal sealed class VulkanBackendDeviceTests
     }
 
     [Test]
-    [Order(int.MaxValue)]
+    [Order(int.MaxValue - 1)]
     public void VulkanWaitTimeoutAfterNativeSignalQuarantinesBufferAndDevice()
     {
         var observedWaitResult = default(VkResult);

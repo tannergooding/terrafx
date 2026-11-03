@@ -17,7 +17,7 @@ namespace TerraFX.Graphics;
 internal sealed class GraphicsDeviceLostException : COMException
 {
     internal GraphicsDeviceLostException(int nativeError)
-        : base($"The native Graphics device was lost with HRESULT 0x{nativeError:X8}.")
+        : base($"The native Graphics device was lost with native error 0x{nativeError:X8}.")
     {
         NativeError = nativeError;
     }

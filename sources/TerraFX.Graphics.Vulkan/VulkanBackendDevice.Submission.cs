@@ -402,6 +402,21 @@ internal sealed unsafe partial class VulkanBackendDevice
     private void RetainUncertainBuffer(VulkanBackendBuffer buffer)
         => _uncertainBufferOwners.Add(buffer);
 
+    private void RetainUncertainSubmissionOwners(
+        VulkanBackendBuffer? retainedBuffer,
+        VulkanBackendTexture? retainedTexture)
+    {
+        if (retainedBuffer is not null)
+        {
+            RetainUncertainBuffer(retainedBuffer);
+        }
+
+        if (retainedTexture is not null)
+        {
+            RetainUncertainTexture(retainedTexture);
+        }
+    }
+
     private void RetainUncertainTexture(VulkanBackendTexture texture)
         => _uncertainTextureOwners.Add(texture);
 
@@ -467,16 +482,12 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
         catch (InvalidOperationException) when (_hasUncertainSubmission)
         {
-            if (retainedBuffer is not null)
-            {
-                RetainUncertainBuffer(retainedBuffer);
-            }
-
-            if (retainedTexture is not null)
-            {
-                RetainUncertainTexture(retainedTexture);
-            }
-
+            RetainUncertainSubmissionOwners(retainedBuffer, retainedTexture);
+            throw;
+        }
+        catch (GraphicsDeviceLostException) when (_hasUncertainSubmission)
+        {
+            RetainUncertainSubmissionOwners(retainedBuffer, retainedTexture);
             throw;
         }
     }
