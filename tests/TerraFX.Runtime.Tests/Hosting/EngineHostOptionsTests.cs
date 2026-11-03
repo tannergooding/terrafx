@@ -431,6 +431,80 @@ internal sealed partial class EngineHostOptionsTests
             }
 
             Assert.That(volumeActual, Is.EqualTo(volumeExpected));
+
+            const int stagingRingByteLength = 64 * 1024 * 1024;
+            const int dedicatedStagingByteLength = stagingRingByteLength + 1;
+
+            if (capabilities.Limits.MaximumBufferByteLength < dedicatedStagingByteLength)
+            {
+                Assert.Ignore("The selected D3D12 device cannot allocate the destination required by the staging-boundary test.");
+                return;
+            }
+
+            var stagingPayload = new byte[dedicatedStagingByteLength];
+            stagingPayload[0] = 0x42;
+            stagingPayload[stagingRingByteLength - 1] = 0x17;
+            stagingPayload[stagingRingByteLength] = 0x9C;
+
+            using var stagingBuffer = graphicsDevice.CreateBufferAsync(
+                new BufferDescription(
+                    dedicatedStagingByteLength,
+                    BufferUsage.CopySource | BufferUsage.CopyDestination,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: null,
+                    debugName: "exact staging-ring boundary destination"))
+                .GetAwaiter()
+                .GetResult();
+            var ringUpload = graphicsDevice.UploadBufferAsync(
+                stagingBuffer,
+                0,
+                stagingPayload.AsSpan(0, stagingRingByteLength))
+                .GetAwaiter()
+                .GetResult();
+            Assert.That(ringUpload.Status, Is.EqualTo(UploadStatus.Ready));
+            var ringCompletedFence = ringUpload.CompletedFence
+                ?? throw new InvalidOperationException("A ready D3D12 staging-ring upload has no completed fence.");
+            Assert.That(ringCompletedFence, Is.GreaterThan(0));
+
+            using (var ringReadback = graphicsDevice.ReadbackBufferAsync(
+                stagingBuffer,
+                stagingRingByteLength - 1,
+                1)
+                .GetAwaiter()
+                .GetResult())
+            using (var ringReadLease = ringReadback.AcquireReadLease(0, 1))
+            {
+                var ringActual = new byte[1];
+                var copyAction = new ReadbackCopyAction(ringActual);
+                ringReadLease.UseWindow(0, 1, ref copyAction);
+                Assert.That(ringActual, Is.EqualTo(new byte[] { 0x17 }));
+            }
+
+            var dedicatedUpload = graphicsDevice.UploadBufferAsync(
+                stagingBuffer,
+                0,
+                stagingPayload)
+                .GetAwaiter()
+                .GetResult();
+            Assert.That(dedicatedUpload.Status, Is.EqualTo(UploadStatus.Ready));
+            var dedicatedCompletedFence = dedicatedUpload.CompletedFence
+                ?? throw new InvalidOperationException("A ready D3D12 dedicated-staging upload has no completed fence.");
+            Assert.That(dedicatedCompletedFence, Is.GreaterThan(0));
+
+            using (var dedicatedReadback = graphicsDevice.ReadbackBufferAsync(
+                stagingBuffer,
+                stagingRingByteLength,
+                1)
+                .GetAwaiter()
+                .GetResult())
+            using (var dedicatedReadLease = dedicatedReadback.AcquireReadLease(0, 1))
+            {
+                var dedicatedActual = new byte[1];
+                var copyAction = new ReadbackCopyAction(dedicatedActual);
+                dedicatedReadLease.UseWindow(0, 1, ref copyAction);
+                Assert.That(dedicatedActual, Is.EqualTo(new byte[] { 0x9C }));
+            }
+
             TestContext.WriteLine(
                 $"Backend={capabilities.Backend}; Profile={capabilities.Profile}; Adapter={capabilities.AdapterName}; "
                 + $"Vendor={capabilities.VendorId:X4}; Device={capabilities.DeviceId:X4}; "
