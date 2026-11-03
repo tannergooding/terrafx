@@ -256,6 +256,37 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task BufferAllocationReservationRecoversAfterBackendCreationFailure()
+    {
+        const int failureCount = 257;
+        var backendDevice = new FakeBackendDevice(
+            bufferAllocationSizeBytes: 300L * 1024 * 1024,
+            bufferCreationFailureCount: failureCount);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        GpuBuffer? buffer = null;
+
+        try
+        {
+            for (var index = 0; index < failureCount; index++)
+            {
+                _ = Assert.ThrowsAsync<InvalidOperationException>(
+                    async () => await graphicsDevice.CreateBufferAsync(CreateBufferDescription()).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+            }
+
+            buffer = await graphicsDevice.CreateBufferAsync(CreateBufferDescription()).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            Assert.That(backendDevice.BufferCreationCount, Is.EqualTo(failureCount + 1));
+        }
+        finally
+        {
+            buffer?.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+
+        Assert.That(backendDevice.BufferDisposalCount, Is.EqualTo(1));
+    }
+
+    [Test]
     public async Task GraphImportOptionsCompareWithOwnerStateAndReportPendingUses()
     {
         var backendDevice = new FakeBackendDevice();
@@ -1477,10 +1508,13 @@ internal sealed class GraphicsBufferTransferTests
         private readonly ManualResetEventSlim? _uploadEntered;
         private readonly GraphicsCapabilities _capabilities = CreateCapabilities();
         private readonly List<byte[]> _buffers = [];
+        private readonly long? _bufferAllocationSizeBytes;
+        private int _bufferCreationCount;
         private int _bufferDisposalCount;
         private long _completedFence;
         private int _effectiveSamplerAnisotropyBits;
         private byte[]? _lastBufferBytes;
+        private int _remainingBufferCreationFailures;
         private int _remainingTextureCreationFailures;
         private int _samplerCreationCount;
         private int _samplerDisposalCount;
@@ -1492,19 +1526,29 @@ internal sealed class GraphicsBufferTransferTests
         internal FakeBackendDevice(
             long textureBudgetBytes = 3L * 1024 * 1024 * 1024,
             long? textureAllocationSizeBytes = null,
-            int textureCreationFailureCount = 0)
+            int textureCreationFailureCount = 0,
+            long? bufferAllocationSizeBytes = null,
+            int bufferCreationFailureCount = 0)
         {
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(textureBudgetBytes);
             ArgumentOutOfRangeException.ThrowIfNegative(textureCreationFailureCount);
+            ArgumentOutOfRangeException.ThrowIfNegative(bufferCreationFailureCount);
 
             if (textureAllocationSizeBytes is <= 0)
             {
                 throw new ArgumentOutOfRangeException(nameof(textureAllocationSizeBytes));
             }
 
+            if (bufferAllocationSizeBytes is <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(bufferAllocationSizeBytes));
+            }
+
             _textureBudgetBytes = textureBudgetBytes;
             _textureAllocationSizeBytes = textureAllocationSizeBytes;
             _remainingTextureCreationFailures = textureCreationFailureCount;
+            _bufferAllocationSizeBytes = bufferAllocationSizeBytes;
+            _remainingBufferCreationFailures = bufferCreationFailureCount;
         }
 
         internal FakeBackendDevice(ManualResetEventSlim uploadEntered, ManualResetEventSlim continueUpload)
@@ -1515,6 +1559,8 @@ internal sealed class GraphicsBufferTransferTests
         }
 
         public GraphicsCapabilities Capabilities => _capabilities;
+
+        internal int BufferCreationCount => Volatile.Read(ref _bufferCreationCount);
 
         internal int BufferDisposalCount => Volatile.Read(ref _bufferDisposalCount);
 
@@ -1541,6 +1587,13 @@ internal sealed class GraphicsBufferTransferTests
 
         public IGraphicsBackendBuffer CreateBuffer(BufferDescription description)
         {
+            _ = Interlocked.Increment(ref _bufferCreationCount);
+
+            if (Interlocked.Decrement(ref _remainingBufferCreationFailures) >= 0)
+            {
+                throw new InvalidOperationException("The fake buffer backend rejected a buffer creation attempt.");
+            }
+
             var buffer = new FakeBackendBuffer(this, description);
             _buffers.Add(buffer.Bytes);
             _lastBufferBytes = buffer.Bytes;
@@ -1584,7 +1637,7 @@ internal sealed class GraphicsBufferTransferTests
         }
 
         public GraphicsResourceAllocationInfo GetBufferAllocationInfo(BufferDescription description)
-            => new(description.ByteLength, alignment: 1, heapIndex: 0, budgetBytes: 3L * 1024 * 1024 * 1024);
+            => new(_bufferAllocationSizeBytes ?? description.ByteLength, alignment: 1, heapIndex: 0, budgetBytes: 3L * 1024 * 1024 * 1024);
 
         public GraphicsResourceAllocationInfo GetTextureAllocationInfo(TextureDescription description)
         {
