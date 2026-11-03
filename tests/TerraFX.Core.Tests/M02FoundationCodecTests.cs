@@ -318,6 +318,39 @@ internal sealed class M02FoundationCodecTests
     }
 
     [Test]
+    public void FoundationProfileWriterMatchesTheCanonicalProfileRecord()
+    {
+        var expected = EbinPrimitives.Encode(_defaultProfile.CreateRecord());
+        var measureStatus = FoundationProfileWriter.Measure(
+            _defaultProfile.Id,
+            _defaultProfile.Settings,
+            EbinReadLimits.Foundation,
+            out var requiredBytes,
+            out var measureDiagnostic);
+
+        Assert.That(measureStatus, Is.EqualTo(EbinWriteStatus.Complete), measureDiagnostic?.ToString());
+        Assert.That(requiredBytes, Is.EqualTo(expected.Length));
+
+        var candidateStorage = new byte[requiredBytes];
+        var destination = Sentinel(requiredBytes);
+        var writeStatus = FoundationProfileWriter.Write(
+            _defaultProfile.Id,
+            _defaultProfile.Settings,
+            EbinReadLimits.Foundation,
+            candidateStorage,
+            destination,
+            out var bytesWritten,
+            out var writeDiagnostic);
+
+        Assert.That(writeStatus, Is.EqualTo(EbinWriteStatus.Complete), writeDiagnostic?.ToString());
+        Assert.That(bytesWritten, Is.EqualTo(expected.Length));
+        Assert.That(destination.AsSpan(0, bytesWritten).ToArray(), Is.EqualTo(expected));
+        Assert.That(destination.AsSpan(bytesWritten).ToArray(), Is.All.EqualTo(0xA5));
+        Assert.That(FoundationCodec.Read(destination.AsSpan(0, bytesWritten), _context, out _, out var consumed, out _), Is.EqualTo(EbinStatus.Complete));
+        Assert.That(consumed, Is.EqualTo(bytesWritten));
+    }
+
+    [Test]
     public void FoundationWritesAreAtomicWhenTheDestinationIsTooSmall()
     {
         var bytes = ProfileBytes();
@@ -813,7 +846,12 @@ internal sealed class M02FoundationCodecTests
     [TestCase(3, 12, "578519731fdb24483bd4dc4f505215c897e894ad86b8abf311856b0962e1640e")]
     public void SettingsDigestUsesTheLockedDecimalPreimage(int meters, int chunk, string digest)
     {
-        Assert.That(Convert.ToHexStringLower(FoundationProfileBinding.ComputeSettingsDigest(new SpatialSettings(meters, chunk))), Is.EqualTo(digest));
+        var settings = new SpatialSettings(meters, chunk);
+        Span<byte> digestBytes = stackalloc byte[32];
+        FoundationProfileBinding.ComputeSettingsDigest(settings, digestBytes);
+
+        Assert.That(Convert.ToHexStringLower(FoundationProfileBinding.ComputeSettingsDigest(settings)), Is.EqualTo(digest));
+        Assert.That(Convert.ToHexStringLower(digestBytes), Is.EqualTo(digest));
     }
 
     [Test]

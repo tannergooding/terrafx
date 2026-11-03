@@ -42,14 +42,27 @@ internal sealed class FoundationProfileBinding
 
     internal static byte[] ComputeSettingsDigest(SpatialSettings settings)
     {
+        var digest = new byte[32];
+        ComputeSettingsDigest(settings, digest);
+        return digest;
+    }
+
+    internal static void ComputeSettingsDigest(SpatialSettings settings, scoped Span<byte> digest)
+    {
         SpatialKernel.ValidateSettings(settings);
+
+        if (digest.Length < 32)
+        {
+            ThrowHelper.ThrowArgumentException("The settings digest destination must contain 32 bytes.", nameof(digest));
+        }
+
         Unsafe.SkipInit(out InlineBuffer32<byte> storage); // The domain and settings fields fill the preimage before hashing.
         Span<byte> preimage = storage;
 
         "TerraFX.SpatialSettings.v2\0"u8.CopyTo(preimage);
         BinaryPrimitives.WriteInt32LittleEndian(preimage[27..], settings.MetersPerUnitExponent);
         preimage[31] = checked((byte)settings.ChunkSizeExponent);
-        return SHA256.HashData(preimage);
+        _ = SHA256.HashData(preimage, digest[..32]);
     }
 
     internal EbinRecord CreateRecord() => new EbinRecord(FoundationCatalogue.ProfileId, 2, 0, [

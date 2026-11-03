@@ -110,6 +110,8 @@ internal ref struct WorldPersistenceCaptureLease
 
     internal readonly long NextTickIndex => _nextTickIndex;
 
+    internal readonly uint OwnerId => _world.OwnerId;
+
     internal readonly long PublicationSequence => _publicationSequence;
 
     internal readonly long Sequence => _sequence;
@@ -249,6 +251,20 @@ internal ref struct WorldPersistenceCaptureLease
 
     internal readonly bool IsBoundTo(World world)
         => ReferenceEquals(_world, world);
+
+    internal readonly EbinWriteStatus MeasureClockRecord(
+        out WorldPersistenceClockWorkspaceRequirements workspace,
+        out EbinStructuralDiagnostic? diagnostic,
+        CancellationToken cancellationToken)
+    {
+        ValidateCurrent();
+        return WorldPersistenceClockWriter.MeasureWorkspace(
+            this,
+            WorldPersistenceEbinLimits.Create(_world.Options),
+            out workspace,
+            out diagnostic,
+            cancellationToken);
+    }
 
     internal readonly EbinWriteStatus MeasureConfigurationRecord(
         out int recordBytes,
