@@ -231,6 +231,7 @@ internal static class ScenePersistenceWorldHierarchyNodeArrayWriter
         maximumNodePayloadBytes = 0;
         diagnostic = null;
         var expectedChildOffset = 0;
+        var actualChildCount = 0;
 
         for (var index = 0; index < hierarchyRows.Length; index++)
         {
@@ -263,19 +264,20 @@ internal static class ScenePersistenceWorldHierarchyNodeArrayWriter
             for (var childIndex = 0; childIndex < children.Length; childIndex++)
             {
                 if ((children[childIndex] == Guid.Empty)
-                    || (children[childIndex] == row.EntityId)
-                    || ((childIndex > 0) && (FoundationCatalogue.CompareRfc(children[childIndex - 1], children[childIndex]) >= 0)))
+                    || (children[childIndex] == row.EntityId))
                 {
-                    diagnostic = CreateDiagnostic("world-hierarchy-child-order");
+                    diagnostic = CreateDiagnostic("world-hierarchy-child-identity");
                     return EbinWriteStatus.InvalidRecord;
                 }
             }
 
             expectedChildOffset = checked((int)childEnd);
             childCount = checked(childCount + row.ChildCount);
+            actualChildCount = checked(actualChildCount + (row.ParentEntityId.HasValue ? 1 : 0));
         }
 
-        if (expectedChildOffset != childEntityIds.Length)
+        // Unique child IDs with matching parent links plus equal edge counts cover every parent link.
+        if ((expectedChildOffset != childEntityIds.Length) || (actualChildCount != childCount))
         {
             diagnostic = CreateDiagnostic("world-hierarchy-child-count");
             return EbinWriteStatus.InvalidRecord;
@@ -305,20 +307,9 @@ internal static class ScenePersistenceWorldHierarchyNodeArrayWriter
 
             if (row.ParentEntityId is Guid parentEntityId)
             {
-                var parentIndex = FindNodeIndex(hierarchyRows, parentEntityId);
-
-                if (parentIndex < 0)
+                if (FindNodeIndex(hierarchyRows, parentEntityId) < 0)
                 {
                     diagnostic = CreateDiagnostic("world-hierarchy-parent");
-                    return EbinWriteStatus.InvalidRecord;
-                }
-
-                var parent = hierarchyRows[parentIndex];
-                var parentChildren = childEntityIds.Slice(parent.ChildOffset, parent.ChildCount);
-
-                if (!VerifyRfcOrderedValuePresent(parentChildren, row.EntityId))
-                {
-                    diagnostic = CreateDiagnostic("world-hierarchy-parent-child-mismatch");
                     return EbinWriteStatus.InvalidRecord;
                 }
             }
@@ -424,33 +415,5 @@ internal static class ScenePersistenceWorldHierarchyNodeArrayWriter
         {
             throw new ArgumentException("The world-hierarchy-node array workspaces must not overlap.");
         }
-    }
-
-    private static bool VerifyRfcOrderedValuePresent(scoped ReadOnlySpan<Guid> values, Guid value)
-    {
-        var lower = 0;
-        var upper = values.Length - 1;
-
-        while (lower <= upper)
-        {
-            var middle = lower + ((upper - lower) / 2);
-            var comparison = FoundationCatalogue.CompareRfc(values[middle], value);
-
-            if (comparison == 0)
-            {
-                return true;
-            }
-
-            if (comparison < 0)
-            {
-                lower = middle + 1;
-            }
-            else
-            {
-                upper = middle - 1;
-            }
-        }
-
-        return false;
     }
 }

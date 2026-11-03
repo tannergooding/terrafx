@@ -12,16 +12,17 @@ internal struct SceneWorldHierarchyCaptureRow
 
     internal Guid EntityId;
 
-    internal int NextChildOffset;
+    internal uint AssignmentOrdinal;
 
     internal Guid? ParentEntityId;
 
-    internal SceneWorldHierarchyCaptureRow(Guid entityId, Guid? parentEntityId)
+    internal SceneWorldHierarchyCaptureRow(Guid entityId, uint assignmentOrdinal, Guid? parentEntityId)
     {
+        ArgumentOutOfRangeException.ThrowIfZero(assignmentOrdinal);
         EntityId = entityId;
+        AssignmentOrdinal = assignmentOrdinal;
         ParentEntityId = parentEntityId;
         ChildCount = 0;
         ChildOffset = 0;
-        NextChildOffset = 0;
     }
 }

@@ -66,10 +66,10 @@ internal sealed class SceneWorldHierarchyCaptureTests
 
         var roots = new Guid[rootCount];
         var children = new Guid[childCount];
-        ScenePersistenceWorldHierarchyCapture.CopyCanonicalLists(hierarchyRows, roots, children);
+        ScenePersistenceWorldHierarchyCapture.CopyCanonicalLists(world, lease, entityRows, hierarchyRows, roots, children);
 
-        Guid[] expectedRootIds = [otherRootEntityId, rootEntityId];
-        Guid[] expectedChildIds = [firstChildEntityId, secondChildEntityId];
+        Guid[] expectedRootIds = [rootEntityId, otherRootEntityId];
+        Guid[] expectedChildIds = [secondChildEntityId, firstChildEntityId];
         Assert.That(roots, Is.EqualTo(expectedRootIds));
         Assert.That(children, Is.EqualTo(expectedChildIds));
         Assert.That(hierarchyRows[1].ParentEntityId, Is.EqualTo(rootEntityId));
@@ -268,7 +268,7 @@ internal sealed class SceneWorldHierarchyCaptureTests
             out var childCount);
         var roots = new Guid[rootCount];
         var children = new Guid[childCount];
-        ScenePersistenceWorldHierarchyCapture.CopyCanonicalLists(hierarchyRows, roots, children);
+        ScenePersistenceWorldHierarchyCapture.CopyCanonicalLists(world, lease, entityRows, hierarchyRows, roots, children);
 
         Guid[] expectedRootIds = [entityId];
         Assert.That(rootCount, Is.EqualTo(1));

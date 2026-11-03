@@ -47,10 +47,9 @@ internal static class ScenePersistenceWorldHierarchyWriter
 
         for (var index = 0; index < rootEntityIds.Length; index++)
         {
-            if ((rootEntityIds[index] == Guid.Empty)
-                || ((index > 0) && (FoundationCatalogue.CompareRfc(rootEntityIds[index - 1], rootEntityIds[index]) >= 0)))
+            if (rootEntityIds[index] == Guid.Empty)
             {
-                diagnostic = CreateDiagnostic("world-hierarchy-root-order");
+                diagnostic = CreateDiagnostic("world-hierarchy-root-identity");
                 return EbinWriteStatus.InvalidRecord;
             }
         }
@@ -73,6 +72,15 @@ internal static class ScenePersistenceWorldHierarchyWriter
         }
 
         ValidateNonoverlappingPayloads(nodeArrayPayload, rootEntityIds, rootPayloadStorage);
+        var rootIdScratch = MemoryMarshal.Cast<byte, Guid>(
+            rootPayloadStorage[..checked(rootEntityIds.Length * 16)]);
+
+        if (!ScenePersistenceWorldHierarchyCapture.AreRfcUnique(rootEntityIds, rootIdScratch))
+        {
+            diagnostic = CreateDiagnostic("world-hierarchy-root-duplicate");
+            return EbinWriteStatus.InvalidRecord;
+        }
+
         Span<EbinFieldSource> fields = stackalloc EbinFieldSource[2];
         var status = BuildFields(
             nodeCount,

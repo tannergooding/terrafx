@@ -14,7 +14,8 @@ internal static class SceneInstanceRecordFixtureBuilder
     internal static byte[] Create(SceneInstance instance, WorldPersistenceCaptureLease lease)
     {
         var limits = EbinReadLimits.Foundation;
-        var entityIds = new Guid[instance.EntityCount];
+        var liveEntityCount = instance.GetPersistenceEntityCount(lease);
+        var entityIds = new Guid[liveEntityCount];
         instance.CopyPersistenceEntityIds(lease, entityIds);
         var entityIdsPayload = new byte[checked(32 + (entityIds.Length * 16))];
         Assert.That(
@@ -24,10 +25,16 @@ internal static class SceneInstanceRecordFixtureBuilder
         Assert.That(diagnostic, Is.Null);
         Assert.That(entityIdsPayloadBytes, Is.EqualTo(entityIdsPayload.Length));
 
-        var bindingRecords = new byte[instance.EntityCount][];
+        var bindingRecords = new byte[liveEntityCount][];
+        var bindingIndex = 0;
 
         for (var index = 0; index < instance.EntityCount; index++)
         {
+            if (!instance.TryGetPersistenceEntityId(lease, index, out _))
+            {
+                continue;
+            }
+
             Assert.That(
                 instance.MeasurePersistenceEntityBindingRecord(lease, index, out var bindingRecordBytes, out diagnostic),
                 Is.EqualTo(EbinWriteStatus.Complete),
@@ -47,7 +54,12 @@ internal static class SceneInstanceRecordFixtureBuilder
                 diagnostic?.Category);
             Assert.That(diagnostic, Is.Null);
             Assert.That(bindingBytesWritten, Is.EqualTo(bindingRecord.Length));
-            bindingRecords[index] = bindingRecord;
+            bindingRecords[bindingIndex++] = bindingRecord;
+        }
+
+        if (bindingIndex != bindingRecords.Length)
+        {
+            throw new InvalidOperationException("The captured Scene binding count changed during fixture construction.");
         }
 
         var bindingsArrayPayload = SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayPayload(bindingRecords);
@@ -189,7 +201,13 @@ internal static class SceneInstanceRecordFixtureBuilder
             out var childCount);
         var rootEntityIds = new Guid[rootCount];
         var childEntityIds = new Guid[childCount];
-        ScenePersistenceWorldHierarchyCapture.CopyCanonicalLists(hierarchyRows, rootEntityIds, childEntityIds);
+        ScenePersistenceWorldHierarchyCapture.CopyCanonicalLists(
+            world,
+            lease,
+            entityRows,
+            hierarchyRows,
+            rootEntityIds,
+            childEntityIds);
         var nodePayloadBytes = 0;
 
         foreach (var row in hierarchyRows)

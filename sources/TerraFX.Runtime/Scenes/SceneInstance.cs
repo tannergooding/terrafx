@@ -80,27 +80,6 @@ public sealed class SceneInstance
         return captureRows;
     }
 
-    private static void SortPersistenceEntityIds(Span<Guid> entityIds)
-    {
-        for (var gap = entityIds.Length / 2; gap > 0; gap /= 2)
-        {
-            for (var index = gap; index < entityIds.Length; index++)
-            {
-                var entityId = entityIds[index];
-                var insertionIndex = index;
-
-                while ((insertionIndex >= gap)
-                    && (FoundationCatalogue.CompareRfc(entityId, entityIds[insertionIndex - gap]) < 0))
-                {
-                    entityIds[insertionIndex] = entityIds[insertionIndex - gap];
-                    insertionIndex -= gap;
-                }
-
-                entityIds[insertionIndex] = entityId;
-            }
-        }
-    }
-
     /// <summary>Begins a typed hierarchy transaction scoped to this exact Scene instance.</summary>
     /// <returns>The unsubmitted transaction.</returns>
     /// <exception cref="InvalidOperationException">This Scene instance is not active in its World.</exception>
@@ -298,38 +277,27 @@ public sealed class SceneInstance
 
     internal void CopyPersistenceEntityIds(WorldPersistenceCaptureLease lease, scoped Span<Guid> destination)
     {
-        lease.ValidateCurrent();
+        var plan = GetPersistencePlan(lease);
+        var liveEntityCount = GetPersistenceEntityCount(lease);
 
-        if (!lease.IsBoundTo(_world))
+        if (destination.Length != liveEntityCount)
         {
-            throw new ArgumentException("The capture lease belongs to another World.", nameof(lease));
+            throw new ArgumentException("The Scene EntityId destination must match the exact live expanded Entity count.", nameof(destination));
         }
 
-        var plan = GetActivePlan();
+        var destinationIndex = 0;
 
-        if (destination.Length != plan.Entities.Length)
+        foreach (var expandedEntityIndex in plan.EntityIndicesByAssignmentOrdinal)
         {
-            throw new ArgumentException("The Scene EntityId destination must match the exact expanded Entity count.", nameof(destination));
-        }
-
-        for (var expandedEntityIndex = 0; expandedEntityIndex < destination.Length; expandedEntityIndex++)
-        {
-            if (!TryGetLiveEntity(plan, expandedEntityIndex, out var entity))
+            if (TryGetLiveEntity(plan, expandedEntityIndex, out var entity))
             {
-                throw new InvalidOperationException("The captured Scene Entity is no longer live in its World.");
+                destination[destinationIndex++] = _world.GetEntityId(entity);
             }
-
-            destination[expandedEntityIndex] = _world.GetEntityId(entity);
         }
 
-        SortPersistenceEntityIds(destination);
-
-        for (var index = 1; index < destination.Length; index++)
+        if (destinationIndex != destination.Length)
         {
-            if (destination[index - 1] == destination[index])
-            {
-                throw new InvalidOperationException("Two expanded Scene Entities share one stable World EntityId.");
-            }
+            throw new InvalidOperationException("The live Scene Entity set changed during capture.");
         }
     }
 
@@ -360,6 +328,22 @@ public sealed class SceneInstance
         }
 
         return assignmentOrdinal;
+    }
+
+    internal int GetPersistenceEntityCount(WorldPersistenceCaptureLease lease)
+    {
+        var plan = GetPersistencePlan(lease);
+        var liveEntityCount = 0;
+
+        foreach (var expandedEntityIndex in plan.EntityIndicesByAssignmentOrdinal)
+        {
+            if (TryGetLiveEntity(plan, expandedEntityIndex, out _))
+            {
+                liveEntityCount = checked(liveEntityCount + 1);
+            }
+        }
+
+        return liveEntityCount;
     }
 
     internal SceneExpansionPlan GetPersistencePlan(WorldPersistenceCaptureLease lease)
@@ -430,6 +414,23 @@ public sealed class SceneInstance
         _ = Interlocked.Exchange(ref _isActive, 0);
         _ = Interlocked.Exchange(ref _externalBindings, null);
         Interlocked.Exchange(ref _plan, null)?.Dispose();
+    }
+
+    internal bool TryGetPersistenceEntityId(
+        WorldPersistenceCaptureLease lease,
+        int expandedEntityIndex,
+        out Guid entityId)
+    {
+        var plan = GetPersistencePlan(lease);
+
+        if (!TryGetLiveEntity(plan, expandedEntityIndex, out var entity))
+        {
+            entityId = Guid.Empty;
+            return false;
+        }
+
+        entityId = _world.GetEntityId(entity);
+        return true;
     }
 
     internal EbinWriteStatus WritePersistenceEntityBindingRecord(

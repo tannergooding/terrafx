@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Runtime.InteropServices;
 using TerraFX;
 
 namespace TerraFX.Scenes;
@@ -40,10 +41,9 @@ internal static class ScenePersistenceWorldHierarchyNodeWriter
         for (var index = 0; index < childEntityIds.Length; index++)
         {
             if ((childEntityIds[index] == Guid.Empty)
-                || (childEntityIds[index] == entityId)
-                || ((index > 0) && (FoundationCatalogue.CompareRfc(childEntityIds[index - 1], childEntityIds[index]) >= 0)))
+                || (childEntityIds[index] == entityId))
             {
-                diagnostic = CreateDiagnostic("world-hierarchy-node-child-order");
+                diagnostic = CreateDiagnostic("world-hierarchy-node-child-identity");
                 return EbinWriteStatus.InvalidRecord;
             }
         }
@@ -73,6 +73,20 @@ internal static class ScenePersistenceWorldHierarchyNodeWriter
             }
 
             throw new ArgumentException("The world-hierarchy-node payload workspace must match its measured extent.", nameof(rootPayloadStorage));
+        }
+
+        if (MemoryMarshal.AsBytes(childEntityIds).Overlaps(rootPayloadStorage))
+        {
+            throw new ArgumentException("The world-hierarchy-node payload workspace must not overlap its child IDs.", nameof(rootPayloadStorage));
+        }
+
+        var childIdScratch = MemoryMarshal.Cast<byte, Guid>(
+            rootPayloadStorage[..checked(childEntityIds.Length * 16)]);
+
+        if (!ScenePersistenceWorldHierarchyCapture.AreRfcUnique(childEntityIds, childIdScratch))
+        {
+            diagnostic = CreateDiagnostic("world-hierarchy-node-child-duplicate");
+            return EbinWriteStatus.InvalidRecord;
         }
 
         Span<EbinFieldSource> fields = stackalloc EbinFieldSource[3];

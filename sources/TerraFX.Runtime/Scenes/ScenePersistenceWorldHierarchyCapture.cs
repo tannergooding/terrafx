@@ -1,12 +1,41 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
 using TerraFX.Entities;
 
 namespace TerraFX.Scenes;
 
 internal static class ScenePersistenceWorldHierarchyCapture
 {
+    private static readonly IComparer<SceneWorldHierarchyCaptureRow> s_assignmentOrdinalComparer =
+        new AssignmentOrdinalComparer();
+    private static readonly IComparer<SceneWorldHierarchyCaptureRow> s_entityIdComparer =
+        new EntityIdComparer();
+    private static readonly IComparer<Guid> s_rfcGuidComparer = new GuidIdentityComparer();
+
+    internal static bool AreRfcUnique(scoped ReadOnlySpan<Guid> values, scoped Span<Guid> scratch)
+    {
+        if (scratch.Length < values.Length)
+        {
+            throw new ArgumentException("The GUID uniqueness workspace is too small.", nameof(scratch));
+        }
+
+        var sorted = scratch[..values.Length];
+        values.CopyTo(sorted);
+        sorted.Sort(s_rfcGuidComparer);
+
+        for (var index = 1; index < sorted.Length; index++)
+        {
+            if (FoundationCatalogue.CompareRfc(sorted[index - 1], sorted[index]) == 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     internal static void Capture(
         World world,
         WorldPersistenceCaptureLease lease,
@@ -44,6 +73,7 @@ internal static class ScenePersistenceWorldHierarchyCapture
             }
 
             var entityId = entityEnumerator.CurrentEntityId;
+            var assignmentOrdinal = entityEnumerator.CurrentAssignmentOrdinal;
             Guid? parentEntityId = null;
 
             if (hasSceneSupport
@@ -63,7 +93,7 @@ internal static class ScenePersistenceWorldHierarchyCapture
                 rootCount = checked(rootCount + 1);
             }
 
-            hierarchyRows[rowIndex++] = new SceneWorldHierarchyCaptureRow(entityId, parentEntityId);
+            hierarchyRows[rowIndex++] = new SceneWorldHierarchyCaptureRow(entityId, assignmentOrdinal, parentEntityId);
         }
 
         if (rowIndex != entityCount)
@@ -102,7 +132,6 @@ internal static class ScenePersistenceWorldHierarchyCapture
         {
             ref var row = ref hierarchyRows[index];
             row.ChildOffset = childOffset;
-            row.NextChildOffset = childOffset;
             childOffset = checked(childOffset + row.ChildCount);
         }
 
@@ -113,10 +142,26 @@ internal static class ScenePersistenceWorldHierarchyCapture
     }
 
     internal static void CopyCanonicalLists(
+        World world,
+        WorldPersistenceCaptureLease lease,
+        scoped ReadOnlySpan<World.EntityStateCaptureRow> entityRows,
         scoped Span<SceneWorldHierarchyCaptureRow> hierarchyRows,
         scoped Span<Guid> rootEntityIds,
         scoped Span<Guid> childEntityIds)
     {
+        ArgumentNullException.ThrowIfNull(world);
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(world))
+        {
+            throw new ArgumentException("The capture lease belongs to another World.", nameof(lease));
+        }
+
+        if (entityRows.Length != hierarchyRows.Length)
+        {
+            throw new ArgumentException("The Entity and hierarchy rows must match their exact live count.");
+        }
+
         var rootCount = 0;
         var childCount = 0;
 
@@ -136,58 +181,80 @@ internal static class ScenePersistenceWorldHierarchyCapture
 
         for (var index = 0; index < hierarchyRows.Length; index++)
         {
-            ref var row = ref hierarchyRows[index];
-            row.NextChildOffset = row.ChildOffset;
-
-            if (!row.ParentEntityId.HasValue)
+            if ((entityRows[index].EntityId != hierarchyRows[index].EntityId)
+                || (entityRows[index].AssignmentOrdinal != hierarchyRows[index].AssignmentOrdinal))
             {
-                rootEntityIds[rootIndex++] = row.EntityId;
+                throw new InvalidOperationException("The captured Entity and hierarchy rows no longer match.");
             }
         }
 
-        for (var index = 0; index < hierarchyRows.Length; index++)
-        {
-            var child = hierarchyRows[index];
+        hierarchyRows.Sort(s_assignmentOrdinalComparer);
 
-            if (child.ParentEntityId is not Guid parentEntityId)
+        try
+        {
+            for (var index = 0; index < hierarchyRows.Length; index++)
+            {
+                var row = hierarchyRows[index];
+
+                if (!row.ParentEntityId.HasValue)
+                {
+                    rootEntityIds[rootIndex++] = row.EntityId;
+                }
+            }
+        }
+        finally
+        {
+            hierarchyRows.Sort(s_entityIdComparer);
+        }
+
+        if (rootIndex != rootEntityIds.Length)
+        {
+            throw new InvalidOperationException("The World hierarchy root list is incomplete.");
+        }
+
+        for (var parentIndex = 0; parentIndex < hierarchyRows.Length; parentIndex++)
+        {
+            var parent = hierarchyRows[parentIndex];
+
+            if (parent.ChildCount == 0)
             {
                 continue;
             }
 
-            var parentIndex = FindNodeIndex(hierarchyRows, parentEntityId);
-
-            if (parentIndex < 0)
-            {
-                throw new InvalidOperationException("A captured World hierarchy parent is absent from the canonical Entity rows.");
-            }
-
-            ref var parent = ref hierarchyRows[parentIndex];
-            var end = checked(parent.ChildOffset + parent.ChildCount);
-
-            if ((parent.NextChildOffset < parent.ChildOffset) || (parent.NextChildOffset >= end))
-            {
-                throw new InvalidOperationException("The captured World hierarchy child count changed while filling its canonical list.");
-            }
-
-            childEntityIds[parent.NextChildOffset++] = child.EntityId;
-        }
-
-        for (var index = 0; index < hierarchyRows.Length; index++)
-        {
-            var row = hierarchyRows[index];
-            var end = checked(row.ChildOffset + row.ChildCount);
-
-            if (row.NextChildOffset != end)
+            if (!world.TryGetFirstHierarchyChild(entityRows[parentIndex].Entity, out var child))
             {
                 throw new InvalidOperationException("The captured World hierarchy child list is incomplete.");
             }
 
-            for (var childIndex = row.ChildOffset + 1; childIndex < end; childIndex++)
+            var childOffset = parent.ChildOffset;
+            var childEnd = checked(childOffset + parent.ChildCount);
+
+            while (true)
             {
-                if (FoundationCatalogue.CompareRfc(childEntityIds[childIndex - 1], childEntityIds[childIndex]) >= 0)
+                if (childOffset >= childEnd)
                 {
-                    throw new InvalidOperationException("The captured World hierarchy child list is not in RFC EntityId order.");
+                    throw new InvalidOperationException("The captured World hierarchy child list exceeds its measured count.");
                 }
+
+                var childEntityId = world.GetEntityId(child);
+                var childIndex = FindNodeIndex(hierarchyRows, childEntityId);
+
+                if ((childIndex < 0) || (hierarchyRows[childIndex].ParentEntityId != parent.EntityId))
+                {
+                    throw new InvalidOperationException("The captured World hierarchy sibling does not match its parent row.");
+                }
+
+                childEntityIds[childOffset++] = childEntityId;
+
+                if (!world.TryGetNextHierarchySibling(child, out child))
+                {
+                    break;
+                }
+            }
+
+            if (childOffset != childEnd)
+            {
+                throw new InvalidOperationException("The captured World hierarchy child list is incomplete.");
             }
         }
     }
@@ -218,5 +285,23 @@ internal static class ScenePersistenceWorldHierarchyCapture
         }
 
         return -1;
+    }
+
+    private sealed class AssignmentOrdinalComparer : IComparer<SceneWorldHierarchyCaptureRow>
+    {
+        public int Compare(SceneWorldHierarchyCaptureRow left, SceneWorldHierarchyCaptureRow right)
+            => left.AssignmentOrdinal.CompareTo(right.AssignmentOrdinal);
+    }
+
+    private sealed class EntityIdComparer : IComparer<SceneWorldHierarchyCaptureRow>
+    {
+        public int Compare(SceneWorldHierarchyCaptureRow left, SceneWorldHierarchyCaptureRow right)
+            => FoundationCatalogue.CompareRfc(left.EntityId, right.EntityId);
+    }
+
+    private sealed class GuidIdentityComparer : IComparer<Guid>
+    {
+        public int Compare(Guid left, Guid right)
+            => FoundationCatalogue.CompareRfc(left, right);
     }
 }

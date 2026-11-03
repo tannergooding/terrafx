@@ -29,7 +29,7 @@ internal static class ScenePersistenceSceneInstanceWriter
         workspace = default;
         diagnostic = null;
         var plan = instance.GetPersistencePlan(lease);
-        var entityCount = plan.Entities.Length;
+        var entityCount = instance.GetPersistenceEntityCount(lease);
         var bindingCount = entityCount;
         var externalBindingCount = instance.GetExternalBindingCaptureRows(lease).Length;
         var occurrenceCount = plan.Occurrences.Length;
@@ -129,6 +129,7 @@ internal static class ScenePersistenceSceneInstanceWriter
             assignmentOrdinal,
             limits,
             sourceRecordBytes,
+            entityCount,
             entityIdsPayload,
             bindingsArrayPayload,
             bindingCount,
@@ -244,6 +245,7 @@ internal static class ScenePersistenceSceneInstanceWriter
             assignmentOrdinal,
             limits,
             sourceRecordBytes,
+            workspace.EntityCount,
             entityIdsPayload,
             bindingsArrayPayload,
             workspace.BindingCount,
@@ -383,6 +385,7 @@ internal static class ScenePersistenceSceneInstanceWriter
         uint assignmentOrdinal,
         EbinReadLimits limits,
         int sourceRecordBytes,
+        int entityCount,
         scoped ReadOnlySpan<byte> entityIdsPayload,
         scoped ReadOnlySpan<byte> bindingsArrayPayload,
         int bindingCount,
@@ -435,7 +438,7 @@ internal static class ScenePersistenceSceneInstanceWriter
             return status;
         }
 
-        AddFixedArrayField(3, plan.Entities.Length, entityIdsPayload, fields, ref fieldCount, rootPayloadStorage, ref offset);
+        AddFixedArrayField(3, entityCount, entityIdsPayload, fields, ref fieldCount, rootPayloadStorage, ref offset);
         AddArrayField(4, bindingCount, bindingsArrayPayload, fields, ref fieldCount, rootPayloadStorage, ref offset);
         AddArrayField(5, externalBindingCount, externalBindingsArrayPayload, fields, ref fieldCount, rootPayloadStorage, ref offset);
         status = AddInt64Field(

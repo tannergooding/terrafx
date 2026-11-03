@@ -2339,17 +2339,16 @@ internal sealed partial class SceneAssetStoreTests
                     var capturedChildAddress = new SceneEntityAddress([placementId], childEntityId);
                     Assert.That(instance.TryGetEntity(rootEntityId, out var capturedRootEntity), Is.True);
                     Assert.That(instance.TryGetEntity(capturedChildAddress, out var capturedChildEntity), Is.True);
-                    Guid[] expectedLiveEntityIds = [
-                        world.GetEntityId(capturedRootEntity),
-                        world.GetEntityId(capturedChildEntity),
-                    ];
-                    var capturedEntityIds = new Guid[instance.EntityCount];
+                    Assert.That(world.TryGetLiveEntityIdentityOrdinal(capturedRootEntity, out var rootAssignmentOrdinal), Is.True);
+                    Assert.That(world.TryGetLiveEntityIdentityOrdinal(capturedChildEntity, out var childAssignmentOrdinal), Is.True);
+                    Guid[] expectedLiveEntityIds = (rootAssignmentOrdinal < childAssignmentOrdinal)
+                        ? [world.GetEntityId(capturedRootEntity), world.GetEntityId(capturedChildEntity)]
+                        : [world.GetEntityId(capturedChildEntity), world.GetEntityId(capturedRootEntity)];
+                    var liveEntityCount = instance.GetPersistenceEntityCount(captureLease);
+                    var capturedEntityIds = new Guid[liveEntityCount];
                     instance.CopyPersistenceEntityIds(captureLease, capturedEntityIds);
-                    Assert.That(capturedEntityIds, Is.EquivalentTo(expectedLiveEntityIds));
+                    Assert.That(capturedEntityIds, Is.EqualTo(expectedLiveEntityIds));
                     Assert.That(capturedEntityIds[0], Is.Not.EqualTo(capturedEntityIds[1]));
-                    var firstEntityIdBytes = capturedEntityIds[0].ToByteArray(bigEndian: true);
-                    var secondEntityIdBytes = capturedEntityIds[1].ToByteArray(bigEndian: true);
-                    Assert.That(firstEntityIdBytes.AsSpan().SequenceCompareTo(secondEntityIdBytes), Is.LessThan(0));
 
                     var occurrenceRecords = new byte[instance.OccurrenceCount][];
 
@@ -2411,12 +2410,18 @@ internal sealed partial class SceneAssetStoreTests
                     }
 
                     var occurrenceArrayPayload = SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayPayload(occurrenceRecords);
-                    Assert.That(instance.EntityCount, Is.EqualTo(2));
+                    Assert.That(liveEntityCount, Is.EqualTo(2));
 
-                    var bindingRecords = new byte[instance.EntityCount][];
+                    var bindingRecords = new byte[liveEntityCount][];
+                    var bindingRecordIndex = 0;
 
                     for (var expandedEntityIndex = 0; expandedEntityIndex < instance.EntityCount; expandedEntityIndex++)
                     {
+                        if (!instance.TryGetPersistenceEntityId(captureLease, expandedEntityIndex, out _))
+                        {
+                            continue;
+                        }
+
                         Assert.That(
                             instance.MeasurePersistenceEntityBindingRecord(
                                 captureLease,
@@ -2440,7 +2445,7 @@ internal sealed partial class SceneAssetStoreTests
                             bindingDiagnostic?.Category);
                         Assert.That(bindingDiagnostic, Is.Null);
                         Assert.That(bytesWritten, Is.EqualTo(recordBytes));
-                        bindingRecords[expandedEntityIndex] = destination;
+                        bindingRecords[bindingRecordIndex++] = destination;
                         var bindingAssertions = new SceneEntityBindingRecordAssertions();
                         Assert.That(
                             EbinStructuralReader.Read(
@@ -2456,6 +2461,7 @@ internal sealed partial class SceneAssetStoreTests
                         Assert.That(bindingBytesConsumed, Is.EqualTo(destination.Length));
                     }
 
+                    Assert.That(bindingRecordIndex, Is.EqualTo(bindingRecords.Length));
                     var bindingsArrayPayload = SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayPayload(bindingRecords);
                     var externalBindings = instance.GetExternalBindingCaptureRows(captureLease);
                     Assert.That(externalBindings.Length, Is.EqualTo(1));
@@ -2682,6 +2688,82 @@ internal sealed partial class SceneAssetStoreTests
                     world.TryGet<SceneComponentDefinitions.RootPositionComponent>(external, out var externalPosition),
                     Is.True);
                 Assert.That(externalPosition.Position.Offset, Is.EqualTo(new TerraFX.Numerics.Vector3(3.0f, 0.0f, 0.0f)));
+            }
+            finally
+            {
+                await assets.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    [SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "ActivateAsync detaches the expansion plan before returning; the awaited request owns it independently of PreparedScene.")]
+    public async Task SceneLoaderResolvesOnlyLiveEntityIdsInAssignmentOrder()
+    {
+        const int sceneAssetIdValue = 3;
+        const int prefabAssetIdValue = 1;
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
+        var childEntityId = new Guid("10000000-0000-4000-8000-000000000002");
+        var placementId = new Guid("40000000-0000-4000-8000-000000000002");
+        var scene = SceneAssetReaderTests.Fixtures.CreateSceneWithChildPlacement(
+            new AssetId(sceneAssetIdValue),
+            rootEntityId,
+            placementId,
+            SceneAssetReaderTests.Fixtures.CreateRootPose(childEntityId, includeRootPosition: false));
+        var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
+            new AssetId(prefabAssetIdValue),
+            entityId: childEntityId);
+        var package = Package.CreatePackage(
+            new Package.Entry(prefabAssetIdValue, Package.CreateEnvelope(prefabAssetIdValue, prefab)),
+            new Package.Entry(sceneAssetIdValue, Package.CreateEnvelope(sceneAssetIdValue, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var storeRegistration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+            var assets = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), storeRegistration)).ConfigureAwait(false);
+
+            try
+            {
+                var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
+                _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+                using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
+                var loader = new SceneLoader(world, assets);
+
+                using var prepared = loader
+                    .PrepareAsync(new AssetId(sceneAssetIdValue), new SceneLoadOptions())
+                    .GetAwaiter()
+                    .GetResult();
+                var activation = loader.ActivateAsync(prepared);
+                world.PumpControlBoundary();
+                var receipt = await activation.ConfigureAwait(false);
+                var instance = receipt.Instance
+                    ?? throw new InvalidOperationException("The nested Scene activation did not return its instance.");
+
+                Assert.That(receipt.Status, Is.EqualTo(SceneActivationStatus.Activated));
+                _ = world.Step();
+                var childAddress = new SceneEntityAddress([placementId], childEntityId);
+                Assert.That(instance.TryGetEntity(rootEntityId, out var root), Is.True);
+                Assert.That(instance.TryGetEntity(childAddress, out var child), Is.True);
+                world.DestroyEntity(root, HierarchyDestroyMode.DetachChildrenKeepWorld);
+                _ = world.Step();
+
+                using var lease = world.AcquirePersistenceCaptureLease();
+                Assert.That(instance.GetPersistenceEntityCount(lease), Is.EqualTo(1));
+                var capturedEntityIds = new Guid[1];
+                instance.CopyPersistenceEntityIds(lease, capturedEntityIds);
+                var expectedEntityIds = new[] { world.GetEntityId(child) };
+                Assert.That(capturedEntityIds, Is.EqualTo(expectedEntityIds));
+                Assert.That(SceneInstanceRecordFixtureBuilder.Create(instance, lease), Is.Not.Empty);
             }
             finally
             {
