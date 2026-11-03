@@ -2738,6 +2738,7 @@ internal sealed partial class SceneAssetStoreTests
                             Array.Sort(expectedAssetIds);
                             var uniqueAssetIds = assetIds.AsSpan(0, uniqueAssetCount).ToArray();
                             Assert.That(uniqueAssetIds, Is.EqualTo(expectedAssetIds));
+                            Assert.That(uniqueAssetIds, Does.Not.Contain(checked((uint)textureAssetIdValue)));
 
                             var worldRecord = WorldPersistenceWorldRecordWriterTests.ComposeWorldRecord(
                                 world,
