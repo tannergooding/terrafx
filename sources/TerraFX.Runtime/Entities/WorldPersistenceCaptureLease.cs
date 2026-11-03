@@ -282,6 +282,18 @@ internal ref struct WorldPersistenceCaptureLease
             out diagnostic);
     }
 
+    internal readonly EbinWriteStatus MeasureCursorsRecord(
+        out int recordBytes,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ValidateCurrent();
+        return WorldPersistenceCursorWriter.Measure(
+            this,
+            WorldPersistenceEbinLimits.Create(_world.Options),
+            out recordBytes,
+            out diagnostic);
+    }
+
     internal readonly EbinWriteStatus MeasureEcsRecord(
         ref WorldPersistenceEcsBuffers buffers,
         out WorldPersistenceEcsWorkspaceRequirements workspace,
@@ -450,6 +462,24 @@ internal ref struct WorldPersistenceCaptureLease
         return reservation.WriteConfigurationRecord(
             _world,
             _world.Options,
+            candidateStorage,
+            destination,
+            out bytesWritten,
+            out diagnostic);
+    }
+
+    internal readonly EbinWriteStatus WriteCursorsRecord(
+        WorldPersistenceAdmissionReservation reservation,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ValidateCurrent();
+        ArgumentNullException.ThrowIfNull(reservation);
+        return reservation.WriteCursorsRecord(
+            _world,
+            this,
             candidateStorage,
             destination,
             out bytesWritten,
