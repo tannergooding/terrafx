@@ -258,6 +258,30 @@ public sealed class WorldRegistration
         throw new KeyNotFoundException("No resource with the supplied ID is registered.");
     }
 
+    internal void CopyPersistenceSystemOrder(Span<int> destination)
+    {
+        if (destination.Length != _systems.Length)
+        {
+            throw new ArgumentException("The persistence system-order workspace must match the registration count.", nameof(destination));
+        }
+
+        for (var index = 0; index < destination.Length; index++)
+        {
+            destination[index] = index;
+        }
+
+        for (var root = (destination.Length / 2) - 1; root >= 0; root--)
+        {
+            SiftDownPersistenceSystemOrder(destination, root, destination.Length);
+        }
+
+        for (var end = destination.Length - 1; end > 0; end--)
+        {
+            (destination[0], destination[end]) = (destination[end], destination[0]);
+            SiftDownPersistenceSystemOrder(destination, 0, end);
+        }
+    }
+
     internal IComponentRegistration GetComponentRegistration(ContentSchemaReference schema)
         => FindComponent(schema);
 
@@ -337,6 +361,14 @@ public sealed class WorldRegistration
         return false;
     }
 
+    private int ComparePersistenceSystems(int leftIndex, int rightIndex)
+    {
+        var left = _systems[leftIndex].Description;
+        var right = _systems[rightIndex].Description;
+        var comparison = left.Order.CompareTo(right.Order);
+        return (comparison != 0) ? comparison : FoundationCatalogue.CompareRfc(left.SystemId, right.SystemId);
+    }
+
     private IComponentRegistration FindComponent(ContentSchemaReference schema)
     {
         if ((schema.SchemaId == Guid.Empty) || (schema.Major <= 0) || (schema.Minor < 0))
@@ -380,5 +412,34 @@ public sealed class WorldRegistration
         }
 
         return -1;
+    }
+
+    private void SiftDownPersistenceSystemOrder(Span<int> indices, int root, int length)
+    {
+        while (true)
+        {
+            var child = checked((root * 2) + 1);
+
+            if (child >= length)
+            {
+                return;
+            }
+
+            var greaterChild = child;
+
+            if (((child + 1) < length)
+                && (ComparePersistenceSystems(indices[child], indices[child + 1]) < 0))
+            {
+                greaterChild = child + 1;
+            }
+
+            if (ComparePersistenceSystems(indices[root], indices[greaterChild]) >= 0)
+            {
+                return;
+            }
+
+            (indices[root], indices[greaterChild]) = (indices[greaterChild], indices[root]);
+            root = greaterChild;
+        }
     }
 }
