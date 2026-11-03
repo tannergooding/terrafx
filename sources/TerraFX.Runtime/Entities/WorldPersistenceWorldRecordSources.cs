@@ -7,6 +7,7 @@ namespace TerraFX.Entities;
 internal readonly ref struct WorldPersistenceWorldRecordSources
 {
     internal WorldPersistenceWorldRecordSources(
+        WorldPersistenceCaptureLease lease,
         ReadOnlySpan<uint> assetIds,
         ReadOnlySpan<byte> clockRecord,
         ReadOnlySpan<byte> configurationRecord,
@@ -22,6 +23,7 @@ internal readonly ref struct WorldPersistenceWorldRecordSources
         ReadOnlySpan<byte> scenesRecord,
         ReadOnlySpan<byte> strictLayoutRecord)
     {
+        lease.ValidateCurrent();
         ArgumentOutOfRangeException.ThrowIfNegative(controlRecordCount);
         ArgumentOutOfRangeException.ThrowIfNegative(randomStreamCount);
         AssetIds = assetIds;
@@ -33,11 +35,13 @@ internal readonly ref struct WorldPersistenceWorldRecordSources
         EcsRecord = ecsRecord;
         Frame2Record = frame2Record;
         Frame3Record = frame3Record;
+        LeaseSequence = lease.Sequence;
         RandomArrayPayload = randomArrayPayload;
         RandomStreamCount = randomStreamCount;
         RegistrationRecord = registrationRecord;
         ScenesRecord = scenesRecord;
         StrictLayoutRecord = strictLayoutRecord;
+        WorldGuid = lease.WorldGuid;
     }
 
     internal ReadOnlySpan<uint> AssetIds { get; }
@@ -58,6 +62,8 @@ internal readonly ref struct WorldPersistenceWorldRecordSources
 
     internal ReadOnlySpan<byte> Frame3Record { get; }
 
+    internal long LeaseSequence { get; }
+
     internal ReadOnlySpan<byte> RandomArrayPayload { get; }
 
     internal int RandomStreamCount { get; }
@@ -67,4 +73,6 @@ internal readonly ref struct WorldPersistenceWorldRecordSources
     internal ReadOnlySpan<byte> ScenesRecord { get; }
 
     internal ReadOnlySpan<byte> StrictLayoutRecord { get; }
+
+    internal Guid WorldGuid { get; }
 }

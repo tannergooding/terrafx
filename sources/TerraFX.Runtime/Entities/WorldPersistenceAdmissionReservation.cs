@@ -481,6 +481,73 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
             out diagnostic);
     }
 
+    internal EbinWriteStatus WriteWorldRecord(
+        World world,
+        WorldPersistenceCaptureLease lease,
+        WorldPersistenceWorldRecordSources sources,
+        WorldPersistenceWorldRecordWorkspaceRequirements workspace,
+        scoped Span<byte> rootPayloadStorage,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        lease.ValidateCurrent();
+
+        if (!ReferenceEquals(_world, world)
+            || !lease.IsBoundTo(world)
+            || (sources.WorldGuid != lease.WorldGuid)
+            || (sources.LeaseSequence != lease.Sequence))
+        {
+            throw new ArgumentException("The capture lease, World-root sources, and reservation must belong to this exact World capture.", nameof(lease));
+        }
+
+        using var activeUse = AcquireUse(world, workspace.WorkspaceBytes);
+        var limits = WorldPersistenceEbinLimits.Create(world.Options);
+        var status = WorldPersistenceWorldRecordWriter.Measure(
+            sources,
+            limits,
+            rootPayloadStorage,
+            out var measuredWorkspace,
+            out diagnostic);
+        bytesWritten = 0;
+
+        if (status is not EbinWriteStatus.Complete)
+        {
+            return status;
+        }
+
+        if (!workspace.Matches(measuredWorkspace))
+        {
+            diagnostic = new EbinStructuralDiagnostic(
+                new ContentSchemaIdentityAssignment("state/world").SchemaId,
+                0,
+                "world-workspace-mismatch",
+                null,
+                0,
+                1,
+                EbinStructuralDiagnosticSource.Construction);
+            return EbinWriteStatus.InvalidRecord;
+        }
+
+        if ((candidateStorage.Length != workspace.RecordBytes)
+            || (destination.Length != workspace.RecordBytes))
+        {
+            throw new ArgumentException("The World root record workspaces must match the measured extent.");
+        }
+
+        return WorldPersistenceWorldRecordWriter.Write(
+            sources,
+            workspace,
+            limits,
+            rootPayloadStorage,
+            candidateStorage,
+            destination,
+            out bytesWritten,
+            out diagnostic);
+    }
+
     private void ReleaseCharge()
     {
         if (_isChargeReleased)

@@ -198,6 +198,7 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             diagnostic?.ToString());
         Assert.That(emptyArrayBytes, Is.EqualTo(emptyArrayPayload.Length));
         var sources = new WorldPersistenceWorldRecordSources(
+            lease,
             assetIds,
             clockRecord,
             configurationRecord,
@@ -227,11 +228,14 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             Is.EqualTo(EbinWriteStatus.Complete),
             diagnostic?.ToString());
         var destination = new byte[workspace.RecordBytes];
+        Assert.That(lease.TryReserveAdmissionBytes(workspace.WorkspaceBytes, out var reservation), Is.True);
+        using var rootReservation = reservation
+            ?? throw new AssertionException("The World-root workspace reservation was not created.");
         Assert.That(
-            WorldPersistenceWorldRecordWriter.Write(
+            lease.WriteWorldRecord(
+                rootReservation,
                 sources,
                 workspace,
-                limits,
                 rootPayloadStorage,
                 new byte[workspace.RecordBytes],
                 destination,
@@ -688,6 +692,7 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
         Assert.That(registrationBytesWritten, Is.EqualTo(registrationRecord.Length));
 
         var sources = new WorldPersistenceWorldRecordSources(
+            lease,
             assetIds.AsSpan(0, assetIdCount),
             clockRecord,
             configurationRecord,
@@ -717,11 +722,14 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             Is.EqualTo(EbinWriteStatus.Complete),
             diagnostic?.ToString());
         var worldDestination = new byte[worldWorkspace.RecordBytes];
+        Assert.That(lease.TryReserveAdmissionBytes(worldWorkspace.WorkspaceBytes, out var rootReservation), Is.True);
+        using var rootReservationScope = rootReservation
+            ?? throw new AssertionException("The World-root workspace reservation was not created.");
         Assert.That(
-            WorldPersistenceWorldRecordWriter.Write(
+            lease.WriteWorldRecord(
+                rootReservationScope,
                 sources,
                 worldWorkspace,
-                limits,
                 rootPayloadStorage,
                 new byte[worldWorkspace.RecordBytes],
                 worldDestination,
@@ -748,6 +756,7 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
         Assert.That(bytesConsumed, Is.EqualTo(worldBytesWritten));
 
         var inconsistentSources = new WorldPersistenceWorldRecordSources(
+                lease,
                 sources.AssetIds,
                 sources.ClockRecord,
                 sources.ConfigurationRecord,
@@ -770,6 +779,69 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
                     out var cursorDiagnostic),
                 Is.EqualTo(EbinWriteStatus.InvalidRecord));
         Assert.That(cursorDiagnostic?.Category, Is.EqualTo("next-control-sequence-mismatch"));
+    }
+
+    [Test]
+    public void RejectsWorldRecordSourcesFromAnEarlierCapture()
+    {
+        var registration = new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build();
+        using var world = World.Create(new WorldOptions(registration));
+        _ = world.Step();
+        WorldPersistenceWorldRecordSources sources;
+
+        using (var originalLease = world.AcquirePersistenceCaptureLease())
+        {
+            sources = new WorldPersistenceWorldRecordSources(
+                originalLease,
+                assetIds: [],
+                clockRecord: [],
+                configurationRecord: [],
+                controlRecordCount: 0,
+                controlsArrayPayload: [],
+                cursorsRecord: [],
+                ecsRecord: [],
+                frame2Record: [],
+                frame3Record: [],
+                randomArrayPayload: [],
+                randomStreamCount: 0,
+                registrationRecord: [],
+                scenesRecord: [],
+                strictLayoutRecord: []);
+        }
+
+        using var currentLease = world.AcquirePersistenceCaptureLease();
+        var workspace = new WorldPersistenceWorldRecordWorkspaceRequirements(
+            assetIdCount: 0,
+            controlRecordCount: 0,
+            hasFrame2: false,
+            hasStrictLayout: false,
+            randomStreamCount: 0,
+            rootPayloadStorageBytes: 1,
+            recordBytes: 1);
+        Assert.That(currentLease.TryReserveAdmissionBytes(workspace.WorkspaceBytes, out var reservation), Is.True);
+        using var reservationScope = reservation
+            ?? throw new AssertionException("The World-root workspace reservation was not created.");
+
+        var rejected = false;
+
+        try
+        {
+            _ = currentLease.WriteWorldRecord(
+                reservationScope,
+                sources,
+                workspace,
+                new byte[workspace.RootPayloadStorageBytes],
+                new byte[workspace.RecordBytes],
+                new byte[workspace.RecordBytes],
+                out _,
+                out _);
+        }
+        catch (ArgumentException)
+        {
+            rejected = true;
+        }
+
+        Assert.That(rejected, Is.True);
     }
 
     internal struct EcsRecordCopyAction : IAction<EbinRecordReadView>

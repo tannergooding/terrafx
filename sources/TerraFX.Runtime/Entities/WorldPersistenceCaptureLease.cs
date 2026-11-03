@@ -719,4 +719,28 @@ internal ref struct WorldPersistenceCaptureLease
         ValidateCurrent();
         return _world.WriteSystemStateRecord(this, systemIndex, destination, cancellationToken);
     }
+
+    internal readonly EbinWriteStatus WriteWorldRecord(
+        WorldPersistenceAdmissionReservation reservation,
+        WorldPersistenceWorldRecordSources sources,
+        WorldPersistenceWorldRecordWorkspaceRequirements workspace,
+        scoped Span<byte> rootPayloadStorage,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ValidateCurrent();
+        ArgumentNullException.ThrowIfNull(reservation);
+        return reservation.WriteWorldRecord(
+            _world,
+            this,
+            sources,
+            workspace,
+            rootPayloadStorage,
+            candidateStorage,
+            destination,
+            out bytesWritten,
+            out diagnostic);
+    }
 }
