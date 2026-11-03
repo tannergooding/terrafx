@@ -64,7 +64,9 @@ public sealed partial class World : IDisposable
     private readonly int _maximumIdentityBranches;
     private readonly int _maximumLiveEntities;
     private readonly long _maximumOwnedStateBytes;
+    private readonly long _maximumPersistenceAdmissionBytes;
     private readonly int _maximumRecordedControls;
+    private readonly long _maximumSnapshotBytes;
     private readonly long _maximumWorkPlanBytes;
     private ulong _nextAttachmentInstallationId;
     private long _nextChunkOrdinal;
@@ -177,9 +179,11 @@ public sealed partial class World : IDisposable
         _maximumDeferredCommands = options.MaximumDeferredCommands;
         _maximumLiveEntities = options.MaximumLiveEntities;
         _maximumOwnedStateBytes = options.SchedulingLimits.MaximumOwnedStateBytes;
+        _maximumPersistenceAdmissionBytes = options.MaximumPersistenceAdmissionBytes;
         _maximumWorkPlanBytes = options.SchedulingLimits.MaximumWorkPlanBytes;
         _componentTagWorkPlanByteReservation = 0;
         _maximumRecordedControls = options.MaximumRecordedControls;
+        _maximumSnapshotBytes = options.MaximumSnapshotBytes;
         _ownsAdmissionDomain = constructionPlan.OwnsAdmissionDomain;
         _registry = constructionPlan.Registry;
         _replayLineageId = constructionPlan.ReplayLineageId;
@@ -335,6 +339,10 @@ public sealed partial class World : IDisposable
     internal int MaximumDeferredCommands => _maximumDeferredCommands;
 
     internal long MaximumOwnedStateBytes => _maximumOwnedStateBytes;
+
+    internal long MaximumPersistenceAdmissionBytes => _maximumPersistenceAdmissionBytes;
+
+    internal long MaximumSnapshotBytes => _maximumSnapshotBytes;
 
     internal uint OwnerId => _ownerId;
 

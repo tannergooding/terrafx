@@ -8,6 +8,9 @@ namespace TerraFX.Entities;
 /// <summary>Defines validated construction inputs and bounded capacities for a standalone World.</summary>
 public sealed class WorldOptions
 {
+    private const long MaximumPersistenceAdmissionBytesLimit = 8_589_934_592L;
+    private const long MaximumSnapshotBytesLimit = 2_147_483_584L;
+
     /// <summary>Initializes World options for one immutable registration.</summary>
     /// <param name="registration">The frozen component, tag, and provider registration.</param>
     /// <exception cref="ArgumentNullException"><paramref name="registration"/> is null.</exception>
@@ -68,11 +71,17 @@ public sealed class WorldOptions
     /// <summary>Gets the maximum pending owner-request count.</summary>
     public int MaximumPendingOwnerRequests { get; init; } = 128;
 
+    /// <summary>Gets the maximum bytes admitted for concurrent persistence operations, in [4096, 8589934592].</summary>
+    public long MaximumPersistenceAdmissionBytes { get; init; } = MaximumPersistenceAdmissionBytesLimit;
+
     /// <summary>Gets the maximum recorded-control count.</summary>
     public int MaximumRecordedControls { get; init; } = 65_536;
 
     /// <summary>Gets the maximum scene-occurrence count.</summary>
     public int MaximumSceneOccurrences { get; init; } = 1_048_576;
+
+    /// <summary>Gets the maximum size of one persisted snapshot, in [64, 2147483584].</summary>
+    public long MaximumSnapshotBytes { get; init; } = MaximumSnapshotBytesLimit;
 
     /// <summary>Gets the selected simulation admission profile.</summary>
     public SimulationProfile Profile { get; init; } = SimulationProfile.Standard;
@@ -181,6 +190,12 @@ public sealed class WorldOptions
         ValidateLimit(MaximumDeferredCommands, 65_536, nameof(MaximumDeferredCommands));
         ValidateLimit(MaximumComponentTypes, 256, nameof(MaximumComponentTypes));
         ValidateLimit(MaximumPendingOwnerRequests, 128, nameof(MaximumPendingOwnerRequests));
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaximumSnapshotBytes, 64L);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(MaximumSnapshotBytes, MaximumSnapshotBytesLimit);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaximumPersistenceAdmissionBytes, 4096L);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(
+            MaximumPersistenceAdmissionBytes,
+            MaximumPersistenceAdmissionBytesLimit);
 
         if (MaximumComponentTypes < Registration.RegisteredTypeCount)
         {

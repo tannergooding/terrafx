@@ -1459,10 +1459,13 @@ public sealed class WorldOptions
     public int MaximumEntityReferencePositions { get; init; } = 4_194_304;
     public int MaximumActiveSceneInstances { get; init; } = 65_536;
     public int MaximumSceneOccurrences { get; init; } = 1_048_576;
-    public int MaximumRecordedControls { get; init; } = 65_536;
     public int MaximumArchetypes { get; init; } = 4096;
     public int MaximumDeferredCommands { get; init; } = 65_536;
     public int MaximumComponentTypes { get; init; } = 256;
+    public int MaximumPendingOwnerRequests { get; init; } = 128;
+    public long MaximumPersistenceAdmissionBytes { get; init; } = 8_589_934_592;
+    public int MaximumRecordedControls { get; init; } = 65_536;
+    public long MaximumSnapshotBytes { get; init; } = 2_147_483_584;
     public SimulationProfile Profile { get; init; } = SimulationProfile.Standard;
     public float InitialTimeScale { get; init; } = 1;
     public SpatialSettings SpatialSettings { get; init; } = SpatialSettings.Default;
@@ -1472,7 +1475,6 @@ public sealed class WorldOptions
         FrameExtent2 { get; init; }
     public (TerraFX.Numerics.Vector3 Minimum, TerraFX.Numerics.Vector3 Maximum)?
         FrameExtent3 { get; init; }
-    public int MaximumPendingOwnerRequests { get; init; } = 128;
     public WorldSchedulingLimits SchedulingLimits { get; init; } = WorldSchedulingLimits.Default;
 }
 
