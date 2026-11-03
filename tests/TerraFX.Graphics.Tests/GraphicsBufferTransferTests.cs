@@ -259,8 +259,9 @@ internal sealed class GraphicsBufferTransferTests
     public async Task BufferAllocationReservationRecoversAfterBackendCreationFailure()
     {
         const int failureCount = 257;
+        const long exactBudgetBytes = 512L * 1024 * 1024;
         var backendDevice = new FakeBackendDevice(
-            bufferAllocationSizeBytes: 300L * 1024 * 1024,
+            bufferAllocationSizeBytes: exactBudgetBytes,
             bufferCreationFailureCount: failureCount);
         var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
         GpuBuffer? buffer = null;
