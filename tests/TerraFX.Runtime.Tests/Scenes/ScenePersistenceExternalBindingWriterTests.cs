@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Buffers.Binary;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Scenes;
@@ -33,6 +34,63 @@ internal sealed class ScenePersistenceExternalBindingWriterTests
             Is.EqualTo(EbinWriteStatus.InvalidRecord));
         Assert.That(recordBytes, Is.Zero);
         Assert.That(diagnostic?.Category, Is.EqualTo("external-scene-binding-metadata"));
+    }
+
+    [Test]
+    public void RejectsUnsortedExternalBindingRows()
+    {
+        SceneExternalBindingCaptureRow[] rows = [
+            new SceneExternalBindingCaptureRow(Guid.Parse("20000000-0000-0000-0000-000000000002"), null),
+            new SceneExternalBindingCaptureRow(Guid.Parse("10000000-0000-0000-0000-000000000001"), null),
+        ];
+        Assert.That(
+            ScenePersistenceExternalBindingArrayWriter.Measure(
+                rows,
+                EbinReadLimits.Foundation,
+                out var recordStorageBytes,
+                out var candidateBytes,
+                out var arrayPayloadBytes,
+                out var diagnostic),
+            Is.EqualTo(EbinWriteStatus.InvalidRecord));
+        Assert.That(recordStorageBytes, Is.Zero);
+        Assert.That(candidateBytes, Is.Zero);
+        Assert.That(arrayPayloadBytes, Is.Zero);
+        Assert.That(diagnostic?.Category, Is.EqualTo("external-scene-binding-array-order"));
+    }
+
+    [Test]
+    public void WritesCanonicalEmptyExternalBindingArray()
+    {
+        Assert.That(
+            ScenePersistenceExternalBindingArrayWriter.Measure(
+                [],
+                EbinReadLimits.Foundation,
+                out var recordStorageBytes,
+                out var candidateBytes,
+                out var arrayPayloadBytes,
+                out var diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.Category);
+        Assert.That(diagnostic, Is.Null);
+        Assert.That(recordStorageBytes, Is.Zero);
+        Assert.That(candidateBytes, Is.Zero);
+        Assert.That(arrayPayloadBytes, Is.EqualTo(16));
+        var payload = new byte[arrayPayloadBytes];
+        Assert.That(
+            ScenePersistenceExternalBindingArrayWriter.Write(
+                [],
+                EbinReadLimits.Foundation,
+                [],
+                [],
+                [],
+                payload,
+                out var payloadBytes,
+                out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.Category);
+        Assert.That(diagnostic, Is.Null);
+        Assert.That(payloadBytes, Is.EqualTo(16));
+        Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(payload), Is.Zero);
     }
 
     [TestCase(false)]
@@ -80,6 +138,71 @@ internal sealed class ScenePersistenceExternalBindingWriterTests
         Assert.That(readDiagnostic, Is.Null);
         Assert.That(assertions.IsMatch, Is.True);
         Assert.That(bytesConsumed, Is.EqualTo(destination.Length));
+    }
+
+    [Test]
+    public void WritesCanonicalExternalBindingArray()
+    {
+        SceneExternalBindingCaptureRow[] rows = [
+            new SceneExternalBindingCaptureRow(
+                Guid.Parse("10000000-0000-0000-0000-000000000001"),
+                null),
+            new SceneExternalBindingCaptureRow(
+                Guid.Parse("20000000-0000-0000-0000-000000000002"),
+                Guid.Parse("30000000-0000-0000-0000-000000000003")),
+        ];
+        Assert.That(
+            ScenePersistenceExternalBindingArrayWriter.Measure(
+                rows,
+                EbinReadLimits.Foundation,
+                out var recordStorageBytes,
+                out var candidateBytes,
+                out var arrayPayloadBytes,
+                out var diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.Category);
+        Assert.That(diagnostic, Is.Null);
+        var recordSlices = new EbinPayloadSlice[rows.Length];
+        var recordStorage = new byte[recordStorageBytes];
+        var candidateStorage = new byte[candidateBytes];
+        var payload = new byte[arrayPayloadBytes];
+        Assert.That(
+            ScenePersistenceExternalBindingArrayWriter.Write(
+                rows,
+                EbinReadLimits.Foundation,
+                recordSlices,
+                recordStorage,
+                candidateStorage,
+                payload,
+                out var payloadBytes,
+                out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.Category);
+        Assert.That(diagnostic, Is.Null);
+        Assert.That(payloadBytes, Is.EqualTo(arrayPayloadBytes));
+        Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(payload), Is.EqualTo(2));
+        var previousOffset = BinaryPrimitives.ReadUInt64LittleEndian(payload.AsSpan(8));
+
+        for (var index = 0; index < rows.Length; index++)
+        {
+            var endOffset = BinaryPrimitives.ReadUInt64LittleEndian(payload.AsSpan(16 + (index * 8)));
+            var assertions = new ExternalBindingAssertions(rows[index].BindingId, rows[index].TargetEntityId);
+            Assert.That(
+                EbinStructuralReader.Read(
+                    payload.AsSpan(checked((int)previousOffset), checked((int)(endOffset - previousOffset))),
+                    EbinReadLimits.Foundation,
+                    EbinReadPolicy.Canonical,
+                    ref assertions,
+                    out var rowBytes,
+                    out var readDiagnostic),
+                Is.EqualTo(EbinReadStatus.Complete));
+            Assert.That(readDiagnostic, Is.Null);
+            Assert.That(assertions.IsMatch, Is.True);
+            Assert.That(rowBytes, Is.EqualTo(checked((int)(endOffset - previousOffset))));
+            previousOffset = endOffset;
+        }
+
+        Assert.That(previousOffset, Is.EqualTo((ulong)payload.Length));
     }
 
     private struct ExternalBindingAssertions : IAction<EbinRecordReadView>
