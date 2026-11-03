@@ -1086,6 +1086,280 @@ internal sealed partial class EngineHostOptionsTests
     }
 
     [Test]
+    [System.Runtime.Versioning.SupportedOSPlatform("windows10.0.22000.0")]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "This test retires caller owners while an admitted D3D12 transfer waits for native fence observation.")]
+    public void D3D12BufferTransferRetainsOwnersUntilFenceCompletionIsObserved()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            Assert.Ignore("The D3D12 transfer fence witness targets Windows 11.");
+            return;
+        }
+
+        using var fenceWaitEntered = new ManualResetEventSlim(initialState: false);
+        using var continueFenceWait = new ManualResetEventSlim(initialState: false);
+        var nativeWaitResult = -1;
+
+        uint WaitForFence(nint fenceEvent, uint timeout)
+        {
+            var result = WindowsTestNativeMethods.WaitForSingleObject(fenceEvent, timeout);
+            Volatile.Write(ref nativeWaitResult, unchecked((int)result));
+            fenceWaitEntered.Set();
+            return continueFenceWait.Wait(TimeSpan.FromSeconds(10), CancellationToken.None)
+                ? result
+                : 0xFFFFFFFF;
+        }
+
+        var registration = new GraphicsBackendRegistration(
+            new D3D12GraphicsBackend.D3D12BackendFactory(WaitForFence));
+        var options = new EngineHostOptions(
+            HostProfile.OffscreenNative,
+            PlatformBackend.Headless,
+            GraphicsBackend.D3D12,
+            registration,
+            CreateAssetStoreOptions());
+        var platformOwner = PlatformHostOwner.Create(options);
+        GraphicsDevice? device = null;
+        GpuBuffer? destination = null;
+        OwnedBuffer<byte>? sourceOwner = null;
+        BufferReadLease<byte>? sourceLease = null;
+
+        try
+        {
+            try
+            {
+                device = GraphicsDevice.CreateAsync(
+                    platformOwner.OwnerId,
+                    registration,
+                    GraphicsDeviceProfile.OffscreenNative,
+                    GraphicsPlatformKind.None,
+                    CancellationToken.None)
+                    .WaitAsync(TimeSpan.FromSeconds(30))
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (DllNotFoundException exception)
+            {
+                Assert.Ignore($"A required D3D12 system library is unavailable: {exception.Message}");
+                return;
+            }
+            catch (EntryPointNotFoundException exception)
+            {
+                Assert.Ignore($"A required D3D12 system entry point is unavailable: {exception.Message}");
+                return;
+            }
+            catch (NotSupportedException exception)
+            {
+                Assert.Ignore($"No available D3D12 device satisfies OffscreenNative: {exception.Message}");
+                return;
+            }
+
+            var graphicsDevice = device
+                ?? throw new InvalidOperationException("D3D12 GraphicsDevice startup returned no device.");
+            destination = graphicsDevice.CreateBufferAsync(
+                new BufferDescription(
+                    4,
+                    BufferUsage.CopySource | BufferUsage.CopyDestination,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: null,
+                    debugName: "native fence wait ownership test"))
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .GetAwaiter()
+                .GetResult();
+            var sourceStorage = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(4, alignment: 1));
+            sourceStorage.CopyFrom([0x42, 0x17, 0x9C, 0xA5], 0);
+            sourceOwner = sourceStorage.TransferToOwnedBuffer();
+            sourceLease = sourceOwner.AcquireReadLease(0, 4);
+            var uploadTask = graphicsDevice.UploadBufferAsync(
+                destination,
+                destinationOffset: 0,
+                sourceLease,
+                sourceOffset: 0,
+                byteLength: 4,
+                CancellationToken.None);
+
+            Assert.That(fenceWaitEntered.Wait(TimeSpan.FromSeconds(5)), Is.True);
+            Assert.That(Volatile.Read(ref nativeWaitResult), Is.EqualTo(0));
+            sourceLease.Dispose();
+            sourceLease = null;
+            sourceOwner.Dispose();
+            sourceOwner = null;
+            var destinationOwner = destination.ResourceOwner;
+            destination.Dispose();
+            destination = null;
+            Assert.That(destinationOwner.HasActiveUses, Is.True);
+
+            var shutdownTask = graphicsDevice.ShutdownAsync();
+            Assert.That(uploadTask.IsCompleted, Is.False);
+            Assert.That(shutdownTask.IsCompleted, Is.False);
+            continueFenceWait.Set();
+
+            var upload = uploadTask.WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+            Assert.That(upload.Status, Is.EqualTo(UploadStatus.Ready));
+            var completedFence = upload.CompletedFence
+                ?? throw new InvalidOperationException("A ready D3D12 upload has no completed fence.");
+            Assert.That(completedFence, Is.GreaterThan(0));
+            Assert.That(destinationOwner.HasActiveUses, Is.False);
+            shutdownTask.WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+            Assert.That(graphicsDevice.Status, Is.EqualTo(GraphicsDeviceStatus.Disposed));
+        }
+        finally
+        {
+            continueFenceWait.Set();
+            sourceLease?.Dispose();
+            sourceOwner?.Dispose();
+            destination?.Dispose();
+
+            try
+            {
+                device?.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+            }
+            finally
+            {
+                platformOwner.DisposeFromOwner();
+            }
+        }
+    }
+
+    [Test]
+    [System.Runtime.Versioning.SupportedOSPlatform("windows10.0.22000.0")]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "The injected D3D12 wait result forces conservative resource/backend quarantine after native submission.")]
+    public void D3D12TimeoutAfterNativeFenceSignalQuarantinesResource()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            Assert.Ignore("The D3D12 transfer fence witness targets Windows 11.");
+            return;
+        }
+
+        var nativeWaitResult = -1;
+
+        uint ReportTimeoutAfterSignal(nint fenceEvent, uint timeout)
+        {
+            var result = WindowsTestNativeMethods.WaitForSingleObject(fenceEvent, timeout);
+            Volatile.Write(ref nativeWaitResult, unchecked((int)result));
+            return result == 0 ? 0x00000102 : result;
+        }
+
+        var registration = new GraphicsBackendRegistration(
+            new D3D12GraphicsBackend.D3D12BackendFactory(ReportTimeoutAfterSignal));
+        var options = new EngineHostOptions(
+            HostProfile.OffscreenNative,
+            PlatformBackend.Headless,
+            GraphicsBackend.D3D12,
+            registration,
+            CreateAssetStoreOptions());
+        var platformOwner = PlatformHostOwner.Create(options);
+        GraphicsDevice? device = null;
+        GpuBuffer? destination = null;
+        OwnedBuffer<byte>? sourceOwner = null;
+        BufferReadLease<byte>? sourceLease = null;
+        Task? shutdownTask = null;
+        var shutdownFailureObserved = false;
+
+        try
+        {
+            try
+            {
+                device = GraphicsDevice.CreateAsync(
+                    platformOwner.OwnerId,
+                    registration,
+                    GraphicsDeviceProfile.OffscreenNative,
+                    GraphicsPlatformKind.None,
+                    CancellationToken.None)
+                    .WaitAsync(TimeSpan.FromSeconds(30))
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (DllNotFoundException exception)
+            {
+                Assert.Ignore($"A required D3D12 system library is unavailable: {exception.Message}");
+                return;
+            }
+            catch (EntryPointNotFoundException exception)
+            {
+                Assert.Ignore($"A required D3D12 system entry point is unavailable: {exception.Message}");
+                return;
+            }
+            catch (NotSupportedException exception)
+            {
+                Assert.Ignore($"No available D3D12 device satisfies OffscreenNative: {exception.Message}");
+                return;
+            }
+
+            var graphicsDevice = device
+                ?? throw new InvalidOperationException("D3D12 GraphicsDevice startup returned no device.");
+            destination = graphicsDevice.CreateBufferAsync(
+                new BufferDescription(
+                    4,
+                    BufferUsage.CopySource | BufferUsage.CopyDestination,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: null,
+                    debugName: "uncertain D3D12 transfer destination"))
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .GetAwaiter()
+                .GetResult();
+            var sourceStorage = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(4, alignment: 1));
+            sourceStorage.CopyFrom([0x42, 0x17, 0x9C, 0xA5], 0);
+            sourceOwner = sourceStorage.TransferToOwnedBuffer();
+            sourceLease = sourceOwner.AcquireReadLease(0, 4);
+            var uploadTask = graphicsDevice.UploadBufferAsync(
+                destination,
+                destinationOffset: 0,
+                sourceLease,
+                sourceOffset: 0,
+                byteLength: 4,
+                CancellationToken.None);
+            _ = Assert.ThrowsAsync<GraphicsDeviceLostException>(
+                async () => await uploadTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false))
+                ?? throw new InvalidOperationException("The simulated D3D12 fence timeout returned no device-loss exception.");
+
+            Assert.That(Volatile.Read(ref nativeWaitResult), Is.EqualTo(0));
+            sourceLease.Dispose();
+            sourceLease = null;
+            sourceOwner.Dispose();
+            sourceOwner = null;
+            destination.Dispose();
+            destination = null;
+            shutdownTask = graphicsDevice.ShutdownAsync();
+            var shutdownException = Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await shutdownTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false))
+                ?? throw new InvalidOperationException("Uncertain D3D12 transfer completion returned no shutdown failure.");
+            shutdownFailureObserved = true;
+
+            Assert.That(shutdownException.Message, Is.EqualTo("D3D12 resources cannot be retired while transfer completion is uncertain."));
+            Assert.That(graphicsDevice.Status, Is.EqualTo(GraphicsDeviceStatus.Stopping));
+        }
+        finally
+        {
+            sourceLease?.Dispose();
+            sourceOwner?.Dispose();
+            destination?.Dispose();
+
+            try
+            {
+                if ((device is not null) && !shutdownFailureObserved)
+                {
+                    (shutdownTask ?? device.ShutdownAsync())
+                        .WaitAsync(TimeSpan.FromSeconds(5))
+                        .GetAwaiter()
+                        .GetResult();
+                }
+            }
+            finally
+            {
+                platformOwner.DisposeFromOwner();
+            }
+        }
+    }
+
+    [Test]
     public void DefaultsBoundedHostPoliciesAndRetainsAssetOptions()
     {
         var assetStoreOptions = CreateAssetStoreOptions();
@@ -1744,6 +2018,10 @@ internal sealed partial class EngineHostOptionsTests
             int width,
             int height,
             uint flags);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport("kernel32.dll", EntryPoint = "WaitForSingleObject", SetLastError = true)]
+        internal static partial uint WaitForSingleObject(nint waitHandle, uint milliseconds);
 
         [StructLayout(LayoutKind.Sequential)]
         internal struct MonitorInfo

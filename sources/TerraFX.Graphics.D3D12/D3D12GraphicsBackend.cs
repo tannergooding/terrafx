@@ -33,9 +33,11 @@ public static unsafe class D3D12GraphicsBackend
         private const int DxgiErrorDriverInternalError = unchecked((int)0x887A0020);
         private const int DxgiErrorNotFound = unchecked((int)0x887A0002);
         private const uint MaximumD3D12MultisampleCount = 32;
+        private readonly Func<nint, uint, uint>? _waitForSingleObject;
 
-        internal D3D12BackendFactory()
+        internal D3D12BackendFactory(Func<nint, uint, uint>? waitForSingleObject = null)
         {
+            _waitForSingleObject = waitForSingleObject;
         }
 
         public GraphicsBackend Backend => GraphicsBackend.D3D12;
@@ -718,7 +720,11 @@ public static unsafe class D3D12GraphicsBackend
                                 continue;
                             }
 
-                            var backendDevice = new D3D12BackendDevice(device, adapter3, capabilities);
+                            var backendDevice = new D3D12BackendDevice(
+                                device,
+                                adapter3,
+                                capabilities,
+                                _waitForSingleObject);
                             device = null;
                             adapter3 = null;
                             return backendDevice;
@@ -782,8 +788,13 @@ public static unsafe class D3D12GraphicsBackend
             private D3D12BackendFactory.D3D12TransferQueue? _transferQueue;
             private byte* _uploadStagingMapped;
             private ID3D12Resource* _uploadStagingResource;
+            private readonly Func<nint, uint, uint>? _waitForSingleObject;
 
-            internal D3D12BackendDevice(ID3D12Device* device, IDXGIAdapter3* adapter, GraphicsCapabilities capabilities)
+            internal D3D12BackendDevice(
+                ID3D12Device* device,
+                IDXGIAdapter3* adapter,
+                GraphicsCapabilities capabilities,
+                Func<nint, uint, uint>? waitForSingleObject = null)
             {
                 ArgumentNullException.ThrowIfNull(capabilities);
 
@@ -795,9 +806,13 @@ public static unsafe class D3D12GraphicsBackend
                 _adapter = adapter;
                 _device = device;
                 Capabilities = capabilities;
+                _waitForSingleObject = waitForSingleObject;
             }
 
             public GraphicsCapabilities Capabilities { get; }
+
+            internal bool HasUncertainTransferSubmission
+                => _transferQueue?.HasUncertainSubmission == true;
 
             private static OwnedBuffer<byte> CopyMappedStorageToOwnedBuffer(byte* source, nint byteLength)
             {
@@ -2758,7 +2773,7 @@ public static unsafe class D3D12GraphicsBackend
 
             private D3D12BackendFactory.D3D12TransferQueue GetTransferQueue()
             {
-                _transferQueue ??= new D3D12BackendFactory.D3D12TransferQueue(_device);
+                _transferQueue ??= new D3D12BackendFactory.D3D12TransferQueue(_device, _waitForSingleObject);
 
                 return _transferQueue;
             }
@@ -3000,6 +3015,11 @@ public static unsafe class D3D12GraphicsBackend
                     if (_descriptorSetReferenceCount != 0)
                     {
                         throw new InvalidOperationException("The D3D12 resource cannot be retired while descriptor sets remain live.");
+                    }
+
+                    if (_owner.HasUncertainTransferSubmission)
+                    {
+                        throw new InvalidOperationException("D3D12 resources cannot be retired while transfer completion is uncertain.");
                     }
 
                     var resource = _resource;
@@ -3760,14 +3780,18 @@ public static unsafe class D3D12GraphicsBackend
             private bool _isRecording;
             private ulong _nextFenceValue;
             private readonly int _ownerThreadId = Environment.CurrentManagedThreadId;
+            private readonly Func<nint, uint, uint>? _waitForSingleObject;
 
-            internal D3D12TransferQueue(ID3D12Device* device)
+            internal D3D12TransferQueue(
+                ID3D12Device* device,
+                Func<nint, uint, uint>? waitForSingleObject = null)
             {
                 if (device is null)
                 {
                     throw new ArgumentNullException(nameof(device));
                 }
 
+                _waitForSingleObject = waitForSingleObject;
                 var queueDescription = new D3D12_COMMAND_QUEUE_DESC {
                     Type = D3D12_COMMAND_LIST_TYPE.D3D12_COMMAND_LIST_TYPE_DIRECT,
                     Priority = (int)D3D12_COMMAND_QUEUE_PRIORITY.D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
@@ -3986,7 +4010,9 @@ public static unsafe class D3D12GraphicsBackend
                     throw new GraphicsDeviceLostException(eventResult.Value);
                 }
 
-                var waitResult = Windows.WaitForSingleObject(_fenceEvent, TransferFenceTimeoutMilliseconds);
+                var waitResult = _waitForSingleObject is Func<nint, uint, uint> waitForSingleObject
+                    ? waitForSingleObject(_fenceEvent, TransferFenceTimeoutMilliseconds)
+                    : Windows.WaitForSingleObject(_fenceEvent, TransferFenceTimeoutMilliseconds);
 
                 if (waitResult == 0xFFFFFFFF)
                 {
