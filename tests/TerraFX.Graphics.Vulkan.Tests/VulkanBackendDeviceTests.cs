@@ -260,14 +260,17 @@ internal sealed class VulkanBackendDeviceTests
             blendMode);
 
     private static VulkanBackendDevice CreateVulkanDeviceForNativeSmokeTest(
-        Func<VkResult, VkResult>? transferWaitResultOverride = null)
+        Func<VkResult, VkResult>? transferWaitResultOverride = null,
+        Action? afterNativeStartupObjectsCreated = null,
+        CancellationToken cancellationToken = default)
     {
         try
         {
             return VulkanBackendDevice.Create(
                 GraphicsDeviceProfile.OffscreenNative,
                 transferWaitResultOverride,
-                CancellationToken.None);
+                afterNativeStartupObjectsCreated,
+                cancellationToken);
         }
         catch (DllNotFoundException exception)
         {
@@ -1651,6 +1654,21 @@ internal sealed class VulkanBackendDeviceTests
         var shader = new ShaderBytecodeInput(ShaderStage.Pixel, ShaderBinaryFormat.SpirV, lease, reflection);
 
         _ = Assert.Throws<NotSupportedException>(() => SpirvReflectionValidator.Validate(shader, lease, index: 0));
+    }
+
+    [Test]
+    [Order(int.MaxValue - 1)]
+    public void VulkanStartupCancellationAfterNativeObjectsReleasesAcquiredHandles()
+    {
+        using var cancellationSource = new CancellationTokenSource();
+        _ = Assert.Throws<OperationCanceledException>(
+            () => CreateVulkanDeviceForNativeSmokeTest(
+                afterNativeStartupObjectsCreated: cancellationSource.Cancel,
+                cancellationToken: cancellationSource.Token));
+
+        using var device = CreateVulkanDeviceForNativeSmokeTest();
+        Assert.That(device.Capabilities.Backend, Is.EqualTo(GraphicsBackend.Vulkan));
+        Assert.That(device.Capabilities.AdapterName, Is.Not.Empty);
     }
 
     [Test]

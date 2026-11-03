@@ -65,19 +65,42 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
     internal static VulkanBackendDevice Create(
         GraphicsDeviceProfile profile,
         Func<VkResult, VkResult>? transferWaitResultOverride,
+        Action? afterNativeStartupObjectsCreated,
         CancellationToken cancellationToken)
-        => Create(profile, GraphicsPlatformKind.None, transferWaitResultOverride, cancellationToken);
+        => Create(
+            profile,
+            GraphicsPlatformKind.None,
+            transferWaitResultOverride,
+            afterNativeStartupObjectsCreated,
+            cancellationToken);
+
+    internal static VulkanBackendDevice Create(
+        GraphicsDeviceProfile profile,
+        Func<VkResult, VkResult>? transferWaitResultOverride,
+        CancellationToken cancellationToken)
+        => Create(
+            profile,
+            GraphicsPlatformKind.None,
+            transferWaitResultOverride,
+            afterNativeStartupObjectsCreated: null,
+            cancellationToken);
 
     internal static VulkanBackendDevice Create(
         GraphicsDeviceProfile profile,
         GraphicsPlatformKind platformKind,
         CancellationToken cancellationToken)
-        => Create(profile, platformKind, transferWaitResultOverride: null, cancellationToken);
+        => Create(
+            profile,
+            platformKind,
+            transferWaitResultOverride: null,
+            afterNativeStartupObjectsCreated: null,
+            cancellationToken);
 
     internal static VulkanBackendDevice Create(
         GraphicsDeviceProfile profile,
         GraphicsPlatformKind platformKind,
         Func<VkResult, VkResult>? transferWaitResultOverride,
+        Action? afterNativeStartupObjectsCreated,
         CancellationToken cancellationToken)
     {
         GraphicsDevice.ValidateStartupProfile(GraphicsBackend.Vulkan, profile, platformKind);
@@ -141,6 +164,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                 hasCommandPool = true;
                 timelineSemaphore = CreateTimelineSemaphore(device);
                 hasTimelineSemaphore = true;
+                afterNativeStartupObjectsCreated?.Invoke();
                 cancellationToken.ThrowIfCancellationRequested();
 
                 var backend = new VulkanBackendDevice(
@@ -196,6 +220,18 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
             throw;
         }
     }
+
+    internal static VulkanBackendDevice Create(
+        GraphicsDeviceProfile profile,
+        GraphicsPlatformKind platformKind,
+        Func<VkResult, VkResult>? transferWaitResultOverride,
+        CancellationToken cancellationToken)
+        => Create(
+            profile,
+            platformKind,
+            transferWaitResultOverride,
+            afterNativeStartupObjectsCreated: null,
+            cancellationToken);
 
     private static long ConvertPositiveLong(ulong value, string parameterName)
     {
