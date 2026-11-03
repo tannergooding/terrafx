@@ -119,6 +119,33 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
         }
     }
 
+    internal EbinWriteStatus WriteEcsRecord(
+        World world,
+        WorldPersistenceCaptureLease lease,
+        ref WorldPersistenceEcsBuffers buffers,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        lease.ValidateCurrent();
+
+        if (!ReferenceEquals(_world, world) || !lease.IsBoundTo(world))
+        {
+            throw new ArgumentException("The capture lease and reservation must belong to this exact World.", nameof(lease));
+        }
+
+        using var activeUse = AcquireUse(world, buffers.GetWorkspaceBytes());
+
+        return WorldPersistenceEcsWriter.Write(
+            lease,
+            ref buffers,
+            WorldPersistenceEbinLimits.Create(world.Options),
+            out bytesWritten,
+            out diagnostic,
+            cancellationToken);
+    }
+
     internal EbinWriteStatus WriteEntityRecord(
         World world,
         WorldPersistenceCaptureLease lease,

@@ -302,8 +302,51 @@ internal static class WorldPersistenceEntityWriter
 
         if (status is not EbinWriteStatus.Complete)
         {
+            bytesWritten = 0;
             return status;
         }
+
+        return WriteMeasured(
+            lease,
+            in entity,
+            limits,
+            in workspace,
+            componentSlices,
+            componentStorage,
+            tagSlices,
+            tagStorage,
+            transientSchemaSlices,
+            transientSchemaStorage,
+            childCandidateStorage,
+            payloadStorage,
+            candidateStorage,
+            destination,
+            out bytesWritten,
+            out diagnostic,
+            cancellationToken);
+    }
+
+    internal static EbinWriteStatus WriteMeasured(
+        WorldPersistenceCaptureLease lease,
+        in World.EntityStateCaptureEnumerator entity,
+        EbinReadLimits limits,
+        in WorldPersistenceEntityWorkspaceRequirements workspace,
+        scoped ReadOnlySpan<EbinPayloadSlice> componentSlices,
+        scoped Span<byte> componentStorage,
+        scoped ReadOnlySpan<EbinPayloadSlice> tagSlices,
+        scoped Span<byte> tagStorage,
+        scoped ReadOnlySpan<EbinPayloadSlice> transientSchemaSlices,
+        scoped Span<byte> transientSchemaStorage,
+        scoped Span<byte> childCandidateStorage,
+        scoped Span<byte> payloadStorage,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic,
+        CancellationToken cancellationToken)
+    {
+        diagnostic = null;
+        bytesWritten = 0;
 
         if ((componentStorage.Length != workspace.ComponentStorageBytes)
             || (tagStorage.Length != workspace.TagStorageBytes)
@@ -316,11 +359,19 @@ internal static class WorldPersistenceEntityWriter
             throw new ArgumentException("The Entity record workspaces must match the exact measured lengths.");
         }
 
+        if ((workspace.ComponentCount != entity.CurrentPersistentComponentCount)
+            || (workspace.TagCount != entity.CurrentTagCount)
+            || (workspace.TransientSchemaCount != entity.CurrentTransientSchemaCount)
+            || (workspace.HasSceneInstance != entity.CurrentSceneInstanceId.HasValue))
+        {
+            throw new InvalidOperationException("The Entity capture changed after workspace measurement.");
+        }
+
         var currentEntity = entity.CurrentEntity;
         var entityId = entity.CurrentEntityId;
         var assignmentOrdinal = entity.CurrentAssignmentOrdinal;
         var sceneInstanceId = entity.CurrentSceneInstanceId;
-        status = WriteComponentRecords(
+        var status = WriteComponentRecords(
             lease,
             currentEntity,
             in entity,

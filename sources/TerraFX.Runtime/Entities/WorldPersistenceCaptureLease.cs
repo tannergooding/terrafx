@@ -166,10 +166,29 @@ internal ref struct WorldPersistenceCaptureLease
         return new World.IdentityHistoryCapture(_world, this);
     }
 
+    internal readonly int GetResourceStateCount()
+    {
+        ValidateCurrent();
+        return _world.Registration.Resources.Length;
+    }
+
     internal readonly World.ResourceStateCaptureEnumerator GetResourceStateEnumerator()
     {
         ValidateCurrent();
         return _world.CreateResourceStateEnumerator(this);
+    }
+
+    internal readonly int GetSystemStateCount()
+    {
+        ValidateCurrent();
+        var count = 0;
+
+        foreach (var registration in _world.Registration.Systems)
+        {
+            count += registration.Factory.Descriptor.StateSchema.HasValue ? 1 : 0;
+        }
+
+        return count;
     }
 
     internal readonly World.SystemStateCaptureEnumerator GetSystemStateEnumerator()
@@ -191,6 +210,22 @@ internal ref struct WorldPersistenceCaptureLease
             WorldPersistenceEbinLimits.Create(_world.Options),
             out recordBytes,
             out diagnostic);
+    }
+
+    internal readonly EbinWriteStatus MeasureEcsRecord(
+        ref WorldPersistenceEcsBuffers buffers,
+        out WorldPersistenceEcsWorkspaceRequirements workspace,
+        out EbinStructuralDiagnostic? diagnostic,
+        CancellationToken cancellationToken)
+    {
+        ValidateCurrent();
+        return WorldPersistenceEcsWriter.MeasureWorkspace(
+            this,
+            ref buffers,
+            WorldPersistenceEbinLimits.Create(_world.Options),
+            out workspace,
+            out diagnostic,
+            cancellationToken);
     }
 
     internal readonly EbinWriteStatus MeasureEntityRecord(
@@ -349,6 +384,24 @@ internal ref struct WorldPersistenceCaptureLease
             destination,
             out bytesWritten,
             out diagnostic);
+    }
+
+    internal readonly EbinWriteStatus WriteEcsRecord(
+        WorldPersistenceAdmissionReservation reservation,
+        ref WorldPersistenceEcsBuffers buffers,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic,
+        CancellationToken cancellationToken)
+    {
+        ValidateCurrent();
+        ArgumentNullException.ThrowIfNull(reservation);
+        return reservation.WriteEcsRecord(
+            _world,
+            this,
+            ref buffers,
+            out bytesWritten,
+            out diagnostic,
+            cancellationToken);
     }
 
     internal readonly EbinWriteStatus WriteEntityRecord(
