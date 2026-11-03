@@ -166,9 +166,14 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
 
                 var queue = default(VkQueue);
                 VulkanApi.vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
-                var commandBuffer = CreateCommandBuffer(device, queueFamilyIndex, out commandPool);
+                var commandBuffer = CreateCommandBuffer(
+                    device,
+                    queueFamilyIndex,
+                    afterNativeObjectAcquired,
+                    cancellationToken,
+                    out commandPool);
                 hasCommandPool = true;
-                afterNativeObjectAcquired?.Invoke(VulkanBackendStartupStage.CommandPoolCreated);
+                afterNativeObjectAcquired?.Invoke(VulkanBackendStartupStage.CommandBufferCreated);
                 cancellationToken.ThrowIfCancellationRequested();
 
                 timelineSemaphore = CreateTimelineSemaphore(device);
@@ -252,6 +257,8 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
     private static VkCommandBuffer CreateCommandBuffer(
         VkDevice device,
         uint queueFamilyIndex,
+        Action<VulkanBackendStartupStage>? afterNativeObjectAcquired,
+        CancellationToken cancellationToken,
         out VkCommandPool commandPool)
     {
         var poolCreateInfo = default(VkCommandPoolCreateInfo);
@@ -265,6 +272,9 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
 
         try
         {
+            afterNativeObjectAcquired?.Invoke(VulkanBackendStartupStage.CommandPoolCreated);
+            cancellationToken.ThrowIfCancellationRequested();
+
             var allocateInfo = default(VkCommandBufferAllocateInfo);
             allocateInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
             allocateInfo.commandPool = commandPool;

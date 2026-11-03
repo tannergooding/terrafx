@@ -1694,6 +1694,7 @@ internal sealed class VulkanBackendDeviceTests
     [TestCase(VulkanBackendStartupStage.InstanceCreated)]
     [TestCase(VulkanBackendStartupStage.LogicalDeviceCreated)]
     [TestCase(VulkanBackendStartupStage.CommandPoolCreated)]
+    [TestCase(VulkanBackendStartupStage.CommandBufferCreated)]
     [TestCase(VulkanBackendStartupStage.TimelineSemaphoreCreated)]
     [Order(int.MaxValue - 3)]
     public void VulkanStartupCancellationAfterNativeObjectAcquisitionReleasesHandles(
@@ -1718,6 +1719,7 @@ internal sealed class VulkanBackendDeviceTests
     [TestCase(VulkanBackendStartupStage.InstanceCreated)]
     [TestCase(VulkanBackendStartupStage.LogicalDeviceCreated)]
     [TestCase(VulkanBackendStartupStage.CommandPoolCreated)]
+    [TestCase(VulkanBackendStartupStage.CommandBufferCreated)]
     [TestCase(VulkanBackendStartupStage.TimelineSemaphoreCreated)]
     [Order(int.MaxValue - 2)]
     public void VulkanStartupFailureAfterNativeObjectAcquisitionReleasesHandles(

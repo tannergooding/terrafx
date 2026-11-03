@@ -8,5 +8,6 @@ internal enum VulkanBackendStartupStage
     InstanceCreated = 1,
     LogicalDeviceCreated = 2,
     CommandPoolCreated = 3,
-    TimelineSemaphoreCreated = 4,
+    CommandBufferCreated = 4,
+    TimelineSemaphoreCreated = 5,
 }
