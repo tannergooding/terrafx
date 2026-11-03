@@ -212,6 +212,35 @@ internal ref struct WorldPersistenceCaptureLease
             out diagnostic);
     }
 
+    internal readonly EbinWriteStatus MeasureIdentityHistoryRecord(
+        in World.IdentityHistoryCapture history,
+        scoped Span<EbinPayloadSlice> branchSlices,
+        scoped Span<EbinPayloadSlice> pageSlices,
+        scoped Span<Guid> pageStableIds,
+        scoped Span<uint> pageMetadata,
+        scoped Span<byte> pagePayloadStorage,
+        out WorldPersistenceIdentityHistoryWorkspaceRequirements workspace,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ValidateCurrent();
+
+        if (!history.IsBoundTo(_world))
+        {
+            throw new ArgumentException("The identity-history capture belongs to another World.", nameof(history));
+        }
+
+        return WorldPersistenceIdentityHistoryWriter.Measure(
+            in history,
+            WorldPersistenceEbinLimits.Create(_world.Options),
+            branchSlices,
+            pageSlices,
+            pageStableIds,
+            pageMetadata,
+            pagePayloadStorage,
+            out workspace,
+            out diagnostic);
+    }
+
     internal readonly EbinWriteStatus MeasureIdentityPageRecord(
         in World.IdentityHistoryCapture history,
         int pageIndex,
@@ -307,6 +336,43 @@ internal ref struct WorldPersistenceCaptureLease
         return reservation.WriteIdentityBranchRecord(
             _world,
             in branch,
+            candidateStorage,
+            destination,
+            out bytesWritten,
+            out diagnostic);
+    }
+
+    internal readonly EbinWriteStatus WriteIdentityHistoryRecord(
+        WorldPersistenceAdmissionReservation reservation,
+        in World.IdentityHistoryCapture history,
+        scoped Span<EbinPayloadSlice> branchSlices,
+        scoped Span<byte> branchStorage,
+        scoped Span<EbinPayloadSlice> pageSlices,
+        scoped Span<byte> pageStorage,
+        scoped Span<Guid> pageStableIds,
+        scoped Span<uint> pageMetadata,
+        scoped Span<byte> pagePayloadStorage,
+        scoped Span<byte> childCandidateStorage,
+        scoped Span<byte> rootPayloadStorage,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ValidateCurrent();
+        ArgumentNullException.ThrowIfNull(reservation);
+        return reservation.WriteIdentityHistoryRecord(
+            _world,
+            in history,
+            branchSlices,
+            branchStorage,
+            pageSlices,
+            pageStorage,
+            pageStableIds,
+            pageMetadata,
+            pagePayloadStorage,
+            childCandidateStorage,
+            rootPayloadStorage,
             candidateStorage,
             destination,
             out bytesWritten,

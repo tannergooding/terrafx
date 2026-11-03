@@ -111,6 +111,71 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
         }
     }
 
+    internal EbinWriteStatus WriteIdentityHistoryRecord(
+        World world,
+        in World.IdentityHistoryCapture history,
+        scoped Span<EbinPayloadSlice> branchSlices,
+        scoped Span<byte> branchStorage,
+        scoped Span<EbinPayloadSlice> pageSlices,
+        scoped Span<byte> pageStorage,
+        scoped Span<Guid> pageStableIds,
+        scoped Span<uint> pageMetadata,
+        scoped Span<byte> pagePayloadStorage,
+        scoped Span<byte> childCandidateStorage,
+        scoped Span<byte> rootPayloadStorage,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+
+        lock (_disposeGate)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            if (!ReferenceEquals(_world, world) || !history.IsBoundTo(world))
+            {
+                throw new ArgumentException("The identity-history capture and reservation must belong to this exact World.", nameof(world));
+            }
+
+            var workspaceBytes = checked(
+                (long)MemoryMarshal.AsBytes(branchSlices).Length
+                + branchStorage.Length
+                + MemoryMarshal.AsBytes(pageSlices).Length
+                + pageStorage.Length
+                + MemoryMarshal.AsBytes(pageStableIds).Length
+                + MemoryMarshal.AsBytes(pageMetadata).Length
+                + pagePayloadStorage.Length
+                + childCandidateStorage.Length
+                + rootPayloadStorage.Length
+                + candidateStorage.Length
+                + destination.Length);
+
+            if (workspaceBytes > _bytes)
+            {
+                throw new ArgumentException("The persistence reservation does not cover every identity-history workspace.", nameof(branchSlices));
+            }
+
+            return WorldPersistenceIdentityHistoryWriter.Write(
+                in history,
+                WorldPersistenceEbinLimits.Create(world.Options),
+                branchSlices,
+                branchStorage,
+                pageSlices,
+                pageStorage,
+                pageStableIds,
+                pageMetadata,
+                pagePayloadStorage,
+                childCandidateStorage,
+                rootPayloadStorage,
+                candidateStorage,
+                destination,
+                out bytesWritten,
+                out diagnostic);
+        }
+    }
+
     internal EbinWriteStatus WriteIdentityPageRecord(
         World world,
         in World.IdentityHistoryCapture history,
