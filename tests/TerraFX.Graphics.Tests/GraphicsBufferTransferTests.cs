@@ -896,6 +896,30 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task GraphicsDeviceStartupQuarantinesBackendWhenAdmissionCleanupFails()
+    {
+        var backendDevice = new FakeBackendDevice(
+            capabilities: CreateCapabilities(includeShaderModel6: false),
+            throwOnDispose: true);
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var startup = GraphicsDevice.CreateAsync(
+            ownerId: 31,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None);
+
+        var exception = Assert.ThrowsAsync<AggregateException>(
+            async () => await startup.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false))
+            ?? throw new InvalidOperationException("Startup cleanup failure returned no aggregate exception.");
+
+        Assert.That(exception.InnerExceptions, Has.Count.EqualTo(2));
+        Assert.That(exception.InnerExceptions[0], Is.TypeOf<NotSupportedException>());
+        Assert.That(exception.InnerExceptions[1].Message, Is.EqualTo("The fake backend disposal failed."));
+        Assert.That(backendDevice.DeviceDisposalCount, Is.EqualTo(1));
+    }
+
+    [Test]
     [SuppressMessage(
         "Usage",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
@@ -1540,6 +1564,7 @@ internal sealed class GraphicsBufferTransferTests
         private readonly long _textureBudgetBytes;
         private int _textureCreationCount;
         private int _textureDisposalCount;
+        private readonly bool _throwOnDispose;
 
         internal FakeBackendDevice(
             long textureBudgetBytes = 3L * 1024 * 1024 * 1024,
@@ -1547,7 +1572,8 @@ internal sealed class GraphicsBufferTransferTests
             int textureCreationFailureCount = 0,
             long? bufferAllocationSizeBytes = null,
             int bufferCreationFailureCount = 0,
-            GraphicsCapabilities? capabilities = null)
+            GraphicsCapabilities? capabilities = null,
+            bool throwOnDispose = false)
         {
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(textureBudgetBytes);
             ArgumentOutOfRangeException.ThrowIfNegative(textureCreationFailureCount);
@@ -1569,6 +1595,7 @@ internal sealed class GraphicsBufferTransferTests
             _bufferAllocationSizeBytes = bufferAllocationSizeBytes;
             _remainingBufferCreationFailures = bufferCreationFailureCount;
             _capabilities = capabilities ?? CreateCapabilities();
+            _throwOnDispose = throwOnDispose;
         }
 
         internal FakeBackendDevice(ManualResetEventSlim uploadEntered, ManualResetEventSlim continueUpload)
@@ -1658,6 +1685,11 @@ internal sealed class GraphicsBufferTransferTests
         public void Dispose()
         {
             _ = Interlocked.Increment(ref _deviceDisposalCount);
+
+            if (_throwOnDispose)
+            {
+                throw new InvalidOperationException("The fake backend disposal failed.");
+            }
         }
 
         public GraphicsResourceAllocationInfo GetBufferAllocationInfo(BufferDescription description)
