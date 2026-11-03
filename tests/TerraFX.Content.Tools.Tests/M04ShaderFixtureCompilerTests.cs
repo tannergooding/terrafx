@@ -685,6 +685,37 @@ internal sealed class M04ShaderFixtureCompilerTests
                 spirvBytecode,
                 compilerIdentity),
             Throws.TypeOf<InvalidDataException>());
+
+        const int firstArrayLengthConstantWordIndex = 41;
+        const int secondArrayLengthConstantWordIndex = 45;
+        var overflowingSpirvWords = (uint[])spirvWords.Clone();
+        overflowingSpirvWords[firstArrayLengthConstantWordIndex] = 46_341;
+        overflowingSpirvWords[secondArrayLengthConstantWordIndex] = 46_341;
+        var overflowingSpirvBytecode = MemoryMarshal.AsBytes(overflowingSpirvWords.AsSpan()).ToArray();
+
+        Assert.That(
+            () => M04ShaderReflectionReader.Read(
+                dxilReflection,
+                spirvReflection,
+                overflowingSpirvBytecode,
+                compilerIdentity),
+            Throws.TypeOf<InvalidDataException>());
+
+        var overflowingSpirvCross = JsonNode.Parse(spirvReflection) as JsonObject
+            ?? throw new InvalidDataException("The sampled SPIRV-Cross reflection root must be an object.");
+        var overflowingSampledImages = overflowingSpirvCross["separate_images"] as JsonArray
+            ?? throw new InvalidDataException("The sampled SPIRV-Cross image collection must be an array.");
+        var overflowingSampledImage = overflowingSampledImages[0] as JsonObject
+            ?? throw new InvalidDataException("The sampled SPIRV-Cross image fixture must be an object.");
+        overflowingSampledImage["array"] = new JsonArray(JsonValue.Create(46_341), JsonValue.Create(46_341));
+
+        Assert.That(
+            () => M04ShaderReflectionReader.Read(
+                dxilReflection,
+                overflowingSpirvCross.ToJsonString(),
+                spirvBytecode,
+                compilerIdentity),
+            Throws.TypeOf<InvalidDataException>());
     }
 
     [Test]

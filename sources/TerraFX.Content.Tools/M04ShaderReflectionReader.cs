@@ -263,6 +263,11 @@ internal static class M04ShaderReflectionReader
                 throw new NotSupportedException("Shader arrays must have positive fixed dimensions.");
             }
 
+            if (dimensionCount > (int.MaxValue / count))
+            {
+                throw new InvalidDataException("SPIRV-Cross array counts exceed the supported 32-bit range.");
+            }
+
             count = checked(count * dimensionCount);
         }
 
@@ -1615,6 +1620,11 @@ internal static class M04ShaderReflectionReader
                         || (descriptorCount > int.MaxValue))
                     {
                         throw new InvalidDataException("SPIR-V descriptor-array lengths must be positive 32-bit constants.");
+                    }
+
+                    if (descriptorCount > (uint)(int.MaxValue / descriptorArrayCount))
+                    {
+                        throw new InvalidDataException("SPIR-V descriptor-array counts exceed the supported 32-bit range.");
                     }
 
                     descriptorArrayCount = checked(descriptorArrayCount * (int)descriptorCount);
