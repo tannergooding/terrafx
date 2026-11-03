@@ -2325,6 +2325,17 @@ internal sealed partial class SceneAssetStoreTests
                 using (var captureLease = world.AcquirePersistenceCaptureLease())
                 {
                     Assert.That(instance.OccurrenceCount, Is.EqualTo(2));
+                    var capturedChildAddress = new SceneEntityAddress([placementId], childEntityId);
+                    Assert.That(instance.TryGetEntity(rootEntityId, out var capturedRootEntity), Is.True);
+                    Assert.That(instance.TryGetEntity(capturedChildAddress, out var capturedChildEntity), Is.True);
+                    Guid[] expectedLiveEntityIds = [
+                        world.GetEntityId(capturedRootEntity),
+                        world.GetEntityId(capturedChildEntity),
+                    ];
+                    var capturedEntityIds = new Guid[instance.EntityCount];
+                    instance.CopyPersistenceEntityIds(captureLease, capturedEntityIds);
+                    Assert.That(capturedEntityIds, Is.EquivalentTo(expectedLiveEntityIds));
+                    Assert.That(capturedEntityIds[0], Is.Not.EqualTo(capturedEntityIds[1]));
 
                     for (var occurrenceIndex = 0; occurrenceIndex < instance.OccurrenceCount; occurrenceIndex++)
                     {

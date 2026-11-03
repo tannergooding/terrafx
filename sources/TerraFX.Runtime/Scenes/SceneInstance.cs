@@ -80,6 +80,27 @@ public sealed class SceneInstance
         return captureRows;
     }
 
+    private static void SortPersistenceEntityIds(Span<Guid> entityIds)
+    {
+        for (var gap = entityIds.Length / 2; gap > 0; gap /= 2)
+        {
+            for (var index = gap; index < entityIds.Length; index++)
+            {
+                var entityId = entityIds[index];
+                var insertionIndex = index;
+
+                while ((insertionIndex >= gap)
+                    && (FoundationCatalogue.CompareRfc(entityId, entityIds[insertionIndex - gap]) < 0))
+                {
+                    entityIds[insertionIndex] = entityIds[insertionIndex - gap];
+                    insertionIndex -= gap;
+                }
+
+                entityIds[insertionIndex] = entityId;
+            }
+        }
+    }
+
     /// <summary>Begins a typed hierarchy transaction scoped to this exact Scene instance.</summary>
     /// <returns>The unsubmitted transaction.</returns>
     /// <exception cref="InvalidOperationException">This Scene instance is not active in its World.</exception>
@@ -272,6 +293,43 @@ public sealed class SceneInstance
         for (var index = 0; index < occurrences.Length; index++)
         {
             destination[index] = checked((uint)occurrences[index].AssetId.Value);
+        }
+    }
+
+    internal void CopyPersistenceEntityIds(WorldPersistenceCaptureLease lease, scoped Span<Guid> destination)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(_world))
+        {
+            throw new ArgumentException("The capture lease belongs to another World.", nameof(lease));
+        }
+
+        var plan = GetActivePlan();
+
+        if (destination.Length != plan.Entities.Length)
+        {
+            throw new ArgumentException("The Scene EntityId destination must match the exact expanded Entity count.", nameof(destination));
+        }
+
+        for (var expandedEntityIndex = 0; expandedEntityIndex < destination.Length; expandedEntityIndex++)
+        {
+            if (!TryGetLiveEntity(plan, expandedEntityIndex, out var entity))
+            {
+                throw new InvalidOperationException("The captured Scene Entity is no longer live in its World.");
+            }
+
+            destination[expandedEntityIndex] = _world.GetEntityId(entity);
+        }
+
+        SortPersistenceEntityIds(destination);
+
+        for (var index = 1; index < destination.Length; index++)
+        {
+            if (destination[index - 1] == destination[index])
+            {
+                throw new InvalidOperationException("Two expanded Scene Entities share one stable World EntityId.");
+            }
         }
     }
 
