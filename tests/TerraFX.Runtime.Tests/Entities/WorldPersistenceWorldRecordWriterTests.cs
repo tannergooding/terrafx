@@ -442,6 +442,30 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             Is.EqualTo(EbinReadStatus.Complete),
             readDiagnostic?.ToString());
         Assert.That(bytesConsumed, Is.EqualTo(worldBytesWritten));
+
+        var inconsistentSources = new WorldPersistenceWorldRecordSources(
+                sources.AssetIds,
+                sources.ClockRecord,
+                sources.ConfigurationRecord,
+                controlRecordCount: 0,
+                emptyArrayPayload,
+                sources.CursorsRecord,
+                sources.EcsRecord,
+                sources.Frame2Record,
+                sources.Frame3Record,
+                sources.RandomArrayPayload,
+                randomStreamCount: 0,
+                sources.RegistrationRecord,
+                sources.ScenesRecord,
+                sources.StrictLayoutRecord);
+        Assert.That(
+                WorldPersistenceWorldRecordWriter.MeasureRootPayloadStorage(
+                    inconsistentSources,
+                    limits,
+                    out _,
+                    out var cursorDiagnostic),
+                Is.EqualTo(EbinWriteStatus.InvalidRecord));
+        Assert.That(cursorDiagnostic?.Category, Is.EqualTo("next-control-sequence-mismatch"));
     }
 
     private struct EcsRecordCopyAction : IAction<EbinRecordReadView>
