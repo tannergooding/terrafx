@@ -50,7 +50,7 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
     }
 
     [Test]
-    public void ComposesCanonicalWorldFromCapturedEmptySubsystems()
+    public void ComposesCanonicalWorldFromCapturedSubsystems()
     {
         DataSchema[] schemaRows = [
             .. CoreContentSchemaCatalogue.PrimitiveSchemas,
@@ -100,6 +100,7 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             InitialReplayLineageId = Guid.NewGuid(),
             WorldGuid = Guid.NewGuid(),
         });
+        world.SetTimeScale(2.0f);
         _ = world.Step();
         using var lease = world.AcquirePersistenceCaptureLease();
         var limits = WorldPersistenceEbinLimits.Create(world.Options);
@@ -429,7 +430,7 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             diagnostic?.ToString());
         Assert.That(worldBytesWritten, Is.EqualTo(worldWorkspace.RecordBytes));
 
-        var assertions = new WorldRecordAssertions(hasFrame2: frame2Record.Length > 0);
+        var assertions = new WorldRecordAssertions(frame2Record.Length > 0, lease.ControlRecordCount);
         Assert.That(
             EbinStructuralReader.Read(
                 worldDestination,
@@ -453,10 +454,12 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
 
     private readonly struct WorldRecordAssertions : IAction<EbinRecordReadView>
     {
+        private readonly int _controlRecordCount;
         private readonly bool _hasFrame2;
 
-        internal WorldRecordAssertions(bool hasFrame2)
+        internal WorldRecordAssertions(bool hasFrame2, int controlRecordCount)
         {
+            _controlRecordCount = controlRecordCount;
             _hasFrame2 = hasFrame2;
         }
 
@@ -482,12 +485,11 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             Assert.That(BinaryPrimitives.ReadUInt16LittleEndian(record.GetField(6).Payload[16..]), Is.EqualTo((ushort)3));
             Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(record.GetField(6).Payload[20..]), Is.EqualTo(4));
             Assert.That(record.GetField(7).Kind, Is.EqualTo((ushort)24));
-            Assert.That(record.GetField(7).Count, Is.Zero);
-            Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(record.GetField(7).Payload), Is.Zero);
-            Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(record.GetField(7).Payload[8..]), Is.EqualTo(16));
+            Assert.That(record.GetField(7).Count, Is.EqualTo(checked((ulong)_controlRecordCount)));
+            Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(record.GetField(7).Payload), Is.EqualTo(checked((ulong)_controlRecordCount)));
             var cursors = record.GetRecord(9);
             Assert.That(cursors.Header.SchemaId, Is.EqualTo(new ContentSchemaIdentityAssignment("state/cursors").SchemaId));
-            Assert.That(BinaryPrimitives.ReadInt64LittleEndian(cursors.GetField(0).Payload), Is.EqualTo(1));
+            Assert.That(BinaryPrimitives.ReadInt64LittleEndian(cursors.GetField(0).Payload), Is.EqualTo(checked((long)_controlRecordCount + 1)));
             Assert.That(record.GetField(9).Kind, Is.EqualTo((ushort)24));
             Assert.That(record.GetField(9).Count, Is.Zero);
             Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(record.GetField(9).Payload), Is.Zero);
