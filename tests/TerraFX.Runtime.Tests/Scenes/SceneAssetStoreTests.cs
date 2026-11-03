@@ -16,6 +16,7 @@ using TerraFX.Animation;
 using TerraFX.Assets;
 using TerraFX.Entities;
 using TerraFX.Graphics;
+using TerraFX.Rendering;
 using TerraFX.Scenes;
 using TerraFX.Runtime.Tests.Entities;
 
@@ -2274,28 +2275,42 @@ internal sealed partial class SceneAssetStoreTests
     {
         const int sceneAssetIdValue = 3;
         const int prefabAssetIdValue = 1;
-        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        const int atlasAssetIdValue = 2;
+        const int textureAssetIdValue = 5;
+        var schemas = CreateRendererRegistry();
         var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
         var childEntityId = new Guid("10000000-0000-4000-8000-000000000002");
         var placementId = new Guid("40000000-0000-4000-8000-000000000002");
         var externalSlotId = new Guid("30000000-0000-4000-8000-000000000092");
+        var frameId = new Guid("30000000-0000-4000-8000-000000000093");
+        var spriteRecord = CreateRenderSpriteRecord(atlasAssetIdValue, frameId, materialAssetId: null);
+        var textureRecord = CreateRenderAtlasPageTextureRecord(17);
+        var atlasRecord = CreateRenderAtlasRecord(
+            textureAssetIdValue,
+            CreateRenderAtlasFrameRecord(frameId, page: 0, x: 4, y: 4, width: 4, height: 4));
         var scene = SceneAssetReaderTests.Fixtures.CreateSceneWithChildPlacement(
             new AssetId(sceneAssetIdValue),
             rootEntityId,
             placementId,
             SceneAssetReaderTests.Fixtures.CreateRootPose(childEntityId, includeRootPosition: false),
-            [CreateExternalSlot(externalSlotId, required: false, allowNull: true, [])]);
+            externalSlots: [CreateExternalSlot(externalSlotId, required: false, allowNull: true, [])],
+            additionalEntityComponents: [spriteRecord]);
         var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
             new AssetId(prefabAssetIdValue),
             entityId: childEntityId);
         var package = Package.CreatePackage(
             new Package.Entry(prefabAssetIdValue, Package.CreateEnvelope(prefabAssetIdValue, prefab)),
-            new Package.Entry(sceneAssetIdValue, Package.CreateEnvelope(sceneAssetIdValue, scene)));
+            new Package.Entry(atlasAssetIdValue, Package.CreateEnvelope(atlasAssetIdValue, atlasRecord)),
+            new Package.Entry(sceneAssetIdValue, Package.CreateEnvelope(sceneAssetIdValue, scene)),
+            new Package.Entry(textureAssetIdValue, Package.CreateEnvelope(textureAssetIdValue, textureRecord)));
         var packagePath = Package.WritePackage(package);
 
         try
         {
-            var storeRegistration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+            var storeRegistrationBuilder = new AssetStoreRegistrationBuilder(schemas);
+            _ = SceneSupport.RegisterAssetCodecs(storeRegistrationBuilder);
+            _ = Renderer.RegisterAssetCodecs(storeRegistrationBuilder);
+            var storeRegistration = storeRegistrationBuilder.Build();
             var assets = await AssetStore.CreateAsync(
                 new AssetStoreOptions(packagePath, SHA256.HashData(package), storeRegistration)).ConfigureAwait(false);
 
@@ -2304,6 +2319,7 @@ internal sealed partial class SceneAssetStoreTests
                 var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
                 var sceneSupport = SceneSupport.CreateRegistration();
                 _ = worldRegistrationBuilder.RegisterSceneSupport(sceneSupport);
+                _ = worldRegistrationBuilder.RegisterCpuExtractionSupport(Renderer.CreateCpuExtractionSupportRegistration());
                 using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
                 var loader = new SceneLoader(world, assets);
                 var options = new SceneLoadOptions {
@@ -2342,6 +2358,10 @@ internal sealed partial class SceneAssetStoreTests
                     var capturedChildAddress = new SceneEntityAddress([placementId], childEntityId);
                     Assert.That(instance.TryGetEntity(rootEntityId, out var capturedRootEntity), Is.True);
                     Assert.That(instance.TryGetEntity(capturedChildAddress, out var capturedChildEntity), Is.True);
+                    Assert.That(
+                        world.TryGet<RenderComponentDefinitions.SpriteComponent>(capturedRootEntity, out var capturedSprite),
+                        Is.True);
+                    Assert.That(capturedSprite.AtlasAssetId, Is.EqualTo(atlasAssetIdValue));
                     Assert.That(world.TryGetLiveEntityIdentityOrdinal(capturedRootEntity, out var rootAssignmentOrdinal), Is.True);
                     Assert.That(world.TryGetLiveEntityIdentityOrdinal(capturedChildEntity, out var childAssignmentOrdinal), Is.True);
                     Guid[] expectedLiveEntityIds = (rootAssignmentOrdinal < childAssignmentOrdinal)
@@ -2679,7 +2699,6 @@ internal sealed partial class SceneAssetStoreTests
                                 .. schemas.Schemas,
                                 .. StandaloneContinuationSchemaCatalogue.Schemas,
                                 .. AnimationSchemaCatalogue.Schemas,
-                                .. RenderingSchemaCatalogue.Schemas,
                                 WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
                                     "application/world-root-test/tag/v1",
                                     ContentSchemaRole.EntityTag,
@@ -2711,7 +2730,11 @@ internal sealed partial class SceneAssetStoreTests
                                 scenesRecord,
                                 persistenceLimits,
                                 assetIds);
-                            uint[] expectedAssetIds = [checked((uint)prefabAssetIdValue), checked((uint)sceneAssetIdValue)];
+                            uint[] expectedAssetIds = [
+                                checked((uint)prefabAssetIdValue),
+                                checked((uint)atlasAssetIdValue),
+                                checked((uint)sceneAssetIdValue),
+                            ];
                             Array.Sort(expectedAssetIds);
                             var uniqueAssetIds = assetIds.AsSpan(0, uniqueAssetCount).ToArray();
                             Assert.That(uniqueAssetIds, Is.EqualTo(expectedAssetIds));

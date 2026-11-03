@@ -832,9 +832,10 @@ internal sealed class SceneAssetReaderTests
             Guid rootEntityId,
             Guid placementId,
             byte[] rootPose,
-            byte[][]? externalSlots = null)
+            byte[][]? externalSlots = null,
+            byte[][]? additionalEntityComponents = null)
         {
-            var entity = CreateRootEntity(rootEntityId);
+            var entity = CreateRootEntity(rootEntityId, additionalEntityComponents);
             var placement = CreatePrefabPlacement(
                 placementId,
                 [rootPose],
