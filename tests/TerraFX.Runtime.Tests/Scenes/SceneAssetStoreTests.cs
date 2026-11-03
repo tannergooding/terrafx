@@ -2586,6 +2586,52 @@ internal sealed partial class SceneAssetStoreTests
                         Assert.That(instanceReadDiagnostic, Is.Null);
                         Assert.That(instanceAssertions.IsMatch, Is.True);
                         Assert.That(instanceBytesConsumed, Is.EqualTo(instanceRecord.Length));
+
+                        var sceneInstanceRecordSlices = new EbinPayloadSlice[activeSceneInstances.Length];
+                        sceneInstanceRecordSlices[0] = new EbinPayloadSlice(0, instanceRecord.Length);
+                        var sceneInstanceOrderScratch = new int[activeSceneInstances.Length];
+                        var orderedSceneInstanceRecords = new EbinPayloadSlice[activeSceneInstances.Length];
+                        Assert.That(
+                            ScenePersistenceSceneInstanceArrayWriter.Measure(
+                                activeSceneInstances,
+                                sceneInstanceRecordSlices,
+                                instanceRecord,
+                                EbinReadLimits.Foundation,
+                                sceneInstanceOrderScratch,
+                                orderedSceneInstanceRecords,
+                                out var sceneInstanceArrayWorkspace,
+                                out instanceDiagnostic),
+                            Is.EqualTo(EbinWriteStatus.Complete),
+                            instanceDiagnostic?.Category);
+                        Assert.That(instanceDiagnostic, Is.Null);
+                        Assert.That(
+                            captureLease.TryReserveAdmissionBytes(
+                                checked(sceneInstanceArrayWorkspace.WorkspaceBytes - instanceRecord.Length),
+                                out var sceneInstanceArrayReservation),
+                            Is.True);
+                        Assert.That(sceneInstanceArrayReservation, Is.Not.Null);
+
+                        using (sceneInstanceArrayReservation)
+                        {
+                            var sceneInstancesArrayPayload = new byte[sceneInstanceArrayWorkspace.ArrayPayloadBytes];
+                            Assert.That(
+                                ScenePersistenceSceneInstanceArrayWriter.Write(
+                                    activeSceneInstances,
+                                    sceneInstanceRecordSlices,
+                                    instanceRecord,
+                                    EbinReadLimits.Foundation,
+                                    sceneInstanceArrayWorkspace,
+                                    sceneInstanceOrderScratch,
+                                    orderedSceneInstanceRecords,
+                                    sceneInstancesArrayPayload,
+                                    out var sceneInstancesArrayBytesWritten,
+                                    out instanceDiagnostic),
+                                Is.EqualTo(EbinWriteStatus.Complete),
+                                instanceDiagnostic?.Category);
+                            Assert.That(instanceDiagnostic, Is.Null);
+                            Assert.That(sceneInstancesArrayBytesWritten, Is.EqualTo(sceneInstancesArrayPayload.Length));
+                            Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(sceneInstancesArrayPayload), Is.EqualTo(1));
+                        }
                     }
                 }
 

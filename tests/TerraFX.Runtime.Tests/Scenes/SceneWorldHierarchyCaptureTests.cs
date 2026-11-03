@@ -229,7 +229,7 @@ internal sealed class SceneWorldHierarchyCaptureTests
                         scenesDiagnostic?.Category);
                     Assert.That(scenesDiagnostic, Is.Null);
                     Assert.That(scenesBytesWritten, Is.EqualTo(scenesRecord.Length));
-                    var scenesAssertions = new ScenePersistenceScenesRecordAssertions(hierarchyRecord);
+                    var scenesAssertions = new ScenePersistenceScenesRecordAssertions(emptyInstancesPayload, [], hierarchyRecord);
                     Assert.That(
                         EbinStructuralReader.Read(
                             scenesRecord,

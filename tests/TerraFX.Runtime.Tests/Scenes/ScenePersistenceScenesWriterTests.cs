@@ -15,9 +15,37 @@ internal sealed class ScenePersistenceScenesWriterTests
     public void WritesCanonicalEmptyScenesRootWithItsHierarchyRecord()
     {
         var limits = EbinReadLimits.Foundation;
-        var emptyArrayPayload = new byte[16];
+        SceneInstance[] emptyInstances = [];
+        EbinPayloadSlice[] noInstanceRecords = [];
+        byte[] emptyInstanceRecordStorage = [];
+        int[] emptyOrderScratch = [];
+        EbinPayloadSlice[] emptyOrderedRecords = [];
         Assert.That(
-            EbinPayloadWriter.WriteRecordArray([], [], limits, emptyArrayPayload, out var arrayBytesWritten, out var diagnostic),
+            ScenePersistenceSceneInstanceArrayWriter.Measure(
+                emptyInstances,
+                noInstanceRecords,
+                emptyInstanceRecordStorage,
+                limits,
+                emptyOrderScratch,
+                emptyOrderedRecords,
+                out var instanceArrayWorkspace,
+                out var diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.Category);
+        Assert.That(diagnostic, Is.Null);
+        var emptyArrayPayload = new byte[instanceArrayWorkspace.ArrayPayloadBytes];
+        Assert.That(
+            ScenePersistenceSceneInstanceArrayWriter.Write(
+                emptyInstances,
+                noInstanceRecords,
+                emptyInstanceRecordStorage,
+                limits,
+                instanceArrayWorkspace,
+                emptyOrderScratch,
+                emptyOrderedRecords,
+                emptyArrayPayload,
+                out var arrayBytesWritten,
+                out diagnostic),
             Is.EqualTo(EbinWriteStatus.Complete),
             diagnostic?.Category);
         Assert.That(diagnostic, Is.Null);
@@ -87,7 +115,7 @@ internal sealed class ScenePersistenceScenesWriterTests
             diagnostic?.Category);
         Assert.That(diagnostic, Is.Null);
         Assert.That(scenesBytesWritten, Is.EqualTo(scenesRecord.Length));
-        var assertions = new ScenePersistenceScenesRecordAssertions(hierarchyRecord);
+        var assertions = new ScenePersistenceScenesRecordAssertions(emptyArrayPayload, [], hierarchyRecord);
         Assert.That(
             EbinStructuralReader.Read(
                 scenesRecord,
