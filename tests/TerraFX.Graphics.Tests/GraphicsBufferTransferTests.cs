@@ -880,6 +880,37 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task GraphicsDeviceStartupCancellationDisposesCreatedBackend()
+    {
+        using var createEntered = new ManualResetEventSlim(initialState: false);
+        using var continueCreate = new ManualResetEventSlim(initialState: false);
+        using var cancellationSource = new CancellationTokenSource();
+        var backendDevice = new FakeBackendDevice();
+        var registration = new GraphicsBackendRegistration(
+            new FakeBackendFactory(backendDevice, createEntered, continueCreate));
+        var startup = GraphicsDevice.CreateAsync(
+            ownerId: 31,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            cancellationSource.Token);
+
+        try
+        {
+            Assert.That(createEntered.Wait(TimeSpan.FromSeconds(5)), Is.True);
+        }
+        finally
+        {
+            await cancellationSource.CancelAsync().ConfigureAwait(false);
+            continueCreate.Set();
+        }
+
+        _ = Assert.ThrowsAsync<TaskCanceledException>(
+            async () => await startup.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+        Assert.That(backendDevice.DeviceDisposalCount, Is.EqualTo(1));
+    }
+
+    [Test]
     public async Task GraphicsDeviceStartupDisposesBackendWhenCapabilityAdmissionFails()
     {
         var backendDevice = new FakeBackendDevice(capabilities: CreateCapabilities(includeShaderModel6: false));
@@ -1919,10 +1950,17 @@ internal sealed class GraphicsBufferTransferTests
 
     private sealed class FakeBackendFactory : IGraphicsBackendFactory
     {
+        private readonly ManualResetEventSlim? _continueCreate;
+        private readonly ManualResetEventSlim? _createEntered;
         private readonly FakeBackendDevice _device;
 
-        internal FakeBackendFactory(FakeBackendDevice device)
+        internal FakeBackendFactory(
+            FakeBackendDevice device,
+            ManualResetEventSlim? createEntered = null,
+            ManualResetEventSlim? continueCreate = null)
         {
+            _continueCreate = continueCreate;
+            _createEntered = createEntered;
             _device = device;
         }
 
@@ -1940,6 +1978,14 @@ internal sealed class GraphicsBufferTransferTests
             if ((profile != GraphicsDeviceProfile.OffscreenNative) || (platformKind != GraphicsPlatformKind.None))
             {
                 throw new ArgumentException("The test backend supports only OffscreenNative without a platform.");
+            }
+
+            _createEntered?.Set();
+
+            if ((_continueCreate is ManualResetEventSlim continueCreate)
+                && !continueCreate.Wait(TimeSpan.FromSeconds(10), CancellationToken.None))
+            {
+                throw new TimeoutException("The GraphicsDevice startup test did not release its factory gate.");
             }
 
             return _device;
