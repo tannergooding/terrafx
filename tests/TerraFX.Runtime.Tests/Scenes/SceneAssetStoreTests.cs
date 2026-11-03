@@ -2713,7 +2713,31 @@ internal sealed partial class SceneAssetStoreTests
                                 assetIds);
                             uint[] expectedAssetIds = [checked((uint)prefabAssetIdValue), checked((uint)sceneAssetIdValue)];
                             Array.Sort(expectedAssetIds);
-                            Assert.That(assetIds.AsSpan(0, uniqueAssetCount).ToArray(), Is.EqualTo(expectedAssetIds));
+                            var uniqueAssetIds = assetIds.AsSpan(0, uniqueAssetCount).ToArray();
+                            Assert.That(uniqueAssetIds, Is.EqualTo(expectedAssetIds));
+
+                            var worldRecord = WorldPersistenceWorldRecordWriterTests.ComposeWorldRecord(
+                                world,
+                                in captureLease,
+                                persistenceLimits,
+                                ecsRecord,
+                                scenesRecord,
+                                uniqueAssetIds);
+                            var worldAssertions = new WorldPersistenceWorldRecordWriterTests.WorldRecordAssertions(
+                                captureLease.Frame2.HasValue,
+                                controlRecordCount: captureLease.ControlRecordCount,
+                                assetIds: uniqueAssetIds);
+                            Assert.That(
+                                EbinStructuralReader.Read(
+                                    worldRecord,
+                                    persistenceLimits,
+                                    EbinReadPolicy.Canonical,
+                                    ref worldAssertions,
+                                    out var worldBytesConsumed,
+                                    out var worldReadDiagnostic),
+                                Is.EqualTo(EbinReadStatus.Complete),
+                                worldReadDiagnostic?.ToString());
+                            Assert.That(worldBytesConsumed, Is.EqualTo(worldRecord.Length));
                         }
                     }
                 }

@@ -18,6 +18,231 @@ namespace TerraFX.Runtime.Tests.Entities;
 [TestFixture]
 internal sealed class WorldPersistenceWorldRecordWriterTests
 {
+    internal static byte[] ComposeWorldRecord(
+        World world,
+        in WorldPersistenceCaptureLease lease,
+        EbinReadLimits limits,
+        ReadOnlySpan<byte> ecsRecord,
+        ReadOnlySpan<byte> scenesRecord,
+        ReadOnlySpan<uint> assetIds)
+    {
+        Assert.That(
+            WorldPersistenceConfigurationWriter.Measure(
+                world.Options,
+                limits,
+                out var configurationBytes,
+                out var diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+        var configurationRecord = new byte[configurationBytes];
+        Assert.That(
+            WorldPersistenceConfigurationWriter.Write(
+                world.Options,
+                limits,
+                new byte[configurationBytes],
+                configurationRecord,
+                out _,
+                out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+
+        Assert.That(
+            lease.MeasureClockRecord(out var clockWorkspace, out diagnostic, CancellationToken.None),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+        var clockBuffers = new WorldPersistenceClockBuffers {
+            ClockCandidateStorage = new byte[clockWorkspace.RecordBytes],
+            ClockPayloadStorage = new byte[clockWorkspace.ClockPayloadStorageBytes],
+            Destination = new byte[clockWorkspace.RecordBytes],
+            FrameCandidateStorage = new byte[clockWorkspace.FrameCandidateStorageBytes],
+            FramePayloadStorage = new byte[clockWorkspace.FramePayloadStorageBytes],
+            FrameProfileCandidateStorage = new byte[clockWorkspace.InitialFrame3.ProfileRecordBytes],
+            FrameProfileStorage = new byte[clockWorkspace.InitialFrame3.ProfileRecordBytes],
+            InitialFrame2Storage = new byte[clockWorkspace.InitialFrame2.RecordBytes],
+            InitialFrame3Storage = new byte[clockWorkspace.InitialFrame3.RecordBytes],
+            SegmentArrayPayloadStorage = new byte[clockWorkspace.SegmentArrayPayloadBytes],
+            SegmentCandidateStorage = new byte[clockWorkspace.SegmentRecordBytes],
+            SegmentSlices = new EbinPayloadSlice[clockWorkspace.SegmentCount],
+            SegmentStorage = new byte[clockWorkspace.SegmentStorageBytes],
+        };
+        Assert.That(
+            WorldPersistenceClockWriter.Write(
+                lease,
+                clockWorkspace,
+                limits,
+                ref clockBuffers,
+                out var clockBytesWritten,
+                out diagnostic,
+                CancellationToken.None),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+        var clockRecord = clockBuffers.Destination[..clockBytesWritten].ToArray();
+
+        var frame2Record = Array.Empty<byte>();
+
+        if (lease.Frame2 is SpatialFrame2 frame2)
+        {
+            Assert.That(
+                WorldPersistenceSpatialFrameWriter.MeasureFrame2(
+                    lease.WorldGuid,
+                    lease.OwnerId,
+                    frame2,
+                    limits,
+                    out var frame2Workspace,
+                    out diagnostic),
+                Is.EqualTo(EbinWriteStatus.Complete),
+                diagnostic?.ToString());
+            var frame2Destination = new byte[frame2Workspace.RecordBytes];
+            var frame2Buffers = new WorldPersistenceSpatialFrameBuffers {
+                Destination = frame2Destination,
+                FrameCandidateStorage = new byte[frame2Workspace.RecordBytes],
+                FramePayloadStorage = new byte[frame2Workspace.FramePayloadStorageBytes],
+                ProfileCandidateStorage = new byte[frame2Workspace.ProfileRecordBytes],
+                ProfileStorage = new byte[frame2Workspace.ProfileRecordBytes],
+            };
+            Assert.That(
+                WorldPersistenceSpatialFrameWriter.WriteFrame2(
+                    lease.WorldGuid,
+                    lease.OwnerId,
+                    frame2,
+                    frame2Workspace,
+                    limits,
+                    ref frame2Buffers,
+                    out var frame2BytesWritten,
+                    out diagnostic),
+                Is.EqualTo(EbinWriteStatus.Complete),
+                diagnostic?.ToString());
+            frame2Record = frame2Destination[..frame2BytesWritten];
+        }
+
+        var frame3 = lease.Frame3;
+        Assert.That(
+            WorldPersistenceSpatialFrameWriter.MeasureFrame3(
+                lease.WorldGuid,
+                lease.OwnerId,
+                frame3,
+                limits,
+                out var frame3Workspace,
+                out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+        var frame3Destination = new byte[frame3Workspace.RecordBytes];
+        var frame3Buffers = new WorldPersistenceSpatialFrameBuffers {
+            Destination = frame3Destination,
+            FrameCandidateStorage = new byte[frame3Workspace.RecordBytes],
+            FramePayloadStorage = new byte[frame3Workspace.FramePayloadStorageBytes],
+            ProfileCandidateStorage = new byte[frame3Workspace.ProfileRecordBytes],
+            ProfileStorage = new byte[frame3Workspace.ProfileRecordBytes],
+        };
+        Assert.That(
+            WorldPersistenceSpatialFrameWriter.WriteFrame3(
+                lease.WorldGuid,
+                lease.OwnerId,
+                frame3,
+                frame3Workspace,
+                limits,
+                ref frame3Buffers,
+                out var frame3BytesWritten,
+                out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+        var frame3Record = frame3Destination[..frame3BytesWritten];
+
+        var controlSlices = new EbinPayloadSlice[lease.ControlRecordCount];
+        Assert.That(
+            WorldPersistenceControlRecordArrayWriter.Measure(
+                lease,
+                limits,
+                controlSlices,
+                out var controlWorkspace,
+                out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+        var controlsArrayPayload = new byte[controlWorkspace.ArrayPayloadBytes];
+        Assert.That(
+            WorldPersistenceControlRecordArrayWriter.Write(
+                lease,
+                limits,
+                controlWorkspace,
+                controlSlices,
+                new byte[controlWorkspace.RecordStorageBytes],
+                new byte[controlWorkspace.MaximumCandidateRecordBytes],
+                new byte[controlWorkspace.MaximumRootPayloadBytes],
+                controlsArrayPayload,
+                out _,
+                out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+
+        Assert.That(
+            WorldPersistenceCursorWriter.Measure(lease, limits, out var cursorsBytes, out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+        var cursorsRecord = new byte[cursorsBytes];
+        Assert.That(
+            WorldPersistenceCursorWriter.Write(
+                lease,
+                limits,
+                new byte[cursorsBytes],
+                cursorsRecord,
+                out _,
+                out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+
+        var registration = CreateRegistrationRecord(world.Registration, limits);
+        var emptyArrayPayload = new byte[16];
+        Assert.That(
+            EbinPayloadWriter.WriteRecordArray([], [], limits, emptyArrayPayload, out var emptyArrayBytes, out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+        Assert.That(emptyArrayBytes, Is.EqualTo(emptyArrayPayload.Length));
+        var sources = new WorldPersistenceWorldRecordSources(
+            assetIds,
+            clockRecord,
+            configurationRecord,
+            lease.ControlRecordCount,
+            controlsArrayPayload,
+            cursorsRecord,
+            ecsRecord,
+            frame2Record,
+            frame3Record,
+            emptyArrayPayload,
+            randomStreamCount: 0,
+            registration,
+            scenesRecord,
+            strictLayoutRecord: []);
+        Assert.That(
+            WorldPersistenceWorldRecordWriter.MeasureRootPayloadStorage(sources, limits, out var rootPayloadBytes, out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+        var rootPayloadStorage = new byte[rootPayloadBytes];
+        Assert.That(
+            WorldPersistenceWorldRecordWriter.Measure(
+                sources,
+                limits,
+                rootPayloadStorage,
+                out var workspace,
+                out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+        var destination = new byte[workspace.RecordBytes];
+        Assert.That(
+            WorldPersistenceWorldRecordWriter.Write(
+                sources,
+                workspace,
+                limits,
+                rootPayloadStorage,
+                new byte[workspace.RecordBytes],
+                destination,
+                out var bytesWritten,
+                out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+        Assert.That(bytesWritten, Is.EqualTo(destination.Length));
+        return destination;
+    }
+
     internal static DataSchema CreateApplicationSchema(string name, ContentSchemaRole role, ushort wireKind, ushort elementKind = 0)
     {
         var assignment = new ContentSchemaIdentityAssignment(name);
@@ -47,6 +272,82 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             ContentSchemaStorage.NotComponent,
             ContentTransientRestore.NotApplicable,
             fields);
+    }
+
+    internal static byte[] CreateRegistrationRecord(WorldRegistration registration, EbinReadLimits limits)
+    {
+        if ((registration.Tags.Length != 0)
+            || (registration.Systems.Length != 0)
+            || (registration.Resources.Length != 0))
+        {
+            throw new InvalidOperationException("The root-test registration helper requires empty tags, systems, and resources.");
+        }
+
+        Assert.That(
+            WorldPersistenceComponentRegistrationArrayWriter.Measure(
+                registration,
+                limits,
+                out var componentsWorkspace,
+                out var diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+        var componentSlices = new EbinPayloadSlice[componentsWorkspace.RecordCount];
+        var componentRecordStorage = new byte[componentsWorkspace.RecordStorageBytes];
+        var componentCandidateStorage = new byte[componentsWorkspace.MaximumCandidateBytes];
+        var componentsArrayPayload = new byte[componentsWorkspace.ArrayPayloadBytes];
+        Assert.That(
+            WorldPersistenceComponentRegistrationArrayWriter.Write(
+                registration,
+                limits,
+                componentsWorkspace,
+                componentSlices,
+                componentRecordStorage,
+                componentCandidateStorage,
+                componentsArrayPayload,
+                out _,
+                out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+
+        var emptyArrayPayload = new byte[16];
+        Assert.That(
+            EbinPayloadWriter.WriteRecordArray([], [], limits, emptyArrayPayload, out var emptyArrayBytes, out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+        Assert.That(emptyArrayBytes, Is.EqualTo(emptyArrayPayload.Length));
+        var registrationRootPayload = new byte[checked(componentsArrayPayload.Length + (3 * emptyArrayPayload.Length))];
+        Assert.That(
+            WorldPersistenceRegistrationWriter.Measure(
+                registration,
+                componentsArrayPayload,
+                emptyArrayPayload,
+                emptyArrayPayload,
+                emptyArrayPayload,
+                limits,
+                registrationRootPayload,
+                out _,
+                out var registrationBytes,
+                out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+        var destination = new byte[registrationBytes];
+        Assert.That(
+            WorldPersistenceRegistrationWriter.Write(
+                registration,
+                componentsArrayPayload,
+                emptyArrayPayload,
+                emptyArrayPayload,
+                emptyArrayPayload,
+                limits,
+                registrationRootPayload,
+                new byte[registrationBytes],
+                destination,
+                out var bytesWritten,
+                out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.ToString());
+        Assert.That(bytesWritten, Is.EqualTo(destination.Length));
+        return destination;
     }
 
     [Test]
@@ -430,7 +731,10 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             diagnostic?.ToString());
         Assert.That(worldBytesWritten, Is.EqualTo(worldWorkspace.RecordBytes));
 
-        var assertions = new WorldRecordAssertions(frame2Record.Length > 0, lease.ControlRecordCount);
+        var assertions = new WorldRecordAssertions(
+            frame2Record.Length > 0,
+            lease.ControlRecordCount,
+            assetIds.AsSpan(0, assetIdCount).ToArray());
         Assert.That(
             EbinStructuralReader.Read(
                 worldDestination,
@@ -468,7 +772,7 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
         Assert.That(cursorDiagnostic?.Category, Is.EqualTo("next-control-sequence-mismatch"));
     }
 
-    private struct EcsRecordCopyAction : IAction<EbinRecordReadView>
+    internal struct EcsRecordCopyAction : IAction<EbinRecordReadView>
     {
         internal byte[]? Record { get; private set; }
 
@@ -476,13 +780,15 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             => Record = record.EncodedBytes.ToArray();
     }
 
-    private readonly struct WorldRecordAssertions : IAction<EbinRecordReadView>
+    internal readonly struct WorldRecordAssertions : IAction<EbinRecordReadView>
     {
+        private readonly uint[] _assetIds;
         private readonly int _controlRecordCount;
         private readonly bool _hasFrame2;
 
-        internal WorldRecordAssertions(bool hasFrame2, int controlRecordCount)
+        internal WorldRecordAssertions(bool hasFrame2, int controlRecordCount, uint[] assetIds)
         {
+            _assetIds = assetIds;
             _controlRecordCount = controlRecordCount;
             _hasFrame2 = hasFrame2;
         }
@@ -504,20 +810,33 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             Assert.That(record.GetRecord(4).Header.SchemaId, Is.EqualTo(new ContentSchemaIdentityAssignment("foundation/frame3").SchemaId));
             Assert.That(record.GetRecord(5).Header.SchemaId, Is.EqualTo(new ContentSchemaIdentityAssignment("state/ecs").SchemaId));
             Assert.That(record.GetRecord(6).Header.SchemaId, Is.EqualTo(new ContentSchemaIdentityAssignment("state/scenes").SchemaId));
-            Assert.That(record.GetField(6).Kind, Is.EqualTo((ushort)23));
-            Assert.That(record.GetField(6).Count, Is.Zero);
-            Assert.That(BinaryPrimitives.ReadUInt16LittleEndian(record.GetField(6).Payload[16..]), Is.EqualTo((ushort)3));
-            Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(record.GetField(6).Payload[20..]), Is.EqualTo(4));
-            Assert.That(record.GetField(7).Kind, Is.EqualTo((ushort)24));
-            Assert.That(record.GetField(7).Count, Is.EqualTo(checked((ulong)_controlRecordCount)));
-            Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(record.GetField(7).Payload), Is.EqualTo(checked((ulong)_controlRecordCount)));
+            var assetIdFieldIndex = _hasFrame2 ? 6 : 5;
+            var assetIdsField = record.GetField(assetIdFieldIndex);
+            Assert.That(assetIdsField.Kind, Is.EqualTo((ushort)23));
+            Assert.That(assetIdsField.Count, Is.EqualTo(checked((ulong)_assetIds.Length)));
+            Assert.That(assetIdsField.Payload.Length, Is.EqualTo(checked(32 + (4 * _assetIds.Length))));
+            Assert.That(BinaryPrimitives.ReadUInt16LittleEndian(assetIdsField.Payload[16..]), Is.EqualTo((ushort)3));
+            Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(assetIdsField.Payload[20..]), Is.EqualTo(4));
+
+            for (var index = 0; index < _assetIds.Length; index++)
+            {
+                Assert.That(
+                    BinaryPrimitives.ReadUInt32LittleEndian(assetIdsField.Payload[(32 + (index * 4))..]),
+                    Is.EqualTo(_assetIds[index]));
+            }
+
+            var controlsField = record.GetField(assetIdFieldIndex + 1);
+            Assert.That(controlsField.Kind, Is.EqualTo((ushort)24));
+            Assert.That(controlsField.Count, Is.EqualTo(checked((ulong)_controlRecordCount)));
+            Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(controlsField.Payload), Is.EqualTo(checked((ulong)_controlRecordCount)));
             var cursors = record.GetRecord(9);
             Assert.That(cursors.Header.SchemaId, Is.EqualTo(new ContentSchemaIdentityAssignment("state/cursors").SchemaId));
             Assert.That(BinaryPrimitives.ReadInt64LittleEndian(cursors.GetField(0).Payload), Is.EqualTo(checked((long)_controlRecordCount + 1)));
-            Assert.That(record.GetField(9).Kind, Is.EqualTo((ushort)24));
-            Assert.That(record.GetField(9).Count, Is.Zero);
-            Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(record.GetField(9).Payload), Is.Zero);
-            Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(record.GetField(9).Payload[8..]), Is.EqualTo(16));
+            var randomField = record.GetField(assetIdFieldIndex + 3);
+            Assert.That(randomField.Kind, Is.EqualTo((ushort)24));
+            Assert.That(randomField.Count, Is.Zero);
+            Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(randomField.Payload), Is.Zero);
+            Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(randomField.Payload[8..]), Is.EqualTo(16));
             Assert.That(record.GetRecord(12).Header.SchemaId, Is.EqualTo(new ContentSchemaIdentityAssignment("state/registration").SchemaId));
         }
     }
