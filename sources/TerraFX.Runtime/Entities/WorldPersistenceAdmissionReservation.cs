@@ -127,29 +127,21 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
     {
         ArgumentNullException.ThrowIfNull(world);
         ArgumentNullException.ThrowIfNull(options);
+        var workspaceBytes = checked((long)candidateStorage.Length + destination.Length);
+        using var activeUse = AcquireUse(world, workspaceBytes);
 
-        lock (_disposeGate)
+        if (!ReferenceEquals(world.Options, options))
         {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-
-            if (!ReferenceEquals(_world, world) || !ReferenceEquals(world.Options, options))
-            {
-                throw new ArgumentException("The persistence reservation and options must belong to this exact World.", nameof(world));
-            }
-
-            if (checked((long)candidateStorage.Length + destination.Length) > _bytes)
-            {
-                throw new ArgumentException("The persistence reservation does not cover both configuration-record workspaces.", nameof(candidateStorage));
-            }
-
-            return WorldPersistenceConfigurationWriter.Write(
-                options,
-                WorldPersistenceEbinLimits.Create(options),
-                candidateStorage,
-                destination,
-                out bytesWritten,
-                out diagnostic);
+            throw new ArgumentException("The persistence reservation and options must belong to this exact World.", nameof(world));
         }
+
+        return WorldPersistenceConfigurationWriter.Write(
+            options,
+            WorldPersistenceEbinLimits.Create(options),
+            candidateStorage,
+            destination,
+            out bytesWritten,
+            out diagnostic);
     }
 
     internal EbinWriteStatus WriteCursorsRecord(
@@ -273,29 +265,21 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
         out EbinStructuralDiagnostic? diagnostic)
     {
         ArgumentNullException.ThrowIfNull(world);
+        var workspaceBytes = checked((long)candidateStorage.Length + destination.Length);
+        using var activeUse = AcquireUse(world, workspaceBytes);
 
-        lock (_disposeGate)
+        if (!branch.IsBoundTo(world))
         {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-
-            if (!ReferenceEquals(_world, world) || !branch.IsBoundTo(world))
-            {
-                throw new ArgumentException("The identity-branch capture and reservation must belong to this exact World.", nameof(world));
-            }
-
-            if (checked((long)candidateStorage.Length + destination.Length) > _bytes)
-            {
-                throw new ArgumentException("The persistence reservation does not cover both identity-branch workspaces.", nameof(candidateStorage));
-            }
-
-            return WorldPersistenceIdentityBranchWriter.Write(
-                in branch,
-                WorldPersistenceEbinLimits.Create(world.Options),
-                candidateStorage,
-                destination,
-                out bytesWritten,
-                out diagnostic);
+            throw new ArgumentException("The identity-branch capture and reservation must belong to this exact World.", nameof(world));
         }
+
+        return WorldPersistenceIdentityBranchWriter.Write(
+            in branch,
+            WorldPersistenceEbinLimits.Create(world.Options),
+            candidateStorage,
+            destination,
+            out bytesWritten,
+            out diagnostic);
     }
 
     internal EbinWriteStatus WriteIdentityHistoryRecord(
@@ -316,51 +300,41 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
         out EbinStructuralDiagnostic? diagnostic)
     {
         ArgumentNullException.ThrowIfNull(world);
+        var workspaceBytes = checked(
+            (long)MemoryMarshal.AsBytes(branchSlices).Length
+            + branchStorage.Length
+            + MemoryMarshal.AsBytes(pageSlices).Length
+            + pageStorage.Length
+            + MemoryMarshal.AsBytes(pageStableIds).Length
+            + MemoryMarshal.AsBytes(pageMetadata).Length
+            + pagePayloadStorage.Length
+            + childCandidateStorage.Length
+            + rootPayloadStorage.Length
+            + candidateStorage.Length
+            + destination.Length);
+        using var activeUse = AcquireUse(world, workspaceBytes);
 
-        lock (_disposeGate)
+        if (!history.IsBoundTo(world))
         {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-
-            if (!ReferenceEquals(_world, world) || !history.IsBoundTo(world))
-            {
-                throw new ArgumentException("The identity-history capture and reservation must belong to this exact World.", nameof(world));
-            }
-
-            var workspaceBytes = checked(
-                (long)MemoryMarshal.AsBytes(branchSlices).Length
-                + branchStorage.Length
-                + MemoryMarshal.AsBytes(pageSlices).Length
-                + pageStorage.Length
-                + MemoryMarshal.AsBytes(pageStableIds).Length
-                + MemoryMarshal.AsBytes(pageMetadata).Length
-                + pagePayloadStorage.Length
-                + childCandidateStorage.Length
-                + rootPayloadStorage.Length
-                + candidateStorage.Length
-                + destination.Length);
-
-            if (workspaceBytes > _bytes)
-            {
-                throw new ArgumentException("The persistence reservation does not cover every identity-history workspace.", nameof(branchSlices));
-            }
-
-            return WorldPersistenceIdentityHistoryWriter.Write(
-                in history,
-                WorldPersistenceEbinLimits.Create(world.Options),
-                branchSlices,
-                branchStorage,
-                pageSlices,
-                pageStorage,
-                pageStableIds,
-                pageMetadata,
-                pagePayloadStorage,
-                childCandidateStorage,
-                rootPayloadStorage,
-                candidateStorage,
-                destination,
-                out bytesWritten,
-                out diagnostic);
+            throw new ArgumentException("The identity-history capture and reservation must belong to this exact World.", nameof(world));
         }
+
+        return WorldPersistenceIdentityHistoryWriter.Write(
+            in history,
+            WorldPersistenceEbinLimits.Create(world.Options),
+            branchSlices,
+            branchStorage,
+            pageSlices,
+            pageStorage,
+            pageStableIds,
+            pageMetadata,
+            pagePayloadStorage,
+            childCandidateStorage,
+            rootPayloadStorage,
+            candidateStorage,
+            destination,
+            out bytesWritten,
+            out diagnostic);
     }
 
     internal EbinWriteStatus WriteIdentityPageRecord(
@@ -376,40 +350,30 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
         out EbinStructuralDiagnostic? diagnostic)
     {
         ArgumentNullException.ThrowIfNull(world);
+        var workspaceBytes = checked(
+            (long)MemoryMarshal.AsBytes(stableIds).Length
+            + MemoryMarshal.AsBytes(metadata).Length
+            + payloadStorage.Length
+            + candidateStorage.Length
+            + destination.Length);
+        using var activeUse = AcquireUse(world, workspaceBytes);
 
-        lock (_disposeGate)
+        if (!history.IsBoundTo(world))
         {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-
-            if (!ReferenceEquals(_world, world) || !history.IsBoundTo(world))
-            {
-                throw new ArgumentException("The identity-history capture and reservation must belong to this exact World.", nameof(world));
-            }
-
-            var workspaceBytes = checked(
-                (long)MemoryMarshal.AsBytes(stableIds).Length
-                + MemoryMarshal.AsBytes(metadata).Length
-                + payloadStorage.Length
-                + candidateStorage.Length
-                + destination.Length);
-
-            if (workspaceBytes > _bytes)
-            {
-                throw new ArgumentException("The persistence reservation does not cover every identity-page workspace.", nameof(stableIds));
-            }
-
-            return WorldPersistenceIdentityPageWriter.Write(
-                in history,
-                WorldPersistenceEbinLimits.Create(world.Options),
-                pageIndex,
-                stableIds,
-                metadata,
-                payloadStorage,
-                candidateStorage,
-                destination,
-                out bytesWritten,
-                out diagnostic);
+            throw new ArgumentException("The identity-history capture and reservation must belong to this exact World.", nameof(world));
         }
+
+        return WorldPersistenceIdentityPageWriter.Write(
+            in history,
+            WorldPersistenceEbinLimits.Create(world.Options),
+            pageIndex,
+            stableIds,
+            metadata,
+            payloadStorage,
+            candidateStorage,
+            destination,
+            out bytesWritten,
+            out diagnostic);
     }
 
     internal EbinWriteStatus WriteRegistrationRecord(
