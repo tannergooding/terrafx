@@ -77,6 +77,20 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
     internal static VulkanBackendDevice Create(
         GraphicsDeviceProfile profile,
         Func<VkResult, VkResult>? transferWaitResultOverride,
+        Action<VulkanBackendStartupStage>? afterNativeObjectAcquired,
+        Func<VkResult, VkResult>? commandBufferAllocationResultOverride,
+        CancellationToken cancellationToken)
+        => Create(
+            profile,
+            GraphicsPlatformKind.None,
+            transferWaitResultOverride,
+            afterNativeObjectAcquired,
+            commandBufferAllocationResultOverride,
+            cancellationToken);
+
+    internal static VulkanBackendDevice Create(
+        GraphicsDeviceProfile profile,
+        Func<VkResult, VkResult>? transferWaitResultOverride,
         CancellationToken cancellationToken)
         => Create(
             profile,
@@ -94,6 +108,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
             platformKind,
             transferWaitResultOverride: null,
             afterNativeObjectAcquired: null,
+            commandBufferAllocationResultOverride: null,
             cancellationToken);
 
     internal static VulkanBackendDevice Create(
@@ -101,6 +116,21 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         GraphicsPlatformKind platformKind,
         Func<VkResult, VkResult>? transferWaitResultOverride,
         Action<VulkanBackendStartupStage>? afterNativeObjectAcquired,
+        CancellationToken cancellationToken)
+        => Create(
+            profile,
+            platformKind,
+            transferWaitResultOverride,
+            afterNativeObjectAcquired,
+            commandBufferAllocationResultOverride: null,
+            cancellationToken);
+
+    internal static VulkanBackendDevice Create(
+        GraphicsDeviceProfile profile,
+        GraphicsPlatformKind platformKind,
+        Func<VkResult, VkResult>? transferWaitResultOverride,
+        Action<VulkanBackendStartupStage>? afterNativeObjectAcquired,
+        Func<VkResult, VkResult>? commandBufferAllocationResultOverride,
         CancellationToken cancellationToken)
     {
         GraphicsDevice.ValidateStartupProfile(GraphicsBackend.Vulkan, profile, platformKind);
@@ -170,6 +200,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                     device,
                     queueFamilyIndex,
                     afterNativeObjectAcquired,
+                    commandBufferAllocationResultOverride,
                     cancellationToken,
                     out commandPool);
                 hasCommandPool = true;
@@ -258,6 +289,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         VkDevice device,
         uint queueFamilyIndex,
         Action<VulkanBackendStartupStage>? afterNativeObjectAcquired,
+        Func<VkResult, VkResult>? commandBufferAllocationResultOverride,
         CancellationToken cancellationToken,
         out VkCommandPool commandPool)
     {
@@ -281,7 +313,14 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
             allocateInfo.level = VkCommandBufferLevel.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
             allocateInfo.commandBufferCount = 1;
             VkCommandBuffer commandBuffer = default;
-            ThrowIfFailed(VulkanApi.vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer), "vkAllocateCommandBuffers");
+            var allocationResult = VulkanApi.vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer);
+
+            if (commandBufferAllocationResultOverride is not null)
+            {
+                allocationResult = commandBufferAllocationResultOverride(allocationResult);
+            }
+
+            ThrowIfFailed(allocationResult, "vkAllocateCommandBuffers");
             afterNativeObjectAcquired?.Invoke(VulkanBackendStartupStage.CommandBufferAllocated);
             cancellationToken.ThrowIfCancellationRequested();
             return commandBuffer;
