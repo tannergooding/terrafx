@@ -468,15 +468,15 @@ internal sealed partial class EngineHostOptionsTests
 
             using (var ringReadback = graphicsDevice.ReadbackBufferAsync(
                 stagingBuffer,
-                stagingRingByteLength - 1,
-                1)
+                0,
+                stagingRingByteLength)
                 .GetAwaiter()
                 .GetResult())
-            using (var ringReadLease = ringReadback.AcquireReadLease(0, 1))
+            using (var ringReadLease = ringReadback.AcquireReadLease(0, stagingRingByteLength))
             {
                 var ringActual = new byte[1];
                 var copyAction = new ReadbackCopyAction(ringActual);
-                ringReadLease.UseWindow(0, 1, ref copyAction);
+                ringReadLease.UseWindow(stagingRingByteLength - 1, 1, ref copyAction);
                 Assert.That(ringActual, Is.EqualTo(new byte[] { 0x17 }));
             }
 
@@ -493,15 +493,15 @@ internal sealed partial class EngineHostOptionsTests
 
             using (var dedicatedReadback = graphicsDevice.ReadbackBufferAsync(
                 stagingBuffer,
-                stagingRingByteLength,
-                1)
+                0,
+                dedicatedStagingByteLength)
                 .GetAwaiter()
                 .GetResult())
-            using (var dedicatedReadLease = dedicatedReadback.AcquireReadLease(0, 1))
+            using (var dedicatedReadLease = dedicatedReadback.AcquireReadLease(0, dedicatedStagingByteLength))
             {
                 var dedicatedActual = new byte[1];
                 var copyAction = new ReadbackCopyAction(dedicatedActual);
-                dedicatedReadLease.UseWindow(0, 1, ref copyAction);
+                dedicatedReadLease.UseWindow(stagingRingByteLength, 1, ref copyAction);
                 Assert.That(dedicatedActual, Is.EqualTo(new byte[] { 0x9C }));
             }
 
