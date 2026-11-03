@@ -1660,7 +1660,7 @@ internal sealed class VulkanBackendDeviceTests
     [TestCase(VulkanBackendStartupStage.LogicalDeviceCreated)]
     [TestCase(VulkanBackendStartupStage.CommandPoolCreated)]
     [TestCase(VulkanBackendStartupStage.TimelineSemaphoreCreated)]
-    [Order(int.MaxValue - 1)]
+    [Order(int.MaxValue - 2)]
     public void VulkanStartupCancellationAfterNativeObjectAcquisitionReleasesHandles(
         VulkanBackendStartupStage stage)
     {
@@ -1674,6 +1674,29 @@ internal sealed class VulkanBackendDeviceTests
                     }
                 },
                 cancellationToken: cancellationSource.Token));
+
+        using var device = CreateVulkanDeviceForNativeSmokeTest();
+        Assert.That(device.Capabilities.Backend, Is.EqualTo(GraphicsBackend.Vulkan));
+        Assert.That(device.Capabilities.AdapterName, Is.Not.Empty);
+    }
+
+    [TestCase(VulkanBackendStartupStage.InstanceCreated)]
+    [TestCase(VulkanBackendStartupStage.LogicalDeviceCreated)]
+    [TestCase(VulkanBackendStartupStage.CommandPoolCreated)]
+    [TestCase(VulkanBackendStartupStage.TimelineSemaphoreCreated)]
+    [Order(int.MaxValue - 1)]
+    public void VulkanStartupFailureAfterNativeObjectAcquisitionReleasesHandles(
+        VulkanBackendStartupStage stage)
+    {
+        Assert.That(
+            () => CreateVulkanDeviceForNativeSmokeTest(
+                afterNativeObjectAcquired: acquiredStage => {
+                    if (acquiredStage == stage)
+                    {
+                        throw new InvalidOperationException("Injected Vulkan startup failure.");
+                    }
+                }),
+            Throws.InvalidOperationException.With.Message.EqualTo("Injected Vulkan startup failure."));
 
         using var device = CreateVulkanDeviceForNativeSmokeTest();
         Assert.That(device.Capabilities.Backend, Is.EqualTo(GraphicsBackend.Vulkan));
