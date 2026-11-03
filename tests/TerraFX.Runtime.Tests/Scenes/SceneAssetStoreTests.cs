@@ -2744,6 +2744,7 @@ internal sealed partial class SceneAssetStoreTests
                                 world,
                                 in captureLease,
                                 persistenceLimits,
+                                scanSchemas,
                                 ecsRecord,
                                 scenesRecord,
                                 uniqueAssetIds);

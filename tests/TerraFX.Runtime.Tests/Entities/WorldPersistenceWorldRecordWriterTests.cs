@@ -22,6 +22,7 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
         World world,
         in WorldPersistenceCaptureLease lease,
         EbinReadLimits limits,
+        CompiledContentSchemaRegistry schemas,
         ReadOnlySpan<byte> ecsRecord,
         ReadOnlySpan<byte> scenesRecord,
         ReadOnlySpan<uint> assetIds)
@@ -197,6 +198,19 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             Is.EqualTo(EbinWriteStatus.Complete),
             diagnostic?.ToString());
         Assert.That(emptyArrayBytes, Is.EqualTo(emptyArrayPayload.Length));
+        var assetIdReferenceCount = WorldPersistenceAssetIdSetWriter.MeasureReferenceCount(
+            schemas,
+            ecsRecord,
+            scenesRecord,
+            limits);
+        var assetIdWorkspace = new uint[assetIdReferenceCount];
+        var measuredAssetIdCount = WorldPersistenceAssetIdSetWriter.CopySortedUniqueAssetIds(
+            schemas,
+            ecsRecord,
+            scenesRecord,
+            limits,
+            assetIdWorkspace);
+        Assert.That(assetIdWorkspace.AsSpan(0, measuredAssetIdCount).ToArray(), Is.EqualTo(assetIds.ToArray()));
         var sources = new WorldPersistenceWorldRecordSources(
             lease,
             assetIds,
@@ -228,21 +242,63 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             Is.EqualTo(EbinWriteStatus.Complete),
             diagnostic?.ToString());
         var destination = new byte[workspace.RecordBytes];
-        Assert.That(lease.TryReserveAdmissionBytes(workspace.WorkspaceBytes, out var reservation), Is.True);
-        using var rootReservation = reservation
-            ?? throw new AssertionException("The World-root workspace reservation was not created.");
+        var captureWorkspace = new WorldPersistenceWorldRecordCaptureWorkspaceRequirements(
+            assetIdReferenceCount,
+            assetIds.Length,
+            workspace);
+
         Assert.That(
-            lease.WriteWorldRecord(
-                rootReservation,
+            lease.TryReserveAdmissionBytes(captureWorkspace.WorkspaceBytes - 1, out var insufficientReservation),
+            Is.True);
+        using var insufficientReservationScope = insufficientReservation
+            ?? throw new AssertionException("The undersized aggregate reservation was not created.");
+        var insufficientAggregateRejected = false;
+
+        try
+        {
+            _ = WorldPersistenceWorldRecordCaptureCoordinator.Write(
+                world,
+                lease,
+                insufficientReservationScope,
+                schemas,
                 sources,
-                workspace,
+                captureWorkspace,
+                assetIdWorkspace,
                 rootPayloadStorage,
                 new byte[workspace.RecordBytes],
                 destination,
+                out _,
+                out _,
+                out _);
+        }
+        catch (ArgumentException)
+        {
+            insufficientAggregateRejected = true;
+        }
+
+        Assert.That(insufficientAggregateRejected, Is.True);
+        insufficientReservationScope.Dispose();
+        Assert.That(lease.TryReserveAdmissionBytes(captureWorkspace.WorkspaceBytes, out var reservation), Is.True);
+        using var rootReservation = reservation
+            ?? throw new AssertionException("The World-root workspace reservation was not created.");
+        Assert.That(
+            WorldPersistenceWorldRecordCaptureCoordinator.Write(
+                world,
+                lease,
+                rootReservation,
+                schemas,
+                sources,
+                captureWorkspace,
+                assetIdWorkspace,
+                rootPayloadStorage,
+                new byte[workspace.RecordBytes],
+                destination,
+                out var capturedAssetIdCount,
                 out var bytesWritten,
                 out diagnostic),
             Is.EqualTo(EbinWriteStatus.Complete),
             diagnostic?.ToString());
+        Assert.That(capturedAssetIdCount, Is.EqualTo(assetIds.Length));
         Assert.That(bytesWritten, Is.EqualTo(destination.Length));
         return destination;
     }
