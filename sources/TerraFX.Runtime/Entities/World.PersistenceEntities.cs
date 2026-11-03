@@ -296,6 +296,9 @@ public sealed partial class World
             throw new ArgumentOutOfRangeException(nameof(schemaIndex));
         }
 
+        internal readonly bool IsBoundTo(World world)
+            => ReferenceEquals(_world, world);
+
         internal bool MoveNext()
         {
             _lease.ValidateCurrent();

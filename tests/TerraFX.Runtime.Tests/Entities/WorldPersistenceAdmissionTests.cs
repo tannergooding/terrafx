@@ -36,6 +36,31 @@ internal sealed class WorldPersistenceAdmissionTests
     }
 
     [Test]
+    public void DisposingReservationDefersReleaseUntilActiveUseExits()
+    {
+        using var world = CreateWorld(4096);
+        Assert.That(world.TryReservePersistenceAdmissionBytes(4096, out var reservation), Is.True);
+        Assert.That(reservation, Is.Not.Null);
+        var activeUse = reservation!.AcquireUse(world, 4096);
+
+        try
+        {
+            reservation.Dispose();
+            Assert.That(world.TryReservePersistenceAdmissionBytes(1, out var refused), Is.False);
+            Assert.That(refused, Is.Null);
+            refused?.Dispose();
+        }
+        finally
+        {
+            activeUse.Dispose();
+        }
+
+        Assert.That(world.TryReservePersistenceAdmissionBytes(1, out var replacement), Is.True);
+        Assert.That(replacement, Is.Not.Null);
+        replacement!.Dispose();
+    }
+
+    [Test]
     public void PersistenceAdmissionRefusesWhenSharedDomainIsClosed()
     {
         using var domain = new WorldAdmissionDomain(16 * 1024 * 1024);

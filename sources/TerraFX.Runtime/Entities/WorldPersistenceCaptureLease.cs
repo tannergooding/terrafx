@@ -193,6 +193,34 @@ internal ref struct WorldPersistenceCaptureLease
             out diagnostic);
     }
 
+    internal readonly EbinWriteStatus MeasureEntityRecord(
+        in World.EntityStateCaptureEnumerator entity,
+        scoped Span<EbinPayloadSlice> componentSlices,
+        scoped Span<EbinPayloadSlice> tagSlices,
+        scoped Span<EbinPayloadSlice> transientSchemaSlices,
+        out WorldPersistenceEntityWorkspaceRequirements workspace,
+        out EbinStructuralDiagnostic? diagnostic,
+        CancellationToken cancellationToken)
+    {
+        ValidateCurrent();
+
+        if (!entity.IsBoundTo(_world))
+        {
+            throw new ArgumentException("The Entity capture belongs to another World.", nameof(entity));
+        }
+
+        return WorldPersistenceEntityWriter.Measure(
+            this,
+            in entity,
+            WorldPersistenceEbinLimits.Create(_world.Options),
+            componentSlices,
+            tagSlices,
+            transientSchemaSlices,
+            out workspace,
+            out diagnostic,
+            cancellationToken);
+    }
+
     internal readonly EbinWriteStatus MeasureIdentityBranchRecord(
         in World.IdentityBranchCaptureEnumerator branch,
         out int recordBytes,
@@ -321,6 +349,50 @@ internal ref struct WorldPersistenceCaptureLease
             destination,
             out bytesWritten,
             out diagnostic);
+    }
+
+    internal readonly EbinWriteStatus WriteEntityRecord(
+        WorldPersistenceAdmissionReservation reservation,
+        in World.EntityStateCaptureEnumerator entity,
+        scoped Span<EbinPayloadSlice> componentSlices,
+        scoped Span<byte> componentStorage,
+        scoped Span<EbinPayloadSlice> tagSlices,
+        scoped Span<byte> tagStorage,
+        scoped Span<EbinPayloadSlice> transientSchemaSlices,
+        scoped Span<byte> transientSchemaStorage,
+        scoped Span<byte> childCandidateStorage,
+        scoped Span<byte> payloadStorage,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic,
+        CancellationToken cancellationToken)
+    {
+        ValidateCurrent();
+        ArgumentNullException.ThrowIfNull(reservation);
+
+        if (!entity.IsBoundTo(_world))
+        {
+            throw new ArgumentException("The Entity capture belongs to another World.", nameof(entity));
+        }
+
+        return reservation.WriteEntityRecord(
+            _world,
+            this,
+            in entity,
+            componentSlices,
+            componentStorage,
+            tagSlices,
+            tagStorage,
+            transientSchemaSlices,
+            transientSchemaStorage,
+            childCandidateStorage,
+            payloadStorage,
+            candidateStorage,
+            destination,
+            out bytesWritten,
+            out diagnostic,
+            cancellationToken);
     }
 
     internal readonly EbinWriteStatus WriteIdentityBranchRecord(

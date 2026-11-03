@@ -202,7 +202,7 @@ internal static class WorldPersistenceIdentityHistoryWriter
             return EbinWriteStatus.InvalidRecord;
         }
 
-        var status = GetRecordArrayPayloadBytes(
+        var status = WorldPersistenceRecordArrayLayout.MeasurePayloadBytes(
             branchCount,
             branchStorageBytes,
             limits,
@@ -214,7 +214,7 @@ internal static class WorldPersistenceIdentityHistoryWriter
             return status;
         }
 
-        status = GetRecordArrayPayloadBytes(
+        status = WorldPersistenceRecordArrayLayout.MeasurePayloadBytes(
             pageCount,
             pageStorageBytes,
             limits,
@@ -477,45 +477,6 @@ internal static class WorldPersistenceIdentityHistoryWriter
             claim,
             limit,
             EbinStructuralDiagnosticSource.Construction);
-
-    private static EbinWriteStatus GetRecordArrayPayloadBytes(
-        int childCount,
-        long childStorageBytes,
-        EbinReadLimits limits,
-        out int payloadBytes,
-        out EbinStructuralDiagnostic? diagnostic)
-    {
-        payloadBytes = 0;
-        diagnostic = null;
-
-        if ((childCount > limits.MaximumArrayElements)
-            || (childCount > limits.MaximumAggregateArrayElements))
-        {
-            var limit = Math.Min((long)limits.MaximumArrayElements, limits.MaximumAggregateArrayElements);
-            diagnostic = CreateDiagnostic(
-                "array-count-budget",
-                checked((ulong)childCount),
-                checked((ulong)limit));
-            return EbinWriteStatus.InvalidRecord;
-        }
-
-        // A record array places its children after a 16-byte-aligned count and count-plus-one offset table.
-        var offsetTableBytes = checked(8L + ((checked((long)childCount) + 1L) * 8L));
-        var firstChildOffset = Align16(offsetTableBytes);
-        var totalBytes = checked(firstChildOffset + childStorageBytes);
-
-        if (totalBytes > limits.MaximumRecordBytes)
-        {
-            diagnostic = CreateDiagnostic(
-                "record-byte-budget",
-                checked((ulong)totalBytes),
-                checked((ulong)limits.MaximumRecordBytes));
-            return EbinWriteStatus.InvalidRecord;
-        }
-
-        payloadBytes = checked((int)totalBytes);
-        return EbinWriteStatus.Complete;
-    }
 
     private static int GetRootRecordBytes(int branchArrayPayloadBytes, int pageArrayPayloadBytes)
     {

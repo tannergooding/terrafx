@@ -8,9 +8,11 @@ namespace TerraFX.Entities;
 
 internal sealed class WorldPersistenceAdmissionReservation : IDisposable
 {
+    private int _activeUseCount;
     private readonly long _bytes;
     private readonly Lock _disposeGate = new();
     private readonly WorldDomainReservation _domainReservation;
+    private bool _isChargeReleased;
     private bool _isDisposed;
     private readonly World _world;
 
@@ -31,14 +33,54 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
     {
         lock (_disposeGate)
         {
-            if (_isDisposed)
+            _isDisposed = true;
+
+            if (_activeUseCount == 0)
             {
-                return;
+                ReleaseCharge();
+            }
+        }
+    }
+
+    internal UseScope AcquireUse(World world, long workspaceBytes)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        ArgumentOutOfRangeException.ThrowIfNegative(workspaceBytes);
+
+        lock (_disposeGate)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            if (!ReferenceEquals(_world, world))
+            {
+                throw new ArgumentException("The persistence reservation belongs to another World.", nameof(world));
             }
 
-            _domainReservation.Dispose();
-            _world.ReleasePersistenceAdmissionBytes(_bytes);
-            _isDisposed = true;
+            if (workspaceBytes > _bytes)
+            {
+                throw new ArgumentException("The persistence reservation does not cover the operation workspaces.", nameof(workspaceBytes));
+            }
+
+            _activeUseCount = checked(_activeUseCount + 1);
+            return new UseScope(this);
+        }
+    }
+
+    internal void ReleaseUse()
+    {
+        lock (_disposeGate)
+        {
+            if (_activeUseCount <= 0)
+            {
+                throw new InvalidOperationException("The persistence reservation has no active operation use.");
+            }
+
+            _activeUseCount--;
+
+            if (_isDisposed && (_activeUseCount == 0))
+            {
+                ReleaseCharge();
+            }
         }
     }
 
@@ -75,6 +117,64 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
                 out bytesWritten,
                 out diagnostic);
         }
+    }
+
+    internal EbinWriteStatus WriteEntityRecord(
+        World world,
+        WorldPersistenceCaptureLease lease,
+        in World.EntityStateCaptureEnumerator entity,
+        scoped Span<EbinPayloadSlice> componentSlices,
+        scoped Span<byte> componentStorage,
+        scoped Span<EbinPayloadSlice> tagSlices,
+        scoped Span<byte> tagStorage,
+        scoped Span<EbinPayloadSlice> transientSchemaSlices,
+        scoped Span<byte> transientSchemaStorage,
+        scoped Span<byte> childCandidateStorage,
+        scoped Span<byte> payloadStorage,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        lease.ValidateCurrent();
+
+        if (!ReferenceEquals(_world, world) || !entity.IsBoundTo(world) || !lease.IsBoundTo(world))
+        {
+            throw new ArgumentException("The Entity capture, lease, and reservation must belong to this exact World.", nameof(entity));
+        }
+
+        var workspaceBytes = checked(
+            (long)MemoryMarshal.AsBytes(componentSlices).Length
+            + componentStorage.Length
+            + MemoryMarshal.AsBytes(tagSlices).Length
+            + tagStorage.Length
+            + MemoryMarshal.AsBytes(transientSchemaSlices).Length
+            + transientSchemaStorage.Length
+            + childCandidateStorage.Length
+            + payloadStorage.Length
+            + candidateStorage.Length
+            + destination.Length);
+        using var activeUse = AcquireUse(world, workspaceBytes);
+
+        return WorldPersistenceEntityWriter.Write(
+            lease,
+            in entity,
+            WorldPersistenceEbinLimits.Create(world.Options),
+            componentSlices,
+            componentStorage,
+            tagSlices,
+            tagStorage,
+            transientSchemaSlices,
+            transientSchemaStorage,
+            childCandidateStorage,
+            payloadStorage,
+            candidateStorage,
+            destination,
+            out bytesWritten,
+            out diagnostic,
+            cancellationToken);
     }
 
     internal EbinWriteStatus WriteIdentityBranchRecord(
@@ -222,6 +322,35 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
                 destination,
                 out bytesWritten,
                 out diagnostic);
+        }
+    }
+
+    private void ReleaseCharge()
+    {
+        if (_isChargeReleased)
+        {
+            return;
+        }
+
+        _domainReservation.Dispose();
+        _world.ReleasePersistenceAdmissionBytes(_bytes);
+        _isChargeReleased = true;
+    }
+
+    internal ref struct UseScope
+    {
+        private WorldPersistenceAdmissionReservation? _reservation;
+
+        internal UseScope(WorldPersistenceAdmissionReservation reservation)
+        {
+            _reservation = reservation;
+        }
+
+        public void Dispose()
+        {
+            var reservation = _reservation;
+            _reservation = null;
+            reservation?.ReleaseUse();
         }
     }
 }
