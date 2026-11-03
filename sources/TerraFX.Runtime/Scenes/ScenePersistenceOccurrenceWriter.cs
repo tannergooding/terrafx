@@ -73,6 +73,14 @@ internal static class ScenePersistenceOccurrenceWriter
         return EbinStructuralWriter.Measure(in source, limits, out recordBytes, out diagnostic);
     }
 
+    internal static EbinWriteStatus MeasureSourceAssetReference(
+        SceneExpansionPlan plan,
+        int occurrenceIndex,
+        EbinReadLimits limits,
+        out int recordBytes,
+        out EbinStructuralDiagnostic? diagnostic)
+        => MeasureAssetReference(plan, occurrenceIndex, limits, out recordBytes, out diagnostic);
+
     internal static EbinWriteStatus Write(
         SceneExpansionPlan plan,
         int occurrenceIndex,
@@ -146,6 +154,15 @@ internal static class ScenePersistenceOccurrenceWriter
             out bytesWritten,
             out diagnostic);
     }
+
+    internal static EbinWriteStatus WriteSourceAssetReference(
+        SceneExpansionSource source,
+        EbinReadLimits limits,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic)
+        => WriteAssetReference(source, limits, candidateStorage, destination, out bytesWritten, out diagnostic);
 
     private static EbinWriteStatus AddGuidField(
         uint tag,

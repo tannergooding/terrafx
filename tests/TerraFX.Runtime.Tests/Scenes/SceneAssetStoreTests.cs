@@ -2381,6 +2381,48 @@ internal sealed partial class SceneAssetStoreTests
                         Assert.That(assertions.IsMatch, Is.True);
                         Assert.That(bytesConsumed, Is.EqualTo(destination.Length));
                     }
+
+                    Assert.That(instance.EntityCount, Is.EqualTo(2));
+
+                    for (var expandedEntityIndex = 0; expandedEntityIndex < instance.EntityCount; expandedEntityIndex++)
+                    {
+                        Assert.That(
+                            instance.MeasurePersistenceEntityBindingRecord(
+                                captureLease,
+                                expandedEntityIndex,
+                                out var recordBytes,
+                                out var bindingDiagnostic),
+                            Is.EqualTo(EbinWriteStatus.Complete),
+                            bindingDiagnostic?.Category);
+                        Assert.That(bindingDiagnostic, Is.Null);
+                        var candidateStorage = new byte[recordBytes];
+                        var destination = new byte[recordBytes];
+                        Assert.That(
+                            instance.WritePersistenceEntityBindingRecord(
+                                captureLease,
+                                expandedEntityIndex,
+                                candidateStorage,
+                                destination,
+                                out var bytesWritten,
+                                out bindingDiagnostic),
+                            Is.EqualTo(EbinWriteStatus.Complete),
+                            bindingDiagnostic?.Category);
+                        Assert.That(bindingDiagnostic, Is.Null);
+                        Assert.That(bytesWritten, Is.EqualTo(recordBytes));
+                        var bindingAssertions = new SceneEntityBindingRecordAssertions();
+                        Assert.That(
+                            EbinStructuralReader.Read(
+                                destination,
+                                EbinReadLimits.Foundation,
+                                EbinReadPolicy.Canonical,
+                                ref bindingAssertions,
+                                out var bindingBytesConsumed,
+                                out var bindingReadDiagnostic),
+                            Is.EqualTo(EbinReadStatus.Complete));
+                        Assert.That(bindingReadDiagnostic, Is.Null);
+                        Assert.That(bindingAssertions.IsMatch, Is.True);
+                        Assert.That(bindingBytesConsumed, Is.EqualTo(destination.Length));
+                    }
                 }
 
                 Assert.That(instance.TryGetEntity(childEntityId, out _), Is.False);
