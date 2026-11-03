@@ -13,10 +13,18 @@ internal ref struct WorldPersistenceCaptureLease
     private readonly long _cohortGeneration;
     private readonly long _committedMutationRevision;
     private readonly long _completedTick;
+    private readonly int _controlRecordCount;
+    private readonly SpatialFrame2? _initialFrame2;
+    private readonly SpatialFrame3 _initialFrame3;
+    private readonly float _initialTimeScale;
     private bool _isDisposed;
+    private readonly long _nextControlSequence;
     private readonly long _nextTickIndex;
     private readonly long _publicationSequence;
     private readonly long _sequence;
+    private readonly int _tickRate;
+    private readonly float _timeScale;
+    private readonly long _timeScaleSegmentSequence;
     private readonly World _world;
     private readonly Guid _worldGuid;
 
@@ -30,6 +38,14 @@ internal ref struct WorldPersistenceCaptureLease
         long completedTick,
         long nextTickIndex,
         Guid worldGuid,
+        int tickRate,
+        float initialTimeScale,
+        float timeScale,
+        long timeScaleSegmentSequence,
+        long nextControlSequence,
+        int controlRecordCount,
+        SpatialFrame3 initialFrame3,
+        SpatialFrame2? initialFrame2,
         SpatialFrame3 frame3,
         SpatialFrame2? frame2)
     {
@@ -42,6 +58,10 @@ internal ref struct WorldPersistenceCaptureLease
         ArgumentOutOfRangeException.ThrowIfNegative(completedTick);
         ArgumentOutOfRangeException.ThrowIfNegative(nextTickIndex);
         ArgumentOutOfRangeException.ThrowIfEqual(worldGuid, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(tickRate);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(timeScaleSegmentSequence);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(nextControlSequence);
+        ArgumentOutOfRangeException.ThrowIfNegative(controlRecordCount);
         _world = world;
         _sequence = sequence;
         _cohortGeneration = cohortGeneration;
@@ -51,6 +71,14 @@ internal ref struct WorldPersistenceCaptureLease
         _completedTick = completedTick;
         _nextTickIndex = nextTickIndex;
         _worldGuid = worldGuid;
+        _tickRate = tickRate;
+        _initialTimeScale = initialTimeScale;
+        _timeScale = timeScale;
+        _timeScaleSegmentSequence = timeScaleSegmentSequence;
+        _nextControlSequence = nextControlSequence;
+        _controlRecordCount = controlRecordCount;
+        _initialFrame3 = initialFrame3;
+        _initialFrame2 = initialFrame2;
         Frame3 = frame3;
         Frame2 = frame2;
         _isDisposed = false;
@@ -64,17 +92,33 @@ internal ref struct WorldPersistenceCaptureLease
 
     internal readonly long CompletedTick => _completedTick;
 
+    internal readonly int ControlRecordCount => _controlRecordCount;
+
     internal readonly SpatialFrame2? Frame2 { get; }
 
     internal readonly SpatialFrame3 Frame3 { get; }
 
+    internal readonly SpatialFrame2? InitialFrame2 => _initialFrame2;
+
+    internal readonly SpatialFrame3 InitialFrame3 => _initialFrame3;
+
+    internal readonly float InitialTimeScale => _initialTimeScale;
+
     internal readonly bool IsDisposed => _isDisposed;
+
+    internal readonly long NextControlSequence => _nextControlSequence;
 
     internal readonly long NextTickIndex => _nextTickIndex;
 
     internal readonly long PublicationSequence => _publicationSequence;
 
     internal readonly long Sequence => _sequence;
+
+    internal readonly int TickRate => _tickRate;
+
+    internal readonly float TimeScale => _timeScale;
+
+    internal readonly long TimeScaleSegmentSequence => _timeScaleSegmentSequence;
 
     internal readonly Guid WorldGuid => _worldGuid;
 
@@ -146,6 +190,12 @@ internal ref struct WorldPersistenceCaptureLease
     {
         ValidateCurrent();
         return _world.CreateComponentStateEnumerator(this);
+    }
+
+    internal readonly WorldPersistenceControlCaptureRow GetControlCapture(int index)
+    {
+        ValidateCurrent();
+        return _world.GetPersistenceControlCapture(this, index);
     }
 
     internal readonly int GetEntityStateCount()

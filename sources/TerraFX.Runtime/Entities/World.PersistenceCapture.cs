@@ -52,6 +52,14 @@ public sealed partial class World
                 publication.CompletedTick,
                 publication.NextTickIndex,
                 _worldGuid,
+                _tickRate,
+                _initialTimeScale,
+                _timeScale,
+                _timeScaleSegmentSequence,
+                _nextControlSequence,
+                _controlRecordCount,
+                _initialFrame3,
+                _initialFrame2,
                 frameCohort.Frame3,
                 frameCohort.Frame2);
         }
@@ -358,6 +366,42 @@ public sealed partial class World
         }
 
         return _attachments.CountTransferredEntries();
+    }
+
+    internal WorldPersistenceControlCaptureRow GetPersistenceControlCapture(
+        WorldPersistenceCaptureLease lease,
+        int index)
+    {
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(this))
+        {
+            throw new ArgumentException("The persistence capture lease belongs to another World.", nameof(lease));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, lease.ControlRecordCount, nameof(index));
+
+        var record = _controlRecords[index];
+        var kind = record.Kind switch {
+            WorldControlKind.Branch => WorldPersistenceControlKind.Branch,
+            WorldControlKind.Frame2 => WorldPersistenceControlKind.Frame2,
+            WorldControlKind.Frame3 => WorldPersistenceControlKind.Frame3,
+            WorldControlKind.TimeScale => WorldPersistenceControlKind.TimeScale,
+            _ => throw new InvalidOperationException("The World contains an unknown control record."),
+        };
+
+        return new WorldPersistenceControlCaptureRow(
+            record.Sequence,
+            record.AppliedAtNextTick,
+            kind,
+            record.TimeScaleValue,
+            record.SegmentSequence,
+            record.Frame2,
+            record.Frame3,
+            record.BranchId,
+            record.LineageId,
+            record.BranchIndex);
     }
 
     internal int GetPersistenceEntityCount(WorldPersistenceCaptureLease lease)

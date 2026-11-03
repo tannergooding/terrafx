@@ -51,6 +51,8 @@ public sealed partial class World : IDisposable
     private Guid _identityBranchId;
     private WorldIdentityBranchRecord[] _identityBranches = [];
     private readonly StableIdentityLedger _identityLedger;
+    private readonly SpatialFrame2? _initialFrame2;
+    private readonly SpatialFrame3 _initialFrame3;
     private readonly float _initialTimeScale;
     private int _isAttachmentCallbackActive;
     private int _isStructuralOperationActive;
@@ -249,6 +251,8 @@ public sealed partial class World : IDisposable
                 frameExtent2.Maximum);
         }
 
+        _initialFrame3 = currentFrame3;
+        _initialFrame2 = currentFrame2;
         _currentFrameCohort = new WorldFrameCohort(currentFrame3, currentFrame2, cohortGeneration: 1);
     }
 

@@ -116,6 +116,52 @@ internal sealed class WorldPersistenceCaptureTests
     }
 
     [Test]
+    public void CaptureLeaseSnapshotsInitialFramesClockAndOrderedControlHistory()
+    {
+        using var world = CreateWorld();
+        var initialFrame = world.CurrentFrame3;
+        var branchId = Guid.NewGuid();
+
+        world.SetTimeScale(2.0f);
+        var nextFrame = world.CreateNextFrame3(
+            initialFrame.Origin,
+            initialFrame.Minimum,
+            initialFrame.Maximum);
+        Assert.That(world.SetFrame(nextFrame).Status, Is.EqualTo(FrameChangeStatus.Applied));
+        world.BeginIdentityBranch(branchId);
+        _ = world.Step();
+
+        using var lease = world.AcquirePersistenceCaptureLease();
+        Assert.That(lease.TickRate, Is.EqualTo(world.TickRate));
+        Assert.That(lease.InitialTimeScale, Is.EqualTo(1.0f));
+        Assert.That(lease.TimeScale, Is.EqualTo(2.0f));
+        Assert.That(lease.TimeScaleSegmentSequence, Is.EqualTo(2));
+        Assert.That(lease.InitialFrame3.Revision, Is.EqualTo(1));
+        Assert.That(lease.Frame3.Revision, Is.EqualTo(2));
+        Assert.That(lease.NextControlSequence, Is.EqualTo(4));
+        Assert.That(lease.ControlRecordCount, Is.EqualTo(3));
+
+        var timeScaleControl = lease.GetControlCapture(0);
+        Assert.That(timeScaleControl.Kind, Is.EqualTo(WorldPersistenceControlKind.TimeScale));
+        Assert.That(timeScaleControl.Sequence, Is.EqualTo(1));
+        Assert.That(timeScaleControl.AppliedAtNextTick, Is.EqualTo(0));
+        Assert.That(timeScaleControl.TimeScaleValue, Is.EqualTo(2.0f));
+        Assert.That(timeScaleControl.SegmentSequence, Is.EqualTo(2));
+
+        var frameControl = lease.GetControlCapture(1);
+        Assert.That(frameControl.Kind, Is.EqualTo(WorldPersistenceControlKind.Frame3));
+        Assert.That(frameControl.Sequence, Is.EqualTo(2));
+        Assert.That(frameControl.Frame3?.Revision, Is.EqualTo(2));
+
+        var branchControl = lease.GetControlCapture(2);
+        Assert.That(branchControl.Kind, Is.EqualTo(WorldPersistenceControlKind.Branch));
+        Assert.That(branchControl.Sequence, Is.EqualTo(3));
+        Assert.That(branchControl.BranchId, Is.EqualTo(branchId));
+        Assert.That(branchControl.LineageId, Is.EqualTo(world.ReplayLineageId));
+        Assert.That(branchControl.BranchIndex, Is.EqualTo(1));
+    }
+
+    [Test]
     public void CapturePersistentComponentRecordFromCommittedWorld()
     {
         using var world = CreateSceneWorld();
