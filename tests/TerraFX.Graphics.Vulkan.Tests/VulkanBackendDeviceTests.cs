@@ -261,7 +261,7 @@ internal sealed class VulkanBackendDeviceTests
 
     private static VulkanBackendDevice CreateVulkanDeviceForNativeSmokeTest(
         Func<VkResult, VkResult>? transferWaitResultOverride = null,
-        Action? afterNativeStartupObjectsCreated = null,
+        Action<VulkanBackendStartupStage>? afterNativeObjectAcquired = null,
         CancellationToken cancellationToken = default)
     {
         try
@@ -269,7 +269,7 @@ internal sealed class VulkanBackendDeviceTests
             return VulkanBackendDevice.Create(
                 GraphicsDeviceProfile.OffscreenNative,
                 transferWaitResultOverride,
-                afterNativeStartupObjectsCreated,
+                afterNativeObjectAcquired,
                 cancellationToken);
         }
         catch (DllNotFoundException exception)
@@ -1656,14 +1656,23 @@ internal sealed class VulkanBackendDeviceTests
         _ = Assert.Throws<NotSupportedException>(() => SpirvReflectionValidator.Validate(shader, lease, index: 0));
     }
 
-    [Test]
+    [TestCase(VulkanBackendStartupStage.InstanceCreated)]
+    [TestCase(VulkanBackendStartupStage.LogicalDeviceCreated)]
+    [TestCase(VulkanBackendStartupStage.CommandPoolCreated)]
+    [TestCase(VulkanBackendStartupStage.TimelineSemaphoreCreated)]
     [Order(int.MaxValue - 1)]
-    public void VulkanStartupCancellationAfterNativeObjectsReleasesAcquiredHandles()
+    public void VulkanStartupCancellationAfterNativeObjectAcquisitionReleasesHandles(
+        VulkanBackendStartupStage stage)
     {
         using var cancellationSource = new CancellationTokenSource();
         _ = Assert.Throws<OperationCanceledException>(
             () => CreateVulkanDeviceForNativeSmokeTest(
-                afterNativeStartupObjectsCreated: cancellationSource.Cancel,
+                afterNativeObjectAcquired: acquiredStage => {
+                    if (acquiredStage == stage)
+                    {
+                        cancellationSource.Cancel();
+                    }
+                },
                 cancellationToken: cancellationSource.Token));
 
         using var device = CreateVulkanDeviceForNativeSmokeTest();
