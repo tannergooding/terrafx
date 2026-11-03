@@ -181,6 +181,17 @@ internal ref struct WorldPersistenceCaptureLease
     internal readonly bool IsBoundTo(World world)
         => ReferenceEquals(_world, world);
 
+    internal readonly EbinWriteStatus MeasureConfigurationRecord(
+        out int recordBytes,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ValidateCurrent();
+        return WorldPersistenceConfigurationWriter.Measure(
+            _world.Options,
+            out recordBytes,
+            out diagnostic);
+    }
+
     internal readonly bool TryReserveAdmissionBytes(
         long bytes,
         out WorldPersistenceAdmissionReservation? reservation)
@@ -216,6 +227,24 @@ internal ref struct WorldPersistenceCaptureLease
     {
         ValidateCurrent();
         return _world.WriteComponentStateRecord(this, entity, schema, destination, cancellationToken);
+    }
+
+    internal readonly EbinWriteStatus WriteConfigurationRecord(
+        WorldPersistenceAdmissionReservation reservation,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ValidateCurrent();
+        ArgumentNullException.ThrowIfNull(reservation);
+        return reservation.WriteConfigurationRecord(
+            _world,
+            _world.Options,
+            candidateStorage,
+            destination,
+            out bytesWritten,
+            out diagnostic);
     }
 
     internal readonly nint WriteResourceStateRecord(

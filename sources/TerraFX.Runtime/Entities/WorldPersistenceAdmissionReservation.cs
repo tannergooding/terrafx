@@ -40,4 +40,38 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
             _isDisposed = true;
         }
     }
+
+    internal EbinWriteStatus WriteConfigurationRecord(
+        World world,
+        WorldOptions options,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        ArgumentNullException.ThrowIfNull(options);
+
+        lock (_disposeGate)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            if (!ReferenceEquals(_world, world) || !ReferenceEquals(world.Options, options))
+            {
+                throw new ArgumentException("The persistence reservation and options must belong to this exact World.", nameof(world));
+            }
+
+            if (checked((long)candidateStorage.Length + destination.Length) > _bytes)
+            {
+                throw new ArgumentException("The persistence reservation does not cover both configuration-record workspaces.", nameof(candidateStorage));
+            }
+
+            return WorldPersistenceConfigurationWriter.Write(
+                options,
+                candidateStorage,
+                destination,
+                out bytesWritten,
+                out diagnostic);
+        }
+    }
 }

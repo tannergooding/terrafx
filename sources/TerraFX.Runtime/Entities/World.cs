@@ -75,6 +75,7 @@ public sealed partial class World : IDisposable
     private long _nextQueryEpoch;
     private long _nextSystemInvocationEpoch;
     private long _nextTickIndex;
+    private readonly WorldOptions _options;
     private long _ownerCommandPreparationByteReservation;
     private readonly uint _ownerId;
     private readonly int _ownerThreadId;
@@ -131,6 +132,7 @@ public sealed partial class World : IDisposable
         }
 
         _admissionDomain = constructionPlan.AdmissionDomain;
+        _options = options;
         _resourceStorage = resourceStorage.MoveToImmutable();
         _resourceStorageByteReservation = resourceStorageBytes;
         _systemInstanceClaim = new WorldSystemInstanceClaim();
@@ -345,6 +347,8 @@ public sealed partial class World : IDisposable
     internal long MaximumPersistenceAdmissionBytes => _maximumPersistenceAdmissionBytes;
 
     internal long MaximumSnapshotBytes => _maximumSnapshotBytes;
+
+    internal WorldOptions Options => _options;
 
     internal uint OwnerId => _ownerId;
 
