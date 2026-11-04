@@ -485,7 +485,8 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
         Assert.That(bytesConsumed, Is.EqualTo(worldBytesWritten));
         var decodedWorld = WorldPersistenceWorldRecordReader.Read(
             worldDestination.AsMemory(0, worldBytesWritten),
-            limits);
+            limits,
+            registration);
         Assert.That(decodedWorld.ControlRecordCount, Is.EqualTo(lease.ControlRecordCount));
         Assert.That(decodedWorld.Clock.SegmentCount, Is.EqualTo(2));
         Assert.That(decodedWorld.Cursors.NextControlSequence, Is.EqualTo(lease.NextControlSequence));

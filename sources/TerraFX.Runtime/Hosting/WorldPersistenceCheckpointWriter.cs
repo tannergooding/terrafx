@@ -4,6 +4,7 @@ using System;
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using TerraFX;
+using TerraFX.Entities;
 
 namespace TerraFX.Hosting;
 
@@ -131,7 +132,8 @@ internal static class WorldPersistenceCheckpointWriter
 
     internal static WorldPersistenceCheckpointContents ReadContents(
         scoped ReadOnlySpan<byte> fileRecord,
-        EbinReadLimits limits)
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration = null)
     {
         ArgumentNullException.ThrowIfNull(limits);
         var reader = new FileRecordReader(
@@ -153,7 +155,7 @@ internal static class WorldPersistenceCheckpointWriter
 
         var worldRecord = reader.WorldRecord
             ?? throw new InvalidOperationException("The validated State2 file did not retain its World record.");
-        var worldContents = WorldPersistenceWorldRecordReader.Read(worldRecord, limits);
+        var worldContents = WorldPersistenceWorldRecordReader.Read(worldRecord, limits, targetRegistration);
 
         if ((worldContents.Clock.NextTick != reader.NextTick)
             || (worldContents.Ecs.WorldGuid != reader.WorldGuid)

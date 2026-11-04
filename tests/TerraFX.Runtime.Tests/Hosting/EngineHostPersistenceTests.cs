@@ -86,7 +86,8 @@ internal sealed partial class EngineHostOptionsTests
             var fileRecord = await File.ReadAllBytesAsync(savePath).ConfigureAwait(false);
             var checkpoint = WorldPersistenceCheckpointWriter.ReadContents(
                 fileRecord,
-                WorldPersistenceEbinLimits.Create(world!.Options));
+                WorldPersistenceEbinLimits.Create(world!.Options),
+                world.Options.Registration);
             var worldContents = checkpoint.WorldContents;
 
             Assert.Multiple(() => {

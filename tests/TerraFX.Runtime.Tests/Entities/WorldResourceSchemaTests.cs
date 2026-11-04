@@ -375,6 +375,11 @@ internal sealed class WorldResourceSchemaTests
             registrationDiagnostic?.Category);
         Assert.That(registrationDiagnostic, Is.Null);
         Assert.That(rootBytesWritten, Is.EqualTo(registrationRootWorkspace.RecordBytes));
+        _ = WorldPersistenceRegistrationReader.Read(
+            rootDestination,
+            EbinReadLimits.Foundation,
+            maximumComponentTypes: 256,
+            targetRegistration: registration);
         var enumerator = lease.GetResourceStateEnumerator();
         Assert.That(enumerator.MoveNext(), Is.True);
         Assert.That(enumerator.CurrentIndex, Is.EqualTo(0));

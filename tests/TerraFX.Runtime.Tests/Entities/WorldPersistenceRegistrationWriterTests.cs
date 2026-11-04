@@ -23,10 +23,13 @@ internal sealed class WorldPersistenceRegistrationWriterTests
         return payload;
     }
 
-    private static WorldRegistration CreateTagRegistration()
+    private static WorldRegistration CreateTagRegistration(bool useAlternateSecondTag = false)
     {
         var firstAssignment = new ContentSchemaIdentityAssignment("application/registration-root/tag-first/v1");
-        var secondAssignment = new ContentSchemaIdentityAssignment("application/registration-root/tag-second/v1");
+        var secondAssignment = new ContentSchemaIdentityAssignment(
+            useAlternateSecondTag
+                ? "application/registration-root/tag-alternate/v1"
+                : "application/registration-root/tag-second/v1");
         var registry = new CompiledContentSchemaRegistry([
             CreateTagSchema(firstAssignment),
             CreateTagSchema(secondAssignment),
@@ -246,11 +249,18 @@ internal sealed class WorldPersistenceRegistrationWriterTests
         var decoded = WorldPersistenceRegistrationReader.Read(
             destination,
             EbinReadLimits.Foundation,
-            maximumComponentTypes: 256);
+            maximumComponentTypes: 256,
+            targetRegistration: registration);
         Assert.That(decoded.ComponentCount, Is.Zero);
         Assert.That(decoded.TagCount, Is.EqualTo(2));
         Assert.That(decoded.SystemCount, Is.Zero);
         Assert.That(decoded.ResourceCount, Is.Zero);
+        _ = Assert.Throws<ArgumentException>(
+            () => WorldPersistenceRegistrationReader.Read(
+                destination,
+                EbinReadLimits.Foundation,
+                maximumComponentTypes: 256,
+                targetRegistration: CreateTagRegistration(useAlternateSecondTag: true)));
     }
 
     private struct RegistrationRootAssertions : IAction<EbinRecordReadView>

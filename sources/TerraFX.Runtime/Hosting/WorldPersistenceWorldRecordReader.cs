@@ -30,7 +30,8 @@ internal static class WorldPersistenceWorldRecordReader
 
     internal static WorldPersistenceWorldRecordContents Read(
         ReadOnlyMemory<byte> worldRecord,
-        EbinReadLimits limits)
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration = null)
     {
         ArgumentNullException.ThrowIfNull(limits);
 
@@ -232,7 +233,8 @@ internal static class WorldPersistenceWorldRecordReader
         var parsedRegistration = WorldPersistenceRegistrationReader.Read(
             registrationRecord,
             limits,
-            parsedConfiguration.MaximumComponentTypes);
+            parsedConfiguration.MaximumComponentTypes,
+            targetRegistration);
         var maximumLiveIdentityCount = checked(
             (long)parsedConfiguration.MaximumLiveEntities
             + parsedConfiguration.MaximumActiveSceneInstances);

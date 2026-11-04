@@ -12,6 +12,30 @@ internal static class WorldPersistenceSystemRegistrationWriter
 
     private static readonly Guid s_schemaId = new ContentSchemaIdentityAssignment("state/system-registration").SchemaId;
 
+    internal static void CopySortedAccesses(
+        scoped ReadOnlySpan<SystemResourceAccess> source,
+        scoped Span<SystemResourceAccess> destination)
+    {
+        if (destination.Length != source.Length)
+        {
+            throw new ArgumentException("The sorted access workspace must match the source count.", nameof(destination));
+        }
+
+        source.CopyTo(destination);
+        SortAccesses(destination);
+    }
+
+    internal static void CopySortedGuids(scoped ReadOnlySpan<Guid> source, scoped Span<Guid> destination)
+    {
+        if (destination.Length != source.Length)
+        {
+            throw new ArgumentException("The sorted identity workspace must match the source count.", nameof(destination));
+        }
+
+        source.CopyTo(destination);
+        SortGuids(destination);
+    }
+
     internal static EbinWriteStatus Measure(
         SystemDescription description,
         WorldSystemFactoryDescriptor factory,

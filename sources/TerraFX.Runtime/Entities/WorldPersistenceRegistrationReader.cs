@@ -11,7 +11,6 @@ internal static class WorldPersistenceRegistrationReader
     private const ushort RecordKind = 22;
     private const int RegistrationFieldCount = 4;
     private const int SchemaReferenceFieldCount = 4;
-
     private static readonly Guid s_componentRegistrationSchemaId = new ContentSchemaIdentityAssignment("state/component-registration").SchemaId;
     private static readonly Guid s_registrationSchemaId = new ContentSchemaIdentityAssignment("state/registration").SchemaId;
     private static readonly Guid s_resourceRegistrationSchemaId = new ContentSchemaIdentityAssignment("state/resource-registration").SchemaId;
@@ -21,7 +20,8 @@ internal static class WorldPersistenceRegistrationReader
     internal static WorldPersistenceRegistrationContents Read(
         ReadOnlyMemory<byte> registrationRecord,
         EbinReadLimits limits,
-        int maximumComponentTypes)
+        int maximumComponentTypes,
+        WorldRegistration? targetRegistration = null)
     {
         ArgumentNullException.ThrowIfNull(limits);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumComponentTypes);
@@ -85,6 +85,11 @@ internal static class WorldPersistenceRegistrationReader
         if ((componentCount + tagCount) > maximumComponentTypes)
         {
             throw new ArgumentException("The saved registration exceeds the configured component/tag identity limit.", nameof(registrationRecord));
+        }
+
+        if (targetRegistration is not null)
+        {
+            WorldPersistenceRegistrationTargetValidator.Validate(record, targetRegistration, nameof(registrationRecord));
         }
 
         return new WorldPersistenceRegistrationContents(componentCount, tagCount, systemCount, resourceCount);

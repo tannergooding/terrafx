@@ -159,6 +159,17 @@ internal sealed class WorldPersistenceSystemRegistrationArrayWriterTests
         var capturedRecord = record ?? throw new InvalidOperationException("The registration capture did not produce its record.");
         using var reservationScope = reservation
             ?? throw new InvalidOperationException("The registration capture did not retain its admission reservation.");
+        _ = WorldPersistenceRegistrationReader.Read(
+            capturedRecord,
+            EbinReadLimits.Foundation,
+            maximumComponentTypes: 256,
+            targetRegistration: registration);
+        _ = Assert.Throws<ArgumentException>(
+            () => WorldPersistenceRegistrationReader.Read(
+                capturedRecord,
+                EbinReadLimits.Foundation,
+                maximumComponentTypes: 256,
+                targetRegistration: CreateRegistration()));
         var assertions = new RegistrationRootAssertions(expectedSystemCount: registration.Systems.Length);
         Assert.That(
             EbinStructuralReader.Read(

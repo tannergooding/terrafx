@@ -166,6 +166,11 @@ internal sealed class WorldPersistenceComponentRegistrationArrayWriterTests
             diagnostic?.Category);
         Assert.That(diagnostic, Is.Null);
         Assert.That(rootBytesWritten, Is.EqualTo(rootRecordBytes));
+        _ = WorldPersistenceRegistrationReader.Read(
+            rootDestination,
+            EbinReadLimits.Foundation,
+            maximumComponentTypes: 256,
+            targetRegistration: registration);
     }
 
     private struct ComponentRegistrationArrayAssertions : IAction<EbinRecordReadView>

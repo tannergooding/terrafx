@@ -2323,7 +2323,8 @@ internal sealed partial class SceneAssetStoreTests
                 var sceneSupport = SceneSupport.CreateRegistration();
                 _ = worldRegistrationBuilder.RegisterSceneSupport(sceneSupport);
                 _ = worldRegistrationBuilder.RegisterCpuExtractionSupport(Renderer.CreateCpuExtractionSupportRegistration());
-                using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
+                var worldRegistration = worldRegistrationBuilder.Build();
+                using var world = World.Create(new WorldOptions(worldRegistration));
                 var loader = new SceneLoader(world, assets);
                 var options = new SceneLoadOptions {
                     ExternalBindings = [new SceneExternalBinding(externalSlotId, target: null)],
@@ -2763,7 +2764,10 @@ internal sealed partial class SceneAssetStoreTests
                                 Is.EqualTo(EbinReadStatus.Complete),
                                 worldReadDiagnostic?.ToString());
                             Assert.That(worldBytesConsumed, Is.EqualTo(worldRecord.Length));
-                            var decodedWorld = WorldPersistenceWorldRecordReader.Read(worldRecord, persistenceLimits);
+                            var decodedWorld = WorldPersistenceWorldRecordReader.Read(
+                                worldRecord,
+                                persistenceLimits,
+                                worldRegistration);
                             Assert.That(decodedWorld.Scenes.InstanceCount, Is.EqualTo(1));
                             Assert.That(decodedWorld.Scenes.HierarchyNodeCount, Is.EqualTo(2));
                             Assert.That(decodedWorld.Scenes.RootCount, Is.EqualTo(1));
