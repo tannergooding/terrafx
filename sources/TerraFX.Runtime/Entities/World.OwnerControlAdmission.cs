@@ -138,11 +138,10 @@ public sealed partial class World
 
     internal void ValidateHostFrameCandidate(SpatialFrame2 frame)
     {
-        ThrowIfDisposed();
-        ThrowIfFaulted();
+        ThrowIfUnavailableForHostControlRequest();
         ValidateFrameOwner(frame.OwnerId, frame.ProfileId, frame.Settings, nameof(frame));
 
-        if (_currentFrameCohort.Frame2 is null)
+        if (_initialFrame2 is null)
         {
             throw new InvalidOperationException("The World has 2D frame admission disabled.");
         }
@@ -150,19 +149,23 @@ public sealed partial class World
 
     internal void ValidateHostFrameCandidate(SpatialFrame3 frame)
     {
-        ThrowIfDisposed();
-        ThrowIfFaulted();
+        ThrowIfUnavailableForHostControlRequest();
         ValidateFrameOwner(frame.OwnerId, frame.ProfileId, frame.Settings, nameof(frame));
     }
 
     internal void ValidateHostTimeScaleChange(float timeScale)
     {
-        ThrowIfDisposed();
-        ThrowIfFaulted();
+        ThrowIfUnavailableForHostControlRequest();
 
         if (!float.IsFinite(timeScale) || (timeScale < 0) || (timeScale > 4))
         {
             throw new ArgumentOutOfRangeException(nameof(timeScale));
         }
+    }
+
+    private void ThrowIfUnavailableForHostControlRequest()
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        ThrowIfFaulted();
     }
 }

@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Security.Cryptography;
 using System.Threading;
@@ -9,12 +10,122 @@ using NUnit.Framework;
 using TerraFX.Assets;
 using TerraFX.Entities;
 using TerraFX.Hosting;
+using TerraFX.Numerics;
 using TerraFX.Runtime.Tests.Scenes;
 
 namespace TerraFX.Runtime.Tests.Hosting;
 
 internal sealed partial class EngineHostOptionsTests
 {
+    [Test]
+    [SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using 'IDisposable' instances complete before the instances are disposed",
+        Justification = "Host disposal joins the owner system before the probe releases its synchronization event.")]
+    public async Task HostControlsCanBeAdmittedDuringAnActiveWorldTickAsync()
+    {
+        var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
+        var packagePath = SceneAssetStoreTests.Package.WritePackage(packageBytes);
+        var assetStoreOptions = new AssetStoreOptions(
+            packagePath,
+            SHA256.HashData(packageBytes),
+            CreateAssetStoreOptions().Registration);
+        var options = CreateHeadlessOptions(assetStoreOptions, cpuWorkerCount: 0);
+        using var probe = new ActiveTickControlProbe();
+        EngineHost? host = null;
+        World? world = null;
+        SpatialFrame2 nextFrame2 = default;
+        SpatialFrame3 nextFrame = default;
+
+        try
+        {
+            host = await EngineHost.StartAsync(options).ConfigureAwait(false);
+            var builder = new WorldRegistrationBuilder(assetStoreOptions.Registration.Schemas);
+            var sourceState = new WorldSystemSourceStateDeclaration(typeof(ActiveTickSystem), []);
+            var binding = WorldSystemFactoryBinding.Stateless<
+                ActiveTickSystem,
+                ActiveTickSystemCreate,
+                ActiveTickSystemRelease>(
+                    Guid.NewGuid(),
+                    1,
+                    sourceState,
+                    new ActiveTickSystemCreate(probe),
+                    default);
+            _ = builder.RegisterSystem(
+                new SystemDescription(
+                    Guid.NewGuid(),
+                    0,
+                    SimulationStage.Input,
+                    [],
+                    [],
+                    [],
+                    SystemThreadMode.OwnerThread),
+                new ActiveTickSystemFactory(binding));
+            var registration = builder.Build();
+
+            await host.InvokeAsync(context => {
+                world = context.CreateWorld(new WorldOptions(registration) {
+                    CpuWorkerCount = 0,
+                    InitialReplayLineageId = Guid.NewGuid(),
+                    WorldGuid = Guid.NewGuid(),
+                });
+                var currentFrame = world.CurrentFrame3;
+                nextFrame = world.CreateNextFrame3(
+                    currentFrame.Origin,
+                    currentFrame.Minimum,
+                    currentFrame.Maximum);
+                var currentFrame2 = world.CurrentFrame2
+                    ?? throw new InvalidOperationException("The test World did not enable 2D frame admission.");
+                nextFrame2 = world.CreateNextFrame2(
+                    currentFrame2.Origin,
+                    currentFrame2.Minimum,
+                    currentFrame2.Maximum);
+            }).ConfigureAwait(false);
+            await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            var targetWorld = world
+                ?? throw new InvalidOperationException("The EngineContext did not create its hosted World.");
+            var frame2Task = host.ChangeFrameAsync(targetWorld, nextFrame2);
+            var frameTask = host.ChangeFrameAsync(targetWorld, nextFrame);
+            var timeScaleTask = host.ChangeTimeScaleAsync(targetWorld, 0.5f);
+            Assert.That(frame2Task.IsCompleted, Is.False);
+            Assert.That(frameTask.IsCompleted, Is.False);
+            Assert.That(timeScaleTask.IsCompleted, Is.False);
+
+            probe.Release.Set();
+            var frame2Receipt = await frame2Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.That(frame2Receipt.Status, Is.EqualTo(FrameChangeStatus.Applied));
+            var committedFrame2 = frame2Receipt.CommittedFrame2
+                ?? throw new InvalidOperationException("The applied 2D frame receipt omitted its committed frame.");
+            Assert.That(committedFrame2.Equals(nextFrame2), Is.True);
+            var frameReceipt = await frameTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.That(frameReceipt.Status, Is.EqualTo(FrameChangeStatus.Applied));
+            var committedFrame = frameReceipt.CommittedFrame3
+                ?? throw new InvalidOperationException("The applied 3D frame receipt omitted its committed frame.");
+            Assert.That(committedFrame.Equals(nextFrame), Is.True);
+            var receipt = await timeScaleTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.That(receipt.Status, Is.EqualTo(TimeScaleChangeStatus.Applied));
+            Assert.That(receipt.AppliedTimeScale, Is.EqualTo(0.5f));
+            await host.StopAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            probe.Release.Set();
+
+            try
+            {
+                if (host is not null)
+                {
+                    await host.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                File.Delete(packagePath);
+            }
+        }
+    }
+
     [Test]
     public async Task HostedWorldControlsApplyAtOwnerBoundaryWithSeparateQueueAdmissionAsync()
     {
@@ -175,5 +286,59 @@ internal sealed partial class EngineHostOptionsTests
                 }
             }
         }
+    }
+
+    private sealed class ActiveTickControlProbe : IDisposable
+    {
+        internal readonly TaskCompletionSource Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal readonly ManualResetEventSlim Release = new(false);
+
+        public void Dispose() => Release.Dispose();
+    }
+
+    private sealed class ActiveTickSystem : IWorldSystem
+    {
+        private readonly ActiveTickControlProbe _probe;
+
+        internal ActiveTickSystem(ActiveTickControlProbe probe)
+        {
+            _probe = probe;
+        }
+
+        public void Execute(WorldSystemContext context)
+        {
+            _ = _probe.Entered.TrySetResult();
+            _probe.Release.Wait();
+        }
+    }
+
+    private readonly struct ActiveTickSystemCreate : IWorldSystemCreate<ActiveTickSystem>
+    {
+        private readonly ActiveTickControlProbe _probe;
+
+        internal ActiveTickSystemCreate(ActiveTickControlProbe probe)
+        {
+            _probe = probe;
+        }
+
+        public ActiveTickSystem Invoke() => new(_probe);
+    }
+
+    private sealed class ActiveTickSystemFactory : IWorldSystemFactory
+    {
+        private readonly WorldSystemFactoryBinding _binding;
+
+        internal ActiveTickSystemFactory(WorldSystemFactoryBinding binding)
+        {
+            _binding = binding;
+        }
+
+        public WorldSystemFactoryBinding Binding => _binding;
+    }
+
+    private readonly struct ActiveTickSystemRelease : IWorldSystemRelease<ActiveTickSystem>
+    {
+        public void Invoke(ActiveTickSystem system)
+            => ArgumentNullException.ThrowIfNull(system);
     }
 }

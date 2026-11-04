@@ -404,7 +404,7 @@ The D3D12 consumer enables NativeAOT locally through `TerraFXPublishAot`; do not
 
 The no-argument handwritten Runtime consumer verifies that `PhysicalInputEvent` and `PhysicalInputValue` expose no public constructors and that event/value/diagnostic/scroll-unit enum values are stable. Its JIT and Windows x64 NativeAOT executions validate that nonfriend surface only; they do not activate native input or create a platform window.
 
-The Scene activation public-consumer cases exercise both standalone World activation and the Headless `EngineHost`/hosted-World path. The hosted case uses the host-owned AssetStore, EngineContext World creation, owner pump, activation, and shutdown. Run the exact cases through the published handwritten NativeAOT executable:
+The Scene activation public-consumer cases exercise both standalone World activation and the Headless `EngineHost`/hosted-World path. The hosted case uses the host-owned AssetStore, EngineContext World creation, the public frame/time-scale request APIs, owner pump, activation, and shutdown. Run the exact cases through the published handwritten NativeAOT executable:
 
 ```powershell
 $env:TERRAFX_SCENE_ACTIVATION_CONSUMER = (Resolve-Path .\artifacts\bin\tests\TerraFX.Runtime.ComponentConsumer\Release\net11.0\win-x64\publish\TerraFX.Runtime.ComponentConsumer.exe).Path
