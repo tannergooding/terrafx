@@ -87,6 +87,9 @@ internal sealed partial class EngineHostOptionsTests
             var checkpoint = WorldPersistenceCheckpointWriter.ReadContents(
                 fileRecord,
                 WorldPersistenceEbinLimits.Create(world!.Options));
+            var worldContents = WorldPersistenceWorldRecordReader.Read(
+                checkpoint.WorldRecord,
+                WorldPersistenceEbinLimits.Create(world.Options));
 
             Assert.Multiple(() => {
                 Assert.That(checkpoint.TransactionGeneration, Is.EqualTo(1));
@@ -96,6 +99,18 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(checkpoint.CheckpointDigest.Length, Is.EqualTo(32));
                 Assert.That(checkpoint.HeaderRecord.IsEmpty, Is.False);
                 Assert.That(checkpoint.WorldRecord.IsEmpty, Is.False);
+                Assert.That(worldContents.ConfigurationRecord.IsEmpty, Is.False);
+                Assert.That(worldContents.ClockRecord.IsEmpty, Is.False);
+                Assert.That(worldContents.Frame2Record.IsEmpty, Is.False);
+                Assert.That(worldContents.Frame3Record.IsEmpty, Is.False);
+                Assert.That(worldContents.EcsRecord.IsEmpty, Is.False);
+                Assert.That(worldContents.ScenesRecord.IsEmpty, Is.False);
+                Assert.That(worldContents.AssetIdCount, Is.Zero);
+                Assert.That(worldContents.ControlRecordCount, Is.Zero);
+                Assert.That(worldContents.CursorsRecord.IsEmpty, Is.False);
+                Assert.That(worldContents.RandomStreamCount, Is.Zero);
+                Assert.That(worldContents.StrictLayoutRecord.IsEmpty, Is.True);
+                Assert.That(worldContents.RegistrationRecord.IsEmpty, Is.False);
             });
 
             await host.StopAsync().ConfigureAwait(false);
