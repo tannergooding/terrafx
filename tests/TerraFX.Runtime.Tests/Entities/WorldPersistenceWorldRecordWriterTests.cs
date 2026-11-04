@@ -630,15 +630,23 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
         using (world)
         {
             _ = world.Step();
+            var request = WorldOwnerControlRequest.CreateTimeScaleChange(0.5f, CancellationToken.None);
+            Assert.That(
+                world.TryAdmitOwnerControl(request, out _),
+                Is.EqualTo(WorldOwnerControlAdmissionStatus.Accepted));
+            world.PumpControlBoundary();
+            Assert.That(request.TimeScaleCompletion.IsCompletedSuccessfully, Is.True);
+            _ = world.Step();
+
             using var lease = world.AcquirePersistenceCaptureLease();
             var limits = WorldPersistenceEbinLimits.Create(world.Options);
             var worldRecord = ComposeWorldRecord(world, in lease, schemas, []);
             var registration = new WorldRegistrationBuilder(schemas).Build();
             var decoded = WorldPersistenceWorldRecordReader.Read(worldRecord, limits, registration, schemas, []);
 
-            Assert.That(decoded.Cursors.NextOwnerRequestSequence, Is.EqualTo(lease.NextOwnerRequestSequence));
+            Assert.That(decoded.Cursors.NextOwnerRequestSequence, Is.EqualTo(2));
             Assert.That(decoded.Cursors.NextBarrierEpoch, Is.EqualTo(lease.NextTickIndex + 1));
-            Assert.That(decoded.Cursors.AcceptedOwnerRequests, Is.EqualTo(lease.AcceptedOwnerRequests));
+            Assert.That(decoded.Cursors.AcceptedOwnerRequests, Is.EqualTo(1));
             Assert.That(decoded.Cursors.PendingCommandCount, Is.Zero);
             Assert.That(decoded.Cursors.PendingOwnerRequestCount, Is.Zero);
             Assert.That(decoded.Cursors.PendingWorldEventCount, Is.Zero);
