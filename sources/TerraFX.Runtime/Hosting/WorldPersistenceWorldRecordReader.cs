@@ -223,6 +223,7 @@ internal static class WorldPersistenceWorldRecordReader
             record.GetRecord(2),
             parsedClock,
             nameof(worldRecord));
+        WorldPersistencePcgReader.Validate(worldRecord, fieldTag: 10, randomStreamCount, nameof(worldRecord));
         var parsedCursors = WorldPersistenceCursorReader.Read(
             cursorsRecord,
             limits,
