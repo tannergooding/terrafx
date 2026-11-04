@@ -296,6 +296,12 @@ internal static class WorldPersistenceWorldRecordReader
                                         s_strictLayoutSchemaId,
                                         limits,
                                         nameof(worldRecord));
+
+                    if (new EbinRecordReadView(strictLayoutRecord.Span).FieldCount != 5)
+                    {
+                        throw new ArgumentException("The state/strict-layout record has the wrong field count.", nameof(worldRecord));
+                    }
+
                     break;
                 }
 
