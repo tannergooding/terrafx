@@ -122,6 +122,19 @@ internal sealed partial class SceneAssetStoreTests
                 ?? throw new InvalidOperationException("The changed-frame extraction omitted its snapshot."));
             Assert.That(changedFrameSnapshot.Frame.Equals(committedFrame), Is.True);
             Assert.That(snapshot.Frame.Equals(originalFrame), Is.True);
+            snapshot.Dispose();
+            changedFrameSnapshot.Dispose();
+            await host.StopAsync().ConfigureAwait(false);
+            Assert.That(
+                activation.Instance!.TryGetEntity(SceneAssetReaderTests.Fixtures.RootEntityId, out _),
+                Is.False);
+            _ = Assert.Throws<InvalidOperationException>(
+                () => _ = host.Renderer.Extract(
+                    world!,
+                    new RenderExtractionOptions3D(
+                        committedFrame,
+                        new PixelSize(640, 480),
+                        [cameraId])));
         }
         finally
         {
