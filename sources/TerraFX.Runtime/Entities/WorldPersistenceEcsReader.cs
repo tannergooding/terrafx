@@ -32,7 +32,7 @@ internal static class WorldPersistenceEcsReader
         WorldPersistenceClockContents clock,
         WorldRegistration? targetRegistration,
         WorldPersistenceLiveIdentitySet liveIdentities,
-        scoped Span<Guid> identityScratch)
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch)
     {
         ArgumentNullException.ThrowIfNull(limits);
         ArgumentNullException.ThrowIfNull(configuration);

@@ -92,7 +92,7 @@ internal sealed partial class EngineHostOptionsTests
                 fileRecord,
                 limits,
                 world.Options.Registration,
-                identityScratch: new Guid[identityAssignmentCount]);
+                identityScratch: new WorldPersistenceIdentityScratchEntry[identityAssignmentCount]);
             var worldContents = checkpoint.WorldContents;
 
             Assert.Multiple(() => {
@@ -147,7 +147,7 @@ internal sealed partial class EngineHostOptionsTests
                 strictLocalFileRecord,
                 limits,
                 world.Options.Registration,
-                identityScratch: new Guid[identityAssignmentCount]));
+                identityScratch: new WorldPersistenceIdentityScratchEntry[identityAssignmentCount]));
 
             Task<SaveReceipt>? strictLocalSaveTask = null;
             await host.InvokeAsync(_ => strictLocalSaveTask = host.Persistence.SaveAsync(

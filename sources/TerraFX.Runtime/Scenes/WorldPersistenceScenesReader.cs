@@ -39,7 +39,8 @@ internal static class WorldPersistenceScenesReader
         int maximumLiveEntities,
         int maximumIdentityAssignments,
         int maximumSceneOccurrences,
-        WorldPersistenceLiveIdentitySet? liveIdentities = null)
+        WorldPersistenceLiveIdentitySet? liveIdentities = null,
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> identityScratch = default)
     {
         ArgumentNullException.ThrowIfNull(limits);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumActiveSceneInstances);
@@ -99,6 +100,7 @@ internal static class WorldPersistenceScenesReader
                 maximumSceneOccurrences,
                 limits,
                 liveIdentities,
+                identityScratch,
                 nameof(scenesRecord));
 
             if ((index > 0) && (FoundationCatalogue.CompareRfc(previousInstanceId, instanceId) >= 0))
@@ -355,6 +357,7 @@ internal static class WorldPersistenceScenesReader
         EbinRecordReadView instance,
         int externalBindingCount,
         WorldPersistenceLiveIdentitySet? liveIdentities,
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> identityScratch,
         string parameterName)
     {
         var previousBindingId = Guid.Empty;
@@ -385,9 +388,10 @@ internal static class WorldPersistenceScenesReader
                 var targetEntityId = new Guid(targetField.Payload, bigEndian: true);
 
                 if ((targetEntityId == Guid.Empty)
-                    || ((liveIdentities is not null) && !liveIdentities.IsMatchedEntity(targetEntityId)))
+                    || ((liveIdentities is not null)
+                        && !WorldPersistenceIdentityScratchEntry.ContainsEntity(identityScratch, targetEntityId)))
                 {
-                    throw new ArgumentException("A state/external-scene-binding target is not a live ECS Entity.", parameterName);
+                    throw new ArgumentException("A state/external-scene-binding target is not an Entity in the retained identity history.", parameterName);
                 }
             }
 
@@ -848,6 +852,7 @@ internal static class WorldPersistenceScenesReader
         int maximumSceneOccurrences,
         EbinReadLimits limits,
         WorldPersistenceLiveIdentitySet? liveIdentities,
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> identityScratch,
         string parameterName)
     {
         ValidateRecordHeader(instance, s_sceneInstanceSchemaId, minimumFieldCount: 7, maximumFieldCount: 7, parameterName);
@@ -888,7 +893,7 @@ internal static class WorldPersistenceScenesReader
 
         var occurrenceIndices = ValidateOccurrences(instance, occurrenceCount, sourceAsset, parameterName);
         ValidateSceneEntityBindings(instance, bindingCount, entityIdsField, occurrenceIndices, liveIdentities, parameterName);
-        ValidateExternalBindings(instance, externalBindingCount, liveIdentities, parameterName);
+        ValidateExternalBindings(instance, externalBindingCount, liveIdentities, identityScratch, parameterName);
         return instanceId;
     }
 }

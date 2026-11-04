@@ -2349,6 +2349,8 @@ internal sealed partial class SceneAssetStoreTests
                     ?? throw new InvalidOperationException("The nested Scene activation did not return its instance.");
 
                 Assert.That(receipt.Status, Is.EqualTo(SceneActivationStatus.Activated));
+                world.DestroyEntity(externalTarget, HierarchyDestroyMode.DetachChildrenKeepWorld);
+                _ = world.Step();
                 uint[] expectedSceneAssetIds = [checked((uint)sceneAssetIdValue), checked((uint)prefabAssetIdValue)];
                 var rootOccurrence = SceneOccurrenceIdentity.CreateRootOccurrence(new AssetId(sceneAssetIdValue));
                 var childOccurrence = SceneOccurrenceIdentity.CreatePrefabOccurrence(
@@ -2761,7 +2763,7 @@ internal sealed partial class SceneAssetStoreTests
                                 scanSchemas,
                                 uniqueAssetIds);
                             var assetIdScratch = new uint[referenceCount];
-                            var identityScratch = new Guid[
+                            var identityScratch = new WorldPersistenceIdentityScratchEntry[
                                 WorldPersistenceWorldRecordReader.MeasureIdentityAssignmentCount(worldRecord, persistenceLimits)];
                             var worldAssertions = new WorldPersistenceWorldRecordWriterTests.WorldRecordAssertions(
                                 captureLease.Frame2.HasValue,
@@ -2786,10 +2788,10 @@ internal sealed partial class SceneAssetStoreTests
                                 assetIdScratch,
                                 identityScratch);
                             Assert.That(decodedWorld.Scenes.InstanceCount, Is.EqualTo(1));
-                            Assert.That(decodedWorld.Scenes.HierarchyNodeCount, Is.EqualTo(3));
-                            Assert.That(decodedWorld.Scenes.RootCount, Is.EqualTo(2));
-                            Assert.That(decodedWorld.Ecs.EntityCount, Is.EqualTo(3));
-                            Assert.That(decodedWorld.Ecs.LiveEntityCount, Is.EqualTo(3));
+                            Assert.That(decodedWorld.Scenes.HierarchyNodeCount, Is.EqualTo(2));
+                            Assert.That(decodedWorld.Scenes.RootCount, Is.EqualTo(1));
+                            Assert.That(decodedWorld.Ecs.EntityCount, Is.EqualTo(2));
+                            Assert.That(decodedWorld.Ecs.LiveEntityCount, Is.EqualTo(2));
                             Assert.That(decodedWorld.Ecs.LiveSceneInstanceCount, Is.EqualTo(1));
                             Assert.That(decodedWorld.AssetIdCount, Is.EqualTo(uniqueAssetCount));
 
@@ -2897,6 +2899,29 @@ internal sealed partial class SceneAssetStoreTests
                             Assert.That(
                                 mismatchedExternalTargetRecord.AsSpan(externalTargetOffset, targetLength).ToArray(),
                                 Is.EqualTo(externalTargetIdBytes.ToArray()));
+
+                            _ = WorldPersistenceWorldRecordReader.Read(
+                                worldRecord,
+                                persistenceLimits,
+                                worldRegistration,
+                                scanSchemas,
+                                assetIdScratch,
+                                identityScratch);
+
+                            var sceneInstanceIdBytes = new byte[16];
+                            _ = instance.SceneInstanceId.TryWriteBytes(sceneInstanceIdBytes, bigEndian: true, out _);
+                            var sceneInstanceTargetRecord = (byte[])worldRecord.Clone();
+                            sceneInstanceIdBytes.CopyTo(
+                                sceneInstanceTargetRecord.AsSpan(externalTargetOffset, sceneInstanceIdBytes.Length));
+                            _ = Assert.Throws<ArgumentException>(
+                                () => WorldPersistenceWorldRecordReader.Read(
+                                    sceneInstanceTargetRecord,
+                                    persistenceLimits,
+                                    worldRegistration,
+                                    scanSchemas,
+                                    assetIdScratch,
+                                    identityScratch));
+
                             unknownTargetIdBytes.CopyTo(
                                 mismatchedExternalTargetRecord.AsSpan(externalTargetOffset, unknownTargetIdBytes.Length));
                             _ = Assert.Throws<ArgumentException>(

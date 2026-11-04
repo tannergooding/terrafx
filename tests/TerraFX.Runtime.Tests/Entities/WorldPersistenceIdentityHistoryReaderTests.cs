@@ -72,7 +72,7 @@ internal sealed class WorldPersistenceIdentityHistoryReaderTests
         var assignmentCount = WorldPersistenceWorldRecordReader.MeasureIdentityAssignmentCount(worldRecord, limits);
         Assert.That(assignmentCount, Is.EqualTo(2));
 
-        var identityScratch = new Guid[assignmentCount];
+        var identityScratch = new WorldPersistenceIdentityScratchEntry[assignmentCount];
         var contents = WorldPersistenceWorldRecordReader.Read(
             worldRecord,
             limits,
@@ -101,6 +101,6 @@ internal sealed class WorldPersistenceIdentityHistoryReaderTests
             worldRecord,
             limits,
             targetRegistration: null,
-            identityScratch: new Guid[assignmentCount + 1]));
+            identityScratch: new WorldPersistenceIdentityScratchEntry[assignmentCount + 1]));
     }
 }

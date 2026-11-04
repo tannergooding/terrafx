@@ -10,6 +10,8 @@ Component default and codec-validation providers run through real create/set/mig
 
 M04 Load-intent contract progress: `TerraFX.Entities.WorldRestoreIntent`, `TerraFX.Hosting.LoadOptions`, and the opaque `WorldRecordedContinuation` metadata/ownership wrapper now implement the synchronous option-shape, target snapshot-limit, digest-copy, and retained-source disposal contracts. No operation issues continuations yet. The focused Runtime.Tests selection passes 15/15 in Debug and Release. This is only the input-contract foundation; `PrepareLoadAsync`, candidate construction/restoration, `CommitLoadAsync`, replacement, identity remapping, and recovery selection remain unimplemented.
 
+M04 State2 provenance progress: external Scene binding targets are validated against the complete kind-aware identity history, so retired Entity assignments remain valid historical provenance while scene-instance identities and unassigned GUIDs reject. Live membership validation remains in force for authoritative Entity references. The exact-sized caller-owned identity scratch carries assignment kind to support this check without an additional hidden identity index.
+
 ## Milestone status
 
 The retired implementation and samples are not an implementation baseline for these milestones.

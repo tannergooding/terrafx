@@ -114,7 +114,7 @@ internal static class WorldPersistenceWorldRecordReader
         WorldRegistration? targetRegistration,
         CompiledContentSchemaRegistry assetReferenceSchemas,
         scoped Span<uint> assetIdScratch,
-        scoped Span<Guid> identityScratch)
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch)
     {
         ArgumentNullException.ThrowIfNull(assetReferenceSchemas);
         return ReadCore(worldRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch, identityScratch);
@@ -124,7 +124,7 @@ internal static class WorldPersistenceWorldRecordReader
         ReadOnlyMemory<byte> worldRecord,
         EbinReadLimits limits,
         WorldRegistration? targetRegistration,
-        scoped Span<Guid> identityScratch)
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch)
         => ReadCore(
             worldRecord,
             limits,
@@ -148,7 +148,7 @@ internal static class WorldPersistenceWorldRecordReader
         WorldRegistration? targetRegistration,
         CompiledContentSchemaRegistry? assetReferenceSchemas,
         scoped Span<uint> assetIdScratch,
-        scoped Span<Guid> identityScratch)
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch)
     {
         ArgumentNullException.ThrowIfNull(limits);
 
@@ -377,7 +377,8 @@ internal static class WorldPersistenceWorldRecordReader
             parsedConfiguration.MaximumLiveEntities,
             parsedConfiguration.MaximumIdentityAssignments,
             parsedConfiguration.MaximumSceneOccurrences,
-            liveIdentities);
+            liveIdentities,
+            identityScratch);
         liveIdentities.ThrowIfNotEmpty(nameof(worldRecord));
 
         if (assetReferenceSchemas is not null)

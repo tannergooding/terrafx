@@ -68,7 +68,7 @@ internal static class WorldPersistenceIdentityHistoryReader
             EbinReadLimits limits,
             WorldPersistenceConfiguration configuration,
             WorldPersistenceLiveIdentitySet liveIdentities,
-            scoped Span<Guid> identityScratch,
+            scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
             long nextTick,
             string parameterName)
     {
@@ -194,7 +194,7 @@ internal static class WorldPersistenceIdentityHistoryReader
 
         for (var index = 1; index < identityScratch.Length; index++)
         {
-            if (identityScratch[index - 1] == identityScratch[index])
+            if (identityScratch[index - 1].StableId == identityScratch[index].StableId)
             {
                 throw new ArgumentException("The identity history contains duplicate assigned identities.", parameterName);
             }
@@ -455,7 +455,7 @@ internal static class WorldPersistenceIdentityHistoryReader
         int branchCount,
         scoped ReadOnlySpan<Guid> branchNamespaces,
         WorldPersistenceLiveIdentitySet liveIdentities,
-        scoped Span<Guid> identityScratch,
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
         string parameterName)
     {
         if ((page.Header.SchemaId != s_identityPageSchemaId)
@@ -502,7 +502,9 @@ internal static class WorldPersistenceIdentityHistoryReader
 
             var assignmentOrdinal = checked(firstOrdinal + index);
             ValidateAssignmentRecipe(id, identityKind, origin, branchIndex, assignmentOrdinal, branchNamespaces, parameterName);
-            identityScratch[checked((int)assignmentOrdinal - 1)] = id;
+            identityScratch[checked((int)assignmentOrdinal - 1)] = new WorldPersistenceIdentityScratchEntry(
+                id,
+                checked((byte)identityKind));
 
             if ((value & (1U << 14)) != 0)
             {
