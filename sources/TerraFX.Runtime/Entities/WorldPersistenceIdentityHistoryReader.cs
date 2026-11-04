@@ -427,7 +427,7 @@ internal static class WorldPersistenceIdentityHistoryReader
 
             if ((value & (1U << 14)) != 0)
             {
-                liveIdentities.Add(id, identityKind, parameterName);
+                liveIdentities.Add(id, identityKind, checked(firstOrdinal + index), parameterName);
 
                 if (identityKind == 1)
                 {

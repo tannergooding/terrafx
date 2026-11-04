@@ -12,7 +12,7 @@ internal sealed class WorldPersistenceLiveIdentitySet
     private const uint MatchedFlag = 1U << 31;
     private const uint SceneInstanceIdentityKind = 2;
 
-    private readonly Dictionary<Guid, uint> _identities = [];
+    private readonly Dictionary<Guid, (uint state, long ordinal)> _identities = [];
     private readonly long _maximumCount;
 
     internal WorldPersistenceLiveIdentitySet(long maximumCount)
@@ -21,11 +21,12 @@ internal sealed class WorldPersistenceLiveIdentitySet
         _maximumCount = maximumCount;
     }
 
-    internal void Add(Guid identity, uint identityKind, string parameterName)
+    internal void Add(Guid identity, uint identityKind, long assignmentOrdinal, string parameterName)
     {
         if (((identityKind != EntityIdentityKind) && (identityKind != SceneInstanceIdentityKind))
             || (_identities.Count >= _maximumCount)
-            || !_identities.TryAdd(identity, identityKind))
+            || (assignmentOrdinal < 1)
+            || !_identities.TryAdd(identity, (identityKind, assignmentOrdinal)))
         {
             throw new ArgumentException("The state/identity-history live identities exceed their bound or contain a duplicate.", parameterName);
         }
@@ -34,17 +35,28 @@ internal sealed class WorldPersistenceLiveIdentitySet
     internal void ClaimSceneEntity(Guid identity, string parameterName)
     {
         if (!_identities.TryGetValue(identity, out var value)
-            || ((value & (MatchedFlag | EntityIdentityKind | EntitySceneOwnershipFlag)) != (MatchedFlag | EntityIdentityKind)))
+            || (value.state != (MatchedFlag | EntityIdentityKind)))
         {
             throw new ArgumentException("A Scene entity is not a unique live ECS Entity.", parameterName);
         }
 
-        _identities[identity] = value | EntitySceneOwnershipFlag;
+        _identities[identity] = (value.state | EntitySceneOwnershipFlag, value.ordinal);
+    }
+
+    internal long GetAssignmentOrdinal(Guid identity, uint expectedKind, string parameterName)
+    {
+        if (!_identities.TryGetValue(identity, out var value)
+            || ((value.state & 3) != expectedKind))
+        {
+            throw new ArgumentException("An identity does not match the expected live identity-history kind.", parameterName);
+        }
+
+        return value.ordinal;
     }
 
     internal bool IsMatchedEntity(Guid identity)
         => _identities.TryGetValue(identity, out var value)
-        && ((value & (MatchedFlag | EntityIdentityKind)) == (MatchedFlag | EntityIdentityKind));
+        && ((value.state & (MatchedFlag | EntityIdentityKind)) == (MatchedFlag | EntityIdentityKind));
 
     internal void MatchEntity(Guid identity, string parameterName)
         => Match(identity, EntityIdentityKind, parameterName);
@@ -54,9 +66,9 @@ internal sealed class WorldPersistenceLiveIdentitySet
 
     internal void ThrowIfNotEmpty(string parameterName)
     {
-        foreach (var value in _identities.Values)
+        foreach (var (state, ordinal) in _identities.Values)
         {
-            if ((value & MatchedFlag) == 0)
+            if ((state & MatchedFlag) == 0)
             {
                 throw new ArgumentException("The state/identity-history live identities do not match the ECS and Scene records.", parameterName);
             }
@@ -65,12 +77,12 @@ internal sealed class WorldPersistenceLiveIdentitySet
 
     private void Match(Guid identity, uint expectedKind, string parameterName)
     {
-        if (!_identities.TryGetValue(identity, out var identityKind)
-            || (identityKind != expectedKind))
+        if (!_identities.TryGetValue(identity, out var value)
+            || (value.state != expectedKind))
         {
             throw new ArgumentException("An ECS or Scene identity does not match its live identity-history assignment.", parameterName);
         }
 
-        _identities[identity] = identityKind | MatchedFlag;
+        _identities[identity] = (value.state | MatchedFlag, value.ordinal);
     }
 }

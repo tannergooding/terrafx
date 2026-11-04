@@ -12,10 +12,12 @@ namespace TerraFX.Scenes;
 internal static class WorldPersistenceScenesReader
 {
     private const ushort ArrayKind = 24;
+    private const uint EntityIdentityKind = 1;
     private const ushort FixedArrayKind = 23;
     private const ushort GuidKind = 11;
     private const ushort Int64Kind = 8;
     private const ushort RecordKind = 22;
+    private const uint SceneInstanceIdentityKind = 2;
     private const int SceneRootFieldCount = 2;
     private const ushort UInt32Kind = 3;
 
@@ -753,9 +755,11 @@ internal static class WorldPersistenceScenesReader
         int bindingCount,
         EbinFieldReadView entityIdsField,
         Dictionary<Guid, int> occurrenceIndices,
+        WorldPersistenceLiveIdentitySet? liveIdentities,
         string parameterName)
     {
-        var expandedEntityKeys = new HashSet<Guid>();
+        var previousAssignmentOrdinal = 0L;
+        var previousExpandedEntityKey = Guid.Empty;
 
         for (var index = 0; index < bindingCount; index++)
         {
@@ -800,10 +804,24 @@ internal static class WorldPersistenceScenesReader
             var expectedExpandedEntityKey = SceneOccurrenceIdentity.CreateExpandedEntityKey(occurrenceId, authoredEntityId);
 
             if ((expandedEntityKey != expectedExpandedEntityKey)
-                || !expandedEntityKeys.Add(expandedEntityKey))
+                || ((index > 0) && (FoundationCatalogue.CompareRfc(previousExpandedEntityKey, expandedEntityKey) >= 0)))
             {
-                throw new ArgumentException("A state/scene-entity-binding has an invalid or duplicate ExpandedEntityKey.", parameterName);
+                throw new ArgumentException("A state/scene-entity-binding has an invalid or noncanonical ExpandedEntityKey.", parameterName);
             }
+
+            if (liveIdentities is not null)
+            {
+                var assignmentOrdinal = liveIdentities.GetAssignmentOrdinal(entityId, EntityIdentityKind, parameterName);
+
+                if ((index > 0) && (assignmentOrdinal <= previousAssignmentOrdinal))
+                {
+                    throw new ArgumentException("Scene EntityIds do not retain their initial identity-assignment order.", parameterName);
+                }
+
+                previousAssignmentOrdinal = assignmentOrdinal;
+            }
+
+            previousExpandedEntityKey = expandedEntityKey;
         }
     }
 
@@ -840,13 +858,19 @@ internal static class WorldPersistenceScenesReader
             throw new ArgumentException("A state/scene-instance has inconsistent identity, assignment, or Entity binding counts.", parameterName);
         }
 
+        if ((liveIdentities is not null)
+            && (liveIdentities.GetAssignmentOrdinal(instanceId, SceneInstanceIdentityKind, parameterName) != assignmentOrdinal))
+        {
+            throw new ArgumentException("A state/scene-instance ordinal does not match its identity-history assignment.", parameterName);
+        }
+
         if ((sourceAsset.schemaId != s_sceneSchemaId) || (sourceAsset.schemaMajor != 2))
         {
             throw new ArgumentException("A state/scene-instance source does not identify a version-2 Scene asset.", parameterName);
         }
 
         var occurrenceIndices = ValidateOccurrences(instance, occurrenceCount, sourceAsset, parameterName);
-        ValidateSceneEntityBindings(instance, bindingCount, entityIdsField, occurrenceIndices, parameterName);
+        ValidateSceneEntityBindings(instance, bindingCount, entityIdsField, occurrenceIndices, liveIdentities, parameterName);
         ValidateExternalBindings(instance, externalBindingCount, parameterName);
         return instanceId;
     }
