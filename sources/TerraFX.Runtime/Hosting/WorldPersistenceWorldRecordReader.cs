@@ -222,10 +222,16 @@ internal static class WorldPersistenceWorldRecordReader
             record.GetRecord(2),
             parsedClock,
             nameof(worldRecord));
+        var parsedCursors = WorldPersistenceCursorReader.Read(
+            cursorsRecord,
+            limits,
+            controlRecordCount,
+            parsedClock);
 
         return new WorldPersistenceWorldRecordContents(
             parsedConfiguration,
             parsedClock,
+            parsedCursors,
             configurationRecord,
             clockRecord,
             frame2Record,

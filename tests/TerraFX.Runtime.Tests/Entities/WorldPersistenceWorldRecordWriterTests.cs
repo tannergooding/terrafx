@@ -488,6 +488,13 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             limits);
         Assert.That(decodedWorld.ControlRecordCount, Is.EqualTo(lease.ControlRecordCount));
         Assert.That(decodedWorld.Clock.SegmentCount, Is.EqualTo(2));
+        Assert.That(decodedWorld.Cursors.NextControlSequence, Is.EqualTo(lease.NextControlSequence));
+        Assert.That(decodedWorld.Cursors.NextOwnerRequestSequence, Is.Null);
+        Assert.That(decodedWorld.Cursors.NextBarrierEpoch, Is.Null);
+        Assert.That(decodedWorld.Cursors.AcceptedOwnerRequests, Is.Null);
+        Assert.That(decodedWorld.Cursors.PendingCommandCount, Is.Zero);
+        Assert.That(decodedWorld.Cursors.PendingOwnerRequestCount, Is.Zero);
+        Assert.That(decodedWorld.Cursors.PendingWorldEventCount, Is.Zero);
 
         var inconsistentSources = new WorldPersistenceWorldRecordSources(
                 lease,
