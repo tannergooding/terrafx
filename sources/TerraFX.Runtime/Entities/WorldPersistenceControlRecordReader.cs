@@ -28,6 +28,7 @@ internal static class WorldPersistenceControlRecordReader
     private static readonly Guid s_frame3ControlSchemaId = new ContentSchemaIdentityAssignment("state/control-frame3").SchemaId;
     private static readonly Guid s_frame3SchemaId = new ContentSchemaIdentityAssignment("foundation/frame3").SchemaId;
     private static readonly Guid s_profileSchemaId = new ContentSchemaIdentityAssignment("foundation/profile").SchemaId;
+    private static readonly Guid s_stepSchemaId = new ContentSchemaIdentityAssignment("state/control-step").SchemaId;
     private static readonly Guid s_timeScaleSchemaId = new ContentSchemaIdentityAssignment("state/control-timescale").SchemaId;
 
     internal static void Validate(
@@ -67,7 +68,19 @@ internal static class WorldPersistenceControlRecordReader
         }
 
         var previousAppliedAtNextTick = 0L;
+        var previousPausedStepTick = 0L;
         var timeScaleControlCount = 0;
+        var hasPausedStep = false;
+        var (initialSegmentSequence, initialSegmentStart, currentTimeScale) = WorldPersistenceClockReader.ReadTimeSegment(
+            clockRecord,
+            0,
+            clock.NextTick,
+            parameterName);
+
+        if ((initialSegmentSequence != 1) || (initialSegmentStart != 0))
+        {
+            throw new ArgumentException("The state/clock initial time-scale segment is invalid.", parameterName);
+        }
 
         for (var index = 0; index < controlRecordCount; index++)
         {
@@ -113,7 +126,23 @@ internal static class WorldPersistenceControlRecordReader
                     throw new ArgumentException("A state/control-timescale payload does not match its clock segment.", parameterName);
                 }
 
+                currentTimeScale = value;
                 timeScaleControlCount = checked(timeScaleControlCount + 1);
+            }
+            else if (payload.Header.SchemaId == s_stepSchemaId)
+            {
+                var executedTick = ReadPausedStepPayload(payload, parameterName);
+
+                if ((executedTick != appliedAtNextTick)
+                    || (executedTick >= clock.NextTick)
+                    || (currentTimeScale != 0.0f)
+                    || (hasPausedStep && (executedTick == previousPausedStepTick)))
+                {
+                    throw new ArgumentException("A state/control-step does not describe one explicit paused tick.", parameterName);
+                }
+
+                previousPausedStepTick = executedTick;
+                hasPausedStep = true;
             }
             else if (payload.Header.SchemaId == s_frame2ControlSchemaId)
             {
@@ -314,6 +343,12 @@ internal static class WorldPersistenceControlRecordReader
         }
 
         return BinaryPrimitives.ReadInt64LittleEndian(field.Payload);
+    }
+
+    private static long ReadPausedStepPayload(EbinRecordReadView payload, string parameterName)
+    {
+        ValidateRecordHeader(payload, s_stepSchemaId, fieldCount: 1, parameterName);
+        return ReadInt64(payload, 1, parameterName);
     }
 
     private static (float Value, long SegmentSequence) ReadTimeScalePayload(

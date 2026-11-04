@@ -167,6 +167,24 @@ internal sealed class WorldControlTests
     }
 
     [Test]
+    public void PausedStepControlCapacityIsReservedBeforeTickExecution()
+    {
+        using var world = World.Create(new WorldOptions(CreateEmptyRegistration()) {
+            InitialReplayLineageId = Guid.NewGuid(),
+            MaximumRecordedControls = 1,
+            WorldGuid = Guid.NewGuid(),
+        });
+        Assert.That(world.Step().CompletedTick, Is.Zero);
+        world.SetTimeScale(0.0f);
+        var nextTick = world.NextTickIndex;
+
+        _ = Assert.Throws<InvalidOperationException>(() => world.Step());
+
+        Assert.That(world.NextTickIndex, Is.EqualTo(nextTick));
+        Assert.That(world.LastFault, Is.Null);
+    }
+
+    [Test]
     public void PumpControlBoundaryDoesNotAdvanceTheSimulationClock()
     {
         using var world = World.Create(new WorldOptions(CreateEmptyRegistration()) {

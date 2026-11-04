@@ -609,6 +609,7 @@ public sealed partial class World
         Branch,
         Frame2,
         Frame3,
+        Step,
         TimeScale,
     }
 

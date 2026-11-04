@@ -1029,7 +1029,9 @@ internal static class WorldPersistenceClockWriter
         }
 
         long previousAppliedAtNextTick = 0;
+        long previousPausedStepTick = 0;
         var hasPreviousControl = false;
+        var hasPausedStep = false;
         var timeScaleControlCount = 0;
         finalTimeScale = lease.InitialTimeScale;
         segmentCount = 1;
@@ -1086,6 +1088,18 @@ internal static class WorldPersistenceClockWriter
                 timeScaleControlCount = checked(timeScaleControlCount + 1);
                 segmentCount = checked(segmentCount + 1);
                 finalTimeScale = control.TimeScaleValue;
+            }
+            else if (control.Kind is WorldPersistenceControlKind.Step)
+            {
+                if ((finalTimeScale != 0.0f)
+                    || (hasPausedStep && (control.AppliedAtNextTick == previousPausedStepTick)))
+                {
+                    diagnostic = CreateDiagnostic("paused-step-control-state", checked((ulong)control.AppliedAtNextTick), 0);
+                    return EbinWriteStatus.InvalidRecord;
+                }
+
+                previousPausedStepTick = control.AppliedAtNextTick;
+                hasPausedStep = true;
             }
             else if (control.Kind is WorldPersistenceControlKind.Frame2)
             {

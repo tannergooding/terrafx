@@ -573,6 +573,57 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
     }
 
     [Test]
+    public void ComposesPausedStepControlFromCommittedTick()
+    {
+        var (schemas, world) = CreateControlValidationWorld();
+        using (world)
+        {
+            world.SetTimeScale(0.0f);
+            Assert.That(world.Step().CompletedTick, Is.Zero);
+
+            using var lease = world.AcquirePersistenceCaptureLease();
+            Assert.That(lease.ControlRecordCount, Is.EqualTo(2));
+            Assert.That(lease.GetControlCapture(1).Kind, Is.EqualTo(WorldPersistenceControlKind.Step));
+            Assert.That(lease.GetControlCapture(1).AppliedAtNextTick, Is.Zero);
+            var limits = WorldPersistenceEbinLimits.Create(world.Options);
+            var worldRecord = ComposeWorldRecord(world, in lease, schemas, []);
+            var registration = new WorldRegistrationBuilder(schemas).Build();
+            var decoded = WorldPersistenceWorldRecordReader.Read(worldRecord, limits, registration, schemas, []);
+
+            Assert.That(decoded.ControlRecordCount, Is.EqualTo(2));
+            Assert.That(decoded.Clock.SegmentCount, Is.EqualTo(2));
+            Assert.That(decoded.Cursors.NextControlSequence, Is.EqualTo(3));
+
+            var stepCapture = new PausedStepControlCapture();
+            Assert.That(
+                EbinStructuralReader.Read(
+                    worldRecord,
+                    limits,
+                    EbinReadPolicy.Canonical,
+                    ref stepCapture,
+                    out _,
+                    out var readDiagnostic),
+                Is.EqualTo(EbinReadStatus.Complete),
+                readDiagnostic?.ToString());
+            var encodedStepPayload = stepCapture.EncodedPayload
+                ?? throw new AssertionException("The state/control-step payload was not captured.");
+            var recordOffset = worldRecord.AsSpan().IndexOf(encodedStepPayload);
+            Assert.That(recordOffset, Is.GreaterThanOrEqualTo(0));
+            var executedTickOffset = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(encodedStepPayload.AsSpan(72)));
+            var invalidStepRecord = (byte[])worldRecord.Clone();
+            BinaryPrimitives.WriteInt64LittleEndian(
+                invalidStepRecord.AsSpan(checked(recordOffset + executedTickOffset), sizeof(long)),
+                1);
+            _ = Assert.Throws<ArgumentException>(() => WorldPersistenceWorldRecordReader.Read(
+                invalidStepRecord,
+                limits,
+                registration,
+                schemas,
+                []));
+        }
+    }
+
+    [Test]
     public void ComposesStrictLocalCursorStateWithoutClaimingLayoutCapture()
     {
         var (schemas, world) = CreateControlValidationWorld(SimulationProfile.StrictLocal);
@@ -809,5 +860,13 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             EncodedFrame = frame.EncodedBytes.ToArray();
             RevisionPayload = frame.GetField(3).Payload.ToArray();
         }
+    }
+
+    private struct PausedStepControlCapture : IAction<EbinRecordReadView>
+    {
+        internal byte[]? EncodedPayload { get; private set; }
+
+        public void Invoke(scoped EbinRecordReadView record)
+            => EncodedPayload = record.GetRecordArrayElement(8, 1).GetRecord(3).EncodedBytes.ToArray();
     }
 }

@@ -7,5 +7,6 @@ internal enum WorldPersistenceControlKind : byte
     Branch,
     Frame2,
     Frame3,
+    Step,
     TimeScale,
 }

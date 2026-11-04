@@ -45,6 +45,19 @@ public sealed partial class World
         EnsureOwnerThread();
         PumpControlBoundary();
 
+        PreparedControlAppend? pausedStepAppend = null;
+        WorldControlRecord? pausedStepControl = null;
+
+        if (_timeScale == 0.0f)
+        {
+            var controlSequence = GetNextControlSequence();
+            pausedStepAppend = TryPrepareControlAppend(appendBranch: false, extraPreparationBytes: 0)
+                ?? throw new InvalidOperationException("The configured recorded-control capacity or shared World budget was reached.");
+            pausedStepControl = new WorldControlRecord(controlSequence, _nextTickIndex, WorldControlKind.Step);
+        }
+
+        using var pausedStepAppendScope = pausedStepAppend;
+
         if (Interlocked.CompareExchange(ref _isStructuralOperationActive, 1, 0) != 0)
         {
             throw new InvalidOperationException("The World already has an active operation.");
@@ -65,7 +78,10 @@ public sealed partial class World
             var nextPublicationSequence = checked(_publicationSequence + 1);
             var schedule = Registration.Schedule;
             _ = checked(_nextSystemInvocationEpoch + schedule.ExecutionCount);
-            _ = checked(_canonicalMutationRevision + CountAuthoritativeSystemInvocations());
+            _ = checked(
+                _canonicalMutationRevision
+                + CountAuthoritativeSystemInvocations()
+                + (pausedStepControl.HasValue ? 1 : 0));
             var step = new SimulationStepContext(tick, _tickRate);
             using var commandStaging = new WorldCommandStaging(
                 this,
@@ -138,6 +154,14 @@ public sealed partial class World
 
             var deliveryReport = new PublicationDeliveryReport(publication, results, failures);
             var receipt = new WorldStepReceipt(publication, deliveryReport);
+
+            if (pausedStepControl is WorldControlRecord stepControl)
+            {
+                _canonicalMutationRevision = checked(_canonicalMutationRevision + 1);
+                (pausedStepAppendScope
+                    ?? throw new InvalidOperationException("The paused-step control reservation was not created."))
+                    .Commit(stepControl, branch: null);
+            }
 
             _nextTickIndex = nextTickIndex;
             _publicationSequence = nextPublicationSequence;

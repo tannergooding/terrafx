@@ -13,6 +13,7 @@ internal static class WorldPersistenceControlRecordWriter
     private static readonly Guid s_frame2SchemaId = new ContentSchemaIdentityAssignment("state/control-frame2").SchemaId;
     private static readonly Guid s_frame3SchemaId = new ContentSchemaIdentityAssignment("state/control-frame3").SchemaId;
     private static readonly Guid s_schemaId = new ContentSchemaIdentityAssignment("state/control").SchemaId;
+    private static readonly Guid s_stepSchemaId = new ContentSchemaIdentityAssignment("state/control-step").SchemaId;
     private static readonly Guid s_timeScaleSchemaId = new ContentSchemaIdentityAssignment("state/control-timescale").SchemaId;
 
     internal static EbinWriteStatus Measure(
@@ -346,6 +347,7 @@ internal static class WorldPersistenceControlRecordWriter
             }
 
             case WorldPersistenceControlKind.Branch:
+            case WorldPersistenceControlKind.Step:
             case WorldPersistenceControlKind.TimeScale:
             {
                 payloadCapacity = 256;
@@ -546,6 +548,16 @@ internal static class WorldPersistenceControlRecordWriter
                 break;
             }
 
+            case WorldPersistenceControlKind.Step:
+            {
+                if ((control.Frame2 is not null) || (control.Frame3 is not null))
+                {
+                    throw new InvalidOperationException("A paused-step control has inconsistent dimensional data.");
+                }
+
+                break;
+            }
+
             default:
             {
                 throw new InvalidOperationException("The World contains an unknown persistence control kind.");
@@ -695,6 +707,13 @@ internal static class WorldPersistenceControlRecordWriter
                 return timeScaleStatus;
             }
 
+            case WorldPersistenceControlKind.Step:
+            {
+                var stepStatus = WriteStepPayload(control, limits, destination, out bytesWritten, out diagnostic);
+                payloadScratchBytes = checked(sizeof(long) + Unsafe.SizeOf<EbinFieldSource>() + bytesWritten);
+                return stepStatus;
+            }
+
             default:
             {
                 bytesWritten = 0;
@@ -733,6 +752,33 @@ internal static class WorldPersistenceControlRecordWriter
             destination[..recordBytes],
             out bytesWritten,
             out diagnostic);
+    }
+
+    private static EbinWriteStatus WriteStepPayload(
+        WorldPersistenceControlCaptureRow control,
+        EbinReadLimits limits,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        Span<EbinFieldSource> fields = stackalloc EbinFieldSource[1];
+        Span<byte> payloadStorage = stackalloc byte[sizeof(long)];
+        var status = EbinPayloadWriter.Write(control.AppliedAtNextTick, payloadStorage, out var payloadBytes, out diagnostic);
+
+        if (status is not EbinWriteStatus.Complete)
+        {
+            bytesWritten = 0;
+            return status;
+        }
+
+        fields[0] = new EbinFieldSource(1, 8, 1, 1, new EbinPayloadSlice(0, payloadBytes));
+        var source = new EbinRecordWriteView(
+            s_stepSchemaId,
+            1,
+            0,
+            fields,
+            payloadStorage[..payloadBytes]);
+        return WritePayloadSource(in source, limits, destination, out bytesWritten, out diagnostic);
     }
 
     private static EbinWriteStatus WriteTimeScalePayload(
