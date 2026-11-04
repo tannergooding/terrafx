@@ -83,11 +83,20 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(receipt.TransactionGeneration, Is.EqualTo(1));
             Assert.That(receipt.Diagnostic, Is.Null);
             Assert.That(File.Exists(savePath), Is.True);
-            Assert.That(
-                WorldPersistenceCheckpointWriter.ReadTransactionGeneration(
-                    await File.ReadAllBytesAsync(savePath).ConfigureAwait(false),
-                    WorldPersistenceEbinLimits.Create(world!.Options)),
-                Is.EqualTo(1));
+            var fileRecord = await File.ReadAllBytesAsync(savePath).ConfigureAwait(false);
+            var checkpoint = WorldPersistenceCheckpointWriter.ReadContents(
+                fileRecord,
+                WorldPersistenceEbinLimits.Create(world!.Options));
+
+            Assert.Multiple(() => {
+                Assert.That(checkpoint.TransactionGeneration, Is.EqualTo(1));
+                Assert.That(checkpoint.Mode, Is.EqualTo((byte)WorldPersistenceMode.Standard));
+                Assert.That(checkpoint.WorldGuid, Is.EqualTo(world.WorldGuid));
+                Assert.That(checkpoint.CanonicalHash.Length, Is.EqualTo(32));
+                Assert.That(checkpoint.CheckpointDigest.Length, Is.EqualTo(32));
+                Assert.That(checkpoint.HeaderRecord.IsEmpty, Is.False);
+                Assert.That(checkpoint.WorldRecord.IsEmpty, Is.False);
+            });
 
             await host.StopAsync().ConfigureAwait(false);
         }

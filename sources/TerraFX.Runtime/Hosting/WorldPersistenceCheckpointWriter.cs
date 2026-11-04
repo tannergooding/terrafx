@@ -129,6 +129,44 @@ internal static class WorldPersistenceCheckpointWriter
             ?? throw new InvalidOperationException("The validated State2 file did not retain its checkpoint record.");
     }
 
+    internal static WorldPersistenceCheckpointContents ReadContents(
+        scoped ReadOnlySpan<byte> fileRecord,
+        EbinReadLimits limits)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+        var reader = new FileRecordReader(
+            limits,
+            captureCheckpointRecord: false,
+            captureCheckpointContents: true);
+        var status = EbinStructuralReader.Read(
+            fileRecord,
+            limits,
+            EbinReadPolicy.Canonical,
+            ref reader,
+            out var bytesConsumed,
+            out _);
+
+        if ((status is not EbinReadStatus.Complete) || (bytesConsumed != fileRecord.Length))
+        {
+            throw new ArgumentException("The State2 file is not a complete canonical record.", nameof(fileRecord));
+        }
+
+        return new WorldPersistenceCheckpointContents(
+            reader.TransactionGeneration,
+            reader.Mode,
+            reader.WorldGuid,
+            reader.LineageGuid,
+            reader.NextTick,
+            reader.CanonicalHash
+                ?? throw new InvalidOperationException("The validated State2 file did not retain its canonical hash."),
+            reader.CheckpointDigest
+                ?? throw new InvalidOperationException("The validated State2 file did not retain its checkpoint digest."),
+            reader.HeaderRecord
+                ?? throw new InvalidOperationException("The validated State2 file did not retain its header record."),
+            reader.WorldRecord
+                ?? throw new InvalidOperationException("The validated State2 file did not retain its World record."));
+    }
+
     internal static long ReadTransactionGeneration(
         scoped ReadOnlySpan<byte> fileRecord,
         EbinReadLimits limits)
@@ -558,19 +596,48 @@ internal static class WorldPersistenceCheckpointWriter
     private struct FileRecordReader : IAction<EbinRecordReadView>
     {
         private readonly bool _captureCheckpointRecord;
+        private readonly bool _captureCheckpointContents;
         private readonly EbinReadLimits _limits;
 
-        internal FileRecordReader(EbinReadLimits limits, bool captureCheckpointRecord)
+        internal FileRecordReader(
+            EbinReadLimits limits,
+            bool captureCheckpointRecord,
+            bool captureCheckpointContents = false)
         {
             _captureCheckpointRecord = captureCheckpointRecord;
+            _captureCheckpointContents = captureCheckpointContents;
             _limits = limits;
             TransactionGeneration = 0;
             CheckpointRecord = null;
+            HeaderRecord = null;
+            WorldRecord = null;
+            CanonicalHash = null;
+            CheckpointDigest = null;
+            Mode = 0;
+            WorldGuid = Guid.Empty;
+            LineageGuid = Guid.Empty;
+            NextTick = 0;
         }
+
+        internal byte[]? CanonicalHash { get; private set; }
+
+        internal byte[]? CheckpointDigest { get; private set; }
 
         internal byte[]? CheckpointRecord { get; private set; }
 
+        internal byte[]? HeaderRecord { get; private set; }
+
+        internal Guid LineageGuid { get; private set; }
+
+        internal byte Mode { get; private set; }
+
+        internal long NextTick { get; private set; }
+
         internal long TransactionGeneration { get; private set; }
+
+        internal Guid WorldGuid { get; private set; }
+
+        internal byte[]? WorldRecord { get; private set; }
 
         public void Invoke(scoped EbinRecordReadView fileRecord)
         {
@@ -668,6 +735,18 @@ internal static class WorldPersistenceCheckpointWriter
 
             TransactionGeneration = transactionGeneration;
             CheckpointRecord = _captureCheckpointRecord ? checkpoint.EncodedBytes.ToArray() : null;
+
+            if (_captureCheckpointContents)
+            {
+                HeaderRecord = header.EncodedBytes.ToArray();
+                WorldRecord = world.EncodedBytes.ToArray();
+                CanonicalHash = canonicalHash;
+                CheckpointDigest = checkpointDigest;
+                Mode = projection.Mode;
+                WorldGuid = projection.WorldGuid;
+                LineageGuid = projection.LineageGuid;
+                NextTick = projection.NextTick;
+            }
         }
     }
 
