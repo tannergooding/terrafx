@@ -78,10 +78,11 @@ internal sealed partial class SceneAssetStoreTests
                 }
 
                 cameraId = world!.GetEntityId(cameraEntity);
+                var currentFrame = world.CurrentFrame3;
                 response = host.Renderer.Extract(
                     world,
                     new RenderExtractionOptions3D(
-                        world.CurrentFrame3,
+                        currentFrame,
                         new PixelSize(640, 480),
                         [cameraId]));
             }).ConfigureAwait(false);
@@ -94,6 +95,33 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(snapshot.WorldGuid, Is.EqualTo(world!.WorldGuid));
             Assert.That(snapshot.CameraIds, Is.EqualTo([cameraId]));
             Assert.That(snapshot.TargetExtent, Is.EqualTo(new PixelSize(640, 480)));
+            var originalFrame = snapshot.Frame;
+            SpatialFrame3 nextFrame = default;
+
+            await host.InvokeAsync(_ => nextFrame = world!.CreateNextFrame3(
+                    originalFrame.Origin,
+                    originalFrame.Minimum,
+                    originalFrame.Maximum)).ConfigureAwait(false);
+
+            var frameReceipt = await host.ChangeFrameAsync(world, nextFrame).ConfigureAwait(false);
+            Assert.That(frameReceipt.Status, Is.EqualTo(FrameChangeStatus.Applied));
+            var committedFrame = frameReceipt.CommittedFrame3
+                ?? throw new InvalidOperationException("The applied frame change omitted its committed frame.");
+            Assert.That(committedFrame.Equals(nextFrame), Is.True);
+            RenderExtractionResponse? changedFrameResponse = null;
+
+            await host.InvokeAsync(_ => changedFrameResponse = host.Renderer.Extract(
+                    world!,
+                    new RenderExtractionOptions3D(
+                        world!.CurrentFrame3,
+                        new PixelSize(640, 480),
+                        [cameraId]))).ConfigureAwait(false);
+
+            Assert.That(changedFrameResponse!.Status, Is.EqualTo(RenderExtractionStatus.Extracted));
+            using var changedFrameSnapshot = (RenderSnapshot3D)(changedFrameResponse.Snapshot
+                ?? throw new InvalidOperationException("The changed-frame extraction omitted its snapshot."));
+            Assert.That(changedFrameSnapshot.Frame.Equals(committedFrame), Is.True);
+            Assert.That(snapshot.Frame.Equals(originalFrame), Is.True);
         }
         finally
         {
