@@ -119,7 +119,7 @@ M04 render-graph progress: the internal registry unifies imports/transients, pas
 
 ### Current Windows x64 NativeAOT qualification
 
-On source revision `1a7289f4`, the three documented self-contained Release `win-x64` consumers were republished and executed using the security-patched SDK `11.0.100-rc.3.26522.148`: `TerraFX.Runtime.ComponentConsumer`, `TerraFX.Runtime.GeneratedComponentConsumer`, and `TerraFX.Graphics.D3D12.Consumer`; all publishes succeeded and each executable exited 0. The optional-null Scene activation witness also passed through the published handwritten Runtime consumer (2/2 cases). `global.json` now pins the patched SDK, prefers the ignored project-local `.dotnet` install, and retains the host SDK fallback. These witnesses qualify selected public consumer/activation surfaces only; they do not directly invoke the internal State2 Save/Load writers, activate native input, a window, or a D3D12 device, and do not qualify public EngineHost/renderer execution. Linux remains deferred per the user's instruction.
+The current Windows x64 NativeAOT Release witnesses publish and execute the handwritten `TerraFX.Runtime.ComponentConsumer` and `TerraFX.Graphics.D3D12.Consumer`. The four standalone/Headless-host Scene activation cases pass 4/4 when the activation test launches the exact published Runtime consumer; the D3D12 consumer verifies public registration and transfer/pipeline/sampler signatures without activating a native device. D3D12.Tests pass 36/36 in Debug and Release. These selected observations do not qualify Load/replacement, native input, public graph submission, presentation, or final Q acceptance. Linux remains deferred per user instruction.
 
 ### Current Persistence producer status
 
