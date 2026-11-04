@@ -533,8 +533,15 @@ internal static class WorldPersistenceCheckpointWriter
             throw new ArgumentException("The State2 checkpoint header identity or next tick does not match its World record.", nameof(fileRecord));
         }
 
-        if ((reader.Mode == (byte)WorldPersistenceMode.StrictLocal)
-            && worldContents.StrictLayoutRecord.IsEmpty)
+        var isStrictLocal = reader.Mode == (byte)WorldPersistenceMode.StrictLocal;
+        var hasStrictLocalCursors = worldContents.Cursors.AcceptedOwnerRequests.HasValue;
+
+        if (isStrictLocal != hasStrictLocalCursors)
+        {
+            throw new ArgumentException("The State2 header mode does not match the saved cursor fields.", nameof(fileRecord));
+        }
+
+        if (isStrictLocal && worldContents.StrictLayoutRecord.IsEmpty)
         {
             throw new ArgumentException("A StrictLocal State2 checkpoint must include its exact layout and allocator record.", nameof(fileRecord));
         }
