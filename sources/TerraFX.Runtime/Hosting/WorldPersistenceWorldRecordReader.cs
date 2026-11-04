@@ -367,6 +367,7 @@ internal static class WorldPersistenceWorldRecordReader
             limits,
             parsedConfiguration,
             parsedClock,
+            targetRegistration,
             liveIdentities,
             identityScratch);
         var parsedScenes = WorldPersistenceScenesReader.Read(

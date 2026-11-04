@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
 using TerraFX;
 
 namespace TerraFX.Entities;
@@ -13,11 +14,14 @@ internal static class WorldPersistenceEcsReader
     private const int MaximumSystemOrResourceCount = 4096;
     private const ushort RecordKind = 22;
     private const int RootFieldCount = 5;
+    private const ushort UInt32Kind = 3;
+    private const ushort UInt8Kind = 1;
 
     private static readonly Guid s_attachmentSchemaId = new ContentSchemaIdentityAssignment("state/attachment").SchemaId;
     private static readonly Guid s_ecsSchemaId = new ContentSchemaIdentityAssignment("state/ecs").SchemaId;
     private static readonly Guid s_entitySchemaId = new ContentSchemaIdentityAssignment("state/entity").SchemaId;
     private static readonly Guid s_resourceStateSchemaId = new ContentSchemaIdentityAssignment("state/resource-state").SchemaId;
+    private static readonly Guid s_schemaReferenceSchemaId = new ContentSchemaIdentityAssignment("content/schema-ref").SchemaId;
     private static readonly Guid s_systemStateSchemaId = new ContentSchemaIdentityAssignment("state/system-state").SchemaId;
 
     internal static WorldPersistenceEcsContents Read(
@@ -25,6 +29,7 @@ internal static class WorldPersistenceEcsReader
         EbinReadLimits limits,
         WorldPersistenceConfiguration configuration,
         WorldPersistenceClockContents clock,
+        WorldRegistration? targetRegistration,
         WorldPersistenceLiveIdentitySet liveIdentities,
         scoped Span<Guid> identityScratch)
     {
@@ -78,7 +83,11 @@ internal static class WorldPersistenceEcsReader
 
         for (var index = 0; index < attachmentCount; index++)
         {
-            ValidateAttachmentOwner(record.GetRecordArrayElement(4, index), liveIdentities, nameof(ecsRecord));
+            ValidateAttachmentOwner(
+                record.GetRecordArrayElement(4, index),
+                targetRegistration,
+                liveIdentities,
+                nameof(ecsRecord));
         }
 
         return new WorldPersistenceEcsContents(
@@ -99,6 +108,7 @@ internal static class WorldPersistenceEcsReader
 
     internal static void ValidateAttachmentOwner(
         EbinRecordReadView attachment,
+        WorldRegistration? targetRegistration,
         WorldPersistenceLiveIdentitySet liveIdentities,
         string parameterName)
     {
@@ -112,16 +122,32 @@ internal static class WorldPersistenceEcsReader
             throw new ArgumentException("A state/attachment row has the wrong schema identity, version, or field count.", parameterName);
         }
 
-        if (!attachment.TryGetField(1, out var schemaField)
-            || (schemaField.Kind != RecordKind)
-            || !schemaField.IsRequired
-            || (schemaField.Count != 1)
-            || !attachment.TryGetField(3, out var payloadField)
-            || (payloadField.Kind != RecordKind)
-            || !payloadField.IsRequired
-            || (payloadField.Count != 1))
+        var schemaField = GetRequiredField(attachment, 1, RecordKind, expectedCount: 1, parameterName);
+        var payloadField = GetRequiredField(attachment, 3, RecordKind, expectedCount: 1, parameterName);
+        var schema = ReadSchemaReference(new EbinRecordReadView(schemaField.Payload), parameterName);
+        var payload = new EbinRecordReadView(payloadField.Payload);
+
+        if ((payload.Header.SchemaId != schema.SchemaId)
+            || (payload.Header.Major != schema.Major)
+            || (payload.Header.Minor != schema.Minor))
         {
-            throw new ArgumentException("A state/attachment row has an invalid schema or payload field.", parameterName);
+            throw new ArgumentException("A state/attachment payload does not match its saved schema reference.", parameterName);
+        }
+
+        if (targetRegistration is not null)
+        {
+            var scope = attachment.TryGetField(2, out _)
+                ? AttachmentScope.Entity
+                : AttachmentScope.World;
+
+            try
+            {
+                _ = targetRegistration.GetAttachmentBinding(scope, schema);
+            }
+            catch (KeyNotFoundException exception)
+            {
+                throw new ArgumentException("A saved attachment schema and scope are not registered in the target World.", parameterName, exception);
+            }
         }
 
         var hasOwner = attachment.TryGetField(2, out var ownerField);
@@ -191,6 +217,18 @@ internal static class WorldPersistenceEcsReader
         return checked((int)field.Count);
     }
 
+    private static Guid ReadGuid(EbinRecordReadView record, uint tag, string parameterName)
+    {
+        var field = GetRequiredField(record, tag, GuidKind, expectedCount: 1, parameterName);
+
+        if (field.Payload.Length != 16)
+        {
+            throw new ArgumentException("A state/attachment GUID field has an invalid payload length.", parameterName);
+        }
+
+        return new Guid(field.Payload, bigEndian: true);
+    }
+
     private static long ReadInt64(EbinRecordReadView record, uint tag, string parameterName)
     {
         var field = GetRequiredField(record, tag, Int64Kind, expectedCount: 1, parameterName);
@@ -201,6 +239,55 @@ internal static class WorldPersistenceEcsReader
         }
 
         return System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(field.Payload);
+    }
+
+    private static ContentSchemaReference ReadSchemaReference(EbinRecordReadView record, string parameterName)
+    {
+        if ((record.Header.SchemaId != s_schemaReferenceSchemaId)
+            || (record.Header.Major != 1)
+            || (record.Header.Minor != 0)
+            || (record.FieldCount != 4))
+        {
+            throw new ArgumentException("An attachment schema reference has the wrong schema identity, version, or field count.", parameterName);
+        }
+
+        var schemaId = ReadGuid(record, 1, parameterName);
+        var major = ReadUInt32(record, 2, parameterName);
+        var minor = ReadUInt32(record, 3, parameterName);
+        var scopeValue = ReadUInt8(record, 4, parameterName);
+
+        if ((major > int.MaxValue)
+            || (minor > int.MaxValue)
+            || !Enum.IsDefined((ContentSchemaScope)scopeValue))
+        {
+            throw new ArgumentException("An attachment schema reference contains an invalid version or scope.", parameterName);
+        }
+
+        return new ContentSchemaReference(schemaId, checked((int)major), checked((int)minor), (ContentSchemaScope)scopeValue);
+    }
+
+    private static uint ReadUInt32(EbinRecordReadView record, uint tag, string parameterName)
+    {
+        var field = GetRequiredField(record, tag, UInt32Kind, expectedCount: 1, parameterName);
+
+        if (field.Payload.Length != sizeof(uint))
+        {
+            throw new ArgumentException("An attachment schema-reference UInt32 field has an invalid payload length.", parameterName);
+        }
+
+        return System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(field.Payload);
+    }
+
+    private static byte ReadUInt8(EbinRecordReadView record, uint tag, string parameterName)
+    {
+        var field = GetRequiredField(record, tag, UInt8Kind, expectedCount: 1, parameterName);
+
+        if (field.Payload.Length != sizeof(byte))
+        {
+            throw new ArgumentException("An attachment schema-reference UInt8 field has an invalid payload length.", parameterName);
+        }
+
+        return field.Payload[0];
     }
 
     private static void ValidateArrayChildren(

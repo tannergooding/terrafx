@@ -14,9 +14,10 @@ internal sealed class WorldPersistenceStateRowWriterTests
     private static void AssertAttachmentOwnerRow(
         byte[] record,
         EbinReadLimits limits,
-        WorldPersistenceLiveIdentitySet liveIdentities)
+        WorldPersistenceLiveIdentitySet liveIdentities,
+        WorldRegistration? targetRegistration = null)
     {
-        var assertions = new AttachmentOwnerValidation(liveIdentities);
+        var assertions = new AttachmentOwnerValidation(liveIdentities, targetRegistration);
         var status = EbinStructuralReader.Read(
             record,
             limits,
@@ -272,7 +273,17 @@ internal sealed class WorldPersistenceStateRowWriterTests
             var differentLiveSet = new WorldPersistenceLiveIdentitySet(maximumCount: 1);
             differentLiveSet.Add(differentEntityId, identityKind: 1, assignmentOrdinal: 1, nameof(destination));
             differentLiveSet.MatchEntity(differentEntityId, nameof(destination));
-            _ = Assert.Throws<ArgumentException>(() => AssertAttachmentOwnerRow(destination, limits, differentLiveSet));
+            _ = Assert.Throws<ArgumentException>(() => AssertAttachmentOwnerRow(
+                destination,
+                limits,
+                differentLiveSet));
+
+            var incompatibleRegistration = new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build();
+            _ = Assert.Throws<ArgumentException>(() => AssertAttachmentOwnerRow(
+                destination,
+                limits,
+                liveIdentities,
+                targetRegistration: incompatibleRegistration));
         }
 
         if (ownerEntityId is null)
@@ -318,17 +329,25 @@ internal sealed class WorldPersistenceStateRowWriterTests
     private readonly struct AttachmentOwnerValidation : IAction<EbinRecordReadView>
     {
         private readonly WorldPersistenceLiveIdentitySet _liveIdentities;
+        private readonly WorldRegistration? _targetRegistration;
 
-        internal AttachmentOwnerValidation(WorldPersistenceLiveIdentitySet liveIdentities)
+        internal AttachmentOwnerValidation(
+            WorldPersistenceLiveIdentitySet liveIdentities,
+            WorldRegistration? targetRegistration)
         {
             _liveIdentities = liveIdentities;
+            _targetRegistration = targetRegistration;
         }
 
         public readonly void Invoke(scoped EbinRecordReadView record)
         {
             if (record.Header.SchemaId == new ContentSchemaIdentityAssignment("state/attachment").SchemaId)
             {
-                WorldPersistenceEcsReader.ValidateAttachmentOwner(record, _liveIdentities, nameof(record));
+                WorldPersistenceEcsReader.ValidateAttachmentOwner(
+                    record,
+                    _targetRegistration,
+                    liveIdentities: _liveIdentities,
+                    parameterName: nameof(record));
             }
         }
     }
