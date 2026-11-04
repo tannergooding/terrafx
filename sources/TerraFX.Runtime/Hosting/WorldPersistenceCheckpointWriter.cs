@@ -134,50 +134,17 @@ internal static class WorldPersistenceCheckpointWriter
         scoped ReadOnlySpan<byte> fileRecord,
         EbinReadLimits limits,
         WorldRegistration? targetRegistration = null)
+        => ReadContentsCore(fileRecord, limits, targetRegistration, assetReferenceSchemas: null, assetIdScratch: []);
+
+    internal static WorldPersistenceCheckpointContents ReadContents(
+        scoped ReadOnlySpan<byte> fileRecord,
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry assetReferenceSchemas,
+        scoped Span<uint> assetIdScratch)
     {
-        ArgumentNullException.ThrowIfNull(limits);
-        var reader = new FileRecordReader(
-            limits,
-            captureCheckpointRecord: false,
-            captureCheckpointContents: true);
-        var status = EbinStructuralReader.Read(
-            fileRecord,
-            limits,
-            EbinReadPolicy.Canonical,
-            ref reader,
-            out var bytesConsumed,
-            out _);
-
-        if ((status is not EbinReadStatus.Complete) || (bytesConsumed != fileRecord.Length))
-        {
-            throw new ArgumentException("The State2 file is not a complete canonical record.", nameof(fileRecord));
-        }
-
-        var worldRecord = reader.WorldRecord
-            ?? throw new InvalidOperationException("The validated State2 file did not retain its World record.");
-        var worldContents = WorldPersistenceWorldRecordReader.Read(worldRecord, limits, targetRegistration);
-
-        if ((worldContents.Clock.NextTick != reader.NextTick)
-            || (worldContents.Ecs.WorldGuid != reader.WorldGuid)
-            || (worldContents.Ecs.ReplayLineageId != reader.LineageGuid))
-        {
-            throw new ArgumentException("The State2 checkpoint header identity or next tick does not match its World record.", nameof(fileRecord));
-        }
-
-        return new WorldPersistenceCheckpointContents(
-            reader.TransactionGeneration,
-            reader.Mode,
-            reader.WorldGuid,
-            reader.LineageGuid,
-            reader.NextTick,
-            reader.CanonicalHash
-                ?? throw new InvalidOperationException("The validated State2 file did not retain its canonical hash."),
-            reader.CheckpointDigest
-                ?? throw new InvalidOperationException("The validated State2 file did not retain its checkpoint digest."),
-            reader.HeaderRecord
-                ?? throw new InvalidOperationException("The validated State2 file did not retain its header record."),
-            worldRecord,
-            worldContents);
+        ArgumentNullException.ThrowIfNull(assetReferenceSchemas);
+        return ReadContentsCore(fileRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch);
     }
 
     internal static long ReadTransactionGeneration(
@@ -471,6 +438,65 @@ internal static class WorldPersistenceCheckpointWriter
 
         AppendPadding(hash, ref cursor, recordBytes);
         return hash.GetHashAndReset();
+    }
+
+    private static WorldPersistenceCheckpointContents ReadContentsCore(
+        scoped ReadOnlySpan<byte> fileRecord,
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry? assetReferenceSchemas,
+        scoped Span<uint> assetIdScratch)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+        var reader = new FileRecordReader(
+            limits,
+            captureCheckpointRecord: false,
+            captureCheckpointContents: true);
+        var status = EbinStructuralReader.Read(
+            fileRecord,
+            limits,
+            EbinReadPolicy.Canonical,
+            ref reader,
+            out var bytesConsumed,
+            out _);
+
+        if ((status is not EbinReadStatus.Complete) || (bytesConsumed != fileRecord.Length))
+        {
+            throw new ArgumentException("The State2 file is not a complete canonical record.", nameof(fileRecord));
+        }
+
+        var worldRecord = reader.WorldRecord
+            ?? throw new InvalidOperationException("The validated State2 file did not retain its World record.");
+        var worldContents = (assetReferenceSchemas is null)
+            ? WorldPersistenceWorldRecordReader.Read(worldRecord, limits, targetRegistration)
+            : WorldPersistenceWorldRecordReader.Read(
+                worldRecord,
+                limits,
+                targetRegistration,
+                assetReferenceSchemas,
+                assetIdScratch);
+
+        if ((worldContents.Clock.NextTick != reader.NextTick)
+            || (worldContents.Ecs.WorldGuid != reader.WorldGuid)
+            || (worldContents.Ecs.ReplayLineageId != reader.LineageGuid))
+        {
+            throw new ArgumentException("The State2 checkpoint header identity or next tick does not match its World record.", nameof(fileRecord));
+        }
+
+        return new WorldPersistenceCheckpointContents(
+            reader.TransactionGeneration,
+            reader.Mode,
+            reader.WorldGuid,
+            reader.LineageGuid,
+            reader.NextTick,
+            reader.CanonicalHash
+                ?? throw new InvalidOperationException("The validated State2 file did not retain its canonical hash."),
+            reader.CheckpointDigest
+                ?? throw new InvalidOperationException("The validated State2 file did not retain its checkpoint digest."),
+            reader.HeaderRecord
+                ?? throw new InvalidOperationException("The validated State2 file did not retain its header record."),
+            worldRecord,
+            worldContents);
     }
 
     private static HeaderProjection ReadHeaderProjection(

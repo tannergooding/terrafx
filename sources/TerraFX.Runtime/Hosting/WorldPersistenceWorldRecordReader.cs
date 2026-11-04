@@ -32,6 +32,34 @@ internal static class WorldPersistenceWorldRecordReader
         ReadOnlyMemory<byte> worldRecord,
         EbinReadLimits limits,
         WorldRegistration? targetRegistration = null)
+        => ReadCore(worldRecord, limits, targetRegistration, assetReferenceSchemas: null, assetIdScratch: []);
+
+    internal static WorldPersistenceWorldRecordContents Read(
+        ReadOnlyMemory<byte> worldRecord,
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry assetReferenceSchemas,
+        scoped Span<uint> assetIdScratch)
+    {
+        ArgumentNullException.ThrowIfNull(assetReferenceSchemas);
+        return ReadCore(worldRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch);
+    }
+
+    private static ReadOnlyMemory<byte> GetPayload(ReadOnlyMemory<byte> record, int fieldIndex)
+    {
+        var entryOffset = checked(64 + (fieldIndex * 32));
+        var entry = record.Span.Slice(entryOffset, 32);
+        var payloadOffset = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(entry[8..]));
+        var payloadLength = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(entry[16..]));
+        return record.Slice(payloadOffset, payloadLength);
+    }
+
+    private static WorldPersistenceWorldRecordContents ReadCore(
+        ReadOnlyMemory<byte> worldRecord,
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry? assetReferenceSchemas,
+        scoped Span<uint> assetIdScratch)
     {
         ArgumentNullException.ThrowIfNull(limits);
 
@@ -250,6 +278,19 @@ internal static class WorldPersistenceWorldRecordReader
             liveIdentities);
         liveIdentities.ThrowIfNotEmpty(nameof(worldRecord));
 
+        if (assetReferenceSchemas is not null)
+        {
+            ValidateAssetIdsAgainstSources(
+                assetReferenceSchemas,
+                ecsRecord,
+                scenesRecord,
+                assetIdsPayload,
+                assetIdCount,
+                limits,
+                assetIdScratch,
+                nameof(worldRecord));
+        }
+
         if ((parsedScenes.HierarchyNodeCount > parsedEcs.EntityCount)
             || (parsedScenes.InstanceCount != parsedEcs.LiveSceneInstanceCount)
             || (parsedEcs.LiveEntityCount != parsedEcs.EntityCount))
@@ -281,13 +322,43 @@ internal static class WorldPersistenceWorldRecordReader
             registrationRecord);
     }
 
-    private static ReadOnlyMemory<byte> GetPayload(ReadOnlyMemory<byte> record, int fieldIndex)
+    private static void ValidateAssetIdsAgainstSources(
+        CompiledContentSchemaRegistry schemas,
+        ReadOnlyMemory<byte> ecsRecord,
+        ReadOnlyMemory<byte> scenesRecord,
+        ReadOnlyMemory<byte> assetIdsPayload,
+        int assetIdCount,
+        EbinReadLimits limits,
+        scoped Span<uint> assetIdScratch,
+        string parameterName)
     {
-        var entryOffset = checked(64 + (fieldIndex * 32));
-        var entry = record.Span.Slice(entryOffset, 32);
-        var payloadOffset = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(entry[8..]));
-        var payloadLength = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(entry[16..]));
-        return record.Slice(payloadOffset, payloadLength);
+        _ = WorldPersistenceAssetIdSetWriter.MeasureReferenceCount(
+            schemas,
+            ecsRecord.Span,
+            scenesRecord.Span,
+            limits);
+        var uniqueAssetCount = WorldPersistenceAssetIdSetWriter.CopySortedUniqueAssetIds(
+            schemas,
+            ecsRecord.Span,
+            scenesRecord.Span,
+            limits,
+            assetIdScratch);
+
+        if (uniqueAssetCount != assetIdCount)
+        {
+            throw new ArgumentException("The state/world AssetIds do not match its live ECS and Scene references.", parameterName);
+        }
+
+        for (var index = 0; index < uniqueAssetCount; index++)
+        {
+            var offset = checked(32 + (index * sizeof(uint)));
+            var storedAssetId = BinaryPrimitives.ReadUInt32LittleEndian(assetIdsPayload.Span[offset..]);
+
+            if (storedAssetId != assetIdScratch[index])
+            {
+                throw new ArgumentException("The state/world AssetIds do not match its live ECS and Scene references.", parameterName);
+            }
+        }
     }
 
     private static void ValidateAssetIdsPayload(

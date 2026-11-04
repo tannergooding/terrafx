@@ -2749,6 +2749,7 @@ internal sealed partial class SceneAssetStoreTests
                                 in captureLease,
                                 scanSchemas,
                                 uniqueAssetIds);
+                            var assetIdScratch = new uint[referenceCount];
                             var worldAssertions = new WorldPersistenceWorldRecordWriterTests.WorldRecordAssertions(
                                 captureLease.Frame2.HasValue,
                                 controlRecordCount: captureLease.ControlRecordCount,
@@ -2767,7 +2768,9 @@ internal sealed partial class SceneAssetStoreTests
                             var decodedWorld = WorldPersistenceWorldRecordReader.Read(
                                 worldRecord,
                                 persistenceLimits,
-                                worldRegistration);
+                                worldRegistration,
+                                scanSchemas,
+                                assetIdScratch);
                             Assert.That(decodedWorld.Scenes.InstanceCount, Is.EqualTo(1));
                             Assert.That(decodedWorld.Scenes.HierarchyNodeCount, Is.EqualTo(2));
                             Assert.That(decodedWorld.Scenes.RootCount, Is.EqualTo(1));
@@ -2775,6 +2778,41 @@ internal sealed partial class SceneAssetStoreTests
                             Assert.That(decodedWorld.Ecs.LiveEntityCount, Is.EqualTo(2));
                             Assert.That(decodedWorld.Ecs.LiveSceneInstanceCount, Is.EqualTo(1));
                             Assert.That(decodedWorld.AssetIdCount, Is.EqualTo(uniqueAssetCount));
+
+                            var mismatchedAssetIdWorldRecord = new byte[worldRecord.Length];
+                            worldRecord.CopyTo(mismatchedAssetIdWorldRecord, 0);
+                            var assetIdsFieldIndex = -1;
+
+                            for (var fieldIndex = 0; fieldIndex < 7; fieldIndex++)
+                            {
+                                var fieldEntryOffset = checked(64 + (fieldIndex * 32));
+
+                                if (BinaryPrimitives.ReadUInt32LittleEndian(
+                                        mismatchedAssetIdWorldRecord.AsSpan(fieldEntryOffset, sizeof(uint)))
+                                    == 7)
+                                {
+                                    assetIdsFieldIndex = fieldIndex;
+                                    break;
+                                }
+                            }
+
+                            Assert.That(assetIdsFieldIndex, Is.GreaterThanOrEqualTo(0));
+                            var assetIdsFieldEntryOffset = checked(64 + (assetIdsFieldIndex * 32));
+                            var assetIdsPayloadOffset = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(
+                                mismatchedAssetIdWorldRecord.AsSpan(assetIdsFieldEntryOffset + 8, sizeof(ulong))));
+                            var finalAssetIdOffset = checked(assetIdsPayloadOffset + 32 + ((uniqueAssetCount - 1) * sizeof(uint)));
+                            var finalAssetId = BinaryPrimitives.ReadUInt32LittleEndian(
+                                mismatchedAssetIdWorldRecord.AsSpan(finalAssetIdOffset, sizeof(uint)));
+                            BinaryPrimitives.WriteUInt32LittleEndian(
+                                mismatchedAssetIdWorldRecord.AsSpan(finalAssetIdOffset, sizeof(uint)),
+                                checked(finalAssetId + 1));
+                            _ = Assert.Throws<ArgumentException>(
+                                () => WorldPersistenceWorldRecordReader.Read(
+                                    mismatchedAssetIdWorldRecord,
+                                    persistenceLimits,
+                                    worldRegistration,
+                                    scanSchemas,
+                                    assetIdScratch));
                         }
                     }
                 }
