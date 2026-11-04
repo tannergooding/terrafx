@@ -21,7 +21,7 @@ using TerraFX.Rendering;
 namespace TerraFX.Hosting;
 
 /// <summary>Owns CPU, asset, persistence, platform, and optional offscreen graphics services.</summary>
-public sealed class EngineHost : IAsyncDisposable
+public sealed partial class EngineHost : IAsyncDisposable
 {
     private const long DefaultAdmissionDomainBytes = 8_589_934_592L;
     private const int MaximumInputRecipients = 64;
@@ -477,7 +477,13 @@ public sealed class EngineHost : IAsyncDisposable
         {
             var sequenceLease = _hostEventSequenceLease
                 ?? throw new InvalidOperationException("The EngineHost event-sequence lease is not initialized.");
-            _worlds.Add(new HostedWorldSchedule(world, sequenceLease));
+
+            lock (_ownerRequestGate)
+            {
+                ObjectDisposedException.ThrowIf(_stopping, this);
+                _worlds.Add(new HostedWorldSchedule(world, sequenceLease));
+            }
+
             return world;
         }
         catch (Exception)
@@ -635,6 +641,11 @@ public sealed class EngineHost : IAsyncDisposable
 
                 foreach (var schedule in _worlds)
                 {
+                    schedule.World.PumpControlBoundary();
+                }
+
+                foreach (var schedule in _worlds)
+                {
                     _ = schedule.BeginPumpBoundary(hostTimestamp);
                 }
 
@@ -666,7 +677,6 @@ public sealed class EngineHost : IAsyncDisposable
                 foreach (var schedule in _worlds)
                 {
                     var world = schedule.World;
-                    world.PumpControlBoundary();
                     var debtTicks = schedule.GetTickDebt(hostTimestamp);
 
                     if (schedule.IsPaused)
@@ -768,9 +778,20 @@ public sealed class EngineHost : IAsyncDisposable
 
         for (var index = _worlds.Count - 1; index >= 0; index--)
         {
+            var world = _worlds[index].World;
+
             try
             {
-                _worlds[index].World.Dispose();
+                world.PumpControlBoundary();
+            }
+            catch (Exception exception)
+            {
+                worldFailures.Add(exception);
+            }
+
+            try
+            {
+                world.Dispose();
             }
             catch (Exception exception)
             {

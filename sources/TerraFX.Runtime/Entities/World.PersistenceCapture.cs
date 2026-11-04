@@ -25,12 +25,23 @@ public sealed partial class World
             throw new InvalidOperationException("The World cannot begin persistence capture during another operation.");
         }
 
-        _isPersistenceCaptureLeaseActive = true;
         IWorldSceneParticipant? sceneParticipant = null;
         var sceneCaptureActive = false;
 
         try
         {
+            lock (_ownerControlGate)
+            {
+                if ((_ownerControlRequestCount != 0)
+                    || (_acceptedOwnerRequests != _completedOwnerRequests)
+                    || (_completedOwnerRequests != _committedOwnerRequests))
+                {
+                    throw new InvalidOperationException("Persistence capture requires every admitted World owner request to be committed.");
+                }
+
+                _isPersistenceCaptureLeaseActive = true;
+            }
+
             sceneParticipant = _sceneParticipant;
 
             if ((sceneParticipant is not null) && !sceneParticipant.TryBeginPersistenceCapture())
@@ -81,7 +92,11 @@ public sealed partial class World
                 sceneParticipant.EndPersistenceCapture();
             }
 
-            _isPersistenceCaptureLeaseActive = false;
+            lock (_ownerControlGate)
+            {
+                _isPersistenceCaptureLeaseActive = false;
+            }
+
             _activePersistenceCaptureLeaseSequence = 0;
             _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
             throw;
@@ -436,7 +451,12 @@ public sealed partial class World
     {
         ValidatePersistenceCaptureLease(lease);
         _activePersistenceCaptureLeaseSequence = 0;
-        _isPersistenceCaptureLeaseActive = false;
+
+        lock (_ownerControlGate)
+        {
+            _isPersistenceCaptureLeaseActive = false;
+        }
+
         _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
     }
 

@@ -17,6 +17,7 @@ public sealed partial class World : IDisposable
     private const long DefaultAdmissionDomainBytes = 8_589_934_592L;
     private const long FreshWorldControlBytes = 4096;
 
+    private long _acceptedOwnerRequests;
     private HashSet<Entity>? _activeCommandExcludedEntityHandles;
     private HashSet<Entity>? _activeCommandProjectedEntityHandles;
     private long _activePersistenceAdmissionBytes;
@@ -31,7 +32,9 @@ public sealed partial class World : IDisposable
     private readonly WorldAttachmentTable _attachments = new();
     private long _canonicalMutationRevision;
     private long _committedMutationRevision;
+    private long _committedOwnerRequests;
     private CommittedWorldPublication? _committedPublication;
+    private long _completedOwnerRequests;
     private WorldChunkWorkPlanEntry[] _componentTagWorkPlan = [];
     private long _componentTagWorkPlanByteReservation;
     private int _componentTagWorkPlanCount;
@@ -67,6 +70,7 @@ public sealed partial class World : IDisposable
     private readonly int _maximumIdentityBranches;
     private readonly int _maximumLiveEntities;
     private readonly long _maximumOwnedStateBytes;
+    private readonly int _maximumPendingOwnerRequests;
     private readonly long _maximumPersistenceAdmissionBytes;
     private readonly int _maximumRecordedControls;
     private readonly long _maximumSnapshotBytes;
@@ -74,11 +78,17 @@ public sealed partial class World : IDisposable
     private ulong _nextAttachmentInstallationId;
     private long _nextChunkOrdinal;
     private long _nextControlSequence = 1;
+    private long _nextOwnerRequestSequence = 1;
     private long _nextQueryEpoch;
     private long _nextSystemInvocationEpoch;
     private long _nextTickIndex;
     private readonly WorldOptions _options;
     private long _ownerCommandPreparationByteReservation;
+    private readonly Lock _ownerControlGate = new();
+    private readonly long _ownerControlQueueByteReservation;
+    private int _ownerControlRequestCount;
+    private int _ownerControlRequestHead;
+    private readonly WorldOwnerControlRequest?[] _ownerControlRequests;
     private readonly uint _ownerId;
     private readonly int _ownerThreadId;
     private readonly bool _ownsAdmissionDomain;
@@ -185,8 +195,11 @@ public sealed partial class World : IDisposable
         _maximumCommandStagingBytes = options.SchedulingLimits.MaximumCommandStagingBytes;
         _maximumDeferredCommands = options.MaximumDeferredCommands;
         _maximumLiveEntities = options.MaximumLiveEntities;
+        _maximumPendingOwnerRequests = options.MaximumPendingOwnerRequests;
         _maximumOwnedStateBytes = options.SchedulingLimits.MaximumOwnedStateBytes;
         _maximumPersistenceAdmissionBytes = options.MaximumPersistenceAdmissionBytes;
+        _ownerControlQueueByteReservation = ArrayBytes(options.MaximumPendingOwnerRequests, IntPtr.Size);
+        _ownerControlRequests = new WorldOwnerControlRequest?[options.MaximumPendingOwnerRequests];
         _maximumWorkPlanBytes = options.SchedulingLimits.MaximumWorkPlanBytes;
         _componentTagWorkPlanByteReservation = 0;
         _maximumRecordedControls = options.MaximumRecordedControls;
@@ -457,9 +470,11 @@ public sealed partial class World : IDisposable
                 throw new InvalidOperationException("The selected resource partitions and system instances exceed the resource and system state budget.");
             }
 
+            var ownerControlQueueBytes = ArrayBytes(options.MaximumPendingOwnerRequests, IntPtr.Size);
             var worldOwnedBytes = checked(
                 FreshWorldControlBytes
                 + archetypeDirectoryBytes
+                + ownerControlQueueBytes
                 + diagnosticBytes
                 + resourceAndSystemStateBytes
                 + sceneSupportBytes
@@ -1119,9 +1134,12 @@ public sealed partial class World : IDisposable
             {
                 lock (_persistenceAdmissionGate)
                 {
-                    if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                    lock (_ownerControlGate)
                     {
-                        return;
+                        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                        {
+                            return;
+                        }
                     }
                 }
             }
@@ -1135,6 +1153,8 @@ public sealed partial class World : IDisposable
 
                 throw new InvalidOperationException("The WorldGuid binding could not be retired; the World remains active.");
             }
+
+            RejectPendingOwnerControlRequestsForDisposal();
 
             if (_ownsWorkerPool)
             {
@@ -1542,7 +1562,8 @@ public sealed partial class World : IDisposable
             + _controlStorageByteReservation
             + _cpuExtractionSupportByteReservation
             + _subscriptionStorageByteReservation
-            + _ownerCommandPreparationByteReservation);
+            + _ownerCommandPreparationByteReservation
+            + _ownerControlQueueByteReservation);
 
         for (var index = 0; index < _archetypeCount; index++)
         {

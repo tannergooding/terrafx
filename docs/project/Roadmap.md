@@ -12,6 +12,8 @@ M04 Load-intent contract progress: `TerraFX.Entities.WorldRestoreIntent`, `Terra
 
 M04 State2 provenance progress: external Scene binding targets are validated against the complete kind-aware identity history, so retired Entity assignments remain valid historical provenance while scene-instance identities and unassigned GUIDs reject. Live membership validation remains in force for authoritative Entity references. The exact-sized caller-owned identity scratch carries assignment kind to support this check without an additional hidden identity index.
 
+M04 hosted World-control progress: `EngineHost.ChangeFrameAsync` and `ChangeTimeScaleAsync` admit through a bounded World-owned FIFO, separate from the host callback mailbox. Pre-canceled and full requests preserve admission/cursor semantics; accepted requests apply at the owner boundary, and persistence capture rejects pending or uncommitted World requests. A focused Runtime witness covers these outcomes and verifies that a pending request cannot produce a Save file in Debug and Release. Coherent frame changes and retirement across real frame participants remain open.
+
 ## Milestone status
 
 The retired implementation and samples are not an implementation baseline for these milestones.
@@ -136,7 +138,7 @@ qualification. Reference checked-in contracts or durable published review record
 checkout-local artifacts. Keep generated logs and qualification outputs out of Git, and
 use Git history rather than repeating implementation history here. Do not change design
 contracts to describe implementation progress.
-M04 State2 external-target membership progress: `WorldPersistenceScenesReader` now requires each non-null external Scene binding target to identify a live ECS Entity in the decoded World; explicit-null remains distinct. The package-backed nested Scene/Prefab reader selection mutates a valid target to a non-live identity and rejects the record, while the paired live-target and explicit-null rows pass 2/2 in Debug and Release. Authored Required/AllowNull policy comparison and remapping source targets into a replacement candidate remain open.
+M04 State2 external-target identity progress: `WorldPersistenceScenesReader` resolves each non-null external Scene binding target against complete kind-aware identity history, allowing retired Entity assignments while rejecting SceneInstance identities and unassigned GUIDs; explicit-null remains distinct. Active Scene bindings still require a live Entity target. Package-backed nested Scene/Prefab coverage verifies retired-target acceptance and wrong-kind/unknown rejection. Authored Required/AllowNull policy comparison and remapping source targets into a replacement candidate remain open.
 
 M03-B Persistence service boundary: The operational `WorldPersistence.SaveAsync` path accepts Standard snapshots; it now rejects StrictLocal before capture or file I/O until exact layout/allocator/cursor capture exists. `ReadContents` requires the header mode to agree with the StrictLocal cursor group and rejects a StrictLocal header whose World record omits `state/strict-layout`. StrictLocal header package-digest encoding remains implemented, but does not by itself qualify a StrictLocal checkpoint.
 

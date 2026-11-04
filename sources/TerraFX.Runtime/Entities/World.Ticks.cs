@@ -142,6 +142,12 @@ public sealed partial class World
             _nextTickIndex = nextTickIndex;
             _publicationSequence = nextPublicationSequence;
             _committedMutationRevision = Volatile.Read(ref _canonicalMutationRevision);
+
+            lock (_ownerControlGate)
+            {
+                _committedOwnerRequests = _completedOwnerRequests;
+            }
+
             Volatile.Write(ref _committedPublication, publication);
             publicationCommitted = true;
             DeliverPublication(publication, capturedSubscriptions, deliveryReport);

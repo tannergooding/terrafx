@@ -160,6 +160,7 @@ public sealed partial class World
             _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
         }
 
+        DrainOwnerControlRequests();
         _sceneParticipant?.PumpControlBoundary();
     }
 
