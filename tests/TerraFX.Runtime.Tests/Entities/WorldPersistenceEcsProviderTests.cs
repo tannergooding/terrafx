@@ -240,6 +240,26 @@ internal sealed class WorldPersistenceEcsProviderTests
         });
     }
 
+    private static void ValidateStateRows(
+        EbinRecordReadView record,
+        int systemCount,
+        int resourceCount,
+        int attachmentCount,
+        WorldRegistration registration,
+        Guid worldGuid)
+        => WorldPersistenceEcsReader.ValidateStateRows(
+            record,
+            systemCount,
+            resourceCount,
+            attachmentCount,
+            registration,
+            registration.Schemas,
+            new WorldPersistenceLiveIdentitySet(maximumCount: 0),
+            identityScratch: [],
+            worldGuid: worldGuid,
+            maximumDepth: EbinReadLimits.Foundation.MaximumDepth,
+            parameterName: nameof(record));
+
     [Test]
     public void CapturesResourceRegistrationInTheWorldRegistrationRoot()
     {
@@ -281,7 +301,11 @@ internal sealed class WorldPersistenceEcsProviderTests
         world.SetAttachment(new EcsAttachmentValue { Counter = 23 }, AttachmentOwnership.Transferred);
         _ = world.Step();
         using var lease = world.AcquirePersistenceCaptureLease();
-        var assertions = new EcsAttachmentAssertions(world.WorldGuid, attachmentSchemaId, expectedCounter: 23);
+        var assertions = new EcsAttachmentAssertions(
+            world.Options.Registration,
+            world.WorldGuid,
+            attachmentSchemaId,
+            expectedCounter: 23);
 
         _ = WorldPersistenceEcsTestHelper.CaptureEcsRecord(world, in lease, ref assertions);
     }
@@ -292,7 +316,12 @@ internal sealed class WorldPersistenceEcsProviderTests
         using var world = CreateResourceWorld(out var resourceId, out var stateSchemaId);
         _ = world.Step();
         using var lease = world.AcquirePersistenceCaptureLease();
-        var assertions = new EcsResourceAssertions(world.WorldGuid, resourceId, stateSchemaId, expectedValue: 17);
+        var assertions = new EcsResourceAssertions(
+            world.Options.Registration,
+            world.WorldGuid,
+            resourceId,
+            stateSchemaId,
+            expectedValue: 17);
 
         _ = WorldPersistenceEcsTestHelper.CaptureEcsRecord(world, in lease, ref assertions);
     }
@@ -303,7 +332,12 @@ internal sealed class WorldPersistenceEcsProviderTests
         using var world = CreateStatefulSystemWorld(out var systemId, out var stateSchema);
         _ = world.Step();
         using var lease = world.AcquirePersistenceCaptureLease();
-        var assertions = new EcsSystemAssertions(world.WorldGuid, systemId, stateSchema.SchemaId, expectedCounter: 42);
+        var assertions = new EcsSystemAssertions(
+            world.Options.Registration,
+            world.WorldGuid,
+            systemId,
+            stateSchema.SchemaId,
+            expectedCounter: 42);
 
         _ = WorldPersistenceEcsTestHelper.CaptureEcsRecord(world, in lease, ref assertions);
     }
@@ -312,12 +346,18 @@ internal sealed class WorldPersistenceEcsProviderTests
     {
         private readonly long _expectedCounter;
         private readonly Guid _expectedSchemaId;
+        private readonly WorldRegistration _registration;
         private readonly Guid _worldGuid;
 
-        internal EcsAttachmentAssertions(Guid worldGuid, Guid expectedSchemaId, long expectedCounter)
+        internal EcsAttachmentAssertions(
+            WorldRegistration registration,
+            Guid worldGuid,
+            Guid expectedSchemaId,
+            long expectedCounter)
         {
             _expectedCounter = expectedCounter;
             _expectedSchemaId = expectedSchemaId;
+            _registration = registration;
             _worldGuid = worldGuid;
         }
 
@@ -353,6 +393,13 @@ internal sealed class WorldPersistenceEcsProviderTests
                 BinaryPrimitives.ReadInt64LittleEndian(attachment.GetRecord(3).GetField(0).Payload),
                 Is.EqualTo(_expectedCounter));
             Assert.That(ReadGuid(record.GetRecord(5).GetField(0)), Is.EqualTo(_worldGuid));
+            ValidateStateRows(
+                record,
+                systemCount: 0,
+                resourceCount: 0,
+                attachmentCount: 1,
+                registration: _registration,
+                worldGuid: _worldGuid);
         }
     }
 
@@ -496,13 +543,20 @@ internal sealed class WorldPersistenceEcsProviderTests
         private readonly Guid _expectedResourceId;
         private readonly Guid _expectedSchemaId;
         private readonly ulong _expectedValue;
+        private readonly WorldRegistration _registration;
         private readonly Guid _worldGuid;
 
-        internal EcsResourceAssertions(Guid worldGuid, Guid expectedResourceId, Guid expectedSchemaId, ulong expectedValue)
+        internal EcsResourceAssertions(
+            WorldRegistration registration,
+            Guid worldGuid,
+            Guid expectedResourceId,
+            Guid expectedSchemaId,
+            ulong expectedValue)
         {
             _expectedResourceId = expectedResourceId;
             _expectedSchemaId = expectedSchemaId;
             _expectedValue = expectedValue;
+            _registration = registration;
             _worldGuid = worldGuid;
         }
 
@@ -532,6 +586,13 @@ internal sealed class WorldPersistenceEcsProviderTests
             Assert.That(values.Payload.Length, Is.EqualTo(40));
             Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(values.Payload[32..]), Is.EqualTo(_expectedValue));
             Assert.That(ReadGuid(record.GetRecord(5).GetField(0)), Is.EqualTo(_worldGuid));
+            ValidateStateRows(
+                record,
+                systemCount: 0,
+                resourceCount: 1,
+                attachmentCount: 0,
+                registration: _registration,
+                worldGuid: _worldGuid);
         }
     }
 
@@ -726,9 +787,11 @@ internal sealed class WorldPersistenceEcsProviderTests
         private readonly int _expectedCounter;
         private readonly Guid _expectedStateSchemaId;
         private readonly Guid _expectedSystemId;
+        private readonly WorldRegistration _registration;
         private readonly Guid _worldGuid;
 
         internal EcsSystemAssertions(
+            WorldRegistration registration,
             Guid worldGuid,
             Guid expectedSystemId,
             Guid expectedStateSchemaId,
@@ -737,6 +800,7 @@ internal sealed class WorldPersistenceEcsProviderTests
             _expectedCounter = expectedCounter;
             _expectedStateSchemaId = expectedStateSchemaId;
             _expectedSystemId = expectedSystemId;
+            _registration = registration;
             _worldGuid = worldGuid;
         }
 
@@ -765,6 +829,13 @@ internal sealed class WorldPersistenceEcsProviderTests
             Assert.That(BinaryPrimitives.ReadInt32LittleEndian(counterField.Payload), Is.EqualTo(_expectedCounter));
             Assert.That(record.GetRecord(5).Header.SchemaId, Is.EqualTo(new ContentSchemaIdentityAssignment("state/identity-history").SchemaId));
             Assert.That(ReadGuid(record.GetRecord(5).GetField(0)), Is.EqualTo(_worldGuid));
+            ValidateStateRows(
+                record,
+                systemCount: 1,
+                resourceCount: 0,
+                attachmentCount: 0,
+                registration: _registration,
+                worldGuid: _worldGuid);
         }
     }
 

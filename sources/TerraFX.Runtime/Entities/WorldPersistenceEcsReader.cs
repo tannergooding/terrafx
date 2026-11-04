@@ -92,15 +92,18 @@ internal static class WorldPersistenceEcsReader
             liveIdentities,
             identityScratch,
             nameof(ecsRecord));
-
-        for (var index = 0; index < attachmentCount; index++)
-        {
-            ValidateAttachmentOwner(
-                record.GetRecordArrayElement(4, index),
-                targetRegistration,
-                liveIdentities,
-                nameof(ecsRecord));
-        }
+        ValidateStateRows(
+            record,
+            systemCount,
+            resourceCount,
+            attachmentCount,
+            targetRegistration,
+            schemas,
+            liveIdentities,
+            identityScratch,
+            worldGuid,
+            limits.MaximumDepth,
+            nameof(ecsRecord));
 
         return new WorldPersistenceEcsContents(
             entityCount,
@@ -221,7 +224,7 @@ internal static class WorldPersistenceEcsReader
         }
 
         var record = new EbinRecordReadView(componentRecord.Span);
-        var componentSchema = ReadComponentSchema(record, parameterName);
+        var componentSchema = ReadContentSchemaReference(record, parameterName);
         ValidateComponentSchema(
             componentSchema,
             ComponentStorageFlags.Persistent,
@@ -297,6 +300,51 @@ internal static class WorldPersistenceEcsReader
         }
     }
 
+    internal static void ValidateStateRows(
+        EbinRecordReadView record,
+        int systemCount,
+        int resourceCount,
+        int attachmentCount,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry? schemas,
+        WorldPersistenceLiveIdentitySet liveIdentities,
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> identityScratch,
+        Guid worldGuid,
+        int maximumDepth,
+        string parameterName)
+    {
+        ValidateSystemStateRows(
+            record,
+            systemCount,
+            targetRegistration,
+            schemas,
+            liveIdentities,
+            identityScratch,
+            worldGuid,
+            maximumDepth,
+            parameterName);
+        ValidateResourceStateRows(
+            record,
+            resourceCount,
+            targetRegistration,
+            schemas,
+            liveIdentities,
+            identityScratch,
+            worldGuid,
+            maximumDepth,
+            parameterName);
+        ValidateAttachmentStateRows(
+            record,
+            attachmentCount,
+            targetRegistration,
+            schemas,
+            liveIdentities,
+            identityScratch,
+            worldGuid,
+            maximumDepth,
+            parameterName);
+    }
+
     internal static void ValidateTagSchema(
         ContentSchemaReference schema,
         WorldRegistration? targetRegistration,
@@ -325,6 +373,19 @@ internal static class WorldPersistenceEcsReader
         }
 
         throw new ArgumentException("A state/entity tag schema is not registered in the target World.", parameterName);
+    }
+
+    private static int CompareSchemaHeader(ContentSchemaReference schema, EbinRecordHeader header)
+    {
+        var comparison = FoundationCatalogue.CompareRfc(schema.SchemaId, header.SchemaId);
+
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        comparison = schema.Major.CompareTo(header.Major);
+        return (comparison != 0) ? comparison : schema.Minor.CompareTo(header.Minor);
     }
 
     private static int CompareSchemaReferences(ContentSchemaReference left, ContentSchemaReference right)
@@ -386,15 +447,15 @@ internal static class WorldPersistenceEcsReader
         return checked((int)field.Count);
     }
 
-    private static ContentSchemaReference ReadComponentSchema(
-        EbinRecordReadView component,
+    private static ContentSchemaReference ReadContentSchemaReference(
+        EbinRecordReadView record,
         string parameterName)
     {
-        var header = component.Header;
+        var header = record.Header;
 
         if ((header.SchemaId == Guid.Empty) || (header.Major <= 0) || (header.Minor < 0))
         {
-            throw new ArgumentException("A state/entity component record has an invalid schema header.", parameterName);
+            throw new ArgumentException("A persisted content record has an invalid schema header.", parameterName);
         }
 
         return new ContentSchemaReference(
@@ -512,12 +573,33 @@ internal static class WorldPersistenceEcsReader
         }
         else
         {
-            foreach (var candidate in schemas.Schemas)
+            var low = 0;
+            var high = schemas.Schemas.Length;
+
+            while (low < high)
             {
-                if ((candidate.Schema.SchemaId != header.SchemaId)
-                    || (candidate.Schema.Major != header.Major)
-                    || (candidate.Schema.Minor != header.Minor)
-                    || ((field.NestedRoleMask & (1UL << ((int)candidate.Role - 1))) == 0))
+                var middle = low + ((high - low) / 2);
+
+                if (CompareSchemaHeader(schemas.Schemas[middle].Schema, header) < 0)
+                {
+                    low = middle + 1;
+                }
+                else
+                {
+                    high = middle;
+                }
+            }
+
+            for (var index = low; index < schemas.Schemas.Length; index++)
+            {
+                var candidate = schemas.Schemas[index];
+
+                if (CompareSchemaHeader(candidate.Schema, header) != 0)
+                {
+                    break;
+                }
+
+                if ((field.NestedRoleMask & (1UL << ((int)candidate.Role - 1))) == 0)
                 {
                     continue;
                 }
@@ -691,6 +773,75 @@ internal static class WorldPersistenceEcsReader
         }
     }
 
+    private static void ValidateAttachmentStateRows(
+        EbinRecordReadView record,
+        int count,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry? schemas,
+        WorldPersistenceLiveIdentitySet liveIdentities,
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> identityScratch,
+        Guid worldGuid,
+        int maximumDepth,
+        string parameterName)
+    {
+        var hasPrevious = false;
+        var previousHasOwner = false;
+        var previousOwnerId = Guid.Empty;
+        var previousSchema = default(ContentSchemaReference);
+
+        for (var index = 0; index < count; index++)
+        {
+            var attachment = record.GetRecordArrayElement(4, index);
+            ValidateAttachmentOwner(attachment, targetRegistration, liveIdentities, parameterName);
+            var schema = ReadSchemaReference(attachment.GetRecord(1), parameterName);
+            var payload = attachment.GetRecord(3);
+            var payloadSchema = ValidatePersistedStatePayload(
+                payload,
+                ContentSchemaRole.AttachmentState,
+                schemas,
+                liveIdentities,
+                identityScratch,
+                worldGuid,
+                maximumDepth,
+                parameterName);
+
+            if (payloadSchema != schema)
+            {
+                throw new ArgumentException("A state/attachment payload does not match its saved schema reference.", parameterName);
+            }
+
+            var hasOwner = attachment.TryGetField(2, out var ownerField);
+            var ownerId = hasOwner
+                ? new Guid(ownerField.Payload, bigEndian: true)
+                : Guid.Empty;
+
+            if (hasPrevious)
+            {
+                var comparison = previousHasOwner.CompareTo(hasOwner);
+
+                if ((comparison == 0) && hasOwner)
+                {
+                    comparison = FoundationCatalogue.CompareRfc(previousOwnerId, ownerId);
+                }
+
+                if (comparison == 0)
+                {
+                    comparison = CompareSchemaReferences(previousSchema, schema);
+                }
+
+                if (comparison >= 0)
+                {
+                    throw new ArgumentException("The state/attachment rows are not in canonical owner/schema order.", parameterName);
+                }
+            }
+
+            hasPrevious = true;
+            previousHasOwner = hasOwner;
+            previousOwnerId = ownerId;
+            previousSchema = schema;
+        }
+    }
+
     private static void ValidateEntityChildren(
         EbinRecordReadView record,
         int count,
@@ -796,7 +947,7 @@ internal static class WorldPersistenceEcsReader
             for (var componentIndex = 0; componentIndex < componentCount; componentIndex++)
             {
                 var component = entity.GetRecordArrayElement(2, componentIndex);
-                var componentSchema = ReadComponentSchema(component, parameterName);
+                var componentSchema = ReadContentSchemaReference(component, parameterName);
 
                 if (hasPreviousComponentSchema
                     && (CompareSchemaReferences(previousComponentSchema, componentSchema) >= 0))
@@ -890,6 +1041,96 @@ internal static class WorldPersistenceEcsReader
             }
 
             previousEntityId = entityId;
+        }
+    }
+
+    private static ContentSchemaReference ValidatePersistedStatePayload(
+        EbinRecordReadView payload,
+        ContentSchemaRole expectedRole,
+        CompiledContentSchemaRegistry? schemas,
+        WorldPersistenceLiveIdentitySet liveIdentities,
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> identityScratch,
+        Guid worldGuid,
+        int maximumDepth,
+        string parameterName)
+    {
+        var schema = ReadContentSchemaReference(payload, parameterName);
+
+        if (schemas is null)
+        {
+            return schema;
+        }
+
+        if (!schemas.TryGetSchema(schema, out var dataSchema) || (dataSchema.Role != expectedRole))
+        {
+            throw new ArgumentException("A state payload does not match its compiled owner schema role.", parameterName);
+        }
+
+        ValidateSchemaRecord(
+            payload,
+            dataSchema,
+            schemas,
+            liveIdentities,
+            identityScratch,
+            worldGuid,
+            maximumDepth,
+            depth: 0,
+            parameterName);
+        return schema;
+    }
+
+    private static void ValidateResourceStateRows(
+        EbinRecordReadView record,
+        int count,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry? schemas,
+        WorldPersistenceLiveIdentitySet liveIdentities,
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> identityScratch,
+        Guid worldGuid,
+        int maximumDepth,
+        string parameterName)
+    {
+        var previousResourceId = Guid.Empty;
+
+        if ((targetRegistration is not null) && (count != targetRegistration.Resources.Length))
+        {
+            throw new ArgumentException("The state/resource-state rows do not match the target World resource registrations.", parameterName);
+        }
+
+        for (var index = 0; index < count; index++)
+        {
+            var resource = record.GetRecordArrayElement(3, index);
+            var resourceId = ReadGuid(resource, 1, parameterName);
+
+            if ((resourceId == Guid.Empty)
+                || ((previousResourceId != Guid.Empty) && (previousResourceId.CompareTo(resourceId) >= 0)))
+            {
+                throw new ArgumentException("The state/resource-state rows are not in canonical ResourceId order.", parameterName);
+            }
+
+            var payload = new EbinRecordReadView(
+                GetRequiredField(resource, 2, RecordKind, expectedCount: 1, parameterName).Payload);
+            var payloadSchema = ValidatePersistedStatePayload(
+                payload,
+                ContentSchemaRole.ResourceState,
+                schemas,
+                liveIdentities,
+                identityScratch,
+                worldGuid,
+                maximumDepth,
+                parameterName);
+
+            if (targetRegistration is not null)
+            {
+                var expected = targetRegistration.Resources[index];
+
+                if ((resourceId != expected.ResourceId) || (payloadSchema != expected.Schema))
+                {
+                    throw new ArgumentException("A state/resource-state row does not match the exact target World resource registration.", parameterName);
+                }
+            }
+
+            previousResourceId = resourceId;
         }
     }
 
@@ -1051,6 +1292,87 @@ internal static class WorldPersistenceEcsReader
         if (!isValid)
         {
             throw new ArgumentException("A state/entity reference field does not identify a permitted World identity.", parameterName);
+        }
+    }
+
+    private static void ValidateSystemStateRows(
+        EbinRecordReadView record,
+        int count,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry? schemas,
+        WorldPersistenceLiveIdentitySet liveIdentities,
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> identityScratch,
+        Guid worldGuid,
+        int maximumDepth,
+        string parameterName)
+    {
+        var previousSystemId = Guid.Empty;
+        var expectedSystemIndex = 0;
+
+        for (var index = 0; index < count; index++)
+        {
+            var system = record.GetRecordArrayElement(2, index);
+            var systemId = ReadGuid(system, 1, parameterName);
+
+            if ((systemId == Guid.Empty)
+                || ((previousSystemId != Guid.Empty)
+                    && (FoundationCatalogue.CompareRfc(previousSystemId, systemId) >= 0)))
+            {
+                throw new ArgumentException("The state/system-state rows are not in canonical RFC SystemId order.", parameterName);
+            }
+
+            var payload = new EbinRecordReadView(
+                GetRequiredField(system, 2, RecordKind, expectedCount: 1, parameterName).Payload);
+            var payloadSchema = ValidatePersistedStatePayload(
+                payload,
+                ContentSchemaRole.SystemState,
+                schemas,
+                liveIdentities,
+                identityScratch,
+                worldGuid,
+                maximumDepth,
+                parameterName);
+
+            if (targetRegistration is not null)
+            {
+                while ((expectedSystemIndex < targetRegistration.Systems.Length)
+                    && !targetRegistration.Systems[expectedSystemIndex].Factory.Descriptor.StateSchema.HasValue)
+                {
+                    expectedSystemIndex++;
+                }
+
+                if (expectedSystemIndex >= targetRegistration.Systems.Length)
+                {
+                    throw new ArgumentException("A state/system-state row is not registered in the target World.", parameterName);
+                }
+
+                var expected = targetRegistration.Systems[expectedSystemIndex];
+                var expectedSchema = expected.Factory.Descriptor.StateSchema
+                    ?? throw new InvalidOperationException("The target stateful system omitted its state schema.");
+
+                if ((systemId != expected.Description.SystemId) || (payloadSchema != expectedSchema))
+                {
+                    throw new ArgumentException("A state/system-state row does not match the target World system registration.", parameterName);
+                }
+
+                expectedSystemIndex++;
+            }
+
+            previousSystemId = systemId;
+        }
+
+        if (targetRegistration is not null)
+        {
+            while ((expectedSystemIndex < targetRegistration.Systems.Length)
+                && !targetRegistration.Systems[expectedSystemIndex].Factory.Descriptor.StateSchema.HasValue)
+            {
+                expectedSystemIndex++;
+            }
+
+            if (expectedSystemIndex != targetRegistration.Systems.Length)
+            {
+                throw new ArgumentException("The state/system-state rows omit a registered stateful World system.", parameterName);
+            }
         }
     }
 }
