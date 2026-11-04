@@ -624,7 +624,7 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
     }
 
     [Test]
-    public void ComposesStrictLocalCursorStateWithoutClaimingLayoutCapture()
+    public void ComposesStrictLocalCursorsButRejectsRootWithoutLayoutCapture()
     {
         var (schemas, world) = CreateControlValidationWorld(SimulationProfile.StrictLocal);
         using (world)
@@ -639,18 +639,20 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             _ = world.Step();
 
             using var lease = world.AcquirePersistenceCaptureLease();
-            var limits = WorldPersistenceEbinLimits.Create(world.Options);
-            var worldRecord = ComposeWorldRecord(world, in lease, schemas, []);
-            var registration = new WorldRegistrationBuilder(schemas).Build();
-            var decoded = WorldPersistenceWorldRecordReader.Read(worldRecord, limits, registration, schemas, []);
-
-            Assert.That(decoded.Cursors.NextOwnerRequestSequence, Is.EqualTo(2));
-            Assert.That(decoded.Cursors.NextBarrierEpoch, Is.EqualTo(lease.NextTickIndex + 1));
-            Assert.That(decoded.Cursors.AcceptedOwnerRequests, Is.EqualTo(1));
-            Assert.That(decoded.Cursors.PendingCommandCount, Is.Zero);
-            Assert.That(decoded.Cursors.PendingOwnerRequestCount, Is.Zero);
-            Assert.That(decoded.Cursors.PendingWorldEventCount, Is.Zero);
-            Assert.That(decoded.StrictLayoutRecord.IsEmpty, Is.True);
+            Assert.That(
+                WorldPersistenceCaptureCoordinator.Capture(
+                    world,
+                    lease,
+                    schemas,
+                    out var worldRecord,
+                    out var assetIdCount,
+                    out var diagnostic,
+                    CancellationToken.None),
+                Is.EqualTo(EbinWriteStatus.InvalidRecord),
+                diagnostic?.Category);
+            Assert.That(diagnostic?.Category, Is.EqualTo("strict-layout-mode"));
+            Assert.That(worldRecord, Is.Null);
+            Assert.That(assetIdCount, Is.Zero);
         }
     }
 

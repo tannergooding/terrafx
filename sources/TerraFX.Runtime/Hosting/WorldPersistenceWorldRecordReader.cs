@@ -353,6 +353,12 @@ internal static class WorldPersistenceWorldRecordReader
             limits,
             controlRecordCount,
             parsedClock);
+
+        if (parsedCursors.AcceptedOwnerRequests.HasValue != !strictLayoutRecord.IsEmpty)
+        {
+            throw new ArgumentException("The state/world StrictLocal cursor group and layout record must be present together.", nameof(worldRecord));
+        }
+
         var parsedRegistration = WorldPersistenceRegistrationReader.Read(
             registrationRecord,
             limits,

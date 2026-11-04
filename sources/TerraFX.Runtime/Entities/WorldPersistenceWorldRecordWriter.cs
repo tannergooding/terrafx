@@ -82,6 +82,17 @@ internal static class WorldPersistenceWorldRecordWriter
         diagnostic = null;
         var hasFrame2 = !sources.Frame2Record.IsEmpty;
         var hasStrictLayout = !sources.StrictLayoutRecord.IsEmpty;
+        var requiresStrictLayout = sources.Profile is SimulationProfile.StrictLocal;
+
+        if (hasStrictLayout != requiresStrictLayout)
+        {
+            diagnostic = CreateDiagnostic(
+                "strict-layout-mode",
+                hasStrictLayout ? 1UL : 0UL,
+                requiresStrictLayout ? 1UL : 0UL);
+            return EbinWriteStatus.InvalidRecord;
+        }
+
         var fieldCount = 10 + (hasFrame2 ? 1 : 0) + (hasStrictLayout ? 1 : 0);
 
         if (limits.MaximumFieldsPerRecord < fieldCount)
@@ -180,7 +191,7 @@ internal static class WorldPersistenceWorldRecordWriter
 
         if (hasStrictLayout)
         {
-            status = ValidateRecord(sources.StrictLayoutRecord, "state/strict-layout", expectedFieldCount: 0, limits, out diagnostic);
+            status = ValidateRecord(sources.StrictLayoutRecord, "state/strict-layout", expectedFieldCount: 5, limits, out diagnostic);
 
             if (status is not EbinWriteStatus.Complete)
             {
