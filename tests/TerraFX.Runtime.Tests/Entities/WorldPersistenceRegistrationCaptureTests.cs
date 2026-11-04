@@ -230,6 +230,7 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
         });
 
         Assert.That(WorldPersistenceCheckpointWriter.ReadTransactionGeneration(firstFileRecord, limits), Is.EqualTo(1));
+        Assert.That(WorldPersistenceCheckpointWriter.ReadCheckpointRecord(firstFileRecord, limits), Is.EqualTo(firstCheckpointRecord));
         var tamperedFileRecord = (byte[])firstFileRecord.Clone();
         var fileDigestOffset = FindSequence(tamperedFileRecord, firstFileContentDigest);
         Assert.That(fileDigestOffset, Is.GreaterThanOrEqualTo(0));

@@ -106,12 +106,35 @@ internal static class WorldPersistenceCheckpointWriter
         return (fileRecord, fileContentDigest);
     }
 
+    internal static byte[] ReadCheckpointRecord(
+        scoped ReadOnlySpan<byte> fileRecord,
+        EbinReadLimits limits)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+        var reader = new FileRecordReader(limits, captureCheckpointRecord: true);
+        var status = EbinStructuralReader.Read(
+            fileRecord,
+            limits,
+            EbinReadPolicy.Canonical,
+            ref reader,
+            out var bytesConsumed,
+            out _);
+
+        if ((status is not EbinReadStatus.Complete) || (bytesConsumed != fileRecord.Length))
+        {
+            throw new ArgumentException("The State2 file is not a complete canonical record.", nameof(fileRecord));
+        }
+
+        return reader.CheckpointRecord
+            ?? throw new InvalidOperationException("The validated State2 file did not retain its checkpoint record.");
+    }
+
     internal static long ReadTransactionGeneration(
         scoped ReadOnlySpan<byte> fileRecord,
         EbinReadLimits limits)
     {
         ArgumentNullException.ThrowIfNull(limits);
-        var reader = new FileRecordReader(limits);
+        var reader = new FileRecordReader(limits, captureCheckpointRecord: false);
         var status = EbinStructuralReader.Read(
             fileRecord,
             limits,
@@ -534,13 +557,18 @@ internal static class WorldPersistenceCheckpointWriter
 
     private struct FileRecordReader : IAction<EbinRecordReadView>
     {
+        private readonly bool _captureCheckpointRecord;
         private readonly EbinReadLimits _limits;
 
-        internal FileRecordReader(EbinReadLimits limits)
+        internal FileRecordReader(EbinReadLimits limits, bool captureCheckpointRecord)
         {
+            _captureCheckpointRecord = captureCheckpointRecord;
             _limits = limits;
             TransactionGeneration = 0;
+            CheckpointRecord = null;
         }
+
+        internal byte[]? CheckpointRecord { get; private set; }
 
         internal long TransactionGeneration { get; private set; }
 
@@ -639,6 +667,7 @@ internal static class WorldPersistenceCheckpointWriter
             }
 
             TransactionGeneration = transactionGeneration;
+            CheckpointRecord = _captureCheckpointRecord ? checkpoint.EncodedBytes.ToArray() : null;
         }
     }
 
