@@ -53,6 +53,7 @@ internal sealed partial class EngineHostOptionsTests
         var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
         var packagePath = SceneAssetStoreTests.Package.WritePackage(packageBytes);
         var savePath = Path.Combine(Path.GetTempPath(), $"terrafx-{Guid.NewGuid():N}.state");
+        var strictLocalSavePath = Path.Combine(Path.GetTempPath(), $"terrafx-{Guid.NewGuid():N}.strict.state");
         var assetRegistration = new AssetStoreRegistrationBuilder(schemas).Build();
         var assetStoreOptions = new AssetStoreOptions(packagePath, SHA256.HashData(packageBytes), assetRegistration);
         var options = CreateHeadlessOptions(assetStoreOptions, cpuWorkerCount: 0);
@@ -125,6 +126,24 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(worldContents.RegistrationRecord.IsEmpty, Is.False);
             });
 
+            Task<SaveReceipt>? strictLocalSaveTask = null;
+            await host.InvokeAsync(_ => strictLocalSaveTask = host.Persistence.SaveAsync(
+                    world!,
+                    new SaveOptions(strictLocalSavePath, SaveDurabilityPolicy.BestEffort) {
+                        Mode = WorldPersistenceMode.StrictLocal,
+                    }))
+                .ConfigureAwait(false);
+            var strictLocalReceipt = await (strictLocalSaveTask
+                ?? throw new InvalidOperationException("The hosted StrictLocal Save operation was not admitted."))
+                .ConfigureAwait(false);
+
+            Assert.Multiple(() => {
+                Assert.That(strictLocalReceipt.Status, Is.EqualTo(SaveStatus.Rejected));
+                Assert.That(strictLocalReceipt.TransactionGeneration, Is.Null);
+                Assert.That(strictLocalReceipt.Diagnostic?.Code, Is.EqualTo("save-strict-local-layout-unavailable"));
+                Assert.That(File.Exists(strictLocalSavePath), Is.False);
+            });
+
             await host.StopAsync().ConfigureAwait(false);
         }
         finally
@@ -141,6 +160,8 @@ internal sealed partial class EngineHostOptionsTests
                 File.Delete(packagePath);
                 File.Delete(savePath);
                 File.Delete(string.Concat(savePath, ".bak"));
+                File.Delete(strictLocalSavePath);
+                File.Delete(string.Concat(strictLocalSavePath, ".bak"));
             }
         }
     }

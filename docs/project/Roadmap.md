@@ -133,3 +133,5 @@ checkout-local artifacts. Keep generated logs and qualification outputs out of G
 use Git history rather than repeating implementation history here. Do not change design
 contracts to describe implementation progress.
 M04 State2 external-target membership progress: `WorldPersistenceScenesReader` now requires each non-null external Scene binding target to identify a live ECS Entity in the decoded World; explicit-null remains distinct. The package-backed nested Scene/Prefab reader selection mutates a valid target to a non-live identity and rejects the record, while the paired live-target and explicit-null rows pass 2/2 in Debug and Release. Authored Required/AllowNull policy comparison and remapping source targets into a replacement candidate remain open.
+
+M03-B Persistence service boundary: The operational `WorldPersistence.SaveAsync` path accepts Standard snapshots; it now rejects StrictLocal before capture or file I/O until exact layout/allocator capture exists. StrictLocal header package-digest encoding remains implemented, but does not by itself qualify a StrictLocal checkpoint.

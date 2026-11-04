@@ -437,6 +437,14 @@ public sealed class WorldPersistence : IAsyncDisposable
 
         try
         {
+            if (options.Mode is WorldPersistenceMode.StrictLocal)
+            {
+                return Task.FromResult(CreateRejected(
+                    "save-strict-local-layout-unavailable",
+                    "StrictLocal requires exact World layout and allocator state that the current capture path does not produce.",
+                    world.WorldGuid));
+            }
+
             packageLease = _assets.AcquirePackageLease();
             var schemas = world.Options.Registration.Schemas;
 
