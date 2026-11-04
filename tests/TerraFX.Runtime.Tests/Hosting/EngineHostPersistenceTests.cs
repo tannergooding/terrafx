@@ -126,6 +126,29 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(worldContents.RegistrationRecord.IsEmpty, Is.False);
             });
 
+            var strictLocalHeaderRecord = WorldPersistenceHeaderWriter.Create(
+                options.PersistenceMetadata,
+                WorldPersistenceMode.StrictLocal,
+                SHA256.HashData(packageBytes),
+                checkpoint.WorldGuid,
+                checkpoint.LineageGuid,
+                checkpoint.NextTick,
+                checked((byte)host.CpuWorkerCount),
+                WorldPersistenceHeaderWriterTests.CreateFoundationProfileRecord());
+            var strictLocalCheckpointRecord = WorldPersistenceCheckpointWriter.CreateCheckpoint(
+                strictLocalHeaderRecord,
+                checkpoint.WorldRecord,
+                limits).CheckpointRecord;
+            var strictLocalFileRecord = WorldPersistenceCheckpointWriter.CreateFileRecord(
+                transactionGeneration: 2,
+                checkpointRecord: strictLocalCheckpointRecord,
+                limits: limits).FileRecord;
+            _ = Assert.Throws<ArgumentException>(() => WorldPersistenceCheckpointWriter.ReadContents(
+                strictLocalFileRecord,
+                limits,
+                world.Options.Registration,
+                identityScratch: new Guid[identityAssignmentCount]));
+
             Task<SaveReceipt>? strictLocalSaveTask = null;
             await host.InvokeAsync(_ => strictLocalSaveTask = host.Persistence.SaveAsync(
                     world!,

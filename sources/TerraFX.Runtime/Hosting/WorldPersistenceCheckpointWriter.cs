@@ -533,6 +533,12 @@ internal static class WorldPersistenceCheckpointWriter
             throw new ArgumentException("The State2 checkpoint header identity or next tick does not match its World record.", nameof(fileRecord));
         }
 
+        if ((reader.Mode == (byte)WorldPersistenceMode.StrictLocal)
+            && worldContents.StrictLayoutRecord.IsEmpty)
+        {
+            throw new ArgumentException("A StrictLocal State2 checkpoint must include its exact layout and allocator record.", nameof(fileRecord));
+        }
+
         return new WorldPersistenceCheckpointContents(
             reader.TransactionGeneration,
             reader.Mode,
