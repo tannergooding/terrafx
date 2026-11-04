@@ -349,6 +349,40 @@ internal static class WorldPersistenceScenesReader
         return BinaryPrimitives.ReadUInt32LittleEndian(field.Payload);
     }
 
+    private static void ValidateExternalBindings(
+        EbinRecordReadView instance,
+        int externalBindingCount,
+        string parameterName)
+    {
+        var previousBindingId = Guid.Empty;
+
+        for (var index = 0; index < externalBindingCount; index++)
+        {
+            var binding = instance.GetRecordArrayElement(5, index);
+            ValidateRecordHeader(binding, s_externalBindingSchemaId, minimumFieldCount: 1, maximumFieldCount: 2, parameterName);
+            var bindingId = ReadGuid(binding, 1, isRequired: true, parameterName);
+            var hasTarget = binding.TryGetField(2, out var targetField);
+
+            if ((binding.FieldCount != (hasTarget ? 2 : 1))
+                || ((index > 0) && (FoundationCatalogue.CompareRfc(previousBindingId, bindingId) >= 0)))
+            {
+                throw new ArgumentException("The state/external-scene-binding array is not in unique RFC SlotId order.", parameterName);
+            }
+
+            if (hasTarget
+                && ((targetField.Kind != GuidKind)
+                    || targetField.IsRequired
+                    || (targetField.Count != 1)
+                    || (targetField.Payload.Length != 16)
+                    || (new Guid(targetField.Payload, bigEndian: true) == Guid.Empty)))
+            {
+                throw new ArgumentException("A state/external-scene-binding target has an invalid wire shape or identity.", parameterName);
+            }
+
+            previousBindingId = bindingId;
+        }
+    }
+
     private static int ValidateGuidFixedArray(
         EbinFieldReadView field,
         int maximumCount,
@@ -813,7 +847,7 @@ internal static class WorldPersistenceScenesReader
 
         var occurrenceIndices = ValidateOccurrences(instance, occurrenceCount, sourceAsset, parameterName);
         ValidateSceneEntityBindings(instance, bindingCount, entityIdsField, occurrenceIndices, parameterName);
-        ValidateRecordArrayChildren(instance, 5, externalBindingCount, s_externalBindingSchemaId, 1, 2, parameterName);
+        ValidateExternalBindings(instance, externalBindingCount, parameterName);
         return instanceId;
     }
 }
