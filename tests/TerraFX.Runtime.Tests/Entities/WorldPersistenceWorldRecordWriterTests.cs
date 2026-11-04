@@ -22,7 +22,6 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
         World world,
         in WorldPersistenceCaptureLease lease,
         CompiledContentSchemaRegistry schemas,
-        ReadOnlySpan<byte> ecsRecord,
         ReadOnlySpan<byte> scenesRecord,
         ReadOnlySpan<uint> assetIds)
     {
@@ -30,7 +29,6 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             world,
             lease,
             schemas,
-            ecsRecord,
             scenesRecord,
             out var worldRecord,
             out var assetIdCount,

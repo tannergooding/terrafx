@@ -2744,7 +2744,6 @@ internal sealed partial class SceneAssetStoreTests
                                 world,
                                 in captureLease,
                                 scanSchemas,
-                                ecsRecord,
                                 scenesRecord,
                                 uniqueAssetIds);
                             var worldAssertions = new WorldPersistenceWorldRecordWriterTests.WorldRecordAssertions(

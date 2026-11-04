@@ -15,6 +15,56 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
         World world,
         WorldPersistenceCaptureLease lease,
         CompiledContentSchemaRegistry schemas,
+        scoped ReadOnlySpan<byte> scenesRecord,
+        out byte[]? worldRecord,
+        out int assetIdCount,
+        out EbinStructuralDiagnostic? diagnostic,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        ArgumentNullException.ThrowIfNull(schemas);
+        lease.ValidateCurrent();
+
+        if (!lease.IsBoundTo(world))
+        {
+            throw new ArgumentException("The capture lease must belong to this exact World.", nameof(lease));
+        }
+
+        var status = WorldPersistenceEcsCaptureCoordinator.Capture(
+            world,
+            lease,
+            out var ecsRecordBytes,
+            out var ecsReservation,
+            out diagnostic,
+            cancellationToken);
+
+        if (status is not EbinWriteStatus.Complete)
+        {
+            worldRecord = null;
+            assetIdCount = 0;
+            return status;
+        }
+
+        using var ecsReservationScope = ecsReservation
+            ?? throw new InvalidOperationException("The ECS capture reservation was not created.");
+        var ecsRecord = ecsRecordBytes
+            ?? throw new InvalidOperationException("The ECS capture did not produce its record.");
+        return CaptureFromRecords(
+            world,
+            lease,
+            schemas,
+            ecsRecord,
+            scenesRecord,
+            out worldRecord,
+            out assetIdCount,
+            out diagnostic,
+            cancellationToken);
+    }
+
+    internal static EbinWriteStatus CaptureFromRecords(
+        World world,
+        WorldPersistenceCaptureLease lease,
+        CompiledContentSchemaRegistry schemas,
         scoped ReadOnlySpan<byte> ecsRecord,
         scoped ReadOnlySpan<byte> scenesRecord,
         out byte[]? worldRecord,
@@ -326,6 +376,7 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
             + frame3Workspace.WorkspaceBytes
             + controlWorkspace.WorkspaceBytes
             + (2L * cursorsBytes)
+            + scenesRecord.Length
             + emptyArrayPayload.Length);
         var captureWorkspace = new WorldPersistenceWorldRecordCaptureWorkspaceRequirements(
             referenceCount,
