@@ -2,6 +2,7 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Runtime.InteropServices;
 using TerraFX;
 using TerraFX.Entities;
 using TerraFX.Scenes;
@@ -282,6 +283,7 @@ internal static class WorldPersistenceWorldRecordReader
         {
             ValidateAssetIdsAgainstSources(
                 assetReferenceSchemas,
+                worldRecord,
                 ecsRecord,
                 scenesRecord,
                 assetIdsPayload,
@@ -324,6 +326,7 @@ internal static class WorldPersistenceWorldRecordReader
 
     private static void ValidateAssetIdsAgainstSources(
         CompiledContentSchemaRegistry schemas,
+        ReadOnlyMemory<byte> worldRecord,
         ReadOnlyMemory<byte> ecsRecord,
         ReadOnlyMemory<byte> scenesRecord,
         ReadOnlyMemory<byte> assetIdsPayload,
@@ -332,11 +335,11 @@ internal static class WorldPersistenceWorldRecordReader
         scoped Span<uint> assetIdScratch,
         string parameterName)
     {
-        _ = WorldPersistenceAssetIdSetWriter.MeasureReferenceCount(
-            schemas,
-            ecsRecord.Span,
-            scenesRecord.Span,
-            limits);
+        if (MemoryMarshal.AsBytes(assetIdScratch).Overlaps(worldRecord.Span))
+        {
+            throw new ArgumentException("The AssetId verification scratch span cannot overlap the source World record.", nameof(assetIdScratch));
+        }
+
         var uniqueAssetCount = WorldPersistenceAssetIdSetWriter.CopySortedUniqueAssetIds(
             schemas,
             ecsRecord.Span,
