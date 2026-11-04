@@ -30,6 +30,16 @@ public sealed class AssetPackageLease : IDisposable
         }
     }
 
+    internal AssetStoreRegistration Registration
+    {
+        get
+        {
+            var state = Volatile.Read(ref _state);
+            ObjectDisposedException.ThrowIf(state is null, this);
+            return state.Backing.Options.Registration;
+        }
+    }
+
     /// <summary>Releases this package backing reference.</summary>
     public void Dispose()
     {

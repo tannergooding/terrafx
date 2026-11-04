@@ -340,6 +340,8 @@ public sealed partial class World : IDisposable
 
     internal long CanonicalMutationRevision => _canonicalMutationRevision;
 
+    internal int CpuWorkerCount => _workerPool.WorkerCount;
+
     internal Guid ExecutionSessionId => _executionSessionId;
 
     internal StableIdentityLedger IdentityLedger => _identityLedger;

@@ -43,6 +43,31 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
         }
     }
 
+    internal IDisposable AcquireRetainedUse(World world, long workspaceBytes)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        ArgumentOutOfRangeException.ThrowIfNegative(workspaceBytes);
+
+        lock (_disposeGate)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            if (!ReferenceEquals(_world, world))
+            {
+                throw new ArgumentException("The persistence reservation belongs to another World.", nameof(world));
+            }
+
+            if (workspaceBytes > (_bytes - _activeWorkspaceBytes))
+            {
+                throw new ArgumentException("The persistence reservation does not cover the simultaneous operation workspaces.", nameof(workspaceBytes));
+            }
+
+            _activeUseCount = checked(_activeUseCount + 1);
+            _activeWorkspaceBytes = checked(_activeWorkspaceBytes + workspaceBytes);
+            return new UseLease(() => ReleaseUse(workspaceBytes));
+        }
+    }
+
     internal UseScope AcquireUse(World world, long workspaceBytes)
     {
         ArgumentNullException.ThrowIfNull(world);
@@ -551,6 +576,16 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
                 _workspaceBytes = 0;
                 reservation.ReleaseUse(workspaceBytes);
             }
+        }
+    }
+
+    private sealed class UseLease(Action releaseUse) : IDisposable
+    {
+        private Action? _releaseUse = releaseUse;
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref _releaseUse, null)?.Invoke();
         }
     }
 }

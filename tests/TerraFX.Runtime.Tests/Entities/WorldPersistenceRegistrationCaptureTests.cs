@@ -59,6 +59,19 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
         return SHA256.HashData(preimage);
     }
 
+    private static int FindSequence(ReadOnlySpan<byte> source, ReadOnlySpan<byte> sequence)
+    {
+        for (var index = 0; index <= source.Length - sequence.Length; index++)
+        {
+            if (source.Slice(index, sequence.Length).SequenceEqual(sequence))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
     [Test]
     public void CapturesRegistrationRootFromFrozenWorldRegistration()
     {
@@ -215,6 +228,15 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             Assert.That(fileBytesConsumed, Is.EqualTo(firstFileRecord.Length));
             Assert.That(nextGenerationFileRecord.Length, Is.EqualTo(firstFileRecord.Length));
         });
+
+        Assert.That(WorldPersistenceCheckpointWriter.ReadTransactionGeneration(firstFileRecord, limits), Is.EqualTo(1));
+        var tamperedFileRecord = (byte[])firstFileRecord.Clone();
+        var fileDigestOffset = FindSequence(tamperedFileRecord, firstFileContentDigest);
+        Assert.That(fileDigestOffset, Is.GreaterThanOrEqualTo(0));
+        tamperedFileRecord[fileDigestOffset] ^= 0x01;
+        Assert.That(
+            () => WorldPersistenceCheckpointWriter.ReadTransactionGeneration(tamperedFileRecord, limits),
+            Throws.ArgumentException);
 
         capturedRecordUse.Dispose();
         retainedCaptureReservation.Dispose();
