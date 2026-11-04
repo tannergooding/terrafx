@@ -27,6 +27,7 @@ internal sealed partial class EngineHostOptionsTests
             CreateAssetStoreOptions().Registration);
         var options = CreateHeadlessOptions(assetStoreOptions, cpuWorkerCount: 0);
         EngineHost? host = null;
+        EngineHost? otherHost = null;
         World? world = null;
         var blocker = Task.CompletedTask;
         Task<SaveReceipt>? pendingSaveTask = null;
@@ -53,6 +54,19 @@ internal sealed partial class EngineHostOptionsTests
 
             var targetWorld = world
                 ?? throw new InvalidOperationException("The owner callback did not create its World.");
+            otherHost = await EngineHost.StartAsync(options).ConfigureAwait(false);
+            var wrongHost = otherHost
+                ?? throw new InvalidOperationException("The second EngineHost did not start.");
+
+            try
+            {
+                _ = await wrongHost.ChangeFrameAsync(targetWorld, nextFrame).ConfigureAwait(false);
+                Assert.Fail("A different EngineHost accepted a World it does not own.");
+            }
+            catch (ArgumentException)
+            {
+            }
+
             using var preCanceled = new CancellationTokenSource();
             await preCanceled.CancelAsync().ConfigureAwait(false);
             var canceledFrameChange = host.ChangeFrameAsync(targetWorld, nextFrame, preCanceled.Token);
@@ -75,6 +89,10 @@ internal sealed partial class EngineHostOptionsTests
 
             var timeScaleTask = host.ChangeTimeScaleAsync(targetWorld, 0.5f);
             Assert.That(timeScaleTask.IsCompleted, Is.False);
+            var refusedTimeScale = await host.ChangeTimeScaleAsync(targetWorld, 1.5f).ConfigureAwait(false);
+            Assert.That(refusedTimeScale.Status, Is.EqualTo(TimeScaleChangeStatus.Rejected));
+            Assert.That(refusedTimeScale.Diagnostics, Has.Length.EqualTo(1));
+            Assert.That(refusedTimeScale.Diagnostics[0].Code, Is.EqualTo("WorldOwnerQueueFull"));
             var refusedFrameChange = host.ChangeFrameAsync(targetWorld, nextFrame);
             Assert.That(refusedFrameChange.IsFaulted, Is.True);
             WorldOwnerQueueFullException queueFull;
@@ -94,6 +112,7 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(queueFull.PendingLimit, Is.EqualTo(1));
             Assert.That(queueFull.NextOwnerRequestSequence, Is.EqualTo(2));
             Assert.That(queueFull.AcceptedOwnerRequests, Is.EqualTo(1));
+            Assert.That(queueFull.NextControlSequence, Is.EqualTo(1));
             Assert.That(queueFull.Diagnostic.Code, Is.EqualTo("WorldOwnerQueueFull"));
 
             var saveAdmissionTask = host.InvokeAsync(_ => pendingSaveTask = host.Persistence.SaveAsync(
@@ -134,15 +153,25 @@ internal sealed partial class EngineHostOptionsTests
 
                 try
                 {
-                    if (host is not null)
+                    if (otherHost is not null)
                     {
-                        await host.DisposeAsync().ConfigureAwait(false);
+                        await otherHost.DisposeAsync().ConfigureAwait(false);
                     }
                 }
                 finally
                 {
-                    File.Delete(savePath);
-                    File.Delete(packagePath);
+                    try
+                    {
+                        if (host is not null)
+                        {
+                            await host.DisposeAsync().ConfigureAwait(false);
+                        }
+                    }
+                    finally
+                    {
+                        File.Delete(savePath);
+                        File.Delete(packagePath);
+                    }
                 }
             }
         }
