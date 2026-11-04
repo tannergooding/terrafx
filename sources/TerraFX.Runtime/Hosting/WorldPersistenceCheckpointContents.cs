@@ -20,12 +20,14 @@ internal sealed class WorldPersistenceCheckpointContents
         byte[] canonicalHash,
         byte[] checkpointDigest,
         byte[] headerRecord,
-        byte[] worldRecord)
+        byte[] worldRecord,
+        WorldPersistenceWorldRecordContents worldContents)
     {
         ArgumentNullException.ThrowIfNull(canonicalHash);
         ArgumentNullException.ThrowIfNull(checkpointDigest);
         ArgumentNullException.ThrowIfNull(headerRecord);
         ArgumentNullException.ThrowIfNull(worldRecord);
+        ArgumentNullException.ThrowIfNull(worldContents);
         TransactionGeneration = transactionGeneration;
         Mode = mode;
         WorldGuid = worldGuid;
@@ -35,6 +37,7 @@ internal sealed class WorldPersistenceCheckpointContents
         _checkpointDigest = checkpointDigest;
         _headerRecord = headerRecord;
         _worldRecord = worldRecord;
+        WorldContents = worldContents;
     }
 
     internal ReadOnlyMemory<byte> CanonicalHash => _canonicalHash;
@@ -50,6 +53,8 @@ internal sealed class WorldPersistenceCheckpointContents
     internal long NextTick { get; }
 
     internal long TransactionGeneration { get; }
+
+    internal WorldPersistenceWorldRecordContents WorldContents { get; }
 
     internal Guid WorldGuid { get; }
 

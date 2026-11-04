@@ -151,6 +151,17 @@ internal static class WorldPersistenceCheckpointWriter
             throw new ArgumentException("The State2 file is not a complete canonical record.", nameof(fileRecord));
         }
 
+        var worldRecord = reader.WorldRecord
+            ?? throw new InvalidOperationException("The validated State2 file did not retain its World record.");
+        var worldContents = WorldPersistenceWorldRecordReader.Read(worldRecord, limits);
+
+        if ((worldContents.Clock.NextTick != reader.NextTick)
+            || (worldContents.Ecs.WorldGuid != reader.WorldGuid)
+            || (worldContents.Ecs.ReplayLineageId != reader.LineageGuid))
+        {
+            throw new ArgumentException("The State2 checkpoint header identity or next tick does not match its World record.", nameof(fileRecord));
+        }
+
         return new WorldPersistenceCheckpointContents(
             reader.TransactionGeneration,
             reader.Mode,
@@ -163,8 +174,8 @@ internal static class WorldPersistenceCheckpointWriter
                 ?? throw new InvalidOperationException("The validated State2 file did not retain its checkpoint digest."),
             reader.HeaderRecord
                 ?? throw new InvalidOperationException("The validated State2 file did not retain its header record."),
-            reader.WorldRecord
-                ?? throw new InvalidOperationException("The validated State2 file did not retain its World record."));
+            worldRecord,
+            worldContents);
     }
 
     internal static long ReadTransactionGeneration(

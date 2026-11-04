@@ -87,9 +87,7 @@ internal sealed partial class EngineHostOptionsTests
             var checkpoint = WorldPersistenceCheckpointWriter.ReadContents(
                 fileRecord,
                 WorldPersistenceEbinLimits.Create(world!.Options));
-            var worldContents = WorldPersistenceWorldRecordReader.Read(
-                checkpoint.WorldRecord,
-                WorldPersistenceEbinLimits.Create(world.Options));
+            var worldContents = checkpoint.WorldContents;
 
             Assert.Multiple(() => {
                 Assert.That(checkpoint.TransactionGeneration, Is.EqualTo(1));
