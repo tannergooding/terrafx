@@ -11,6 +11,8 @@ internal sealed class WorldPersistenceEcsContents
         int systemCount,
         int resourceCount,
         int attachmentCount,
+        int liveEntityCount,
+        int liveSceneInstanceCount,
         Guid worldGuid,
         Guid replayLineageId,
         Guid activeBranchId,
@@ -23,6 +25,8 @@ internal sealed class WorldPersistenceEcsContents
         SystemCount = systemCount;
         ResourceCount = resourceCount;
         AttachmentCount = attachmentCount;
+        LiveEntityCount = liveEntityCount;
+        LiveSceneInstanceCount = liveSceneInstanceCount;
         WorldGuid = worldGuid;
         ReplayLineageId = replayLineageId;
         ActiveBranchId = activeBranchId;
@@ -43,6 +47,10 @@ internal sealed class WorldPersistenceEcsContents
     internal int IdentityPageCount { get; }
 
     internal Guid IssuanceNamespace { get; }
+
+    internal int LiveEntityCount { get; }
+
+    internal int LiveSceneInstanceCount { get; }
 
     internal long NextAssignmentOrdinal { get; }
 

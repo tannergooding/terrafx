@@ -233,7 +233,7 @@ internal static class WorldPersistenceWorldRecordReader
             registrationRecord,
             limits,
             parsedConfiguration.MaximumComponentTypes);
-        var parsedEcs = WorldPersistenceEcsReader.Read(ecsRecord, limits, parsedConfiguration);
+        var parsedEcs = WorldPersistenceEcsReader.Read(ecsRecord, limits, parsedConfiguration, parsedClock);
         var parsedScenes = WorldPersistenceScenesReader.Read(
             scenesRecord,
             limits,
@@ -242,9 +242,11 @@ internal static class WorldPersistenceWorldRecordReader
             parsedConfiguration.MaximumIdentityAssignments,
             parsedConfiguration.MaximumSceneOccurrences);
 
-        if (parsedScenes.HierarchyNodeCount > parsedEcs.EntityCount)
+        if ((parsedScenes.HierarchyNodeCount > parsedEcs.EntityCount)
+            || (parsedScenes.InstanceCount != parsedEcs.LiveSceneInstanceCount)
+            || (parsedEcs.LiveEntityCount != parsedEcs.EntityCount))
         {
-            throw new ArgumentException("The state/scenes hierarchy contains more nodes than live World entities.", nameof(worldRecord));
+            throw new ArgumentException("The ECS entity/scene-instance arrays do not match their live identity history.", nameof(worldRecord));
         }
 
         return new WorldPersistenceWorldRecordContents(

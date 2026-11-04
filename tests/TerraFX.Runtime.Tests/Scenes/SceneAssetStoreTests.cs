@@ -2768,6 +2768,8 @@ internal sealed partial class SceneAssetStoreTests
                             Assert.That(decodedWorld.Scenes.HierarchyNodeCount, Is.EqualTo(2));
                             Assert.That(decodedWorld.Scenes.RootCount, Is.EqualTo(1));
                             Assert.That(decodedWorld.Ecs.EntityCount, Is.EqualTo(2));
+                            Assert.That(decodedWorld.Ecs.LiveEntityCount, Is.EqualTo(2));
+                            Assert.That(decodedWorld.Ecs.LiveSceneInstanceCount, Is.EqualTo(1));
                             Assert.That(decodedWorld.AssetIdCount, Is.EqualTo(uniqueAssetCount));
                         }
                     }

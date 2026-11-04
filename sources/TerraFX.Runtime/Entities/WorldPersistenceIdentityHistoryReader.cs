@@ -36,7 +36,9 @@ internal static class WorldPersistenceIdentityHistoryReader
         Guid issuanceNamespace,
         long nextAssignmentOrdinal,
         int branchCount,
-        int pageCount) Read(
+        int pageCount,
+        int liveEntityCount,
+        int liveSceneInstanceCount) Read(
             EbinRecordReadView record,
             EbinReadLimits limits,
             WorldPersistenceConfiguration configuration,
@@ -142,14 +144,19 @@ internal static class WorldPersistenceIdentityHistoryReader
             throw new ArgumentException("The active identity branch is absent from the directory.", parameterName);
         }
 
+        var liveEntityCount = 0;
+        var liveSceneInstanceCount = 0;
+
         for (var pageIndex = 0; pageIndex < pageCount; pageIndex++)
         {
-            ValidatePage(
+            var liveCounts = ValidatePage(
                 record.GetRecordArrayElement(7, pageIndex),
                 pageIndex,
                 assignmentCount,
                 branchCount,
                 parameterName);
+            liveEntityCount = checked(liveEntityCount + liveCounts.liveEntityCount);
+            liveSceneInstanceCount = checked(liveSceneInstanceCount + liveCounts.liveSceneInstanceCount);
         }
 
         return (
@@ -159,7 +166,9 @@ internal static class WorldPersistenceIdentityHistoryReader
             issuanceNamespace,
             nextAssignmentOrdinal,
             branchCount,
-            pageCount);
+            pageCount,
+            liveEntityCount,
+            liveSceneInstanceCount);
     }
 
     private static EbinFieldReadView GetRequiredField(
@@ -363,7 +372,7 @@ internal static class WorldPersistenceIdentityHistoryReader
         return field.Payload[0];
     }
 
-    private static void ValidatePage(
+    private static (int liveEntityCount, int liveSceneInstanceCount) ValidatePage(
         EbinRecordReadView page,
         int pageIndex,
         long assignmentCount,
@@ -385,6 +394,8 @@ internal static class WorldPersistenceIdentityHistoryReader
         var metadataField = GetRequiredField(page, 3, FixedArrayKind, checked((ulong)expectedRecordCount), parameterName);
         var ids = ReadFixedArray(idsField, GuidKind, GuidPayloadBytes, parameterName);
         var metadata = ReadFixedArray(metadataField, UInt32Kind, sizeof(uint), parameterName);
+        var liveEntityCount = 0;
+        var liveSceneInstanceCount = 0;
 
         if ((firstOrdinal != expectedFirstOrdinal)
             || (ids.Length != checked(expectedRecordCount * GuidPayloadBytes))
@@ -409,6 +420,20 @@ internal static class WorldPersistenceIdentityHistoryReader
             {
                 throw new ArgumentException("An identity-page assignment has invalid identity metadata.", parameterName);
             }
+
+            if ((value & (1U << 14)) != 0)
+            {
+                if (identityKind == 1)
+                {
+                    liveEntityCount = checked(liveEntityCount + 1);
+                }
+                else
+                {
+                    liveSceneInstanceCount = checked(liveSceneInstanceCount + 1);
+                }
+            }
         }
+
+        return (liveEntityCount, liveSceneInstanceCount);
     }
 }

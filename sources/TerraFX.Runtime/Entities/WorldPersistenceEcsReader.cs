@@ -61,13 +61,16 @@ internal static class WorldPersistenceEcsReader
         ValidateArrayChildren(record, 4, attachmentCount, s_attachmentSchemaId, minimumFieldCount: 3, maximumFieldCount: 3, nameof(ecsRecord));
         var historyField = GetRequiredField(record, 5, RecordKind, expectedCount: 1, nameof(ecsRecord));
         var history = new EbinRecordReadView(historyField.Payload);
-        var (worldGuid, replayLineageId, activeBranchId, issuanceNamespace, nextAssignmentOrdinal, branchCount, pageCount) = WorldPersistenceIdentityHistoryReader.Read(history, limits, configuration, clock.NextTick, nameof(ecsRecord));
+        var (worldGuid, replayLineageId, activeBranchId, issuanceNamespace, nextAssignmentOrdinal, branchCount, pageCount, liveEntityCount, liveSceneInstanceCount) =
+            WorldPersistenceIdentityHistoryReader.Read(history, limits, configuration, clock.NextTick, nameof(ecsRecord));
 
         return new WorldPersistenceEcsContents(
             entityCount,
             systemCount,
             resourceCount,
             attachmentCount,
+            liveEntityCount,
+            liveSceneInstanceCount,
             worldGuid,
             replayLineageId,
             activeBranchId,
