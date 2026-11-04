@@ -233,14 +233,20 @@ internal static class WorldPersistenceWorldRecordReader
             registrationRecord,
             limits,
             parsedConfiguration.MaximumComponentTypes);
-        var parsedEcs = WorldPersistenceEcsReader.Read(ecsRecord, limits, parsedConfiguration, parsedClock);
+        var maximumLiveIdentityCount = checked(
+            (long)parsedConfiguration.MaximumLiveEntities
+            + parsedConfiguration.MaximumActiveSceneInstances);
+        var liveIdentities = new WorldPersistenceLiveIdentitySet(maximumLiveIdentityCount);
+        var parsedEcs = WorldPersistenceEcsReader.Read(ecsRecord, limits, parsedConfiguration, parsedClock, liveIdentities);
         var parsedScenes = WorldPersistenceScenesReader.Read(
             scenesRecord,
             limits,
             parsedConfiguration.MaximumActiveSceneInstances,
             parsedConfiguration.MaximumLiveEntities,
             parsedConfiguration.MaximumIdentityAssignments,
-            parsedConfiguration.MaximumSceneOccurrences);
+            parsedConfiguration.MaximumSceneOccurrences,
+            liveIdentities);
+        liveIdentities.ThrowIfNotEmpty(nameof(worldRecord));
 
         if ((parsedScenes.HierarchyNodeCount > parsedEcs.EntityCount)
             || (parsedScenes.InstanceCount != parsedEcs.LiveSceneInstanceCount)

@@ -3,6 +3,7 @@
 using System;
 using System.Buffers.Binary;
 using TerraFX;
+using TerraFX.Entities;
 
 namespace TerraFX.Scenes;
 
@@ -30,7 +31,8 @@ internal static class WorldPersistenceScenesReader
         int maximumActiveSceneInstances,
         int maximumLiveEntities,
         int maximumIdentityAssignments,
-        int maximumSceneOccurrences)
+        int maximumSceneOccurrences,
+        WorldPersistenceLiveIdentitySet? liveIdentities = null)
     {
         ArgumentNullException.ThrowIfNull(limits);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumActiveSceneInstances);
@@ -96,6 +98,7 @@ internal static class WorldPersistenceScenesReader
                 throw new ArgumentException("The state/scene-instance array is not in unique RFC SceneInstanceId order.", nameof(scenesRecord));
             }
 
+            liveIdentities?.MatchSceneInstance(instanceId, nameof(scenesRecord));
             previousInstanceId = instanceId;
         }
 

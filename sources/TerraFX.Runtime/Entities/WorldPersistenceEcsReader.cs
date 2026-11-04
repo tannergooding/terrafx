@@ -8,6 +8,7 @@ namespace TerraFX.Entities;
 internal static class WorldPersistenceEcsReader
 {
     private const ushort ArrayKind = 24;
+    private const ushort GuidKind = 11;
     private const int MaximumSystemOrResourceCount = 4096;
     private const ushort RecordKind = 22;
     private const int RootFieldCount = 5;
@@ -22,11 +23,13 @@ internal static class WorldPersistenceEcsReader
         ReadOnlyMemory<byte> ecsRecord,
         EbinReadLimits limits,
         WorldPersistenceConfiguration configuration,
-        WorldPersistenceClockContents clock)
+        WorldPersistenceClockContents clock,
+        WorldPersistenceLiveIdentitySet liveIdentities)
     {
         ArgumentNullException.ThrowIfNull(limits);
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(clock);
+        ArgumentNullException.ThrowIfNull(liveIdentities);
 
         var status = EbinStructuralReader.Validate(
             ecsRecord.Span,
@@ -55,14 +58,20 @@ internal static class WorldPersistenceEcsReader
         var systemCount = ReadArrayCount(record, 2, MaximumSystemOrResourceCount, minimumCount: 0, limits, nameof(ecsRecord));
         var resourceCount = ReadArrayCount(record, 3, MaximumSystemOrResourceCount, minimumCount: 0, limits, nameof(ecsRecord));
         var attachmentCount = ReadArrayCount(record, 4, limits.MaximumArrayElements, minimumCount: 0, limits, nameof(ecsRecord));
-        ValidateArrayChildren(record, 1, entityCount, s_entitySchemaId, minimumFieldCount: 5, maximumFieldCount: 6, nameof(ecsRecord));
         ValidateArrayChildren(record, 2, systemCount, s_systemStateSchemaId, minimumFieldCount: 2, maximumFieldCount: 2, nameof(ecsRecord));
         ValidateArrayChildren(record, 3, resourceCount, s_resourceStateSchemaId, minimumFieldCount: 2, maximumFieldCount: 2, nameof(ecsRecord));
         ValidateArrayChildren(record, 4, attachmentCount, s_attachmentSchemaId, minimumFieldCount: 3, maximumFieldCount: 3, nameof(ecsRecord));
         var historyField = GetRequiredField(record, 5, RecordKind, expectedCount: 1, nameof(ecsRecord));
         var history = new EbinRecordReadView(historyField.Payload);
         var (worldGuid, replayLineageId, activeBranchId, issuanceNamespace, nextAssignmentOrdinal, branchCount, pageCount, liveEntityCount, liveSceneInstanceCount) =
-            WorldPersistenceIdentityHistoryReader.Read(history, limits, configuration, clock.NextTick, nameof(ecsRecord));
+            WorldPersistenceIdentityHistoryReader.Read(
+                history,
+                limits,
+                configuration,
+                liveIdentities,
+                clock.NextTick,
+                nameof(ecsRecord));
+        ValidateEntityChildren(record, entityCount, liveIdentities, nameof(ecsRecord));
 
         return new WorldPersistenceEcsContents(
             entityCount,
@@ -140,6 +149,35 @@ internal static class WorldPersistenceEcsReader
             {
                 throw new ArgumentException("A state/ecs array child has the wrong schema identity, version, or field count.", parameterName);
             }
+        }
+    }
+
+    private static void ValidateEntityChildren(
+        EbinRecordReadView record,
+        int count,
+        WorldPersistenceLiveIdentitySet liveIdentities,
+        string parameterName)
+    {
+        for (var index = 0; index < count; index++)
+        {
+            var entity = record.GetRecordArrayElement(1, index);
+
+            if ((entity.Header.SchemaId != s_entitySchemaId)
+                || (entity.Header.Major != 1)
+                || (entity.Header.Minor != 0)
+                || (entity.FieldCount is < 5 or > 6))
+            {
+                throw new ArgumentException("A state/entity child has the wrong schema identity, version, or field count.", parameterName);
+            }
+
+            var idField = GetRequiredField(entity, 1, GuidKind, expectedCount: 1, parameterName);
+
+            if (idField.Payload.Length != 16)
+            {
+                throw new ArgumentException("A state/entity identity has an invalid payload length.", parameterName);
+            }
+
+            liveIdentities.MatchEntity(new Guid(idField.Payload, bigEndian: true), parameterName);
         }
     }
 }

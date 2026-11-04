@@ -42,11 +42,13 @@ internal static class WorldPersistenceIdentityHistoryReader
             EbinRecordReadView record,
             EbinReadLimits limits,
             WorldPersistenceConfiguration configuration,
+            WorldPersistenceLiveIdentitySet liveIdentities,
             long nextTick,
             string parameterName)
     {
         ArgumentNullException.ThrowIfNull(limits);
         ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(liveIdentities);
 
         if ((record.Header.SchemaId != s_identityHistorySchemaId)
             || (record.Header.Major != 1)
@@ -154,6 +156,7 @@ internal static class WorldPersistenceIdentityHistoryReader
                 pageIndex,
                 assignmentCount,
                 branchCount,
+                liveIdentities,
                 parameterName);
             liveEntityCount = checked(liveEntityCount + liveCounts.liveEntityCount);
             liveSceneInstanceCount = checked(liveSceneInstanceCount + liveCounts.liveSceneInstanceCount);
@@ -377,6 +380,7 @@ internal static class WorldPersistenceIdentityHistoryReader
         int pageIndex,
         long assignmentCount,
         int branchCount,
+        WorldPersistenceLiveIdentitySet liveIdentities,
         string parameterName)
     {
         if ((page.Header.SchemaId != s_identityPageSchemaId)
@@ -423,6 +427,8 @@ internal static class WorldPersistenceIdentityHistoryReader
 
             if ((value & (1U << 14)) != 0)
             {
+                liveIdentities.Add(id, identityKind, parameterName);
+
                 if (identityKind == 1)
                 {
                     liveEntityCount = checked(liveEntityCount + 1);
