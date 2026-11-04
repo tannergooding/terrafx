@@ -84,10 +84,14 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(receipt.Diagnostic, Is.Null);
             Assert.That(File.Exists(savePath), Is.True);
             var fileRecord = await File.ReadAllBytesAsync(savePath).ConfigureAwait(false);
+            var limits = WorldPersistenceEbinLimits.Create(world!.Options);
+            var identityAssignmentCount = WorldPersistenceCheckpointWriter.MeasureIdentityAssignmentCount(fileRecord, limits);
+            Assert.That(identityAssignmentCount, Is.Zero);
             var checkpoint = WorldPersistenceCheckpointWriter.ReadContents(
                 fileRecord,
-                WorldPersistenceEbinLimits.Create(world!.Options),
-                world.Options.Registration);
+                limits,
+                world.Options.Registration,
+                identityScratch: new Guid[identityAssignmentCount]);
             var worldContents = checkpoint.WorldContents;
 
             Assert.Multiple(() => {

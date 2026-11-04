@@ -30,6 +30,30 @@ internal static class WorldPersistenceIdentityHistoryReader
     private static readonly Guid s_identityHistorySchemaId = new ContentSchemaIdentityAssignment("state/identity-history").SchemaId;
     private static readonly Guid s_identityPageSchemaId = new ContentSchemaIdentityAssignment("state/identity-page").SchemaId;
 
+    internal static int MeasureAssignmentCount(
+        EbinRecordReadView record,
+        int maximumIdentityAssignments,
+        string parameterName)
+    {
+        if ((record.Header.SchemaId != s_identityHistorySchemaId)
+            || (record.Header.Major != 1)
+            || (record.Header.Minor != 0)
+            || (record.FieldCount != RootFieldCount))
+        {
+            throw new ArgumentException("The state/identity-history record has the wrong schema identity, version, or field count.", parameterName);
+        }
+
+        var nextAssignmentOrdinal = ReadInt64(record, 5, parameterName);
+
+        if ((nextAssignmentOrdinal < 1)
+            || (nextAssignmentOrdinal > checked((long)maximumIdentityAssignments + 1)))
+        {
+            throw new ArgumentException("The state/identity-history cursor is outside its supported range.", parameterName);
+        }
+
+        return checked((int)(nextAssignmentOrdinal - 1));
+    }
+
     internal static (
         Guid worldGuid,
         Guid replayLineageId,
@@ -44,6 +68,7 @@ internal static class WorldPersistenceIdentityHistoryReader
             EbinReadLimits limits,
             WorldPersistenceConfiguration configuration,
             WorldPersistenceLiveIdentitySet liveIdentities,
+            scoped Span<Guid> identityScratch,
             long nextTick,
             string parameterName)
     {
@@ -51,28 +76,26 @@ internal static class WorldPersistenceIdentityHistoryReader
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(liveIdentities);
 
-        if ((record.Header.SchemaId != s_identityHistorySchemaId)
-            || (record.Header.Major != 1)
-            || (record.Header.Minor != 0)
-            || (record.FieldCount != RootFieldCount))
-        {
-            throw new ArgumentException("The state/identity-history record has the wrong schema identity, version, or field count.", parameterName);
-        }
-
         var worldGuid = ReadGuid(record, 1, parameterName);
         var replayLineageId = ReadGuid(record, 2, parameterName);
         var activeBranchId = ReadGuid(record, 3, parameterName);
         var issuanceNamespace = ReadGuid(record, 4, parameterName);
         var nextAssignmentOrdinal = ReadInt64(record, 5, parameterName);
+        var assignmentCount = MeasureAssignmentCount(
+            record,
+            configuration.MaximumIdentityAssignments,
+            parameterName);
 
-        if ((nextTick < 1)
-            || (nextAssignmentOrdinal < 1)
-            || (nextAssignmentOrdinal > checked((long)configuration.MaximumIdentityAssignments + 1)))
+        if (nextTick < 1)
         {
             throw new ArgumentException("The state/identity-history cursor is outside its supported range.", parameterName);
         }
 
-        var assignmentCount = nextAssignmentOrdinal - 1;
+        if (identityScratch.Length != assignmentCount)
+        {
+            throw new ArgumentException("The identity-history scratch span does not match the bounded assignment count.", parameterName);
+        }
+
         var branchCount = ReadArrayCount(record, 6, configuration.MaximumIdentityBranches, minimumCount: 1, limits, parameterName);
         var pageCount = ReadArrayCount(record, 7, MaximumPageCount, minimumCount: 0, limits, parameterName);
 
@@ -161,9 +184,20 @@ internal static class WorldPersistenceIdentityHistoryReader
                 branchCount,
                 branchNamespaces,
                 liveIdentities,
+                identityScratch,
                 parameterName);
             liveEntityCount = checked(liveEntityCount + liveCounts.liveEntityCount);
             liveSceneInstanceCount = checked(liveSceneInstanceCount + liveCounts.liveSceneInstanceCount);
+        }
+
+        identityScratch.Sort();
+
+        for (var index = 1; index < identityScratch.Length; index++)
+        {
+            if (identityScratch[index - 1] == identityScratch[index])
+            {
+                throw new ArgumentException("The identity history contains duplicate assigned identities.", parameterName);
+            }
         }
 
         return (
@@ -421,6 +455,7 @@ internal static class WorldPersistenceIdentityHistoryReader
         int branchCount,
         scoped ReadOnlySpan<Guid> branchNamespaces,
         WorldPersistenceLiveIdentitySet liveIdentities,
+        scoped Span<Guid> identityScratch,
         string parameterName)
     {
         if ((page.Header.SchemaId != s_identityPageSchemaId)
@@ -467,6 +502,7 @@ internal static class WorldPersistenceIdentityHistoryReader
 
             var assignmentOrdinal = checked(firstOrdinal + index);
             ValidateAssignmentRecipe(id, identityKind, origin, branchIndex, assignmentOrdinal, branchNamespaces, parameterName);
+            identityScratch[checked((int)assignmentOrdinal - 1)] = id;
 
             if ((value & (1U << 14)) != 0)
             {

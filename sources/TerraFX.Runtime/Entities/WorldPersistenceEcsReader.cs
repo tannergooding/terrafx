@@ -25,7 +25,8 @@ internal static class WorldPersistenceEcsReader
         EbinReadLimits limits,
         WorldPersistenceConfiguration configuration,
         WorldPersistenceClockContents clock,
-        WorldPersistenceLiveIdentitySet liveIdentities)
+        WorldPersistenceLiveIdentitySet liveIdentities,
+        scoped Span<Guid> identityScratch)
     {
         ArgumentNullException.ThrowIfNull(limits);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -70,6 +71,7 @@ internal static class WorldPersistenceEcsReader
                 limits,
                 configuration,
                 liveIdentities,
+                identityScratch,
                 clock.NextTick,
                 nameof(ecsRecord));
         ValidateEntityChildren(record, entityCount, liveIdentities, nameof(ecsRecord));

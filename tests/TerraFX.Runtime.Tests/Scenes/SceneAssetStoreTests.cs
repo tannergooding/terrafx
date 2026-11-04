@@ -2750,6 +2750,8 @@ internal sealed partial class SceneAssetStoreTests
                                 scanSchemas,
                                 uniqueAssetIds);
                             var assetIdScratch = new uint[referenceCount];
+                            var identityScratch = new Guid[
+                                WorldPersistenceWorldRecordReader.MeasureIdentityAssignmentCount(worldRecord, persistenceLimits)];
                             var worldAssertions = new WorldPersistenceWorldRecordWriterTests.WorldRecordAssertions(
                                 captureLease.Frame2.HasValue,
                                 controlRecordCount: captureLease.ControlRecordCount,
@@ -2770,7 +2772,8 @@ internal sealed partial class SceneAssetStoreTests
                                 persistenceLimits,
                                 worldRegistration,
                                 scanSchemas,
-                                assetIdScratch);
+                                assetIdScratch,
+                                identityScratch);
                             Assert.That(decodedWorld.Scenes.InstanceCount, Is.EqualTo(1));
                             Assert.That(decodedWorld.Scenes.HierarchyNodeCount, Is.EqualTo(2));
                             Assert.That(decodedWorld.Scenes.RootCount, Is.EqualTo(1));
@@ -2812,7 +2815,8 @@ internal sealed partial class SceneAssetStoreTests
                                     persistenceLimits,
                                     worldRegistration,
                                     scanSchemas,
-                                    assetIdScratch));
+                                    assetIdScratch,
+                                    identityScratch));
                         }
                     }
                 }

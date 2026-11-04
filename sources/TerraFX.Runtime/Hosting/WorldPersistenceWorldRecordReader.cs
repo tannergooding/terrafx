@@ -29,11 +29,73 @@ internal static class WorldPersistenceWorldRecordReader
     private static readonly Guid s_strictLayoutSchemaId = new ContentSchemaIdentityAssignment("state/strict-layout").SchemaId;
     private static readonly Guid s_worldSchemaId = new ContentSchemaIdentityAssignment("state/world").SchemaId;
 
+    internal static int MeasureIdentityAssignmentCount(EbinRecordReadView world, string parameterName)
+    {
+        if ((world.Header.SchemaId != s_worldSchemaId)
+            || (world.Header.Major != 1)
+            || (world.Header.Minor != 0)
+            || (world.FieldCount is < RequiredFieldCount or > 12)
+            || !world.TryGetField(1, out var configurationField)
+            || (configurationField.Kind != RecordKind)
+            || (configurationField.Count != 1)
+            || !configurationField.IsRequired
+            || !world.TryGetField(5, out var ecsField)
+            || (ecsField.Kind != RecordKind)
+            || (ecsField.Count != 1)
+            || !ecsField.IsRequired)
+        {
+            throw new ArgumentException("The state/world record has the wrong schema identity, version, or required fields.", parameterName);
+        }
+
+        var maximumIdentityAssignments = WorldPersistenceConfigurationReader.ReadMaximumIdentityAssignments(
+            world.GetRecord(1),
+            parameterName);
+        var ecs = world.GetRecord(5);
+
+        if ((ecs.Header.SchemaId != s_ecsSchemaId)
+            || (ecs.Header.Major != 1)
+            || (ecs.Header.Minor != 0)
+            || (ecs.FieldCount != 5)
+            || !ecs.TryGetField(5, out var identityHistoryField)
+            || (identityHistoryField.Kind != RecordKind)
+            || (identityHistoryField.Count != 1)
+            || !identityHistoryField.IsRequired)
+        {
+            throw new ArgumentException("The state/ecs record has the wrong schema identity, version, or field count.", parameterName);
+        }
+
+        return WorldPersistenceIdentityHistoryReader.MeasureAssignmentCount(
+            ecs.GetRecord(5),
+            maximumIdentityAssignments,
+            parameterName);
+    }
+
+    internal static int MeasureIdentityAssignmentCount(ReadOnlyMemory<byte> worldRecord, EbinReadLimits limits)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+        var status = EbinStructuralReader.Validate(
+            worldRecord.Span,
+            limits,
+            EbinReadPolicy.Canonical,
+            out var bytesConsumed,
+            out _);
+
+        if ((status is not EbinReadStatus.Complete)
+            || (bytesConsumed != worldRecord.Length))
+        {
+            throw new ArgumentException("The state/world record is not a complete canonical EBIN record.", nameof(worldRecord));
+        }
+
+        return MeasureIdentityAssignmentCount(
+            new EbinRecordReadView(worldRecord.Span),
+            nameof(worldRecord));
+    }
+
     internal static WorldPersistenceWorldRecordContents Read(
         ReadOnlyMemory<byte> worldRecord,
         EbinReadLimits limits,
         WorldRegistration? targetRegistration = null)
-        => ReadCore(worldRecord, limits, targetRegistration, assetReferenceSchemas: null, assetIdScratch: []);
+        => ReadCore(worldRecord, limits, targetRegistration, assetReferenceSchemas: null, assetIdScratch: [], identityScratch: []);
 
     internal static WorldPersistenceWorldRecordContents Read(
         ReadOnlyMemory<byte> worldRecord,
@@ -43,8 +105,33 @@ internal static class WorldPersistenceWorldRecordReader
         scoped Span<uint> assetIdScratch)
     {
         ArgumentNullException.ThrowIfNull(assetReferenceSchemas);
-        return ReadCore(worldRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch);
+        return ReadCore(worldRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch, identityScratch: []);
     }
+
+    internal static WorldPersistenceWorldRecordContents Read(
+        ReadOnlyMemory<byte> worldRecord,
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry assetReferenceSchemas,
+        scoped Span<uint> assetIdScratch,
+        scoped Span<Guid> identityScratch)
+    {
+        ArgumentNullException.ThrowIfNull(assetReferenceSchemas);
+        return ReadCore(worldRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch, identityScratch);
+    }
+
+    internal static WorldPersistenceWorldRecordContents Read(
+        ReadOnlyMemory<byte> worldRecord,
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration,
+        scoped Span<Guid> identityScratch)
+        => ReadCore(
+            worldRecord,
+            limits,
+            targetRegistration,
+            assetReferenceSchemas: null,
+            assetIdScratch: [],
+            identityScratch: identityScratch);
 
     private static ReadOnlyMemory<byte> GetPayload(ReadOnlyMemory<byte> record, int fieldIndex)
     {
@@ -60,9 +147,16 @@ internal static class WorldPersistenceWorldRecordReader
         EbinReadLimits limits,
         WorldRegistration? targetRegistration,
         CompiledContentSchemaRegistry? assetReferenceSchemas,
-        scoped Span<uint> assetIdScratch)
+        scoped Span<uint> assetIdScratch,
+        scoped Span<Guid> identityScratch)
     {
         ArgumentNullException.ThrowIfNull(limits);
+
+        if (MemoryMarshal.AsBytes(identityScratch).Overlaps(worldRecord.Span)
+            || MemoryMarshal.AsBytes(identityScratch).Overlaps(MemoryMarshal.AsBytes(assetIdScratch)))
+        {
+            throw new ArgumentException("The identity verification scratch span cannot overlap another buffer.", nameof(identityScratch));
+        }
 
         var status = EbinStructuralReader.Validate(
             worldRecord.Span,
@@ -268,7 +362,13 @@ internal static class WorldPersistenceWorldRecordReader
             (long)parsedConfiguration.MaximumLiveEntities
             + parsedConfiguration.MaximumActiveSceneInstances);
         var liveIdentities = new WorldPersistenceLiveIdentitySet(maximumLiveIdentityCount);
-        var parsedEcs = WorldPersistenceEcsReader.Read(ecsRecord, limits, parsedConfiguration, parsedClock, liveIdentities);
+        var parsedEcs = WorldPersistenceEcsReader.Read(
+            ecsRecord,
+            limits,
+            parsedConfiguration,
+            parsedClock,
+            liveIdentities,
+            identityScratch);
         var parsedScenes = WorldPersistenceScenesReader.Read(
             scenesRecord,
             limits,

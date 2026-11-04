@@ -107,6 +107,29 @@ internal static class WorldPersistenceCheckpointWriter
         return (fileRecord, fileContentDigest);
     }
 
+    internal static int MeasureIdentityAssignmentCount(scoped ReadOnlySpan<byte> fileRecord, EbinReadLimits limits)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+        var reader = new FileRecordReader(
+            limits,
+            captureCheckpointRecord: false,
+            measureIdentityAssignmentCount: true);
+        var status = EbinStructuralReader.Read(
+            fileRecord,
+            limits,
+            EbinReadPolicy.Canonical,
+            ref reader,
+            out var bytesConsumed,
+            out _);
+
+        if ((status is not EbinReadStatus.Complete) || (bytesConsumed != fileRecord.Length))
+        {
+            throw new ArgumentException("The State2 file is not a complete canonical record.", nameof(fileRecord));
+        }
+
+        return reader.IdentityAssignmentCount;
+    }
+
     internal static byte[] ReadCheckpointRecord(
         scoped ReadOnlySpan<byte> fileRecord,
         EbinReadLimits limits)
@@ -134,7 +157,7 @@ internal static class WorldPersistenceCheckpointWriter
         scoped ReadOnlySpan<byte> fileRecord,
         EbinReadLimits limits,
         WorldRegistration? targetRegistration = null)
-        => ReadContentsCore(fileRecord, limits, targetRegistration, assetReferenceSchemas: null, assetIdScratch: []);
+        => ReadContentsCore(fileRecord, limits, targetRegistration, assetReferenceSchemas: null, assetIdScratch: [], identityScratch: []);
 
     internal static WorldPersistenceCheckpointContents ReadContents(
         scoped ReadOnlySpan<byte> fileRecord,
@@ -144,8 +167,33 @@ internal static class WorldPersistenceCheckpointWriter
         scoped Span<uint> assetIdScratch)
     {
         ArgumentNullException.ThrowIfNull(assetReferenceSchemas);
-        return ReadContentsCore(fileRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch);
+        return ReadContentsCore(fileRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch, identityScratch: []);
     }
+
+    internal static WorldPersistenceCheckpointContents ReadContents(
+        scoped ReadOnlySpan<byte> fileRecord,
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry assetReferenceSchemas,
+        scoped Span<uint> assetIdScratch,
+        scoped Span<Guid> identityScratch)
+    {
+        ArgumentNullException.ThrowIfNull(assetReferenceSchemas);
+        return ReadContentsCore(fileRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch, identityScratch);
+    }
+
+    internal static WorldPersistenceCheckpointContents ReadContents(
+        scoped ReadOnlySpan<byte> fileRecord,
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration,
+        scoped Span<Guid> identityScratch)
+        => ReadContentsCore(
+            fileRecord,
+            limits,
+            targetRegistration,
+            assetReferenceSchemas: null,
+            assetIdScratch: [],
+            identityScratch: identityScratch);
 
     internal static long ReadTransactionGeneration(
         scoped ReadOnlySpan<byte> fileRecord,
@@ -445,7 +493,8 @@ internal static class WorldPersistenceCheckpointWriter
         EbinReadLimits limits,
         WorldRegistration? targetRegistration,
         CompiledContentSchemaRegistry? assetReferenceSchemas,
-        scoped Span<uint> assetIdScratch)
+        scoped Span<uint> assetIdScratch,
+        scoped Span<Guid> identityScratch)
     {
         ArgumentNullException.ThrowIfNull(limits);
         var reader = new FileRecordReader(
@@ -468,13 +517,14 @@ internal static class WorldPersistenceCheckpointWriter
         var worldRecord = reader.WorldRecord
             ?? throw new InvalidOperationException("The validated State2 file did not retain its World record.");
         var worldContents = (assetReferenceSchemas is null)
-            ? WorldPersistenceWorldRecordReader.Read(worldRecord, limits, targetRegistration)
+            ? WorldPersistenceWorldRecordReader.Read(worldRecord, limits, targetRegistration, identityScratch)
             : WorldPersistenceWorldRecordReader.Read(
                 worldRecord,
                 limits,
                 targetRegistration,
                 assetReferenceSchemas,
-                assetIdScratch);
+                assetIdScratch,
+                identityScratch);
 
         if ((worldContents.Clock.NextTick != reader.NextTick)
             || (worldContents.Ecs.WorldGuid != reader.WorldGuid)
@@ -634,19 +684,23 @@ internal static class WorldPersistenceCheckpointWriter
 
     private struct FileRecordReader : IAction<EbinRecordReadView>
     {
-        private readonly bool _captureCheckpointRecord;
         private readonly bool _captureCheckpointContents;
+        private readonly bool _captureCheckpointRecord;
         private readonly EbinReadLimits _limits;
+        private readonly bool _measureIdentityAssignmentCount;
 
         internal FileRecordReader(
             EbinReadLimits limits,
             bool captureCheckpointRecord,
-            bool captureCheckpointContents = false)
+            bool captureCheckpointContents = false,
+            bool measureIdentityAssignmentCount = false)
         {
             _captureCheckpointRecord = captureCheckpointRecord;
             _captureCheckpointContents = captureCheckpointContents;
             _limits = limits;
+            _measureIdentityAssignmentCount = measureIdentityAssignmentCount;
             TransactionGeneration = 0;
+            IdentityAssignmentCount = 0;
             CheckpointRecord = null;
             HeaderRecord = null;
             WorldRecord = null;
@@ -665,6 +719,8 @@ internal static class WorldPersistenceCheckpointWriter
         internal byte[]? CheckpointRecord { get; private set; }
 
         internal byte[]? HeaderRecord { get; private set; }
+
+        internal int IdentityAssignmentCount { get; private set; }
 
         internal Guid LineageGuid { get; private set; }
 
@@ -728,6 +784,9 @@ internal static class WorldPersistenceCheckpointWriter
                 minor: 0,
                 _limits,
                 nameof(fileRecord));
+            IdentityAssignmentCount = _measureIdentityAssignmentCount
+                ? WorldPersistenceWorldRecordReader.MeasureIdentityAssignmentCount(world, nameof(fileRecord))
+                : 0;
             var projection = ReadHeaderProjection(header.EncodedBytes, _limits);
             ValidateRecord(
                 projection.ApplicationRecord,
