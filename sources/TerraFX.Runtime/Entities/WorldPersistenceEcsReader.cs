@@ -85,9 +85,12 @@ internal static class WorldPersistenceEcsReader
             record,
             entityCount,
             configuration.MaximumComponentTypes,
+            limits,
+            worldGuid,
             targetRegistration,
             schemas,
             liveIdentities,
+            identityScratch,
             nameof(ecsRecord));
 
         for (var index = 0; index < attachmentCount; index++)
@@ -188,6 +191,59 @@ internal static class WorldPersistenceEcsReader
         {
             throw new ArgumentException("A state/attachment owner is not a live ECS Entity.", parameterName);
         }
+    }
+
+    internal static void ValidateComponentRecord(
+        ReadOnlyMemory<byte> componentRecord,
+        CompiledContentSchemaRegistry schemas,
+        WorldPersistenceLiveIdentitySet liveIdentities,
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> identityScratch,
+        Guid worldGuid,
+        EbinReadLimits limits,
+        string parameterName)
+    {
+        ArgumentNullException.ThrowIfNull(schemas);
+        ArgumentNullException.ThrowIfNull(liveIdentities);
+        ArgumentNullException.ThrowIfNull(limits);
+        ArgumentOutOfRangeException.ThrowIfEqual(worldGuid, Guid.Empty);
+
+        var status = EbinStructuralReader.Validate(
+            componentRecord.Span,
+            limits,
+            EbinReadPolicy.Canonical,
+            out var bytesConsumed,
+            out _);
+
+        if ((status is not EbinReadStatus.Complete)
+            || (bytesConsumed != componentRecord.Length))
+        {
+            throw new ArgumentException("A state/entity component record is not a complete canonical EBIN record.", parameterName);
+        }
+
+        var record = new EbinRecordReadView(componentRecord.Span);
+        var componentSchema = ReadComponentSchema(record, parameterName);
+        ValidateComponentSchema(
+            componentSchema,
+            ComponentStorageFlags.Persistent,
+            targetRegistration: null,
+            schemas,
+            parameterName);
+
+        if (!schemas.TryGetSchema(componentSchema, out var dataSchema))
+        {
+            throw new ArgumentException("A state/entity component schema is absent from the compiled registry.", parameterName);
+        }
+
+        ValidateSchemaRecord(
+            record,
+            dataSchema,
+            schemas,
+            liveIdentities,
+            identityScratch,
+            worldGuid,
+            limits.MaximumDepth,
+            depth: 0,
+            parameterName);
     }
 
     internal static void ValidateComponentSchema(
@@ -421,50 +477,62 @@ internal static class WorldPersistenceEcsReader
         return field.Payload[0];
     }
 
-    private static DataSchema ResolveAttachmentNestedSchema(
+    private static DataSchema ResolveNestedSchema(
         CompiledContentSchemaRegistry schemas,
         ContentFieldDescriptor field,
         EbinRecordReadView record,
         string parameterName)
     {
         DataSchema? resolved = null;
+        var header = record.Header;
 
-        foreach (var candidate in schemas.Schemas)
+        if (!field.NestedSchemas.IsEmpty)
         {
-            if ((candidate.Schema.SchemaId != record.Header.SchemaId)
-                || (candidate.Schema.Major != record.Header.Major)
-                || (candidate.Schema.Minor != record.Header.Minor))
-            {
-                continue;
-            }
-
-            var isAllowed = false;
-
             foreach (var nestedSchema in field.NestedSchemas)
             {
-                isAllowed |= nestedSchema == candidate.Schema;
-            }
+                if ((nestedSchema.SchemaId != header.SchemaId)
+                    || (nestedSchema.Major != header.Major)
+                    || (nestedSchema.Minor != header.Minor))
+                {
+                    continue;
+                }
 
-            if ((field.NestedRoleMask & (1UL << (int)candidate.Role)) != 0)
+                if (!schemas.TryGetSchema(nestedSchema, out var candidate))
+                {
+                    throw new ArgumentException("A nested record schema is absent from the compiled registry.", parameterName);
+                }
+
+                if (resolved is not null)
+                {
+                    throw new ArgumentException("A nested record schema selection is ambiguous.", parameterName);
+                }
+
+                resolved = candidate;
+            }
+        }
+        else
+        {
+            foreach (var candidate in schemas.Schemas)
             {
-                isAllowed = true;
-            }
+                if ((candidate.Schema.SchemaId != header.SchemaId)
+                    || (candidate.Schema.Major != header.Major)
+                    || (candidate.Schema.Minor != header.Minor)
+                    || ((field.NestedRoleMask & (1UL << ((int)candidate.Role - 1))) == 0))
+                {
+                    continue;
+                }
 
-            if (!isAllowed)
-            {
-                continue;
-            }
+                if (resolved is not null)
+                {
+                    throw new ArgumentException("A nested record schema selection is ambiguous.", parameterName);
+                }
 
-            if (resolved is not null)
-            {
-                throw new ArgumentException("An AttachmentState nested record schema selection is ambiguous.", parameterName);
+                resolved = candidate;
             }
-
-            resolved = candidate;
         }
 
         return resolved
-            ?? throw new ArgumentException("An AttachmentState nested record does not match its declared schema selection.", parameterName);
+            ?? throw new ArgumentException("A nested record does not match its declared schema selection.", parameterName);
     }
 
     private static bool TryGetAttachmentField(
@@ -544,7 +612,7 @@ internal static class WorldPersistenceEcsReader
                 }
 
                 current = current.GetRecord(segment.Value);
-                currentSchema = ResolveAttachmentNestedSchema(schemas, fieldSchema, current, parameterName);
+                currentSchema = ResolveNestedSchema(schemas, fieldSchema, current, parameterName);
             }
             else if (!ReferenceEquals(currentSchema, descriptor.DataSchema)
                 || !ReferenceEquals(fieldSchema, descriptor.Field))
@@ -627,9 +695,12 @@ internal static class WorldPersistenceEcsReader
         EbinRecordReadView record,
         int count,
         int maximumComponentTypes,
+        EbinReadLimits limits,
+        Guid worldGuid,
         WorldRegistration? targetRegistration,
         CompiledContentSchemaRegistry? schemas,
         WorldPersistenceLiveIdentitySet liveIdentities,
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> identityScratch,
         string parameterName)
     {
         var previousEntityId = Guid.Empty;
@@ -740,6 +811,25 @@ internal static class WorldPersistenceEcsReader
                     schemas,
                     parameterName);
 
+                if (schemas is not null)
+                {
+                    if (!schemas.TryGetSchema(componentSchema, out var componentDataSchema))
+                    {
+                        throw new ArgumentException("A state/entity component schema is absent from the compiled registry.", parameterName);
+                    }
+
+                    ValidateSchemaRecord(
+                        component,
+                        componentDataSchema,
+                        schemas,
+                        liveIdentities,
+                        identityScratch,
+                        worldGuid,
+                        limits.MaximumDepth,
+                        depth: 0,
+                        parameterName);
+                }
+
                 if (componentSchema.SchemaId == s_localTransformSchemaId)
                 {
                     if ((componentSchema.Major != 1) || (componentSchema.Minor != 0))
@@ -800,6 +890,167 @@ internal static class WorldPersistenceEcsReader
             }
 
             previousEntityId = entityId;
+        }
+    }
+
+    private static void ValidateSchemaRecord(
+        EbinRecordReadView record,
+        DataSchema schema,
+        CompiledContentSchemaRegistry schemas,
+        WorldPersistenceLiveIdentitySet liveIdentities,
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> identityScratch,
+        Guid worldGuid,
+        int maximumDepth,
+        int depth,
+        string parameterName)
+    {
+        if (depth > maximumDepth)
+        {
+            throw new ArgumentException("A state/entity component record exceeds the admitted schema depth.", parameterName);
+        }
+
+        var header = record.Header;
+
+        if ((header.SchemaId != schema.Schema.SchemaId)
+            || (header.Major != schema.Schema.Major)
+            || (header.Minor != schema.Schema.Minor))
+        {
+            throw new ArgumentException("A state/entity component record does not match its compiled schema tuple.", parameterName);
+        }
+
+        var presentFieldCount = 0;
+
+        foreach (var descriptor in schema.Fields)
+        {
+            if (!record.TryGetField(descriptor.Tag, out var field))
+            {
+                if (descriptor.IsRequired)
+                {
+                    throw new ArgumentException("A state/entity component record omits a required schema field.", parameterName);
+                }
+
+                continue;
+            }
+
+            presentFieldCount++;
+
+            if ((field.Kind != descriptor.WireKind)
+                || (field.IsRequired != descriptor.IsRequired)
+                || (field.Count < descriptor.MinimumCount)
+                || (field.Count > descriptor.MaximumCount))
+            {
+                throw new ArgumentException("A state/entity component field does not match its compiled wire schema.", parameterName);
+            }
+
+            if (descriptor.Reference != ContentReferenceKind.None)
+            {
+                ValidateSchemaReferenceField(
+                    field,
+                    descriptor,
+                    liveIdentities,
+                    identityScratch,
+                    worldGuid,
+                    parameterName);
+            }
+
+            if (descriptor.WireKind == RecordKind)
+            {
+                var nestedRecord = record.GetRecord(descriptor.Tag);
+                var nestedSchema = ResolveNestedSchema(schemas, descriptor, nestedRecord, parameterName);
+                ValidateSchemaRecord(
+                    nestedRecord,
+                    nestedSchema,
+                    schemas,
+                    liveIdentities,
+                    identityScratch,
+                    worldGuid,
+                    maximumDepth,
+                    checked(depth + 1),
+                    parameterName);
+            }
+            else if (descriptor.WireKind == ArrayKind)
+            {
+                if (field.Count > int.MaxValue)
+                {
+                    throw new ArgumentException("A state/entity component record-array count exceeds its supported range.", parameterName);
+                }
+
+                var nestedCount = checked((int)field.Count);
+
+                for (var nestedIndex = 0; nestedIndex < nestedCount; nestedIndex++)
+                {
+                    var nestedRecord = record.GetRecordArrayElement(descriptor.Tag, nestedIndex);
+                    var nestedSchema = ResolveNestedSchema(schemas, descriptor, nestedRecord, parameterName);
+                    ValidateSchemaRecord(
+                        nestedRecord,
+                        nestedSchema,
+                        schemas,
+                        liveIdentities,
+                        identityScratch,
+                        worldGuid,
+                        maximumDepth,
+                        checked(depth + 1),
+                        parameterName);
+                }
+            }
+        }
+
+        if (presentFieldCount != record.FieldCount)
+        {
+            throw new ArgumentException("A state/entity component record contains a field absent from its compiled schema.", parameterName);
+        }
+    }
+
+    private static void ValidateSchemaReferenceField(
+        EbinFieldReadView field,
+        ContentFieldDescriptor descriptor,
+        WorldPersistenceLiveIdentitySet liveIdentities,
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> identityScratch,
+        Guid worldGuid,
+        string parameterName)
+    {
+        var requiresWorldIdentity = descriptor.Reference is ContentReferenceKind.Entity
+            or ContentReferenceKind.HistoricalEntity
+            or ContentReferenceKind.SceneInstance
+            or ContentReferenceKind.HistoricalSceneInstance
+            or ContentReferenceKind.World;
+
+        if (field.Kind != GuidKind)
+        {
+            if (requiresWorldIdentity)
+            {
+                throw new ArgumentException("A state/entity World identity reference must use a GUID field.", parameterName);
+            }
+
+            return;
+        }
+
+        if ((field.Count != 1) || (field.Payload.Length != 16))
+        {
+            throw new ArgumentException("A state/entity GUID reference field has an invalid wire shape.", parameterName);
+        }
+
+        var identity = new Guid(field.Payload, bigEndian: true);
+
+        if (identity == Guid.Empty)
+        {
+            throw new ArgumentException("A state/entity reference field cannot contain an empty identity.", parameterName);
+        }
+
+        var isValid = descriptor.Reference switch {
+            ContentReferenceKind.Entity => liveIdentities.IsLiveEntityIdentity(identity),
+            ContentReferenceKind.HistoricalEntity
+                => WorldPersistenceIdentityScratchEntry.ContainsKind(identityScratch, identity, kind: 1),
+            ContentReferenceKind.SceneInstance => liveIdentities.IsLiveSceneInstanceIdentity(identity),
+            ContentReferenceKind.HistoricalSceneInstance
+                => WorldPersistenceIdentityScratchEntry.ContainsKind(identityScratch, identity, kind: 2),
+            ContentReferenceKind.World => identity == worldGuid,
+            _ => true,
+        };
+
+        if (!isValid)
+        {
+            throw new ArgumentException("A state/entity reference field does not identify a permitted World identity.", parameterName);
         }
     }
 }

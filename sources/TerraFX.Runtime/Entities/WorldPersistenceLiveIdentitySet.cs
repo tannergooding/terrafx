@@ -58,6 +58,14 @@ internal sealed class WorldPersistenceLiveIdentitySet
         return value.ordinal;
     }
 
+    internal bool IsLiveEntityIdentity(Guid identity)
+        => _identities.TryGetValue(identity, out var value)
+        && ((value.state & 3) == EntityIdentityKind);
+
+    internal bool IsLiveSceneInstanceIdentity(Guid identity)
+        => _identities.TryGetValue(identity, out var value)
+        && ((value.state & 3) == SceneInstanceIdentityKind);
+
     internal bool IsMatchedEntity(Guid identity)
         => _identities.TryGetValue(identity, out var value)
         && ((value.state & (MatchedFlag | EntityIdentityKind)) == (MatchedFlag | EntityIdentityKind));

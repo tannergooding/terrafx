@@ -25,6 +25,12 @@ internal readonly struct WorldPersistenceIdentityScratchEntry : IComparable<Worl
     internal Guid StableId => _identity;
 
     internal static bool ContainsEntity(scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> entries, Guid identity)
+        => ContainsKind(entries, identity, kind: 1);
+
+    internal static bool ContainsKind(
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> entries,
+        Guid identity,
+        byte kind)
     {
         var low = 0;
         var high = entries.Length - 1;
@@ -37,7 +43,7 @@ internal readonly struct WorldPersistenceIdentityScratchEntry : IComparable<Worl
 
             if (comparison == 0)
             {
-                return entry.Kind == 1;
+                return entry.Kind == kind;
             }
 
             if (comparison < 0)
