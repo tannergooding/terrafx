@@ -104,6 +104,8 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(worldContents.Clock.NextTick, Is.EqualTo(checkpoint.NextTick));
                 Assert.That(worldContents.Clock.TickRate, Is.EqualTo(world.Options.TickRate));
                 Assert.That(worldContents.Clock.SegmentCount, Is.GreaterThanOrEqualTo(1));
+                Assert.That(worldContents.Ecs.WorldGuid, Is.EqualTo(checkpoint.WorldGuid));
+                Assert.That(worldContents.Ecs.ReplayLineageId, Is.EqualTo(checkpoint.LineageGuid));
                 Assert.That(worldContents.Cursors.NextControlSequence, Is.EqualTo(1));
                 Assert.That(worldContents.ConfigurationRecord.IsEmpty, Is.False);
                 Assert.That(worldContents.ClockRecord.IsEmpty, Is.False);
