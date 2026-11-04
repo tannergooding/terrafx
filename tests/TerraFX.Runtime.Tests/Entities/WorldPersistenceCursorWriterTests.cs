@@ -2,6 +2,7 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Threading;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Entities;
@@ -63,6 +64,66 @@ internal sealed class WorldPersistenceCursorWriterTests
                 out var readDiagnostic),
             Is.EqualTo(EbinReadStatus.Complete));
         Assert.That(readDiagnostic, Is.Null);
+        Assert.That(bytesConsumed, Is.EqualTo(bytesWritten));
+    }
+
+    [Test]
+    public void WritesStrictLocalOwnerCursorsAfterACommittedAdmission()
+    {
+        var registration = new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build();
+        using var world = World.Create(new WorldOptions(registration) {
+            CpuWorkerCount = 0,
+            InitialReplayLineageId = Guid.NewGuid(),
+            Profile = SimulationProfile.StrictLocal,
+            WorldGuid = Guid.NewGuid(),
+        });
+        _ = world.Step();
+        var request = WorldOwnerControlRequest.CreateTimeScaleChange(0.5f, CancellationToken.None);
+        Assert.That(world.TryAdmitOwnerControl(request, out _), Is.EqualTo(WorldOwnerControlAdmissionStatus.Accepted));
+        world.PumpControlBoundary();
+        Assert.That(request.TimeScaleCompletion.IsCompletedSuccessfully, Is.True);
+        _ = world.Step();
+
+        using var lease = world.AcquirePersistenceCaptureLease();
+        Assert.That(lease.AcceptedOwnerRequests, Is.EqualTo(1));
+        Assert.That(lease.NextOwnerRequestSequence, Is.EqualTo(2));
+        Assert.That(lease.NextBarrierEpoch, Is.EqualTo(lease.NextTickIndex + 1));
+        Assert.That(
+            WorldPersistenceCursorWriter.Measure(
+                lease,
+                EbinReadLimits.Foundation,
+                out var recordBytes,
+                out var measureDiagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            measureDiagnostic?.Category);
+        var candidateStorage = new byte[recordBytes];
+        var destination = new byte[recordBytes];
+        Assert.That(
+            WorldPersistenceCursorWriter.Write(
+                lease,
+                EbinReadLimits.Foundation,
+                candidateStorage,
+                destination,
+                out var bytesWritten,
+                out var writeDiagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            writeDiagnostic?.Category);
+        var assertions = new CursorAssertions(
+            lease.Profile,
+            lease.NextControlSequence,
+            lease.NextOwnerRequestSequence,
+            lease.NextBarrierEpoch,
+            lease.AcceptedOwnerRequests);
+        Assert.That(
+            EbinStructuralReader.Read(
+                destination.AsSpan(0, bytesWritten),
+                EbinReadLimits.Foundation,
+                EbinReadPolicy.Canonical,
+                ref assertions,
+                out var bytesConsumed,
+                out var readDiagnostic),
+            Is.EqualTo(EbinReadStatus.Complete),
+            readDiagnostic?.Category);
         Assert.That(bytesConsumed, Is.EqualTo(bytesWritten));
     }
 
