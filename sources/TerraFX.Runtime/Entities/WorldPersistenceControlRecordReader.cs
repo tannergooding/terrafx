@@ -8,6 +8,7 @@ namespace TerraFX.Entities;
 
 internal static class WorldPersistenceControlRecordReader
 {
+    private const ushort ArrayKind = 24;
     private const ushort ByteArrayKind = 13;
     private const ushort FloatKind = 10;
     private const ushort GuidKind = 11;
@@ -27,6 +28,7 @@ internal static class WorldPersistenceControlRecordReader
     private static readonly Guid s_frame2SchemaId = new ContentSchemaIdentityAssignment("foundation/frame2").SchemaId;
     private static readonly Guid s_frame3ControlSchemaId = new ContentSchemaIdentityAssignment("state/control-frame3").SchemaId;
     private static readonly Guid s_frame3SchemaId = new ContentSchemaIdentityAssignment("foundation/frame3").SchemaId;
+    private static readonly Guid s_identityHistorySchemaId = new ContentSchemaIdentityAssignment("state/identity-history").SchemaId;
     private static readonly Guid s_profileSchemaId = new ContentSchemaIdentityAssignment("foundation/profile").SchemaId;
     private static readonly Guid s_stepSchemaId = new ContentSchemaIdentityAssignment("state/control-step").SchemaId;
     private static readonly Guid s_timeScaleSchemaId = new ContentSchemaIdentityAssignment("state/control-timescale").SchemaId;
@@ -81,6 +83,19 @@ internal static class WorldPersistenceControlRecordReader
         {
             throw new ArgumentException("The state/clock initial time-scale segment is invalid.", parameterName);
         }
+
+        var identityHistory = worldRecord.GetRecord(5).GetRecord(5);
+        ValidateRecordHeader(identityHistory, s_identityHistorySchemaId, fieldCount: 7, parameterName);
+        var branchField = GetRequiredField(identityHistory, 6, ArrayKind, expectedCount: null, parameterName);
+
+        if (branchField.Count is < 1 or > 1024)
+        {
+            throw new ArgumentException("The identity-branch directory count is outside its supported range.", parameterName);
+        }
+
+        var branchCount = checked((int)branchField.Count);
+        Span<byte> branchControlCounts = stackalloc byte[1024];
+        branchControlCounts.Clear();
 
         for (var index = 0; index < controlRecordCount; index++)
         {
@@ -189,11 +204,33 @@ internal static class WorldPersistenceControlRecordReader
             }
             else if (payload.Header.SchemaId == s_branchSchemaId)
             {
-                ValidateBranchPayload(payload, parameterName);
+                var (branchId, lineageId, branchIndex) = ReadBranchPayload(payload, parameterName);
+                ValidateBranchControlJoin(
+                    identityHistory,
+                    branchCount,
+                    branchControlCounts,
+                    branchIndex,
+                    branchId,
+                    lineageId,
+                    appliedAtNextTick,
+                    parameterName);
             }
             else
             {
                 throw new ArgumentException("The state/control payload has an unsupported schema identity.", parameterName);
+            }
+        }
+
+        for (var branchIndex = 1; branchIndex < branchCount; branchIndex++)
+        {
+            var branch = identityHistory.GetRecordArrayElement(6, branchIndex);
+            var hasSourceCheckpointDigest = branch.TryGetField(7, out _);
+            var hasForkSource = branch.TryGetField(8, out _);
+            var requiresDirectControl = !hasSourceCheckpointDigest && !hasForkSource;
+
+            if (requiresDirectControl != (branchControlCounts[branchIndex] == 1))
+            {
+                throw new ArgumentException("The identity-branch directory and state/control-branch records disagree.", parameterName);
             }
         }
 
@@ -276,6 +313,25 @@ internal static class WorldPersistenceControlRecordReader
         }
 
         return field;
+    }
+
+    private static (Guid BranchId, Guid LineageId, ushort BranchIndex) ReadBranchPayload(
+        EbinRecordReadView payload,
+        string parameterName)
+    {
+        ValidateRecordHeader(payload, s_branchSchemaId, fieldCount: 3, parameterName);
+        var branchId = ReadGuid(payload, 1, parameterName);
+        var lineageId = ReadGuid(payload, 2, parameterName);
+        var branchIndex = ReadUInt16(payload, 3, parameterName);
+
+        if ((branchId == Guid.Empty)
+            || (lineageId == Guid.Empty)
+            || (branchIndex is < 1 or > 1023))
+        {
+            throw new ArgumentException("A state/control-branch payload has invalid identity metadata.", parameterName);
+        }
+
+        return (branchId, lineageId, branchIndex);
     }
 
     private static float ReadFiniteSingle(scoped ReadOnlySpan<byte> payload, int offset, string parameterName)
@@ -415,19 +471,38 @@ internal static class WorldPersistenceControlRecordReader
         return field.Payload[0];
     }
 
-    private static void ValidateBranchPayload(EbinRecordReadView payload, string parameterName)
+    private static void ValidateBranchControlJoin(
+        EbinRecordReadView identityHistory,
+        int branchCount,
+        Span<byte> branchControlCounts,
+        ushort branchIndex,
+        Guid branchId,
+        Guid lineageId,
+        long appliedAtNextTick,
+        string parameterName)
     {
-        ValidateRecordHeader(payload, s_branchSchemaId, fieldCount: 3, parameterName);
-        var branchId = ReadGuid(payload, 1, parameterName);
-        var lineageId = ReadGuid(payload, 2, parameterName);
-        var branchIndex = ReadUInt16(payload, 3, parameterName);
-
-        if ((branchId == Guid.Empty)
-            || (lineageId == Guid.Empty)
-            || (branchIndex is < 1 or > 1023))
+        if ((branchIndex >= branchCount) || (branchControlCounts[branchIndex] != 0))
         {
-            throw new ArgumentException("A state/control-branch payload has invalid identity metadata.", parameterName);
+            throw new ArgumentException("A state/control-branch names an absent or duplicate identity directory row.", parameterName);
         }
+
+        var branch = identityHistory.GetRecordArrayElement(6, branchIndex);
+        var directoryIndex = ReadUInt16(branch, 1, parameterName);
+        var directoryBranchId = ReadGuid(branch, 2, parameterName);
+        var creationLineageId = ReadGuid(branch, 3, parameterName);
+        var createdAtNextTick = ReadInt64(branch, 6, parameterName);
+
+        if ((directoryIndex != branchIndex)
+            || (directoryBranchId != branchId)
+            || (creationLineageId != lineageId)
+            || (createdAtNextTick != appliedAtNextTick)
+            || branch.TryGetField(7, out _)
+            || branch.TryGetField(8, out _))
+        {
+            throw new ArgumentException("A state/control-branch does not match its direct identity-history row.", parameterName);
+        }
+
+        branchControlCounts[branchIndex] = 1;
     }
 
     private static void ValidateFramePayload(

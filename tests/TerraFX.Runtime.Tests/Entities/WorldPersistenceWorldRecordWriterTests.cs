@@ -646,6 +646,36 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
         }
     }
 
+    [Test]
+    public void RejectsBranchControlThatDoesNotMatchIdentityHistory()
+    {
+        var (schemas, world) = CreateControlValidationWorld();
+        using (world)
+        {
+            var branchId = Guid.NewGuid();
+            world.BeginIdentityBranch(branchId);
+            _ = world.Step();
+
+            using var lease = world.AcquirePersistenceCaptureLease();
+            var limits = WorldPersistenceEbinLimits.Create(world.Options);
+            var worldRecord = ComposeWorldRecord(world, in lease, schemas, []);
+            Span<byte> branchIdBytes = stackalloc byte[16];
+            _ = branchId.TryWriteBytes(branchIdBytes, bigEndian: true, out _);
+            var branchOffset = worldRecord.AsSpan().LastIndexOf(branchIdBytes);
+            Assert.That(branchOffset, Is.GreaterThanOrEqualTo(0));
+            Span<byte> replacementBranchIdBytes = stackalloc byte[16];
+            _ = Guid.NewGuid().TryWriteBytes(replacementBranchIdBytes, bigEndian: true, out _);
+            replacementBranchIdBytes.CopyTo(worldRecord.AsSpan(branchOffset, replacementBranchIdBytes.Length));
+
+            _ = Assert.Throws<ArgumentException>(() => WorldPersistenceWorldRecordReader.Read(
+                worldRecord,
+                limits,
+                new WorldRegistrationBuilder(schemas).Build(),
+                schemas,
+                []));
+        }
+    }
+
     [TestCase(false, true)]
     [TestCase(false, false)]
     [TestCase(true, true)]
