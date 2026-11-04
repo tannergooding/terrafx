@@ -30,6 +30,8 @@ public sealed partial class World
         }
     }
 
+    internal long TimeScaleSegmentSequence => _timeScaleSegmentSequence;
+
     private static int GetExpandedControlCapacity(int currentCapacity, int requiredCapacity, int maximumCapacity)
     {
         if (requiredCapacity > maximumCapacity)

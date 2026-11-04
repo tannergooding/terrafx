@@ -25,13 +25,18 @@ internal sealed class PlatformHostOwner
     private readonly PlatformHost _platform;
     private readonly HostProfile _profile;
 
-    private PlatformHostOwner(uint ownerId, HostProfile profile, PlatformHost platform, TimeProvider timeProvider)
+    private PlatformHostOwner(
+        uint ownerId,
+        HostProfile profile,
+        PlatformHost platform,
+        TimeProvider timeProvider,
+        HostEventSequenceLease? sequenceLease)
     {
         _ownerId = ownerId;
         _platform = platform;
         _profile = profile;
         _ownerThreadId = Environment.CurrentManagedThreadId;
-        _inputBroker = new PlatformInputBroker(ownerId, timeProvider);
+        _inputBroker = new PlatformInputBroker(ownerId, timeProvider, sequenceLease);
         _activeMonitorHandles = [];
         _activeWindowHandles = [];
         _nativeMonitorHandles = [];
@@ -53,13 +58,15 @@ internal sealed class PlatformHostOwner
         "Usage",
         "CA1031:Do not catch general exception types",
         Justification = "A monitor-snapshot startup failure must dispose the already-created Platform owner.")]
-    internal static PlatformHostOwner Create(EngineHostOptions options)
+    internal static PlatformHostOwner Create(
+        EngineHostOptions options,
+        HostEventSequenceLease? sequenceLease = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         var ownerId = OwnerIdAllocator.Allocate();
         var timeProvider = TimeProvider.System;
         var platform = new PlatformHost(ownerId, options.Platform, options.ClipboardServicePolicy, timeProvider);
-        var owner = new PlatformHostOwner(ownerId, options.Profile, platform, timeProvider);
+        var owner = new PlatformHostOwner(ownerId, options.Profile, platform, timeProvider, sequenceLease);
 
         try
         {
@@ -206,6 +213,13 @@ internal sealed class PlatformHostOwner
         }
 
         return activeRequests.MoveToImmutable();
+    }
+
+    internal long GetHostTimestamp()
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        return _inputBroker.GetCurrentHostTimestamp();
     }
 
     internal nint GetNativeMonitorHandle(MonitorHandle monitor)

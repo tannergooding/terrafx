@@ -22,10 +22,14 @@ internal sealed class PlatformInputBroker
     private readonly long _originTimestamp;
     private readonly uint _ownerId;
     private readonly int _ownerThreadId;
+    private readonly bool _ownsSequenceLease;
     private readonly HostEventSequenceLease _sequenceLease;
     private readonly TimeProvider _timeProvider;
 
-    internal PlatformInputBroker(uint ownerId, TimeProvider? timeProvider = null)
+    internal PlatformInputBroker(
+        uint ownerId,
+        TimeProvider? timeProvider = null,
+        HostEventSequenceLease? sequenceLease = null)
     {
         ArgumentOutOfRangeException.ThrowIfZero(ownerId);
 
@@ -33,7 +37,8 @@ internal sealed class PlatformInputBroker
         _ownerThreadId = Environment.CurrentManagedThreadId;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _originTimestamp = _timeProvider.GetTimestamp();
-        _sequenceLease = new HostEventSequenceLease();
+        _ownsSequenceLease = sequenceLease is null;
+        _sequenceLease = sequenceLease ?? new HostEventSequenceLease();
         _deviceGenerations = [];
         _devicesByNativeIdentity = [];
         _deviceKinds = [];
@@ -281,6 +286,14 @@ internal sealed class PlatformInputBroker
         return new PlatformInputCaptureBatch(events.ToImmutable(), discardedSampleCount);
     }
 
+    internal long GetCurrentHostTimestamp()
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        var timestamp = _timeProvider.GetElapsedTime(_originTimestamp, _timeProvider.GetTimestamp()).Ticks;
+        return Math.Max(timestamp, _lastHostTimestamp);
+    }
+
     internal void Retire()
     {
         EnsureOwnerThread();
@@ -294,7 +307,12 @@ internal sealed class PlatformInputBroker
         _devicesByNativeIdentity.Clear();
         _deviceKinds.Clear();
         _freeDeviceIndices.Clear();
-        _sequenceLease.Revoke();
+
+        if (_ownsSequenceLease)
+        {
+            _sequenceLease.Revoke();
+        }
+
         _isDisposed = true;
     }
 

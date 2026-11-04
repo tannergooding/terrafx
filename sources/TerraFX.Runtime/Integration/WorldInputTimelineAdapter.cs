@@ -12,10 +12,32 @@ internal sealed class WorldInputTimelineAdapter
 {
     private bool _isDisposed;
     private readonly int _ownerThreadId;
+    private readonly bool _ownsSequenceLease;
     private readonly InputRouter _router;
     private SimulationClockSegment _segment;
     private readonly HostEventSequenceLease _sequenceLease;
     private readonly World _world;
+
+    internal WorldInputTimelineAdapter(
+        World world,
+        InputRouter router,
+        HostEventSequenceLease sequenceLease)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        ArgumentNullException.ThrowIfNull(router);
+        ArgumentNullException.ThrowIfNull(sequenceLease);
+        _ = world.CurrentFrame3;
+
+        if (router.RecipientKind != InputRecipientKind.SimulationTimeline)
+        {
+            throw new ArgumentException("A World input timeline requires a SimulationTimeline router.", nameof(router));
+        }
+
+        _ownerThreadId = Environment.CurrentManagedThreadId;
+        _router = router;
+        _sequenceLease = sequenceLease;
+        _world = world;
+    }
 
     internal WorldInputTimelineAdapter(World world)
     {
@@ -24,6 +46,7 @@ internal sealed class WorldInputTimelineAdapter
 
         _ownerThreadId = Environment.CurrentManagedThreadId;
         _sequenceLease = new HostEventSequenceLease();
+        _ownsSequenceLease = true;
         _world = world;
         _router = new InputRouter(
             InputRecipientKind.SimulationTimeline,
@@ -52,6 +75,16 @@ internal sealed class WorldInputTimelineAdapter
         }
     }
 
+    internal World World
+    {
+        get
+        {
+            EnsureOwnerThread();
+            ThrowIfDisposed();
+            return _world;
+        }
+    }
+
     internal SimulationClockSegment BeginPumpBoundary(long hostTimestamp, bool isPaused)
     {
         EnsureOwnerThread();
@@ -70,7 +103,12 @@ internal sealed class WorldInputTimelineAdapter
         }
 
         var transitions = _router.DisposeAndGetTransitions();
-        _sequenceLease.Revoke();
+
+        if (_ownsSequenceLease)
+        {
+            _sequenceLease.Revoke();
+        }
+
         _isDisposed = true;
         return transitions;
     }
@@ -200,6 +238,13 @@ internal sealed class WorldInputTimelineAdapter
             nextOpenTick: nextOpenTick,
             beginHostControlBoundary: false);
         return receipt;
+    }
+
+    internal ImmutableArray<InputActionTransition> ServiceHostControlBoundary()
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        return _router.ServiceInputControlBoundary();
     }
 
     private SimulationClockSegment CreateClockSegment(
