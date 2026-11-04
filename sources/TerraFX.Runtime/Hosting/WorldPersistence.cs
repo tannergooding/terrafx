@@ -414,6 +414,7 @@ public sealed class WorldPersistence : IAsyncDisposable
     /// <param name="options">The absolute destination and durability policy.</param>
     /// <param name="cancellationToken">The token that cancels work before replacement.</param>
     /// <returns>The terminal save outcome.</returns>
+    /// <remarks>The save mode must match <see cref="WorldOptions.Profile"/>; a mismatch returns a rejected receipt before capture or file I/O.</remarks>
     /// <exception cref="ArgumentNullException"><paramref name="world"/> or <paramref name="options"/> is null.</exception>
     /// <exception cref="ObjectDisposedException">This persistence service has been disposed.</exception>
     /// <exception cref="OperationCanceledException">Cancellation was requested before capture was admitted.</exception>
