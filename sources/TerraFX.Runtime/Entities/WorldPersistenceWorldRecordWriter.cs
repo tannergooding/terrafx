@@ -71,6 +71,58 @@ internal static class WorldPersistenceWorldRecordWriter
         return status;
     }
 
+    internal static EbinWriteStatus MeasureRecordExtent(
+        scoped ReadOnlySpan<int> fieldPayloadLengths,
+        EbinReadLimits limits,
+        out int rootPayloadStorageBytes,
+        out int recordBytes,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+        rootPayloadStorageBytes = 0;
+        recordBytes = 0;
+        diagnostic = null;
+
+        if ((fieldPayloadLengths.Length is < 1 or > FieldCapacity)
+            || (fieldPayloadLengths.Length > limits.MaximumFieldsPerRecord))
+        {
+            diagnostic = CreateDiagnostic(
+                "field-count-budget",
+                checked((ulong)fieldPayloadLengths.Length),
+                checked((ulong)Math.Min(FieldCapacity, limits.MaximumFieldsPerRecord)));
+            return EbinWriteStatus.InvalidRecord;
+        }
+
+        var payloadBytes = 0L;
+        var cursor = checked(64L + (32L * fieldPayloadLengths.Length));
+
+        foreach (var payloadLength in fieldPayloadLengths)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(payloadLength);
+            payloadBytes = checked(payloadBytes + payloadLength);
+            cursor = checked((cursor + 15L) & ~15L);
+            cursor = checked(cursor + payloadLength);
+        }
+
+        cursor = checked((cursor + 15L) & ~15L);
+
+        if ((payloadBytes > limits.MaximumRecordBytes)
+            || (payloadBytes > int.MaxValue)
+            || (cursor > limits.MaximumRecordBytes)
+            || (cursor > int.MaxValue))
+        {
+            diagnostic = CreateDiagnostic(
+                "record-byte-budget",
+                checked((ulong)cursor),
+                checked((ulong)Math.Min(limits.MaximumRecordBytes, int.MaxValue)));
+            return EbinWriteStatus.InvalidRecord;
+        }
+
+        rootPayloadStorageBytes = checked((int)payloadBytes);
+        recordBytes = checked((int)cursor);
+        return EbinWriteStatus.Complete;
+    }
+
     internal static EbinWriteStatus MeasureRootPayloadStorage(
         WorldPersistenceWorldRecordSources sources,
         EbinReadLimits limits,

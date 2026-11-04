@@ -61,6 +61,25 @@ internal sealed class WorldPersistenceAdmissionTests
     }
 
     [Test]
+    public void GrowingReservationChargesBothLimitsAndRollsBackRefusedGrowth()
+    {
+        using var domain = new WorldAdmissionDomain(16 * 1024 * 1024);
+        using var world = CreateWorld(8192, domain);
+        Assert.That(world.TryReservePersistenceAdmissionBytes(4096, 1024, out var reservation), Is.True);
+        Assert.That(reservation, Is.Not.Null);
+        using var reservationScope = reservation
+            ?? throw new InvalidOperationException("The persistence admission reservation was not created.");
+
+        Assert.That(reservationScope.TryGrow(1024), Is.True);
+        Assert.That(reservationScope.TryGrow(1), Is.False);
+        reservationScope.Dispose();
+
+        Assert.That(world.TryReservePersistenceAdmissionBytes(8192, out var replacement), Is.True);
+        Assert.That(replacement, Is.Not.Null);
+        replacement!.Dispose();
+    }
+
+    [Test]
     public void PersistenceAdmissionRefusesWhenSharedDomainIsClosed()
     {
         using var domain = new WorldAdmissionDomain(16 * 1024 * 1024);

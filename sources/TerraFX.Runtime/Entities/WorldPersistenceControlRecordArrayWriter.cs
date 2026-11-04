@@ -12,7 +12,23 @@ internal static class WorldPersistenceControlRecordArrayWriter
     internal static EbinWriteStatus Measure(
         WorldPersistenceCaptureLease lease,
         EbinReadLimits limits,
+        out WorldPersistenceControlRecordArrayWorkspaceRequirements workspace,
+        out EbinStructuralDiagnostic? diagnostic)
+        => MeasureCore(lease, limits, [], writeRecordSlices: false, out workspace, out diagnostic);
+
+    internal static EbinWriteStatus Measure(
+        WorldPersistenceCaptureLease lease,
+        EbinReadLimits limits,
         scoped Span<EbinPayloadSlice> recordSlices,
+        out WorldPersistenceControlRecordArrayWorkspaceRequirements workspace,
+        out EbinStructuralDiagnostic? diagnostic)
+        => MeasureCore(lease, limits, recordSlices, writeRecordSlices: true, out workspace, out diagnostic);
+
+    internal static EbinWriteStatus MeasureCore(
+        WorldPersistenceCaptureLease lease,
+        EbinReadLimits limits,
+        scoped Span<EbinPayloadSlice> recordSlices,
+        bool writeRecordSlices,
         out WorldPersistenceControlRecordArrayWorkspaceRequirements workspace,
         out EbinStructuralDiagnostic? diagnostic)
     {
@@ -23,7 +39,7 @@ internal static class WorldPersistenceControlRecordArrayWriter
 
         var controlCount = lease.ControlRecordCount;
 
-        if (recordSlices.Length != controlCount)
+        if (writeRecordSlices && (recordSlices.Length != controlCount))
         {
             throw new ArgumentException("The control-record slice workspace must match the captured control count.", nameof(recordSlices));
         }
@@ -100,7 +116,11 @@ internal static class WorldPersistenceControlRecordArrayWriter
                 return EbinWriteStatus.InvalidRecord;
             }
 
-            recordSlices[index] = new EbinPayloadSlice(recordStorageBytes, recordWorkspace.RecordBytes);
+            if (writeRecordSlices)
+            {
+                recordSlices[index] = new EbinPayloadSlice(recordStorageBytes, recordWorkspace.RecordBytes);
+            }
+
             recordStorageBytes = checked(recordStorageBytes + recordWorkspace.RecordBytes);
             maximumCandidateRecordBytes = Math.Max(maximumCandidateRecordBytes, recordWorkspace.RecordBytes);
             maximumRootPayloadBytes = Math.Max(maximumRootPayloadBytes, recordWorkspace.RootPayloadBytes);

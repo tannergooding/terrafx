@@ -441,7 +441,7 @@ public sealed class WorldPersistence : IAsyncDisposable
             {
                 return Task.FromResult(CreateRejected(
                     "save-strict-local-layout-unavailable",
-                    "StrictLocal Save remains unavailable until the complete capture and pre-file validation path reserves and validates layout and allocator state.",
+                    "StrictLocal Save remains unavailable until layout validation and the complete header, checkpoint, and file workspace reservation are integrated before I/O.",
                     world.WorldGuid));
             }
 

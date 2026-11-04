@@ -553,6 +553,15 @@ internal ref struct WorldPersistenceCaptureLease
 
     internal readonly bool TryReserveAdmissionBytes(
         long bytes,
+        long maximumAdditionalBytes,
+        out WorldPersistenceAdmissionReservation? reservation)
+    {
+        ValidateCurrent();
+        return _world.TryReservePersistenceAdmissionBytes(bytes, maximumAdditionalBytes, out reservation);
+    }
+
+    internal readonly bool TryReserveAdmissionBytes(
+        long bytes,
         out WorldPersistenceAdmissionReservation? reservation)
     {
         ValidateCurrent();

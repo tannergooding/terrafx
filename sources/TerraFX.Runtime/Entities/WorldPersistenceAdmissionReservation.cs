@@ -10,7 +10,7 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
 {
     private int _activeUseCount;
     private long _activeWorkspaceBytes;
-    private readonly long _bytes;
+    private long _bytes;
     private readonly Lock _disposeGate = new();
     private readonly WorldDomainReservation _domainReservation;
     private bool _isChargeReleased;
@@ -111,6 +111,25 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
             {
                 ReleaseCharge();
             }
+        }
+    }
+
+    internal bool TryGrow(long bytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        lock (_disposeGate)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+            var expandedBytes = checked(_bytes + bytes);
+
+            if (!_world.TryGrowPersistenceAdmissionBytes(_domainReservation, bytes))
+            {
+                return false;
+            }
+
+            _bytes = expandedBytes;
+            return true;
         }
     }
 
