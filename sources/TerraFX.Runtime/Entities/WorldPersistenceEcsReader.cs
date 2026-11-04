@@ -139,15 +139,18 @@ internal static class WorldPersistenceEcsReader
             var scope = attachment.TryGetField(2, out _)
                 ? AttachmentScope.Entity
                 : AttachmentScope.World;
+            WorldAttachmentFactoryDescriptor descriptor;
 
             try
             {
-                _ = targetRegistration.GetAttachmentBinding(scope, schema);
+                descriptor = targetRegistration.GetAttachmentBinding(scope, schema);
             }
             catch (KeyNotFoundException exception)
             {
                 throw new ArgumentException("A saved attachment schema and scope are not registered in the target World.", parameterName, exception);
             }
+
+            ValidateAttachmentEntityReferences(payload, descriptor, liveIdentities, parameterName);
         }
 
         var hasOwner = attachment.TryGetField(2, out var ownerField);
@@ -290,6 +293,141 @@ internal static class WorldPersistenceEcsReader
         return field.Payload[0];
     }
 
+    private static DataSchema ResolveAttachmentNestedSchema(
+        CompiledContentSchemaRegistry schemas,
+        ContentFieldDescriptor field,
+        EbinRecordReadView record,
+        string parameterName)
+    {
+        DataSchema? resolved = null;
+
+        foreach (var candidate in schemas.Schemas)
+        {
+            if ((candidate.Schema.SchemaId != record.Header.SchemaId)
+                || (candidate.Schema.Major != record.Header.Major)
+                || (candidate.Schema.Minor != record.Header.Minor))
+            {
+                continue;
+            }
+
+            var isAllowed = false;
+
+            foreach (var nestedSchema in field.NestedSchemas)
+            {
+                isAllowed |= nestedSchema == candidate.Schema;
+            }
+
+            if ((field.NestedRoleMask & (1UL << (int)candidate.Role)) != 0)
+            {
+                isAllowed = true;
+            }
+
+            if (!isAllowed)
+            {
+                continue;
+            }
+
+            if (resolved is not null)
+            {
+                throw new ArgumentException("An AttachmentState nested record schema selection is ambiguous.", parameterName);
+            }
+
+            resolved = candidate;
+        }
+
+        return resolved
+            ?? throw new ArgumentException("An AttachmentState nested record does not match its declared schema selection.", parameterName);
+    }
+
+    private static bool TryGetAttachmentField(
+        EbinRecordReadView payload,
+        WorldAttachmentFieldDescriptor descriptor,
+        string parameterName,
+        out EbinFieldReadView field)
+    {
+        field = default;
+        var current = payload;
+        var schemas = descriptor.Schemas;
+
+        if (!schemas.TryGetSchema(descriptor.Schema, out var currentSchema))
+        {
+            throw new ArgumentException("The target attachment schema is absent from its compiled registry.", parameterName);
+        }
+
+        var segments = descriptor.Path.Segments;
+
+        for (var index = 0; index < segments.Length; index++)
+        {
+            var segment = segments[index];
+
+            if (segment.Kind != ComponentPropertySegmentKind.FieldTag)
+            {
+                throw new ArgumentException("An AttachmentState field path contains an unsupported segment.", parameterName);
+            }
+
+            if ((current.Header.SchemaId != currentSchema.Schema.SchemaId)
+                || (current.Header.Major != currentSchema.Schema.Major)
+                || (current.Header.Minor != currentSchema.Schema.Minor))
+            {
+                throw new ArgumentException("An AttachmentState nested record does not match its compiled schema path.", parameterName);
+            }
+
+            ContentFieldDescriptor? fieldSchema = null;
+
+            foreach (var candidate in currentSchema.Fields)
+            {
+                if (candidate.Tag == segment.Value)
+                {
+                    fieldSchema = candidate;
+                    break;
+                }
+            }
+
+            if (fieldSchema is null)
+            {
+                throw new ArgumentException("An AttachmentState field path is absent from its compiled schema.", parameterName);
+            }
+
+            if (!current.TryGetField(segment.Value, out field))
+            {
+                if ((index == (segments.Length - 1)) && !fieldSchema.IsRequired)
+                {
+                    return false;
+                }
+
+                throw new ArgumentException("An AttachmentState nested record path is incomplete.", parameterName);
+            }
+
+            if ((field.Kind != fieldSchema.WireKind)
+                || (field.IsRequired != fieldSchema.IsRequired)
+                || (field.Count < fieldSchema.MinimumCount)
+                || (field.Count > fieldSchema.MaximumCount))
+            {
+                throw new ArgumentException("An AttachmentState field does not match its compiled wire schema.", parameterName);
+            }
+
+            if (index != (segments.Length - 1))
+            {
+                if ((fieldSchema.WireKind != RecordKind)
+                    || !field.IsRequired
+                    || (field.Count != 1))
+                {
+                    throw new ArgumentException("An AttachmentState nested record has an invalid wire shape.", parameterName);
+                }
+
+                current = current.GetRecord(segment.Value);
+                currentSchema = ResolveAttachmentNestedSchema(schemas, fieldSchema, current, parameterName);
+            }
+            else if (!ReferenceEquals(currentSchema, descriptor.DataSchema)
+                || !ReferenceEquals(fieldSchema, descriptor.Field))
+            {
+                throw new ArgumentException("An AttachmentState field path does not match its registered descriptor.", parameterName);
+            }
+        }
+
+        return true;
+    }
+
     private static void ValidateArrayChildren(
         EbinRecordReadView record,
         uint fieldTag,
@@ -310,6 +448,49 @@ internal static class WorldPersistenceEcsReader
                 || (child.FieldCount > maximumFieldCount))
             {
                 throw new ArgumentException("A state/ecs array child has the wrong schema identity, version, or field count.", parameterName);
+            }
+        }
+    }
+
+    private static void ValidateAttachmentEntityReferences(
+        EbinRecordReadView payload,
+        WorldAttachmentFactoryDescriptor descriptor,
+        WorldPersistenceLiveIdentitySet liveIdentities,
+        string parameterName)
+    {
+        foreach (var fieldDescriptor in descriptor.Fields)
+        {
+            var schemaField = fieldDescriptor.Field;
+
+            if (schemaField.Reference != ContentReferenceKind.Entity)
+            {
+                continue;
+            }
+
+            if (schemaField.IsRequired
+                || (schemaField.WireKind != GuidKind))
+            {
+                throw new ArgumentException("The target attachment registration has an unsupported Entity-reference field.", parameterName);
+            }
+
+            if (!TryGetAttachmentField(payload, fieldDescriptor, parameterName, out var field))
+            {
+                continue;
+            }
+
+            if ((field.Kind != GuidKind)
+                || field.IsRequired
+                || (field.Count != 1)
+                || (field.Payload.Length != 16))
+            {
+                throw new ArgumentException("An AttachmentState Entity-reference field has an invalid wire shape.", parameterName);
+            }
+
+            var targetEntityId = new Guid(field.Payload, bigEndian: true);
+
+            if ((targetEntityId == Guid.Empty) || !liveIdentities.IsMatchedEntity(targetEntityId))
+            {
+                throw new ArgumentException("An AttachmentState Entity reference does not identify a live ECS Entity.", parameterName);
             }
         }
     }

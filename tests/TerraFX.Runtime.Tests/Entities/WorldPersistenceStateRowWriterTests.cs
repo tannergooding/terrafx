@@ -11,7 +11,7 @@ namespace TerraFX.Runtime.Tests.Entities;
 [TestFixture]
 internal sealed class WorldPersistenceStateRowWriterTests
 {
-    private static void AssertAttachmentOwnerRow(
+    internal static void AssertAttachmentOwnerRow(
         byte[] record,
         EbinReadLimits limits,
         WorldPersistenceLiveIdentitySet liveIdentities,

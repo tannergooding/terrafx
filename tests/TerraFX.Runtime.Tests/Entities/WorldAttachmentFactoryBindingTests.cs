@@ -7,6 +7,7 @@ using System.Threading;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Entities;
+using TerraFX.Runtime.Tests.Scenes;
 
 namespace TerraFX.Runtime.Tests.Entities;
 
@@ -174,6 +175,8 @@ internal sealed class WorldAttachmentFactoryBindingTests
             var capturedRecordCount = 0;
             var capturedWorldScope = false;
             var capturedEntityScope = false;
+            Span<byte> targetIdBytes = stackalloc byte[16];
+            Span<byte> unknownTargetIdBytes = stackalloc byte[16];
 
             while (enumerator.MoveNext())
             {
@@ -220,6 +223,97 @@ internal sealed class WorldAttachmentFactoryBindingTests
                 Assert.That(guidBytesWritten, Is.EqualTo(16));
                 Assert.That(written, Is.EqualTo(byteCount));
                 Assert.That(encoded, Is.EqualTo(expected));
+
+                if (scope == AttachmentScope.Entity)
+                {
+                    var attachmentOwnerId = ownerEntityId
+                        ?? throw new InvalidOperationException("The selected Entity attachment has no owner.");
+                    var valuePayload = new byte[sizeof(long)];
+                    BinaryPrimitives.WriteInt64LittleEndian(valuePayload, expectedCounter);
+                    var payloadRecord = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                        schema.SchemaId,
+                        schema.Major,
+                        schema.Minor,
+                        new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(1, 8, 1, 1, valuePayload),
+                        SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(2, targetId, isRequired: false));
+                    var attachmentLimits = EbinReadLimits.Foundation;
+                    Assert.That(
+                        WorldPersistenceStateRowWriter.MeasureAttachment(
+                            schema,
+                            hasOwner: true,
+                            payloadRecordBytes: payloadRecord.Length,
+                            limits: attachmentLimits,
+                            schemaReferenceRecordBytes: out var schemaReferenceBytes,
+                            rowRecordBytes: out var attachmentRecordBytes,
+                            rowPayloadBytes: out var attachmentPayloadBytes,
+                            diagnostic: out var attachmentDiagnostic),
+                        Is.EqualTo(EbinWriteStatus.Complete),
+                        attachmentDiagnostic?.Category);
+                    Assert.That(attachmentDiagnostic, Is.Null);
+                    Assert.That(schemaReferenceBytes, Is.GreaterThan(0));
+                    var attachmentPayload = new byte[attachmentPayloadBytes];
+                    var attachmentCandidate = new byte[attachmentRecordBytes];
+                    var attachmentRecord = new byte[attachmentRecordBytes];
+                    Assert.That(
+                        WorldPersistenceStateRowWriter.WriteAttachment(
+                            schema,
+                            attachmentOwnerId,
+                            payloadRecord,
+                            attachmentLimits,
+                            attachmentPayload,
+                            attachmentCandidate,
+                            attachmentRecord,
+                            out var attachmentBytesWritten,
+                            out attachmentDiagnostic),
+                        Is.EqualTo(EbinWriteStatus.Complete),
+                        attachmentDiagnostic?.Category);
+                    Assert.That(attachmentDiagnostic, Is.Null);
+                    Assert.That(attachmentBytesWritten, Is.EqualTo(attachmentRecordBytes));
+
+                    var liveIdentities = new WorldPersistenceLiveIdentitySet(maximumCount: 2);
+                    liveIdentities.Add(targetId, identityKind: 1, assignmentOrdinal: 1, nameof(targetId));
+                    liveIdentities.MatchEntity(targetId, nameof(targetId));
+                    liveIdentities.Add(attachmentOwnerId, identityKind: 1, assignmentOrdinal: 2, nameof(ownerEntityId));
+                    liveIdentities.MatchEntity(attachmentOwnerId, nameof(ownerEntityId));
+                    WorldPersistenceStateRowWriterTests.AssertAttachmentOwnerRow(
+                        attachmentRecord,
+                        attachmentLimits,
+                        liveIdentities,
+                        registration);
+
+                    var invalidPayload = (byte[])payloadRecord.Clone();
+                    _ = targetId.TryWriteBytes(targetIdBytes, bigEndian: true, out _);
+                    _ = Guid.Parse("50000000-0000-0000-0000-000000000001").TryWriteBytes(
+                        unknownTargetIdBytes,
+                        bigEndian: true,
+                        out _);
+                    var targetOffset = invalidPayload.AsSpan().IndexOf(targetIdBytes);
+                    Assert.That(targetOffset, Is.GreaterThanOrEqualTo(0));
+                    Assert.That(
+                        invalidPayload.AsSpan(targetOffset + targetIdBytes.Length).IndexOf(targetIdBytes),
+                        Is.EqualTo(-1));
+                    unknownTargetIdBytes.CopyTo(invalidPayload.AsSpan(targetOffset, unknownTargetIdBytes.Length));
+                    Assert.That(
+                        WorldPersistenceStateRowWriter.WriteAttachment(
+                            schema,
+                            attachmentOwnerId,
+                            invalidPayload,
+                            attachmentLimits,
+                            attachmentPayload,
+                            attachmentCandidate,
+                            attachmentRecord,
+                            out attachmentBytesWritten,
+                            out attachmentDiagnostic),
+                        Is.EqualTo(EbinWriteStatus.Complete),
+                        attachmentDiagnostic?.Category);
+                    Assert.That(attachmentDiagnostic, Is.Null);
+                    _ = Assert.Throws<ArgumentException>(() => WorldPersistenceStateRowWriterTests.AssertAttachmentOwnerRow(
+                        attachmentRecord,
+                        attachmentLimits,
+                        liveIdentities,
+                        registration));
+                }
+
                 capturedRecordCount++;
             }
 
