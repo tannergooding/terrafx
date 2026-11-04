@@ -624,11 +624,77 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
     }
 
     [Test]
-    public void ComposesStrictLocalCursorsButRejectsRootWithoutLayoutCapture()
+    public void ComposesStrictLocalFreeListAndPhysicalChunkOrder()
+    {
+        const string TagSchemaName = "application/world-root-test/strict-layout-tag/v1";
+        var schemas = new CompiledContentSchemaRegistry([
+            .. CoreContentSchemaCatalogue.PrimitiveSchemas,
+            .. CoreContentSchemaCatalogue.FoundationSchemas,
+            .. NativeAssetSchemaCatalogue.Schemas,
+            .. SceneSchemaCatalogue.Schemas,
+            .. AnimationSchemaCatalogue.Schemas,
+            .. RenderingSchemaCatalogue.Schemas,
+            .. StandaloneContinuationSchemaCatalogue.Schemas,
+            CreateApplicationSchema(
+                "application/world-root-test/system-state/v1",
+                ContentSchemaRole.SystemState,
+                7),
+            CreateApplicationSchema(
+                "application/world-root-test/resource-state/v1",
+                ContentSchemaRole.ResourceState,
+                23,
+                4),
+            CreateApplicationSchema(
+                "application/world-root-test/attachment-state/v1",
+                ContentSchemaRole.AttachmentState,
+                8),
+            CreateApplicationSchema(TagSchemaName, ContentSchemaRole.EntityTag, 0),
+        ]);
+        var tagId = new ContentSchemaIdentityAssignment(TagSchemaName).SchemaId;
+        var builder = new WorldRegistrationBuilder(schemas);
+        _ = builder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+        _ = builder.RegisterTag(new EntityTagSchema(tagId, 1));
+        var registration = builder.Build();
+        using var world = World.Create(new WorldOptions(registration) {
+            CpuWorkerCount = 0,
+            InitialReplayLineageId = Guid.NewGuid(),
+            Profile = SimulationProfile.StrictLocal,
+            WorldGuid = Guid.NewGuid(),
+        });
+        var retiredEntity = world.CreateEntity(new EntityDescription(Guid.NewGuid()));
+        var liveEntityId = Guid.NewGuid();
+        _ = world.CreateEntity(new EntityDescription(liveEntityId, tags: [tagId]));
+        world.DestroyEntity(retiredEntity, HierarchyDestroyMode.DetachChildrenKeepWorld);
+        _ = world.Step();
+
+        using var lease = world.AcquirePersistenceCaptureLease();
+        var limits = WorldPersistenceEbinLimits.Create(world.Options);
+        var worldRecord = ComposeWorldRecord(world, in lease, schemas, []);
+        var identityAssignmentCount = WorldPersistenceWorldRecordReader.MeasureIdentityAssignmentCount(worldRecord, limits);
+        var identityScratch = new WorldPersistenceIdentityScratchEntry[identityAssignmentCount];
+        var decoded = WorldPersistenceWorldRecordReader.Read(worldRecord, limits, registration, schemas, [], identityScratch);
+        var assertions = new StrictLayoutAllocatorAssertions(liveEntityId, tagId, registration);
+        Assert.That(
+            EbinStructuralReader.Read(
+                decoded.StrictLayoutRecord.Span,
+                limits,
+                EbinReadPolicy.Canonical,
+                ref assertions,
+                out var bytesConsumed,
+                out var diagnostic),
+            Is.EqualTo(EbinReadStatus.Complete),
+            diagnostic?.ToString());
+        Assert.That(bytesConsumed, Is.EqualTo(decoded.StrictLayoutRecord.Length));
+    }
+
+    [Test]
+    public void ComposesStrictLocalLayoutAndCursorState()
     {
         var (schemas, world) = CreateControlValidationWorld(SimulationProfile.StrictLocal);
         using (world)
         {
+            var entityId = Guid.NewGuid();
+            _ = world.CreateEntity(new EntityDescription(entityId));
             _ = world.Step();
             var request = WorldOwnerControlRequest.CreateTimeScaleChange(0.5f, CancellationToken.None);
             Assert.That(
@@ -639,20 +705,30 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             _ = world.Step();
 
             using var lease = world.AcquirePersistenceCaptureLease();
+            var limits = WorldPersistenceEbinLimits.Create(world.Options);
+            var worldRecord = ComposeWorldRecord(world, in lease, schemas, []);
+            var registration = new WorldRegistrationBuilder(schemas).Build();
+            var identityAssignmentCount = WorldPersistenceWorldRecordReader.MeasureIdentityAssignmentCount(worldRecord, limits);
+            var identityScratch = new WorldPersistenceIdentityScratchEntry[identityAssignmentCount];
+            var decoded = WorldPersistenceWorldRecordReader.Read(worldRecord, limits, registration, schemas, [], identityScratch);
+
+            Assert.That(decoded.Cursors.NextOwnerRequestSequence, Is.EqualTo(2));
+            Assert.That(decoded.Cursors.NextBarrierEpoch, Is.EqualTo(lease.NextTickIndex + 1));
+            Assert.That(decoded.Cursors.AcceptedOwnerRequests, Is.EqualTo(1));
+            Assert.That(decoded.StrictLayoutRecord.IsEmpty, Is.False);
+
+            var assertions = new StrictLayoutRootAssertions(entityId);
             Assert.That(
-                WorldPersistenceCaptureCoordinator.Capture(
-                    world,
-                    lease,
-                    schemas,
-                    out var worldRecord,
-                    out var assetIdCount,
-                    out var diagnostic,
-                    CancellationToken.None),
-                Is.EqualTo(EbinWriteStatus.InvalidRecord),
-                diagnostic?.Category);
-            Assert.That(diagnostic?.Category, Is.EqualTo("strict-layout-mode"));
-            Assert.That(worldRecord, Is.Null);
-            Assert.That(assetIdCount, Is.Zero);
+                EbinStructuralReader.Read(
+                    decoded.StrictLayoutRecord.Span,
+                    limits,
+                    EbinReadPolicy.Canonical,
+                    ref assertions,
+                    out var bytesConsumed,
+                    out var readDiagnostic),
+                Is.EqualTo(EbinReadStatus.Complete),
+                readDiagnostic?.ToString());
+            Assert.That(bytesConsumed, Is.EqualTo(decoded.StrictLayoutRecord.Length));
         }
     }
 
@@ -908,5 +984,126 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
 
         public void Invoke(scoped EbinRecordReadView record)
             => EncodedPayload = record.GetRecordArrayElement(8, 1).GetRecord(3).EncodedBytes.ToArray();
+    }
+
+    private readonly struct StrictLayoutAllocatorAssertions : IAction<EbinRecordReadView>
+    {
+        private readonly Guid _liveEntityId;
+        private readonly Guid _tagId;
+        private readonly WorldRegistration _registration;
+
+        internal StrictLayoutAllocatorAssertions(Guid liveEntityId, Guid tagId, WorldRegistration registration)
+        {
+            ArgumentOutOfRangeException.ThrowIfEqual(liveEntityId, Guid.Empty);
+            ArgumentOutOfRangeException.ThrowIfEqual(tagId, Guid.Empty);
+            ArgumentNullException.ThrowIfNull(registration);
+            _liveEntityId = liveEntityId;
+            _tagId = tagId;
+            _registration = registration;
+        }
+
+        public readonly void Invoke(scoped EbinRecordReadView record)
+        {
+            Assert.That(record.Header.SchemaId, Is.EqualTo(new ContentSchemaIdentityAssignment("state/strict-layout").SchemaId));
+            Assert.That(record.FieldCount, Is.EqualTo(5));
+            Assert.That(record.GetField(0).Count, Is.EqualTo(2));
+            Assert.That(record.GetField(1).Count, Is.EqualTo(2));
+            Assert.That(record.GetField(2).Count, Is.EqualTo(1));
+            Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(record.GetField(2).Payload[32..]), Is.EqualTo(1));
+            Assert.That(BinaryPrimitives.ReadInt64LittleEndian(record.GetField(3).Payload), Is.EqualTo(2));
+            Assert.That(record.GetField(4).Count, Is.EqualTo(_registration.Components.Length));
+
+            for (var index = 0; index < _registration.Components.Length; index++)
+            {
+                var expected = _registration.Components[index];
+                var layout = record.GetRecordArrayElement(5, index);
+                var schemaReference = layout.GetRecord(1);
+                Assert.That(layout.Header.SchemaId, Is.EqualTo(new ContentSchemaIdentityAssignment("state/component-layout").SchemaId));
+                Assert.That(layout.FieldCount, Is.EqualTo(3));
+                Assert.That(schemaReference.Header.SchemaId, Is.EqualTo(new ContentSchemaIdentityAssignment("content/schema-ref").SchemaId));
+                Assert.That(schemaReference.FieldCount, Is.EqualTo(4));
+                Assert.That(new Guid(schemaReference.GetField(0).Payload, bigEndian: true), Is.EqualTo(expected.SchemaReference.SchemaId));
+                Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(schemaReference.GetField(1).Payload), Is.EqualTo(expected.SchemaReference.Major));
+                Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(schemaReference.GetField(2).Payload), Is.EqualTo(expected.SchemaReference.Minor));
+                Assert.That(schemaReference.GetField(3).Payload[0], Is.EqualTo((byte)expected.SchemaReference.Scope));
+                Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(layout.GetField(1).Payload), Is.EqualTo(expected.Layout.LogicalBytes));
+                Assert.That(new Guid(layout.GetField(2).Payload, bigEndian: true), Is.EqualTo(expected.Layout.LayoutId));
+            }
+
+            var emptyArchetype = record.GetRecordArrayElement(1, 0);
+            Assert.That(emptyArchetype.GetField(0).Count, Is.Zero);
+            Assert.That(emptyArchetype.GetField(1).Count, Is.EqualTo(1));
+            var emptyChunk = emptyArchetype.GetRecordArrayElement(2, 0);
+            Assert.That(BinaryPrimitives.ReadInt64LittleEndian(emptyChunk.GetField(0).Payload), Is.Zero);
+            Assert.That(emptyChunk.GetField(1).Count, Is.Zero);
+
+            var taggedArchetype = record.GetRecordArrayElement(1, 1);
+            Assert.That(taggedArchetype.GetField(0).Count, Is.EqualTo(1));
+            Assert.That(
+                new Guid(taggedArchetype.GetField(0).Payload[32..], bigEndian: true),
+                Is.EqualTo(_tagId));
+            var taggedChunk = taggedArchetype.GetRecordArrayElement(2, 0);
+            Assert.That(BinaryPrimitives.ReadInt64LittleEndian(taggedChunk.GetField(0).Payload), Is.EqualTo(1));
+            Assert.That(taggedChunk.GetField(1).Count, Is.EqualTo(1));
+            Assert.That(
+                new Guid(taggedChunk.GetField(1).Payload[32..], bigEndian: true),
+                Is.EqualTo(_liveEntityId));
+
+            var freeSlot = record.GetRecordArrayElement(2, 0);
+            Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(freeSlot.GetField(0).Payload), Is.EqualTo(1));
+            Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(freeSlot.GetField(1).Payload), Is.EqualTo(2));
+            Assert.That(freeSlot.GetField(2).Payload[0], Is.EqualTo(1));
+            Assert.That(freeSlot.FieldCount, Is.EqualTo(3));
+
+            var liveSlot = record.GetRecordArrayElement(2, 1);
+            Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(liveSlot.GetField(0).Payload), Is.EqualTo(2));
+            Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(liveSlot.GetField(1).Payload), Is.EqualTo(1));
+            Assert.That(liveSlot.GetField(2).Payload[0], Is.Zero);
+            Assert.That(new Guid(liveSlot.GetField(3).Payload, bigEndian: true), Is.EqualTo(_liveEntityId));
+            Assert.That(liveSlot.GetField(4).Count, Is.EqualTo(32));
+            Assert.That(BinaryPrimitives.ReadInt64LittleEndian(liveSlot.GetField(5).Payload), Is.EqualTo(1));
+            Assert.That(BinaryPrimitives.ReadUInt16LittleEndian(liveSlot.GetField(6).Payload), Is.Zero);
+        }
+    }
+
+    private readonly struct StrictLayoutRootAssertions : IAction<EbinRecordReadView>
+    {
+        private readonly Guid _entityId;
+
+        internal StrictLayoutRootAssertions(Guid entityId)
+        {
+            ArgumentOutOfRangeException.ThrowIfEqual(entityId, Guid.Empty);
+            _entityId = entityId;
+        }
+
+        public readonly void Invoke(scoped EbinRecordReadView record)
+        {
+            Assert.That(record.Header.SchemaId, Is.EqualTo(new ContentSchemaIdentityAssignment("state/strict-layout").SchemaId));
+            Assert.That(record.FieldCount, Is.EqualTo(5));
+            Assert.That(record.GetField(0).Count, Is.EqualTo(1));
+            Assert.That(record.GetField(1).Count, Is.EqualTo(1));
+            Assert.That(record.GetField(2).Count, Is.Zero);
+            Assert.That(BinaryPrimitives.ReadInt64LittleEndian(record.GetField(3).Payload), Is.EqualTo(1));
+            Assert.That(record.GetField(4).Count, Is.Zero);
+
+            var archetype = record.GetRecordArrayElement(1, 0);
+            Assert.That(archetype.GetField(0).Count, Is.Zero);
+            Assert.That(archetype.GetField(1).Count, Is.EqualTo(1));
+            var chunk = archetype.GetRecordArrayElement(2, 0);
+            Assert.That(BinaryPrimitives.ReadInt64LittleEndian(chunk.GetField(0).Payload), Is.Zero);
+            Assert.That(chunk.GetField(1).Count, Is.EqualTo(1));
+            Assert.That(new Guid(chunk.GetField(1).Payload[32..], bigEndian: true), Is.EqualTo(_entityId));
+            Assert.That(BinaryPrimitives.ReadUInt16LittleEndian(chunk.GetField(2).Payload), Is.EqualTo(1));
+            Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(chunk.GetField(3).Payload), Is.EqualTo(256));
+
+            var slot = record.GetRecordArrayElement(2, 0);
+            Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(slot.GetField(0).Payload), Is.EqualTo(1));
+            Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(slot.GetField(1).Payload), Is.EqualTo(1));
+            Assert.That(slot.GetField(2).Payload[0], Is.Zero);
+            Assert.That(new Guid(slot.GetField(3).Payload, bigEndian: true), Is.EqualTo(_entityId));
+            Assert.That(slot.GetField(4).Count, Is.EqualTo(32));
+            Assert.That(BinaryPrimitives.ReadInt64LittleEndian(slot.GetField(5).Payload), Is.Zero);
+            Assert.That(BinaryPrimitives.ReadUInt16LittleEndian(slot.GetField(6).Payload), Is.Zero);
+        }
     }
 }

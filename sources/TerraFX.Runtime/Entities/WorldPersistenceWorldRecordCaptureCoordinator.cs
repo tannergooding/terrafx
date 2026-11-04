@@ -334,6 +334,69 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
             throw new InvalidOperationException("The cursor record extent changed after measurement.");
         }
 
+        var strictLayoutBuffers = default(WorldPersistenceStrictLayoutBuffers);
+        var strictLayoutRecord = ReadOnlySpan<byte>.Empty;
+
+        if (lease.Profile is SimulationProfile.StrictLocal)
+        {
+            status = WorldPersistenceStrictLayoutWriter.Measure(
+                lease,
+                world.Registration,
+                limits,
+                cancellationToken,
+                out var strictLayoutWorkspace,
+                out diagnostic);
+
+            if (status is not EbinWriteStatus.Complete)
+            {
+                return status;
+            }
+
+            strictLayoutBuffers = WorldPersistenceStrictLayoutBuffers.Create(strictLayoutWorkspace);
+
+            if (strictLayoutBuffers.GetWorkspaceBytes() != strictLayoutWorkspace.WorkspaceBytes)
+            {
+                throw new InvalidOperationException("The StrictLocal layout workspace extent changed after measurement.");
+            }
+
+            status = WorldPersistenceStrictLayoutWriter.Write(
+                lease,
+                world.Registration,
+                strictLayoutWorkspace,
+                limits,
+                strictLayoutBuffers.ArchetypeSlices,
+                strictLayoutBuffers.SlotSlices,
+                strictLayoutBuffers.ComponentSlices,
+                strictLayoutBuffers.ChunkSlices,
+                strictLayoutBuffers.ArchetypeRecordStorage,
+                strictLayoutBuffers.SlotRecordStorage,
+                strictLayoutBuffers.ComponentRecordStorage,
+                strictLayoutBuffers.ChunkRecordStorage,
+                strictLayoutBuffers.ArchetypePayloadStorage,
+                strictLayoutBuffers.FreeSlotScratch,
+                strictLayoutBuffers.RowIdScratch,
+                strictLayoutBuffers.ArchetypeDigestStorage,
+                strictLayoutBuffers.ChildCandidateStorage,
+                strictLayoutBuffers.RootPayloadStorage,
+                strictLayoutBuffers.CandidateStorage,
+                strictLayoutBuffers.Destination,
+                cancellationToken,
+                out var strictLayoutBytesWritten,
+                out diagnostic);
+
+            if (status is not EbinWriteStatus.Complete)
+            {
+                return status;
+            }
+
+            if (strictLayoutBytesWritten != strictLayoutBuffers.Destination.Length)
+            {
+                throw new InvalidOperationException("The StrictLocal layout extent changed after measurement.");
+            }
+
+            strictLayoutRecord = strictLayoutBuffers.Destination;
+        }
+
         var referenceCount = WorldPersistenceAssetIdSetWriter.MeasureReferenceCount(
             schemas,
             ecsRecord,
@@ -381,7 +444,7 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
             randomStreamCount: 0,
             registrationRecord,
             scenesRecord,
-            strictLayoutRecord: []);
+            strictLayoutRecord);
         status = WorldPersistenceWorldRecordWriter.MeasureRootPayloadStorage(
             sources,
             limits,
@@ -413,7 +476,8 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
             + frame3Workspace.WorkspaceBytes
             + controlWorkspace.WorkspaceBytes
             + (2L * cursorsBytes)
-            + emptyArrayPayload.Length);
+            + emptyArrayPayload.Length
+            + strictLayoutBuffers.GetWorkspaceBytes());
         var captureWorkspace = new WorldPersistenceWorldRecordCaptureWorkspaceRequirements(
             referenceCount,
             assetIdCount,

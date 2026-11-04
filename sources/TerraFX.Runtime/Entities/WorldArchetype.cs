@@ -60,6 +60,8 @@ internal sealed class WorldArchetype
     internal long MetadataByteReservation
         => GetMetadataByteReservation(Components.Length, Tags.Length);
 
+    internal ReadOnlySpan<Guid> SchemaIds => _schemaIds;
+
     internal EntityArchetypeStorage Storage { get; }
 
     internal ImmutableArray<Guid> Tags { get; }

@@ -514,6 +514,21 @@ internal static class WorldPersistenceEcsReader
         return new ContentSchemaReference(schemaId, checked((int)major), checked((int)minor), (ContentSchemaScope)scopeValue);
     }
 
+    private static ContentSchemaReference ReadTagSchemaReference(EbinRecordReadView record, string parameterName)
+    {
+        var header = record.Header;
+
+        if ((header.SchemaId == Guid.Empty)
+            || (header.Major <= 0)
+            || (header.Minor < 0)
+            || (record.FieldCount != 0))
+        {
+            throw new ArgumentException("A state/entity tag record has an invalid schema identity, version, or field count.", parameterName);
+        }
+
+        return new ContentSchemaReference(header.SchemaId, header.Major, header.Minor, ContentSchemaScope.Content);
+    }
+
     private static uint ReadUInt32(EbinRecordReadView record, uint tag, string parameterName)
     {
         var field = GetRequiredField(record, tag, UInt32Kind, expectedCount: 1, parameterName);
@@ -1002,7 +1017,7 @@ internal static class WorldPersistenceEcsReader
             for (var tagIndex = 0; tagIndex < tagCount; tagIndex++)
             {
                 var tag = entity.GetRecordArrayElement(3, tagIndex);
-                var tagSchema = ReadSchemaReference(tag, parameterName);
+                var tagSchema = ReadTagSchemaReference(tag, parameterName);
 
                 if (hasPreviousTagSchema && (CompareSchemaReferences(previousTagSchema, tagSchema) >= 0))
                 {

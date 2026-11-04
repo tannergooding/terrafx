@@ -401,6 +401,22 @@ internal sealed class EntityArchetypeStorage
         return bytes;
     }
 
+    internal Entity GetChunkEntity(int chunkIndex, int row)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(chunkIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(chunkIndex, _chunks.Length);
+        ArgumentOutOfRangeException.ThrowIfNegative(row);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(row, _chunks[chunkIndex]._count);
+        return _chunks[chunkIndex]._entities[row];
+    }
+
+    internal int GetChunkRowCount(int chunkIndex)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(chunkIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(chunkIndex, _chunks.Length);
+        return _chunks[chunkIndex]._count;
+    }
+
     internal Span<T> GetColumnSpan<T>(int componentIndex, int chunkIndex, int startRow, int length)
         where T : unmanaged
     {

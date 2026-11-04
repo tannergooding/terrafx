@@ -110,6 +110,12 @@ public sealed partial class World
         }
     }
 
+    internal void CopyPersistenceFreeSlots(WorldPersistenceCaptureLease lease, scoped Span<uint> destination)
+    {
+        ValidatePersistenceCaptureLease(lease);
+        _entitySlots.CopyPersistenceFreeSlots(destination);
+    }
+
     internal nint CountAttachmentStateRecord(
         WorldPersistenceCaptureLease lease,
         int attachmentIndex,
@@ -394,6 +400,36 @@ public sealed partial class World
         return new SystemStateCaptureEnumerator(this, lease);
     }
 
+    internal int GetPersistenceAllocatedSlotCount(WorldPersistenceCaptureLease lease)
+    {
+        ValidatePersistenceCaptureLease(lease);
+        return _entitySlots.AllocatedSlotCount;
+    }
+
+    internal WorldArchetype GetPersistenceArchetypeByIndex(WorldPersistenceCaptureLease lease, int index)
+    {
+        ValidatePersistenceCaptureLease(lease);
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, _archetypeCount);
+        return _archetypes[index]
+            ?? throw new InvalidOperationException("The World archetype directory contains an empty allocated slot.");
+    }
+
+    internal WorldArchetype GetPersistenceArchetypeByOrder(WorldPersistenceCaptureLease lease, int index)
+    {
+        ValidatePersistenceCaptureLease(lease);
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, _archetypeCount);
+        return _queryArchetypes[index]
+            ?? throw new InvalidOperationException("The World canonical archetype order contains an empty slot.");
+    }
+
+    internal int GetPersistenceArchetypeCount(WorldPersistenceCaptureLease lease)
+    {
+        ValidatePersistenceCaptureLease(lease);
+        return _archetypeCount;
+    }
+
     internal int GetPersistenceAttachmentCount(WorldPersistenceCaptureLease lease)
     {
         lease.ValidateCurrent();
@@ -453,6 +489,37 @@ public sealed partial class World
         }
 
         return _entitySlots.LiveEntityCount;
+    }
+
+    internal Guid GetPersistenceEntityId(WorldPersistenceCaptureLease lease, Entity entity)
+    {
+        ValidatePersistenceCaptureLease(lease);
+        return GetEntityId(entity);
+    }
+
+    internal int GetPersistenceFreeSlotCount(WorldPersistenceCaptureLease lease)
+    {
+        ValidatePersistenceCaptureLease(lease);
+        return _entitySlots.FreeSlotCount;
+    }
+
+    internal long GetPersistenceNextChunkOrdinal(WorldPersistenceCaptureLease lease)
+    {
+        ValidatePersistenceCaptureLease(lease);
+        return _nextChunkOrdinal;
+    }
+
+    internal void GetPersistenceSlot(
+        WorldPersistenceCaptureLease lease,
+        int index,
+        out uint generation,
+        out byte status,
+        out int archetypeIndex,
+        out long chunkOrdinal,
+        out int row)
+    {
+        ValidatePersistenceCaptureLease(lease);
+        _entitySlots.GetPersistenceSlot(index, out generation, out status, out archetypeIndex, out chunkOrdinal, out row);
     }
 
     internal void ReleasePersistenceCaptureLease(WorldPersistenceCaptureLease lease)

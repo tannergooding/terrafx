@@ -144,6 +144,42 @@ internal ref struct WorldPersistenceCaptureLease
 
     internal readonly long Sequence => _sequence;
 
+    internal readonly int StrictLayoutAllocatedSlotCount
+    {
+        get
+        {
+            ValidateCurrent();
+            return _world.GetPersistenceAllocatedSlotCount(this);
+        }
+    }
+
+    internal readonly int StrictLayoutArchetypeCount
+    {
+        get
+        {
+            ValidateCurrent();
+            return _world.GetPersistenceArchetypeCount(this);
+        }
+    }
+
+    internal readonly int StrictLayoutFreeSlotCount
+    {
+        get
+        {
+            ValidateCurrent();
+            return _world.GetPersistenceFreeSlotCount(this);
+        }
+    }
+
+    internal readonly long StrictLayoutNextChunkOrdinal
+    {
+        get
+        {
+            ValidateCurrent();
+            return _world.GetPersistenceNextChunkOrdinal(this);
+        }
+    }
+
     internal readonly int TickRate => _tickRate;
 
     internal readonly float TimeScale => _timeScale;
@@ -163,6 +199,12 @@ internal ref struct WorldPersistenceCaptureLease
         }
 
         _sceneParticipant?.CopySceneAssetIds(destination);
+    }
+
+    internal readonly void CopyStrictLayoutFreeSlots(scoped Span<uint> destination)
+    {
+        ValidateCurrent();
+        _world.CopyPersistenceFreeSlots(this, destination);
     }
 
     internal readonly nint CountAttachmentStateRecord(int attachmentIndex, CancellationToken cancellationToken)
@@ -276,6 +318,36 @@ internal ref struct WorldPersistenceCaptureLease
     {
         ValidateCurrent();
         return _sceneParticipant?.GetSceneAssetIdCount() ?? 0;
+    }
+
+    internal readonly WorldArchetype GetStrictLayoutArchetypeByIndex(int index)
+    {
+        ValidateCurrent();
+        return _world.GetPersistenceArchetypeByIndex(this, index);
+    }
+
+    internal readonly WorldArchetype GetStrictLayoutArchetypeByOrder(int index)
+    {
+        ValidateCurrent();
+        return _world.GetPersistenceArchetypeByOrder(this, index);
+    }
+
+    internal readonly Guid GetStrictLayoutEntityId(Entity entity)
+    {
+        ValidateCurrent();
+        return _world.GetPersistenceEntityId(this, entity);
+    }
+
+    internal readonly void GetStrictLayoutSlot(
+        int index,
+        out uint generation,
+        out byte status,
+        out int archetypeIndex,
+        out long chunkOrdinal,
+        out int row)
+    {
+        ValidateCurrent();
+        _world.GetPersistenceSlot(this, index, out generation, out status, out archetypeIndex, out chunkOrdinal, out row);
     }
 
     internal readonly int GetSystemStateCount()

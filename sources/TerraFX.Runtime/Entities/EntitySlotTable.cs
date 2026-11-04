@@ -76,6 +76,19 @@ internal sealed class EntitySlotTable
         slot._row = -1;
     }
 
+    internal void CopyPersistenceFreeSlots(Span<uint> destination)
+    {
+        if (destination.Length != _freeSlotCount)
+        {
+            throw new ArgumentException("The persisted free-slot destination must match the exact free-list count.", nameof(destination));
+        }
+
+        for (var index = 0; index < _freeSlotCount; index++)
+        {
+            destination[index] = checked((uint)_freeSlots[index]);
+        }
+    }
+
     // The free-list requirement is its peak depth during the next commit, not its final depth.
     internal long GetCapacityPreparationBytes(int requiredAllocatedSlots, int requiredFreeSlotCount)
     {
@@ -105,6 +118,54 @@ internal sealed class EntitySlotTable
         }
 
         return _slots[(int)index]._hierarchyDepth;
+    }
+
+    internal void GetPersistenceSlot(
+        int index,
+        out uint generation,
+        out byte status,
+        out int archetypeIndex,
+        out long chunkOrdinal,
+        out int row)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(index);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(index, _allocatedSlotCount);
+        var slot = _slots[index];
+        generation = slot._generation;
+        archetypeIndex = -1;
+        chunkOrdinal = -1;
+        row = -1;
+
+        switch (slot._state)
+        {
+            case SlotState.Live:
+            {
+                if (!TryGetLocation(checked((uint)index), slot._generation, out archetypeIndex, out chunkOrdinal, out row))
+                {
+                    throw new InvalidOperationException("A live slot has no persisted archetype location.");
+                }
+
+                status = 0;
+                break;
+            }
+
+            case SlotState.Free when slot._generation >= 2:
+            {
+                status = 1;
+                break;
+            }
+
+            case SlotState.Retired when slot._generation == uint.MaxValue:
+            {
+                status = 2;
+                break;
+            }
+
+            default:
+            {
+                throw new InvalidOperationException("The entity slot table contains an invalid persisted slot state.");
+            }
+        }
     }
 
     internal bool IsLive(uint index, uint generation)
