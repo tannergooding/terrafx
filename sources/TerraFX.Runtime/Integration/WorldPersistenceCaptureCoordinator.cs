@@ -15,6 +15,7 @@ internal static class WorldPersistenceCaptureCoordinator
         World world,
         WorldPersistenceCaptureLease lease,
         CompiledContentSchemaRegistry schemas,
+        out WorldPersistenceAdmissionReservation? retainedReservation,
         out byte[]? worldRecord,
         out int assetIdCount,
         out EbinStructuralDiagnostic? diagnostic,
@@ -22,6 +23,7 @@ internal static class WorldPersistenceCaptureCoordinator
     {
         ArgumentNullException.ThrowIfNull(world);
         ArgumentNullException.ThrowIfNull(schemas);
+        retainedReservation = null;
         worldRecord = null;
         assetIdCount = 0;
         var status = ScenePersistenceCaptureCoordinator.Capture(
@@ -47,9 +49,32 @@ internal static class WorldPersistenceCaptureCoordinator
             schemas,
             capturedScenesRecord,
             scenesReservationScope,
+            out retainedReservation,
             out worldRecord,
             out assetIdCount,
             out diagnostic,
             cancellationToken);
+    }
+
+    internal static EbinWriteStatus Capture(
+        World world,
+        WorldPersistenceCaptureLease lease,
+        CompiledContentSchemaRegistry schemas,
+        out byte[]? worldRecord,
+        out int assetIdCount,
+        out EbinStructuralDiagnostic? diagnostic,
+        CancellationToken cancellationToken)
+    {
+        var status = Capture(
+            world,
+            lease,
+            schemas,
+            out var retainedReservation,
+            out worldRecord,
+            out assetIdCount,
+            out diagnostic,
+            cancellationToken);
+        retainedReservation?.Dispose();
+        return status;
     }
 }

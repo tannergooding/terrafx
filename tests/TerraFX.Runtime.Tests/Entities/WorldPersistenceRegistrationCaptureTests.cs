@@ -2,6 +2,7 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Security.Cryptography;
 using System.Threading;
 using NUnit.Framework;
 using TerraFX;
@@ -9,7 +10,9 @@ using TerraFX.Animation;
 using TerraFX.Assets;
 using TerraFX.Entities;
 using TerraFX.Graphics;
+using TerraFX.Hosting;
 using TerraFX.Integration;
+using TerraFX.Runtime.Tests.Hosting;
 using TerraFX.Scenes;
 
 namespace TerraFX.Runtime.Tests.Entities;
@@ -17,6 +20,45 @@ namespace TerraFX.Runtime.Tests.Entities;
 [TestFixture]
 internal sealed class WorldPersistenceRegistrationCaptureTests
 {
+    private static byte[] CreateExpectedFileContentDigest(
+        long generation,
+        ReadOnlySpan<byte> checkpointRecord,
+        EbinReadLimits limits)
+    {
+        var payloadStorage = new byte[checked(8 + checkpointRecord.Length)];
+        var status = EbinPayloadWriter.Write(generation, payloadStorage, out var generationBytes, out _);
+        Assert.That(status, Is.EqualTo(EbinWriteStatus.Complete));
+        checkpointRecord.CopyTo(payloadStorage.AsSpan(generationBytes));
+        Span<EbinFieldSource> fields = [
+            new EbinFieldSource(1, 8, 1, 1, new EbinPayloadSlice(0, generationBytes)),
+            new EbinFieldSource(2, 22, 1, 1, new EbinPayloadSlice(generationBytes, checkpointRecord.Length)),
+        ];
+        var source = new EbinRecordWriteView(
+            new ContentSchemaIdentityAssignment("state/file-content").SchemaId,
+            major: 1,
+            minor: 0,
+            fields,
+            payloadStorage);
+        status = EbinStructuralWriter.Measure(in source, limits, out var recordBytes, out _);
+        Assert.That(status, Is.EqualTo(EbinWriteStatus.Complete));
+        var candidateStorage = new byte[recordBytes];
+        var record = new byte[recordBytes];
+        status = EbinStructuralWriter.Write(
+            in source,
+            limits,
+            candidateStorage,
+            record,
+            out var bytesWritten,
+            out _);
+        Assert.That(status, Is.EqualTo(EbinWriteStatus.Complete));
+        Assert.That(bytesWritten, Is.EqualTo(record.Length));
+        var prefix = "TerraFX.WorldFile.v1\0"u8;
+        var preimage = new byte[checked(prefix.Length + record.Length)];
+        prefix.CopyTo(preimage);
+        record.CopyTo(preimage.AsSpan(prefix.Length));
+        return SHA256.HashData(preimage);
+    }
+
     [Test]
     public void CapturesRegistrationRootFromFrozenWorldRegistration()
     {
@@ -98,6 +140,7 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
                 world,
                 lease,
                 schemas,
+                out var captureReservation,
                 out var record,
                 out var assetIdCount,
                 out var diagnostic,
@@ -105,8 +148,11 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             Is.EqualTo(EbinWriteStatus.Complete),
             diagnostic?.Category);
         Assert.That(diagnostic, Is.Null);
+        using var retainedCaptureReservation = captureReservation
+            ?? throw new InvalidOperationException("The successful World capture did not retain its admission reservation.");
         Assert.That(assetIdCount, Is.Zero);
         var capturedRecord = record ?? throw new InvalidOperationException("The World capture coordinator did not produce its record.");
+        using var capturedRecordUse = retainedCaptureReservation.AcquireUse(world, capturedRecord.Length);
         var assertions = new WorldPersistenceWorldRecordWriterTests.WorldRecordAssertions(
             lease.Frame2.HasValue,
             lease.ControlRecordCount,
@@ -122,6 +168,86 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             Is.EqualTo(EbinReadStatus.Complete));
         Assert.That(readDiagnostic, Is.Null);
         Assert.That(bytesConsumed, Is.EqualTo(capturedRecord.Length));
+
+        var metadata = WorldPersistenceHeaderWriterTests.CreateMetadata();
+        var profileRecord = WorldPersistenceHeaderWriterTests.CreateFoundationProfileRecord();
+        var header = WorldPersistenceHeaderWriter.Create(
+            metadata,
+            WorldPersistenceMode.Standard,
+            [],
+            lease.WorldGuid,
+            world.ReplayLineageId,
+            lease.NextTickIndex,
+            captureWorkerCount: 0,
+            profileRecord);
+        var limits = WorldPersistenceEbinLimits.Create(world.Options);
+        var (firstCheckpointRecord, firstFileRecord, firstCanonicalHash, firstCheckpointDigest, firstFileContentDigest) =
+            WorldPersistenceCheckpointWriter.Create(header, capturedRecord, 1, limits);
+        var changedWorkerHeader = WorldPersistenceHeaderWriter.Create(
+            metadata,
+            WorldPersistenceMode.Standard,
+            [],
+            lease.WorldGuid,
+            world.ReplayLineageId,
+            lease.NextTickIndex,
+            captureWorkerCount: 1,
+            profileRecord);
+        var (_, _, changedWorkerCanonicalHash, changedWorkerCheckpointDigest, _) =
+            WorldPersistenceCheckpointWriter.Create(changedWorkerHeader, capturedRecord, 1, limits);
+        var (_, nextGenerationFileRecord, nextGenerationCanonicalHash, nextGenerationCheckpointDigest, nextGenerationFileContentDigest) =
+            WorldPersistenceCheckpointWriter.Create(header, capturedRecord, 2, limits);
+
+        Assert.Multiple(() => {
+            Assert.That(firstCanonicalHash, Is.EqualTo(changedWorkerCanonicalHash));
+            Assert.That(firstCheckpointDigest, Is.Not.EqualTo(changedWorkerCheckpointDigest));
+            Assert.That(firstCanonicalHash, Is.EqualTo(nextGenerationCanonicalHash));
+            Assert.That(firstCheckpointDigest, Is.EqualTo(nextGenerationCheckpointDigest));
+            Assert.That(firstFileContentDigest, Is.Not.EqualTo(nextGenerationFileContentDigest));
+            Assert.That(firstCheckpointDigest, Is.EqualTo(SHA256.HashData(firstCheckpointRecord)));
+            Assert.That(firstFileContentDigest, Is.EqualTo(
+                CreateExpectedFileContentDigest(1, firstCheckpointRecord, limits)));
+            Assert.That(EbinStructuralReader.Validate(
+                firstFileRecord,
+                limits,
+                EbinReadPolicy.Canonical,
+                out var fileBytesConsumed,
+                out _), Is.EqualTo(EbinReadStatus.Complete));
+            Assert.That(fileBytesConsumed, Is.EqualTo(firstFileRecord.Length));
+            Assert.That(nextGenerationFileRecord.Length, Is.EqualTo(firstFileRecord.Length));
+        });
+
+        capturedRecordUse.Dispose();
+        retainedCaptureReservation.Dispose();
+        lease.Dispose();
+        world.SetTimeScale(0.5f);
+        _ = world.Step();
+        using var nextLease = world.AcquirePersistenceCaptureLease();
+        var nextCaptureStatus = WorldPersistenceCaptureCoordinator.Capture(
+            world,
+            nextLease,
+            schemas,
+            out var nextCaptureReservation,
+            out var nextRecord,
+            out _,
+            out var nextDiagnostic,
+            CancellationToken.None);
+        Assert.That(nextCaptureStatus, Is.EqualTo(EbinWriteStatus.Complete), nextDiagnostic?.Category);
+        using var nextReservation = nextCaptureReservation
+            ?? throw new InvalidOperationException("The next World capture did not retain its admission reservation.");
+        var nextWorldRecord = nextRecord
+            ?? throw new InvalidOperationException("The next World capture did not produce its record.");
+        var nextHeader = WorldPersistenceHeaderWriter.Create(
+            metadata,
+            WorldPersistenceMode.Standard,
+            [],
+            nextLease.WorldGuid,
+            world.ReplayLineageId,
+            nextLease.NextTickIndex,
+            captureWorkerCount: 0,
+            profileRecord);
+        var (_, _, nextWorldCanonicalHash, _, _) =
+            WorldPersistenceCheckpointWriter.Create(nextHeader, nextWorldRecord, 3, limits);
+        Assert.That(nextWorldCanonicalHash, Is.Not.EqualTo(firstCanonicalHash));
     }
 
     [Test]

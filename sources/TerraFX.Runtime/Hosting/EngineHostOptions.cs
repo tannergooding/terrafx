@@ -128,6 +128,9 @@ public sealed class EngineHostOptions
         }
     }
 
+    /// <summary>Gets the application and runtime identity used by host-owned persistence.</summary>
+    public required WorldPersistenceMetadata PersistenceMetadata { get; init; }
+
     /// <summary>Gets the explicitly selected platform backend.</summary>
     public PlatformBackend Platform { get; }
 

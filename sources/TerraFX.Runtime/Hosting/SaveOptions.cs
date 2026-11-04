@@ -8,6 +8,8 @@ namespace TerraFX.Hosting;
 /// <summary>Defines one absolute checkpoint destination and its durability policy.</summary>
 public sealed class SaveOptions
 {
+    private WorldPersistenceMode _mode = WorldPersistenceMode.Standard;
+
     /// <summary>Initializes one save destination.</summary>
     /// <param name="absoluteSavePath">The absolute checkpoint file path.</param>
     /// <param name="durabilityPolicy">The required or explicitly best-effort replacement policy.</param>
@@ -38,4 +40,22 @@ public sealed class SaveOptions
 
     /// <summary>Gets the required durability policy.</summary>
     public SaveDurabilityPolicy DurabilityPolicy { get; }
+
+    /// <summary>Gets or initializes the checkpoint compatibility mode.</summary>
+    public WorldPersistenceMode Mode
+    {
+        get
+        {
+            return _mode;
+        }
+        init
+        {
+            if (!Enum.IsDefined(value))
+            {
+                throw new ArgumentOutOfRangeException(nameof(Mode));
+            }
+
+            _mode = value;
+        }
+    }
 }

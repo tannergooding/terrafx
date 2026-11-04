@@ -1338,6 +1338,7 @@ public sealed class EngineHostOptions
     public GraphicsBackend? GraphicsBackend { get; }
     public GraphicsBackendRegistration? GraphicsBackendRegistration { get; }
     public AssetStoreOptions AssetStoreOptions { get; }
+    public required WorldPersistenceMetadata PersistenceMetadata { get; init; }
     public int CpuWorkerCount { get; init; } = Math.Min(64, Math.Max(1, Environment.ProcessorCount - 2));
     public SimulationOverrunPolicy OverrunPolicy { get; init; } = SimulationOverrunPolicy.Pause;
     public GraphicsFailurePolicy GraphicsFailurePolicy { get; init; } = GraphicsFailurePolicy.StopHost;
@@ -1415,11 +1416,11 @@ public sealed class InputBindingReceipt
 
 `EngineHost` has no public constructor; `StartAsync` owns startup and returns only a running host or a faulted task with startup context. `CpuWorkerCount` admits `[0, 64]`; zero runs stable parallel partitions inline. The host owns one Entities CPU worker pool shared by its Worlds and disposes it only after every World has joined. A host-created `WorldOptions.CpuWorkerCount` must be `null` (inherit the host pool) or equal the host's configured count; a mismatched explicit count rejects before World allocation. A standalone World's null count resolves to the documented default and it owns its pool. `Headless` requires an explicit headless platform and no graphics backend; `OffscreenNative` requires an explicit real D3D12 or Vulkan backend. No backend, display, endpoint, or physical-input fallback is inferred. The host owns its dedicated owner thread and keeps pumping native readiness and accepted owner-control operations while paused, minimized, or stopping. The host assigns each `HostLiveUI` and `SimulationTimeline` router a fresh Core `OwnerId` through the private Runtime issuer path. `EngineContext.CreateInputRouter` is owner-bound and creates one router for exactly one recipient. `BindGameplayInput` establishes [14](14-custom-input-actions-and-text.md)'s focused-window/world/timeline route and returns `Bound` with a router only on success; `Rejected` returns a diagnostic and no router. `BindHeadlessGameplayInput` requires the caller's exact same-host `SimulationTimeline` router and hosted World in `Headless`; it never discovers a World or creates a native route. `InjectHeadlessInput` is owner-thread-only during a live `EngineContext` callback and fans one caller-supplied normalized `InputInjection` to an explicit recipient set. Invalid recipient sets reject before capture; on admission the host assigns one capture timestamp/sequence, and every recipient gets that same identity while mapping it to its own tick. Queue overflow is recipient-local, reported as `CapacityExceeded`, and does not stop fanout to other targets.
 
-`Assets`, `Diagnostics`, `Persistence`, `Platform`, and `Renderer` are initialized host-owned services available after `StartAsync` succeeds. `EngineHost` creates its `Assets` service through `AssetStore.CreateAsync` using the required immutable `EngineHostOptions.AssetStoreOptions`, then owns and disposes that instance during shutdown; standalone stores use the same factory and are owned/disposed by their callers. Host construction validates the Assets registration independently of each future `WorldRegistration`; `CreateWorld` checks their compatible compiled schema registrations and package schema tuples before allocating a World. `Renderer` is a CPU-capable extraction service in every host profile. `GraphicsDevice` and `GpuResidency` are both available when a graphics backend is selected and both `null` for `Headless`; no placeholder device is constructed. In `Headless`, `Renderer.Extract` validates and copies logical scene data only, while `BuildGraph` and `SubmitAsync` throw `InvalidOperationException` because no real graphics device exists; no GPU output is synthesized. Capture/extraction requires the World owner's current canonical mutation revision to match a committed/restored marker. `OffscreenNative` has a real device and no interactive surface. `CreateAudioMixerAsync` creates an independently owned mixer from explicit `AudioMixerOptions`; the selected physical or offline endpoint is required by those options and is never inferred. A pre-canceled token prevents creation; after admission the task completes with the created mixer or faults with initialization context, and the caller owns/disposes the returned mixer.
+`Assets`, `Diagnostics`, `Persistence`, `Platform`, and `Renderer` are initialized host-owned services available after `StartAsync` succeeds. `EngineHost` creates its `Assets` service through `AssetStore.CreateAsync` using the required immutable `EngineHostOptions.AssetStoreOptions`, then owns and disposes that instance during shutdown; standalone stores use the same factory and are owned/disposed by their callers. `Persistence` receives the required `EngineHostOptions.PersistenceMetadata` and the exact host-owned `AssetStore`; standalone construction requires those same explicit inputs. Save capture pins the selected package with `AssetStore.AcquirePackageLease` through actual file I/O. Host construction validates the Assets registration independently of each future `WorldRegistration`; `CreateWorld` checks their compatible compiled schema registrations and package schema tuples before allocating a World. `Renderer` is a CPU-capable extraction service in every host profile. `GraphicsDevice` and `GpuResidency` are both available when a graphics backend is selected and both `null` for `Headless`; no placeholder device is constructed. In `Headless`, `Renderer.Extract` validates and copies logical scene data only, while `BuildGraph` and `SubmitAsync` throw `InvalidOperationException` because no real graphics device exists; no GPU output is synthesized. Capture/extraction requires the World owner's current canonical mutation revision to match a committed/restored marker. `OffscreenNative` has a real device and no interactive surface. `CreateAudioMixerAsync` creates an independently owned mixer from explicit `AudioMixerOptions`; the selected physical or offline endpoint is required by those options and is never inferred. A pre-canceled token prevents creation; after admission the task completes with the created mixer or faults with initialization context, and the caller owns/disposes the returned mixer.
 
 `GetSurface` is synchronous and owner-thread-only. It returns the same host-owned logical `Surface` for a live interactive `WindowHandle`; a default/foreign handle throws `ArgumentException`, while off-owner-thread access, a stale/closed handle, or a live window without an interactive surface throws `InvalidOperationException`. Successful interactive window creation establishes this mapping before returning its `Created` receipt. Applying `CloseWindowAsync` invalidates the mapping and the logical surface immediately; native surface/swapchain storage remains fence-retained until GPU use and queued presentation have actually retired. `EngineHost.GetSurface` does not add a `Platform` dependency to `TerraFX.Graphics`.
 
-`EngineHostOptions` requires host profile, platform, nullable graphics backend, nullable matching graphics-backend registration, and `AssetStoreOptions` in its constructor; that constructor has no optional arguments or fallback package path. `HostProfile.None=0` is invalid; Headless/OffscreenNative require `PlatformBackend.Headless`, while Interactive requires a native display selector. Headless requires both graphics inputs to be null; native profiles require both to be non-null and identify the same backend; Interactive D3D12 requires WindowsNative. `OverrunPolicy` uses `Pause=0` and `DropDebt=1`, defaulting to pause on overrun; `GraphicsFailurePolicy` currently has only `StopHost=0`. `CpuWorkerCount` is in `[0,64]`, defaults to `min(64, max(1, ProcessorCount-2))`, and zero executes partitions inline without worker threads. `ShutdownTimeout` is positive and defaults to five seconds. `ClipboardServicePolicy` defaults to `NotRequested`. These selector and scalar values are validated by the options type before host construction; package contents and runtime/backend capabilities remain startup admission checks. A registration is immutable factory metadata returned by the explicitly referenced backend package; it is not a device, owner, adapter, surface, or native handle. `AssetStoreOptions.AbsolutePackagePath`, `ExpectedPackageSha256`, and `Registration` are the required package selection and trusted admission inputs; no cache-directory option exists in this contract. The host passes the frozen options to `AssetStore.CreateAsync` and does not report startup complete until the package digest, directory, profile, registration closure, typed references, and selected graphics device are admitted.
+`EngineHostOptions` requires host profile, platform, nullable graphics backend, nullable matching graphics-backend registration, and `AssetStoreOptions` in its constructor; its object initializer must also set `PersistenceMetadata`, with no inferred application or runtime identity. That constructor has no optional arguments or fallback package path. `HostProfile.None=0` is invalid; Headless/OffscreenNative require `PlatformBackend.Headless`, while Interactive requires a native display selector. Headless requires both graphics inputs to be null; native profiles require both to be non-null and identify the same backend; Interactive D3D12 requires WindowsNative. `OverrunPolicy` uses `Pause=0` and `DropDebt=1`, defaulting to pause on overrun; `GraphicsFailurePolicy` currently has only `StopHost=0`. `CpuWorkerCount` is in `[0,64]`, defaults to `min(64, max(1, ProcessorCount-2))`, and zero executes partitions inline without worker threads. `ShutdownTimeout` is positive and defaults to five seconds. `ClipboardServicePolicy` defaults to `NotRequested`. These selector and scalar values are validated by the options type before host construction; package contents and runtime/backend capabilities remain startup admission checks. A registration is immutable factory metadata returned by the explicitly referenced backend package; it is not a device, owner, adapter, surface, or native handle. `AssetStoreOptions.AbsolutePackagePath`, `ExpectedPackageSha256`, and `Registration` are the required package selection and trusted admission inputs; no cache-directory option exists in this contract. The host passes the frozen options to `AssetStore.CreateAsync` and does not report startup complete until the package digest, directory, profile, registration closure, typed references, and selected graphics device are admitted.
 
 `InvokeAsync` and `TryInvoke` invoke a bounded synchronous callback on the host owner between ticks. The `EngineContext` is valid only during that callback; retaining it does not retain authority, and later use throws. The callback cannot await, recursively pump, or synchronously wait for its own completion. `TryInvoke` returns false only for a full bounded mailbox, with `completion = null`; true supplies the same asynchronously completed or faulted task as `InvokeAsync`. A pre-canceled `InvokeAsync` returns a canceled task; a pre-canceled `TryInvoke` throws `OperationCanceledException` before admission. `StopAsync` is idempotent; cancellation of its wait cannot undo accepted shutdown. `EngineContext` has no frame-change method: it is a borrowed synchronous callback capability, not the ordinary-thread queue service or standalone World control route. `World.SetFrame` is the owner-idle standalone route; either `EngineHost.ChangeFrameAsync` overload targets the exact hosted World binding and does not require the caller to be the World owner.
 
@@ -3756,11 +3757,19 @@ public sealed class AssetStore : IAsyncDisposable
     private AssetStore();
     public static Task<AssetStore> CreateAsync(AssetStoreOptions options,
         CancellationToken cancellationToken = default);
+    public AssetPackageLease AcquirePackageLease();
     public Task<AssetLease<T>> LoadAsync<T>(AssetId assetId,
         CancellationToken cancellationToken = default);
     public Task ReplacePackageAsync(AssetStoreOptions options,
         CancellationToken cancellationToken = default);
     public ValueTask DisposeAsync();
+}
+
+public sealed class AssetPackageLease : IDisposable
+{
+    internal AssetPackageLease(AssetPackageBacking backing);
+    public ImmutableArray<byte> PackageSha256 { get; }
+    public void Dispose();
 }
 
 public sealed class AssetLease<T> : IDisposable
@@ -7219,11 +7228,97 @@ public enum SaveDurabilityPolicy
     BestEffort = 2
 }
 
+public enum WorldPersistenceMode
+{
+    Standard = 0,
+    StrictLocal = 1
+}
+
 public sealed class SaveOptions
 {
     public SaveOptions(string absoluteSavePath, SaveDurabilityPolicy durabilityPolicy = SaveDurabilityPolicy.RequireDurable);
     public string AbsoluteSavePath { get; }
     public SaveDurabilityPolicy DurabilityPolicy { get; }
+    public WorldPersistenceMode Mode { get; init; } = WorldPersistenceMode.Standard;
+}
+
+public readonly record struct WorldPersistenceModuleVersion(Guid ModuleId, uint Version);
+
+public sealed class WorldPersistenceApplication
+{
+    public WorldPersistenceApplication(Guid applicationId, uint majorVersion, uint minorVersion, ReadOnlySpan<WorldPersistenceModuleVersion> modules);
+    public Guid ApplicationId { get; }
+    public uint MajorVersion { get; }
+    public uint MinorVersion { get; }
+    public ImmutableArray<WorldPersistenceModuleVersion> Modules { get; }
+}
+
+public enum WorldPersistenceOperatingSystem
+{
+    Windows = 0,
+    Linux = 1
+}
+
+public enum WorldPersistenceCodeGeneration
+{
+    Jit = 0,
+    NativeAot = 1
+}
+
+[Flags]
+public enum WorldPersistenceInstructionSet
+{
+    None = 0,
+    Sse2 = 1,
+    Avx = 2,
+    Avx2 = 4,
+    Avx512F = 8
+}
+
+public enum WorldPersistenceFmaPolicy
+{
+    Disallowed = 0,
+    Permitted = 1
+}
+
+public readonly record struct WorldPersistenceModuleArtifact
+{
+    public WorldPersistenceModuleArtifact(Guid moduleId, uint version, ReadOnlySpan<byte> artifactSha256);
+    public Guid ModuleId { get; }
+    public uint Version { get; }
+    public ImmutableArray<byte> ArtifactSha256 { get; }
+}
+
+public sealed class WorldPersistenceRuntimeProfile
+{
+    public WorldPersistenceRuntimeProfile(
+        ReadOnlySpan<byte> engineArtifactSha256,
+        ReadOnlySpan<byte> runtimeArtifactSha256,
+        ReadOnlySpan<byte> compilerArtifactSha256,
+        WorldPersistenceOperatingSystem operatingSystem,
+        WorldPersistenceCodeGeneration codeGeneration,
+        WorldPersistenceInstructionSet instructionSets,
+        ReadOnlySpan<byte> numericsKernelSha256,
+        WorldPersistenceFmaPolicy fmaPolicy,
+        ushort maximumSimdBits,
+        ReadOnlySpan<WorldPersistenceModuleArtifact> modules);
+    public ImmutableArray<byte> EngineArtifactSha256 { get; }
+    public ImmutableArray<byte> RuntimeArtifactSha256 { get; }
+    public ImmutableArray<byte> CompilerArtifactSha256 { get; }
+    public WorldPersistenceOperatingSystem OperatingSystem { get; }
+    public WorldPersistenceCodeGeneration CodeGeneration { get; }
+    public WorldPersistenceInstructionSet InstructionSets { get; }
+    public ImmutableArray<byte> NumericsKernelSha256 { get; }
+    public WorldPersistenceFmaPolicy FmaPolicy { get; }
+    public ushort MaximumSimdBits { get; }
+    public ImmutableArray<WorldPersistenceModuleArtifact> Modules { get; }
+}
+
+public sealed class WorldPersistenceMetadata
+{
+    public WorldPersistenceMetadata(WorldPersistenceApplication application, WorldPersistenceRuntimeProfile runtimeProfile);
+    public WorldPersistenceApplication Application { get; }
+    public WorldPersistenceRuntimeProfile RuntimeProfile { get; }
 }
 
 public sealed class SaveReceipt
@@ -7330,7 +7425,7 @@ public sealed class WorldLoadReceipt
 
 public sealed class WorldPersistence : IAsyncDisposable
 {
-    public WorldPersistence();
+    public WorldPersistence(AssetStore assets, WorldPersistenceMetadata metadata);
     public Task<SaveReceipt> SaveAsync(World world, SaveOptions options, CancellationToken cancellationToken = default);
     public Task<WorldRecordedContinuationPreparation> PrepareRecordedContinuationAsync(
         World targetWorld,

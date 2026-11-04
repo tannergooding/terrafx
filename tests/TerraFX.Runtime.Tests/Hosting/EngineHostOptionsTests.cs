@@ -100,8 +100,32 @@ internal sealed partial class EngineHostOptionsTests
             OverrunPolicy = overrunPolicy ?? SimulationOverrunPolicy.Pause,
             GraphicsFailurePolicy = graphicsFailurePolicy ?? GraphicsFailurePolicy.StopHost,
             ClipboardServicePolicy = clipboardServicePolicy ?? ClipboardServicePolicy.NotRequested,
+            PersistenceMetadata = CreatePersistenceMetadata(),
             ShutdownTimeout = shutdownTimeout ?? TimeSpan.FromSeconds(5),
         };
+
+    private static WorldPersistenceMetadata CreatePersistenceMetadata()
+    {
+        var digest = new byte[32];
+        var application = new WorldPersistenceApplication(
+            new Guid("10000000-0000-0000-0000-000000000000"),
+            majorVersion: 1,
+            minorVersion: 0,
+            modules: []);
+        var runtimeProfile = new WorldPersistenceRuntimeProfile(
+            digest,
+            digest,
+            digest,
+            WorldPersistenceOperatingSystem.Windows,
+            WorldPersistenceCodeGeneration.Jit,
+            WorldPersistenceInstructionSet.None,
+            digest,
+            WorldPersistenceFmaPolicy.Disallowed,
+            maximumSimdBits: 0,
+            modules: []);
+
+        return new WorldPersistenceMetadata(application, runtimeProfile);
+    }
 
     private static ShaderReflection CreateReflectionWithResourceBinding(
         ShaderReflection reflection,
@@ -165,13 +189,17 @@ internal sealed partial class EngineHostOptionsTests
             PlatformBackend.Headless,
             GraphicsBackend.D3D12,
             registration,
-            assetStoreOptions);
+            assetStoreOptions) {
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
         var interactive = new EngineHostOptions(
             HostProfile.Interactive,
             PlatformBackend.WindowsNative,
             GraphicsBackend.D3D12,
             registration,
-            assetStoreOptions);
+            assetStoreOptions) {
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
 
         Assert.That(offscreen.GraphicsBackendRegistration, Is.SameAs(registration));
         Assert.That(interactive.Platform, Is.EqualTo(PlatformBackend.WindowsNative));
@@ -225,7 +253,9 @@ internal sealed partial class EngineHostOptionsTests
             PlatformBackend.Headless,
             GraphicsBackend.D3D12,
             registration,
-            CreateAssetStoreOptions());
+            CreateAssetStoreOptions()) {
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
         var platformOwner = PlatformHostOwner.Create(options);
         GraphicsDevice? device = null;
 
@@ -541,7 +571,9 @@ internal sealed partial class EngineHostOptionsTests
             PlatformBackend.Headless,
             GraphicsBackend.Vulkan,
             registration,
-            CreateAssetStoreOptions());
+            CreateAssetStoreOptions()) {
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
         var platformOwner = PlatformHostOwner.Create(options);
         GraphicsDevice? device = null;
 
@@ -674,7 +706,9 @@ internal sealed partial class EngineHostOptionsTests
             PlatformBackend.Headless,
             GraphicsBackend.D3D12,
             registration,
-            CreateAssetStoreOptions());
+            CreateAssetStoreOptions()) {
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
         var platformOwner = PlatformHostOwner.Create(options);
 
         try
@@ -1120,7 +1154,9 @@ internal sealed partial class EngineHostOptionsTests
             PlatformBackend.Headless,
             GraphicsBackend.D3D12,
             registration,
-            CreateAssetStoreOptions());
+            CreateAssetStoreOptions()) {
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
         var platformOwner = PlatformHostOwner.Create(options);
         GraphicsDevice? device = null;
         GpuBuffer? destination = null;
@@ -1254,7 +1290,9 @@ internal sealed partial class EngineHostOptionsTests
             PlatformBackend.Headless,
             GraphicsBackend.D3D12,
             registration,
-            CreateAssetStoreOptions());
+            CreateAssetStoreOptions()) {
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
         var platformOwner = PlatformHostOwner.Create(options);
         GraphicsDevice? device = null;
         GpuBuffer? destination = null;
@@ -1368,7 +1406,9 @@ internal sealed partial class EngineHostOptionsTests
             PlatformBackend.Headless,
             graphicsBackend: null,
             graphicsBackendRegistration: null,
-            assetStoreOptions: assetStoreOptions);
+            assetStoreOptions: assetStoreOptions) {
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
 
         Assert.That(options.AssetStoreOptions, Is.SameAs(assetStoreOptions));
         Assert.That(options.CpuWorkerCount, Is.EqualTo(Math.Min(64, Math.Max(1, Environment.ProcessorCount - 2))));
@@ -1416,35 +1456,45 @@ internal sealed partial class EngineHostOptionsTests
                 PlatformBackend.Headless,
                 graphicsBackend: null,
                 graphicsBackendRegistration: null,
-                assetStoreOptions: assetStoreOptions));
+                assetStoreOptions: assetStoreOptions) {
+                PersistenceMetadata = CreatePersistenceMetadata(),
+            });
         _ = Assert.Throws<ArgumentException>(
             () => _ = new EngineHostOptions(
                 HostProfile.Headless,
                 PlatformBackend.WindowsNative,
                 graphicsBackend: null,
                 graphicsBackendRegistration: null,
-                assetStoreOptions: assetStoreOptions));
+                assetStoreOptions: assetStoreOptions) {
+                PersistenceMetadata = CreatePersistenceMetadata(),
+            });
         _ = Assert.Throws<ArgumentException>(
             () => _ = new EngineHostOptions(
                 HostProfile.Headless,
                 PlatformBackend.Headless,
                 GraphicsBackend.D3D12,
                 graphicsBackendRegistration: null,
-                assetStoreOptions: assetStoreOptions));
+                assetStoreOptions: assetStoreOptions) {
+                PersistenceMetadata = CreatePersistenceMetadata(),
+            });
         _ = Assert.Throws<ArgumentException>(
             () => _ = new EngineHostOptions(
                 HostProfile.OffscreenNative,
                 PlatformBackend.WaylandOnly,
                 graphicsBackend: null,
                 graphicsBackendRegistration: null,
-                assetStoreOptions: assetStoreOptions));
+                assetStoreOptions: assetStoreOptions) {
+                PersistenceMetadata = CreatePersistenceMetadata(),
+            });
         _ = Assert.Throws<ArgumentException>(
             () => _ = new EngineHostOptions(
                 HostProfile.Interactive,
                 PlatformBackend.Headless,
                 graphicsBackend: null,
                 graphicsBackendRegistration: null,
-                assetStoreOptions: assetStoreOptions));
+                assetStoreOptions: assetStoreOptions) {
+                PersistenceMetadata = CreatePersistenceMetadata(),
+            });
     }
 
     [Test]
@@ -1465,14 +1515,18 @@ internal sealed partial class EngineHostOptionsTests
                 PlatformBackend.Headless,
                 GraphicsBackend.Vulkan,
                 registration,
-                assetStoreOptions));
+                assetStoreOptions) {
+                PersistenceMetadata = CreatePersistenceMetadata(),
+            });
         _ = Assert.Throws<ArgumentException>(
             () => _ = new EngineHostOptions(
                 HostProfile.Interactive,
                 PlatformBackend.WaylandOnly,
                 GraphicsBackend.D3D12,
                 registration,
-                assetStoreOptions));
+                assetStoreOptions) {
+                PersistenceMetadata = CreatePersistenceMetadata(),
+            });
     }
 
     [Test]
@@ -1494,7 +1548,9 @@ internal sealed partial class EngineHostOptionsTests
             PlatformBackend.WindowsNative,
             GraphicsBackend.D3D12,
             D3D12GraphicsBackend.CreateRegistration(),
-            CreateAssetStoreOptions());
+            CreateAssetStoreOptions()) {
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
         var completion = new TaskCompletionSource<(uint OwnerId, ImmutableArray<MonitorHandle> Monitors)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() => {
@@ -1582,7 +1638,9 @@ internal sealed partial class EngineHostOptionsTests
             PlatformBackend.WindowsNative,
             GraphicsBackend.D3D12,
             D3D12GraphicsBackend.CreateRegistration(),
-            CreateAssetStoreOptions());
+            CreateAssetStoreOptions()) {
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
         var completion = new TaskCompletionSource<(
             WindowHandle Window,
             uint OwnerId,
@@ -1743,7 +1801,9 @@ internal sealed partial class EngineHostOptionsTests
             PlatformBackend.WindowsNative,
             GraphicsBackend.D3D12,
             D3D12GraphicsBackend.CreateRegistration(),
-            CreateAssetStoreOptions());
+            CreateAssetStoreOptions()) {
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
         var completion = new TaskCompletionSource<(
             uint OwnerId,
             ImmutableArray<float> ObservedDpis,

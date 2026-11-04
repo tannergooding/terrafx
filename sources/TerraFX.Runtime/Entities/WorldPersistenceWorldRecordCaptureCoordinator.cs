@@ -17,6 +17,7 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
         CompiledContentSchemaRegistry schemas,
         scoped ReadOnlySpan<byte> scenesRecord,
         WorldPersistenceAdmissionReservation scenesReservation,
+        out WorldPersistenceAdmissionReservation? retainedReservation,
         out byte[]? worldRecord,
         out int assetIdCount,
         out EbinStructuralDiagnostic? diagnostic,
@@ -26,6 +27,7 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
         ArgumentNullException.ThrowIfNull(schemas);
         ArgumentNullException.ThrowIfNull(scenesReservation);
         lease.ValidateCurrent();
+        retainedReservation = null;
 
         if (!lease.IsBoundTo(world))
         {
@@ -58,10 +60,37 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
             ecsRecord,
             scenesRecord,
             scenesReservation,
+            out retainedReservation,
             out worldRecord,
             out assetIdCount,
             out diagnostic,
             cancellationToken);
+    }
+
+    internal static EbinWriteStatus Capture(
+        World world,
+        WorldPersistenceCaptureLease lease,
+        CompiledContentSchemaRegistry schemas,
+        scoped ReadOnlySpan<byte> scenesRecord,
+        WorldPersistenceAdmissionReservation scenesReservation,
+        out byte[]? worldRecord,
+        out int assetIdCount,
+        out EbinStructuralDiagnostic? diagnostic,
+        CancellationToken cancellationToken)
+    {
+        var status = Capture(
+            world,
+            lease,
+            schemas,
+            scenesRecord,
+            scenesReservation,
+            out var retainedReservation,
+            out worldRecord,
+            out assetIdCount,
+            out diagnostic,
+            cancellationToken);
+        retainedReservation?.Dispose();
+        return status;
     }
 
     internal static EbinWriteStatus CaptureFromRecords(
@@ -71,6 +100,7 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
         scoped ReadOnlySpan<byte> ecsRecord,
         scoped ReadOnlySpan<byte> scenesRecord,
         WorldPersistenceAdmissionReservation scenesReservation,
+        out WorldPersistenceAdmissionReservation? retainedReservation,
         out byte[]? worldRecord,
         out int assetIdCount,
         out EbinStructuralDiagnostic? diagnostic,
@@ -80,6 +110,7 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
         ArgumentNullException.ThrowIfNull(schemas);
         ArgumentNullException.ThrowIfNull(scenesReservation);
         lease.ValidateCurrent();
+        retainedReservation = null;
 
         if (!lease.IsBoundTo(world))
         {
@@ -394,130 +425,171 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
             throw new InvalidOperationException("The World-record child and root workspaces were refused by admission.");
         }
 
-        using var reservationScope = reservation
+        var reservationScope = reservation
             ?? throw new InvalidOperationException("The World-record capture reservation was not created.");
+        var retainReservation = false;
 
-        status = lease.WriteConfigurationRecord(
-            reservationScope,
-            configurationCandidateStorage,
-            configurationRecord,
-            out configurationBytesWritten,
-            out diagnostic);
-
-        if (status is not EbinWriteStatus.Complete)
+        try
         {
-            return status;
-        }
-
-        status = reservationScope.WriteClockRecord(
-            world,
-            lease,
-            clockWorkspace,
-            ref clockBuffers,
-            out clockBytesWritten,
-            out diagnostic,
-            cancellationToken);
-
-        if (status is not EbinWriteStatus.Complete)
-        {
-            return status;
-        }
-
-        if (lease.Frame2 is SpatialFrame2 capturedFrame2)
-        {
-            using var frameUse = reservationScope.AcquireUse(world, frame2Workspace.WorkspaceBytes);
-            status = WorldPersistenceSpatialFrameWriter.WriteFrame2(
-                lease.WorldGuid,
-                lease.OwnerId,
-                capturedFrame2,
-                frame2Workspace,
-                limits,
-                ref frame2Buffers,
-                out _,
+            status = lease.WriteConfigurationRecord(
+                reservationScope,
+                configurationCandidateStorage,
+                configurationRecord,
+                out configurationBytesWritten,
                 out diagnostic);
 
             if (status is not EbinWriteStatus.Complete)
             {
                 return status;
             }
-        }
 
-        using (reservationScope.AcquireUse(world, frame3Workspace.WorkspaceBytes))
-        {
-            status = WorldPersistenceSpatialFrameWriter.WriteFrame3(
-                lease.WorldGuid,
-                lease.OwnerId,
-                lease.Frame3,
-                frame3Workspace,
-                limits,
-                ref frame3Buffers,
-                out _,
-                out diagnostic);
-        }
-
-        if (status is not EbinWriteStatus.Complete)
-        {
-            return status;
-        }
-
-        using (reservationScope.AcquireUse(world, controlWorkspace.WorkspaceBytes))
-        {
-            status = WorldPersistenceControlRecordArrayWriter.Write(
+            status = reservationScope.WriteClockRecord(
+                world,
                 lease,
-                limits,
-                controlWorkspace,
-                controlSlices,
-                controlRecordStorage,
-                controlCandidateStorage,
-                controlRootPayloadStorage,
-                controlsArrayPayload,
-                out _,
-                out diagnostic);
-        }
+                clockWorkspace,
+                ref clockBuffers,
+                out clockBytesWritten,
+                out diagnostic,
+                cancellationToken);
 
-        if (status is not EbinWriteStatus.Complete)
-        {
-            return status;
-        }
-
-        status = lease.WriteCursorsRecord(
-            reservationScope,
-            cursorsCandidateStorage,
-            cursorsRecord,
-            out cursorsBytesWritten,
-            out diagnostic);
-
-        if (status is not EbinWriteStatus.Complete)
-        {
-            return status;
-        }
-
-        var worldDestination = new byte[worldWorkspace.RecordBytes];
-        status = Write(
-            world,
-            lease,
-            reservationScope,
-            schemas,
-            sources,
-            captureWorkspace,
-            assetIdWorkspace,
-            rootPayloadStorage,
-            new byte[worldWorkspace.RecordBytes],
-            worldDestination,
-            out assetIdCount,
-            out var worldBytesWritten,
-            out diagnostic);
-
-        if (status is EbinWriteStatus.Complete)
-        {
-            if (worldBytesWritten != worldDestination.Length)
+            if (status is not EbinWriteStatus.Complete)
             {
-                throw new InvalidOperationException("The World record extent changed after capture measurement.");
+                return status;
             }
 
-            worldRecord = worldDestination;
-        }
+            if (lease.Frame2 is SpatialFrame2 capturedFrame2)
+            {
+                using var frameUse = reservationScope.AcquireUse(world, frame2Workspace.WorkspaceBytes);
+                status = WorldPersistenceSpatialFrameWriter.WriteFrame2(
+                    lease.WorldGuid,
+                    lease.OwnerId,
+                    capturedFrame2,
+                    frame2Workspace,
+                    limits,
+                    ref frame2Buffers,
+                    out _,
+                    out diagnostic);
 
+                if (status is not EbinWriteStatus.Complete)
+                {
+                    return status;
+                }
+            }
+
+            using (reservationScope.AcquireUse(world, frame3Workspace.WorkspaceBytes))
+            {
+                status = WorldPersistenceSpatialFrameWriter.WriteFrame3(
+                    lease.WorldGuid,
+                    lease.OwnerId,
+                    lease.Frame3,
+                    frame3Workspace,
+                    limits,
+                    ref frame3Buffers,
+                    out _,
+                    out diagnostic);
+            }
+
+            if (status is not EbinWriteStatus.Complete)
+            {
+                return status;
+            }
+
+            using (reservationScope.AcquireUse(world, controlWorkspace.WorkspaceBytes))
+            {
+                status = WorldPersistenceControlRecordArrayWriter.Write(
+                    lease,
+                    limits,
+                    controlWorkspace,
+                    controlSlices,
+                    controlRecordStorage,
+                    controlCandidateStorage,
+                    controlRootPayloadStorage,
+                    controlsArrayPayload,
+                    out _,
+                    out diagnostic);
+            }
+
+            if (status is not EbinWriteStatus.Complete)
+            {
+                return status;
+            }
+
+            status = lease.WriteCursorsRecord(
+                reservationScope,
+                cursorsCandidateStorage,
+                cursorsRecord,
+                out cursorsBytesWritten,
+                out diagnostic);
+
+            if (status is not EbinWriteStatus.Complete)
+            {
+                return status;
+            }
+
+            var worldDestination = new byte[worldWorkspace.RecordBytes];
+            status = Write(
+                world,
+                lease,
+                reservationScope,
+                schemas,
+                sources,
+                captureWorkspace,
+                assetIdWorkspace,
+                rootPayloadStorage,
+                new byte[worldWorkspace.RecordBytes],
+                worldDestination,
+                out assetIdCount,
+                out var worldBytesWritten,
+                out diagnostic);
+
+            if (status is EbinWriteStatus.Complete)
+            {
+                if (worldBytesWritten != worldDestination.Length)
+                {
+                    throw new InvalidOperationException("The World record extent changed after capture measurement.");
+                }
+
+                worldRecord = worldDestination;
+                retainedReservation = reservationScope;
+                retainReservation = true;
+            }
+
+            return status;
+        }
+        finally
+        {
+            if (!retainReservation)
+            {
+                reservationScope.Dispose();
+            }
+        }
+    }
+
+    internal static EbinWriteStatus CaptureFromRecords(
+        World world,
+        WorldPersistenceCaptureLease lease,
+        CompiledContentSchemaRegistry schemas,
+        scoped ReadOnlySpan<byte> ecsRecord,
+        scoped ReadOnlySpan<byte> scenesRecord,
+        WorldPersistenceAdmissionReservation scenesReservation,
+        out byte[]? worldRecord,
+        out int assetIdCount,
+        out EbinStructuralDiagnostic? diagnostic,
+        CancellationToken cancellationToken)
+    {
+        var status = CaptureFromRecords(
+            world,
+            lease,
+            schemas,
+            ecsRecord,
+            scenesRecord,
+            scenesReservation,
+            out var retainedReservation,
+            out worldRecord,
+            out assetIdCount,
+            out diagnostic,
+            cancellationToken);
+        retainedReservation?.Dispose();
         return status;
     }
 
