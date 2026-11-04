@@ -16,6 +16,7 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
         WorldPersistenceCaptureLease lease,
         CompiledContentSchemaRegistry schemas,
         scoped ReadOnlySpan<byte> scenesRecord,
+        WorldPersistenceAdmissionReservation scenesReservation,
         out byte[]? worldRecord,
         out int assetIdCount,
         out EbinStructuralDiagnostic? diagnostic,
@@ -23,6 +24,7 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
     {
         ArgumentNullException.ThrowIfNull(world);
         ArgumentNullException.ThrowIfNull(schemas);
+        ArgumentNullException.ThrowIfNull(scenesReservation);
         lease.ValidateCurrent();
 
         if (!lease.IsBoundTo(world))
@@ -55,6 +57,7 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
             schemas,
             ecsRecord,
             scenesRecord,
+            scenesReservation,
             out worldRecord,
             out assetIdCount,
             out diagnostic,
@@ -67,6 +70,7 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
         CompiledContentSchemaRegistry schemas,
         scoped ReadOnlySpan<byte> ecsRecord,
         scoped ReadOnlySpan<byte> scenesRecord,
+        WorldPersistenceAdmissionReservation scenesReservation,
         out byte[]? worldRecord,
         out int assetIdCount,
         out EbinStructuralDiagnostic? diagnostic,
@@ -74,6 +78,7 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
     {
         ArgumentNullException.ThrowIfNull(world);
         ArgumentNullException.ThrowIfNull(schemas);
+        ArgumentNullException.ThrowIfNull(scenesReservation);
         lease.ValidateCurrent();
 
         if (!lease.IsBoundTo(world))
@@ -81,6 +86,7 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
             throw new ArgumentException("The capture lease must belong to this exact World.", nameof(lease));
         }
 
+        using var scenesRecordUse = scenesReservation.AcquireUse(world, scenesRecord.Length);
         worldRecord = null;
         assetIdCount = 0;
         var status = WorldPersistenceRegistrationCaptureCoordinator.Capture(
@@ -376,7 +382,6 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
             + frame3Workspace.WorkspaceBytes
             + controlWorkspace.WorkspaceBytes
             + (2L * cursorsBytes)
-            + scenesRecord.Length
             + emptyArrayPayload.Length);
         var captureWorkspace = new WorldPersistenceWorldRecordCaptureWorkspaceRequirements(
             referenceCount,

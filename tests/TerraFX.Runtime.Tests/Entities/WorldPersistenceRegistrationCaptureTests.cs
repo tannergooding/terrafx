@@ -2,9 +2,15 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Threading;
 using NUnit.Framework;
 using TerraFX;
+using TerraFX.Animation;
+using TerraFX.Assets;
 using TerraFX.Entities;
+using TerraFX.Graphics;
+using TerraFX.Integration;
+using TerraFX.Scenes;
 
 namespace TerraFX.Runtime.Tests.Entities;
 
@@ -47,6 +53,74 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             Is.EqualTo(EbinReadStatus.Complete));
         Assert.That(readDiagnostic, Is.Null);
         Assert.That(assertions.IsMatch, Is.True);
+        Assert.That(bytesConsumed, Is.EqualTo(capturedRecord.Length));
+    }
+
+    [Test]
+    public void CapturesWorldRootWithoutSceneSupport()
+    {
+        var schemas = new CompiledContentSchemaRegistry([
+            .. CoreContentSchemaCatalogue.PrimitiveSchemas,
+            .. CoreContentSchemaCatalogue.FoundationSchemas,
+            .. NativeAssetSchemaCatalogue.Schemas,
+            .. SceneSchemaCatalogue.Schemas,
+            .. AnimationSchemaCatalogue.Schemas,
+            .. RenderingSchemaCatalogue.Schemas,
+            .. StandaloneContinuationSchemaCatalogue.Schemas,
+            WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
+                "application/world-root-test/tag/v1",
+                ContentSchemaRole.EntityTag,
+                0),
+            WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
+                "application/world-root-test/system-state/v1",
+                ContentSchemaRole.SystemState,
+                7),
+            WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
+                "application/world-root-test/resource-state/v1",
+                ContentSchemaRole.ResourceState,
+                23,
+                4),
+            WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
+                "application/world-root-test/attachment-state/v1",
+                ContentSchemaRole.AttachmentState,
+                8),
+        ]);
+        var registration = new WorldRegistrationBuilder(schemas).Build();
+        using var world = World.Create(new WorldOptions(registration) {
+            CpuWorkerCount = 0,
+            InitialReplayLineageId = Guid.NewGuid(),
+            WorldGuid = Guid.NewGuid(),
+        });
+        _ = world.Step();
+        using var lease = world.AcquirePersistenceCaptureLease();
+        Assert.That(
+            WorldPersistenceCaptureCoordinator.Capture(
+                world,
+                lease,
+                schemas,
+                out var record,
+                out var assetIdCount,
+                out var diagnostic,
+                CancellationToken.None),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.Category);
+        Assert.That(diagnostic, Is.Null);
+        Assert.That(assetIdCount, Is.Zero);
+        var capturedRecord = record ?? throw new InvalidOperationException("The World capture coordinator did not produce its record.");
+        var assertions = new WorldPersistenceWorldRecordWriterTests.WorldRecordAssertions(
+            lease.Frame2.HasValue,
+            lease.ControlRecordCount,
+            []);
+        Assert.That(
+            EbinStructuralReader.Read(
+                capturedRecord,
+                WorldPersistenceEbinLimits.Create(world.Options),
+                EbinReadPolicy.Canonical,
+                ref assertions,
+                out var bytesConsumed,
+                out var readDiagnostic),
+            Is.EqualTo(EbinReadStatus.Complete));
+        Assert.That(readDiagnostic, Is.Null);
         Assert.That(bytesConsumed, Is.EqualTo(capturedRecord.Length));
     }
 

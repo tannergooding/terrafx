@@ -5,6 +5,7 @@ using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Security.Cryptography;
+using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
@@ -115,6 +116,57 @@ internal sealed partial class SceneAssetStoreTests
                 Assert.That(orderedRecords[0], Is.EqualTo(recordSlicesByInstance[1]));
                 Assert.That(orderedRecords[1], Is.EqualTo(recordSlicesByInstance[0]));
                 var arrayPayload = new byte[workspace.ArrayPayloadBytes];
+                Assert.That(
+                    EbinPayloadWriter.WriteRecordArray(
+                        orderedRecords,
+                        recordStorage,
+                        EbinReadLimits.Foundation,
+                        arrayPayload,
+                        out var expectedArrayBytesWritten,
+                        out diagnostic),
+                    Is.EqualTo(EbinWriteStatus.Complete),
+                    diagnostic?.Category);
+                Assert.That(diagnostic, Is.Null);
+                Assert.That(expectedArrayBytesWritten, Is.EqualTo(arrayPayload.Length));
+                Guid[] expectedSceneInstanceIds = [
+                    instances[orderScratch[0]].SceneInstanceId,
+                    instances[orderScratch[1]].SceneInstanceId,
+                ];
+                var hierarchyRecord = SceneInstanceRecordFixtureBuilder.CreateWorldHierarchyRecord(world, lease);
+                Assert.That(
+                    ScenePersistenceCaptureCoordinator.Capture(
+                        world,
+                        lease,
+                        out var productionScenesRecord,
+                        out var productionScenesReservation,
+                        out diagnostic,
+                        CancellationToken.None),
+                    Is.EqualTo(EbinWriteStatus.Complete),
+                    diagnostic?.Category);
+                Assert.That(diagnostic, Is.Null);
+                var capturedScenesRecord = productionScenesRecord
+                    ?? throw new InvalidOperationException("The production Scene capture did not produce its record.");
+                using (productionScenesReservation
+                    ?? throw new InvalidOperationException("The production Scene capture did not retain its record reservation."))
+                {
+                    var productionScenesAssertions = new ScenePersistenceScenesRecordAssertions(
+                        arrayPayload,
+                        expectedSceneInstanceIds,
+                        hierarchyRecord);
+                    Assert.That(
+                        EbinStructuralReader.Read(
+                            capturedScenesRecord,
+                            EbinReadLimits.Foundation,
+                            EbinReadPolicy.Canonical,
+                            ref productionScenesAssertions,
+                            out var productionScenesBytesConsumed,
+                            out var productionScenesReadDiagnostic),
+                        Is.EqualTo(EbinReadStatus.Complete));
+                    Assert.That(productionScenesReadDiagnostic, Is.Null);
+                    Assert.That(productionScenesAssertions.IsMatch, Is.True);
+                    Assert.That(productionScenesBytesConsumed, Is.EqualTo(capturedScenesRecord.Length));
+                }
+
                 var stagingRecordBytes = checked(records[0].Length + records[1].Length);
                 Assert.That(
                     lease.TryReserveAdmissionBytes(checked(workspace.WorkspaceBytes + stagingRecordBytes), out var reservation),
@@ -141,11 +193,6 @@ internal sealed partial class SceneAssetStoreTests
                     Assert.That(payloadBytesWritten, Is.EqualTo(arrayPayload.Length));
                     Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(arrayPayload), Is.EqualTo(2));
 
-                    Guid[] expectedSceneInstanceIds = [
-                        instances[orderScratch[0]].SceneInstanceId,
-                        instances[orderScratch[1]].SceneInstanceId,
-                    ];
-                    var hierarchyRecord = SceneInstanceRecordFixtureBuilder.CreateWorldHierarchyRecord(world, lease);
                     var scenesRootPayload = new byte[checked(arrayPayload.Length + hierarchyRecord.Length)];
                     Assert.That(
                         ScenePersistenceScenesWriter.Measure(

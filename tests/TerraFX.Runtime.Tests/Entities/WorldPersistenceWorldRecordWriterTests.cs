@@ -11,6 +11,7 @@ using TerraFX.Animation;
 using TerraFX.Assets;
 using TerraFX.Entities;
 using TerraFX.Graphics;
+using TerraFX.Integration;
 using TerraFX.Scenes;
 
 namespace TerraFX.Runtime.Tests.Entities;
@@ -22,14 +23,12 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
         World world,
         in WorldPersistenceCaptureLease lease,
         CompiledContentSchemaRegistry schemas,
-        ReadOnlySpan<byte> scenesRecord,
         ReadOnlySpan<uint> assetIds)
     {
-        var status = WorldPersistenceWorldRecordCaptureCoordinator.Capture(
+        var status = WorldPersistenceCaptureCoordinator.Capture(
             world,
             lease,
             schemas,
-            scenesRecord,
             out var worldRecord,
             out var assetIdCount,
             out var diagnostic,
