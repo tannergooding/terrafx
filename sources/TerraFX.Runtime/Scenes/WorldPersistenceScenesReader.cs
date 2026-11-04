@@ -148,19 +148,6 @@ internal static class WorldPersistenceScenesReader
         return new WorldPersistenceScenesContents(instanceCount, hierarchyNodeCount, rootCount);
     }
 
-    private static bool ContainsGuid(EbinFieldReadView field, Guid identity)
-    {
-        for (var index = 0; index < checked((int)field.Count); index++)
-        {
-            if (ReadGuidArrayElement(field, index) == identity)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     private static int FindHierarchyNodeIndex(
         EbinRecordReadView hierarchy,
         int nodeCount,
@@ -360,33 +347,38 @@ internal static class WorldPersistenceScenesReader
     private static void ValidateHierarchyAcyclic(
         EbinRecordReadView hierarchy,
         int nodeCount,
+        byte[] nodeStates,
         string parameterName)
     {
-        var visitStates = new byte[nodeCount];
+        const byte VisitCompleteFlag = 8;
+        const byte VisitInProgressFlag = 4;
+        const byte VisitStateMask = VisitCompleteFlag | VisitInProgressFlag;
 
         for (var startIndex = 0; startIndex < nodeCount; startIndex++)
         {
             var currentIndex = startIndex;
 
-            while ((currentIndex >= 0) && (visitStates[currentIndex] == 0))
+            while ((currentIndex >= 0) && ((nodeStates[currentIndex] & VisitStateMask) == 0))
             {
-                visitStates[currentIndex] = 1;
+                nodeStates[currentIndex] |= VisitInProgressFlag;
                 var parentId = ReadHierarchyParentId(hierarchy.GetRecordArrayElement(1, currentIndex), parameterName);
                 currentIndex = parentId.HasValue
                     ? FindHierarchyNodeIndex(hierarchy, nodeCount, parentId.Value, parameterName)
                     : -1;
             }
 
-            if ((currentIndex >= 0) && (visitStates[currentIndex] == 1))
+            if ((currentIndex >= 0) && ((nodeStates[currentIndex] & VisitStateMask) == VisitInProgressFlag))
             {
                 throw new ArgumentException("The scene/world-hierarchy contains a parent cycle.", parameterName);
             }
 
             currentIndex = startIndex;
 
-            while ((currentIndex >= 0) && (visitStates[currentIndex] == 1))
+            while ((currentIndex >= 0) && ((nodeStates[currentIndex] & VisitStateMask) == VisitInProgressFlag))
             {
-                visitStates[currentIndex] = 2;
+                nodeStates[currentIndex] = (byte)(
+                    (nodeStates[currentIndex] & ~VisitStateMask)
+                    | VisitCompleteFlag);
                 var parentId = ReadHierarchyParentId(hierarchy.GetRecordArrayElement(1, currentIndex), parameterName);
                 currentIndex = parentId.HasValue
                     ? FindHierarchyNodeIndex(hierarchy, nodeCount, parentId.Value, parameterName)
@@ -433,6 +425,24 @@ internal static class WorldPersistenceScenesReader
     {
         var rootNodeCount = 0;
         long childReferenceCount = 0;
+        const byte ChildReferenceFlag = 1;
+        const byte RootMembershipFlag = 2;
+        var nodeStates = new byte[nodeCount];
+
+        for (var rootIndex = 0; rootIndex < rootCount; rootIndex++)
+        {
+            var rootId = ReadGuidArrayElement(rootsField, rootIndex);
+            var nodeIndex = FindHierarchyNodeIndex(hierarchy, nodeCount, rootId, parameterName);
+
+            if ((nodeIndex < 0)
+                || (ReadHierarchyParentId(hierarchy.GetRecordArrayElement(1, nodeIndex), parameterName) is not null)
+                || ((nodeStates[nodeIndex] & RootMembershipFlag) != 0))
+            {
+                throw new ArgumentException("A scene/world-hierarchy root is absent, duplicated, or has a parent.", parameterName);
+            }
+
+            nodeStates[nodeIndex] |= RootMembershipFlag;
+        }
 
         for (var nodeIndex = 0; nodeIndex < nodeCount; nodeIndex++)
         {
@@ -452,19 +462,16 @@ internal static class WorldPersistenceScenesReader
                     throw new ArgumentException("A scene/world-hierarchy parent is absent from the node set.", parameterName);
                 }
 
-                var parent = hierarchy.GetRecordArrayElement(1, parentIndex);
-                var parentChildren = GetRequiredField(parent, 3, FixedArrayKind, expectedCount: null, parameterName);
-
-                if (!ContainsGuid(parentChildren, nodeId))
+                if ((nodeStates[nodeIndex] & RootMembershipFlag) != 0)
                 {
-                    throw new ArgumentException("A scene/world-hierarchy parent omits its child node.", parameterName);
+                    throw new ArgumentException("A scene/world-hierarchy node with a parent is listed as a root.", parameterName);
                 }
             }
             else
             {
                 rootNodeCount++;
 
-                if (!ContainsGuid(rootsField, nodeId))
+                if ((nodeStates[nodeIndex] & RootMembershipFlag) == 0)
                 {
                     throw new ArgumentException("A parentless scene/world-hierarchy node is absent from Roots.", parameterName);
                 }
@@ -480,6 +487,13 @@ internal static class WorldPersistenceScenesReader
                 {
                     throw new ArgumentException("A scene/world-hierarchy child does not point back to its parent.", parameterName);
                 }
+
+                if ((nodeStates[childNodeIndex] & ChildReferenceFlag) != 0)
+                {
+                    throw new ArgumentException("A scene/world-hierarchy node appears more than once in child arrays.", parameterName);
+                }
+
+                nodeStates[childNodeIndex] |= ChildReferenceFlag;
             }
         }
 
@@ -489,19 +503,18 @@ internal static class WorldPersistenceScenesReader
             throw new ArgumentException("The scene/world-hierarchy Roots and Children arrays do not match node parent links.", parameterName);
         }
 
-        for (var rootIndex = 0; rootIndex < rootCount; rootIndex++)
+        for (var nodeIndex = 0; nodeIndex < nodeCount; nodeIndex++)
         {
-            var rootId = ReadGuidArrayElement(rootsField, rootIndex);
-            var nodeIndex = FindHierarchyNodeIndex(hierarchy, nodeCount, rootId, parameterName);
+            var hasParent = ReadHierarchyParentId(hierarchy.GetRecordArrayElement(1, nodeIndex), parameterName).HasValue;
+            var hasChildReference = (nodeStates[nodeIndex] & ChildReferenceFlag) != 0;
 
-            if ((nodeIndex < 0)
-                || (ReadHierarchyParentId(hierarchy.GetRecordArrayElement(1, nodeIndex), parameterName) is not null))
+            if (hasParent != hasChildReference)
             {
-                throw new ArgumentException("A scene/world-hierarchy root is absent or has a parent.", parameterName);
+                throw new ArgumentException("A scene/world-hierarchy child-reference set does not match the node parent links.", parameterName);
             }
         }
 
-        ValidateHierarchyAcyclic(hierarchy, nodeCount, parameterName);
+        ValidateHierarchyAcyclic(hierarchy, nodeCount, nodeStates, parameterName);
     }
 
     private static void ValidateRecordArrayChildren(
