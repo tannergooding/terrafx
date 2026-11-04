@@ -605,7 +605,7 @@ internal static partial class Program
     private static int RunSceneActivationConsumer(string[] args)
     {
         if ((args.Length != 5)
-            || (args[0] != "--scene-activation")
+            || (args[0] is not "--scene-activation" and not "--scene-activation-host")
             || !Guid.TryParseExact(args[3], "N", out var externalSlotId)
             || !Guid.TryParseExact(args[4], "N", out var rootEntityId)
             || (args[2] is not "optional" and not "required"))
@@ -701,8 +701,19 @@ internal static partial class Program
 
         var registration = registrationBuilder.Build();
         var packageBytes = File.ReadAllBytes(args[1]);
-        var assets = AssetStore.CreateAsync(
-            new AssetStoreOptions(args[1], SHA256.HashData(packageBytes), assetStoreRegistration))
+        var assetStoreOptions = new AssetStoreOptions(args[1], SHA256.HashData(packageBytes), assetStoreRegistration);
+
+        if (args[0] is "--scene-activation-host")
+        {
+            return RunHostedSceneActivationConsumer(
+                assetStoreOptions,
+                registration,
+                optional,
+                externalSlotId,
+                rootEntityId);
+        }
+
+        var assets = AssetStore.CreateAsync(assetStoreOptions)
             .GetAwaiter()
             .GetResult();
 

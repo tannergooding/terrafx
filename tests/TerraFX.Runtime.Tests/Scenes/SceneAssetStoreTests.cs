@@ -1711,9 +1711,11 @@ internal sealed partial class SceneAssetStoreTests
         }
     }
 
-    [TestCase(true)]
-    [TestCase(false)]
-    public async Task SceneLoaderActivationHandlesExplicitNullEntityReference(bool optional)
+    [TestCase(true, false)]
+    [TestCase(false, false)]
+    [TestCase(true, true)]
+    [TestCase(false, true)]
+    public async Task SceneLoaderActivationHandlesExplicitNullEntityReference(bool optional, bool hosted)
     {
         const int sceneAssetIdValue = 3;
         var componentSchema = CreateEntityReferenceComponentSchema(optional);
@@ -1790,7 +1792,7 @@ internal sealed partial class SceneAssetStoreTests
                 startInfo.ArgumentList.Add("--");
             }
 
-            startInfo.ArgumentList.Add("--scene-activation");
+            startInfo.ArgumentList.Add(hosted ? "--scene-activation-host" : "--scene-activation");
             startInfo.ArgumentList.Add(packagePath);
             startInfo.ArgumentList.Add(optional ? "optional" : "required");
             startInfo.ArgumentList.Add(externalSlotId.ToString("N"));
