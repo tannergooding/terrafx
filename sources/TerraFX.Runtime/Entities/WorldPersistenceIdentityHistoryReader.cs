@@ -2,6 +2,7 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Globalization;
 using TerraFX;
 
 namespace TerraFX.Entities;
@@ -83,6 +84,7 @@ internal static class WorldPersistenceIdentityHistoryReader
         }
 
         Span<Guid> branchIds = stackalloc Guid[branchCount];
+        Span<Guid> branchNamespaces = stackalloc Guid[branchCount];
         var activeBranchFound = false;
         var previousFirstOrdinal = 0L;
         var previousCreatedAtNextTick = 0L;
@@ -126,6 +128,7 @@ internal static class WorldPersistenceIdentityHistoryReader
             }
 
             branchIds[index] = branchData.branchId;
+            branchNamespaces[index] = branchData.issuanceNamespace;
             previousFirstOrdinal = branchData.firstAssignmentOrdinal;
             previousCreatedAtNextTick = branchData.createdAtNextTick;
 
@@ -156,6 +159,7 @@ internal static class WorldPersistenceIdentityHistoryReader
                 pageIndex,
                 assignmentCount,
                 branchCount,
+                branchNamespaces,
                 liveIdentities,
                 parameterName);
             liveEntityCount = checked(liveEntityCount + liveCounts.liveEntityCount);
@@ -375,11 +379,47 @@ internal static class WorldPersistenceIdentityHistoryReader
         return field.Payload[0];
     }
 
+    private static void ValidateAssignmentRecipe(
+        Guid identity,
+        uint identityKind,
+        uint originValue,
+        uint branchIndex,
+        long assignmentOrdinal,
+        scoped ReadOnlySpan<Guid> branchNamespaces,
+        string parameterName)
+    {
+        var kind = (IdentityKind)identityKind;
+        var origin = (IdentityOrigin)originValue;
+
+        if (origin == IdentityOrigin.Automatic)
+        {
+            var prefix = kind == IdentityKind.Entity ? "world/entity/v1/" : "world/scene-instance/v1/";
+            var name = string.Create(CultureInfo.InvariantCulture, $"{prefix}{assignmentOrdinal:x16}");
+            var expectedIdentity = FoundationNameUuid.Create(branchNamespaces[checked((int)branchIndex)], name);
+
+            if (identity != expectedIdentity)
+            {
+                throw new ArgumentException("An automatic identity does not match its branch namespace and assignment ordinal recipe.", parameterName);
+            }
+        }
+        else if (origin == IdentityOrigin.Explicit)
+        {
+            Span<byte> identityBytes = stackalloc byte[16];
+            _ = identity.TryWriteBytes(identityBytes, bigEndian: true, out _);
+
+            if ((identityBytes[6] & 0xF0) == 0x80 && (identityBytes[8] & 0xC0) == 0x80)
+            {
+                throw new ArgumentException("An explicit identity uses the engine-reserved RFC UUIDv8 domain.", parameterName);
+            }
+        }
+    }
+
     private static (int liveEntityCount, int liveSceneInstanceCount) ValidatePage(
         EbinRecordReadView page,
         int pageIndex,
         long assignmentCount,
         int branchCount,
+        scoped ReadOnlySpan<Guid> branchNamespaces,
         WorldPersistenceLiveIdentitySet liveIdentities,
         string parameterName)
     {
@@ -425,9 +465,12 @@ internal static class WorldPersistenceIdentityHistoryReader
                 throw new ArgumentException("An identity-page assignment has invalid identity metadata.", parameterName);
             }
 
+            var assignmentOrdinal = checked(firstOrdinal + index);
+            ValidateAssignmentRecipe(id, identityKind, origin, branchIndex, assignmentOrdinal, branchNamespaces, parameterName);
+
             if ((value & (1U << 14)) != 0)
             {
-                liveIdentities.Add(id, identityKind, checked(firstOrdinal + index), parameterName);
+                liveIdentities.Add(id, identityKind, assignmentOrdinal, parameterName);
 
                 if (identityKind == 1)
                 {
