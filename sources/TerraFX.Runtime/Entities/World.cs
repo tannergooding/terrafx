@@ -82,6 +82,7 @@ public sealed partial class World : IDisposable
     private readonly uint _ownerId;
     private readonly int _ownerThreadId;
     private readonly bool _ownsAdmissionDomain;
+    private readonly bool _ownsWorkerPool;
     private readonly Lock _persistenceAdmissionGate = new();
     private long _publicationSequence;
     private WorldArchetype?[] _queryArchetypes;
@@ -191,6 +192,7 @@ public sealed partial class World : IDisposable
         _maximumRecordedControls = options.MaximumRecordedControls;
         _maximumSnapshotBytes = options.MaximumSnapshotBytes;
         _ownsAdmissionDomain = constructionPlan.OwnsAdmissionDomain;
+        _ownsWorkerPool = constructionPlan.OwnsWorkerPool;
         _registry = constructionPlan.Registry;
         _replayLineageId = constructionPlan.ReplayLineageId;
         _spatialProfileId = options.SpatialProfileId;
@@ -365,11 +367,31 @@ public sealed partial class World : IDisposable
     /// <exception cref="ArgumentException">An identity, registration, spatial profile, or extent is invalid.</exception>
     /// <exception cref="ArgumentOutOfRangeException">A capacity, tick rate, time scale, or worker count is invalid.</exception>
     /// <exception cref="InvalidOperationException">A WorldGuid/domain/lineage admission is refused or owner issuance is exhausted.</exception>
-    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The reserved identity, domain charge, and returned World transfer together only after both admission commits; the finally path releases them on failure.")]
     public static World Create(WorldOptions options)
+        => AdmitWorld(options, sharedWorkerPool: null, sharedDiagnostics: null, hostAdmissionDomain: null);
+
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The reserved identity, domain charge, and returned World transfer together only after both admission commits; the finally path releases them on failure.")]
+    private static World AdmitWorld(
+        WorldOptions options,
+        WorldWorkerPool? sharedWorkerPool,
+        DiagnosticsService? sharedDiagnostics,
+        WorldAdmissionDomain? hostAdmissionDomain)
     {
         ArgumentNullException.ThrowIfNull(options);
         var resolvedOptions = options.ValidateAndResolve();
+
+        if (sharedWorkerPool is not null)
+        {
+            if ((options.CpuWorkerCount is int configuredWorkerCount)
+                && (configuredWorkerCount != sharedWorkerPool.WorkerCount))
+            {
+                throw new ArgumentException("A hosted World worker count must match the host-owned pool.", nameof(options));
+            }
+
+            resolvedOptions = resolvedOptions with { CpuWorkerCount = sharedWorkerPool.WorkerCount };
+        }
+
+        var ownsWorkerPool = sharedWorkerPool is null;
         var worldGuid = options.WorldGuid ?? Guid.NewGuid();
 
         if (worldGuid == Guid.Empty)
@@ -404,12 +426,16 @@ public sealed partial class World : IDisposable
                 throw new InvalidOperationException($"WorldGuid admission was refused with code {worldGuidRefusal.Code}.");
             }
 
-            admissionDomain = options.AdmissionDomain ?? new WorldAdmissionDomain(DefaultAdmissionDomainBytes);
-            ownsAdmissionDomain = options.AdmissionDomain is null;
+            admissionDomain = options.AdmissionDomain
+                ?? hostAdmissionDomain
+                ?? new WorldAdmissionDomain(DefaultAdmissionDomainBytes);
+            ownsAdmissionDomain = (options.AdmissionDomain is null) && (hostAdmissionDomain is null);
 
             var maximumDiagnosticBytes = options.SchedulingLimits.MaximumDiagnosticBytes;
             var diagnosticRecordCount = DiagnosticsService.GetMaximumRecordCount(maximumDiagnosticBytes);
-            var diagnosticBytes = DiagnosticsService.GetOwnedByteReservation(diagnosticRecordCount);
+            var diagnosticBytes = (sharedDiagnostics is null)
+                ? DiagnosticsService.GetOwnedByteReservation(diagnosticRecordCount)
+                : 0;
             var archetypeDirectoryBytes = checked(2 * ArrayBytes(options.MaximumArchetypes, IntPtr.Size));
             var resourceBytes = 0L;
             var systemBytes = checked(
@@ -443,12 +469,14 @@ public sealed partial class World : IDisposable
             if (!admissionDomain.TryReserveWorld(worldOwnedBytes, out domainReservation)
                 || (domainReservation is null))
             {
-                throw new InvalidOperationException("The admission domain cannot reserve the standalone World and diagnostic service.");
+                throw new InvalidOperationException("The admission domain cannot reserve the World and its owned diagnostics service.");
             }
 
-            diagnostics = new DiagnosticsService(diagnosticRecordCount);
+            diagnostics = sharedDiagnostics ?? new DiagnosticsService(diagnosticRecordCount);
             var executionSessionId = ExecutionSession.ExecutionSessionId;
-            diagnosticsCapability = diagnostics.CreateWorldCapability(worldGuid, executionSessionId);
+            diagnosticsCapability = (sharedDiagnostics is null)
+                ? diagnostics.CreateWorldCapability(worldGuid, executionSessionId)
+                : diagnostics.CreateBorrowedWorldCapability(worldGuid, executionSessionId);
             var replayLineageId = options.InitialReplayLineageId ?? Guid.NewGuid();
 
             if (replayLineageId == Guid.Empty)
@@ -487,6 +515,7 @@ public sealed partial class World : IDisposable
                 executionSessionId,
                 admissionDomain,
                 ownsAdmissionDomain,
+                ownsWorkerPool,
                 domainReservation,
                 lineageGrant,
                 registry,
@@ -494,7 +523,7 @@ public sealed partial class World : IDisposable
                 diagnosticsCapability,
                 identityLedger);
             systemQuarantineReservation = WorldSystemInstanceRegistry.ReserveQuarantineCapacity(options.Registration.Systems.Length);
-            workerPool = new WorldWorkerPool(resolvedOptions.CpuWorkerCount);
+            workerPool = sharedWorkerPool ?? new WorldWorkerPool(resolvedOptions.CpuWorkerCount);
             var world = new World(constructionPlan, systemQuarantineReservation, workerPool);
 
             try
@@ -545,13 +574,16 @@ public sealed partial class World : IDisposable
         {
             if (!publicationCommitted)
             {
-                workerPool?.Dispose();
+                if (ownsWorkerPool)
+                {
+                    workerPool?.Dispose();
+                }
 
                 if (diagnosticsCapability is not null)
                 {
                     diagnosticsCapability.Close();
                 }
-                else
+                else if (sharedDiagnostics is null)
                 {
                     diagnostics?.Close();
                 }
@@ -1104,7 +1136,11 @@ public sealed partial class World : IDisposable
                 throw new InvalidOperationException("The WorldGuid binding could not be retired; the World remains active.");
             }
 
-            _workerPool.Dispose();
+            if (_ownsWorkerPool)
+            {
+                _workerPool.Dispose();
+            }
+
             _cpuExtractionParticipant?.Dispose();
             _cpuExtractionParticipant = null;
             _sceneParticipant?.Dispose();

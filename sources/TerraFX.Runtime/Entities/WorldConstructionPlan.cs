@@ -14,6 +14,7 @@ internal sealed class WorldConstructionPlan
     private readonly StableIdentityLedger _identityLedger;
     private readonly WorldLineageGrant _lineageGrant;
     private readonly bool _ownsAdmissionDomain;
+    private readonly bool _ownsWorkerPool;
     private readonly WorldGuidRegistry _registry;
     private readonly ResolvedWorldOptions _resolvedOptions;
     private readonly Guid _worldGuid;
@@ -27,6 +28,7 @@ internal sealed class WorldConstructionPlan
         Guid executionSessionId,
         WorldAdmissionDomain admissionDomain,
         bool ownsAdmissionDomain,
+        bool ownsWorkerPool,
         WorldDomainReservation domainReservation,
         WorldLineageGrant lineageGrant,
         WorldGuidRegistry registry,
@@ -40,6 +42,7 @@ internal sealed class WorldConstructionPlan
         _executionSessionId = executionSessionId;
         _admissionDomain = admissionDomain;
         _ownsAdmissionDomain = ownsAdmissionDomain;
+        _ownsWorkerPool = ownsWorkerPool;
         _domainReservation = domainReservation;
         _lineageGrant = lineageGrant;
         _registry = registry;
@@ -66,6 +69,8 @@ internal sealed class WorldConstructionPlan
     internal WorldOptions Options => _resolvedOptions.Options;
 
     internal bool OwnsAdmissionDomain => _ownsAdmissionDomain;
+
+    internal bool OwnsWorkerPool => _ownsWorkerPool;
 
     internal WorldGuidRegistry Registry => _registry;
 
