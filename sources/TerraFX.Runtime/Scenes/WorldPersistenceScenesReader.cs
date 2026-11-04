@@ -2,7 +2,9 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using TerraFX;
+using TerraFX.Assets;
 using TerraFX.Entities;
 
 namespace TerraFX.Scenes;
@@ -15,11 +17,14 @@ internal static class WorldPersistenceScenesReader
     private const ushort Int64Kind = 8;
     private const ushort RecordKind = 22;
     private const int SceneRootFieldCount = 2;
+    private const ushort UInt32Kind = 3;
 
     private static readonly Guid s_externalBindingSchemaId = new ContentSchemaIdentityAssignment("state/external-scene-binding").SchemaId;
     private static readonly Guid s_hierarchyNodeSchemaId = new ContentSchemaIdentityAssignment("scene/world-hierarchy-node").SchemaId;
     private static readonly Guid s_hierarchySchemaId = new ContentSchemaIdentityAssignment("scene/world-hierarchy").SchemaId;
     private static readonly Guid s_nativeAssetReferenceSchemaId = new ContentSchemaIdentityAssignment("native/asset-reference").SchemaId;
+    private static readonly Guid s_prefabSchemaId = new ContentSchemaIdentityAssignment("native/prefab").SchemaId;
+    private static readonly Guid s_sceneSchemaId = new ContentSchemaIdentityAssignment("native/scene").SchemaId;
     private static readonly Guid s_sceneEntityBindingSchemaId = new ContentSchemaIdentityAssignment("state/scene-entity-binding").SchemaId;
     private static readonly Guid s_sceneInstanceSchemaId = new ContentSchemaIdentityAssignment("state/scene-instance").SchemaId;
     private static readonly Guid s_sceneOccurrenceSchemaId = new ContentSchemaIdentityAssignment("state/scene-occurrence").SchemaId;
@@ -199,6 +204,27 @@ internal static class WorldPersistenceScenesReader
         return field;
     }
 
+    private static bool GuidArraysMatch(
+        EbinFieldReadView left,
+        int leftCount,
+        EbinFieldReadView right)
+    {
+        if (leftCount != checked((int)right.Count))
+        {
+            return false;
+        }
+
+        for (var index = 0; index < leftCount; index++)
+        {
+            if (ReadGuidArrayElement(left, index) != ReadGuidArrayElement(right, index))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private static int ReadArrayCount(
         EbinRecordReadView record,
         uint tag,
@@ -218,6 +244,25 @@ internal static class WorldPersistenceScenesReader
         }
 
         return checked((int)field.Count);
+    }
+
+    private static (int assetId, Guid schemaId, uint schemaMajor) ReadAssetReference(
+        EbinRecordReadView record,
+        string parameterName)
+    {
+        ValidateRecordHeader(record, s_nativeAssetReferenceSchemaId, minimumFieldCount: 3, maximumFieldCount: 3, parameterName);
+        var assetId = ReadUInt32(record, 1, parameterName);
+        var schemaId = ReadGuid(record, 2, isRequired: true, parameterName);
+        var schemaMajor = ReadUInt32(record, 3, parameterName);
+
+        if ((assetId == 0)
+            || (assetId > int.MaxValue)
+            || (schemaMajor == 0))
+        {
+            throw new ArgumentException("A State2 Scene asset reference has an invalid identity or schema version.", parameterName);
+        }
+
+        return (checked((int)assetId), schemaId, schemaMajor);
     }
 
     private static Guid ReadGuid(EbinRecordReadView record, uint tag, bool isRequired, string parameterName)
@@ -290,6 +335,18 @@ internal static class WorldPersistenceScenesReader
         }
 
         return BinaryPrimitives.ReadInt64LittleEndian(field.Payload);
+    }
+
+    private static uint ReadUInt32(EbinRecordReadView record, uint tag, string parameterName)
+    {
+        var field = GetRequiredField(record, tag, UInt32Kind, expectedCount: 1, parameterName);
+
+        if (field.Payload.Length != sizeof(uint))
+        {
+            throw new ArgumentException("A State2 Scene UInt32 field has an invalid payload length.", parameterName);
+        }
+
+        return BinaryPrimitives.ReadUInt32LittleEndian(field.Payload);
     }
 
     private static int ValidateGuidFixedArray(
@@ -517,6 +574,109 @@ internal static class WorldPersistenceScenesReader
         ValidateHierarchyAcyclic(hierarchy, nodeCount, nodeStates, parameterName);
     }
 
+    private static Dictionary<Guid, int> ValidateOccurrences(
+        EbinRecordReadView instance,
+        int occurrenceCount,
+        (int assetId, Guid schemaId, uint schemaMajor) rootSource,
+        string parameterName)
+    {
+        var occurrenceIndices = new Dictionary<Guid, int>();
+        var parentPlacements = new HashSet<(Guid parentId, Guid placementId)>();
+
+        for (var index = 0; index < occurrenceCount; index++)
+        {
+            var occurrence = instance.GetRecordArrayElement(7, index);
+            ValidateRecordHeader(occurrence, s_sceneOccurrenceSchemaId, minimumFieldCount: 3, maximumFieldCount: 5, parameterName);
+            var pathField = GetRequiredField(occurrence, 1, FixedArrayKind, expectedCount: null, parameterName);
+            var pathCount = ValidateGuidFixedArray(pathField, maximumCount: 32, parameterName);
+            var occurrenceId = ReadGuid(occurrence, 2, isRequired: true, parameterName);
+            var sourceField = GetRequiredField(occurrence, 3, RecordKind, expectedCount: 1, parameterName);
+            var source = ReadAssetReference(new EbinRecordReadView(sourceField.Payload), parameterName);
+            var hasParent = occurrence.TryGetField(4, out _);
+            var hasPlacement = occurrence.TryGetField(5, out _);
+
+            if ((hasParent != hasPlacement)
+                || (occurrence.FieldCount != (hasParent ? 5 : 3)))
+            {
+                throw new ArgumentException("A state/scene-occurrence has inconsistent parent and placement fields.", parameterName);
+            }
+
+            Guid expectedOccurrenceId;
+
+            if (index == 0)
+            {
+                if (hasParent
+                    || (pathCount != 0)
+                    || (source != rootSource)
+                    || (source.schemaId != s_sceneSchemaId)
+                    || (source.schemaMajor != 2))
+                {
+                    throw new ArgumentException("The first state/scene-occurrence is not the matching Scene root.", parameterName);
+                }
+
+                expectedOccurrenceId = SceneOccurrenceIdentity.CreateRootOccurrence(new AssetId(source.assetId));
+            }
+            else
+            {
+                if (!hasParent
+                    || (pathCount == 0)
+                    || (source.schemaId != s_prefabSchemaId)
+                    || (source.schemaMajor != 2))
+                {
+                    throw new ArgumentException("A nested state/scene-occurrence must identify a version-2 Prefab and its placement.", parameterName);
+                }
+
+                var parentId = ReadGuid(occurrence, 4, isRequired: false, parameterName);
+                var placementId = ReadGuid(occurrence, 5, isRequired: false, parameterName);
+
+                if (!occurrenceIndices.TryGetValue(parentId, out var parentIndex))
+                {
+                    throw new ArgumentException("A nested state/scene-occurrence refers to a parent that is absent or not earlier.", parameterName);
+                }
+
+                if (!parentPlacements.Add((parentId, placementId)))
+                {
+                    throw new ArgumentException("Two nested state/scene-occurrences use the same parent placement.", parameterName);
+                }
+
+                var parent = instance.GetRecordArrayElement(7, parentIndex);
+                var parentPath = GetRequiredField(parent, 1, FixedArrayKind, expectedCount: null, parameterName);
+                var parentPathCount = checked((int)parentPath.Count);
+
+                if (pathCount != (parentPathCount + 1))
+                {
+                    throw new ArgumentException("A nested state/scene-occurrence path does not extend its parent's path.", parameterName);
+                }
+
+                for (var pathIndex = 0; pathIndex < parentPathCount; pathIndex++)
+                {
+                    if (ReadGuidArrayElement(pathField, pathIndex) != ReadGuidArrayElement(parentPath, pathIndex))
+                    {
+                        throw new ArgumentException("A nested state/scene-occurrence path does not preserve its parent's prefix.", parameterName);
+                    }
+                }
+
+                if (ReadGuidArrayElement(pathField, parentPathCount) != placementId)
+                {
+                    throw new ArgumentException("A nested state/scene-occurrence path does not end with its placement identity.", parameterName);
+                }
+
+                expectedOccurrenceId = SceneOccurrenceIdentity.CreatePrefabOccurrence(
+                    parentId,
+                    placementId,
+                    new AssetId(source.assetId));
+            }
+
+            if ((occurrenceId != expectedOccurrenceId)
+                || !occurrenceIndices.TryAdd(occurrenceId, index))
+            {
+                throw new ArgumentException("A state/scene-occurrence identity does not match its canonical source recipe or is duplicated.", parameterName);
+            }
+        }
+
+        return occurrenceIndices;
+    }
+
     private static void ValidateRecordArrayChildren(
         EbinRecordReadView record,
         uint fieldTag,
@@ -558,17 +718,57 @@ internal static class WorldPersistenceScenesReader
         EbinRecordReadView instance,
         int bindingCount,
         EbinFieldReadView entityIdsField,
+        Dictionary<Guid, int> occurrenceIndices,
         string parameterName)
     {
+        var expandedEntityKeys = new HashSet<Guid>();
+
         for (var index = 0; index < bindingCount; index++)
         {
             var binding = instance.GetRecordArrayElement(4, index);
             ValidateRecordHeader(binding, s_sceneEntityBindingSchemaId, minimumFieldCount: 6, maximumFieldCount: 6, parameterName);
             var entityId = ReadGuid(binding, 4, isRequired: true, parameterName);
+            var occurrenceId = ReadGuid(binding, 5, isRequired: true, parameterName);
 
             if (entityId != ReadGuidArrayElement(entityIdsField, index))
             {
                 throw new ArgumentException("A state/scene-entity-binding does not match its EntityIds position.", parameterName);
+            }
+
+            if (!occurrenceIndices.TryGetValue(occurrenceId, out var occurrenceIndex))
+            {
+                throw new ArgumentException("A state/scene-entity-binding refers to an absent occurrence.", parameterName);
+            }
+
+            var occurrence = instance.GetRecordArrayElement(7, occurrenceIndex);
+            var bindingPath = GetRequiredField(binding, 1, FixedArrayKind, expectedCount: null, parameterName);
+            var bindingPathCount = ValidateGuidFixedArray(bindingPath, maximumCount: 32, parameterName);
+            var occurrencePath = GetRequiredField(occurrence, 1, FixedArrayKind, expectedCount: null, parameterName);
+            _ = ValidateGuidFixedArray(occurrencePath, maximumCount: 32, parameterName);
+
+            if (!GuidArraysMatch(bindingPath, bindingPathCount, occurrencePath))
+            {
+                throw new ArgumentException("A state/scene-entity-binding placement path does not match its occurrence.", parameterName);
+            }
+
+            var bindingSourceField = GetRequiredField(binding, 2, RecordKind, expectedCount: 1, parameterName);
+            var bindingSource = ReadAssetReference(new EbinRecordReadView(bindingSourceField.Payload), parameterName);
+            var occurrenceSourceField = GetRequiredField(occurrence, 3, RecordKind, expectedCount: 1, parameterName);
+            var occurrenceSource = ReadAssetReference(new EbinRecordReadView(occurrenceSourceField.Payload), parameterName);
+
+            if (bindingSource != occurrenceSource)
+            {
+                throw new ArgumentException("A state/scene-entity-binding source does not match its occurrence source.", parameterName);
+            }
+
+            var authoredEntityId = ReadGuid(binding, 3, isRequired: true, parameterName);
+            var expandedEntityKey = ReadGuid(binding, 6, isRequired: true, parameterName);
+            var expectedExpandedEntityKey = SceneOccurrenceIdentity.CreateExpandedEntityKey(occurrenceId, authoredEntityId);
+
+            if ((expandedEntityKey != expectedExpandedEntityKey)
+                || !expandedEntityKeys.Add(expandedEntityKey))
+            {
+                throw new ArgumentException("A state/scene-entity-binding has an invalid or duplicate ExpandedEntityKey.", parameterName);
             }
         }
     }
@@ -585,12 +785,7 @@ internal static class WorldPersistenceScenesReader
         ValidateRecordHeader(instance, s_sceneInstanceSchemaId, minimumFieldCount: 7, maximumFieldCount: 7, parameterName);
         var instanceId = ReadGuid(instance, 1, isRequired: true, parameterName);
         var sourceField = GetRequiredField(instance, 2, RecordKind, expectedCount: 1, parameterName);
-        ValidateRecordHeader(
-            new EbinRecordReadView(sourceField.Payload),
-            s_nativeAssetReferenceSchemaId,
-            minimumFieldCount: 3,
-            maximumFieldCount: 3,
-            parameterName);
+        var sourceAsset = ReadAssetReference(new EbinRecordReadView(sourceField.Payload), parameterName);
         var entityIdsField = GetRequiredField(instance, 3, FixedArrayKind, expectedCount: null, parameterName);
         var entityCount = ValidateGuidFixedArray(
             entityIdsField,
@@ -611,9 +806,14 @@ internal static class WorldPersistenceScenesReader
             throw new ArgumentException("A state/scene-instance has inconsistent identity, assignment, or Entity binding counts.", parameterName);
         }
 
-        ValidateSceneEntityBindings(instance, bindingCount, entityIdsField, parameterName);
+        if ((sourceAsset.schemaId != s_sceneSchemaId) || (sourceAsset.schemaMajor != 2))
+        {
+            throw new ArgumentException("A state/scene-instance source does not identify a version-2 Scene asset.", parameterName);
+        }
+
+        var occurrenceIndices = ValidateOccurrences(instance, occurrenceCount, sourceAsset, parameterName);
+        ValidateSceneEntityBindings(instance, bindingCount, entityIdsField, occurrenceIndices, parameterName);
         ValidateRecordArrayChildren(instance, 5, externalBindingCount, s_externalBindingSchemaId, 1, 2, parameterName);
-        ValidateRecordArrayChildren(instance, 7, occurrenceCount, s_sceneOccurrenceSchemaId, 3, 5, parameterName);
         return instanceId;
     }
 }
