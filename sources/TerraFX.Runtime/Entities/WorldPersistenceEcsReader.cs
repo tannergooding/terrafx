@@ -62,7 +62,7 @@ internal static class WorldPersistenceEcsReader
         var attachmentCount = ReadArrayCount(record, 4, limits.MaximumArrayElements, minimumCount: 0, limits, nameof(ecsRecord));
         ValidateArrayChildren(record, 2, systemCount, s_systemStateSchemaId, minimumFieldCount: 2, maximumFieldCount: 2, nameof(ecsRecord));
         ValidateArrayChildren(record, 3, resourceCount, s_resourceStateSchemaId, minimumFieldCount: 2, maximumFieldCount: 2, nameof(ecsRecord));
-        ValidateArrayChildren(record, 4, attachmentCount, s_attachmentSchemaId, minimumFieldCount: 3, maximumFieldCount: 3, nameof(ecsRecord));
+        ValidateArrayChildren(record, 4, attachmentCount, s_attachmentSchemaId, minimumFieldCount: 2, maximumFieldCount: 3, nameof(ecsRecord));
         var historyField = GetRequiredField(record, 5, RecordKind, expectedCount: 1, nameof(ecsRecord));
         var history = new EbinRecordReadView(historyField.Payload);
         var (worldGuid, replayLineageId, activeBranchId, issuanceNamespace, nextAssignmentOrdinal, branchCount, pageCount, liveEntityCount, liveSceneInstanceCount) =
@@ -75,6 +75,11 @@ internal static class WorldPersistenceEcsReader
                 clock.NextTick,
                 nameof(ecsRecord));
         ValidateEntityChildren(record, entityCount, liveIdentities, nameof(ecsRecord));
+
+        for (var index = 0; index < attachmentCount; index++)
+        {
+            ValidateAttachmentOwner(record.GetRecordArrayElement(4, index), liveIdentities, nameof(ecsRecord));
+        }
 
         return new WorldPersistenceEcsContents(
             entityCount,
@@ -90,6 +95,49 @@ internal static class WorldPersistenceEcsReader
             nextAssignmentOrdinal,
             branchCount,
             pageCount);
+    }
+
+    internal static void ValidateAttachmentOwner(
+        EbinRecordReadView attachment,
+        WorldPersistenceLiveIdentitySet liveIdentities,
+        string parameterName)
+    {
+        ArgumentNullException.ThrowIfNull(liveIdentities);
+
+        if ((attachment.Header.SchemaId != s_attachmentSchemaId)
+            || (attachment.Header.Major != 1)
+            || (attachment.Header.Minor != 0)
+            || (attachment.FieldCount is < 2 or > 3))
+        {
+            throw new ArgumentException("A state/attachment row has the wrong schema identity, version, or field count.", parameterName);
+        }
+
+        var hasOwner = attachment.TryGetField(2, out var ownerField);
+
+        if (attachment.FieldCount != (hasOwner ? 3 : 2))
+        {
+            throw new ArgumentException("A state/attachment row has an unknown or missing field.", parameterName);
+        }
+
+        if (!hasOwner)
+        {
+            return;
+        }
+
+        if ((ownerField.Kind != GuidKind)
+            || ownerField.IsRequired
+            || (ownerField.Count != 1)
+            || (ownerField.Payload.Length != 16))
+        {
+            throw new ArgumentException("A state/attachment owner has an invalid wire shape.", parameterName);
+        }
+
+        var ownerEntityId = new Guid(ownerField.Payload, bigEndian: true);
+
+        if ((ownerEntityId == Guid.Empty) || !liveIdentities.IsMatchedEntity(ownerEntityId))
+        {
+            throw new ArgumentException("A state/attachment owner is not a live ECS Entity.", parameterName);
+        }
     }
 
     private static EbinFieldReadView GetRequiredField(

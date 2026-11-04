@@ -11,6 +11,24 @@ namespace TerraFX.Runtime.Tests.Entities;
 [TestFixture]
 internal sealed class WorldPersistenceStateRowWriterTests
 {
+    private static void AssertAttachmentOwnerRow(
+        byte[] record,
+        EbinReadLimits limits,
+        WorldPersistenceLiveIdentitySet liveIdentities)
+    {
+        var assertions = new AttachmentOwnerValidation(liveIdentities);
+        var status = EbinStructuralReader.Read(
+            record,
+            limits,
+            EbinReadPolicy.Canonical,
+            ref assertions,
+            out var bytesConsumed,
+            out var diagnostic);
+        Assert.That(status, Is.EqualTo(EbinReadStatus.Complete), diagnostic?.ToString());
+        Assert.That(diagnostic, Is.Null);
+        Assert.That(bytesConsumed, Is.EqualTo(record.Length));
+    }
+
     private static void AssertStateRow(
         Guid rowSchemaId,
         Guid id,
@@ -237,6 +255,25 @@ internal sealed class WorldPersistenceStateRowWriterTests
             Is.EqualTo(EbinReadStatus.Complete));
         Assert.That(readDiagnostic, Is.Null);
         Assert.That(bytesConsumed, Is.EqualTo(bytesWritten));
+
+        var liveIdentities = new WorldPersistenceLiveIdentitySet(ownerEntityId.HasValue ? 1 : 0);
+
+        if (ownerEntityId is Guid owner)
+        {
+            liveIdentities.Add(owner, identityKind: 1, assignmentOrdinal: 1, nameof(ownerEntityId));
+            liveIdentities.MatchEntity(owner, nameof(ownerEntityId));
+        }
+
+        AssertAttachmentOwnerRow(destination, limits, liveIdentities);
+
+        if (ownerEntityId.HasValue)
+        {
+            var differentEntityId = Guid.Parse("40000000-0000-0000-0000-000000000008");
+            var differentLiveSet = new WorldPersistenceLiveIdentitySet(maximumCount: 1);
+            differentLiveSet.Add(differentEntityId, identityKind: 1, assignmentOrdinal: 1, nameof(destination));
+            differentLiveSet.MatchEntity(differentEntityId, nameof(destination));
+            _ = Assert.Throws<ArgumentException>(() => AssertAttachmentOwnerRow(destination, limits, differentLiveSet));
+        }
     }
 
     [Test]
@@ -266,6 +303,24 @@ internal sealed class WorldPersistenceStateRowWriterTests
             payloadRecord,
             limits,
             WorldPersistenceStateRowWriter.WriteResource);
+    }
+
+    private readonly struct AttachmentOwnerValidation : IAction<EbinRecordReadView>
+    {
+        private readonly WorldPersistenceLiveIdentitySet _liveIdentities;
+
+        internal AttachmentOwnerValidation(WorldPersistenceLiveIdentitySet liveIdentities)
+        {
+            _liveIdentities = liveIdentities;
+        }
+
+        public readonly void Invoke(scoped EbinRecordReadView record)
+        {
+            if (record.Header.SchemaId == new ContentSchemaIdentityAssignment("state/attachment").SchemaId)
+            {
+                WorldPersistenceEcsReader.ValidateAttachmentOwner(record, _liveIdentities, nameof(record));
+            }
+        }
     }
 
     private readonly struct StateRowAssertions : IAction<EbinRecordReadView>
