@@ -624,6 +624,7 @@ public sealed partial class Renderer
     /// <returns>The immutable snapshot or a typed capacity refusal.</returns>
     /// <exception cref="ArgumentNullException">A reference argument is null.</exception>
     /// <exception cref="ArgumentException">The selected frame, camera, or World binding is invalid.</exception>
+    /// <exception cref="ObjectDisposedException">The World has been disposed.</exception>
     /// <exception cref="InvalidOperationException">CPU extraction is not registered, the World is not idle, or its current revision is not committed.</exception>
     [SuppressMessage(
         "Performance",
@@ -757,6 +758,7 @@ public sealed partial class Renderer
     /// <returns>The immutable snapshot or a typed capacity refusal.</returns>
     /// <exception cref="ArgumentNullException">A reference argument is null.</exception>
     /// <exception cref="ArgumentException">The selected frame, camera, or World binding is invalid.</exception>
+    /// <exception cref="ObjectDisposedException">The World has been disposed.</exception>
     /// <exception cref="InvalidOperationException">CPU extraction is not registered, the World is not idle, or its current revision is not committed.</exception>
     [SuppressMessage(
         "Performance",

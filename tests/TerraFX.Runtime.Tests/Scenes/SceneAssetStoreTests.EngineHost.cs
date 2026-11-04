@@ -128,7 +128,7 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(
                 activation.Instance!.TryGetEntity(SceneAssetReaderTests.Fixtures.RootEntityId, out _),
                 Is.False);
-            _ = Assert.Throws<InvalidOperationException>(
+            _ = Assert.Throws<ObjectDisposedException>(
                 () => _ = host.Renderer.Extract(
                     world!,
                     new RenderExtractionOptions3D(

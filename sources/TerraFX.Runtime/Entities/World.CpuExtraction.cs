@@ -76,6 +76,8 @@ public sealed partial class World
 
     internal WorldFrameReadLease AcquireFrameReadLease()
     {
+        ThrowIfDisposed();
+
         var participant = _cpuExtractionParticipant
             ?? throw new InvalidOperationException("CPU extraction support was not registered before World construction.");
         var sceneParticipant = _sceneParticipant
