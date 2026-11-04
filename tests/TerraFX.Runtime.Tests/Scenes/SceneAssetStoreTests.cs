@@ -2284,6 +2284,7 @@ internal sealed partial class SceneAssetStoreTests
         var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
         var childEntityId = new Guid("10000000-0000-4000-8000-000000000002");
         var placementId = new Guid("40000000-0000-4000-8000-000000000002");
+        var boundExternalSlotId = new Guid("30000000-0000-4000-8000-000000000091");
         var externalSlotId = new Guid("30000000-0000-4000-8000-000000000092");
         var frameId = new Guid("30000000-0000-4000-8000-000000000093");
         var spriteRecord = CreateRenderSpriteRecord(atlasAssetIdValue, frameId, materialAssetId: null);
@@ -2296,7 +2297,10 @@ internal sealed partial class SceneAssetStoreTests
             rootEntityId,
             placementId,
             SceneAssetReaderTests.Fixtures.CreateRootPose(childEntityId, includeRootPosition: false),
-            externalSlots: [CreateExternalSlot(externalSlotId, required: false, allowNull: true, [])],
+            externalSlots: [
+                CreateExternalSlot(boundExternalSlotId, required: false, allowNull: true, []),
+                CreateExternalSlot(externalSlotId, required: false, allowNull: true, []),
+            ],
             additionalEntityComponents: [spriteRecord]);
         var prefab = SceneAssetReaderTests.Fixtures.CreatePrefab(
             new AssetId(prefabAssetIdValue),
@@ -2325,9 +2329,14 @@ internal sealed partial class SceneAssetStoreTests
                 _ = worldRegistrationBuilder.RegisterCpuExtractionSupport(Renderer.CreateCpuExtractionSupportRegistration());
                 var worldRegistration = worldRegistrationBuilder.Build();
                 using var world = World.Create(new WorldOptions(worldRegistration));
+                var externalTarget = world.CreateEntity(new EntityDescription());
+                var externalTargetId = world.GetEntityId(externalTarget);
                 var loader = new SceneLoader(world, assets);
                 var options = new SceneLoadOptions {
-                    ExternalBindings = [new SceneExternalBinding(externalSlotId, target: null)],
+                    ExternalBindings = [
+                        new SceneExternalBinding(boundExternalSlotId, target: externalTarget),
+                        new SceneExternalBinding(externalSlotId, target: null),
+                    ],
                 };
                 using var prepared = loader
                     .PrepareAsync(new AssetId(sceneAssetIdValue), options)
@@ -2491,9 +2500,11 @@ internal sealed partial class SceneAssetStoreTests
                     Assert.That(bindingRecordIndex, Is.EqualTo(bindingRecords.Length));
                     var bindingsArrayPayload = SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayPayload(bindingRecords);
                     var externalBindings = instance.GetExternalBindingCaptureRows(captureLease);
-                    Assert.That(externalBindings.Length, Is.EqualTo(1));
-                    Assert.That(externalBindings[0].BindingId, Is.EqualTo(externalSlotId));
-                    Assert.That(externalBindings[0].TargetEntityId, Is.Null);
+                    Assert.That(externalBindings.Length, Is.EqualTo(2));
+                    Assert.That(externalBindings[0].BindingId, Is.EqualTo(boundExternalSlotId));
+                    Assert.That(externalBindings[0].TargetEntityId, Is.EqualTo(externalTargetId));
+                    Assert.That(externalBindings[1].BindingId, Is.EqualTo(externalSlotId));
+                    Assert.That(externalBindings[1].TargetEntityId, Is.Null);
                     Assert.That(
                         ScenePersistenceExternalBindingArrayWriter.Measure(
                             externalBindings,
@@ -2775,10 +2786,10 @@ internal sealed partial class SceneAssetStoreTests
                                 assetIdScratch,
                                 identityScratch);
                             Assert.That(decodedWorld.Scenes.InstanceCount, Is.EqualTo(1));
-                            Assert.That(decodedWorld.Scenes.HierarchyNodeCount, Is.EqualTo(2));
-                            Assert.That(decodedWorld.Scenes.RootCount, Is.EqualTo(1));
-                            Assert.That(decodedWorld.Ecs.EntityCount, Is.EqualTo(2));
-                            Assert.That(decodedWorld.Ecs.LiveEntityCount, Is.EqualTo(2));
+                            Assert.That(decodedWorld.Scenes.HierarchyNodeCount, Is.EqualTo(3));
+                            Assert.That(decodedWorld.Scenes.RootCount, Is.EqualTo(2));
+                            Assert.That(decodedWorld.Ecs.EntityCount, Is.EqualTo(3));
+                            Assert.That(decodedWorld.Ecs.LiveEntityCount, Is.EqualTo(3));
                             Assert.That(decodedWorld.Ecs.LiveSceneInstanceCount, Is.EqualTo(1));
                             Assert.That(decodedWorld.AssetIdCount, Is.EqualTo(uniqueAssetCount));
 
@@ -2812,6 +2823,85 @@ internal sealed partial class SceneAssetStoreTests
                             _ = Assert.Throws<ArgumentException>(
                                 () => WorldPersistenceWorldRecordReader.Read(
                                     mismatchedAssetIdWorldRecord,
+                                    persistenceLimits,
+                                    worldRegistration,
+                                    scanSchemas,
+                                    assetIdScratch,
+                                    identityScratch));
+
+                            var mismatchedExternalTargetRecord = (byte[])worldRecord.Clone();
+                            Span<byte> externalTargetIdBytes = stackalloc byte[16];
+                            Span<byte> unknownTargetIdBytes = stackalloc byte[16];
+                            _ = externalTargetId.TryWriteBytes(externalTargetIdBytes, bigEndian: true, out _);
+                            _ = Guid.Parse("50000000-0000-0000-0000-000000000001").TryWriteBytes(
+                                unknownTargetIdBytes,
+                                bigEndian: true,
+                                out _);
+                            static (int Offset, int Length) GetFieldPayloadRange(ReadOnlySpan<byte> record, uint tag)
+                            {
+                                var fieldCount = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(record[12..]));
+
+                                for (var fieldIndex = 0; fieldIndex < fieldCount; fieldIndex++)
+                                {
+                                    var entry = record.Slice(64 + (fieldIndex * 32), 32);
+
+                                    if (BinaryPrimitives.ReadUInt32LittleEndian(entry) == tag)
+                                    {
+                                        return (
+                                            checked((int)BinaryPrimitives.ReadUInt64LittleEndian(entry[8..])),
+                                            checked((int)BinaryPrimitives.ReadUInt64LittleEndian(entry[16..])));
+                                    }
+                                }
+
+                                throw new AssertionException($"Record field {tag} is absent.");
+                            }
+
+                            static (int Offset, int Length) GetRecordArrayElementRange(ReadOnlySpan<byte> array, int index)
+                            {
+                                var start = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(array[(8 + (index * 8))..]));
+                                var end = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(array[(16 + (index * 8))..]));
+                                return (start, checked(end - start));
+                            }
+
+                            var worldBytes = mismatchedExternalTargetRecord.AsSpan();
+                            var (scenesOffset, scenesLength) = GetFieldPayloadRange(worldBytes, 6);
+                            var persistedScenesRecord = worldBytes.Slice(scenesOffset, scenesLength);
+                            var (instanceArrayOffset, instanceArrayLength) = GetFieldPayloadRange(persistedScenesRecord, 1);
+                            var instanceArray = persistedScenesRecord.Slice(instanceArrayOffset, instanceArrayLength);
+                            var (instanceOffset, instanceLength) = GetRecordArrayElementRange(instanceArray, 0);
+                            Assert.That(
+                                (instanceOffset >= 0)
+                                && (instanceLength >= 0)
+                                && (instanceOffset <= instanceArray.Length)
+                                && (instanceLength <= (instanceArray.Length - instanceOffset)),
+                                Is.True,
+                                $"Instance range {instanceOffset}+{instanceLength} exceeds array length {instanceArray.Length}.");
+                            var persistedInstanceRecord = instanceArray.Slice(instanceOffset, instanceLength);
+                            var (externalBindingsOffset, externalBindingsLength) = GetFieldPayloadRange(
+                                persistedInstanceRecord,
+                                5);
+                            var externalBindingsArray = persistedInstanceRecord.Slice(
+                                externalBindingsOffset,
+                                externalBindingsLength);
+                            var (bindingOffset, bindingLength) = GetRecordArrayElementRange(externalBindingsArray, 0);
+                            var persistedBindingRecord = externalBindingsArray.Slice(bindingOffset, bindingLength);
+                            var (targetOffset, targetLength) = GetFieldPayloadRange(persistedBindingRecord, 2);
+                            Assert.That(targetLength, Is.EqualTo(externalTargetIdBytes.Length));
+                            var externalTargetOffset = checked(
+                                scenesOffset
+                                + instanceArrayOffset
+                                + instanceOffset
+                                + externalBindingsOffset
+                                + bindingOffset
+                                + targetOffset);
+                            Assert.That(
+                                mismatchedExternalTargetRecord.AsSpan(externalTargetOffset, targetLength).ToArray(),
+                                Is.EqualTo(externalTargetIdBytes.ToArray()));
+                            unknownTargetIdBytes.CopyTo(
+                                mismatchedExternalTargetRecord.AsSpan(externalTargetOffset, unknownTargetIdBytes.Length));
+                            _ = Assert.Throws<ArgumentException>(
+                                () => WorldPersistenceWorldRecordReader.Read(
+                                    mismatchedExternalTargetRecord,
                                     persistenceLimits,
                                     worldRegistration,
                                     scanSchemas,

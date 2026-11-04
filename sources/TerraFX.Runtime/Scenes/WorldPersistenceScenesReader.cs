@@ -354,6 +354,7 @@ internal static class WorldPersistenceScenesReader
     private static void ValidateExternalBindings(
         EbinRecordReadView instance,
         int externalBindingCount,
+        WorldPersistenceLiveIdentitySet? liveIdentities,
         string parameterName)
     {
         var previousBindingId = Guid.Empty;
@@ -371,14 +372,23 @@ internal static class WorldPersistenceScenesReader
                 throw new ArgumentException("The state/external-scene-binding array is not in unique RFC SlotId order.", parameterName);
             }
 
-            if (hasTarget
-                && ((targetField.Kind != GuidKind)
+            if (hasTarget)
+            {
+                if ((targetField.Kind != GuidKind)
                     || targetField.IsRequired
                     || (targetField.Count != 1)
-                    || (targetField.Payload.Length != 16)
-                    || (new Guid(targetField.Payload, bigEndian: true) == Guid.Empty)))
-            {
-                throw new ArgumentException("A state/external-scene-binding target has an invalid wire shape or identity.", parameterName);
+                    || (targetField.Payload.Length != 16))
+                {
+                    throw new ArgumentException("A state/external-scene-binding target has an invalid wire shape.", parameterName);
+                }
+
+                var targetEntityId = new Guid(targetField.Payload, bigEndian: true);
+
+                if ((targetEntityId == Guid.Empty)
+                    || ((liveIdentities is not null) && !liveIdentities.IsMatchedEntity(targetEntityId)))
+                {
+                    throw new ArgumentException("A state/external-scene-binding target is not a live ECS Entity.", parameterName);
+                }
             }
 
             previousBindingId = bindingId;
@@ -873,7 +883,7 @@ internal static class WorldPersistenceScenesReader
 
         var occurrenceIndices = ValidateOccurrences(instance, occurrenceCount, sourceAsset, parameterName);
         ValidateSceneEntityBindings(instance, bindingCount, entityIdsField, occurrenceIndices, liveIdentities, parameterName);
-        ValidateExternalBindings(instance, externalBindingCount, parameterName);
+        ValidateExternalBindings(instance, externalBindingCount, liveIdentities, parameterName);
         return instanceId;
     }
 }
