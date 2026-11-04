@@ -13,6 +13,8 @@ public sealed class PlatformHost
 {
     internal const int MaximumWindowCount = 32;
     private readonly IPlatformBackend _backend;
+    private readonly ClipboardServiceStatus _clipboardStatus;
+    private readonly ClipboardTextService? _clipboardText;
     private readonly Dictionary<WindowHandle, WindowMetrics> _windowMetrics = [];
 
     /// <summary>Creates one platform owner from a Runtime-issued identity and explicit service policy.</summary>
@@ -20,17 +22,34 @@ public sealed class PlatformHost
     /// <param name="backend">The explicitly selected platform backend.</param>
     /// <param name="clipboardPolicy">The host's clipboard service admission policy.</param>
     /// <param name="timeProvider">The host's private monotonic timestamp source.</param>
+    /// <param name="clipboardAllowed">Whether this host profile permits clipboard text.</param>
     internal PlatformHost(
         uint ownerId,
         PlatformBackend backend,
         ClipboardServicePolicy clipboardPolicy,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        bool clipboardAllowed = true)
     {
-        _backend = PlatformBackendFactory.Create(backend, ownerId, clipboardPolicy, timeProvider);
+        if (!clipboardAllowed && (clipboardPolicy is ClipboardServicePolicy.Required))
+        {
+            throw new NotSupportedException("The selected host profile does not provide clipboard text.");
+        }
+
+        var backendClipboardPolicy = clipboardAllowed ? clipboardPolicy : ClipboardServicePolicy.NotRequested;
+        _backend = PlatformBackendFactory.Create(backend, ownerId, backendClipboardPolicy, timeProvider);
+        _clipboardStatus = (clipboardPolicy is ClipboardServicePolicy.NotRequested)
+            ? ClipboardServiceStatus.NotRequested
+            : (clipboardAllowed ? _backend.ClipboardStatus : ClipboardServiceStatus.Unsupported);
+        _clipboardText = (clipboardPolicy is ClipboardServicePolicy.NotRequested)
+            ? null
+            : new ClipboardTextService(_backend, _clipboardStatus);
     }
 
     /// <summary>Gets the owner's clipboard capability state.</summary>
-    public ClipboardServiceStatus ClipboardStatus => _backend.ClipboardStatus;
+    public ClipboardServiceStatus ClipboardStatus => _clipboardStatus;
+
+    /// <summary>Gets the optional asynchronous clipboard text service.</summary>
+    public ClipboardTextService? ClipboardText => _clipboardText;
 
     /// <summary>Gets the latest immutable metrics snapshot for a live window.</summary>
     /// <param name="window">The live window owned by this platform host.</param>
@@ -76,6 +95,7 @@ public sealed class PlatformHost
 
     internal void DisposeFromOwner()
     {
+        _clipboardText?.DisposeFromOwner();
         _backend.Dispose();
         _windowMetrics.Clear();
     }
@@ -95,7 +115,11 @@ public sealed class PlatformHost
     internal WindowMetrics? GetWindowMetricsSnapshot(WindowHandle window)
         => _windowMetrics.GetValueOrDefault(window);
 
-    internal void Pump() => _backend.Pump();
+    internal void Pump()
+    {
+        _backend.Pump();
+        _clipboardText?.Pump();
+    }
 
     internal void SetMonitorHandles(ImmutableArray<MonitorHandle> monitorHandles)
         => _backend.SetMonitorHandles(monitorHandles);

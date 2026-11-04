@@ -54,11 +54,6 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
         ArgumentOutOfRangeException.ThrowIfGreaterThan((int)clipboardPolicy, (int)ClipboardServicePolicy.Required);
         ArgumentOutOfRangeException.ThrowIfNegative((int)clipboardPolicy);
 
-        if (clipboardPolicy == ClipboardServicePolicy.Required)
-        {
-            throw new NotSupportedException("The Windows Platform backend does not yet provide the required clipboard service.");
-        }
-
         var windowClassName = $"TerraFX.Platform.Window.{ownerId:X8}";
         var windows = new WindowState?[PlatformHost.MaximumWindowCount];
 
@@ -111,9 +106,9 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
         _windows = windows;
         _inputSamples = new PlatformInputSampleQueue(_ownerThreadId);
         _knownInputDevices = [];
-        _clipboardStatus = clipboardPolicy == ClipboardServicePolicy.Optional
-            ? ClipboardServiceStatus.Unsupported
-            : ClipboardServiceStatus.NotRequested;
+        _clipboardStatus = clipboardPolicy is ClipboardServicePolicy.NotRequested
+            ? ClipboardServiceStatus.NotRequested
+            : ClipboardServiceStatus.Ready;
         _lastMonitorCount = GetSystemMetricsNative(SystemMetricMonitorCount);
     }
 

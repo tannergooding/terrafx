@@ -9,6 +9,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="TerraFX.Core.Tests" Key="$(AssemblyOriginatorPublicKey)" />
     <InternalsVisibleTo Include="TerraFX.Input.Tests" Key="$(AssemblyOriginatorPublicKey)" />
+    <InternalsVisibleTo Include="TerraFX.Platform.Tests" Key="$(AssemblyOriginatorPublicKey)" />
     <InternalsVisibleTo Include="TerraFX.Assets" Key="$(AssemblyOriginatorPublicKey)" />
     <InternalsVisibleTo Include="TerraFX.Runtime" Key="$(AssemblyOriginatorPublicKey)" />
   </ItemGroup>

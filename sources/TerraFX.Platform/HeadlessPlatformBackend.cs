@@ -4,6 +4,7 @@ using System;
 using System.Collections.Immutable;
 using System.Threading;
 using TerraFX;
+using ClipboardTextResult = TerraFX.Platform.ClipboardStatus;
 
 namespace TerraFX.Platform;
 
@@ -142,6 +143,21 @@ internal sealed class HeadlessPlatformBackend : IPlatformBackend
         EnsureOwnerThread();
     }
 
+    public ClipboardReadResponse ReadClipboardText(ClipboardReadRequest request)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(request);
+        return new ClipboardReadResponse(
+            ClipboardTextResult.Unsupported,
+            text: null,
+            ClipboardTextService.CreateDiagnostic(
+                "ClipboardUnsupported",
+                request.Window,
+                "ClipboardText.ReadTextAsync",
+                nativeResult: null,
+                "The Headless platform does not provide clipboard text."));
+    }
+
     public void SetMonitorHandles(ImmutableArray<MonitorHandle> monitorHandles)
     {
         EnsureOwnerThread();
@@ -166,6 +182,20 @@ internal sealed class HeadlessPlatformBackend : IPlatformBackend
         _ = window;
         binding = default;
         return false;
+    }
+
+    public ClipboardWriteResponse WriteClipboardText(ClipboardWriteRequest request)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(request);
+        return new ClipboardWriteResponse(
+            ClipboardTextResult.Unsupported,
+            ClipboardTextService.CreateDiagnostic(
+                "ClipboardUnsupported",
+                request.Window,
+                "ClipboardText.WriteTextAsync",
+                nativeResult: null,
+                "The Headless platform does not provide clipboard text."));
     }
 
     private void EnsureOwnerThread()

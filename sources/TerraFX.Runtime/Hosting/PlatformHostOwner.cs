@@ -65,7 +65,12 @@ internal sealed class PlatformHostOwner
         ArgumentNullException.ThrowIfNull(options);
         var ownerId = OwnerIdAllocator.Allocate();
         var timeProvider = TimeProvider.System;
-        var platform = new PlatformHost(ownerId, options.Platform, options.ClipboardServicePolicy, timeProvider);
+        var platform = new PlatformHost(
+            ownerId,
+            options.Platform,
+            options.ClipboardServicePolicy,
+            timeProvider,
+            clipboardAllowed: options.Profile is HostProfile.Interactive);
         var owner = new PlatformHostOwner(ownerId, options.Profile, platform, timeProvider, sequenceLease);
 
         try

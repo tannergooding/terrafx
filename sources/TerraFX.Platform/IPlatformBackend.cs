@@ -36,9 +36,13 @@ internal interface IPlatformBackend : IDisposable
 
     void Pump();
 
+    ClipboardReadResponse ReadClipboardText(ClipboardReadRequest request);
+
     void SetMonitorHandles(ImmutableArray<MonitorHandle> monitorHandles);
 
     bool TakeMonitorTopologyChanged();
 
     bool TryGetNativeWindowBinding(WindowHandle window, out PlatformNativeWindowBinding binding);
+
+    ClipboardWriteResponse WriteClipboardText(ClipboardWriteRequest request);
 }

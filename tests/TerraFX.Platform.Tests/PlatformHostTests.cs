@@ -59,6 +59,13 @@ internal sealed class PlatformHostTests
         try
         {
             Assert.That(optional.ClipboardStatus, Is.EqualTo(ClipboardServiceStatus.Unsupported));
+            var clipboardText = optional.ClipboardText
+                ?? throw new System.InvalidOperationException("The optional clipboard service was not exposed.");
+            var response = clipboardText.ReadTextAsync(
+                new ClipboardReadRequest(new TerraFX.WindowHandle(2, index: 0, generation: 1), 16, gestureToken: null))
+                .GetAwaiter()
+                .GetResult();
+            Assert.That(response.Status, Is.EqualTo(ClipboardStatus.Unsupported));
         }
         finally
         {
