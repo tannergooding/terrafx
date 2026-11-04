@@ -14,6 +14,8 @@ M04 State2 provenance progress: external Scene binding targets are validated aga
 
 M04 hosted World-control progress: `EngineHost.ChangeFrameAsync` and `ChangeTimeScaleAsync` admit through a bounded World-owned FIFO, separate from the host callback mailbox. Exact-host binding, pre-canceled frame refusal, distinct full-queue outcomes, and no sequence consumption on refusal are covered; accepted requests apply at the owner boundary, and persistence capture rejects pending or uncommitted World requests. The focused Runtime witness passes in Debug and Release and verifies that a pending request cannot produce a Save file. Coherent frame changes and retirement across real frame participants remain open.
 
+M04 State2 ECS-membership progress: `state/entity` rows now require RFC-ordered Entity identities and canonical component, EntityTag, and transient-schema arrays. With the compiled registry, component role/storage and tag role are checked; with a target `WorldRegistration`, each member must match the exact persistent/transient component or tag registration. Focused writer and package-backed Scene/Prefab parser coverage passes 3/3 in Debug and Release. Component field-value/reference semantics, package/source joins, and candidate restoration remain open.
+
 ## Milestone status
 
 The retired implementation and samples are not an implementation baseline for these milestones.

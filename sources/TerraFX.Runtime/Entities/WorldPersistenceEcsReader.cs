@@ -31,6 +31,7 @@ internal static class WorldPersistenceEcsReader
         WorldPersistenceConfiguration configuration,
         WorldPersistenceClockContents clock,
         WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry? schemas,
         WorldPersistenceLiveIdentitySet liveIdentities,
         scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch)
     {
@@ -84,6 +85,8 @@ internal static class WorldPersistenceEcsReader
             record,
             entityCount,
             configuration.MaximumComponentTypes,
+            targetRegistration,
+            schemas,
             liveIdentities,
             nameof(ecsRecord));
 
@@ -187,6 +190,107 @@ internal static class WorldPersistenceEcsReader
         }
     }
 
+    internal static void ValidateComponentSchema(
+        ContentSchemaReference schema,
+        ComponentStorageFlags expectedStorage,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry? schemas,
+        string parameterName)
+    {
+        if ((schema.SchemaId == Guid.Empty)
+            || (schema.Major <= 0)
+            || (schema.Minor < 0)
+            || (schema.Scope != ContentSchemaScope.Content))
+        {
+            throw new ArgumentException("A state/entity component schema tuple is invalid.", parameterName);
+        }
+
+        var expectedSchemaStorage = expectedStorage switch {
+            ComponentStorageFlags.Persistent => ContentSchemaStorage.Persistent,
+            ComponentStorageFlags.Transient => ContentSchemaStorage.Transient,
+            _ => throw new ArgumentOutOfRangeException(nameof(expectedStorage)),
+        };
+
+        if (schemas is not null
+            && (!schemas.TryGetSchema(schema, out var dataSchema)
+                || (dataSchema.Role != ContentSchemaRole.Component)
+                || (dataSchema.Storage != expectedSchemaStorage)))
+        {
+            throw new ArgumentException("A state/entity component schema is absent from the compiled component registry.", parameterName);
+        }
+
+        if (targetRegistration is null)
+        {
+            return;
+        }
+
+        IComponentRegistration registration;
+
+        try
+        {
+            registration = targetRegistration.GetComponentRegistration(schema);
+        }
+        catch (KeyNotFoundException exception)
+        {
+            throw new ArgumentException("A state/entity component schema is not registered in the target World.", parameterName, exception);
+        }
+
+        if (registration.Descriptor.Flags != expectedStorage)
+        {
+            throw new ArgumentException("A state/entity component storage class does not match the target World registration.", parameterName);
+        }
+    }
+
+    internal static void ValidateTagSchema(
+        ContentSchemaReference schema,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry? schemas,
+        string parameterName)
+    {
+        if ((schema.Scope != ContentSchemaScope.Content)
+            || (schemas is not null
+                && (!schemas.TryGetSchema(schema, out var dataSchema)
+                    || (dataSchema.Role != ContentSchemaRole.EntityTag))))
+        {
+            throw new ArgumentException("A state/entity tag schema is absent from the compiled EntityTag registry.", parameterName);
+        }
+
+        if (targetRegistration is null)
+        {
+            return;
+        }
+
+        foreach (var tag in targetRegistration.Tags)
+        {
+            if (tag.Schema == schema)
+            {
+                return;
+            }
+        }
+
+        throw new ArgumentException("A state/entity tag schema is not registered in the target World.", parameterName);
+    }
+
+    private static int CompareSchemaReferences(ContentSchemaReference left, ContentSchemaReference right)
+    {
+        var comparison = FoundationCatalogue.CompareRfc(left.SchemaId, right.SchemaId);
+
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        comparison = left.Major.CompareTo(right.Major);
+
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        comparison = left.Minor.CompareTo(right.Minor);
+        return (comparison != 0) ? comparison : left.Scope.CompareTo(right.Scope);
+    }
+
     private static EbinFieldReadView GetRequiredField(
         EbinRecordReadView record,
         uint tag,
@@ -224,6 +328,24 @@ internal static class WorldPersistenceEcsReader
         }
 
         return checked((int)field.Count);
+    }
+
+    private static ContentSchemaReference ReadComponentSchema(
+        EbinRecordReadView component,
+        string parameterName)
+    {
+        var header = component.Header;
+
+        if ((header.SchemaId == Guid.Empty) || (header.Major <= 0) || (header.Minor < 0))
+        {
+            throw new ArgumentException("A state/entity component record has an invalid schema header.", parameterName);
+        }
+
+        return new ContentSchemaReference(
+            header.SchemaId,
+            header.Major,
+            header.Minor,
+            ContentSchemaScope.Content);
     }
 
     private static Guid ReadGuid(EbinRecordReadView record, uint tag, string parameterName)
@@ -505,9 +627,13 @@ internal static class WorldPersistenceEcsReader
         EbinRecordReadView record,
         int count,
         int maximumComponentTypes,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry? schemas,
         WorldPersistenceLiveIdentitySet liveIdentities,
         string parameterName)
     {
+        var previousEntityId = Guid.Empty;
+
         for (var index = 0; index < count; index++)
         {
             var entity = record.GetRecordArrayElement(1, index);
@@ -528,14 +654,38 @@ internal static class WorldPersistenceEcsReader
             }
 
             var entityId = new Guid(idField.Payload, bigEndian: true);
+
+            if ((previousEntityId != Guid.Empty)
+                && (FoundationCatalogue.CompareRfc(previousEntityId, entityId) >= 0))
+            {
+                throw new ArgumentException("The state/ecs Entity rows are not in canonical RFC identity order.", parameterName);
+            }
+
             liveIdentities.MatchEntity(entityId, parameterName);
             var componentField = GetRequiredField(entity, 2, ArrayKind, expectedCount: null, parameterName);
+            var tagField = GetRequiredField(entity, 3, ArrayKind, expectedCount: null, parameterName);
+            var transientSchemaField = GetRequiredField(entity, 4, ArrayKind, expectedCount: null, parameterName);
 
             if ((componentField.Count > (ulong)maximumComponentTypes)
                 || (componentField.Count > 256)
                 || (componentField.Count > int.MaxValue))
             {
                 throw new ArgumentException("A state/entity component array exceeds its registered capacity.", parameterName);
+            }
+
+            if ((tagField.Count > (ulong)maximumComponentTypes)
+                || (tagField.Count > 256)
+                || (tagField.Count > int.MaxValue))
+            {
+                throw new ArgumentException("A state/entity tag array exceeds its registered capacity.", parameterName);
+            }
+
+            if ((transientSchemaField.Count > (ulong)maximumComponentTypes)
+                || (transientSchemaField.Count > 256)
+                || (transientSchemaField.Count > int.MaxValue)
+                || (componentField.Count + tagField.Count + transientSchemaField.Count > (ulong)maximumComponentTypes))
+            {
+                throw new ArgumentException("A state/entity transient-schema array exceeds its registered capacity.", parameterName);
             }
 
             var assignmentOrdinal = ReadInt64(entity, 5, parameterName);
@@ -569,21 +719,87 @@ internal static class WorldPersistenceEcsReader
             }
 
             var componentCount = checked((int)componentField.Count);
+            var previousComponentSchema = default(ContentSchemaReference);
+            var hasPreviousComponentSchema = false;
 
             for (var componentIndex = 0; componentIndex < componentCount; componentIndex++)
             {
                 var component = entity.GetRecordArrayElement(2, componentIndex);
+                var componentSchema = ReadComponentSchema(component, parameterName);
 
-                if (component.Header.SchemaId == s_localTransformSchemaId)
+                if (hasPreviousComponentSchema
+                    && (CompareSchemaReferences(previousComponentSchema, componentSchema) >= 0))
                 {
-                    if ((component.Header.Major != 1) || (component.Header.Minor != 0))
+                    throw new ArgumentException("A state/entity component array is not in canonical schema-tuple order.", parameterName);
+                }
+
+                ValidateComponentSchema(
+                    componentSchema,
+                    ComponentStorageFlags.Persistent,
+                    targetRegistration,
+                    schemas,
+                    parameterName);
+
+                if (componentSchema.SchemaId == s_localTransformSchemaId)
+                {
+                    if ((componentSchema.Major != 1) || (componentSchema.Minor != 0))
                     {
                         throw new ArgumentException("A saved LocalTransform component has an unsupported schema version.", parameterName);
                     }
 
                     liveIdentities.MarkLocalTransform(entityId, parameterName);
                 }
+
+                previousComponentSchema = componentSchema;
+                hasPreviousComponentSchema = true;
             }
+
+            var tagCount = checked((int)tagField.Count);
+            var previousTagSchema = default(ContentSchemaReference);
+            var hasPreviousTagSchema = false;
+
+            for (var tagIndex = 0; tagIndex < tagCount; tagIndex++)
+            {
+                var tag = entity.GetRecordArrayElement(3, tagIndex);
+                var tagSchema = ReadSchemaReference(tag, parameterName);
+
+                if (hasPreviousTagSchema && (CompareSchemaReferences(previousTagSchema, tagSchema) >= 0))
+                {
+                    throw new ArgumentException("A state/entity tag array is not in canonical schema-tuple order.", parameterName);
+                }
+
+                ValidateTagSchema(tagSchema, targetRegistration, schemas, parameterName);
+                previousTagSchema = tagSchema;
+                hasPreviousTagSchema = true;
+            }
+
+            var transientSchemaCount = checked((int)transientSchemaField.Count);
+            var previousTransientSchema = default(ContentSchemaReference);
+            var hasPreviousTransientSchema = false;
+
+            for (var transientIndex = 0; transientIndex < transientSchemaCount; transientIndex++)
+            {
+                var transientSchema = ReadSchemaReference(
+                    entity.GetRecordArrayElement(4, transientIndex),
+                    parameterName);
+
+                if (hasPreviousTransientSchema
+                    && (CompareSchemaReferences(previousTransientSchema, transientSchema) >= 0))
+                {
+                    throw new ArgumentException("A state/entity transient-schema array is not in canonical schema-tuple order.", parameterName);
+                }
+
+                ValidateComponentSchema(
+                    transientSchema,
+                    ComponentStorageFlags.Transient,
+                    targetRegistration,
+                    schemas,
+                    parameterName);
+                previousTransientSchema = transientSchema;
+                hasPreviousTransientSchema = true;
+            }
+
+            previousEntityId = entityId;
         }
     }
 }

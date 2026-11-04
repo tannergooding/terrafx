@@ -368,6 +368,7 @@ internal static class WorldPersistenceWorldRecordReader
             parsedConfiguration,
             parsedClock,
             targetRegistration,
+            targetRegistration?.Schemas ?? assetReferenceSchemas,
             liveIdentities,
             identityScratch);
         var parsedScenes = WorldPersistenceScenesReader.Read(
