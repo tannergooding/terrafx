@@ -63,4 +63,21 @@ internal sealed class WorldPersistenceLiveIdentitySetTests
         _ = Assert.Throws<ArgumentException>(() => validIdentities.ClaimSceneEntity(entityId, sceneInstanceId, nameof(entityId)));
         validIdentities.ThrowIfNotEmpty(nameof(validIdentities));
     }
+
+    [Test]
+    public void RequiresLocalTransformsToAppearInHierarchy()
+    {
+        var entityId = Guid.NewGuid();
+        var identities = new WorldPersistenceLiveIdentitySet(maximumCount: 1);
+        identities.Add(entityId, identityKind: 1, assignmentOrdinal: 1, nameof(entityId));
+        identities.MatchEntity(entityId, nameof(entityId));
+        identities.MarkLocalTransform(entityId, nameof(entityId));
+
+        _ = Assert.Throws<ArgumentException>(() => identities.ThrowIfNotEmpty(nameof(identities)));
+        identities.MarkHierarchyNode(entityId, nameof(entityId));
+        identities.ThrowIfNotEmpty(nameof(identities));
+
+        _ = Assert.Throws<ArgumentException>(() => identities.MarkLocalTransform(entityId, nameof(entityId)));
+        _ = Assert.Throws<ArgumentException>(() => identities.MarkHierarchyNode(entityId, nameof(entityId)));
+    }
 }

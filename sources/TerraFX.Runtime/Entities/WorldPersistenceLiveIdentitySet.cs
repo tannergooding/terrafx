@@ -9,6 +9,8 @@ internal sealed class WorldPersistenceLiveIdentitySet
 {
     private const uint EntityIdentityKind = 1;
     private const uint EntitySceneOwnershipFlag = 1U << 30;
+    private const uint HierarchyNodeFlag = 1U << 28;
+    private const uint LocalTransformFlag = 1U << 29;
     private const uint MatchedFlag = 1U << 31;
     private const uint SceneInstanceIdentityKind = 2;
 
@@ -35,7 +37,8 @@ internal sealed class WorldPersistenceLiveIdentitySet
     internal void ClaimSceneEntity(Guid identity, Guid sceneInstanceId, string parameterName)
     {
         if (!_identities.TryGetValue(identity, out var value)
-            || (value.state != (MatchedFlag | EntityIdentityKind))
+            || ((value.state & (MatchedFlag | 3)) != (MatchedFlag | EntityIdentityKind))
+            || ((value.state & EntitySceneOwnershipFlag) != 0)
             || (value.sceneOwnerId != sceneInstanceId))
         {
             throw new ArgumentException("A Scene entity is not a unique live ECS Entity.", parameterName);
@@ -59,6 +62,30 @@ internal sealed class WorldPersistenceLiveIdentitySet
         => _identities.TryGetValue(identity, out var value)
         && ((value.state & (MatchedFlag | EntityIdentityKind)) == (MatchedFlag | EntityIdentityKind));
 
+    internal void MarkHierarchyNode(Guid identity, string parameterName)
+    {
+        if (!_identities.TryGetValue(identity, out var entity)
+            || ((entity.state & (MatchedFlag | 3)) != (MatchedFlag | EntityIdentityKind))
+            || ((entity.state & HierarchyNodeFlag) != 0))
+        {
+            throw new ArgumentException("A hierarchy node does not identify a unique live ECS Entity.", parameterName);
+        }
+
+        _identities[identity] = (entity.state | HierarchyNodeFlag, entity.ordinal, entity.sceneOwnerId);
+    }
+
+    internal void MarkLocalTransform(Guid identity, string parameterName)
+    {
+        if (!_identities.TryGetValue(identity, out var entity)
+            || ((entity.state & (MatchedFlag | 3)) != (MatchedFlag | EntityIdentityKind))
+            || ((entity.state & LocalTransformFlag) != 0))
+        {
+            throw new ArgumentException("A LocalTransform component does not identify a unique live ECS Entity.", parameterName);
+        }
+
+        _identities[identity] = (entity.state | LocalTransformFlag, entity.ordinal, entity.sceneOwnerId);
+    }
+
     internal void MatchEntity(Guid identity, string parameterName)
         => Match(identity, EntityIdentityKind, parameterName);
 
@@ -68,7 +95,7 @@ internal sealed class WorldPersistenceLiveIdentitySet
     internal void SetSceneOwner(Guid identity, Guid sceneInstanceId, string parameterName)
     {
         if (!_identities.TryGetValue(identity, out var entity)
-            || (entity.state != (MatchedFlag | EntityIdentityKind))
+            || ((entity.state & (MatchedFlag | 3)) != (MatchedFlag | EntityIdentityKind))
             || (entity.sceneOwnerId != Guid.Empty)
             || (sceneInstanceId == Guid.Empty)
             || !_identities.TryGetValue(sceneInstanceId, out var sceneInstance)
@@ -86,9 +113,12 @@ internal sealed class WorldPersistenceLiveIdentitySet
         {
             var isSceneOwned = sceneOwnerId != Guid.Empty;
             var hasSceneClaim = (state & EntitySceneOwnershipFlag) != 0;
+            var hasLocalTransform = (state & LocalTransformFlag) != 0;
+            var hasHierarchyNode = (state & HierarchyNodeFlag) != 0;
 
             if (((state & MatchedFlag) == 0)
-                || (((state & 3) == EntityIdentityKind) && (isSceneOwned != hasSceneClaim)))
+                || (((state & 3) == EntityIdentityKind)
+                    && ((isSceneOwned != hasSceneClaim) || (hasLocalTransform && !hasHierarchyNode))))
             {
                 throw new ArgumentException("The state/identity-history live identities do not match the ECS and Scene records.", parameterName);
             }

@@ -20,6 +20,7 @@ internal static class WorldPersistenceEcsReader
     private static readonly Guid s_attachmentSchemaId = new ContentSchemaIdentityAssignment("state/attachment").SchemaId;
     private static readonly Guid s_ecsSchemaId = new ContentSchemaIdentityAssignment("state/ecs").SchemaId;
     private static readonly Guid s_entitySchemaId = new ContentSchemaIdentityAssignment("state/entity").SchemaId;
+    private static readonly Guid s_localTransformSchemaId = new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId;
     private static readonly Guid s_resourceStateSchemaId = new ContentSchemaIdentityAssignment("state/resource-state").SchemaId;
     private static readonly Guid s_schemaReferenceSchemaId = new ContentSchemaIdentityAssignment("content/schema-ref").SchemaId;
     private static readonly Guid s_systemStateSchemaId = new ContentSchemaIdentityAssignment("state/system-state").SchemaId;
@@ -79,7 +80,12 @@ internal static class WorldPersistenceEcsReader
                 identityScratch,
                 clock.NextTick,
                 nameof(ecsRecord));
-        ValidateEntityChildren(record, entityCount, liveIdentities, nameof(ecsRecord));
+        ValidateEntityChildren(
+            record,
+            entityCount,
+            configuration.MaximumComponentTypes,
+            liveIdentities,
+            nameof(ecsRecord));
 
         for (var index = 0; index < attachmentCount; index++)
         {
@@ -498,6 +504,7 @@ internal static class WorldPersistenceEcsReader
     private static void ValidateEntityChildren(
         EbinRecordReadView record,
         int count,
+        int maximumComponentTypes,
         WorldPersistenceLiveIdentitySet liveIdentities,
         string parameterName)
     {
@@ -522,6 +529,15 @@ internal static class WorldPersistenceEcsReader
 
             var entityId = new Guid(idField.Payload, bigEndian: true);
             liveIdentities.MatchEntity(entityId, parameterName);
+            var componentField = GetRequiredField(entity, 2, ArrayKind, expectedCount: null, parameterName);
+
+            if ((componentField.Count > (ulong)maximumComponentTypes)
+                || (componentField.Count > 256)
+                || (componentField.Count > int.MaxValue))
+            {
+                throw new ArgumentException("A state/entity component array exceeds its registered capacity.", parameterName);
+            }
+
             var assignmentOrdinal = ReadInt64(entity, 5, parameterName);
 
             if (liveIdentities.GetAssignmentOrdinal(entityId, expectedKind: 1, parameterName) != assignmentOrdinal)
@@ -550,6 +566,23 @@ internal static class WorldPersistenceEcsReader
                     entityId,
                     new Guid(sceneInstanceField.Payload, bigEndian: true),
                     parameterName);
+            }
+
+            var componentCount = checked((int)componentField.Count);
+
+            for (var componentIndex = 0; componentIndex < componentCount; componentIndex++)
+            {
+                var component = entity.GetRecordArrayElement(2, componentIndex);
+
+                if (component.Header.SchemaId == s_localTransformSchemaId)
+                {
+                    if ((component.Header.Major != 1) || (component.Header.Minor != 0))
+                    {
+                        throw new ArgumentException("A saved LocalTransform component has an unsupported schema version.", parameterName);
+                    }
+
+                    liveIdentities.MarkLocalTransform(entityId, parameterName);
+                }
             }
         }
     }

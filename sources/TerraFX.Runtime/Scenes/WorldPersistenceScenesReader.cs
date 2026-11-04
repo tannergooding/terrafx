@@ -508,9 +508,14 @@ internal static class WorldPersistenceScenesReader
         var entityId = ReadGuid(node, 1, isRequired: true, parameterName);
         _ = ReadHierarchyParentId(node, parameterName);
 
-        if ((liveIdentities is not null) && !liveIdentities.IsMatchedEntity(entityId))
+        if (liveIdentities is not null)
         {
-            throw new ArgumentException("A scene/world-hierarchy node does not identify a live ECS Entity.", parameterName);
+            if (!liveIdentities.IsMatchedEntity(entityId))
+            {
+                throw new ArgumentException("A scene/world-hierarchy node does not identify a live ECS Entity.", parameterName);
+            }
+
+            liveIdentities.MarkHierarchyNode(entityId, parameterName);
         }
 
         var childrenField = GetRequiredField(node, 3, FixedArrayKind, expectedCount: null, parameterName);
