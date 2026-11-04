@@ -44,6 +44,8 @@ internal sealed class WorldPersistenceLiveIdentitySetTests
         validIdentities.Add(sceneInstanceId, identityKind: 2, nameof(sceneInstanceId));
         validIdentities.MatchEntity(entityId, nameof(entityId));
         validIdentities.MatchSceneInstance(sceneInstanceId, nameof(sceneInstanceId));
+        validIdentities.ClaimSceneEntity(entityId, nameof(entityId));
+        _ = Assert.Throws<ArgumentException>(() => validIdentities.ClaimSceneEntity(entityId, nameof(entityId)));
         validIdentities.ThrowIfNotEmpty(nameof(validIdentities));
     }
 }

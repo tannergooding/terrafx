@@ -8,6 +8,8 @@ namespace TerraFX.Entities;
 internal sealed class WorldPersistenceLiveIdentitySet
 {
     private const uint EntityIdentityKind = 1;
+    private const uint EntitySceneOwnershipFlag = 1U << 30;
+    private const uint MatchedFlag = 1U << 31;
     private const uint SceneInstanceIdentityKind = 2;
 
     private readonly Dictionary<Guid, uint> _identities = [];
@@ -21,12 +23,28 @@ internal sealed class WorldPersistenceLiveIdentitySet
 
     internal void Add(Guid identity, uint identityKind, string parameterName)
     {
-        if ((_identities.Count >= _maximumCount)
+        if (((identityKind != EntityIdentityKind) && (identityKind != SceneInstanceIdentityKind))
+            || (_identities.Count >= _maximumCount)
             || !_identities.TryAdd(identity, identityKind))
         {
             throw new ArgumentException("The state/identity-history live identities exceed their bound or contain a duplicate.", parameterName);
         }
     }
+
+    internal void ClaimSceneEntity(Guid identity, string parameterName)
+    {
+        if (!_identities.TryGetValue(identity, out var value)
+            || ((value & (MatchedFlag | EntityIdentityKind | EntitySceneOwnershipFlag)) != (MatchedFlag | EntityIdentityKind)))
+        {
+            throw new ArgumentException("A Scene entity is not a unique live ECS Entity.", parameterName);
+        }
+
+        _identities[identity] = value | EntitySceneOwnershipFlag;
+    }
+
+    internal bool IsMatchedEntity(Guid identity)
+        => _identities.TryGetValue(identity, out var value)
+        && ((value & (MatchedFlag | EntityIdentityKind)) == (MatchedFlag | EntityIdentityKind));
 
     internal void MatchEntity(Guid identity, string parameterName)
         => Match(identity, EntityIdentityKind, parameterName);
@@ -36,18 +54,23 @@ internal sealed class WorldPersistenceLiveIdentitySet
 
     internal void ThrowIfNotEmpty(string parameterName)
     {
-        if (_identities.Count != 0)
+        foreach (var value in _identities.Values)
         {
-            throw new ArgumentException("The state/identity-history live identities do not match the ECS and Scene records.", parameterName);
+            if ((value & MatchedFlag) == 0)
+            {
+                throw new ArgumentException("The state/identity-history live identities do not match the ECS and Scene records.", parameterName);
+            }
         }
     }
 
     private void Match(Guid identity, uint expectedKind, string parameterName)
     {
-        if (!_identities.Remove(identity, out var identityKind)
+        if (!_identities.TryGetValue(identity, out var identityKind)
             || (identityKind != expectedKind))
         {
             throw new ArgumentException("An ECS or Scene identity does not match its live identity-history assignment.", parameterName);
         }
+
+        _identities[identity] = identityKind | MatchedFlag;
     }
 }

@@ -91,6 +91,7 @@ internal static class WorldPersistenceScenesReader
                 maximumIdentityAssignments,
                 maximumSceneOccurrences,
                 limits,
+                liveIdentities,
                 nameof(scenesRecord));
 
             if ((index > 0) && (FoundationCatalogue.CompareRfc(previousInstanceId, instanceId) >= 0))
@@ -113,7 +114,8 @@ internal static class WorldPersistenceScenesReader
         var rootCount = ValidateGuidFixedArray(
             rootsField,
             maximumLiveEntities,
-            nameof(scenesRecord));
+            nameof(scenesRecord),
+            liveIdentities);
 
         if (rootCount > hierarchyNodeCount)
         {
@@ -125,7 +127,7 @@ internal static class WorldPersistenceScenesReader
         for (var index = 0; index < hierarchyNodeCount; index++)
         {
             var node = hierarchy.GetRecordArrayElement(1, index);
-            var nodeId = ValidateHierarchyNode(node, maximumLiveEntities, nameof(scenesRecord));
+            var nodeId = ValidateHierarchyNode(node, maximumLiveEntities, liveIdentities, nameof(scenesRecord));
 
             if ((index > 0) && (FoundationCatalogue.CompareRfc(previousNodeId, nodeId) >= 0))
             {
@@ -135,7 +137,61 @@ internal static class WorldPersistenceScenesReader
             previousNodeId = nodeId;
         }
 
+        ValidateHierarchyRelations(
+            hierarchy,
+            hierarchyNodeCount,
+            rootsField,
+            rootCount,
+            maximumLiveEntities,
+            liveIdentities,
+            nameof(scenesRecord));
         return new WorldPersistenceScenesContents(instanceCount, hierarchyNodeCount, rootCount);
+    }
+
+    private static bool ContainsGuid(EbinFieldReadView field, Guid identity)
+    {
+        for (var index = 0; index < checked((int)field.Count); index++)
+        {
+            if (ReadGuidArrayElement(field, index) == identity)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static int FindHierarchyNodeIndex(
+        EbinRecordReadView hierarchy,
+        int nodeCount,
+        Guid identity,
+        string parameterName)
+    {
+        var low = 0;
+        var high = nodeCount - 1;
+
+        while (low <= high)
+        {
+            var middle = low + ((high - low) / 2);
+            var nodeId = ReadGuid(hierarchy.GetRecordArrayElement(1, middle), 1, isRequired: true, parameterName);
+            var comparison = FoundationCatalogue.CompareRfc(nodeId, identity);
+
+            if (comparison == 0)
+            {
+                return middle;
+            }
+
+            if (comparison < 0)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle - 1;
+            }
+        }
+
+        return -1;
     }
 
     private static EbinFieldReadView GetRequiredField(
@@ -198,6 +254,45 @@ internal static class WorldPersistenceScenesReader
         return value;
     }
 
+    private static Guid ReadGuidArrayElement(EbinFieldReadView field, int index)
+    {
+        var offset = checked(32 + (index * 16));
+        return new Guid(field.Payload.Slice(offset, 16), bigEndian: true);
+    }
+
+    private static Guid? ReadHierarchyParentId(EbinRecordReadView node, string parameterName)
+    {
+        var hasParent = node.TryGetField(2, out var parentField);
+
+        if (node.FieldCount != (hasParent ? 3 : 2))
+        {
+            throw new ArgumentException("A scene/world-hierarchy-node has an unknown or missing field.", parameterName);
+        }
+
+        if (!hasParent)
+        {
+            return null;
+        }
+
+        if ((parentField.Kind != GuidKind)
+            || parentField.IsRequired
+            || (parentField.Count != 1)
+            || (parentField.Payload.Length != 16))
+        {
+            throw new ArgumentException("A scene/world-hierarchy parent field has an invalid wire shape.", parameterName);
+        }
+
+        var parentId = new Guid(parentField.Payload, bigEndian: true);
+        var nodeId = ReadGuid(node, 1, isRequired: true, parameterName);
+
+        if ((parentId == Guid.Empty) || (parentId == nodeId))
+        {
+            throw new ArgumentException("A scene/world-hierarchy parent identity is invalid.", parameterName);
+        }
+
+        return parentId;
+    }
+
     private static long ReadInt64(EbinRecordReadView record, uint tag, string parameterName)
     {
         var field = GetRequiredField(record, tag, Int64Kind, expectedCount: 1, parameterName);
@@ -213,7 +308,9 @@ internal static class WorldPersistenceScenesReader
     private static int ValidateGuidFixedArray(
         EbinFieldReadView field,
         int maximumCount,
-        string parameterName)
+        string parameterName,
+        WorldPersistenceLiveIdentitySet? liveIdentities = null,
+        bool claimSceneEntities = false)
     {
         if ((field.Kind != FixedArrayKind)
             || !field.IsRequired
@@ -242,14 +339,66 @@ internal static class WorldPersistenceScenesReader
             {
                 throw new ArgumentException("A State2 Scene fixed GUID array contains an empty identity.", parameterName);
             }
+
+            if (liveIdentities is not null)
+            {
+                if (!liveIdentities.IsMatchedEntity(id))
+                {
+                    throw new ArgumentException("A State2 Scene Entity reference does not identify a live ECS Entity.", parameterName);
+                }
+
+                if (claimSceneEntities)
+                {
+                    liveIdentities.ClaimSceneEntity(id, parameterName);
+                }
+            }
         }
 
         return checked((int)field.Count);
     }
 
+    private static void ValidateHierarchyAcyclic(
+        EbinRecordReadView hierarchy,
+        int nodeCount,
+        string parameterName)
+    {
+        var visitStates = new byte[nodeCount];
+
+        for (var startIndex = 0; startIndex < nodeCount; startIndex++)
+        {
+            var currentIndex = startIndex;
+
+            while ((currentIndex >= 0) && (visitStates[currentIndex] == 0))
+            {
+                visitStates[currentIndex] = 1;
+                var parentId = ReadHierarchyParentId(hierarchy.GetRecordArrayElement(1, currentIndex), parameterName);
+                currentIndex = parentId.HasValue
+                    ? FindHierarchyNodeIndex(hierarchy, nodeCount, parentId.Value, parameterName)
+                    : -1;
+            }
+
+            if ((currentIndex >= 0) && (visitStates[currentIndex] == 1))
+            {
+                throw new ArgumentException("The scene/world-hierarchy contains a parent cycle.", parameterName);
+            }
+
+            currentIndex = startIndex;
+
+            while ((currentIndex >= 0) && (visitStates[currentIndex] == 1))
+            {
+                visitStates[currentIndex] = 2;
+                var parentId = ReadHierarchyParentId(hierarchy.GetRecordArrayElement(1, currentIndex), parameterName);
+                currentIndex = parentId.HasValue
+                    ? FindHierarchyNodeIndex(hierarchy, nodeCount, parentId.Value, parameterName)
+                    : -1;
+            }
+        }
+    }
+
     private static Guid ValidateHierarchyNode(
         EbinRecordReadView node,
         int maximumLiveEntities,
+        WorldPersistenceLiveIdentitySet? liveIdentities,
         string parameterName)
     {
         if ((node.Header.SchemaId != s_hierarchyNodeSchemaId)
@@ -261,34 +410,98 @@ internal static class WorldPersistenceScenesReader
         }
 
         var entityId = ReadGuid(node, 1, isRequired: true, parameterName);
-        var hasParent = node.TryGetField(2, out var parentField);
+        _ = ReadHierarchyParentId(node, parameterName);
 
-        if (node.FieldCount != (hasParent ? 3 : 2))
+        if ((liveIdentities is not null) && !liveIdentities.IsMatchedEntity(entityId))
         {
-            throw new ArgumentException("A scene/world-hierarchy-node has an unknown or missing field.", parameterName);
-        }
-
-        if (hasParent)
-        {
-            if ((parentField.Kind != GuidKind)
-                || parentField.IsRequired
-                || (parentField.Count != 1)
-                || (parentField.Payload.Length != 16))
-            {
-                throw new ArgumentException("A scene/world-hierarchy parent field has an invalid wire shape.", parameterName);
-            }
-
-            var parentId = new Guid(parentField.Payload, bigEndian: true);
-
-            if ((parentId == Guid.Empty) || (parentId == entityId))
-            {
-                throw new ArgumentException("A scene/world-hierarchy parent identity is invalid.", parameterName);
-            }
+            throw new ArgumentException("A scene/world-hierarchy node does not identify a live ECS Entity.", parameterName);
         }
 
         var childrenField = GetRequiredField(node, 3, FixedArrayKind, expectedCount: null, parameterName);
-        _ = ValidateGuidFixedArray(childrenField, maximumLiveEntities, parameterName);
+        _ = ValidateGuidFixedArray(childrenField, maximumLiveEntities, parameterName, liveIdentities);
         return entityId;
+    }
+
+    private static void ValidateHierarchyRelations(
+        EbinRecordReadView hierarchy,
+        int nodeCount,
+        EbinFieldReadView rootsField,
+        int rootCount,
+        int maximumLiveEntities,
+        WorldPersistenceLiveIdentitySet? liveIdentities,
+        string parameterName)
+    {
+        var rootNodeCount = 0;
+        long childReferenceCount = 0;
+
+        for (var nodeIndex = 0; nodeIndex < nodeCount; nodeIndex++)
+        {
+            var node = hierarchy.GetRecordArrayElement(1, nodeIndex);
+            var nodeId = ReadGuid(node, 1, isRequired: true, parameterName);
+            var parentId = ReadHierarchyParentId(node, parameterName);
+            var childrenField = GetRequiredField(node, 3, FixedArrayKind, expectedCount: null, parameterName);
+            var childCount = ValidateGuidFixedArray(childrenField, maximumLiveEntities, parameterName, liveIdentities);
+            childReferenceCount = checked(childReferenceCount + childCount);
+
+            if (parentId is Guid parentIdentity)
+            {
+                var parentIndex = FindHierarchyNodeIndex(hierarchy, nodeCount, parentIdentity, parameterName);
+
+                if (parentIndex < 0)
+                {
+                    throw new ArgumentException("A scene/world-hierarchy parent is absent from the node set.", parameterName);
+                }
+
+                var parent = hierarchy.GetRecordArrayElement(1, parentIndex);
+                var parentChildren = GetRequiredField(parent, 3, FixedArrayKind, expectedCount: null, parameterName);
+
+                if (!ContainsGuid(parentChildren, nodeId))
+                {
+                    throw new ArgumentException("A scene/world-hierarchy parent omits its child node.", parameterName);
+                }
+            }
+            else
+            {
+                rootNodeCount++;
+
+                if (!ContainsGuid(rootsField, nodeId))
+                {
+                    throw new ArgumentException("A parentless scene/world-hierarchy node is absent from Roots.", parameterName);
+                }
+            }
+
+            for (var childIndex = 0; childIndex < childCount; childIndex++)
+            {
+                var childId = ReadGuidArrayElement(childrenField, childIndex);
+                var childNodeIndex = FindHierarchyNodeIndex(hierarchy, nodeCount, childId, parameterName);
+
+                if ((childNodeIndex < 0)
+                    || (ReadHierarchyParentId(hierarchy.GetRecordArrayElement(1, childNodeIndex), parameterName) != nodeId))
+                {
+                    throw new ArgumentException("A scene/world-hierarchy child does not point back to its parent.", parameterName);
+                }
+            }
+        }
+
+        if ((rootCount != rootNodeCount)
+            || (childReferenceCount != (nodeCount - rootNodeCount)))
+        {
+            throw new ArgumentException("The scene/world-hierarchy Roots and Children arrays do not match node parent links.", parameterName);
+        }
+
+        for (var rootIndex = 0; rootIndex < rootCount; rootIndex++)
+        {
+            var rootId = ReadGuidArrayElement(rootsField, rootIndex);
+            var nodeIndex = FindHierarchyNodeIndex(hierarchy, nodeCount, rootId, parameterName);
+
+            if ((nodeIndex < 0)
+                || (ReadHierarchyParentId(hierarchy.GetRecordArrayElement(1, nodeIndex), parameterName) is not null))
+            {
+                throw new ArgumentException("A scene/world-hierarchy root is absent or has a parent.", parameterName);
+            }
+        }
+
+        ValidateHierarchyAcyclic(hierarchy, nodeCount, parameterName);
     }
 
     private static void ValidateRecordArrayChildren(
@@ -328,12 +541,32 @@ internal static class WorldPersistenceScenesReader
         }
     }
 
+    private static void ValidateSceneEntityBindings(
+        EbinRecordReadView instance,
+        int bindingCount,
+        EbinFieldReadView entityIdsField,
+        string parameterName)
+    {
+        for (var index = 0; index < bindingCount; index++)
+        {
+            var binding = instance.GetRecordArrayElement(4, index);
+            ValidateRecordHeader(binding, s_sceneEntityBindingSchemaId, minimumFieldCount: 6, maximumFieldCount: 6, parameterName);
+            var entityId = ReadGuid(binding, 4, isRequired: true, parameterName);
+
+            if (entityId != ReadGuidArrayElement(entityIdsField, index))
+            {
+                throw new ArgumentException("A state/scene-entity-binding does not match its EntityIds position.", parameterName);
+            }
+        }
+    }
+
     private static Guid ValidateSceneInstance(
         EbinRecordReadView instance,
         int maximumLiveEntities,
         int maximumIdentityAssignments,
         int maximumSceneOccurrences,
         EbinReadLimits limits,
+        WorldPersistenceLiveIdentitySet? liveIdentities,
         string parameterName)
     {
         ValidateRecordHeader(instance, s_sceneInstanceSchemaId, minimumFieldCount: 7, maximumFieldCount: 7, parameterName);
@@ -346,7 +579,12 @@ internal static class WorldPersistenceScenesReader
             maximumFieldCount: 3,
             parameterName);
         var entityIdsField = GetRequiredField(instance, 3, FixedArrayKind, expectedCount: null, parameterName);
-        var entityCount = ValidateGuidFixedArray(entityIdsField, maximumLiveEntities, parameterName);
+        var entityCount = ValidateGuidFixedArray(
+            entityIdsField,
+            maximumLiveEntities,
+            parameterName,
+            liveIdentities,
+            claimSceneEntities: liveIdentities is not null);
         var bindingCount = ReadArrayCount(instance, 4, maximumLiveEntities, minimumCount: 0, limits, parameterName);
         var externalBindingCount = ReadArrayCount(instance, 5, 65_536, minimumCount: 0, limits, parameterName);
         var assignmentOrdinal = ReadInt64(instance, 6, parameterName);
@@ -360,7 +598,7 @@ internal static class WorldPersistenceScenesReader
             throw new ArgumentException("A state/scene-instance has inconsistent identity, assignment, or Entity binding counts.", parameterName);
         }
 
-        ValidateRecordArrayChildren(instance, 4, bindingCount, s_sceneEntityBindingSchemaId, 6, 6, parameterName);
+        ValidateSceneEntityBindings(instance, bindingCount, entityIdsField, parameterName);
         ValidateRecordArrayChildren(instance, 5, externalBindingCount, s_externalBindingSchemaId, 1, 2, parameterName);
         ValidateRecordArrayChildren(instance, 7, occurrenceCount, s_sceneOccurrenceSchemaId, 3, 5, parameterName);
         return instanceId;
