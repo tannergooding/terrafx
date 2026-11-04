@@ -577,6 +577,36 @@ public sealed partial class EngineHost : IAsyncDisposable
         }
     }
 
+    private bool HandleSimulationOverrun(
+        HostedWorldSchedule schedule,
+        long debtTicks,
+        long hostTimestamp)
+    {
+        if (!schedule.IsOverrun(debtTicks))
+        {
+            return false;
+        }
+
+        var inputAdapter = _inputTimelineByRouter.Values
+            .FirstOrDefault(adapter => ReferenceEquals(adapter.World, schedule.World));
+
+        if (_options.OverrunPolicy is SimulationOverrunPolicy.Pause)
+        {
+            schedule.PauseAtBoundary(hostTimestamp);
+            _ = (inputAdapter?.PauseHeadlessInput(hostTimestamp, out _, out _));
+            RecordSimulationDebt(schedule, debtTicks, dropped: false);
+        }
+        else
+        {
+            _ = (inputAdapter?.PauseHeadlessInput(hostTimestamp, out _, out _));
+            schedule.DropDebtAtBoundary(hostTimestamp);
+            _ = (inputAdapter?.ReconcileHeadlessInputAtBoundary([], hostTimestamp, out _, out _));
+            RecordSimulationDebt(schedule, debtTicks, dropped: true);
+        }
+
+        return true;
+    }
+
     private void RecordSimulationDebt(HostedWorldSchedule schedule, long debtTicks, bool dropped)
     {
         var world = schedule.World;
@@ -674,8 +704,21 @@ public sealed partial class EngineHost : IAsyncDisposable
                     throw new InvalidOperationException("The selected non-interactive platform unexpectedly produced physical input.");
                 }
 
-                foreach (var schedule in _worlds)
+                if (_ownerRequests.IsAddingCompleted)
                 {
+                    continue;
+                }
+
+                var scheduledWorldCount = _worlds.Count;
+
+                for (var scheduleIndex = 0; scheduleIndex < scheduledWorldCount; scheduleIndex++)
+                {
+                    if (scheduleIndex >= _worlds.Count)
+                    {
+                        break;
+                    }
+
+                    var schedule = _worlds[scheduleIndex];
                     var world = schedule.World;
                     var debtTicks = schedule.GetTickDebt(hostTimestamp);
 
@@ -684,29 +727,15 @@ public sealed partial class EngineHost : IAsyncDisposable
                         continue;
                     }
 
-                    if (schedule.IsOverrun(debtTicks))
+                    if (HandleSimulationOverrun(schedule, debtTicks, hostTimestamp))
                     {
-                        var inputAdapter = _inputTimelineByRouter.Values
-                            .FirstOrDefault(adapter => ReferenceEquals(adapter.World, world));
-
-                        if (_options.OverrunPolicy is SimulationOverrunPolicy.Pause)
-                        {
-                            schedule.PauseAtBoundary(hostTimestamp);
-                            _ = (inputAdapter?.PauseHeadlessInput(hostTimestamp, out _, out _));
-                            RecordSimulationDebt(schedule, debtTicks, dropped: false);
-                            continue;
-                        }
-
-                        _ = (inputAdapter?.PauseHeadlessInput(hostTimestamp, out _, out _));
-                        schedule.DropDebtAtBoundary(hostTimestamp);
-                        _ = (inputAdapter?.ReconcileHeadlessInputAtBoundary([], hostTimestamp, out _, out _));
-                        RecordSimulationDebt(schedule, debtTicks, dropped: true);
                         continue;
                     }
 
-                    var tickCount = checked((int)Math.Min(debtTicks, MaximumSimulationTicksPerPump));
+                    var tickLimit = checked((int)Math.Min(debtTicks, MaximumSimulationTicksPerPump));
+                    var tickOffset = 0;
 
-                    for (var tickOffset = 0; tickOffset < tickCount; tickOffset++)
+                    while (tickOffset < tickLimit)
                     {
                         var nextTick = world.NextTickIndex;
                         var inputAdapter = _inputTimelineByRouter.Values
@@ -718,6 +747,19 @@ public sealed partial class EngineHost : IAsyncDisposable
                         }
 
                         _ = world.ExecuteTick();
+                        tickOffset++;
+
+                        if ((tickOffset >= tickLimit)
+                            || !ServiceCatchUpBoundary(schedule, out var catchUpHostTimestamp))
+                        {
+                            break;
+                        }
+
+                        var remainingDebtTicks = schedule.GetTickDebt(catchUpHostTimestamp);
+                        var remainingTickLimit = checked((int)Math.Min(
+                            remainingDebtTicks,
+                            MaximumSimulationTicksPerPump - tickOffset));
+                        tickLimit = checked(tickOffset + remainingTickLimit);
                     }
                 }
             }
@@ -750,6 +792,52 @@ public sealed partial class EngineHost : IAsyncDisposable
                 _ = _completion.TrySetException(failure);
             }
         }
+    }
+
+    private bool ServiceCatchUpBoundary(HostedWorldSchedule schedule, out long hostTimestamp)
+    {
+        var processedRequests = 0;
+
+        while ((processedRequests < MaximumOwnerRequestCount)
+            && _ownerRequests.TryTake(out var request))
+        {
+            request.Execute(this);
+            processedRequests++;
+        }
+
+        hostTimestamp = _platformOwner?.GetHostTimestamp()
+            ?? throw new InvalidOperationException("The EngineHost platform owner is not initialized.");
+
+        if (_ownerRequests.IsAddingCompleted || (_ownerRequests.Count != 0))
+        {
+            return false;
+        }
+
+        schedule.World.PumpControlBoundary();
+        _ = schedule.BeginPumpBoundary(hostTimestamp);
+        var inputAdapter = _inputTimelineByRouter.Values
+            .FirstOrDefault(adapter => ReferenceEquals(adapter.World, schedule.World));
+
+        if (inputAdapter is not null)
+        {
+            if (schedule.DidResumeAtLastBoundary)
+            {
+                _ = inputAdapter.ReconcileHeadlessInputAtBoundary(
+                    [],
+                    hostTimestamp,
+                    out _,
+                    out _);
+            }
+            else
+            {
+                _ = inputAdapter.BeginPumpBoundary(hostTimestamp, schedule.IsPaused);
+            }
+
+            _ = inputAdapter.ServiceHostControlBoundary();
+        }
+
+        var debtTicks = schedule.GetTickDebt(hostTimestamp);
+        return !HandleSimulationOverrun(schedule, debtTicks, hostTimestamp) && !schedule.IsPaused;
     }
 
     [SuppressMessage(

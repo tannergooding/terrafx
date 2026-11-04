@@ -127,6 +127,105 @@ internal sealed partial class EngineHostOptionsTests
     }
 
     [Test]
+    public async Task HostMailboxCallbacksAreServicedBetweenCatchUpTicksAsync()
+    {
+        var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
+        var packagePath = SceneAssetStoreTests.Package.WritePackage(packageBytes);
+        var assetStoreOptions = new AssetStoreOptions(
+            packagePath,
+            SHA256.HashData(packageBytes),
+            CreateAssetStoreOptions().Registration);
+        var options = CreateHeadlessOptions(assetStoreOptions, cpuWorkerCount: 0);
+        using var releaseFirstCatchUpTick = new ManualResetEventSlim(false);
+        using var probe = new CatchUpMailboxProbe(releaseFirstCatchUpTick);
+        using var releaseBlocker = new ManualResetEventSlim(false);
+        var ownerRequestEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        EngineHost? host = null;
+        Task? blockerTask = null;
+
+        try
+        {
+            host = await EngineHost.StartAsync(options).ConfigureAwait(false);
+            var builder = new WorldRegistrationBuilder(assetStoreOptions.Registration.Schemas);
+            var sourceState = new WorldSystemSourceStateDeclaration(typeof(CatchUpMailboxSystem), []);
+            var binding = WorldSystemFactoryBinding.Stateless<
+                CatchUpMailboxSystem,
+                CatchUpMailboxSystemCreate,
+                CatchUpMailboxSystemRelease>(
+                    Guid.NewGuid(),
+                    1,
+                    sourceState,
+                    new CatchUpMailboxSystemCreate(probe),
+                    default);
+            _ = builder.RegisterSystem(
+                new SystemDescription(
+                    Guid.NewGuid(),
+                    0,
+                    SimulationStage.Input,
+                    [],
+                    [],
+                    [],
+                    SystemThreadMode.OwnerThread),
+                new CatchUpMailboxSystemFactory(binding));
+            var registration = builder.Build();
+
+            await host.InvokeAsync(context =>
+                _ = context.CreateWorld(new WorldOptions(registration) {
+                    CpuWorkerCount = 0,
+                    InitialReplayLineageId = Guid.NewGuid(),
+                    TickRate = 240,
+                    WorldGuid = Guid.NewGuid(),
+                })).ConfigureAwait(false);
+            await probe.InitialTick.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            blockerTask = host.InvokeAsync(context => {
+                probe.BeginCatchUpObservation();
+                _ = ownerRequestEntered.TrySetResult();
+                releaseBlocker.Wait();
+            });
+            await ownerRequestEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await Task.Delay(100).ConfigureAwait(false);
+            releaseBlocker.Set();
+            await blockerTask.ConfigureAwait(false);
+            await probe.FirstCatchUpTick.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var markerTask = host.InvokeAsync(_ => probe.MarkHostCallback());
+            releaseFirstCatchUpTick.Set();
+            await markerTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            var secondCatchUpTickSawCallback = await probe.SecondCatchUpTick.Task
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert.That(
+                secondCatchUpTickSawCallback,
+                Is.True,
+                $"The callback was observed after {probe.TickCountAtHostAction} catch-up tick(s).");
+            await host.StopAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            releaseBlocker.Set();
+            releaseFirstCatchUpTick.Set();
+
+            if (blockerTask is not null)
+            {
+                await blockerTask.ConfigureAwait(false);
+            }
+
+            try
+            {
+                if (host is not null)
+                {
+                    await host.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                File.Delete(packagePath);
+            }
+        }
+    }
+
+    [Test]
     public async Task HostedWorldControlsApplyAtOwnerBoundaryWithSeparateQueueAdmissionAsync()
     {
         var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
@@ -339,6 +438,111 @@ internal sealed partial class EngineHostOptionsTests
     private readonly struct ActiveTickSystemRelease : IWorldSystemRelease<ActiveTickSystem>
     {
         public void Invoke(ActiveTickSystem system)
+            => ArgumentNullException.ThrowIfNull(system);
+    }
+
+    private sealed class CatchUpMailboxProbe : IDisposable
+    {
+        private int _catchUpMode;
+        private int _catchUpTickCount;
+        private readonly ManualResetEventSlim _firstCatchUpTickRelease;
+        private int _hostActionApplied;
+        private int _tickCountAtHostAction;
+
+        internal CatchUpMailboxProbe(ManualResetEventSlim firstCatchUpTickRelease)
+        {
+            ArgumentNullException.ThrowIfNull(firstCatchUpTickRelease);
+            _firstCatchUpTickRelease = firstCatchUpTickRelease;
+        }
+
+        internal TaskCompletionSource FirstCatchUpTick { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource InitialTick { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource<bool> SecondCatchUpTick { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal int TickCountAtHostAction => Volatile.Read(ref _tickCountAtHostAction);
+
+        public void Dispose()
+        {
+        }
+
+        internal void BeginCatchUpObservation()
+            => Volatile.Write(ref _catchUpMode, 1);
+
+        internal void MarkHostCallback()
+        {
+            Volatile.Write(ref _tickCountAtHostAction, Volatile.Read(ref _catchUpTickCount));
+            Volatile.Write(ref _hostActionApplied, 1);
+        }
+
+        internal void ObserveTick()
+        {
+            if (Volatile.Read(ref _catchUpMode) == 0)
+            {
+                _ = InitialTick.TrySetResult();
+                return;
+            }
+
+            var tickCount = Interlocked.Increment(ref _catchUpTickCount);
+
+            if (tickCount == 1)
+            {
+                _ = FirstCatchUpTick.TrySetResult();
+                _firstCatchUpTickRelease.Wait();
+            }
+            else if (tickCount == 2)
+            {
+                var callbackWasServicedBetweenTicks = (Volatile.Read(ref _hostActionApplied) != 0)
+                    && (Volatile.Read(ref _tickCountAtHostAction) == 1);
+                _ = SecondCatchUpTick.TrySetResult(callbackWasServicedBetweenTicks);
+            }
+        }
+    }
+
+    private sealed class CatchUpMailboxSystem : IWorldSystem
+    {
+        private readonly CatchUpMailboxProbe _probe;
+
+        internal CatchUpMailboxSystem(CatchUpMailboxProbe probe)
+        {
+            _probe = probe;
+        }
+
+        public void Execute(WorldSystemContext context)
+        {
+            _ = context;
+            _probe.ObserveTick();
+        }
+    }
+
+    private readonly struct CatchUpMailboxSystemCreate : IWorldSystemCreate<CatchUpMailboxSystem>
+    {
+        private readonly CatchUpMailboxProbe _probe;
+
+        internal CatchUpMailboxSystemCreate(CatchUpMailboxProbe probe)
+        {
+            _probe = probe;
+        }
+
+        public CatchUpMailboxSystem Invoke() => new(_probe);
+    }
+
+    private sealed class CatchUpMailboxSystemFactory : IWorldSystemFactory
+    {
+        private readonly WorldSystemFactoryBinding _binding;
+
+        internal CatchUpMailboxSystemFactory(WorldSystemFactoryBinding binding)
+        {
+            _binding = binding;
+        }
+
+        public WorldSystemFactoryBinding Binding => _binding;
+    }
+
+    private readonly struct CatchUpMailboxSystemRelease : IWorldSystemRelease<CatchUpMailboxSystem>
+    {
+        public void Invoke(CatchUpMailboxSystem system)
             => ArgumentNullException.ThrowIfNull(system);
     }
 }
