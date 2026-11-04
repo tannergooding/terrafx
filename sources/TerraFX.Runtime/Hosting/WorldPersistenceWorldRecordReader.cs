@@ -371,6 +371,11 @@ internal static class WorldPersistenceWorldRecordReader
             targetRegistration?.Schemas ?? assetReferenceSchemas,
             liveIdentities,
             identityScratch);
+        WorldPersistenceControlRecordReader.ValidateWorldGuidFrames(
+            frame2Record,
+            frame3Record,
+            parsedEcs.WorldGuid,
+            nameof(worldRecord));
         var parsedScenes = WorldPersistenceScenesReader.Read(
             scenesRecord,
             limits,

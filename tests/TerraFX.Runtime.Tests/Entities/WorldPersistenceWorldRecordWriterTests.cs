@@ -71,6 +71,32 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             fields);
     }
 
+    private static (CompiledContentSchemaRegistry Schemas, World World) CreateControlValidationWorld()
+    {
+        DataSchema[] schemaRows = [
+            .. CoreContentSchemaCatalogue.PrimitiveSchemas,
+            .. CoreContentSchemaCatalogue.FoundationSchemas,
+            .. NativeAssetSchemaCatalogue.Schemas,
+            .. SceneSchemaCatalogue.Schemas,
+            .. AnimationSchemaCatalogue.Schemas,
+            .. RenderingSchemaCatalogue.Schemas,
+            .. StandaloneContinuationSchemaCatalogue.Schemas,
+            CreateApplicationSchema("application/world-root-test/tag/v1", ContentSchemaRole.EntityTag, 0),
+            CreateApplicationSchema("application/world-root-test/system-state/v1", ContentSchemaRole.SystemState, 7),
+            CreateApplicationSchema("application/world-root-test/resource-state/v1", ContentSchemaRole.ResourceState, 23, 4),
+            CreateApplicationSchema("application/world-root-test/attachment-state/v1", ContentSchemaRole.AttachmentState, 8),
+        ];
+        var schemas = new CompiledContentSchemaRegistry([.. schemaRows]);
+        var registration = new WorldRegistrationBuilder(schemas).Build();
+        var world = World.Create(new WorldOptions(registration) {
+            CpuWorkerCount = 0,
+            Enable2DFrame = true,
+            InitialReplayLineageId = Guid.NewGuid(),
+            WorldGuid = Guid.NewGuid(),
+        });
+        return (schemas, world);
+    }
+
     [Test]
     public void ComposesCanonicalWorldFromCapturedSubsystems()
     {
@@ -544,6 +570,63 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
         Assert.That(cursorDiagnostic?.Category, Is.EqualTo("next-control-sequence-mismatch"));
     }
 
+    [TestCase(false, true)]
+    [TestCase(false, false)]
+    [TestCase(true, true)]
+    [TestCase(true, false)]
+    public void RejectsFrameControlAndCurrentFrameRevisionDisagreement(bool isFrame2, bool corruptControlRevision)
+    {
+        var (schemas, world) = CreateControlValidationWorld();
+        using (world)
+        {
+            var frame3 = world.CurrentFrame3;
+            var updatedFrame3 = world.CreateNextFrame3(frame3.Origin, frame3.Minimum, frame3.Maximum);
+            Assert.That(world.SetFrame(updatedFrame3).Status, Is.EqualTo(FrameChangeStatus.Applied));
+            var frame2 = world.CurrentFrame2
+                ?? throw new AssertionException("The test World did not admit its 2D frame.");
+            var updatedFrame2 = world.CreateNextFrame2(frame2.Origin, frame2.Minimum, frame2.Maximum);
+            Assert.That(world.SetFrame(updatedFrame2).Status, Is.EqualTo(FrameChangeStatus.Applied));
+            _ = world.Step();
+
+            using var lease = world.AcquirePersistenceCaptureLease();
+            var limits = WorldPersistenceEbinLimits.Create(world.Options);
+            var worldRecord = ComposeWorldRecord(world, in lease, schemas, []);
+            var frameCapture = new FrameRevisionRecordCapture(isFrame2, corruptControlRevision);
+            Assert.That(
+                EbinStructuralReader.Read(
+                    worldRecord,
+                    limits,
+                    EbinReadPolicy.Canonical,
+                    ref frameCapture,
+                    out var bytesConsumed,
+                    out var diagnostic),
+                Is.EqualTo(EbinReadStatus.Complete),
+                diagnostic?.ToString());
+            Assert.That(bytesConsumed, Is.EqualTo(worldRecord.Length));
+            var encodedFrame = frameCapture.EncodedFrame
+                ?? throw new AssertionException("The selected Frame3 record was not captured.");
+            var revisionPayload = frameCapture.RevisionPayload
+                ?? throw new AssertionException("The selected Frame3 revision was not captured.");
+            var frameOffset = corruptControlRevision
+                ? worldRecord.AsSpan().IndexOf(encodedFrame)
+                : worldRecord.AsSpan().LastIndexOf(encodedFrame);
+            Assert.That(frameOffset, Is.GreaterThanOrEqualTo(0));
+            var revisionPayloadOffset = encodedFrame.AsSpan().IndexOf(revisionPayload);
+            Assert.That(revisionPayloadOffset, Is.GreaterThanOrEqualTo(0));
+
+            var corruptedRecord = (byte[])worldRecord.Clone();
+            var revisionOffset = checked(frameOffset + revisionPayloadOffset);
+            var revision = BinaryPrimitives.ReadUInt64LittleEndian(
+                corruptedRecord.AsSpan(revisionOffset, sizeof(ulong)));
+            Assert.That(revision, Is.EqualTo(2));
+            BinaryPrimitives.WriteUInt64LittleEndian(
+                corruptedRecord.AsSpan(revisionOffset, sizeof(ulong)),
+                checked(revision + 1));
+
+            _ = Assert.Throws<ArgumentException>(() => WorldPersistenceWorldRecordReader.Read(corruptedRecord, limits));
+        }
+    }
+
     [Test]
     public void RejectsWorldRecordSourcesFromAnEarlierCapture()
     {
@@ -673,6 +756,33 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(randomField.Payload), Is.Zero);
             Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(randomField.Payload[8..]), Is.EqualTo(16));
             Assert.That(record.GetRecord(12).Header.SchemaId, Is.EqualTo(new ContentSchemaIdentityAssignment("state/registration").SchemaId));
+        }
+    }
+
+    private struct FrameRevisionRecordCapture : IAction<EbinRecordReadView>
+    {
+        private readonly bool _isFrame2;
+        private readonly bool _captureControlFrame;
+
+        internal FrameRevisionRecordCapture(bool isFrame2, bool captureControlFrame)
+        {
+            _isFrame2 = isFrame2;
+            _captureControlFrame = captureControlFrame;
+            EncodedFrame = null;
+            RevisionPayload = null;
+        }
+
+        internal byte[]? EncodedFrame { get; private set; }
+
+        internal byte[]? RevisionPayload { get; private set; }
+
+        public void Invoke(scoped EbinRecordReadView record)
+        {
+            var frame = _captureControlFrame
+                ? record.GetRecordArrayElement(8, _isFrame2 ? 1 : 0).GetRecord(3).GetRecord(1)
+                : record.GetRecord(_isFrame2 ? 3U : 4U);
+            EncodedFrame = frame.EncodedBytes.ToArray();
+            RevisionPayload = frame.GetField(3).Payload.ToArray();
         }
     }
 }
