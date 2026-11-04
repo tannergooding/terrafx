@@ -37,6 +37,21 @@ internal sealed class DiagnosticsServiceTests
             context.IsDefault ? [] : context);
 
     [Test]
+    public void BorrowedWorldCapabilityCloseRetainsHostService()
+    {
+        var service = new DiagnosticsService(2);
+        var capability = service.CreateBorrowedWorldCapability(Guid.NewGuid(), Guid.NewGuid());
+        capability.BindOwner(1);
+
+        capability.Close();
+
+        Assert.That(service.TryGetLatestFault(out var latestFault), Is.False);
+        Assert.That(latestFault, Is.Null);
+        _ = Assert.Throws<ObjectDisposedException>(() => capability.GetTimestamp());
+        service.Close();
+    }
+
+    [Test]
     public void CloseRetiresServiceStorageAndRejectsFutureUse()
     {
         var service = new DiagnosticsService(2);

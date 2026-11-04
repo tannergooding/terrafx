@@ -247,10 +247,16 @@ public sealed class DiagnosticsService
         }
     }
 
+    internal WorldDiagnosticsCapability CreateBorrowedWorldCapability(Guid worldGuid, Guid executionSessionId)
+    {
+        ObjectDisposedException.ThrowIf(_records is null, this);
+        return new WorldDiagnosticsCapability(this, worldGuid, executionSessionId, ownsDiagnosticsService: false);
+    }
+
     internal WorldDiagnosticsCapability CreateWorldCapability(Guid worldGuid, Guid executionSessionId)
     {
         ObjectDisposedException.ThrowIf(_records is null, this);
-        return new WorldDiagnosticsCapability(this, worldGuid, executionSessionId);
+        return new WorldDiagnosticsCapability(this, worldGuid, executionSessionId, ownsDiagnosticsService: true);
     }
 
     internal void RecordDropped()

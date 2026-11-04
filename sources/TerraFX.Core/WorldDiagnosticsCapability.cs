@@ -10,10 +10,15 @@ internal sealed class WorldDiagnosticsCapability
     private int _closed;
     private readonly DiagnosticsService _diagnostics;
     private readonly Guid _executionSessionId;
+    private readonly bool _ownsDiagnosticsService;
     private readonly Guid _worldGuid;
     private long _worldOwnerId;
 
-    internal WorldDiagnosticsCapability(DiagnosticsService diagnostics, Guid worldGuid, Guid executionSessionId)
+    internal WorldDiagnosticsCapability(
+        DiagnosticsService diagnostics,
+        Guid worldGuid,
+        Guid executionSessionId,
+        bool ownsDiagnosticsService)
     {
         ArgumentNullException.ThrowIfNull(diagnostics);
         ArgumentOutOfRangeException.ThrowIfEqual(worldGuid, Guid.Empty);
@@ -22,6 +27,7 @@ internal sealed class WorldDiagnosticsCapability
         _diagnostics = diagnostics;
         _worldGuid = worldGuid;
         _executionSessionId = executionSessionId;
+        _ownsDiagnosticsService = ownsDiagnosticsService;
     }
 
     internal DiagnosticsService Diagnostics => _diagnostics;
@@ -44,7 +50,10 @@ internal sealed class WorldDiagnosticsCapability
     {
         if (Interlocked.Exchange(ref _closed, 1) == 0)
         {
-            _diagnostics.Close();
+            if (_ownsDiagnosticsService)
+            {
+                _diagnostics.Close();
+            }
         }
     }
 
