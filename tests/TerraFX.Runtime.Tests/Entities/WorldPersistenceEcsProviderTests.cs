@@ -241,6 +241,40 @@ internal sealed class WorldPersistenceEcsProviderTests
     }
 
     [Test]
+    public void CapturesResourceRegistrationInTheWorldRegistrationRoot()
+    {
+        using var world = CreateResourceWorld(out _, out _);
+        _ = world.Step();
+        using var lease = world.AcquirePersistenceCaptureLease();
+        Assert.That(
+            WorldPersistenceRegistrationCaptureCoordinator.Capture(
+                world,
+                lease,
+                out var record,
+                out var reservation,
+                out var diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.Category);
+        Assert.That(diagnostic, Is.Null);
+        var capturedRecord = record ?? throw new InvalidOperationException("The registration capture did not produce its record.");
+        using var reservationScope = reservation
+            ?? throw new InvalidOperationException("The registration capture did not retain its admission reservation.");
+        var assertions = new ResourceRegistrationRootAssertions();
+        Assert.That(
+            EbinStructuralReader.Read(
+                capturedRecord,
+                EbinReadLimits.Foundation,
+                EbinReadPolicy.Canonical,
+                ref assertions,
+                out var bytesConsumed,
+                out var readDiagnostic),
+            Is.EqualTo(EbinReadStatus.Complete));
+        Assert.That(readDiagnostic, Is.Null);
+        Assert.That(assertions.IsMatch, Is.True);
+        Assert.That(bytesConsumed, Is.EqualTo(capturedRecord.Length));
+    }
+
+    [Test]
     public void WritesAttachmentPayloadAsACompleteNestedRecord()
     {
         using var world = CreateAttachmentWorld(out var attachmentSchemaId);
@@ -898,5 +932,29 @@ internal sealed class WorldPersistenceEcsProviderTests
         }
 
         public WorldSystemFactoryBinding Binding { get; }
+    }
+
+    private struct ResourceRegistrationRootAssertions : IAction<EbinRecordReadView>
+    {
+        internal bool IsMatch { get; private set; }
+
+        public void Invoke(scoped EbinRecordReadView record)
+        {
+            IsMatch = (record.Header.SchemaId == new ContentSchemaIdentityAssignment("state/registration").SchemaId)
+                && (record.Header.Major == 1)
+                && (record.Header.Minor == 0)
+                && (record.FieldCount == 4);
+
+            if (!IsMatch)
+            {
+                return;
+            }
+
+            var resources = record.GetField(3);
+            IsMatch = (resources.Tag == 4)
+                && (resources.Kind == 24)
+                && (resources.Count == 1)
+                && (BinaryPrimitives.ReadUInt64LittleEndian(resources.Payload) == 1);
+        }
     }
 }

@@ -38,6 +38,45 @@ internal sealed class WorldPersistenceTagRegistrationArrayWriterTests
             []);
 
     [Test]
+    public void CapturesRegisteredTagsInTheWorldRegistrationRoot()
+    {
+        var registration = CreateRegistration(out _, out _);
+        using var world = World.Create(new WorldOptions(registration) {
+            CpuWorkerCount = 0,
+            InitialReplayLineageId = Guid.NewGuid(),
+            WorldGuid = Guid.NewGuid(),
+        });
+        _ = world.Step();
+        using var lease = world.AcquirePersistenceCaptureLease();
+        Assert.That(
+            WorldPersistenceRegistrationCaptureCoordinator.Capture(
+                world,
+                lease,
+                out var record,
+                out var reservation,
+                out var diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.Category);
+        Assert.That(diagnostic, Is.Null);
+        var capturedRecord = record ?? throw new InvalidOperationException("The registration capture did not produce its record.");
+        using var reservationScope = reservation
+            ?? throw new InvalidOperationException("The registration capture did not retain its admission reservation.");
+        var assertions = new RootRegistrationAssertions(expectedTagCount: registration.Tags.Length);
+        Assert.That(
+            EbinStructuralReader.Read(
+                capturedRecord,
+                EbinReadLimits.Foundation,
+                EbinReadPolicy.Canonical,
+                ref assertions,
+                out var bytesConsumed,
+                out var readDiagnostic),
+            Is.EqualTo(EbinReadStatus.Complete));
+        Assert.That(readDiagnostic, Is.Null);
+        Assert.That(assertions.IsMatch, Is.True);
+        Assert.That(bytesConsumed, Is.EqualTo(capturedRecord.Length));
+    }
+
+    [Test]
     public void WritesCanonicalEmptyTagArray()
     {
         var registration = new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build();
@@ -132,6 +171,38 @@ internal sealed class WorldPersistenceTagRegistrationArrayWriterTests
         }
 
         Assert.That(previousOffset, Is.EqualTo((ulong)payload.Length));
+    }
+
+    private struct RootRegistrationAssertions : IAction<EbinRecordReadView>
+    {
+        private readonly int _expectedTagCount;
+
+        internal RootRegistrationAssertions(int expectedTagCount)
+        {
+            _expectedTagCount = expectedTagCount;
+            IsMatch = false;
+        }
+
+        internal bool IsMatch { get; private set; }
+
+        public void Invoke(scoped EbinRecordReadView record)
+        {
+            IsMatch = (record.Header.SchemaId == new ContentSchemaIdentityAssignment("state/registration").SchemaId)
+                && (record.Header.Major == 1)
+                && (record.Header.Minor == 0)
+                && (record.FieldCount == 4);
+
+            if (!IsMatch)
+            {
+                return;
+            }
+
+            var tags = record.GetField(1);
+            IsMatch = (tags.Tag == 2)
+                && (tags.Kind == 24)
+                && (tags.Count == checked((ulong)_expectedTagCount))
+                && (BinaryPrimitives.ReadUInt64LittleEndian(tags.Payload) == checked((ulong)_expectedTagCount));
+        }
     }
 
     private struct SchemaReferenceAssertions : IAction<EbinRecordReadView>

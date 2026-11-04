@@ -12,6 +12,45 @@ namespace TerraFX.Runtime.Tests.Entities;
 internal sealed class WorldPersistenceRegistrationCaptureTests
 {
     [Test]
+    public void CapturesRegistrationRootFromFrozenWorldRegistration()
+    {
+        var registration = new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build();
+        using var world = World.Create(new WorldOptions(registration) {
+            CpuWorkerCount = 0,
+            InitialReplayLineageId = Guid.NewGuid(),
+            WorldGuid = Guid.NewGuid(),
+        });
+        _ = world.Step();
+        using var lease = world.AcquirePersistenceCaptureLease();
+        Assert.That(
+            WorldPersistenceRegistrationCaptureCoordinator.Capture(
+                world,
+                lease,
+                out var record,
+                out var reservation,
+                out var diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.Category);
+        Assert.That(diagnostic, Is.Null);
+        var capturedRecord = record ?? throw new InvalidOperationException("The registration capture did not produce its record.");
+        using var reservationScope = reservation
+            ?? throw new InvalidOperationException("The registration capture did not retain its admission reservation.");
+        var assertions = new RegistrationCaptureAssertions();
+        Assert.That(
+            EbinStructuralReader.Read(
+                capturedRecord,
+                EbinReadLimits.Foundation,
+                EbinReadPolicy.Canonical,
+                ref assertions,
+                out var bytesConsumed,
+                out var readDiagnostic),
+            Is.EqualTo(EbinReadStatus.Complete));
+        Assert.That(readDiagnostic, Is.Null);
+        Assert.That(assertions.IsMatch, Is.True);
+        Assert.That(bytesConsumed, Is.EqualTo(capturedRecord.Length));
+    }
+
+    [Test]
     public void WritesRegistrationRootUnderItsExactWorldReservation()
     {
         var registration = new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build();

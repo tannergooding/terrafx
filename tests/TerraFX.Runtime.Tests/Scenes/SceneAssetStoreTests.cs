@@ -2743,7 +2743,6 @@ internal sealed partial class SceneAssetStoreTests
                             var worldRecord = WorldPersistenceWorldRecordWriterTests.ComposeWorldRecord(
                                 world,
                                 in captureLease,
-                                persistenceLimits,
                                 scanSchemas,
                                 ecsRecord,
                                 scenesRecord,

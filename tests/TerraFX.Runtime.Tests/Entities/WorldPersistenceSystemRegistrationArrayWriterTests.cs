@@ -136,6 +136,45 @@ internal sealed class WorldPersistenceSystemRegistrationArrayWriterTests
     }
 
     [Test]
+    public void CapturesRegisteredSystemsInTheWorldRegistrationRoot()
+    {
+        var registration = CreateRegistration();
+        using var world = World.Create(new WorldOptions(registration) {
+            CpuWorkerCount = 0,
+            InitialReplayLineageId = Guid.NewGuid(),
+            WorldGuid = Guid.NewGuid(),
+        });
+        _ = world.Step();
+        using var lease = world.AcquirePersistenceCaptureLease();
+        Assert.That(
+            WorldPersistenceRegistrationCaptureCoordinator.Capture(
+                world,
+                lease,
+                out var record,
+                out var reservation,
+                out var diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete),
+            diagnostic?.Category);
+        Assert.That(diagnostic, Is.Null);
+        var capturedRecord = record ?? throw new InvalidOperationException("The registration capture did not produce its record.");
+        using var reservationScope = reservation
+            ?? throw new InvalidOperationException("The registration capture did not retain its admission reservation.");
+        var assertions = new RegistrationRootAssertions(expectedSystemCount: registration.Systems.Length);
+        Assert.That(
+            EbinStructuralReader.Read(
+                capturedRecord,
+                EbinReadLimits.Foundation,
+                EbinReadPolicy.Canonical,
+                ref assertions,
+                out var bytesConsumed,
+                out var readDiagnostic),
+            Is.EqualTo(EbinReadStatus.Complete));
+        Assert.That(readDiagnostic, Is.Null);
+        Assert.That(assertions.IsMatch, Is.True);
+        Assert.That(bytesConsumed, Is.EqualTo(capturedRecord.Length));
+    }
+
+    [Test]
     public void RejectsRowsOutsideTheCallerOwnedStorage()
     {
         var registration = CreateRegistration();
@@ -333,5 +372,37 @@ internal sealed class WorldPersistenceSystemRegistrationArrayWriterTests
     {
         public void Invoke(RegistrationArraySystem system)
             => ArgumentNullException.ThrowIfNull(system);
+    }
+
+    private struct RegistrationRootAssertions : IAction<EbinRecordReadView>
+    {
+        private readonly int _expectedSystemCount;
+
+        internal RegistrationRootAssertions(int expectedSystemCount)
+        {
+            _expectedSystemCount = expectedSystemCount;
+            IsMatch = false;
+        }
+
+        internal bool IsMatch { get; private set; }
+
+        public void Invoke(scoped EbinRecordReadView record)
+        {
+            IsMatch = (record.Header.SchemaId == new ContentSchemaIdentityAssignment("state/registration").SchemaId)
+                && (record.Header.Major == 1)
+                && (record.Header.Minor == 0)
+                && (record.FieldCount == 4);
+
+            if (!IsMatch)
+            {
+                return;
+            }
+
+            var systems = record.GetField(2);
+            IsMatch = (systems.Tag == 3)
+                && (systems.Kind == 24)
+                && (systems.Count == checked((ulong)_expectedSystemCount))
+                && (BinaryPrimitives.ReadUInt64LittleEndian(systems.Payload) == checked((ulong)_expectedSystemCount));
+        }
     }
 }

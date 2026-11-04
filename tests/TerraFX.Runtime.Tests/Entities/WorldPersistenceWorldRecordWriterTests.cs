@@ -21,20 +21,17 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
     internal static byte[] ComposeWorldRecord(
         World world,
         in WorldPersistenceCaptureLease lease,
-        EbinReadLimits limits,
         CompiledContentSchemaRegistry schemas,
         ReadOnlySpan<byte> ecsRecord,
         ReadOnlySpan<byte> scenesRecord,
         ReadOnlySpan<uint> assetIds)
     {
-        var registrationRecord = CreateRegistrationRecord(world.Registration, limits);
         var status = WorldPersistenceWorldRecordCaptureCoordinator.Capture(
             world,
             lease,
             schemas,
             ecsRecord,
             scenesRecord,
-            registrationRecord,
             out var worldRecord,
             out var assetIdCount,
             out var diagnostic,
@@ -74,82 +71,6 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             ContentSchemaStorage.NotComponent,
             ContentTransientRestore.NotApplicable,
             fields);
-    }
-
-    internal static byte[] CreateRegistrationRecord(WorldRegistration registration, EbinReadLimits limits)
-    {
-        if ((registration.Tags.Length != 0)
-            || (registration.Systems.Length != 0)
-            || (registration.Resources.Length != 0))
-        {
-            throw new InvalidOperationException("The root-test registration helper requires empty tags, systems, and resources.");
-        }
-
-        Assert.That(
-            WorldPersistenceComponentRegistrationArrayWriter.Measure(
-                registration,
-                limits,
-                out var componentsWorkspace,
-                out var diagnostic),
-            Is.EqualTo(EbinWriteStatus.Complete),
-            diagnostic?.ToString());
-        var componentSlices = new EbinPayloadSlice[componentsWorkspace.RecordCount];
-        var componentRecordStorage = new byte[componentsWorkspace.RecordStorageBytes];
-        var componentCandidateStorage = new byte[componentsWorkspace.MaximumCandidateBytes];
-        var componentsArrayPayload = new byte[componentsWorkspace.ArrayPayloadBytes];
-        Assert.That(
-            WorldPersistenceComponentRegistrationArrayWriter.Write(
-                registration,
-                limits,
-                componentsWorkspace,
-                componentSlices,
-                componentRecordStorage,
-                componentCandidateStorage,
-                componentsArrayPayload,
-                out _,
-                out diagnostic),
-            Is.EqualTo(EbinWriteStatus.Complete),
-            diagnostic?.ToString());
-
-        var emptyArrayPayload = new byte[16];
-        Assert.That(
-            EbinPayloadWriter.WriteRecordArray([], [], limits, emptyArrayPayload, out var emptyArrayBytes, out diagnostic),
-            Is.EqualTo(EbinWriteStatus.Complete),
-            diagnostic?.ToString());
-        Assert.That(emptyArrayBytes, Is.EqualTo(emptyArrayPayload.Length));
-        var registrationRootPayload = new byte[checked(componentsArrayPayload.Length + (3 * emptyArrayPayload.Length))];
-        Assert.That(
-            WorldPersistenceRegistrationWriter.Measure(
-                registration,
-                componentsArrayPayload,
-                emptyArrayPayload,
-                emptyArrayPayload,
-                emptyArrayPayload,
-                limits,
-                registrationRootPayload,
-                out _,
-                out var registrationBytes,
-                out diagnostic),
-            Is.EqualTo(EbinWriteStatus.Complete),
-            diagnostic?.ToString());
-        var destination = new byte[registrationBytes];
-        Assert.That(
-            WorldPersistenceRegistrationWriter.Write(
-                registration,
-                componentsArrayPayload,
-                emptyArrayPayload,
-                emptyArrayPayload,
-                emptyArrayPayload,
-                limits,
-                registrationRootPayload,
-                new byte[registrationBytes],
-                destination,
-                out var bytesWritten,
-                out diagnostic),
-            Is.EqualTo(EbinWriteStatus.Complete),
-            diagnostic?.ToString());
-        Assert.That(bytesWritten, Is.EqualTo(destination.Length));
-        return destination;
     }
 
     [Test]

@@ -17,7 +17,6 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
         CompiledContentSchemaRegistry schemas,
         scoped ReadOnlySpan<byte> ecsRecord,
         scoped ReadOnlySpan<byte> scenesRecord,
-        scoped ReadOnlySpan<byte> registrationRecord,
         out byte[]? worldRecord,
         out int assetIdCount,
         out EbinStructuralDiagnostic? diagnostic,
@@ -34,8 +33,24 @@ internal static class WorldPersistenceWorldRecordCaptureCoordinator
 
         worldRecord = null;
         assetIdCount = 0;
+        var status = WorldPersistenceRegistrationCaptureCoordinator.Capture(
+            world,
+            lease,
+            out var registrationRecordBytes,
+            out var registrationReservation,
+            out diagnostic);
+
+        if (status is not EbinWriteStatus.Complete)
+        {
+            return status;
+        }
+
+        using var registrationReservationScope = registrationReservation
+            ?? throw new InvalidOperationException("The registration capture reservation was not created.");
+        var registrationRecord = registrationRecordBytes
+            ?? throw new InvalidOperationException("The registration capture did not produce its record.");
         var limits = WorldPersistenceEbinLimits.Create(world.Options);
-        var status = lease.MeasureConfigurationRecord(out var configurationBytes, out diagnostic);
+        status = lease.MeasureConfigurationRecord(out var configurationBytes, out diagnostic);
 
         if (status is not EbinWriteStatus.Complete)
         {
