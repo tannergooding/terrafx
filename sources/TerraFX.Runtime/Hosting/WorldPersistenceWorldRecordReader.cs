@@ -215,6 +215,14 @@ internal static class WorldPersistenceWorldRecordReader
             throw new ArgumentException("The state/world clock, controls, or initial-frame presence does not match the saved configuration.", nameof(worldRecord));
         }
 
+        WorldPersistenceControlRecordReader.Validate(
+            record,
+            fieldTag: 8,
+            controlRecordCount,
+            record.GetRecord(2),
+            parsedClock,
+            nameof(worldRecord));
+
         return new WorldPersistenceWorldRecordContents(
             parsedConfiguration,
             parsedClock,

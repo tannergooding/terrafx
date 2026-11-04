@@ -11,6 +11,7 @@ using TerraFX.Animation;
 using TerraFX.Assets;
 using TerraFX.Entities;
 using TerraFX.Graphics;
+using TerraFX.Hosting;
 using TerraFX.Integration;
 using TerraFX.Scenes;
 
@@ -122,6 +123,18 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             WorldGuid = Guid.NewGuid(),
         });
         world.SetTimeScale(2.0f);
+        var currentFrame3 = world.CurrentFrame3;
+        _ = world.SetFrame(world.CreateNextFrame3(
+            currentFrame3.Origin,
+            currentFrame3.Minimum,
+            currentFrame3.Maximum));
+        var currentFrame2 = world.CurrentFrame2
+            ?? throw new AssertionException("The test World did not admit its 2D frame.");
+        _ = world.SetFrame(world.CreateNextFrame2(
+            currentFrame2.Origin,
+            currentFrame2.Minimum,
+            currentFrame2.Maximum));
+        world.BeginIdentityBranch(Guid.NewGuid());
         _ = world.Step();
         using var lease = world.AcquirePersistenceCaptureLease();
         var limits = WorldPersistenceEbinLimits.Create(world.Options);
@@ -470,6 +483,11 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             Is.EqualTo(EbinReadStatus.Complete),
             readDiagnostic?.ToString());
         Assert.That(bytesConsumed, Is.EqualTo(worldBytesWritten));
+        var decodedWorld = WorldPersistenceWorldRecordReader.Read(
+            worldDestination.AsMemory(0, worldBytesWritten),
+            limits);
+        Assert.That(decodedWorld.ControlRecordCount, Is.EqualTo(lease.ControlRecordCount));
+        Assert.That(decodedWorld.Clock.SegmentCount, Is.EqualTo(2));
 
         var inconsistentSources = new WorldPersistenceWorldRecordSources(
                 lease,

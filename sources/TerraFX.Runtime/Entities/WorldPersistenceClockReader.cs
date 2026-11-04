@@ -98,17 +98,16 @@ internal static class WorldPersistenceClockReader
         {
             var segment = record.GetRecordArrayElement(5, index);
             var expectedSequence = checked((long)index + 1);
-            ReadTimeSegment(
+
+            var (_, segmentStartNextTick, segmentScale) = ReadTimeSegment(
                 segment,
                 expectedSequence,
                 nextTick,
                 previousStartNextTick,
                 index == 0,
-                out var segmentStartNextTick,
-                out var segmentTimeScale,
                 nameof(clockRecord));
             previousStartNextTick = segmentStartNextTick;
-            finalTimeScale = segmentTimeScale;
+            finalTimeScale = segmentScale;
         }
 
         if (BitConverter.SingleToUInt32Bits(finalTimeScale) != BitConverter.SingleToUInt32Bits(timeScale))
@@ -127,6 +126,23 @@ internal static class WorldPersistenceClockReader
             initialFrame2Record,
             initialFrame3Record,
             historyBaseNextTick);
+    }
+
+    internal static (long sequence, long startNextTick, float timeScale) ReadTimeSegment(
+        EbinRecordReadView clockRecord,
+        int index,
+        long nextTick,
+        string parameterName)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+        var segment = clockRecord.GetRecordArrayElement(5, index);
+        return ReadTimeSegment(
+            segment,
+            checked((long)index + 1),
+            nextTick,
+            previousStartNextTick: 0,
+            isInitialSegment: index == 0,
+            parameterName: parameterName);
     }
 
     private static ReadOnlyMemory<byte> GetPayload(ReadOnlyMemory<byte> record, int fieldIndex)
@@ -218,14 +234,12 @@ internal static class WorldPersistenceClockReader
         return BinaryPrimitives.ReadInt64LittleEndian(field.Payload);
     }
 
-    private static void ReadTimeSegment(
+    private static (long sequence, long startNextTick, float timeScale) ReadTimeSegment(
         EbinRecordReadView record,
         long expectedSequence,
         long nextTick,
         long previousStartNextTick,
         bool isInitialSegment,
-        out long startNextTick,
-        out float timeScale,
         string parameterName)
     {
         if ((record.Header.SchemaId != s_timeSegmentSchemaId)
@@ -237,8 +251,8 @@ internal static class WorldPersistenceClockReader
         }
 
         var sequence = ReadInt64(record, 1, parameterName);
-        startNextTick = ReadInt64(record, 2, parameterName);
-        timeScale = ReadFloat(record, 3, parameterName);
+        var startNextTick = ReadInt64(record, 2, parameterName);
+        var timeScale = ReadFloat(record, 3, parameterName);
 
         if ((sequence != expectedSequence)
             || (startNextTick < 0)
@@ -248,6 +262,8 @@ internal static class WorldPersistenceClockReader
         {
             throw new ArgumentException("A state/time-segment record has inconsistent sequence or tick ordering.", parameterName);
         }
+
+        return (sequence, startNextTick, timeScale);
     }
 
     private static uint ReadUInt32(EbinRecordReadView record, uint tag, string parameterName)
