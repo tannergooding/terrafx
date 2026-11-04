@@ -437,11 +437,13 @@ public sealed class WorldPersistence : IAsyncDisposable
 
         try
         {
-            if (options.Mode is WorldPersistenceMode.StrictLocal)
+            var strictLocalWorld = world.Options.Profile is SimulationProfile.StrictLocal;
+
+            if (strictLocalWorld != (options.Mode is WorldPersistenceMode.StrictLocal))
             {
                 return Task.FromResult(CreateRejected(
-                    "save-strict-local-layout-unavailable",
-                    "StrictLocal Save remains unavailable until layout validation and the complete header, checkpoint, and file workspace reservation are integrated before I/O.",
+                    "save-mode-profile-mismatch",
+                    "The save mode must match the World simulation profile; StrictLocal saves require a StrictLocal World.",
                     world.WorldGuid));
             }
 

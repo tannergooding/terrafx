@@ -59,6 +59,7 @@ internal sealed partial class EngineHostOptionsTests
         var options = CreateHeadlessOptions(assetStoreOptions, cpuWorkerCount: 0);
         EngineHost? host = null;
         World? world = null;
+        World? strictLocalWorld = null;
 
         try
         {
@@ -149,9 +150,33 @@ internal sealed partial class EngineHostOptionsTests
                 world.Options.Registration,
                 identityScratch: new WorldPersistenceIdentityScratchEntry[identityAssignmentCount]));
 
+            Task<SaveReceipt>? mismatchedStrictLocalSaveTask = null;
+            await host.InvokeAsync(_ => mismatchedStrictLocalSaveTask = host.Persistence.SaveAsync(
+                    world!,
+                    new SaveOptions(strictLocalSavePath, SaveDurabilityPolicy.BestEffort) {
+                        Mode = WorldPersistenceMode.StrictLocal,
+                    }))
+                .ConfigureAwait(false);
+            var mismatchedStrictLocalReceipt = await (mismatchedStrictLocalSaveTask
+                ?? throw new InvalidOperationException("The mismatched StrictLocal Save operation was not admitted."))
+                .ConfigureAwait(false);
+
+            Assert.Multiple(() => {
+                Assert.That(mismatchedStrictLocalReceipt.Status, Is.EqualTo(SaveStatus.Rejected));
+                Assert.That(mismatchedStrictLocalReceipt.Diagnostic?.Code, Is.EqualTo("save-mode-profile-mismatch"));
+                Assert.That(File.Exists(strictLocalSavePath), Is.False);
+            });
+
+            await host.InvokeAsync(engineContext => strictLocalWorld = engineContext.CreateWorld(new WorldOptions(worldRegistration) {
+                CpuWorkerCount = 0,
+                InitialReplayLineageId = Guid.NewGuid(),
+                Profile = SimulationProfile.StrictLocal,
+                WorldGuid = Guid.NewGuid(),
+            })).ConfigureAwait(false);
+            await Task.Delay(50).ConfigureAwait(false);
             Task<SaveReceipt>? strictLocalSaveTask = null;
             await host.InvokeAsync(_ => strictLocalSaveTask = host.Persistence.SaveAsync(
-                    world!,
+                    strictLocalWorld!,
                     new SaveOptions(strictLocalSavePath, SaveDurabilityPolicy.BestEffort) {
                         Mode = WorldPersistenceMode.StrictLocal,
                     }))
@@ -161,10 +186,53 @@ internal sealed partial class EngineHostOptionsTests
                 .ConfigureAwait(false);
 
             Assert.Multiple(() => {
-                Assert.That(strictLocalReceipt.Status, Is.EqualTo(SaveStatus.Rejected));
-                Assert.That(strictLocalReceipt.TransactionGeneration, Is.Null);
-                Assert.That(strictLocalReceipt.Diagnostic?.Code, Is.EqualTo("save-strict-local-layout-unavailable"));
-                Assert.That(File.Exists(strictLocalSavePath), Is.False);
+                Assert.That(strictLocalReceipt.Status, Is.AnyOf(SaveStatus.DurableCommitted, SaveStatus.BestEffortCommitted));
+                Assert.That(strictLocalReceipt.TransactionGeneration, Is.EqualTo(1));
+                Assert.That(strictLocalReceipt.Diagnostic, Is.Null);
+                Assert.That(File.Exists(strictLocalSavePath), Is.True);
+            });
+
+            var savedStrictLocalWorld = strictLocalWorld
+                ?? throw new InvalidOperationException("The StrictLocal World was not created.");
+            var strictLocalFileRecordFromSave = await File.ReadAllBytesAsync(strictLocalSavePath).ConfigureAwait(false);
+            var strictLocalLimits = WorldPersistenceEbinLimits.Create(savedStrictLocalWorld.Options);
+            var strictLocalCheckpointRecordFromSave = WorldPersistenceCheckpointWriter.ReadCheckpointRecord(
+                strictLocalFileRecordFromSave,
+                strictLocalLimits);
+            var strictLocalWorldRecordAction = new StrictLocalWorldRecordAction();
+            var strictLocalWorldRecordStatus = EbinStructuralReader.Read(
+                strictLocalCheckpointRecordFromSave,
+                strictLocalLimits,
+                EbinReadPolicy.Canonical,
+                ref strictLocalWorldRecordAction,
+                out var strictLocalCheckpointBytesConsumed,
+                out var strictLocalCheckpointDiagnostic);
+
+            Assert.That(strictLocalWorldRecordStatus, Is.EqualTo(EbinReadStatus.Complete), strictLocalCheckpointDiagnostic?.Category);
+            Assert.That(strictLocalCheckpointBytesConsumed, Is.EqualTo(strictLocalCheckpointRecordFromSave.Length));
+            var strictLocalWorldRecord = strictLocalWorldRecordAction.WorldRecord
+                ?? throw new InvalidOperationException("The StrictLocal checkpoint did not contain its World record.");
+            var strictLocalIdentityAssignmentCount = WorldPersistenceCheckpointWriter.MeasureIdentityAssignmentCount(
+                strictLocalFileRecordFromSave,
+                strictLocalLimits);
+            var strictLayoutWorkspace = WorldPersistenceWorldRecordReader.MeasureStrictLayoutReadWorkspace(
+                strictLocalWorldRecord,
+                strictLocalLimits);
+            var strictLayoutBuffers = WorldPersistenceStrictLayoutReadBuffers.Create(strictLayoutWorkspace);
+            var strictLocalContents = WorldPersistenceCheckpointWriter.ReadContents(
+                strictLocalFileRecordFromSave,
+                strictLocalLimits,
+                savedStrictLocalWorld.Options.Registration,
+                schemas,
+                assetIdScratch: [],
+                identityScratch: new WorldPersistenceIdentityScratchEntry[strictLocalIdentityAssignmentCount],
+                ref strictLayoutBuffers);
+
+            Assert.Multiple(() => {
+                Assert.That(strictLocalContents.Mode, Is.EqualTo((byte)WorldPersistenceMode.StrictLocal));
+                Assert.That(strictLocalContents.WorldContents.StrictLayoutRecord.IsEmpty, Is.False);
+                Assert.That(strictLocalContents.WorldContents.Cursors.AcceptedOwnerRequests, Is.Not.Null);
+                Assert.That(strictLocalContents.WorldContents.Ecs.WorldGuid, Is.EqualTo(savedStrictLocalWorld.WorldGuid));
             });
 
             await host.StopAsync().ConfigureAwait(false);
@@ -185,6 +253,21 @@ internal sealed partial class EngineHostOptionsTests
                 File.Delete(string.Concat(savePath, ".bak"));
                 File.Delete(strictLocalSavePath);
                 File.Delete(string.Concat(strictLocalSavePath, ".bak"));
+            }
+        }
+    }
+
+    private struct StrictLocalWorldRecordAction : IAction<EbinRecordReadView>
+    {
+        private static readonly Guid s_checkpointSchemaId = new ContentSchemaIdentityAssignment("state/checkpoint").SchemaId;
+
+        internal byte[]? WorldRecord { get; private set; }
+
+        public void Invoke(scoped EbinRecordReadView record)
+        {
+            if (record.Header.SchemaId == s_checkpointSchemaId)
+            {
+                WorldRecord = record.GetRecord(2).EncodedBytes.ToArray();
             }
         }
     }
