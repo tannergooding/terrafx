@@ -112,6 +112,18 @@ internal static class WorldPersistenceEcsReader
             throw new ArgumentException("A state/attachment row has the wrong schema identity, version, or field count.", parameterName);
         }
 
+        if (!attachment.TryGetField(1, out var schemaField)
+            || (schemaField.Kind != RecordKind)
+            || !schemaField.IsRequired
+            || (schemaField.Count != 1)
+            || !attachment.TryGetField(3, out var payloadField)
+            || (payloadField.Kind != RecordKind)
+            || !payloadField.IsRequired
+            || (payloadField.Count != 1))
+        {
+            throw new ArgumentException("A state/attachment row has an invalid schema or payload field.", parameterName);
+        }
+
         var hasOwner = attachment.TryGetField(2, out var ownerField);
 
         if (attachment.FieldCount != (hasOwner ? 3 : 2))

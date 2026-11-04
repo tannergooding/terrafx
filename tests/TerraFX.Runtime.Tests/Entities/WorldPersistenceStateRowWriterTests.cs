@@ -274,6 +274,16 @@ internal sealed class WorldPersistenceStateRowWriterTests
             differentLiveSet.MatchEntity(differentEntityId, nameof(destination));
             _ = Assert.Throws<ArgumentException>(() => AssertAttachmentOwnerRow(destination, limits, differentLiveSet));
         }
+
+        if (ownerEntityId is null)
+        {
+            var missingSchemaRecord = (byte[])destination.Clone();
+            BinaryPrimitives.WriteUInt32LittleEndian(missingSchemaRecord.AsSpan(64), 2);
+            _ = Assert.Throws<ArgumentException>(() => AssertAttachmentOwnerRow(
+                missingSchemaRecord,
+                limits,
+                liveIdentities));
+        }
     }
 
     [Test]
