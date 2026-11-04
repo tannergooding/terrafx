@@ -19,6 +19,7 @@ internal sealed class EntityArchetypeStorage
     private Chunk[] _chunks;
     private readonly ImmutableArray<IComponentRegistration> _components;
     private int _entityCount;
+    private readonly int _logicalRowBytes;
     private readonly int _maximumEntityCount;
     private readonly uint _ownerId;
 
@@ -52,6 +53,7 @@ internal sealed class EntityArchetypeStorage
         }
 
         _archetypeIndex = archetypeIndex;
+        _logicalRowBytes = checked((int)rowBytes);
         _chunkCapacity = Math.Min(ChunkCapacity, checked((int)(32768 / rowBytes)));
         _components = components;
         _maximumEntityCount = maximumEntityCount;
@@ -69,6 +71,8 @@ internal sealed class EntityArchetypeStorage
     internal int ChunkCount => _chunks.Length;
 
     internal int EntityCount => _entityCount;
+
+    internal int LogicalRowBytes => _logicalRowBytes;
 
     internal long OwnedByteReservation
     {

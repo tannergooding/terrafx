@@ -91,11 +91,75 @@ internal static class WorldPersistenceWorldRecordReader
             nameof(worldRecord));
     }
 
+    internal static WorldPersistenceStrictLayoutReadWorkspaceRequirements MeasureStrictLayoutReadWorkspace(
+        ReadOnlyMemory<byte> worldRecord,
+        EbinReadLimits limits)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+        var status = EbinStructuralReader.Validate(
+            worldRecord.Span,
+            limits,
+            EbinReadPolicy.Canonical,
+            out var bytesConsumed,
+            out _);
+
+        if ((status is not EbinReadStatus.Complete)
+            || (bytesConsumed != worldRecord.Length))
+        {
+            throw new ArgumentException("The state/world record is not a complete canonical EBIN record.", nameof(worldRecord));
+        }
+
+        var world = new EbinRecordReadView(worldRecord.Span);
+
+        if ((world.Header.SchemaId != s_worldSchemaId)
+            || (world.Header.Major != 1)
+            || (world.Header.Minor != 0)
+            || (world.FieldCount is < RequiredFieldCount or > 12))
+        {
+            throw new ArgumentException("The state/world record has the wrong schema identity, version, or field count.", nameof(worldRecord));
+        }
+
+        if (!world.TryGetField(11, out var strictLayoutField))
+        {
+            return default;
+        }
+
+        if ((strictLayoutField.Kind != RecordKind)
+            || strictLayoutField.IsRequired
+            || (strictLayoutField.Count != 1))
+        {
+            throw new ArgumentException("The state/world StrictLayout field has an invalid wire shape.", nameof(worldRecord));
+        }
+
+        for (var index = 0; index < world.FieldCount; index++)
+        {
+            if (world.GetField(index).Tag == 11)
+            {
+                return WorldPersistenceStrictLayoutReader.Measure(
+                    GetPayload(worldRecord, index),
+                    limits,
+                    nameof(worldRecord));
+            }
+        }
+
+        throw new InvalidOperationException("The state/world StrictLayout field has no encoded record payload.");
+    }
+
     internal static WorldPersistenceWorldRecordContents Read(
         ReadOnlyMemory<byte> worldRecord,
         EbinReadLimits limits,
         WorldRegistration? targetRegistration = null)
-        => ReadCore(worldRecord, limits, targetRegistration, assetReferenceSchemas: null, assetIdScratch: [], identityScratch: []);
+    {
+        var strictLayoutBuffers = default(WorldPersistenceStrictLayoutReadBuffers);
+        return ReadCore(
+            worldRecord,
+            limits,
+            targetRegistration,
+            null,
+            [],
+            [],
+            ref strictLayoutBuffers);
+    }
 
     internal static WorldPersistenceWorldRecordContents Read(
         ReadOnlyMemory<byte> worldRecord,
@@ -105,7 +169,15 @@ internal static class WorldPersistenceWorldRecordReader
         scoped Span<uint> assetIdScratch)
     {
         ArgumentNullException.ThrowIfNull(assetReferenceSchemas);
-        return ReadCore(worldRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch, identityScratch: []);
+        var strictLayoutBuffers = default(WorldPersistenceStrictLayoutReadBuffers);
+        return ReadCore(
+            worldRecord,
+            limits,
+            targetRegistration,
+            assetReferenceSchemas,
+            assetIdScratch,
+            [],
+            ref strictLayoutBuffers);
     }
 
     internal static WorldPersistenceWorldRecordContents Read(
@@ -117,7 +189,35 @@ internal static class WorldPersistenceWorldRecordReader
         scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch)
     {
         ArgumentNullException.ThrowIfNull(assetReferenceSchemas);
-        return ReadCore(worldRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch, identityScratch);
+        var strictLayoutBuffers = default(WorldPersistenceStrictLayoutReadBuffers);
+        return ReadCore(
+            worldRecord,
+            limits,
+            targetRegistration,
+            assetReferenceSchemas,
+            assetIdScratch,
+            identityScratch,
+            ref strictLayoutBuffers);
+    }
+
+    internal static WorldPersistenceWorldRecordContents Read(
+        ReadOnlyMemory<byte> worldRecord,
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry assetReferenceSchemas,
+        scoped Span<uint> assetIdScratch,
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
+        scoped ref WorldPersistenceStrictLayoutReadBuffers strictLayoutBuffers)
+    {
+        ArgumentNullException.ThrowIfNull(assetReferenceSchemas);
+        return ReadCore(
+            worldRecord,
+            limits,
+            targetRegistration,
+            assetReferenceSchemas,
+            assetIdScratch,
+            identityScratch,
+            ref strictLayoutBuffers);
     }
 
     internal static WorldPersistenceWorldRecordContents Read(
@@ -125,13 +225,32 @@ internal static class WorldPersistenceWorldRecordReader
         EbinReadLimits limits,
         WorldRegistration? targetRegistration,
         scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch)
+    {
+        var strictLayoutBuffers = default(WorldPersistenceStrictLayoutReadBuffers);
+        return ReadCore(
+            worldRecord,
+            limits,
+            targetRegistration,
+            null,
+            [],
+            identityScratch,
+            ref strictLayoutBuffers);
+    }
+
+    internal static WorldPersistenceWorldRecordContents Read(
+        ReadOnlyMemory<byte> worldRecord,
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration,
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
+        scoped ref WorldPersistenceStrictLayoutReadBuffers strictLayoutBuffers)
         => ReadCore(
             worldRecord,
             limits,
             targetRegistration,
-            assetReferenceSchemas: null,
-            assetIdScratch: [],
-            identityScratch: identityScratch);
+            null,
+            [],
+            identityScratch,
+            ref strictLayoutBuffers);
 
     private static ReadOnlyMemory<byte> GetPayload(ReadOnlyMemory<byte> record, int fieldIndex)
     {
@@ -148,7 +267,8 @@ internal static class WorldPersistenceWorldRecordReader
         WorldRegistration? targetRegistration,
         CompiledContentSchemaRegistry? assetReferenceSchemas,
         scoped Span<uint> assetIdScratch,
-        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch)
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
+        scoped ref WorldPersistenceStrictLayoutReadBuffers strictLayoutBuffers)
     {
         ArgumentNullException.ThrowIfNull(limits);
 
@@ -156,6 +276,19 @@ internal static class WorldPersistenceWorldRecordReader
             || MemoryMarshal.AsBytes(identityScratch).Overlaps(MemoryMarshal.AsBytes(assetIdScratch)))
         {
             throw new ArgumentException("The identity verification scratch span cannot overlap another buffer.", nameof(identityScratch));
+        }
+
+        if (strictLayoutBuffers.ArchetypeDigestScratch.Overlaps(worldRecord.Span)
+            || strictLayoutBuffers.FreeSlotBitset.Overlaps(worldRecord.Span)
+            || MemoryMarshal.AsBytes(strictLayoutBuffers.ChunkOrdinalScratch).Overlaps(worldRecord.Span)
+            || strictLayoutBuffers.ArchetypeDigestScratch.Overlaps(MemoryMarshal.AsBytes(identityScratch))
+            || strictLayoutBuffers.FreeSlotBitset.Overlaps(MemoryMarshal.AsBytes(identityScratch))
+            || MemoryMarshal.AsBytes(strictLayoutBuffers.ChunkOrdinalScratch).Overlaps(MemoryMarshal.AsBytes(identityScratch))
+            || strictLayoutBuffers.ArchetypeDigestScratch.Overlaps(MemoryMarshal.AsBytes(assetIdScratch))
+            || strictLayoutBuffers.FreeSlotBitset.Overlaps(MemoryMarshal.AsBytes(assetIdScratch))
+            || MemoryMarshal.AsBytes(strictLayoutBuffers.ChunkOrdinalScratch).Overlaps(MemoryMarshal.AsBytes(assetIdScratch)))
+        {
+            throw new ArgumentException("The StrictLocal verification scratch spans cannot overlap the source or sibling buffers.", nameof(strictLayoutBuffers));
         }
 
         var status = EbinStructuralReader.Validate(
@@ -397,7 +530,27 @@ internal static class WorldPersistenceWorldRecordReader
             parsedConfiguration.MaximumSceneOccurrences,
             liveIdentities,
             identityScratch);
-        liveIdentities.ThrowIfNotEmpty(nameof(worldRecord));
+
+        if (!strictLayoutRecord.IsEmpty)
+        {
+            var strictLayoutWorkspace = WorldPersistenceStrictLayoutReader.Measure(
+                strictLayoutRecord,
+                limits,
+                nameof(worldRecord));
+            WorldPersistenceStrictLayoutReader.Validate(
+                strictLayoutRecord,
+                ecsRecord,
+                registrationRecord,
+                limits,
+                parsedConfiguration,
+                targetRegistration,
+                liveIdentities,
+                strictLayoutWorkspace,
+                ref strictLayoutBuffers,
+                nameof(worldRecord));
+        }
+
+        liveIdentities.ThrowIfNotEmpty(nameof(worldRecord), requireStrictLayout: !strictLayoutRecord.IsEmpty);
 
         if (assetReferenceSchemas is not null)
         {

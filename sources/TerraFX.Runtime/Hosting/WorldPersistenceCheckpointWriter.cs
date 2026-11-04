@@ -157,7 +157,10 @@ internal static class WorldPersistenceCheckpointWriter
         scoped ReadOnlySpan<byte> fileRecord,
         EbinReadLimits limits,
         WorldRegistration? targetRegistration = null)
-        => ReadContentsCore(fileRecord, limits, targetRegistration, assetReferenceSchemas: null, assetIdScratch: [], identityScratch: []);
+    {
+        var strictLayoutBuffers = default(WorldPersistenceStrictLayoutReadBuffers);
+        return ReadContentsCore(fileRecord, limits, targetRegistration, null, [], [], ref strictLayoutBuffers);
+    }
 
     internal static WorldPersistenceCheckpointContents ReadContents(
         scoped ReadOnlySpan<byte> fileRecord,
@@ -167,7 +170,8 @@ internal static class WorldPersistenceCheckpointWriter
         scoped Span<uint> assetIdScratch)
     {
         ArgumentNullException.ThrowIfNull(assetReferenceSchemas);
-        return ReadContentsCore(fileRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch, identityScratch: []);
+        var strictLayoutBuffers = default(WorldPersistenceStrictLayoutReadBuffers);
+        return ReadContentsCore(fileRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch, [], ref strictLayoutBuffers);
     }
 
     internal static WorldPersistenceCheckpointContents ReadContents(
@@ -179,7 +183,28 @@ internal static class WorldPersistenceCheckpointWriter
         scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch)
     {
         ArgumentNullException.ThrowIfNull(assetReferenceSchemas);
-        return ReadContentsCore(fileRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch, identityScratch);
+        var strictLayoutBuffers = default(WorldPersistenceStrictLayoutReadBuffers);
+        return ReadContentsCore(fileRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch, identityScratch, ref strictLayoutBuffers);
+    }
+
+    internal static WorldPersistenceCheckpointContents ReadContents(
+        scoped ReadOnlySpan<byte> fileRecord,
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry assetReferenceSchemas,
+        scoped Span<uint> assetIdScratch,
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
+        scoped ref WorldPersistenceStrictLayoutReadBuffers strictLayoutBuffers)
+    {
+        ArgumentNullException.ThrowIfNull(assetReferenceSchemas);
+        return ReadContentsCore(
+            fileRecord,
+            limits,
+            targetRegistration,
+            assetReferenceSchemas,
+            assetIdScratch,
+            identityScratch,
+            ref strictLayoutBuffers);
     }
 
     internal static WorldPersistenceCheckpointContents ReadContents(
@@ -187,13 +212,32 @@ internal static class WorldPersistenceCheckpointWriter
         EbinReadLimits limits,
         WorldRegistration? targetRegistration,
         scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch)
+    {
+        var strictLayoutBuffers = default(WorldPersistenceStrictLayoutReadBuffers);
+        return ReadContentsCore(
+            fileRecord,
+            limits,
+            targetRegistration,
+            null,
+            [],
+            identityScratch,
+            ref strictLayoutBuffers);
+    }
+
+    internal static WorldPersistenceCheckpointContents ReadContents(
+        scoped ReadOnlySpan<byte> fileRecord,
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration,
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
+        scoped ref WorldPersistenceStrictLayoutReadBuffers strictLayoutBuffers)
         => ReadContentsCore(
             fileRecord,
             limits,
             targetRegistration,
             assetReferenceSchemas: null,
             assetIdScratch: [],
-            identityScratch: identityScratch);
+            identityScratch,
+            ref strictLayoutBuffers);
 
     internal static long ReadTransactionGeneration(
         scoped ReadOnlySpan<byte> fileRecord,
@@ -494,7 +538,8 @@ internal static class WorldPersistenceCheckpointWriter
         WorldRegistration? targetRegistration,
         CompiledContentSchemaRegistry? assetReferenceSchemas,
         scoped Span<uint> assetIdScratch,
-        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch)
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
+        scoped ref WorldPersistenceStrictLayoutReadBuffers strictLayoutBuffers)
     {
         ArgumentNullException.ThrowIfNull(limits);
         var reader = new FileRecordReader(
@@ -517,14 +562,20 @@ internal static class WorldPersistenceCheckpointWriter
         var worldRecord = reader.WorldRecord
             ?? throw new InvalidOperationException("The validated State2 file did not retain its World record.");
         var worldContents = (assetReferenceSchemas is null)
-            ? WorldPersistenceWorldRecordReader.Read(worldRecord, limits, targetRegistration, identityScratch)
+            ? WorldPersistenceWorldRecordReader.Read(
+                worldRecord,
+                limits,
+                targetRegistration,
+                identityScratch,
+                ref strictLayoutBuffers)
             : WorldPersistenceWorldRecordReader.Read(
                 worldRecord,
                 limits,
                 targetRegistration,
                 assetReferenceSchemas,
                 assetIdScratch,
-                identityScratch);
+                identityScratch,
+                ref strictLayoutBuffers);
 
         if ((worldContents.Clock.NextTick != reader.NextTick)
             || (worldContents.Ecs.WorldGuid != reader.WorldGuid)

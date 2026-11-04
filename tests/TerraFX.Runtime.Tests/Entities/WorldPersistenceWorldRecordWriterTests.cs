@@ -4,6 +4,7 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Linq;
 using System.Threading;
 using NUnit.Framework;
 using TerraFX;
@@ -13,6 +14,7 @@ using TerraFX.Entities;
 using TerraFX.Graphics;
 using TerraFX.Hosting;
 using TerraFX.Integration;
+using TerraFX.Numerics;
 using TerraFX.Scenes;
 
 namespace TerraFX.Runtime.Tests.Entities;
@@ -663,7 +665,14 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
         });
         var retiredEntity = world.CreateEntity(new EntityDescription(Guid.NewGuid()));
         var liveEntityId = Guid.NewGuid();
-        _ = world.CreateEntity(new EntityDescription(liveEntityId, tags: [tagId]));
+        var localTransform = SceneComponentDefinitions.CreateAssignedLocalTransform(
+            Vector3.Zero,
+            Quaternion.Identity,
+            Vector3.One);
+        _ = world.CreateEntity(new EntityDescription(
+            liveEntityId,
+            components: [ComponentInitialization.Value(in localTransform)],
+            tags: [tagId]));
         world.DestroyEntity(retiredEntity, HierarchyDestroyMode.DetachChildrenKeepWorld);
         _ = world.Step();
 
@@ -672,7 +681,16 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
         var worldRecord = ComposeWorldRecord(world, in lease, schemas, []);
         var identityAssignmentCount = WorldPersistenceWorldRecordReader.MeasureIdentityAssignmentCount(worldRecord, limits);
         var identityScratch = new WorldPersistenceIdentityScratchEntry[identityAssignmentCount];
-        var decoded = WorldPersistenceWorldRecordReader.Read(worldRecord, limits, registration, schemas, [], identityScratch);
+        var strictLayoutWorkspace = WorldPersistenceWorldRecordReader.MeasureStrictLayoutReadWorkspace(worldRecord, limits);
+        var strictLayoutBuffers = WorldPersistenceStrictLayoutReadBuffers.Create(strictLayoutWorkspace);
+        var decoded = WorldPersistenceWorldRecordReader.Read(
+            worldRecord,
+            limits,
+            registration,
+            schemas,
+            [],
+            identityScratch,
+            ref strictLayoutBuffers);
         var assertions = new StrictLayoutAllocatorAssertions(liveEntityId, tagId, registration);
         Assert.That(
             EbinStructuralReader.Read(
@@ -685,6 +703,32 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             Is.EqualTo(EbinReadStatus.Complete),
             diagnostic?.ToString());
         Assert.That(bytesConsumed, Is.EqualTo(decoded.StrictLayoutRecord.Length));
+
+        var liveSlotBytes = assertions.LiveSlotRecord.Span;
+        var corruptedWorldRecord = (byte[])worldRecord.Clone();
+        var liveSlotOffset = corruptedWorldRecord.AsSpan().IndexOf(liveSlotBytes);
+        Assert.That(liveSlotOffset, Is.GreaterThanOrEqualTo(0));
+        var chunkOrdinalPayloadOffset = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(
+            liveSlotBytes.Slice(64 + (5 * 32) + 8, sizeof(ulong))));
+        BinaryPrimitives.WriteInt64LittleEndian(
+            corruptedWorldRecord.AsSpan(checked(liveSlotOffset + chunkOrdinalPayloadOffset), sizeof(long)),
+            long.MaxValue);
+
+        try
+        {
+            _ = WorldPersistenceWorldRecordReader.Read(
+                corruptedWorldRecord,
+                limits,
+                registration,
+                schemas,
+                [],
+                identityScratch,
+                ref strictLayoutBuffers);
+            Assert.Fail("A live slot with an unallocated chunk ordinal was accepted.");
+        }
+        catch (ArgumentException)
+        {
+        }
     }
 
     [Test]
@@ -710,7 +754,16 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             var registration = new WorldRegistrationBuilder(schemas).Build();
             var identityAssignmentCount = WorldPersistenceWorldRecordReader.MeasureIdentityAssignmentCount(worldRecord, limits);
             var identityScratch = new WorldPersistenceIdentityScratchEntry[identityAssignmentCount];
-            var decoded = WorldPersistenceWorldRecordReader.Read(worldRecord, limits, registration, schemas, [], identityScratch);
+            var strictLayoutWorkspace = WorldPersistenceWorldRecordReader.MeasureStrictLayoutReadWorkspace(worldRecord, limits);
+            var strictLayoutBuffers = WorldPersistenceStrictLayoutReadBuffers.Create(strictLayoutWorkspace);
+            var decoded = WorldPersistenceWorldRecordReader.Read(
+                worldRecord,
+                limits,
+                registration,
+                schemas,
+                [],
+                identityScratch,
+                ref strictLayoutBuffers);
 
             Assert.That(decoded.Cursors.NextOwnerRequestSequence, Is.EqualTo(2));
             Assert.That(decoded.Cursors.NextBarrierEpoch, Is.EqualTo(lease.NextTickIndex + 1));
@@ -986,7 +1039,7 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             => EncodedPayload = record.GetRecordArrayElement(8, 1).GetRecord(3).EncodedBytes.ToArray();
     }
 
-    private readonly struct StrictLayoutAllocatorAssertions : IAction<EbinRecordReadView>
+    private struct StrictLayoutAllocatorAssertions : IAction<EbinRecordReadView>
     {
         private readonly Guid _liveEntityId;
         private readonly Guid _tagId;
@@ -1002,7 +1055,9 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             _registration = registration;
         }
 
-        public readonly void Invoke(scoped EbinRecordReadView record)
+        internal ReadOnlyMemory<byte> LiveSlotRecord { get; private set; }
+
+        public void Invoke(scoped EbinRecordReadView record)
         {
             Assert.That(record.Header.SchemaId, Is.EqualTo(new ContentSchemaIdentityAssignment("state/strict-layout").SchemaId));
             Assert.That(record.FieldCount, Is.EqualTo(5));
@@ -1038,16 +1093,28 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             Assert.That(emptyChunk.GetField(1).Count, Is.Zero);
 
             var taggedArchetype = record.GetRecordArrayElement(1, 1);
-            Assert.That(taggedArchetype.GetField(0).Count, Is.EqualTo(1));
+            Assert.That(taggedArchetype.GetField(0).Count, Is.EqualTo(2));
+            var schemaKeyPayload = taggedArchetype.GetField(0).Payload;
+            var firstSchemaId = new Guid(schemaKeyPayload.Slice(32, 16), bigEndian: true);
+            var secondSchemaId = new Guid(schemaKeyPayload.Slice(48, 16), bigEndian: true);
+            var localTransformSchemaId = new ContentSchemaIdentityAssignment("scene/local-transform").SchemaId;
             Assert.That(
-                new Guid(taggedArchetype.GetField(0).Payload[32..], bigEndian: true),
-                Is.EqualTo(_tagId));
+                ((firstSchemaId == _tagId) && (secondSchemaId == localTransformSchemaId))
+                    || ((firstSchemaId == localTransformSchemaId) && (secondSchemaId == _tagId)),
+                Is.True);
             var taggedChunk = taggedArchetype.GetRecordArrayElement(2, 0);
             Assert.That(BinaryPrimitives.ReadInt64LittleEndian(taggedChunk.GetField(0).Payload), Is.EqualTo(1));
             Assert.That(taggedChunk.GetField(1).Count, Is.EqualTo(1));
             Assert.That(
                 new Guid(taggedChunk.GetField(1).Payload[32..], bigEndian: true),
                 Is.EqualTo(_liveEntityId));
+            var localTransformLayout = _registration.Components
+                .First(component => component.SchemaReference.SchemaId == localTransformSchemaId)
+                .Layout;
+            var logicalRowBytes = checked(12 + localTransformLayout.LogicalBytes);
+            var expectedCapacity = checked((ushort)Math.Min(256, 32_768 / logicalRowBytes));
+            Assert.That(BinaryPrimitives.ReadUInt16LittleEndian(taggedChunk.GetField(2).Payload), Is.EqualTo(expectedCapacity));
+            Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(taggedChunk.GetField(3).Payload), Is.EqualTo(logicalRowBytes));
 
             var freeSlot = record.GetRecordArrayElement(2, 0);
             Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(freeSlot.GetField(0).Payload), Is.EqualTo(1));
@@ -1056,6 +1123,7 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             Assert.That(freeSlot.FieldCount, Is.EqualTo(3));
 
             var liveSlot = record.GetRecordArrayElement(2, 1);
+            LiveSlotRecord = liveSlot.EncodedBytes.ToArray();
             Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(liveSlot.GetField(0).Payload), Is.EqualTo(2));
             Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(liveSlot.GetField(1).Payload), Is.EqualTo(1));
             Assert.That(liveSlot.GetField(2).Payload[0], Is.Zero);
@@ -1093,8 +1161,8 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             Assert.That(BinaryPrimitives.ReadInt64LittleEndian(chunk.GetField(0).Payload), Is.Zero);
             Assert.That(chunk.GetField(1).Count, Is.EqualTo(1));
             Assert.That(new Guid(chunk.GetField(1).Payload[32..], bigEndian: true), Is.EqualTo(_entityId));
-            Assert.That(BinaryPrimitives.ReadUInt16LittleEndian(chunk.GetField(2).Payload), Is.EqualTo(1));
-            Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(chunk.GetField(3).Payload), Is.EqualTo(256));
+            Assert.That(BinaryPrimitives.ReadUInt16LittleEndian(chunk.GetField(2).Payload), Is.EqualTo(256));
+            Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(chunk.GetField(3).Payload), Is.EqualTo(12));
 
             var slot = record.GetRecordArrayElement(2, 0);
             Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(slot.GetField(0).Payload), Is.EqualTo(1));
