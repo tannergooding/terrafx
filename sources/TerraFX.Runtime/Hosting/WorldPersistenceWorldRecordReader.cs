@@ -206,9 +206,18 @@ internal static class WorldPersistenceWorldRecordReader
         }
 
         var parsedConfiguration = WorldPersistenceConfigurationReader.Read(configurationRecord, limits);
+        var parsedClock = WorldPersistenceClockReader.Read(clockRecord, limits);
+
+        if ((parsedClock.HasInitialFrame2 != !frame2Record.IsEmpty)
+            || (controlRecordCount > parsedConfiguration.MaximumRecordedControls)
+            || (parsedClock.SegmentCount > (parsedConfiguration.MaximumRecordedControls + 1)))
+        {
+            throw new ArgumentException("The state/world clock, controls, or initial-frame presence does not match the saved configuration.", nameof(worldRecord));
+        }
 
         return new WorldPersistenceWorldRecordContents(
             parsedConfiguration,
+            parsedClock,
             configurationRecord,
             clockRecord,
             frame2Record,

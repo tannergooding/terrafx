@@ -9,6 +9,7 @@ internal sealed class WorldPersistenceWorldRecordContents
 {
     internal WorldPersistenceWorldRecordContents(
         WorldPersistenceConfiguration configuration,
+        WorldPersistenceClockContents clock,
         ReadOnlyMemory<byte> configurationRecord,
         ReadOnlyMemory<byte> clockRecord,
         ReadOnlyMemory<byte> frame2Record,
@@ -26,6 +27,7 @@ internal sealed class WorldPersistenceWorldRecordContents
         ReadOnlyMemory<byte> registrationRecord)
     {
         Configuration = configuration;
+        Clock = clock;
         ConfigurationRecord = configurationRecord;
         ClockRecord = clockRecord;
         Frame2Record = frame2Record;
@@ -46,6 +48,8 @@ internal sealed class WorldPersistenceWorldRecordContents
     internal int AssetIdCount { get; }
 
     internal ReadOnlyMemory<byte> AssetIdsPayload { get; }
+
+    internal WorldPersistenceClockContents Clock { get; }
 
     internal ReadOnlyMemory<byte> ClockRecord { get; }
 

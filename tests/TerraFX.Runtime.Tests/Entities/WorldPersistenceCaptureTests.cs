@@ -543,6 +543,27 @@ internal sealed class WorldPersistenceCaptureTests
             out var readDiagnostic);
         Assert.That(readStatus, Is.EqualTo(EbinReadStatus.Complete), readDiagnostic?.ToString());
         Assert.That(bytesConsumed, Is.EqualTo(bytesWritten));
+
+        var limits = WorldPersistenceEbinLimits.Create(world.Options);
+        var encodedClock = buffers.Destination[..bytesWritten].ToArray();
+        var clock = WorldPersistenceClockReader.Read(encodedClock, limits);
+        Assert.That(clock.NextTick, Is.EqualTo(1));
+        Assert.That(clock.TickRate, Is.EqualTo(world.TickRate));
+        Assert.That(clock.TimeScale, Is.EqualTo(1.5f));
+        Assert.That(clock.NextPublicationSequence, Is.EqualTo(2));
+        Assert.That(clock.SegmentCount, Is.EqualTo(3));
+        Assert.That(clock.CurrentSegmentSequence, Is.EqualTo(3));
+        Assert.That(clock.HasInitialFrame2, Is.True);
+        Assert.That(clock.InitialFrame2Record.IsEmpty, Is.False);
+        Assert.That(clock.InitialFrame3Record.IsEmpty, Is.False);
+        Assert.That(clock.HistoryBaseNextTick, Is.Zero);
+
+        var invalidReplayClock = (byte[])encodedClock.Clone();
+        var replayCompleteEntryOffset = checked(64 + (5 * 32));
+        var replayCompletePayloadOffset = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(
+            invalidReplayClock.AsSpan(replayCompleteEntryOffset + 8, sizeof(ulong))));
+        invalidReplayClock[replayCompletePayloadOffset] = 1;
+        _ = Assert.Throws<ArgumentException>(() => WorldPersistenceClockReader.Read(invalidReplayClock, limits));
     }
 
     [Test]
@@ -610,6 +631,15 @@ internal sealed class WorldPersistenceCaptureTests
             Assert.That(readStatus, Is.EqualTo(EbinReadStatus.Complete), readDiagnostic?.ToString());
             Assert.That(bytesConsumed, Is.EqualTo(bytesWritten));
         }
+
+        var encodedClock = buffers.Destination[..workspace.RecordBytes].ToArray();
+        var clock = WorldPersistenceClockReader.Read(
+            encodedClock,
+            WorldPersistenceEbinLimits.Create(world.Options));
+        Assert.That(clock.HasInitialFrame2, Is.False);
+        Assert.That(clock.InitialFrame2Record.IsEmpty, Is.True);
+        Assert.That(clock.InitialFrame3Record.IsEmpty, Is.False);
+        Assert.That(clock.SegmentCount, Is.EqualTo(1));
     }
 
     [Test]

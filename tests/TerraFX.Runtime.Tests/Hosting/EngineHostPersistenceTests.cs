@@ -101,6 +101,9 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(checkpoint.WorldRecord.IsEmpty, Is.False);
                 Assert.That(worldContents.Configuration.MaximumLiveEntities, Is.EqualTo(world.Options.MaximumLiveEntities));
                 Assert.That(worldContents.Configuration.MaximumSnapshotBytes, Is.EqualTo(world.Options.MaximumSnapshotBytes));
+                Assert.That(worldContents.Clock.NextTick, Is.EqualTo(checkpoint.NextTick));
+                Assert.That(worldContents.Clock.TickRate, Is.EqualTo(world.Options.TickRate));
+                Assert.That(worldContents.Clock.SegmentCount, Is.GreaterThanOrEqualTo(1));
                 Assert.That(worldContents.ConfigurationRecord.IsEmpty, Is.False);
                 Assert.That(worldContents.ClockRecord.IsEmpty, Is.False);
                 Assert.That(worldContents.Frame2Record.IsEmpty, Is.False);

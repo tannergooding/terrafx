@@ -551,6 +551,7 @@ internal static class WorldPersistenceClockWriter
     private static EbinWriteStatus AddRecordField(
         uint tag,
         scoped ReadOnlySpan<byte> record,
+        bool isRequired,
         Span<EbinFieldSource> fields,
         ref int fieldCount,
         Span<byte> payloadStorage,
@@ -564,7 +565,7 @@ internal static class WorldPersistenceClockWriter
         }
 
         record.CopyTo(payloadStorage[payloadBytes..]);
-        fields[fieldCount++] = new EbinFieldSource(tag, 22, 1, 1, new EbinPayloadSlice(payloadBytes, record.Length));
+        fields[fieldCount++] = new EbinFieldSource(tag, 22, isRequired ? (ushort)1 : (ushort)0, 1, new EbinPayloadSlice(payloadBytes, record.Length));
         payloadBytes = checked(payloadBytes + record.Length);
         diagnostic = null;
         return EbinWriteStatus.Complete;
@@ -719,7 +720,15 @@ internal static class WorldPersistenceClockWriter
 
         if (workspace.HasInitialFrame2)
         {
-            status = AddRecordField(8, initialFrame2, fields, ref fieldCount, payloadStorage, ref payloadBytes, out diagnostic);
+            status = AddRecordField(
+                8,
+                initialFrame2,
+                isRequired: false,
+                fields,
+                ref fieldCount,
+                payloadStorage,
+                ref payloadBytes,
+                out diagnostic);
 
             if (status is not EbinWriteStatus.Complete)
             {
@@ -727,7 +736,15 @@ internal static class WorldPersistenceClockWriter
             }
         }
 
-        status = AddRecordField(9, initialFrame3, fields, ref fieldCount, payloadStorage, ref payloadBytes, out diagnostic);
+        status = AddRecordField(
+            9,
+            initialFrame3,
+            isRequired: true,
+            fields,
+            ref fieldCount,
+            payloadStorage,
+            ref payloadBytes,
+            out diagnostic);
 
         if (status is not EbinWriteStatus.Complete)
         {
