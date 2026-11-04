@@ -7,7 +7,9 @@ namespace TerraFX.Entities;
 
 internal static class WorldPersistenceCursorWriter
 {
-    private const int PayloadStorageBytes = 56;
+    private const int MaximumPayloadStorageBytes = 80;
+    private const int StandardFieldCount = 4;
+    private const int StrictLocalFieldCount = 7;
 
     private static readonly Guid s_schemaId = new ContentSchemaIdentityAssignment("state/cursors").SchemaId;
 
@@ -19,9 +21,9 @@ internal static class WorldPersistenceCursorWriter
     {
         ArgumentNullException.ThrowIfNull(limits);
         lease.ValidateCurrent();
-        Span<EbinFieldSource> fields = stackalloc EbinFieldSource[4];
-        Span<byte> payloadStorage = stackalloc byte[PayloadStorageBytes];
-        var status = BuildFields(lease.NextControlSequence, limits, fields, payloadStorage, out var payloadBytes, out diagnostic);
+        Span<EbinFieldSource> fields = stackalloc EbinFieldSource[StrictLocalFieldCount];
+        Span<byte> payloadStorage = stackalloc byte[MaximumPayloadStorageBytes];
+        var status = BuildFields(lease, limits, fields, payloadStorage, out var fieldCount, out var payloadBytes, out diagnostic);
 
         if (status is not EbinWriteStatus.Complete)
         {
@@ -33,7 +35,7 @@ internal static class WorldPersistenceCursorWriter
             s_schemaId,
             major: 1,
             minor: 0,
-            fields,
+            fields[..fieldCount],
             payloadStorage[..payloadBytes]);
         return EbinStructuralWriter.Measure(in source, limits, out recordBytes, out diagnostic);
     }
@@ -48,9 +50,9 @@ internal static class WorldPersistenceCursorWriter
     {
         ArgumentNullException.ThrowIfNull(limits);
         lease.ValidateCurrent();
-        Span<EbinFieldSource> fields = stackalloc EbinFieldSource[4];
-        Span<byte> payloadStorage = stackalloc byte[PayloadStorageBytes];
-        var status = BuildFields(lease.NextControlSequence, limits, fields, payloadStorage, out var payloadBytes, out diagnostic);
+        Span<EbinFieldSource> fields = stackalloc EbinFieldSource[StrictLocalFieldCount];
+        Span<byte> payloadStorage = stackalloc byte[MaximumPayloadStorageBytes];
+        var status = BuildFields(lease, limits, fields, payloadStorage, out var fieldCount, out var payloadBytes, out diagnostic);
 
         if (status is not EbinWriteStatus.Complete)
         {
@@ -62,7 +64,7 @@ internal static class WorldPersistenceCursorWriter
             s_schemaId,
             major: 1,
             minor: 0,
-            fields,
+            fields[..fieldCount],
             payloadStorage[..payloadBytes]);
         return EbinStructuralWriter.Write(
             in source,
@@ -110,6 +112,7 @@ internal static class WorldPersistenceCursorWriter
     private static EbinWriteStatus AddInt64Field(
         uint tag,
         long value,
+        bool isRequired,
         Span<EbinFieldSource> fields,
         ref int fieldCount,
         Span<byte> payloadStorage,
@@ -123,34 +126,42 @@ internal static class WorldPersistenceCursorWriter
             return status;
         }
 
-        fields[fieldCount++] = new EbinFieldSource(tag, 8, 1, 1, new EbinPayloadSlice(payloadBytes, fieldBytes));
+        fields[fieldCount++] = new EbinFieldSource(
+            tag,
+            8,
+            isRequired ? (ushort)1 : (ushort)0,
+            1,
+            new EbinPayloadSlice(payloadBytes, fieldBytes));
         payloadBytes = checked(payloadBytes + fieldBytes);
         return EbinWriteStatus.Complete;
     }
 
     private static EbinWriteStatus BuildFields(
-        long nextControlSequence,
+        WorldPersistenceCaptureLease lease,
         EbinReadLimits limits,
         Span<EbinFieldSource> fields,
         Span<byte> payloadStorage,
+        out int fieldCount,
         out int payloadBytes,
         out EbinStructuralDiagnostic? diagnostic)
     {
         fields.Clear();
         payloadStorage.Clear();
+        fieldCount = 0;
         payloadBytes = 0;
         diagnostic = null;
+        var isStrictLocal = lease.Profile is SimulationProfile.StrictLocal;
 
-        if (nextControlSequence <= 0)
+        if (lease.NextControlSequence <= 0)
         {
             diagnostic = CreateDiagnostic("next-control-sequence", 0, 1);
             return EbinWriteStatus.InvalidRecord;
         }
 
-        var fieldCount = 0;
         var status = AddInt64Field(
             1,
-            nextControlSequence,
+            lease.NextControlSequence,
+            isRequired: true,
             fields,
             ref fieldCount,
             payloadStorage,
@@ -160,6 +171,39 @@ internal static class WorldPersistenceCursorWriter
         if (status is not EbinWriteStatus.Complete)
         {
             return status;
+        }
+
+        if (isStrictLocal)
+        {
+            status = AddInt64Field(
+                2,
+                lease.NextOwnerRequestSequence,
+                isRequired: false,
+                fields,
+                ref fieldCount,
+                payloadStorage,
+                ref payloadBytes,
+                out diagnostic);
+
+            if (status is not EbinWriteStatus.Complete)
+            {
+                return status;
+            }
+
+            status = AddInt64Field(
+                3,
+                lease.NextBarrierEpoch,
+                isRequired: false,
+                fields,
+                ref fieldCount,
+                payloadStorage,
+                ref payloadBytes,
+                out diagnostic);
+
+            if (status is not EbinWriteStatus.Complete)
+            {
+                return status;
+            }
         }
 
         status = AddEmptyRecordArrayField(
@@ -199,7 +243,29 @@ internal static class WorldPersistenceCursorWriter
             ref payloadBytes,
             out diagnostic);
 
-        if (payloadBytes != PayloadStorageBytes)
+        if (status is not EbinWriteStatus.Complete)
+        {
+            return status;
+        }
+
+        if (isStrictLocal)
+        {
+            status = AddInt64Field(
+                7,
+                lease.AcceptedOwnerRequests,
+                isRequired: false,
+                fields,
+                ref fieldCount,
+                payloadStorage,
+                ref payloadBytes,
+                out diagnostic);
+        }
+
+        var expectedFieldCount = isStrictLocal ? StrictLocalFieldCount : StandardFieldCount;
+        var expectedPayloadBytes = isStrictLocal ? MaximumPayloadStorageBytes : (MaximumPayloadStorageBytes - 24);
+
+        if ((status is EbinWriteStatus.Complete)
+            && ((fieldCount != expectedFieldCount) || (payloadBytes != expectedPayloadBytes)))
         {
             throw new InvalidOperationException("The state/cursors payload extent changed after workspace measurement.");
         }

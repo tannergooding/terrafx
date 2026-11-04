@@ -9,6 +9,7 @@ namespace TerraFX.Entities;
 
 internal ref struct WorldPersistenceCaptureLease
 {
+    private readonly long _acceptedOwnerRequests;
     private readonly long _canonicalMutationRevision;
     private readonly long _cohortGeneration;
     private readonly long _committedMutationRevision;
@@ -19,7 +20,9 @@ internal ref struct WorldPersistenceCaptureLease
     private readonly float _initialTimeScale;
     private bool _isDisposed;
     private readonly long _nextControlSequence;
+    private readonly long _nextOwnerRequestSequence;
     private readonly long _nextTickIndex;
+    private readonly SimulationProfile _profile;
     private readonly long _publicationSequence;
     private readonly long _sequence;
     private readonly IWorldSceneParticipant? _sceneParticipant;
@@ -44,6 +47,9 @@ internal ref struct WorldPersistenceCaptureLease
         float timeScale,
         long timeScaleSegmentSequence,
         long nextControlSequence,
+        long nextOwnerRequestSequence,
+        long acceptedOwnerRequests,
+        SimulationProfile profile,
         int controlRecordCount,
         SpatialFrame3 initialFrame3,
         SpatialFrame2? initialFrame2,
@@ -63,7 +69,15 @@ internal ref struct WorldPersistenceCaptureLease
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(tickRate);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(timeScaleSegmentSequence);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(nextControlSequence);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(nextOwnerRequestSequence);
+        ArgumentOutOfRangeException.ThrowIfNegative(acceptedOwnerRequests);
         ArgumentOutOfRangeException.ThrowIfNegative(controlRecordCount);
+
+        if (nextOwnerRequestSequence != checked(acceptedOwnerRequests + 1))
+        {
+            throw new ArgumentException("The captured owner-request sequence does not follow accepted admissions.", nameof(nextOwnerRequestSequence));
+        }
+
         _world = world;
         _sequence = sequence;
         _cohortGeneration = cohortGeneration;
@@ -78,6 +92,9 @@ internal ref struct WorldPersistenceCaptureLease
         _timeScale = timeScale;
         _timeScaleSegmentSequence = timeScaleSegmentSequence;
         _nextControlSequence = nextControlSequence;
+        _nextOwnerRequestSequence = nextOwnerRequestSequence;
+        _acceptedOwnerRequests = acceptedOwnerRequests;
+        _profile = profile;
         _controlRecordCount = controlRecordCount;
         _initialFrame3 = initialFrame3;
         _initialFrame2 = initialFrame2;
@@ -86,6 +103,8 @@ internal ref struct WorldPersistenceCaptureLease
         _sceneParticipant = sceneParticipant;
         _isDisposed = false;
     }
+
+    internal readonly long AcceptedOwnerRequests => _acceptedOwnerRequests;
 
     internal readonly long CanonicalMutationRevision => _canonicalMutationRevision;
 
@@ -109,11 +128,17 @@ internal ref struct WorldPersistenceCaptureLease
 
     internal readonly bool IsDisposed => _isDisposed;
 
+    internal readonly long NextBarrierEpoch => checked(_nextTickIndex + 1);
+
     internal readonly long NextControlSequence => _nextControlSequence;
+
+    internal readonly long NextOwnerRequestSequence => _nextOwnerRequestSequence;
 
     internal readonly long NextTickIndex => _nextTickIndex;
 
     internal readonly uint OwnerId => _world.OwnerId;
+
+    internal readonly SimulationProfile Profile => _profile;
 
     internal readonly long PublicationSequence => _publicationSequence;
 

@@ -11,13 +11,15 @@ namespace TerraFX.Runtime.Tests.Entities;
 [TestFixture]
 internal sealed class WorldPersistenceCursorWriterTests
 {
-    [Test]
-    public void WritesCommittedControlCursorAndEmptyPendingArraysUnderReservation()
+    [TestCase(SimulationProfile.Standard)]
+    [TestCase(SimulationProfile.StrictLocal)]
+    public void WritesCommittedControlCursorAndEmptyPendingArraysUnderReservation(SimulationProfile profile)
     {
         var registration = new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build();
         using var world = World.Create(new WorldOptions(registration) {
             CpuWorkerCount = 0,
             InitialReplayLineageId = Guid.NewGuid(),
+            Profile = profile,
             WorldGuid = Guid.NewGuid(),
         });
         _ = world.Step();
@@ -45,7 +47,12 @@ internal sealed class WorldPersistenceCursorWriterTests
         Assert.That(diagnostic, Is.Null);
         Assert.That(bytesWritten, Is.EqualTo(recordBytes));
 
-        var assertions = new CursorAssertions(lease.NextControlSequence);
+        var assertions = new CursorAssertions(
+            lease.Profile,
+            lease.NextControlSequence,
+            lease.NextOwnerRequestSequence,
+            lease.NextBarrierEpoch,
+            lease.AcceptedOwnerRequests);
         Assert.That(
             EbinStructuralReader.Read(
                 destination.AsSpan(0, bytesWritten),
@@ -61,11 +68,24 @@ internal sealed class WorldPersistenceCursorWriterTests
 
     private readonly struct CursorAssertions : IAction<EbinRecordReadView>
     {
+        private readonly long _acceptedOwnerRequests;
+        private readonly long _nextBarrierEpoch;
         private readonly long _nextControlSequence;
+        private readonly long _nextOwnerRequestSequence;
+        private readonly SimulationProfile _profile;
 
-        internal CursorAssertions(long nextControlSequence)
+        internal CursorAssertions(
+            SimulationProfile profile,
+            long nextControlSequence,
+            long nextOwnerRequestSequence,
+            long nextBarrierEpoch,
+            long acceptedOwnerRequests)
         {
+            _acceptedOwnerRequests = acceptedOwnerRequests;
+            _nextBarrierEpoch = nextBarrierEpoch;
             _nextControlSequence = nextControlSequence;
+            _nextOwnerRequestSequence = nextOwnerRequestSequence;
+            _profile = profile;
         }
 
         private static void AssertEmptyRecordArray(EbinFieldReadView field, uint tag)
@@ -79,23 +99,46 @@ internal sealed class WorldPersistenceCursorWriterTests
             Assert.That(BinaryPrimitives.ReadUInt64LittleEndian(field.Payload[8..]), Is.EqualTo(16));
         }
 
+        private static void AssertOptionalInt64Field(EbinFieldReadView field, uint tag, long expectedValue)
+        {
+            Assert.That(field.Tag, Is.EqualTo(tag));
+            Assert.That(field.Kind, Is.EqualTo(8));
+            Assert.That(field.IsRequired, Is.False);
+            Assert.That(field.Count, Is.EqualTo(1));
+            Assert.That(field.Payload.Length, Is.EqualTo(sizeof(long)));
+            Assert.That(BinaryPrimitives.ReadInt64LittleEndian(field.Payload), Is.EqualTo(expectedValue));
+        }
+
         public readonly void Invoke(scoped EbinRecordReadView record)
         {
             Assert.That(record.Header.SchemaId, Is.EqualTo(new ContentSchemaIdentityAssignment("state/cursors").SchemaId));
             Assert.That(record.Header.Major, Is.EqualTo(1));
             Assert.That(record.Header.Minor, Is.Zero);
-            Assert.That(record.FieldCount, Is.EqualTo(4));
+            var isStrictLocal = _profile is SimulationProfile.StrictLocal;
+            Assert.That(record.FieldCount, Is.EqualTo(isStrictLocal ? 7 : 4));
 
-            var nextControlSequence = record.GetField(0);
+            var fieldIndex = 0;
+            var nextControlSequence = record.GetField(fieldIndex++);
             Assert.That(nextControlSequence.Tag, Is.EqualTo(1));
             Assert.That(nextControlSequence.Kind, Is.EqualTo(8));
             Assert.That(nextControlSequence.IsRequired, Is.True);
             Assert.That(nextControlSequence.Count, Is.EqualTo(1));
             Assert.That(BinaryPrimitives.ReadInt64LittleEndian(nextControlSequence.Payload), Is.EqualTo(_nextControlSequence));
 
-            AssertEmptyRecordArray(record.GetField(1), 4);
-            AssertEmptyRecordArray(record.GetField(2), 5);
-            AssertEmptyRecordArray(record.GetField(3), 6);
+            if (isStrictLocal)
+            {
+                AssertOptionalInt64Field(record.GetField(fieldIndex++), 2, _nextOwnerRequestSequence);
+                AssertOptionalInt64Field(record.GetField(fieldIndex++), 3, _nextBarrierEpoch);
+            }
+
+            AssertEmptyRecordArray(record.GetField(fieldIndex++), 4);
+            AssertEmptyRecordArray(record.GetField(fieldIndex++), 5);
+            AssertEmptyRecordArray(record.GetField(fieldIndex++), 6);
+
+            if (isStrictLocal)
+            {
+                AssertOptionalInt64Field(record.GetField(fieldIndex), 7, _acceptedOwnerRequests);
+            }
         }
     }
 }

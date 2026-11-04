@@ -36,6 +36,7 @@ internal readonly ref struct WorldPersistenceWorldRecordSources
         Frame2Record = frame2Record;
         Frame3Record = frame3Record;
         LeaseSequence = lease.Sequence;
+        Profile = lease.Profile;
         RandomArrayPayload = randomArrayPayload;
         RandomStreamCount = randomStreamCount;
         RegistrationRecord = registrationRecord;
@@ -63,6 +64,8 @@ internal readonly ref struct WorldPersistenceWorldRecordSources
     internal ReadOnlySpan<byte> Frame3Record { get; }
 
     internal long LeaseSequence { get; }
+
+    internal SimulationProfile Profile { get; }
 
     internal ReadOnlySpan<byte> RandomArrayPayload { get; }
 

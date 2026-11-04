@@ -145,7 +145,8 @@ internal static class WorldPersistenceWorldRecordWriter
             return status;
         }
 
-        status = ValidateRecord(sources.CursorsRecord, "state/cursors", expectedFieldCount: 4, limits, out diagnostic);
+        var cursorFieldCount = sources.Profile is SimulationProfile.StrictLocal ? 7 : 4;
+        status = ValidateRecord(sources.CursorsRecord, "state/cursors", cursorFieldCount, limits, out diagnostic);
 
         if (status is not EbinWriteStatus.Complete)
         {

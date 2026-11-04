@@ -27,6 +27,8 @@ public sealed partial class World
 
         IWorldSceneParticipant? sceneParticipant = null;
         var sceneCaptureActive = false;
+        long acceptedOwnerRequests;
+        long nextOwnerRequestSequence;
 
         try
         {
@@ -40,6 +42,8 @@ public sealed partial class World
                 }
 
                 _isPersistenceCaptureLeaseActive = true;
+                acceptedOwnerRequests = _acceptedOwnerRequests;
+                nextOwnerRequestSequence = _nextOwnerRequestSequence;
             }
 
             sceneParticipant = _sceneParticipant;
@@ -78,6 +82,9 @@ public sealed partial class World
                 _timeScale,
                 _timeScaleSegmentSequence,
                 _nextControlSequence,
+                nextOwnerRequestSequence,
+                acceptedOwnerRequests,
+                Profile,
                 _controlRecordCount,
                 _initialFrame3,
                 _initialFrame2,

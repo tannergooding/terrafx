@@ -71,7 +71,8 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             fields);
     }
 
-    private static (CompiledContentSchemaRegistry Schemas, World World) CreateControlValidationWorld()
+    private static (CompiledContentSchemaRegistry Schemas, World World) CreateControlValidationWorld(
+        SimulationProfile profile = SimulationProfile.Standard)
     {
         DataSchema[] schemaRows = [
             .. CoreContentSchemaCatalogue.PrimitiveSchemas,
@@ -92,6 +93,7 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
             CpuWorkerCount = 0,
             Enable2DFrame = true,
             InitialReplayLineageId = Guid.NewGuid(),
+            Profile = profile,
             WorldGuid = Guid.NewGuid(),
         });
         return (schemas, world);
@@ -568,6 +570,29 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
                     out var cursorDiagnostic),
                 Is.EqualTo(EbinWriteStatus.InvalidRecord));
         Assert.That(cursorDiagnostic?.Category, Is.EqualTo("next-control-sequence-mismatch"));
+    }
+
+    [Test]
+    public void ComposesStrictLocalCursorStateWithoutClaimingLayoutCapture()
+    {
+        var (schemas, world) = CreateControlValidationWorld(SimulationProfile.StrictLocal);
+        using (world)
+        {
+            _ = world.Step();
+            using var lease = world.AcquirePersistenceCaptureLease();
+            var limits = WorldPersistenceEbinLimits.Create(world.Options);
+            var worldRecord = ComposeWorldRecord(world, in lease, schemas, []);
+            var registration = new WorldRegistrationBuilder(schemas).Build();
+            var decoded = WorldPersistenceWorldRecordReader.Read(worldRecord, limits, registration, schemas, []);
+
+            Assert.That(decoded.Cursors.NextOwnerRequestSequence, Is.EqualTo(lease.NextOwnerRequestSequence));
+            Assert.That(decoded.Cursors.NextBarrierEpoch, Is.EqualTo(lease.NextTickIndex + 1));
+            Assert.That(decoded.Cursors.AcceptedOwnerRequests, Is.EqualTo(lease.AcceptedOwnerRequests));
+            Assert.That(decoded.Cursors.PendingCommandCount, Is.Zero);
+            Assert.That(decoded.Cursors.PendingOwnerRequestCount, Is.Zero);
+            Assert.That(decoded.Cursors.PendingWorldEventCount, Is.Zero);
+            Assert.That(decoded.StrictLayoutRecord.IsEmpty, Is.True);
+        }
     }
 
     [TestCase(false, true)]
