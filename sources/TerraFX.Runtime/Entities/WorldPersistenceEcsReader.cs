@@ -9,6 +9,7 @@ internal static class WorldPersistenceEcsReader
 {
     private const ushort ArrayKind = 24;
     private const ushort GuidKind = 11;
+    private const ushort Int64Kind = 8;
     private const int MaximumSystemOrResourceCount = 4096;
     private const ushort RecordKind = 22;
     private const int RootFieldCount = 5;
@@ -128,6 +129,18 @@ internal static class WorldPersistenceEcsReader
         return checked((int)field.Count);
     }
 
+    private static long ReadInt64(EbinRecordReadView record, uint tag, string parameterName)
+    {
+        var field = GetRequiredField(record, tag, Int64Kind, expectedCount: 1, parameterName);
+
+        if (field.Payload.Length != sizeof(long))
+        {
+            throw new ArgumentException("A state/entity Int64 field has an invalid payload length.", parameterName);
+        }
+
+        return System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(field.Payload);
+    }
+
     private static void ValidateArrayChildren(
         EbinRecordReadView record,
         uint fieldTag,
@@ -177,7 +190,37 @@ internal static class WorldPersistenceEcsReader
                 throw new ArgumentException("A state/entity identity has an invalid payload length.", parameterName);
             }
 
-            liveIdentities.MatchEntity(new Guid(idField.Payload, bigEndian: true), parameterName);
+            var entityId = new Guid(idField.Payload, bigEndian: true);
+            liveIdentities.MatchEntity(entityId, parameterName);
+            var assignmentOrdinal = ReadInt64(entity, 5, parameterName);
+
+            if (liveIdentities.GetAssignmentOrdinal(entityId, expectedKind: 1, parameterName) != assignmentOrdinal)
+            {
+                throw new ArgumentException("A state/entity ordinal does not match its identity-history assignment.", parameterName);
+            }
+
+            var hasSceneInstanceId = entity.TryGetField(6, out var sceneInstanceField);
+
+            if (entity.FieldCount != (hasSceneInstanceId ? 6 : 5))
+            {
+                throw new ArgumentException("A state/entity has an unknown or missing field.", parameterName);
+            }
+
+            if (hasSceneInstanceId)
+            {
+                if ((sceneInstanceField.Kind != GuidKind)
+                    || sceneInstanceField.IsRequired
+                    || (sceneInstanceField.Count != 1)
+                    || (sceneInstanceField.Payload.Length != 16))
+                {
+                    throw new ArgumentException("A state/entity SceneInstanceId has an invalid wire shape.", parameterName);
+                }
+
+                liveIdentities.SetSceneOwner(
+                    entityId,
+                    new Guid(sceneInstanceField.Payload, bigEndian: true),
+                    parameterName);
+            }
         }
     }
 }

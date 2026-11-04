@@ -10,6 +10,17 @@ namespace TerraFX.Runtime.Tests.Entities;
 internal sealed class WorldPersistenceLiveIdentitySetTests
 {
     [Test]
+    public void AllowsAnUnownedLiveEntity()
+    {
+        var entityId = Guid.NewGuid();
+        var identities = new WorldPersistenceLiveIdentitySet(maximumCount: 1);
+        identities.Add(entityId, identityKind: 1, assignmentOrdinal: 1, nameof(entityId));
+        identities.MatchEntity(entityId, nameof(entityId));
+
+        identities.ThrowIfNotEmpty(nameof(identities));
+    }
+
+    [Test]
     public void RejectsDuplicateLiveIdentity()
     {
         var identity = Guid.NewGuid();
@@ -44,10 +55,12 @@ internal sealed class WorldPersistenceLiveIdentitySetTests
         validIdentities.Add(sceneInstanceId, identityKind: 2, assignmentOrdinal: 2, nameof(sceneInstanceId));
         validIdentities.MatchEntity(entityId, nameof(entityId));
         validIdentities.MatchSceneInstance(sceneInstanceId, nameof(sceneInstanceId));
-        validIdentities.ClaimSceneEntity(entityId, nameof(entityId));
+        validIdentities.SetSceneOwner(entityId, sceneInstanceId, nameof(entityId));
+        _ = Assert.Throws<ArgumentException>(() => validIdentities.ClaimSceneEntity(entityId, Guid.NewGuid(), nameof(entityId)));
+        validIdentities.ClaimSceneEntity(entityId, sceneInstanceId, nameof(entityId));
         Assert.That(validIdentities.GetAssignmentOrdinal(entityId, expectedKind: 1, nameof(entityId)), Is.EqualTo(1));
         Assert.That(validIdentities.GetAssignmentOrdinal(sceneInstanceId, expectedKind: 2, nameof(sceneInstanceId)), Is.EqualTo(2));
-        _ = Assert.Throws<ArgumentException>(() => validIdentities.ClaimSceneEntity(entityId, nameof(entityId)));
+        _ = Assert.Throws<ArgumentException>(() => validIdentities.ClaimSceneEntity(entityId, sceneInstanceId, nameof(entityId)));
         validIdentities.ThrowIfNotEmpty(nameof(validIdentities));
     }
 }

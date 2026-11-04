@@ -390,7 +390,8 @@ internal static class WorldPersistenceScenesReader
         int maximumCount,
         string parameterName,
         WorldPersistenceLiveIdentitySet? liveIdentities = null,
-        bool claimSceneEntities = false)
+        bool claimSceneEntities = false,
+        Guid sceneInstanceId = default)
     {
         if ((field.Kind != FixedArrayKind)
             || !field.IsRequired
@@ -429,7 +430,7 @@ internal static class WorldPersistenceScenesReader
 
                 if (claimSceneEntities)
                 {
-                    liveIdentities.ClaimSceneEntity(id, parameterName);
+                    liveIdentities.ClaimSceneEntity(id, sceneInstanceId, parameterName);
                 }
             }
         }
@@ -844,7 +845,8 @@ internal static class WorldPersistenceScenesReader
             maximumLiveEntities,
             parameterName,
             liveIdentities,
-            claimSceneEntities: liveIdentities is not null);
+            claimSceneEntities: liveIdentities is not null,
+            sceneInstanceId: instanceId);
         var bindingCount = ReadArrayCount(instance, 4, maximumLiveEntities, minimumCount: 0, limits, parameterName);
         var externalBindingCount = ReadArrayCount(instance, 5, 65_536, minimumCount: 0, limits, parameterName);
         var assignmentOrdinal = ReadInt64(instance, 6, parameterName);
