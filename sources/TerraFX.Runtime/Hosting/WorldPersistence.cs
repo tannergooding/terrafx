@@ -327,7 +327,7 @@ public sealed class WorldPersistence : IAsyncDisposable
 
             if (File.Exists(targetPath))
             {
-                File.Replace(temporaryPath, targetPath, backupPath, ignoreMetadataErrors: true);
+                File.Replace(temporaryPath, targetPath, backupPath);
             }
             else
             {

@@ -96,14 +96,28 @@ internal sealed partial class SceneAssetStoreTests
                 });
 
                 var limits = WorldPersistenceEbinLimits.Create(world.Options);
+                var primaryBytes = File.ReadAllBytesAsync(savePath).GetAwaiter().GetResult();
+                var backupPath = string.Concat(savePath, ".bak");
+                var backupBytes = File.ReadAllBytesAsync(backupPath).GetAwaiter().GetResult();
                 Assert.That(
-                    WorldPersistenceCheckpointWriter.ReadTransactionGeneration(File.ReadAllBytesAsync(savePath).GetAwaiter().GetResult(), limits),
+                    WorldPersistenceCheckpointWriter.ReadTransactionGeneration(primaryBytes, limits),
                     Is.EqualTo(2));
                 Assert.That(
                     WorldPersistenceCheckpointWriter.ReadTransactionGeneration(
-                        File.ReadAllBytesAsync(string.Concat(savePath, ".bak")).GetAwaiter().GetResult(),
+                        backupBytes,
                         limits),
                     Is.EqualTo(1));
+                var tamperedBackup = (byte[])backupBytes.Clone();
+                tamperedBackup[^1] ^= 0x01;
+                File.WriteAllBytesAsync(backupPath, tamperedBackup).GetAwaiter().GetResult();
+                var rejectedSave = persistence.SaveAsync(world, options).GetAwaiter().GetResult();
+
+                Assert.Multiple(() => {
+                    Assert.That(rejectedSave.Status, Is.EqualTo(SaveStatus.Rejected));
+                    Assert.That(rejectedSave.TransactionGeneration, Is.Null);
+                    Assert.That(rejectedSave.Diagnostic, Is.Not.Null);
+                    Assert.That(File.ReadAllBytesAsync(savePath).GetAwaiter().GetResult(), Is.EqualTo(primaryBytes));
+                });
             }
             finally
             {
