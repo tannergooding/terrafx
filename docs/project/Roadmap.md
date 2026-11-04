@@ -99,7 +99,7 @@ M04 render-graph progress: the internal registry unifies imports/transients, pas
 
 ### Current Windows x64 NativeAOT qualification
 
-On source revision `a73b59b5`, the three documented self-contained Release `win-x64` consumers were republished and executed: `TerraFX.Runtime.ComponentConsumer`, `TerraFX.Runtime.GeneratedComponentConsumer`, and `TerraFX.Graphics.D3D12.Consumer`; all publishes succeeded and each executable exited 0. The optional-null Scene activation witness also passed through the published handwritten Runtime consumer. These witnesses qualify selected public consumer/activation surfaces only; they do not directly invoke the internal State2 writers, activate native input, a window, or a D3D12 device, and do not qualify public EngineHost/renderer execution. Linux remains deferred per the user's instruction.
+On source revision `afc6b81d`, the three documented self-contained Release `win-x64` consumers were republished and executed: `TerraFX.Runtime.ComponentConsumer`, `TerraFX.Runtime.GeneratedComponentConsumer`, and `TerraFX.Graphics.D3D12.Consumer`; all publishes succeeded and each executable exited 0. The optional-null Scene activation witness also passed through the published handwritten Runtime consumer (2/2 cases). These witnesses qualify selected public consumer/activation surfaces only; they do not directly invoke the internal State2 writers, activate native input, a window, or a D3D12 device, and do not qualify public EngineHost/renderer execution. Linux remains deferred per the user's instruction.
 
 ### Current Persistence producer status
 
