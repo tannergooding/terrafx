@@ -495,6 +495,10 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
         Assert.That(decodedWorld.Cursors.PendingCommandCount, Is.Zero);
         Assert.That(decodedWorld.Cursors.PendingOwnerRequestCount, Is.Zero);
         Assert.That(decodedWorld.Cursors.PendingWorldEventCount, Is.Zero);
+        Assert.That(decodedWorld.Registration.ComponentCount, Is.Zero);
+        Assert.That(decodedWorld.Registration.TagCount, Is.Zero);
+        Assert.That(decodedWorld.Registration.SystemCount, Is.Zero);
+        Assert.That(decodedWorld.Registration.ResourceCount, Is.Zero);
 
         var inconsistentSources = new WorldPersistenceWorldRecordSources(
                 lease,

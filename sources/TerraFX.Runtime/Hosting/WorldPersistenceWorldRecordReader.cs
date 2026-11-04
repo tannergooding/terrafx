@@ -227,11 +227,16 @@ internal static class WorldPersistenceWorldRecordReader
             limits,
             controlRecordCount,
             parsedClock);
+        var parsedRegistration = WorldPersistenceRegistrationReader.Read(
+            registrationRecord,
+            limits,
+            parsedConfiguration.MaximumComponentTypes);
 
         return new WorldPersistenceWorldRecordContents(
             parsedConfiguration,
             parsedClock,
             parsedCursors,
+            parsedRegistration,
             configurationRecord,
             clockRecord,
             frame2Record,

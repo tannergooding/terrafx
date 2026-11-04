@@ -11,6 +11,7 @@ internal sealed class WorldPersistenceWorldRecordContents
         WorldPersistenceConfiguration configuration,
         WorldPersistenceClockContents clock,
         WorldPersistenceCursorContents cursors,
+        WorldPersistenceRegistrationContents registration,
         ReadOnlyMemory<byte> configurationRecord,
         ReadOnlyMemory<byte> clockRecord,
         ReadOnlyMemory<byte> frame2Record,
@@ -30,6 +31,7 @@ internal sealed class WorldPersistenceWorldRecordContents
         Configuration = configuration;
         Clock = clock;
         Cursors = cursors;
+        Registration = registration;
         ConfigurationRecord = configurationRecord;
         ClockRecord = clockRecord;
         Frame2Record = frame2Record;
@@ -76,6 +78,8 @@ internal sealed class WorldPersistenceWorldRecordContents
     internal int RandomStreamCount { get; }
 
     internal ReadOnlyMemory<byte> RandomStreamsPayload { get; }
+
+    internal WorldPersistenceRegistrationContents Registration { get; }
 
     internal ReadOnlyMemory<byte> RegistrationRecord { get; }
 

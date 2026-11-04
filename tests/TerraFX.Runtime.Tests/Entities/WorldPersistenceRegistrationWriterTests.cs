@@ -152,6 +152,14 @@ internal sealed class WorldPersistenceRegistrationWriterTests
         Assert.That(readDiagnostic, Is.Null);
         Assert.That(assertions.IsMatch, Is.True);
         Assert.That(bytesConsumed, Is.EqualTo(destination.Length));
+        var decoded = WorldPersistenceRegistrationReader.Read(
+            destination,
+            EbinReadLimits.Foundation,
+            maximumComponentTypes: 256);
+        Assert.That(decoded.ComponentCount, Is.Zero);
+        Assert.That(decoded.TagCount, Is.Zero);
+        Assert.That(decoded.SystemCount, Is.Zero);
+        Assert.That(decoded.ResourceCount, Is.Zero);
     }
 
     [Test]
@@ -235,6 +243,14 @@ internal sealed class WorldPersistenceRegistrationWriterTests
         Assert.That(readDiagnostic, Is.Null);
         Assert.That(assertions.IsMatch, Is.True);
         Assert.That(bytesConsumed, Is.EqualTo(destination.Length));
+        var decoded = WorldPersistenceRegistrationReader.Read(
+            destination,
+            EbinReadLimits.Foundation,
+            maximumComponentTypes: 256);
+        Assert.That(decoded.ComponentCount, Is.Zero);
+        Assert.That(decoded.TagCount, Is.EqualTo(2));
+        Assert.That(decoded.SystemCount, Is.Zero);
+        Assert.That(decoded.ResourceCount, Is.Zero);
     }
 
     private struct RegistrationRootAssertions : IAction<EbinRecordReadView>
