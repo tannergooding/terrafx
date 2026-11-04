@@ -503,6 +503,9 @@ internal sealed class WorldPersistenceWorldRecordWriterTests
         Assert.That(decodedWorld.Ecs.WorldGuid, Is.EqualTo(world.WorldGuid));
         Assert.That(decodedWorld.Ecs.ReplayLineageId, Is.EqualTo(world.ReplayLineageId));
         Assert.That(decodedWorld.Ecs.IdentityBranchCount, Is.EqualTo(2));
+        Assert.That(decodedWorld.Scenes.InstanceCount, Is.Zero);
+        Assert.That(decodedWorld.Scenes.HierarchyNodeCount, Is.Zero);
+        Assert.That(decodedWorld.Scenes.RootCount, Is.Zero);
 
         var inconsistentSources = new WorldPersistenceWorldRecordSources(
                 lease,

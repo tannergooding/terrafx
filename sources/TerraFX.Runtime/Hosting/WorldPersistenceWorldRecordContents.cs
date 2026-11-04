@@ -2,6 +2,7 @@
 
 using System;
 using TerraFX.Entities;
+using TerraFX.Scenes;
 
 namespace TerraFX.Hosting;
 
@@ -13,6 +14,7 @@ internal sealed class WorldPersistenceWorldRecordContents
         WorldPersistenceCursorContents cursors,
         WorldPersistenceRegistrationContents registration,
         WorldPersistenceEcsContents ecs,
+        WorldPersistenceScenesContents scenes,
         ReadOnlyMemory<byte> configurationRecord,
         ReadOnlyMemory<byte> clockRecord,
         ReadOnlyMemory<byte> frame2Record,
@@ -34,6 +36,7 @@ internal sealed class WorldPersistenceWorldRecordContents
         Cursors = cursors;
         Registration = registration;
         Ecs = ecs;
+        Scenes = scenes;
         ConfigurationRecord = configurationRecord;
         ClockRecord = clockRecord;
         Frame2Record = frame2Record;
@@ -86,6 +89,8 @@ internal sealed class WorldPersistenceWorldRecordContents
     internal WorldPersistenceRegistrationContents Registration { get; }
 
     internal ReadOnlyMemory<byte> RegistrationRecord { get; }
+
+    internal WorldPersistenceScenesContents Scenes { get; }
 
     internal ReadOnlyMemory<byte> ScenesRecord { get; }
 

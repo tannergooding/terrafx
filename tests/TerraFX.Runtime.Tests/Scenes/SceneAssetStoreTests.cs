@@ -16,9 +16,10 @@ using TerraFX.Animation;
 using TerraFX.Assets;
 using TerraFX.Entities;
 using TerraFX.Graphics;
+using TerraFX.Hosting;
 using TerraFX.Rendering;
-using TerraFX.Scenes;
 using TerraFX.Runtime.Tests.Entities;
+using TerraFX.Scenes;
 
 namespace TerraFX.Runtime.Tests.Scenes;
 
@@ -2762,6 +2763,12 @@ internal sealed partial class SceneAssetStoreTests
                                 Is.EqualTo(EbinReadStatus.Complete),
                                 worldReadDiagnostic?.ToString());
                             Assert.That(worldBytesConsumed, Is.EqualTo(worldRecord.Length));
+                            var decodedWorld = WorldPersistenceWorldRecordReader.Read(worldRecord, persistenceLimits);
+                            Assert.That(decodedWorld.Scenes.InstanceCount, Is.EqualTo(1));
+                            Assert.That(decodedWorld.Scenes.HierarchyNodeCount, Is.EqualTo(2));
+                            Assert.That(decodedWorld.Scenes.RootCount, Is.EqualTo(1));
+                            Assert.That(decodedWorld.Ecs.EntityCount, Is.EqualTo(2));
+                            Assert.That(decodedWorld.AssetIdCount, Is.EqualTo(uniqueAssetCount));
                         }
                     }
                 }

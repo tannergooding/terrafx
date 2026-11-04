@@ -128,5 +128,15 @@ internal sealed class ScenePersistenceScenesWriterTests
         Assert.That(readDiagnostic, Is.Null);
         Assert.That(assertions.IsMatch, Is.True);
         Assert.That(scenesBytesConsumed, Is.EqualTo(scenesRecord.Length));
+        var decoded = WorldPersistenceScenesReader.Read(
+            scenesRecord,
+            limits,
+            maximumActiveSceneInstances: 65_536,
+            maximumLiveEntities: 1_048_576,
+            maximumIdentityAssignments: 33_554_432,
+            maximumSceneOccurrences: 1_048_576);
+        Assert.That(decoded.InstanceCount, Is.Zero);
+        Assert.That(decoded.HierarchyNodeCount, Is.Zero);
+        Assert.That(decoded.RootCount, Is.Zero);
     }
 }

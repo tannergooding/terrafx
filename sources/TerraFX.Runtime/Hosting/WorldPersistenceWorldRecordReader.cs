@@ -4,6 +4,7 @@ using System;
 using System.Buffers.Binary;
 using TerraFX;
 using TerraFX.Entities;
+using TerraFX.Scenes;
 
 namespace TerraFX.Hosting;
 
@@ -232,6 +233,18 @@ internal static class WorldPersistenceWorldRecordReader
             limits,
             parsedConfiguration.MaximumComponentTypes);
         var parsedEcs = WorldPersistenceEcsReader.Read(ecsRecord, limits, parsedConfiguration);
+        var parsedScenes = WorldPersistenceScenesReader.Read(
+            scenesRecord,
+            limits,
+            parsedConfiguration.MaximumActiveSceneInstances,
+            parsedConfiguration.MaximumLiveEntities,
+            parsedConfiguration.MaximumIdentityAssignments,
+            parsedConfiguration.MaximumSceneOccurrences);
+
+        if (parsedScenes.HierarchyNodeCount > parsedEcs.EntityCount)
+        {
+            throw new ArgumentException("The state/scenes hierarchy contains more nodes than live World entities.", nameof(worldRecord));
+        }
 
         return new WorldPersistenceWorldRecordContents(
             parsedConfiguration,
@@ -239,6 +252,7 @@ internal static class WorldPersistenceWorldRecordReader
             parsedCursors,
             parsedRegistration,
             parsedEcs,
+            parsedScenes,
             configurationRecord,
             clockRecord,
             frame2Record,
