@@ -79,6 +79,40 @@ internal sealed class WorldPersistenceConfigurationCaptureTests
             Is.EqualTo(EbinReadStatus.Complete));
         Assert.That(readDiagnostic, Is.Null);
         Assert.That(bytesConsumed, Is.EqualTo(bytesWritten));
+
+        var decoded = WorldPersistenceConfigurationReader.Read(
+            destination.AsMemory(0, bytesWritten),
+            EbinReadLimits.Foundation);
+
+        Assert.Multiple(() => {
+            Assert.That(decoded.MaximumLiveEntities, Is.EqualTo(options.MaximumLiveEntities));
+            Assert.That(decoded.MaximumEntitySlots, Is.EqualTo(options.MaximumEntitySlots));
+            Assert.That(decoded.MaximumArchetypes, Is.EqualTo(options.MaximumArchetypes));
+            Assert.That(decoded.MaximumDeferredCommands, Is.EqualTo(options.MaximumDeferredCommands));
+            Assert.That(decoded.MaximumComponentTypes, Is.EqualTo(options.MaximumComponentTypes));
+            Assert.That(decoded.MaximumPendingOwnerRequests, Is.EqualTo(options.MaximumPendingOwnerRequests));
+            Assert.That(decoded.MaximumRecordedControls, Is.EqualTo(options.MaximumRecordedControls));
+            Assert.That(decoded.MaximumIdentityAssignments, Is.EqualTo(options.MaximumIdentityAssignments));
+            Assert.That(decoded.SchedulingLimits.MaximumRegistrationBytes, Is.EqualTo(options.SchedulingLimits.MaximumRegistrationBytes));
+            Assert.That(decoded.SchedulingLimits.MaximumGraphBytes, Is.EqualTo(options.SchedulingLimits.MaximumGraphBytes));
+            Assert.That(decoded.SchedulingLimits.MaximumWorkPlanBytes, Is.EqualTo(options.SchedulingLimits.MaximumWorkPlanBytes));
+            Assert.That(decoded.SchedulingLimits.MaximumCommandStagingBytes, Is.EqualTo(options.SchedulingLimits.MaximumCommandStagingBytes));
+            Assert.That(decoded.SchedulingLimits.MaximumOwnedStateBytes, Is.EqualTo(options.SchedulingLimits.MaximumOwnedStateBytes));
+            Assert.That(decoded.SchedulingLimits.MaximumDiagnosticBytes, Is.EqualTo(options.SchedulingLimits.MaximumDiagnosticBytes));
+            Assert.That(decoded.SchedulingLimits.MaximumConflictComparisons, Is.EqualTo(options.SchedulingLimits.MaximumConflictComparisons));
+            Assert.That(decoded.MaximumIdentityBranches, Is.EqualTo(options.MaximumIdentityBranches));
+            Assert.That(decoded.MaximumEntityReferencePositions, Is.EqualTo(options.MaximumEntityReferencePositions));
+            Assert.That(decoded.MaximumActiveSceneInstances, Is.EqualTo(options.MaximumActiveSceneInstances));
+            Assert.That(decoded.MaximumSceneOccurrences, Is.EqualTo(options.MaximumSceneOccurrences));
+            Assert.That(decoded.MaximumSnapshotBytes, Is.EqualTo(options.MaximumSnapshotBytes));
+            Assert.That(decoded.MaximumPersistenceAdmissionBytes, Is.EqualTo(options.MaximumPersistenceAdmissionBytes));
+        });
+
+        var invalidExecutionOwner = destination.AsSpan(0, bytesWritten).ToArray();
+        var executionOwnerEntryOffset = checked(64 + (9 * 32));
+        var executionOwnerPayloadOffset = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(invalidExecutionOwner.AsSpan(executionOwnerEntryOffset + 8, sizeof(ulong))));
+        invalidExecutionOwner[executionOwnerPayloadOffset] = 1;
+        _ = Assert.Throws<ArgumentException>(() => WorldPersistenceConfigurationReader.Read(invalidExecutionOwner, EbinReadLimits.Foundation));
     }
 
     private readonly struct WorldPersistenceConfigurationAssertions : IAction<EbinRecordReadView>

@@ -3,6 +3,7 @@
 using System;
 using System.Buffers.Binary;
 using TerraFX;
+using TerraFX.Entities;
 
 namespace TerraFX.Hosting;
 
@@ -204,7 +205,10 @@ internal static class WorldPersistenceWorldRecordReader
             throw new ArgumentException("The state/world record omitted a required field.", nameof(worldRecord));
         }
 
+        var parsedConfiguration = WorldPersistenceConfigurationReader.Read(configurationRecord, limits);
+
         return new WorldPersistenceWorldRecordContents(
+            parsedConfiguration,
             configurationRecord,
             clockRecord,
             frame2Record,

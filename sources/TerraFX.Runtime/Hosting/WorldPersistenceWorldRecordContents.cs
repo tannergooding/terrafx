@@ -1,12 +1,14 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using TerraFX.Entities;
 
 namespace TerraFX.Hosting;
 
 internal sealed class WorldPersistenceWorldRecordContents
 {
     internal WorldPersistenceWorldRecordContents(
+        WorldPersistenceConfiguration configuration,
         ReadOnlyMemory<byte> configurationRecord,
         ReadOnlyMemory<byte> clockRecord,
         ReadOnlyMemory<byte> frame2Record,
@@ -23,6 +25,7 @@ internal sealed class WorldPersistenceWorldRecordContents
         ReadOnlyMemory<byte> strictLayoutRecord,
         ReadOnlyMemory<byte> registrationRecord)
     {
+        Configuration = configuration;
         ConfigurationRecord = configurationRecord;
         ClockRecord = clockRecord;
         Frame2Record = frame2Record;
@@ -45,6 +48,8 @@ internal sealed class WorldPersistenceWorldRecordContents
     internal ReadOnlyMemory<byte> AssetIdsPayload { get; }
 
     internal ReadOnlyMemory<byte> ClockRecord { get; }
+
+    internal WorldPersistenceConfiguration Configuration { get; }
 
     internal ReadOnlyMemory<byte> ConfigurationRecord { get; }
 

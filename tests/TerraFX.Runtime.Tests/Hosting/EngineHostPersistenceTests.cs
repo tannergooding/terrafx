@@ -99,6 +99,8 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(checkpoint.CheckpointDigest.Length, Is.EqualTo(32));
                 Assert.That(checkpoint.HeaderRecord.IsEmpty, Is.False);
                 Assert.That(checkpoint.WorldRecord.IsEmpty, Is.False);
+                Assert.That(worldContents.Configuration.MaximumLiveEntities, Is.EqualTo(world.Options.MaximumLiveEntities));
+                Assert.That(worldContents.Configuration.MaximumSnapshotBytes, Is.EqualTo(world.Options.MaximumSnapshotBytes));
                 Assert.That(worldContents.ConfigurationRecord.IsEmpty, Is.False);
                 Assert.That(worldContents.ClockRecord.IsEmpty, Is.False);
                 Assert.That(worldContents.Frame2Record.IsEmpty, Is.False);
