@@ -3,6 +3,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
@@ -14,6 +15,7 @@ using TerraFX;
 using TerraFX.Assets;
 using TerraFX.Entities;
 using TerraFX.Integration;
+using TerraFX.Scenes;
 
 namespace TerraFX.Hosting;
 
@@ -350,6 +352,25 @@ public sealed class WorldPersistence : IAsyncDisposable
                         $"Asset {reference.AssetId} does not match its saved schema reference.",
                         worldGuid);
                 }
+            }
+
+            try
+            {
+                await WorldPersistenceScenesReader.ValidatePackageSourceClosureAsync(
+                    checkpointRecord,
+                    packageLease,
+                    limits,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is ArgumentException
+                or InvalidDataException
+                or KeyNotFoundException
+                or NotSupportedException)
+            {
+                return CreateRejected(
+                    "save-scene-source-mismatch",
+                    exception.Message,
+                    worldGuid);
             }
 
             var directoryPath = Path.GetDirectoryName(targetPath)

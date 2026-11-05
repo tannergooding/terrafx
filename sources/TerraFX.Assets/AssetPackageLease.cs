@@ -84,6 +84,22 @@ public sealed class AssetPackageLease : IDisposable
         return state.Backing.TryGetEntry(assetId, out _);
     }
 
+    internal Task<AssetLease<T>> LoadFromPackageAsync<T>(
+        AssetId assetId,
+        CancellationToken cancellationToken)
+    {
+        if (!assetId.IsValid)
+        {
+            throw new ArgumentOutOfRangeException(nameof(assetId));
+        }
+
+        var state = Volatile.Read(ref _state);
+        ObjectDisposedException.ThrowIf(state is null, this);
+        var backing = state.Backing;
+        ObjectDisposedException.ThrowIf(!backing.TryAcquireReference(), this);
+        return state.Store.LoadFromPackageAsync<T>(assetId, backing, cancellationToken);
+    }
+
     internal async Task<bool> MatchesAssetReferenceAsync(
         AssetReference reference,
         CancellationToken cancellationToken)

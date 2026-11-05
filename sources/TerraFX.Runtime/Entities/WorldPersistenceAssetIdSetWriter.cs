@@ -141,7 +141,8 @@ internal static class WorldPersistenceAssetIdSetWriter
 
         if (!schemas.TryGetSchema(schemaReference, out var schema))
         {
-            throw new NotSupportedException("A persistence root uses an unregistered schema tuple.");
+            throw new NotSupportedException(
+                $"A persistence root uses unregistered schema tuple {header.SchemaId:N}/{header.Major}.{header.Minor}.");
         }
 
         return schema;
@@ -252,11 +253,18 @@ internal static class WorldPersistenceAssetIdSetWriter
         public void Invoke(scoped EbinRecordReadView record)
         {
             var schema = GetSchema(record, _schemas);
+            var referenceCount = AssetReferenceScanner.CountAssetIds(record, schema, _schemas);
             var copiedCount = AssetReferenceScanner.CopyAssetReferences(
                 record,
                 schema,
                 _schemas,
-                _destination[Count..]);
+                _destination.Slice(Count, referenceCount));
+
+            if (copiedCount != referenceCount)
+            {
+                throw new InvalidOperationException("The AssetReference count changed during persistence capture.");
+            }
+
             Count = checked(Count + copiedCount);
         }
     }

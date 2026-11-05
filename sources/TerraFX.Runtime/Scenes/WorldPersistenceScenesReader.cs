@@ -3,6 +3,10 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using TerraFX;
 using TerraFX.Assets;
 using TerraFX.Entities;
@@ -16,6 +20,7 @@ internal static class WorldPersistenceScenesReader
     private const ushort FixedArrayKind = 23;
     private const ushort GuidKind = 11;
     private const ushort Int64Kind = 8;
+    private const int MaximumPrefabDepth = 32;
     private const ushort RecordKind = 22;
     private const uint SceneInstanceIdentityKind = 2;
     private const int SceneRootFieldCount = 2;
@@ -157,6 +162,63 @@ internal static class WorldPersistenceScenesReader
         return new WorldPersistenceScenesContents(instanceCount, hierarchyNodeCount, rootCount);
     }
 
+    internal static async Task ValidatePackageSourceClosureAsync(
+        ReadOnlyMemory<byte> checkpointRecord,
+        AssetPackageLease packageLease,
+        EbinReadLimits limits,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(packageLease);
+        ArgumentNullException.ThrowIfNull(limits);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var scenesRecord = GetCheckpointScenesRecord(checkpointRecord);
+        var instanceCount = ReadSceneInstanceCount(scenesRecord, limits, nameof(checkpointRecord));
+
+        for (var instanceIndex = 0; instanceIndex < instanceCount; instanceIndex++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var (sceneAssetId, occurrenceCount) = ReadSceneSource(
+                scenesRecord,
+                instanceIndex,
+                limits,
+                nameof(checkpointRecord));
+            var context = new SceneSourceValidationContext(
+                scenesRecord,
+                instanceIndex,
+                occurrenceCount,
+                packageLease,
+                cancellationToken);
+            var rootOccurrenceId = SceneOccurrenceIdentity.CreateRootOccurrence(sceneAssetId);
+            context.AssetPath[0] = sceneAssetId;
+
+            using var sceneLease = await packageLease.LoadFromPackageAsync<SceneAsset>(
+                sceneAssetId,
+                cancellationToken).ConfigureAwait(false);
+            var scene = sceneLease.Value;
+            ValidateSourceOccurrence(
+                context,
+                scene.AssetId,
+                s_sceneSchemaId,
+                rootOccurrenceId,
+                parentOccurrenceId: null,
+                placementId: null,
+                nameof(checkpointRecord));
+            await VisitHierarchyAsync(
+                scene.Hierarchy,
+                scene.Placements,
+                rootOccurrenceId,
+                prefabDepth: 0,
+                context,
+                nameof(checkpointRecord)).ConfigureAwait(false);
+
+            if (context.OccurrenceIndex != context.OccurrenceCount)
+            {
+                throw new InvalidDataException("The saved Scene occurrence set omits a source Scene or Prefab placement.");
+            }
+        }
+    }
+
     private static int FindHierarchyNodeIndex(
         EbinRecordReadView hierarchy,
         int nodeCount,
@@ -188,6 +250,83 @@ internal static class WorldPersistenceScenesReader
         }
 
         return -1;
+    }
+
+    private static int FindHierarchyNodeIndex(
+        ImmutableArray<SceneHierarchyNode> nodes,
+        Guid entityId)
+    {
+        var low = 0;
+        var high = nodes.Length - 1;
+
+        while (low <= high)
+        {
+            var middle = low + ((high - low) / 2);
+            var comparison = FoundationCatalogue.CompareRfc(nodes[middle].EntityId, entityId);
+
+            if (comparison == 0)
+            {
+                return middle;
+            }
+
+            if (comparison < 0)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle - 1;
+            }
+        }
+
+        return -1;
+    }
+
+    private static int FindPlacementIndex(
+        ImmutableArray<ScenePrefabPlacement> placements,
+        Guid placementId)
+    {
+        var low = 0;
+        var high = placements.Length - 1;
+
+        while (low <= high)
+        {
+            var middle = low + ((high - low) / 2);
+            var comparison = FoundationCatalogue.CompareRfc(placements[middle].PlacementId, placementId);
+
+            if (comparison == 0)
+            {
+                return middle;
+            }
+
+            if (comparison < 0)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle - 1;
+            }
+        }
+
+        return -1;
+    }
+
+    private static ReadOnlyMemory<byte> GetCheckpointScenesRecord(ReadOnlyMemory<byte> checkpointRecord)
+    {
+        var checkpointBytes = checkpointRecord.Span;
+        var checkpoint = new EbinRecordReadView(checkpointBytes);
+        var scenesRecord = checkpoint.GetRecord(2).GetRecord(6).EncodedBytes;
+
+        if (!checkpointBytes.Overlaps(scenesRecord, out var offset)
+            || (offset < 0)
+            || (offset > checkpointBytes.Length)
+            || (scenesRecord.Length > (checkpointBytes.Length - offset)))
+        {
+            throw new ArgumentException("The State2 Scene record is not backed by its enclosing checkpoint.", nameof(checkpointRecord));
+        }
+
+        return checkpointRecord.Slice(offset, scenesRecord.Length);
     }
 
     private static EbinFieldReadView GetRequiredField(
@@ -339,6 +478,48 @@ internal static class WorldPersistenceScenesReader
         }
 
         return BinaryPrimitives.ReadInt64LittleEndian(field.Payload);
+    }
+
+    private static int ReadSceneInstanceCount(
+        ReadOnlyMemory<byte> scenesRecord,
+        EbinReadLimits limits,
+        string parameterName)
+    {
+        var scenes = new EbinRecordReadView(scenesRecord.Span);
+        return ReadArrayCount(
+            scenes,
+            1,
+            1_048_576,
+            minimumCount: 0,
+            limits,
+            parameterName);
+    }
+
+    private static (AssetId SceneAssetId, int OccurrenceCount) ReadSceneSource(
+        ReadOnlyMemory<byte> scenesRecord,
+        int instanceIndex,
+        EbinReadLimits limits,
+        string parameterName)
+    {
+        var scenes = new EbinRecordReadView(scenesRecord.Span);
+        var instance = scenes.GetRecordArrayElement(1, instanceIndex);
+        var (assetId, schemaId, schemaMajor) = ReadAssetReference(
+            new EbinRecordReadView(instance.GetRecord(2).EncodedBytes),
+            parameterName);
+
+        if ((schemaId != s_sceneSchemaId) || (schemaMajor != 2))
+        {
+            throw new ArgumentException("A saved SceneInstance source does not identify a version-2 Scene asset.", parameterName);
+        }
+
+        var occurrenceCount = ReadArrayCount(
+            instance,
+            7,
+            1_048_576,
+            minimumCount: 1,
+            limits,
+            parameterName);
+        return (new AssetId(assetId), occurrenceCount);
     }
 
     private static uint ReadUInt32(EbinRecordReadView record, uint tag, string parameterName)
@@ -895,5 +1076,214 @@ internal static class WorldPersistenceScenesReader
         ValidateSceneEntityBindings(instance, bindingCount, entityIdsField, occurrenceIndices, liveIdentities, parameterName);
         ValidateExternalBindings(instance, externalBindingCount, liveIdentities, identityScratch, parameterName);
         return instanceId;
+    }
+
+    private static void ValidateSourceOccurrence(
+        SceneSourceValidationContext context,
+        AssetId assetId,
+        Guid schemaId,
+        Guid occurrenceId,
+        Guid? parentOccurrenceId,
+        Guid? placementId,
+        string parameterName)
+    {
+        context.CancellationToken.ThrowIfCancellationRequested();
+
+        if (context.OccurrenceIndex >= context.OccurrenceCount)
+        {
+            throw new InvalidDataException("The package Scene and Prefab sources contain an unrecorded occurrence.");
+        }
+
+        var scenes = new EbinRecordReadView(context.ScenesRecord.Span);
+        var instance = scenes.GetRecordArrayElement(1, context.SceneInstanceIndex);
+        var occurrence = instance.GetRecordArrayElement(7, context.OccurrenceIndex);
+        var path = GetRequiredField(occurrence, 1, FixedArrayKind, expectedCount: null, parameterName);
+        var pathCount = ValidateGuidFixedArray(path, maximumCount: MaximumPrefabDepth, parameterName);
+
+        if (pathCount != context.PlacementPathLength)
+        {
+            throw new InvalidDataException("A saved Scene occurrence path does not match the selected source placement path.");
+        }
+
+        for (var pathIndex = 0; pathIndex < pathCount; pathIndex++)
+        {
+            if (ReadGuidArrayElement(path, pathIndex) != context.PlacementPath[pathIndex])
+            {
+                throw new InvalidDataException("A saved Scene occurrence path does not match the selected source placement path.");
+            }
+        }
+
+        if (ReadGuid(occurrence, 2, isRequired: true, parameterName) != occurrenceId)
+        {
+            throw new InvalidDataException("A saved Scene occurrence identity does not match its selected source recipe.");
+        }
+
+        var (sourceAssetId, sourceSchemaId, sourceSchemaMajor) = ReadAssetReference(new EbinRecordReadView(
+            GetRequiredField(occurrence, 3, RecordKind, expectedCount: 1, parameterName).Payload), parameterName);
+
+        if ((sourceAssetId != assetId.Value)
+            || (sourceSchemaId != schemaId)
+            || (sourceSchemaMajor != 2))
+        {
+            throw new InvalidDataException("A saved Scene occurrence source does not match the selected package source.");
+        }
+
+        var hasParent = occurrence.TryGetField(4, out _);
+        var hasPlacement = occurrence.TryGetField(5, out _);
+
+        if (parentOccurrenceId.HasValue != hasParent
+            || placementId.HasValue != hasPlacement)
+        {
+            throw new InvalidDataException("A saved Scene occurrence parent or placement presence does not match its source.");
+        }
+
+        if (parentOccurrenceId is { } parent
+            && (ReadGuid(occurrence, 4, isRequired: false, parameterName) != parent
+                || ReadGuid(occurrence, 5, isRequired: false, parameterName) != placementId))
+        {
+            throw new InvalidDataException("A saved Scene occurrence parent or placement does not match its source.");
+        }
+
+        context.OccurrenceIndex = checked(context.OccurrenceIndex + 1);
+    }
+
+    private static async Task VisitHierarchyAsync(
+        SceneHierarchy hierarchy,
+        ImmutableArray<ScenePrefabPlacement> placements,
+        Guid occurrenceId,
+        int prefabDepth,
+        SceneSourceValidationContext context,
+        string parameterName)
+    {
+        for (var rootIndex = 0; rootIndex < hierarchy.Roots.Length; rootIndex++)
+        {
+            context.CancellationToken.ThrowIfCancellationRequested();
+            await VisitHierarchyEntryAsync(
+                hierarchy,
+                placements,
+                hierarchy.Roots[rootIndex],
+                occurrenceId,
+                prefabDepth,
+                context,
+                parameterName).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task VisitHierarchyEntryAsync(
+        SceneHierarchy hierarchy,
+        ImmutableArray<ScenePrefabPlacement> placements,
+        SceneHierarchyEntry entry,
+        Guid occurrenceId,
+        int prefabDepth,
+        SceneSourceValidationContext context,
+        string parameterName)
+    {
+        context.CancellationToken.ThrowIfCancellationRequested();
+
+        if (entry.Kind is SceneHierarchyEntryKind.Entity)
+        {
+            var nodeIndex = FindHierarchyNodeIndex(hierarchy.Nodes, entry.Id);
+
+            if (nodeIndex < 0)
+            {
+                throw new InvalidDataException("A Scene source hierarchy references an absent Entity node.");
+            }
+
+            var children = hierarchy.Nodes[nodeIndex].Children;
+
+            for (var childIndex = 0; childIndex < children.Length; childIndex++)
+            {
+                await VisitHierarchyEntryAsync(
+                    hierarchy,
+                    placements,
+                    children[childIndex],
+                    occurrenceId,
+                    prefabDepth,
+                    context,
+                    parameterName).ConfigureAwait(false);
+            }
+
+            return;
+        }
+
+        if (entry.Kind is not SceneHierarchyEntryKind.PrefabPlacement)
+        {
+            throw new InvalidDataException("A Scene source hierarchy contains an unknown entry kind.");
+        }
+
+        var placementIndex = FindPlacementIndex(placements, entry.Id);
+
+        if (placementIndex < 0)
+        {
+            throw new InvalidDataException("A Scene source hierarchy references an absent PrefabPlacement.");
+        }
+
+        var placement = placements[placementIndex];
+        var childPrefabDepth = checked(prefabDepth + 1);
+
+        if (childPrefabDepth > MaximumPrefabDepth)
+        {
+            throw new InvalidDataException("The selected Scene and Prefab graph exceeds the supported Prefab depth.");
+        }
+
+        for (var pathIndex = 0; pathIndex <= prefabDepth; pathIndex++)
+        {
+            if (context.AssetPath[pathIndex] == placement.PrefabAssetId)
+            {
+                throw new InvalidDataException("The selected Scene and Prefab source graph contains a cycle.");
+            }
+        }
+
+        var childOccurrenceId = SceneOccurrenceIdentity.CreatePrefabOccurrence(
+            occurrenceId,
+            placement.PlacementId,
+            placement.PrefabAssetId);
+        context.PlacementPath[context.PlacementPathLength++] = placement.PlacementId;
+        context.AssetPath[childPrefabDepth] = placement.PrefabAssetId;
+
+        try
+        {
+            using var prefabLease = await context.PackageLease.LoadFromPackageAsync<ScenePrefabAsset>(
+                placement.PrefabAssetId,
+                context.CancellationToken).ConfigureAwait(false);
+            var prefab = prefabLease.Value;
+            ValidateSourceOccurrence(
+                context,
+                prefab.AssetId,
+                s_prefabSchemaId,
+                childOccurrenceId,
+                occurrenceId,
+                placement.PlacementId,
+                parameterName);
+            await VisitHierarchyAsync(
+                prefab.Hierarchy,
+                prefab.Placements,
+                childOccurrenceId,
+                childPrefabDepth,
+                context,
+                parameterName).ConfigureAwait(false);
+        }
+        finally
+        {
+            context.PlacementPathLength--;
+        }
+    }
+
+    private sealed class SceneSourceValidationContext(
+        ReadOnlyMemory<byte> scenesRecord,
+        int sceneInstanceIndex,
+        int occurrenceCount,
+        AssetPackageLease packageLease,
+        CancellationToken cancellationToken)
+    {
+        internal readonly AssetId[] AssetPath = new AssetId[MaximumPrefabDepth + 1];
+        internal readonly CancellationToken CancellationToken = cancellationToken;
+        internal readonly AssetPackageLease PackageLease = packageLease;
+        internal readonly Guid[] PlacementPath = new Guid[MaximumPrefabDepth];
+        internal readonly ReadOnlyMemory<byte> ScenesRecord = scenesRecord;
+        internal readonly int SceneInstanceIndex = sceneInstanceIndex;
+        internal readonly int OccurrenceCount = occurrenceCount;
+        internal int OccurrenceIndex;
+        internal int PlacementPathLength;
     }
 }
