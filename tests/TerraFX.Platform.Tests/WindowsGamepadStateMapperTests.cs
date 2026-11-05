@@ -63,6 +63,21 @@ internal sealed class WindowsGamepadStateMapperTests
     }
 
     [Test]
+    public void ReportsButtonBitsOutsideThePublicGamepadContract()
+    {
+        var state = new PlatformGamepadState(
+            Buttons: 0x8000_0105,
+            LeftTrigger: 0.0f,
+            RightTrigger: 0.0f,
+            LeftThumbstickX: 0.0f,
+            LeftThumbstickY: 0.0f,
+            RightThumbstickX: 0.0f,
+            RightThumbstickY: 0.0f);
+
+        Assert.That(WindowsGamepadStateMapper.GetUnmappedButtonMask(state), Is.EqualTo(0x8000_0000u));
+    }
+
+    [Test]
     public void ReportsOnlyChangedControls()
     {
         var previous = new PlatformGamepadState(0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);

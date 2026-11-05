@@ -34,4 +34,5 @@ internal readonly record struct PlatformInputSample(
     string? NativeClockDomain = null,
     PhysicalInputEventDiagnostic Diagnostics = PhysicalInputEventDiagnostic.None,
     long MonotonicTimestamp = 0,
-    ImmutableArray<PlatformInputStateValue> ReconciliationState = default);
+    ImmutableArray<PlatformInputStateValue> ReconciliationState = default,
+    uint UnmappedGamepadButtonMask = 0);

@@ -29,6 +29,7 @@ internal static class WindowsGamepadStateMapper
         (GameInputGamepadButtons.LeftShoulder, GamepadButtonValue.LeftBumper),
         (GameInputGamepadButtons.RightShoulder, GamepadButtonValue.RightBumper),
     ];
+    private static readonly uint s_mappedButtonMask = GetMappedButtonMask();
 
     internal static long ConvertNativeTimestamp(ulong timestamp)
     {
@@ -220,6 +221,21 @@ internal static class WindowsGamepadStateMapper
         }
 
         return changes.ToImmutable();
+    }
+
+    internal static uint GetUnmappedButtonMask(in PlatformGamepadState state)
+        => state.Buttons & ~s_mappedButtonMask;
+
+    private static uint GetMappedButtonMask()
+    {
+        var mask = 0u;
+
+        foreach (var (source, _) in s_buttonMappings)
+        {
+            mask |= (uint)source;
+        }
+
+        return mask;
     }
 
     private static bool IsNormalizedAxis(float value)

@@ -136,6 +136,7 @@ internal sealed partial class WindowsGameInputCapture : IDisposable
         internal readonly nint NativeIdentity = nativeIdentity;
         internal bool NeedsAnnouncement = true;
         internal bool NeedsReconciliation = true;
+        internal uint ReportedUnmappedButtonMask;
         internal readonly ulong ReadingCallbackToken = readingCallbackToken;
     }
 }

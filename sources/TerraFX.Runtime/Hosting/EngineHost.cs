@@ -693,6 +693,18 @@ public sealed partial class EngineHost : IAsyncDisposable
                 }
 
                 var capturedInput = _platformOwner.Pump();
+
+                if (!capturedInput.Diagnostics.IsEmpty)
+                {
+                    var diagnostics = _diagnostics
+                        ?? throw new InvalidOperationException("The EngineHost diagnostics service is not initialized.");
+
+                    foreach (var diagnostic in capturedInput.Diagnostics)
+                    {
+                        diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+                    }
+                }
+
                 var hostTimestamp = _platformOwner.GetHostTimestamp();
 
                 foreach (var schedule in _worlds)

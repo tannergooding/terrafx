@@ -4,6 +4,7 @@ using System;
 using System.Collections.Immutable;
 using System.Threading;
 using NUnit.Framework;
+using TerraFX;
 using TerraFX.Hosting;
 using TerraFX.Input;
 using TerraFX.Numerics;
@@ -206,6 +207,33 @@ internal sealed class PlatformInputBrokerTests
         Assert.That(captured.Events[1].ReconciliationState[0].IsDown, Is.True);
         Assert.That(captured.Events[1].ReconciliationState[1].AxisValue, Is.EqualTo(-0.5f));
         Assert.That(captured.Events[1].ReconciliationState[2].TriggerValue, Is.EqualTo(0.75f));
+        broker.Retire();
+    }
+
+    [Test]
+    public void RecordsUnmappedGamepadButtonsAgainstTheIssuedDeviceGeneration()
+    {
+        var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());
+        var sample = new PlatformInputSample(
+            PhysicalInputEventKind.StateReconciliation,
+            null,
+            (nint)71,
+            PlatformInputDeviceKind.Gamepad,
+            MonotonicTimestamp: 2,
+            ReconciliationState: [],
+            UnmappedGamepadButtonMask: 0x8000_0000);
+
+        var captured = broker.Capture(new PlatformInputSampleBatch([sample], DiscardedSampleCount: 0), static _ => true);
+
+        Assert.That(captured.Events, Has.Length.EqualTo(2));
+        Assert.That(captured.Events[0].Kind, Is.EqualTo(PhysicalInputEventKind.DeviceAdded));
+        Assert.That(captured.Diagnostics, Has.Length.EqualTo(1));
+        Assert.That(captured.Diagnostics[0].Code, Is.EqualTo("platform-gamepad-unmapped-buttons"));
+        Assert.That(captured.Diagnostics[0].Severity, Is.EqualTo(DiagnosticSeverity.Warning));
+        Assert.That(captured.Diagnostics[0].DeviceEpoch, Is.EqualTo(captured.Events[0].Device!.Value.Generation));
+        Assert.That(captured.Diagnostics[0].Message, Does.Contain("0x80000000"));
+        Assert.That(captured.Diagnostics[0].Context[0].Key, Is.EqualTo("deviceIndex"));
+        Assert.That(captured.Diagnostics[0].Context[0].Value, Is.EqualTo("0"));
         broker.Retire();
     }
 

@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Globalization;
 using TerraFX;
 using TerraFX.Input;
 using TerraFX.Numerics;
@@ -173,6 +174,40 @@ internal sealed class PlatformInputBroker
         }
     }
 
+    private static Diagnostic CreateUnmappedGamepadButtonsDiagnostic(
+        PlatformInputSample sample,
+        InputDeviceHandle device)
+        => new(
+            "platform-gamepad-unmapped-buttons",
+            DiagnosticSeverity.Warning,
+            sample.MonotonicTimestamp,
+            hostId: device.OwnerId,
+            worldGuid: null,
+            deviceId: null,
+            surfaceId: null,
+            deviceEpoch: device.Generation,
+            surfaceEpoch: null,
+            swapchainEpoch: null,
+            tick: null,
+            systemId: null,
+            passId: null,
+            assetId: null,
+            commandIdentity: null,
+            operation: "PlatformInputBroker.GameInput",
+            nativeResult: null,
+            message: $"The GameInput device reported unmapped button bits 0x{sample.UnmappedGamepadButtonMask:X8}; the controls were not guessed.",
+            context: [
+                new DiagnosticContextEntry(
+                    "deviceIndex",
+                    device.Index.ToString(CultureInfo.InvariantCulture)),
+                new DiagnosticContextEntry(
+                    "deviceGeneration",
+                    device.Generation.ToString(CultureInfo.InvariantCulture)),
+                new DiagnosticContextEntry(
+                    "unmappedButtonMask",
+                    $"0x{sample.UnmappedGamepadButtonMask:X8}"),
+            ]);
+
     private static bool IsDeviceScoped(PhysicalInputEventKind kind)
         => kind is PhysicalInputEventKind.KeyDown
             or PhysicalInputEventKind.KeyRepeat
@@ -223,6 +258,7 @@ internal sealed class PlatformInputBroker
         }
 
         var events = ImmutableArray.CreateBuilder<PhysicalInputEvent>(sampleBatch.Samples.Length);
+        var diagnostics = ImmutableArray.CreateBuilder<Diagnostic>();
         var discardedSampleCount = sampleBatch.DiscardedSampleCount;
 
         foreach (var sample in sampleBatch.Samples)
@@ -286,6 +322,12 @@ internal sealed class PlatformInputBroker
                 throw new InvalidOperationException("A platform sample carries reconciliation state for a non-reconciliation event.");
             }
 
+            if ((sample.UnmappedGamepadButtonMask != 0)
+                && (sample.Kind != PhysicalInputEventKind.StateReconciliation))
+            {
+                throw new InvalidOperationException("A platform sample carries unmapped gamepad buttons outside reconciliation.");
+            }
+
             var hostTimestamp = GetHostTimestamp(sample.MonotonicTimestamp);
 
             if (sample.Window is { } window)
@@ -327,6 +369,13 @@ internal sealed class PlatformInputBroker
                 throw new InvalidOperationException("A device-scoped platform input sample has no native identity.");
             }
 
+            if (sample.UnmappedGamepadButtonMask != 0)
+            {
+                diagnostics.Add(CreateUnmappedGamepadButtonsDiagnostic(
+                    sample,
+                    device ?? throw new InvalidOperationException("An unmapped gamepad diagnostic has no device identity.")));
+            }
+
             if (sample.Kind == PhysicalInputEventKind.DeviceAdded)
             {
                 if (isNewDevice)
@@ -365,7 +414,10 @@ internal sealed class PlatformInputBroker
             events.Add(CreatePhysicalInputEvent(sample, device, hostTimestamp, gamepadValue));
         }
 
-        return new PlatformInputCaptureBatch(events.ToImmutable(), discardedSampleCount);
+        return new PlatformInputCaptureBatch(
+            events.ToImmutable(),
+            discardedSampleCount,
+            diagnostics.ToImmutable());
     }
 
     internal long GetCurrentHostTimestamp()

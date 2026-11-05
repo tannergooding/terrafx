@@ -118,13 +118,23 @@ internal sealed partial class WindowsGameInputCapture
             }
 
             var state = WindowsGamepadStateMapper.FromGameInput(nativeState);
+            var unmappedButtonMask = WindowsGamepadStateMapper.GetUnmappedButtonMask(state);
+            var newUnmappedButtonMask = unmappedButtonMask & ~capture.ReportedUnmappedButtonMask;
             var nativeTimestamp = WindowsGamepadStateMapper.ConvertNativeTimestamp(
                 _manager.GetReadingTimestamp(arguments.Reading));
             var monotonicTimestamp = _timeProvider.GetTimestamp();
 
-            if (capture.NeedsAnnouncement || capture.NeedsReconciliation || arguments.HasOverrunOccurred)
+            if (capture.NeedsAnnouncement
+                || capture.NeedsReconciliation
+                || arguments.HasOverrunOccurred
+                || (newUnmappedButtonMask != 0))
             {
-                EmitReconciliation(capture, state, nativeTimestamp, monotonicTimestamp);
+                EmitReconciliation(
+                    capture,
+                    state,
+                    nativeTimestamp,
+                    monotonicTimestamp,
+                    newUnmappedButtonMask);
             }
             else
             {
@@ -178,7 +188,8 @@ internal sealed partial class WindowsGameInputCapture
         GamepadCapture capture,
         in PlatformGamepadState state,
         long nativeTimestamp,
-        long monotonicTimestamp)
+        long monotonicTimestamp,
+        uint unmappedButtonMask)
     {
         if (capture.NeedsAnnouncement)
         {
@@ -205,7 +216,8 @@ internal sealed partial class WindowsGameInputCapture
             NativeTimestamp: nativeTimestamp,
             NativeClockDomain: "GameInput",
             MonotonicTimestamp: monotonicTimestamp,
-            ReconciliationState: WindowsGamepadStateMapper.CreateState(state));
+            ReconciliationState: WindowsGamepadStateMapper.CreateState(state),
+            UnmappedGamepadButtonMask: unmappedButtonMask);
 
         if (!_samples.TryEnqueue(in reconciliation))
         {
@@ -214,6 +226,7 @@ internal sealed partial class WindowsGameInputCapture
         }
 
         capture.NeedsReconciliation = false;
+        capture.ReportedUnmappedButtonMask |= unmappedButtonMask;
     }
 
     private void EnsureOwnerThread()
@@ -246,10 +259,12 @@ internal sealed partial class WindowsGameInputCapture
 
         var current = WindowsGamepadStateMapper.FromGameInput(nativeState);
         var monotonicTimestamp = _timeProvider.GetTimestamp();
+        var unmappedButtonMask = WindowsGamepadStateMapper.GetUnmappedButtonMask(current)
+            & ~capture.ReportedUnmappedButtonMask;
 
-        if (capture.NeedsAnnouncement || capture.NeedsReconciliation)
+        if (capture.NeedsAnnouncement || capture.NeedsReconciliation || (unmappedButtonMask != 0))
         {
-            EmitReconciliation(capture, current, nativeTimestamp, monotonicTimestamp);
+            EmitReconciliation(capture, current, nativeTimestamp, monotonicTimestamp, unmappedButtonMask);
         }
 
         capture.LastState = current;

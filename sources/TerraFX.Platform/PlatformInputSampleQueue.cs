@@ -57,7 +57,10 @@ internal sealed class PlatformInputSampleQueue
         if (!Enum.IsDefined(sample.DeviceKind)
             || (sample.Window is { IsValid: false })
             || ((sample.NativeDeviceIdentity == 0)
-                && (sample.Kind is PhysicalInputEventKind.DeviceAdded or PhysicalInputEventKind.DeviceRemoved)))
+                && (sample.Kind is PhysicalInputEventKind.DeviceAdded or PhysicalInputEventKind.DeviceRemoved))
+            || ((sample.UnmappedGamepadButtonMask != 0)
+                && ((sample.Kind != PhysicalInputEventKind.StateReconciliation)
+                    || (sample.DeviceKind != PlatformInputDeviceKind.Gamepad))))
         {
             throw new ArgumentException("The platform input sample has an invalid source.", nameof(sample));
         }
