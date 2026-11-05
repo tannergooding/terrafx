@@ -2500,7 +2500,8 @@ public static unsafe class D3D12GraphicsBackend
 
                 if (availableBudgetBytes is long available && allocationInfo.SizeBytes > available)
                 {
-                    throw new OutOfMemoryException("The D3D12 adapter's host-visible staging budget is exhausted.");
+                    throw new OutOfMemoryException(
+                        $"The D3D12 adapter's host-visible staging budget ({available} bytes) cannot cover the {allocationInfo.SizeBytes}-byte staging allocation.");
                 }
 
                 var nativeDescription = CreateNativeBufferDescription(description);
@@ -2710,14 +2711,22 @@ public static unsafe class D3D12GraphicsBackend
 
             private ID3D12Resource* GetReadbackStaging(nint byteLength, out bool isDedicated)
             {
-                if (byteLength <= StagingRingCapacityBytes)
+                var existingRing = _readbackStagingResource is not null;
+                var availableBudget = !existingRing && (byteLength <= StagingRingCapacityBytes)
+                    ? GetAvailableBudgetBytes(GpuMemoryKind.Readback)
+                    : null;
+                isDedicated = D3D12StagingAdmission.ShouldUseDedicatedStaging(
+                    checked((long)byteLength),
+                    StagingRingCapacityBytes,
+                    availableBudget,
+                    existingRing);
+
+                if (!isDedicated)
                 {
                     EnsureReadbackStaging();
-                    isDedicated = false;
                     return _readbackStagingResource;
                 }
 
-                isDedicated = true;
                 return CreateStagingResource(GpuMemoryKind.Readback, checked((long)byteLength), "TerraFX D3D12 dedicated readback");
             }
 
@@ -2780,15 +2789,23 @@ public static unsafe class D3D12GraphicsBackend
 
             private byte* GetUploadStaging(nint byteLength, out ID3D12Resource* stagingResource, out bool isDedicated)
             {
-                if (byteLength <= StagingRingCapacityBytes)
+                var existingRing = _uploadStagingResource is not null;
+                var availableBudget = !existingRing && (byteLength <= StagingRingCapacityBytes)
+                    ? GetAvailableBudgetBytes(GpuMemoryKind.Upload)
+                    : null;
+                isDedicated = D3D12StagingAdmission.ShouldUseDedicatedStaging(
+                    checked((long)byteLength),
+                    StagingRingCapacityBytes,
+                    availableBudget,
+                    existingRing);
+
+                if (!isDedicated)
                 {
                     EnsureUploadStaging();
-                    isDedicated = false;
                     stagingResource = _uploadStagingResource;
                     return _uploadStagingMapped;
                 }
 
-                isDedicated = true;
                 stagingResource = CreateStagingResource(
                     GpuMemoryKind.Upload,
                     checked((long)byteLength),
