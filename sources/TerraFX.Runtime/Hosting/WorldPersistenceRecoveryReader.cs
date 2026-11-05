@@ -78,6 +78,8 @@ internal static class WorldPersistenceRecoveryReader
                 validateCandidate,
                 cancellationToken).ConfigureAwait(false);
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (latest is null)
             {
                 return null;
@@ -150,6 +152,7 @@ internal static class WorldPersistenceRecoveryReader
                     throw new IOException("A State2 candidate changed length while its committed generation was being read.");
                 }
 
+                cancellationToken.ThrowIfCancellationRequested();
                 long generation;
 
                 try
@@ -167,6 +170,7 @@ internal static class WorldPersistenceRecoveryReader
                 }
 
                 var contents = validateCandidate(candidate);
+                cancellationToken.ThrowIfCancellationRequested();
                 return (contents is null)
                     ? latest
                     : (candidatePath, generation, candidate, contents);

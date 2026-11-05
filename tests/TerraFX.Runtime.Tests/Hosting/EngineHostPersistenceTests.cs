@@ -299,6 +299,54 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(semanticFallback.Generation, Is.EqualTo(1));
             semanticFallbackSourceUse.Dispose();
             await File.WriteAllBytesAsync(savePath, fileRecord).ConfigureAwait(false);
+
+            using var cancelAfterValidation = new CancellationTokenSource();
+            Task? cancellationCallbacks = null;
+
+            WorldPersistenceCheckpointContents? ValidateAndCancel(ReadOnlyMemory<byte> candidateFile)
+            {
+                var contents = ValidateCandidate(candidateFile);
+                cancellationCallbacks = cancelAfterValidation.CancelAsync();
+                return contents;
+            }
+
+            var recoveryCancellationObserved = false;
+
+            try
+            {
+                var unexpectedCandidate = await WorldPersistenceRecoveryReader.ReadLatestCommittedAsync(
+                    savePath,
+                    backupPath,
+                    recoveryPreparationScope,
+                    world.Options.MaximumSnapshotBytes,
+                    limits,
+                    ValidateAndCancel,
+                    cancelAfterValidation.Token).ConfigureAwait(false);
+                unexpectedCandidate?.SourceUse.Dispose();
+            }
+            catch (OperationCanceledException)
+            {
+                recoveryCancellationObserved = true;
+            }
+
+            Assert.That(recoveryCancellationObserved, Is.True);
+            await (cancellationCallbacks
+                ?? throw new InvalidOperationException("Checkpoint validation did not request cancellation."))
+                .ConfigureAwait(false);
+
+            var retryAfterCancellationCandidate = await WorldPersistenceRecoveryReader.ReadLatestCommittedAsync(
+                savePath,
+                backupPath,
+                recoveryPreparationScope,
+                world.Options.MaximumSnapshotBytes,
+                limits,
+                ValidateCandidate,
+                default).ConfigureAwait(false);
+            var retryAfterCancellation = retryAfterCancellationCandidate
+                ?? throw new InvalidOperationException("The recovery source lease was not released after cancellation.");
+            using var retrySourceUse = retryAfterCancellation.SourceUse;
+            Assert.That(retryAfterCancellation.Path, Is.EqualTo(savePath));
+            retrySourceUse.Dispose();
             recoveryPreparationScope.Dispose();
 
             var strictLocalHeaderRecord = WorldPersistenceHeaderWriter.Create(
