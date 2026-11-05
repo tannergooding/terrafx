@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Linq;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Hosting;
@@ -175,6 +176,74 @@ internal sealed class PlatformInputRoutingOwnerTests
         {
             routingOwner.ClearRoutes();
             _ = router.DisposeAndGetTransitions();
+        }
+    }
+
+    [Test]
+    public void FocusRegainWarningIsSuppressedOnlyByANewerAcceptedSnapshot()
+    {
+        var ownerThreadId = Environment.CurrentManagedThreadId;
+        var ownerId = OwnerIdAllocator.Allocate();
+        var platformOwner = new TestPlatformInputRoutingHost(ownerId);
+        var sequenceLease = new HostEventSequenceLease();
+        var inputRouters = new HashSet<InputRouter>();
+        InputRouter? simulationRouter = null;
+        var diagnostics = new DiagnosticsService();
+        var routingOwner = new PlatformInputRoutingOwner(
+            HostProfile.Interactive,
+            platformOwner,
+            sequenceLease,
+            diagnostics,
+            ownerThreadId,
+            inputRouters,
+            [],
+            recipientId => (simulationRouter?.RecipientId == recipientId) ? simulationRouter : null);
+        var window = new WindowHandle(ownerId, 0, 1);
+        _ = routingOwner.CreateInputRouter(InputRecipientKind.HostLiveUI, window);
+        simulationRouter = routingOwner.CreateInputRouter(InputRecipientKind.SimulationTimeline, window: null);
+        routingOwner.AttachSimulationTimelineToWindow(window, simulationRouter);
+
+        try
+        {
+            var focusGained = new PhysicalInputEvent(
+                PhysicalInputEventKind.FocusGained,
+                hostTimestamp: 10,
+                hostSequence: sequenceLease.Allocate(),
+                window: window);
+            var reconciliation = new PhysicalInputEvent(
+                PhysicalInputEventKind.StateReconciliation,
+                hostTimestamp: 10,
+                hostSequence: sequenceLease.Allocate(),
+                window: window,
+                reconciliationState: []);
+            routingOwner.RouteCapturedInput(new PlatformInputCaptureBatch([focusGained, reconciliation], 0, []));
+
+            var reconciledDiagnostics = diagnostics.GetSnapshot(
+                new DiagnosticQuery(128, DiagnosticSeverity.Warning, worldGuid: null, minimumTick: null));
+            Assert.That(
+                reconciledDiagnostics.Records.Any(static diagnostic => diagnostic.Code == "input-state-reconciliation-required"),
+                Is.False);
+
+            var missingSnapshotFocus = new PhysicalInputEvent(
+                PhysicalInputEventKind.FocusGained,
+                hostTimestamp: 20,
+                hostSequence: sequenceLease.Allocate(),
+                window: window);
+            routingOwner.RouteCapturedInput(new PlatformInputCaptureBatch([missingSnapshotFocus], 0, []));
+            var missingDiagnostics = diagnostics.GetSnapshot(
+                new DiagnosticQuery(128, DiagnosticSeverity.Warning, worldGuid: null, minimumTick: null));
+            Assert.That(
+                missingDiagnostics.Records.Any(static diagnostic => diagnostic.Code == "input-state-reconciliation-required"),
+                Is.True);
+        }
+        finally
+        {
+            routingOwner.ClearRoutes();
+
+            foreach (var router in inputRouters)
+            {
+                _ = router.DisposeAndGetTransitions();
+            }
         }
     }
 

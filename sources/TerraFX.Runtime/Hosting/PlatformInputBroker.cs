@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Globalization;
+using System.Linq;
 using TerraFX;
 using TerraFX.Input;
 using TerraFX.Numerics;
@@ -119,6 +120,16 @@ internal sealed class PlatformInputBroker
     {
         switch (value.Kind)
         {
+            case PlatformInputStateValueKind.Digital:
+            {
+                if ((value.DigitalControl is not { } control) || (value.IsDown != true))
+                {
+                    throw new InvalidOperationException("A window reconciliation digital control must be held.");
+                }
+
+                return new PhysicalInputValue(control, isDown: true);
+            }
+
             case PlatformInputStateValueKind.GamepadButton:
             {
                 if ((value.GamepadButton is not { } button)
@@ -223,7 +234,6 @@ internal sealed class PlatformInputBroker
             or PhysicalInputEventKind.GamepadAxis
             or PhysicalInputEventKind.GamepadStick
             or PhysicalInputEventKind.GamepadTrigger
-            or PhysicalInputEventKind.StateReconciliation
             or PhysicalInputEventKind.DeviceAdded
             or PhysicalInputEventKind.DeviceRemoved;
 
@@ -234,13 +244,19 @@ internal sealed class PlatformInputBroker
             or PhysicalInputEventKind.GamepadStick
             or PhysicalInputEventKind.GamepadTrigger;
 
+    private static bool IsWindowReconciliationValue(PlatformInputStateValue value)
+        => (value.Kind == PlatformInputStateValueKind.Digital)
+            && (value.IsDown == true)
+            && (value.DigitalControl?.Kind is DigitalControlKind.KeyboardHid
+                or DigitalControlKind.LogicalKey
+                or DigitalControlKind.MouseButton);
+
     private static bool IsWindowless(PhysicalInputEventKind kind)
         => kind is PhysicalInputEventKind.GamepadButtonDown
             or PhysicalInputEventKind.GamepadButtonUp
             or PhysicalInputEventKind.GamepadAxis
             or PhysicalInputEventKind.GamepadStick
             or PhysicalInputEventKind.GamepadTrigger
-            or PhysicalInputEventKind.StateReconciliation
             or PhysicalInputEventKind.DeviceAdded
             or PhysicalInputEventKind.DeviceRemoved;
 
@@ -264,17 +280,24 @@ internal sealed class PlatformInputBroker
         foreach (var sample in sampleBatch.Samples)
         {
             if (!IsDeviceScoped(sample.Kind)
-                && (sample.Kind is not PhysicalInputEventKind.FocusGained and not PhysicalInputEventKind.FocusLost))
+                && (sample.Kind is not PhysicalInputEventKind.FocusGained
+                    and not PhysicalInputEventKind.FocusLost
+                    and not PhysicalInputEventKind.StateReconciliation))
             {
                 throw new InvalidOperationException($"The platform input sample kind {sample.Kind} is not supported by the Runtime capture broker.");
             }
 
-            if (IsDeviceScoped(sample.Kind) != (sample.NativeDeviceIdentity != 0))
+            var isDeviceScopedSample = IsDeviceScoped(sample.Kind)
+                || ((sample.Kind == PhysicalInputEventKind.StateReconciliation) && (sample.NativeDeviceIdentity != 0));
+            var isWindowlessSample = IsWindowless(sample.Kind)
+                || ((sample.Kind == PhysicalInputEventKind.StateReconciliation) && (sample.NativeDeviceIdentity != 0));
+
+            if (isDeviceScopedSample != (sample.NativeDeviceIdentity != 0))
             {
                 throw new InvalidOperationException("The platform input sample has an invalid device source.");
             }
 
-            if (IsWindowless(sample.Kind) ? (sample.Window is not null) : (sample.Window is null))
+            if (isWindowlessSample ? (sample.Window is not null) : (sample.Window is null))
             {
                 throw new InvalidOperationException("The platform input sample has an invalid window source.");
             }
@@ -303,8 +326,9 @@ internal sealed class PlatformInputBroker
 
             if (sample.Kind is PhysicalInputEventKind.StateReconciliation)
             {
-                if ((sample.DeviceKind != PlatformInputDeviceKind.Gamepad)
-                    || sample.ReconciliationState.IsDefault
+                var isDeviceState = sample.NativeDeviceIdentity != 0;
+
+                if (sample.ReconciliationState.IsDefault
                     || (sample.Axis is not null)
                     || (sample.AxisValue is not null)
                     || (sample.GamepadButton is not null)
@@ -316,6 +340,21 @@ internal sealed class PlatformInputBroker
                 {
                     throw new InvalidOperationException("A platform state-reconciliation sample has an invalid source or payload.");
                 }
+
+                if (isDeviceState)
+                {
+                    if ((sample.DeviceKind != PlatformInputDeviceKind.Gamepad)
+                        || sample.ReconciliationState.Any(static value => value.Kind is PlatformInputStateValueKind.Digital))
+                    {
+                        throw new InvalidOperationException("A device state-reconciliation sample must describe one gamepad.");
+                    }
+                }
+                else if ((sample.Window is null)
+                    || (sample.DeviceKind != PlatformInputDeviceKind.Unknown)
+                    || sample.ReconciliationState.Any(static value => !IsWindowReconciliationValue(value)))
+                {
+                    throw new InvalidOperationException("A window state-reconciliation sample must contain only keyboard or pointer controls.");
+                }
             }
             else if (!sample.ReconciliationState.IsDefault)
             {
@@ -323,7 +362,9 @@ internal sealed class PlatformInputBroker
             }
 
             if ((sample.UnmappedGamepadButtonMask != 0)
-                && (sample.Kind != PhysicalInputEventKind.StateReconciliation))
+                && ((sample.Kind != PhysicalInputEventKind.StateReconciliation)
+                    || (sample.NativeDeviceIdentity == 0)
+                    || (sample.DeviceKind != PlatformInputDeviceKind.Gamepad)))
             {
                 throw new InvalidOperationException("A platform sample carries unmapped gamepad buttons outside reconciliation.");
             }

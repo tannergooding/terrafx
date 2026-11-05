@@ -9,6 +9,7 @@ internal readonly record struct PlatformInputStateValue(
     PlatformInputStateValueKind Kind,
     GamepadButtonValue? GamepadButton = null,
     bool? IsDown = null,
+    DigitalControl? DigitalControl = null,
     GamepadAxis? Axis = null,
     float? AxisValue = null,
     GamepadStick? Stick = null,

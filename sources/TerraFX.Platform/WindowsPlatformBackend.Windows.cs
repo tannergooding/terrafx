@@ -17,6 +17,7 @@ namespace TerraFX.Platform;
 internal sealed unsafe partial class WindowsPlatformBackend
 {
     private const int CreateWindowDefaultPosition = int.MinValue;
+    private const uint MapVirtualKeyVirtualKeyToScanCodeEx = 4;
     private const uint MonitorDefaultToPrimary = 0x00000001;
     private const uint RawInputCommandInput = 0x10000003;
     private const uint RawInputTypeKeyboard = 1;
@@ -42,6 +43,11 @@ internal sealed unsafe partial class WindowsPlatformBackend
     private const uint SystemMetricVirtualScreenLeft = 76;
     private const uint SystemMetricVirtualScreenTop = 77;
     private const uint SystemMetricVirtualScreenWidth = 78;
+    private const uint VirtualKeyLeftButton = 0x01;
+    private const uint VirtualKeyMiddleButton = 0x04;
+    private const uint VirtualKeyRightButton = 0x02;
+    private const uint VirtualKeyXButton1 = 0x05;
+    private const uint VirtualKeyXButton2 = 0x06;
     private const uint WindowClassHorizontalRedraw = 0x0002;
     private const uint WindowClassVerticalRedraw = 0x0001;
     private const uint WindowMessageClose = 0x0010;
@@ -74,6 +80,86 @@ internal sealed unsafe partial class WindowsPlatformBackend
         [MarshalAs(UnmanagedType.Bool)] bool hasMenu,
         uint extendedStyle,
         uint dpi);
+
+    private static ImmutableArray<PlatformInputStateValue> CaptureWindowInputState()
+    {
+        var keyboardStates = new byte[256];
+
+        fixed (byte* keyStatesPointer = keyboardStates)
+        {
+            if (!GetKeyboardStateNative(keyStatesPointer))
+            {
+                throw new Win32Exception(Marshal.GetLastPInvokeError(), "Windows could not read the focused window input state.");
+            }
+        }
+
+        var keyboardLayout = GetKeyboardLayoutNative(threadId: 0);
+
+        if (keyboardLayout == 0)
+        {
+            throw new InvalidOperationException("Windows did not report the focused thread's keyboard layout.");
+        }
+
+        var reconciledValues = ImmutableArray.CreateBuilder<PlatformInputStateValue>();
+        var seenKeyboardUsages = new bool[256];
+
+        for (var virtualKey = 0; virtualKey < keyboardStates.Length; virtualKey++)
+        {
+            if ((keyboardStates[virtualKey] & 0x80) == 0)
+            {
+                continue;
+            }
+
+            var mouseButton = (uint)virtualKey switch {
+                VirtualKeyLeftButton => MouseButtonValue.Primary,
+                VirtualKeyRightButton => MouseButtonValue.Secondary,
+                VirtualKeyMiddleButton => MouseButtonValue.Middle,
+                VirtualKeyXButton1 => MouseButtonValue.Auxiliary1,
+                VirtualKeyXButton2 => MouseButtonValue.Auxiliary2,
+                _ => (MouseButtonValue?)null,
+            };
+
+            if (mouseButton is { } heldMouseButton)
+            {
+                reconciledValues.Add(new PlatformInputStateValue(
+                    PlatformInputStateValueKind.Digital,
+                    DigitalControl: new DigitalControl(heldMouseButton),
+                    IsDown: true));
+                continue;
+            }
+
+            var scanCode = MapVirtualKeyExNative(
+                checked((uint)virtualKey),
+                MapVirtualKeyVirtualKeyToScanCodeEx,
+                keyboardLayout);
+
+            if (scanCode == 0)
+            {
+                continue;
+            }
+
+            var makeCode = checked((ushort)(scanCode & 0xFF));
+            var flags = ((scanCode >> 8) & 0xFF) switch {
+                0xE0 => WindowsRawInputDecoder.RawKeyboardE0,
+                0xE1 => WindowsRawInputDecoder.RawKeyboardE1,
+                _ => (ushort)0,
+            };
+
+            if (!WindowsRawInputDecoder.TryMapKeyboardUsage(makeCode, flags, out var usage)
+                || seenKeyboardUsages[usage])
+            {
+                continue;
+            }
+
+            seenKeyboardUsages[usage] = true;
+            reconciledValues.Add(new PlatformInputStateValue(
+                PlatformInputStateValueKind.Digital,
+                DigitalControl: new DigitalControl(new KeyboardControl(0x0007, usage)),
+                IsDown: true));
+        }
+
+        return reconciledValues.ToImmutable();
+    }
 
     private static void ConfigureWindowBounds(WindowState state, nint monitor)
     {
@@ -167,6 +253,13 @@ internal sealed unsafe partial class WindowsPlatformBackend
     [LibraryImport("user32.dll", EntryPoint = "GetDpiForWindow", SetLastError = true)]
     private static partial uint GetDpiForWindowNative(nint window);
 
+    [LibraryImport("user32.dll", EntryPoint = "GetKeyboardLayout")]
+    private static partial nint GetKeyboardLayoutNative(uint threadId);
+
+    [LibraryImport("user32.dll", EntryPoint = "GetKeyboardState", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetKeyboardStateNative(byte* keyStates);
+
     [LibraryImport("user32.dll", EntryPoint = "GetMessageTime")]
     private static partial int GetMessageTimeNative();
 
@@ -202,6 +295,9 @@ internal sealed unsafe partial class WindowsPlatformBackend
 
     [LibraryImport("user32.dll", EntryPoint = "LoadCursorW")]
     private static partial nint LoadCursorNative(nint instance, nint cursorName);
+
+    [LibraryImport("user32.dll", EntryPoint = "MapVirtualKeyExW")]
+    private static partial uint MapVirtualKeyExNative(uint code, uint mapType, nint keyboardLayout);
 
     [LibraryImport("user32.dll", EntryPoint = "MonitorFromPoint")]
     private static partial nint MonitorFromPointNative(NativePoint point, uint flags);
@@ -885,6 +981,20 @@ internal sealed unsafe partial class WindowsPlatformBackend
             NativeClockDomain: WindowsMessageTimeClockDomain,
             Diagnostics: diagnostics,
             MonotonicTimestamp: monotonicTimestamp));
+
+        if (kind == PhysicalInputEventKind.FocusGained)
+        {
+            CaptureNativeInputSample(new PlatformInputSample(
+                PhysicalInputEventKind.StateReconciliation,
+                state.Window,
+                NativeDeviceIdentity: 0,
+                PlatformInputDeviceKind.Unknown,
+                NativeTimestamp: nativeTimestamp,
+                NativeClockDomain: WindowsMessageTimeClockDomain,
+                Diagnostics: diagnostics,
+                MonotonicTimestamp: monotonicTimestamp,
+                ReconciliationState: CaptureWindowInputState()));
+        }
     }
 
     private void CreateNativeWindow(WindowState state, nint monitor)

@@ -211,6 +211,50 @@ internal sealed class PlatformInputBrokerTests
     }
 
     [Test]
+    public void PreservesWindowKeyboardAndPointerStateReconciliation()
+    {
+        var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());
+        var window = new WindowHandle(17, 0, 1);
+        var key = new KeyboardControl(7, 4);
+        var reconciliationState = ImmutableArray.Create(
+            new PlatformInputStateValue(
+                PlatformInputStateValueKind.Digital,
+                DigitalControl: new DigitalControl(key),
+                IsDown: true),
+            new PlatformInputStateValue(
+                PlatformInputStateValueKind.Digital,
+                DigitalControl: new DigitalControl(MouseButtonValue.Primary),
+                IsDown: true));
+        var sample = new PlatformInputSample(
+            PhysicalInputEventKind.StateReconciliation,
+            window,
+            NativeDeviceIdentity: 0,
+            PlatformInputDeviceKind.Unknown,
+            MonotonicTimestamp: 2,
+            ReconciliationState: reconciliationState);
+
+        var captured = broker.Capture(new PlatformInputSampleBatch([sample], DiscardedSampleCount: 0), static _ => true);
+        Assert.That(captured.Events, Has.Length.EqualTo(1));
+        var inputEvent = captured.Events[0];
+
+        Assert.Multiple(() => {
+            Assert.That(inputEvent.Kind, Is.EqualTo(PhysicalInputEventKind.StateReconciliation));
+            Assert.That(inputEvent.Window, Is.EqualTo(window));
+            Assert.That(inputEvent.Device, Is.Null);
+            Assert.That(inputEvent.ReconciliationState, Has.Length.EqualTo(2));
+            Assert.That(inputEvent.ReconciliationState[0].DigitalControl?.Kind, Is.EqualTo(DigitalControlKind.KeyboardHid));
+            Assert.That(inputEvent.ReconciliationState[0].DigitalControl?.Keyboard?.UsagePage, Is.EqualTo(key.UsagePage));
+            Assert.That(inputEvent.ReconciliationState[0].DigitalControl?.Keyboard?.Usage, Is.EqualTo(key.Usage));
+            Assert.That(inputEvent.ReconciliationState[0].IsDown, Is.True);
+            Assert.That(inputEvent.ReconciliationState[1].DigitalControl?.Kind, Is.EqualTo(DigitalControlKind.MouseButton));
+            Assert.That(inputEvent.ReconciliationState[1].DigitalControl?.MouseButton, Is.EqualTo(MouseButtonValue.Primary));
+            Assert.That(inputEvent.ReconciliationState[1].IsDown, Is.True);
+        });
+
+        broker.Retire();
+    }
+
+    [Test]
     public void RecordsUnmappedGamepadButtonsAgainstTheIssuedDeviceGeneration()
     {
         var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());

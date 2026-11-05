@@ -447,6 +447,9 @@ internal sealed class PlatformInputRoutingOwner
             WritePlatformInputSampleDropDiagnostic(capturedInput.DiscardedSampleCount);
         }
 
+        List<(WindowHandle Window, long HostSequence)>? focusReconciliationRequests = null;
+        Dictionary<WindowHandle, long>? reconciledWindowSequences = null;
+
         foreach (var inputEvent in capturedInput.Events)
         {
             if (RouteDeviceInput(inputEvent))
@@ -496,14 +499,36 @@ internal sealed class PlatformInputRoutingOwner
                     inputEvent.Kind.ToString());
             }
 
+            if ((inputEvent.Kind == PhysicalInputEventKind.StateReconciliation)
+                && (result.SimulationRecipient is { Status: InputRoutingStatus.Applied })
+                && route.HasSimulationTimeline)
+            {
+                reconciledWindowSequences ??= [];
+                reconciledWindowSequences[window] = inputEvent.HostSequence;
+            }
+
             if (result.RequiresStateReconciliation && route.HasSimulationTimeline)
             {
-                WriteInputDiagnostic(
-                    "input-state-reconciliation-required",
-                    DiagnosticSeverity.Warning,
-                    window,
-                    inputEvent.HostSequence,
-                    "Focus returned to the window, but no current physical-state reconciliation sample is available. Held controls remain disarmed until a later neutral/up event.");
+                focusReconciliationRequests ??= [];
+                focusReconciliationRequests.Add((window, inputEvent.HostSequence));
+            }
+        }
+
+        if (focusReconciliationRequests is not null)
+        {
+            foreach (var (window, hostSequence) in focusReconciliationRequests)
+            {
+                if ((reconciledWindowSequences is null)
+                    || !reconciledWindowSequences.TryGetValue(window, out var reconciliationSequence)
+                    || (reconciliationSequence <= hostSequence))
+                {
+                    WriteInputDiagnostic(
+                        "input-state-reconciliation-required",
+                        DiagnosticSeverity.Warning,
+                        window,
+                        hostSequence,
+                        "Focus returned to the window, but no current physical-state reconciliation sample is available. Held controls remain disarmed until a later neutral/up event.");
+                }
             }
         }
 

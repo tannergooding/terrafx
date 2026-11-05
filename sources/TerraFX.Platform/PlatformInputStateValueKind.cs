@@ -8,4 +8,5 @@ internal enum PlatformInputStateValueKind : byte
     GamepadAxis = 2,
     GamepadStick = 3,
     GamepadTrigger = 4,
+    Digital = 5,
 }
