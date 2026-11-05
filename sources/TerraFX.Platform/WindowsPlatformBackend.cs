@@ -25,6 +25,7 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
     private static bool s_isAdmissionReserved;
     private static WindowsPlatformBackend? s_quarantinedBackend;
     private readonly ClipboardServiceStatus _clipboardStatus;
+    private readonly WindowsXInputGamepadAdapter _gamepads;
     private PlatformServiceStatus _displayStatus = PlatformServiceStatus.Unavailable;
     private bool _hasNativeMessageTimestamp;
     private readonly PlatformInputSampleQueue _inputSamples;
@@ -104,6 +105,7 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
         _ownerThreadId = _platformOwner.OwnerThreadId;
         _windowClassName = windowClassName;
         _windows = windows;
+        _gamepads = new WindowsXInputGamepadAdapter(CaptureNativeInputSample, _timeProvider);
         _inputSamples = new PlatformInputSampleQueue(_ownerThreadId);
         _knownInputDevices = [];
         _clipboardStatus = clipboardPolicy is ClipboardServicePolicy.NotRequested
@@ -338,6 +340,7 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
             _ = DispatchMessageNative(&message);
         }
 
+        _gamepads.Pump();
         ApplyDeferredWindowUpdates();
         ThrowCallbackFailures();
 
