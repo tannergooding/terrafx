@@ -4,6 +4,7 @@ using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using System.Threading.Tasks;
+using TerraFX;
 using TerraFX.Entities;
 
 namespace TerraFX.Scenes;
@@ -57,6 +58,63 @@ internal sealed class SceneUnloadRequest : SceneOwnerRequest
             return;
         }
 
+        var limits = WorldPersistenceEbinLimits.Create(world.Options);
+        var controlMeasureStatus = ScenePersistenceControlRecordWriter.MeasureUnload(
+            world,
+            _instance.SceneInstanceId,
+            _mode,
+            limits,
+            out var controlWorkspace,
+            out var controlDiagnostic);
+
+        if (controlMeasureStatus is not EbinWriteStatus.Complete)
+        {
+            Reject(world.CreateDiagnostic(
+                "SceneUnload.ControlRecordInvalid",
+                DiagnosticSeverity.Error,
+                "SceneInstance.UnloadAsync",
+                controlDiagnostic?.ToString() ?? "The Scene unload control could not be measured.",
+                _instance.AssetId.Value));
+            return;
+        }
+
+        using var controlAppend = world.TryPrepareSceneControlAppend(
+            controlWorkspace.RecordBytes,
+            controlWorkspace.WorkspaceBytes);
+
+        if (controlAppend is null)
+        {
+            Reject(world.CreateDiagnostic(
+                "SceneUnload.ControlCapacityExceeded",
+                DiagnosticSeverity.Error,
+                "SceneInstance.UnloadAsync",
+                "The configured recorded-control capacity or shared World budget was reached.",
+                _instance.AssetId.Value));
+            return;
+        }
+
+        var controlWriteStatus = ScenePersistenceControlRecordWriter.WriteUnload(
+            _instance.SceneInstanceId,
+            _mode,
+            controlWorkspace,
+            limits,
+            controlAppend.CandidateStorage,
+            controlAppend.PayloadRecord,
+            out var controlBytesWritten,
+            out controlDiagnostic);
+
+        if ((controlWriteStatus is not EbinWriteStatus.Complete)
+            || (controlBytesWritten != controlWorkspace.RecordBytes))
+        {
+            Reject(world.CreateDiagnostic(
+                "SceneUnload.ControlRecordInvalid",
+                DiagnosticSeverity.Error,
+                "SceneInstance.UnloadAsync",
+                controlDiagnostic?.ToString() ?? "The Scene unload control could not be written.",
+                _instance.AssetId.Value));
+            return;
+        }
+
         try
         {
             var revision = world.DestroySceneEntitiesAtomically(
@@ -67,6 +125,7 @@ internal sealed class SceneUnloadRequest : SceneOwnerRequest
                 _cancellationToken);
             registry.RemoveInstance(_instance);
             _instance.RevokeFromWorld();
+            controlAppend.Commit();
             _ = _completion.TrySetResult(new SceneUnloadReceipt(
                 SceneUnloadStatus.Unloaded,
                 _instance.SceneInstanceId,

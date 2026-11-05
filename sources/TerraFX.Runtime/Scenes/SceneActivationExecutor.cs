@@ -50,6 +50,62 @@ internal static class SceneActivationExecutor
                 "The requested SceneInstance identity has already been assigned.");
         }
 
+        var sceneInstanceId = world.GetNextSceneInstanceIdentity(request.Options.SceneInstanceId);
+        var limits = WorldPersistenceEbinLimits.Create(world.Options);
+        var controlMeasureStatus = ScenePersistenceControlRecordWriter.MeasureActivation(
+            world,
+            plan,
+            sceneInstanceId,
+            request.Options.SceneInstanceId,
+            externalBindingCaptureRows,
+            limits,
+            out var controlWorkspace,
+            out var controlDiagnostic);
+
+        if (controlMeasureStatus is not EbinWriteStatus.Complete)
+        {
+            return CreateRejectedReceipt(
+                world,
+                plan.SceneAssetId,
+                "SceneActivation.ControlRecordInvalid",
+                controlDiagnostic?.ToString() ?? "The Scene activation control could not be measured.");
+        }
+
+        using var controlAppend = world.TryPrepareSceneControlAppend(
+            controlWorkspace.RecordBytes,
+            controlWorkspace.WorkspaceBytes);
+
+        if (controlAppend is null)
+        {
+            return CreateRejectedReceipt(
+                world,
+                plan.SceneAssetId,
+                "SceneActivation.ControlCapacityExceeded",
+                "The configured recorded-control capacity or shared World budget was reached.");
+        }
+
+        var controlWriteStatus = ScenePersistenceControlRecordWriter.WriteActivation(
+            plan,
+            sceneInstanceId,
+            request.Options.SceneInstanceId,
+            externalBindingCaptureRows,
+            controlWorkspace,
+            limits,
+            controlAppend.CandidateStorage,
+            controlAppend.PayloadRecord,
+            out var controlBytesWritten,
+            out controlDiagnostic);
+
+        if ((controlWriteStatus is not EbinWriteStatus.Complete)
+            || (controlBytesWritten != controlWorkspace.RecordBytes))
+        {
+            return CreateRejectedReceipt(
+                world,
+                plan.SceneAssetId,
+                "SceneActivation.ControlRecordInvalid",
+                controlDiagnostic?.ToString() ?? "The Scene activation control could not be written.");
+        }
+
         SceneInstanceReservation? reservation = null;
 
         try
@@ -105,9 +161,16 @@ internal static class SceneActivationExecutor
 
             var instance = candidateInstance
                 ?? throw new InvalidOperationException("Scene activation committed without preparing its SceneInstance.");
+
+            if (commit.SceneInstanceId != sceneInstanceId)
+            {
+                throw new InvalidOperationException("The prepared Scene control identity did not match the committed SceneInstance identity.");
+            }
+
             instance.Activate(commit.SceneInstanceId, commit.FirstEntityIdentityOrdinal);
             admittedReservation.Commit(instance);
             request.TransferPlan();
+            controlAppend.Commit();
             return new SceneActivationReceipt(
                 SceneActivationStatus.Activated,
                 instance,

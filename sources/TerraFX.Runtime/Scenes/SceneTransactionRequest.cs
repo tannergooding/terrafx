@@ -70,6 +70,8 @@ internal sealed class SceneTransactionRequest : SceneOwnerRequest
             return;
         }
 
+        World.WorldSceneControlAppend? controlAppend = null;
+
         try
         {
             if (!registry.ContainsInstance(_instance)
@@ -103,6 +105,58 @@ internal sealed class SceneTransactionRequest : SceneOwnerRequest
                 throw new InvalidOperationException("The Scene transaction planner returned success without a plan.");
             }
 
+            if (!_operations.IsEmpty)
+            {
+                var limits = WorldPersistenceEbinLimits.Create(world.Options);
+                var controlMeasureStatus = ScenePersistenceControlRecordWriter.MeasureEdit(
+                    world,
+                    _sceneInstanceId,
+                    _operations,
+                    limits,
+                    out var controlWorkspace,
+                    out var controlDiagnostic);
+
+                if (controlMeasureStatus is not EbinWriteStatus.Complete)
+                {
+                    Reject(
+                        "SceneTransaction.ControlRecordInvalid",
+                        controlDiagnostic?.ToString() ?? "The Scene transaction control could not be measured.");
+                    return;
+                }
+
+                controlAppend = world.TryPrepareSceneControlAppend(
+                    controlWorkspace.RecordBytes,
+                    controlWorkspace.WorkspaceBytes);
+
+                if (controlAppend is null)
+                {
+                    Reject(
+                        "SceneTransaction.ControlCapacityExceeded",
+                        "The configured recorded-control capacity or shared World budget was reached.");
+                    return;
+                }
+
+                var controlWriteStatus = ScenePersistenceControlRecordWriter.WriteEdit(
+                    world,
+                    _sceneInstanceId,
+                    _operations,
+                    controlWorkspace,
+                    limits,
+                    controlAppend.CandidateStorage,
+                    controlAppend.PayloadRecord,
+                    out var controlBytesWritten,
+                    out controlDiagnostic);
+
+                if ((controlWriteStatus is not EbinWriteStatus.Complete)
+                    || (controlBytesWritten != controlWorkspace.RecordBytes))
+                {
+                    Reject(
+                        "SceneTransaction.ControlRecordInvalid",
+                        controlDiagnostic?.ToString() ?? "The Scene transaction control could not be written.");
+                    return;
+                }
+            }
+
             var revision = world.ApplySceneHierarchyTransaction(
                 registry,
                 _sceneInstanceId,
@@ -111,6 +165,7 @@ internal sealed class SceneTransactionRequest : SceneOwnerRequest
                 plan.ComponentMutations,
                 plan.ParentMutations,
                 _cancellationToken);
+            controlAppend?.Commit();
             _ = _completion.TrySetResult(new SceneTransactionReceipt(
                 SceneTransactionStatus.Committed,
                 revision,
@@ -139,6 +194,10 @@ internal sealed class SceneTransactionRequest : SceneOwnerRequest
         catch (Exception exception)
         {
             _ = _completion.TrySetException(exception);
+        }
+        finally
+        {
+            controlAppend?.Dispose();
         }
     }
 

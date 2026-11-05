@@ -13,6 +13,7 @@ internal static class WorldPersistenceControlRecordWriter
     private static readonly Guid s_frame2SchemaId = new ContentSchemaIdentityAssignment("state/control-frame2").SchemaId;
     private static readonly Guid s_frame3SchemaId = new ContentSchemaIdentityAssignment("state/control-frame3").SchemaId;
     private static readonly Guid s_schemaId = new ContentSchemaIdentityAssignment("state/control").SchemaId;
+    private static readonly Guid s_sceneSchemaId = new ContentSchemaIdentityAssignment("state/control-scene").SchemaId;
     private static readonly Guid s_stepSchemaId = new ContentSchemaIdentityAssignment("state/control-step").SchemaId;
     private static readonly Guid s_timeScaleSchemaId = new ContentSchemaIdentityAssignment("state/control-timescale").SchemaId;
 
@@ -35,7 +36,44 @@ internal static class WorldPersistenceControlRecordWriter
             return EbinWriteStatus.InvalidRecord;
         }
 
-        Span<byte> payloadRecordStorage = stackalloc byte[payloadCapacity];
+        if (control.Kind is WorldPersistenceControlKind.Scene)
+        {
+            var sceneRootPayloadBytes = checked(payloadCapacity + 16);
+            var sceneRecordEnd = checked(192L + payloadCapacity);
+            var sceneRecordBytes = checked((sceneRecordEnd + 15L) & ~15L);
+
+            if (sceneRecordBytes > limits.MaximumRecordBytes)
+            {
+                diagnostic = CreateDiagnostic(
+                    "control-scene-record-size",
+                    checked((ulong)sceneRecordBytes),
+                    checked((ulong)limits.MaximumRecordBytes));
+                return EbinWriteStatus.InvalidRecord;
+            }
+
+            workspace = new WorldPersistenceControlRecordWorkspaceRequirements(
+                control.Kind,
+                payloadCapacity,
+                sceneRootPayloadBytes,
+                checked((int)sceneRecordBytes),
+                payloadScratchBytes: 0,
+                frameWorkspace);
+            return EbinWriteStatus.Complete;
+        }
+
+        Span<byte> payloadRecordStorage = stackalloc byte[4096];
+        byte[]? payloadRecordArray = null;
+
+        if (payloadCapacity > payloadRecordStorage.Length)
+        {
+            payloadRecordArray = new byte[payloadCapacity];
+            payloadRecordStorage = payloadRecordArray;
+        }
+        else
+        {
+            payloadRecordStorage = payloadRecordStorage[..payloadCapacity];
+        }
+
         var payloadStatus = WritePayloadRecord(
             lease,
             control,
@@ -51,7 +89,19 @@ internal static class WorldPersistenceControlRecordWriter
         }
 
         var rootPayloadBytes = checked(payloadRecordBytes + 16);
-        Span<byte> rootPayloadStorage = stackalloc byte[rootPayloadBytes];
+        Span<byte> rootPayloadStorage = stackalloc byte[4096];
+        byte[]? rootPayloadArray = null;
+
+        if (rootPayloadBytes > rootPayloadStorage.Length)
+        {
+            rootPayloadArray = new byte[rootPayloadBytes];
+            rootPayloadStorage = rootPayloadArray;
+        }
+        else
+        {
+            rootPayloadStorage = rootPayloadStorage[..rootPayloadBytes];
+        }
+
         Span<EbinFieldSource> fields = stackalloc EbinFieldSource[3];
         var buildStatus = BuildFields(
             control,
@@ -141,6 +191,46 @@ internal static class WorldPersistenceControlRecordWriter
             throw new ArgumentException("The state/control record buffers must match the measured extent.");
         }
 
+        if (control.Kind is WorldPersistenceControlKind.Scene)
+        {
+            var scenePayload = control.ScenePayloadRecord
+                ?? throw new InvalidOperationException("A Scene control payload was not captured.");
+            Span<EbinFieldSource> sceneFields = stackalloc EbinFieldSource[3];
+            var sceneBuildStatus = BuildFields(
+                control,
+                scenePayload,
+                sceneFields,
+                rootPayloadStorage,
+                out var sceneFieldCount,
+                out var scenePayloadBytes,
+                out diagnostic);
+
+            if (sceneBuildStatus is not EbinWriteStatus.Complete)
+            {
+                return sceneBuildStatus;
+            }
+
+            if ((scenePayloadBytes != workspace.RootPayloadBytes)
+                || (sceneFieldCount != sceneFields.Length))
+            {
+                throw new InvalidOperationException("The state/control Scene payload changed after workspace measurement.");
+            }
+
+            var sceneSource = new EbinRecordWriteView(
+                s_schemaId,
+                major: 1,
+                minor: 0,
+                sceneFields,
+                rootPayloadStorage[..scenePayloadBytes]);
+            return EbinStructuralWriter.Write(
+                in sceneSource,
+                limits,
+                candidateStorage,
+                destination,
+                out bytesWritten,
+                out diagnostic);
+        }
+
         _ = MeasureFrame(lease, control, limits, out var payloadCapacity, out diagnostic);
 
         if (diagnostic is not null)
@@ -148,7 +238,19 @@ internal static class WorldPersistenceControlRecordWriter
             return EbinWriteStatus.InvalidRecord;
         }
 
-        Span<byte> payloadRecordStorage = stackalloc byte[payloadCapacity];
+        Span<byte> payloadRecordStorage = stackalloc byte[4096];
+        byte[]? payloadRecordArray = null;
+
+        if (payloadCapacity > payloadRecordStorage.Length)
+        {
+            payloadRecordArray = new byte[payloadCapacity];
+            payloadRecordStorage = payloadRecordArray;
+        }
+        else
+        {
+            payloadRecordStorage = payloadRecordStorage[..payloadCapacity];
+        }
+
         var payloadStatus = WritePayloadRecord(
             lease,
             control,
@@ -351,6 +453,48 @@ internal static class WorldPersistenceControlRecordWriter
             case WorldPersistenceControlKind.TimeScale:
             {
                 payloadCapacity = 256;
+                diagnostic = null;
+                return default;
+            }
+
+            case WorldPersistenceControlKind.Scene:
+            {
+                var payload = control.ScenePayloadRecord;
+
+                if (payload is null || payload.Length == 0)
+                {
+                    payloadCapacity = 0;
+                    diagnostic = CreateDiagnostic("control-scene-payload-missing");
+                    return default;
+                }
+
+                var readStatus = EbinStructuralReader.Validate(
+                    payload,
+                    limits,
+                    EbinReadPolicy.Canonical,
+                    out var bytesConsumed,
+                    out _);
+
+                if ((readStatus is not EbinReadStatus.Complete)
+                    || (bytesConsumed != payload.Length))
+                {
+                    payloadCapacity = 0;
+                    diagnostic = CreateDiagnostic("control-scene-payload-invalid");
+                    return default;
+                }
+
+                var sceneControl = new EbinRecordReadView(payload);
+
+                if ((sceneControl.Header.SchemaId != s_sceneSchemaId)
+                    || (sceneControl.Header.Major != 1)
+                    || (sceneControl.Header.Minor != 0))
+                {
+                    payloadCapacity = 0;
+                    diagnostic = CreateDiagnostic("control-scene-schema");
+                    return default;
+                }
+
+                payloadCapacity = payload.Length;
                 diagnostic = null;
                 return default;
             }
@@ -558,6 +702,23 @@ internal static class WorldPersistenceControlRecordWriter
                 break;
             }
 
+            case WorldPersistenceControlKind.Scene:
+            {
+                if ((control.ScenePayloadRecord is null)
+                    || (control.ScenePayloadRecord.Length == 0)
+                    || (control.Frame2 is not null)
+                    || (control.Frame3 is not null)
+                    || (control.BranchId != Guid.Empty)
+                    || (control.LineageId != Guid.Empty)
+                    || (control.BranchIndex != 0)
+                    || (control.SegmentSequence != 0))
+                {
+                    throw new InvalidOperationException("A Scene control has inconsistent owner payload data.");
+                }
+
+                break;
+            }
+
             default:
             {
                 throw new InvalidOperationException("The World contains an unknown persistence control kind.");
@@ -712,6 +873,23 @@ internal static class WorldPersistenceControlRecordWriter
                 var stepStatus = WriteStepPayload(control, limits, destination, out bytesWritten, out diagnostic);
                 payloadScratchBytes = checked(sizeof(long) + Unsafe.SizeOf<EbinFieldSource>() + bytesWritten);
                 return stepStatus;
+            }
+
+            case WorldPersistenceControlKind.Scene:
+            {
+                var payload = control.ScenePayloadRecord
+                    ?? throw new InvalidOperationException("A Scene control payload was not captured.");
+
+                if (payload.Length != destination.Length)
+                {
+                    throw new ArgumentException("The Scene control payload destination must match its measured extent.", nameof(destination));
+                }
+
+                payload.AsSpan().CopyTo(destination);
+                bytesWritten = payload.Length;
+                payloadScratchBytes = 0;
+                diagnostic = null;
+                return EbinWriteStatus.Complete;
             }
 
             default:

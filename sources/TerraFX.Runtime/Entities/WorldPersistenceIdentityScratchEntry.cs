@@ -17,8 +17,8 @@ internal struct WorldPersistenceIdentityScratchEntry : IComparable<WorldPersiste
     private readonly Guid _sourceIdentityNamespace;
     private readonly byte _kind;
     private readonly byte _origin;
-    private int _sceneControlSourceLength;
-    private int _sceneControlSourceOffset;
+    private int _sceneControlRecordLength;
+    private int _sceneControlRecordOffset;
     private byte _sceneControlState;
 
     internal WorldPersistenceIdentityScratchEntry(
@@ -44,8 +44,8 @@ internal struct WorldPersistenceIdentityScratchEntry : IComparable<WorldPersiste
         _branchIndex = branchIndex;
         _sourceIdentityNamespace = sourceIdentityNamespace;
         _origin = origin;
-        _sceneControlSourceLength = 0;
-        _sceneControlSourceOffset = -1;
+        _sceneControlRecordLength = 0;
+        _sceneControlRecordOffset = -1;
         _sceneControlState = 0;
     }
 
@@ -63,9 +63,9 @@ internal struct WorldPersistenceIdentityScratchEntry : IComparable<WorldPersiste
 
     internal readonly byte Origin => _origin;
 
-    internal readonly int SceneControlSourceLength => _sceneControlSourceLength;
+    internal readonly int SceneControlRecordLength => _sceneControlRecordLength;
 
-    internal readonly int SceneControlSourceOffset => _sceneControlSourceOffset;
+    internal readonly int SceneControlRecordOffset => _sceneControlRecordOffset;
 
     internal readonly Guid SourceIdentityNamespace => _sourceIdentityNamespace;
 
@@ -117,19 +117,19 @@ internal struct WorldPersistenceIdentityScratchEntry : IComparable<WorldPersiste
     public readonly int CompareTo(WorldPersistenceIdentityScratchEntry other)
         => _identity.CompareTo(other._identity);
 
-    internal bool TryMarkSceneControlActive(int sourceOffset, int sourceLength)
+    internal bool TryMarkSceneControlActive(int recordOffset, int recordLength)
     {
         if ((Kind != 2)
             || ((_sceneControlState & SceneControlActivatedFlag) != 0)
-            || (sourceOffset < 0)
-            || (sourceLength <= 0))
+            || (recordOffset < 0)
+            || (recordLength <= 0))
         {
             return false;
         }
 
         _sceneControlState = SceneControlActivatedFlag | SceneControlActiveFlag;
-        _sceneControlSourceOffset = sourceOffset;
-        _sceneControlSourceLength = sourceLength;
+        _sceneControlRecordOffset = recordOffset;
+        _sceneControlRecordLength = recordLength;
         return true;
     }
 

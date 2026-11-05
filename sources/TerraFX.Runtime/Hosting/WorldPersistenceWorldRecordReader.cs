@@ -91,6 +91,83 @@ internal static class WorldPersistenceWorldRecordReader
             nameof(worldRecord));
     }
 
+    internal static int MeasureLineageMembershipScratchCapacity(
+        EbinRecordReadView world,
+        EbinReadLimits limits,
+        string parameterName)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+        ArgumentNullException.ThrowIfNull(parameterName);
+
+        if ((world.Header.SchemaId != s_worldSchemaId)
+            || (world.Header.Major != 1)
+            || (world.Header.Minor != 0)
+            || (world.FieldCount is < RequiredFieldCount or > 12)
+            || !world.TryGetField(1, out var configurationField)
+            || (configurationField.Kind != RecordKind)
+            || (configurationField.Count != 1)
+            || !configurationField.IsRequired
+            || !world.TryGetField(5, out var ecsField)
+            || (ecsField.Kind != RecordKind)
+            || (ecsField.Count != 1)
+            || !ecsField.IsRequired)
+        {
+            throw new ArgumentException("The state/world record has the wrong schema identity, version, or required fields.", parameterName);
+        }
+
+        var configuration = world.GetRecord(1);
+        var maximumIdentityAssignments = WorldPersistenceConfigurationReader.ReadMaximumIdentityAssignments(
+            configuration,
+            parameterName);
+        var maximumIdentityBranches = WorldPersistenceConfigurationReader.ReadMaximumIdentityBranches(
+            configuration,
+            parameterName);
+        var ecs = world.GetRecord(5);
+
+        if ((ecs.Header.SchemaId != s_ecsSchemaId)
+            || (ecs.Header.Major != 1)
+            || (ecs.Header.Minor != 0)
+            || (ecs.FieldCount != 5)
+            || !ecs.TryGetField(5, out var identityHistoryField)
+            || (identityHistoryField.Kind != RecordKind)
+            || (identityHistoryField.Count != 1)
+            || !identityHistoryField.IsRequired)
+        {
+            throw new ArgumentException("The state/ecs record has the wrong schema identity, version, or field count.", parameterName);
+        }
+
+        return WorldPersistenceIdentityHistoryReader.MeasureLineageMembershipScratchCapacity(
+            ecs.GetRecord(5).EncodedBytes,
+            limits,
+            maximumIdentityAssignments,
+            maximumIdentityBranches,
+            parameterName);
+    }
+
+    internal static int MeasureLineageMembershipScratchCapacity(
+        ReadOnlyMemory<byte> worldRecord,
+        EbinReadLimits limits)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+        var status = EbinStructuralReader.Validate(
+            worldRecord.Span,
+            limits,
+            EbinReadPolicy.Canonical,
+            out var bytesConsumed,
+            out _);
+
+        if ((status is not EbinReadStatus.Complete)
+            || (bytesConsumed != worldRecord.Length))
+        {
+            throw new ArgumentException("The state/world record is not a complete canonical EBIN record.", nameof(worldRecord));
+        }
+
+        return MeasureLineageMembershipScratchCapacity(
+            new EbinRecordReadView(worldRecord.Span),
+            limits,
+            nameof(worldRecord));
+    }
+
     internal static WorldPersistenceStrictLayoutReadWorkspaceRequirements MeasureStrictLayoutReadWorkspace(
         ReadOnlyMemory<byte> worldRecord,
         EbinReadLimits limits)
@@ -158,6 +235,7 @@ internal static class WorldPersistenceWorldRecordReader
             null,
             [],
             [],
+            [],
             ref strictLayoutBuffers);
     }
 
@@ -177,6 +255,7 @@ internal static class WorldPersistenceWorldRecordReader
             assetReferenceSchemas,
             assetIdScratch,
             [],
+            [],
             ref strictLayoutBuffers);
     }
 
@@ -197,6 +276,51 @@ internal static class WorldPersistenceWorldRecordReader
             assetReferenceSchemas,
             assetIdScratch,
             identityScratch,
+            [],
+            ref strictLayoutBuffers);
+    }
+
+    internal static WorldPersistenceWorldRecordContents Read(
+        ReadOnlyMemory<byte> worldRecord,
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry assetReferenceSchemas,
+        scoped Span<uint> assetIdScratch,
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
+        scoped Span<Guid> lineageMembershipScratch)
+    {
+        ArgumentNullException.ThrowIfNull(assetReferenceSchemas);
+        var strictLayoutBuffers = default(WorldPersistenceStrictLayoutReadBuffers);
+        return ReadCore(
+            worldRecord,
+            limits,
+            targetRegistration,
+            assetReferenceSchemas,
+            assetIdScratch,
+            identityScratch,
+            lineageMembershipScratch,
+            ref strictLayoutBuffers);
+    }
+
+    internal static WorldPersistenceWorldRecordContents Read(
+        ReadOnlyMemory<byte> worldRecord,
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry assetReferenceSchemas,
+        scoped Span<uint> assetIdScratch,
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
+        scoped Span<Guid> lineageMembershipScratch,
+        scoped ref WorldPersistenceStrictLayoutReadBuffers strictLayoutBuffers)
+    {
+        ArgumentNullException.ThrowIfNull(assetReferenceSchemas);
+        return ReadCore(
+            worldRecord,
+            limits,
+            targetRegistration,
+            assetReferenceSchemas,
+            assetIdScratch,
+            identityScratch,
+            lineageMembershipScratch,
             ref strictLayoutBuffers);
     }
 
@@ -217,6 +341,7 @@ internal static class WorldPersistenceWorldRecordReader
             assetReferenceSchemas,
             assetIdScratch,
             identityScratch,
+            [],
             ref strictLayoutBuffers);
     }
 
@@ -234,8 +359,26 @@ internal static class WorldPersistenceWorldRecordReader
             null,
             [],
             identityScratch,
+            [],
             ref strictLayoutBuffers);
     }
+
+    internal static WorldPersistenceWorldRecordContents Read(
+        ReadOnlyMemory<byte> worldRecord,
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration,
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
+        scoped Span<Guid> lineageMembershipScratch,
+        scoped ref WorldPersistenceStrictLayoutReadBuffers strictLayoutBuffers)
+        => ReadCore(
+            worldRecord,
+            limits,
+            targetRegistration,
+            null,
+            [],
+            identityScratch,
+            lineageMembershipScratch,
+            ref strictLayoutBuffers);
 
     internal static WorldPersistenceWorldRecordContents Read(
         ReadOnlyMemory<byte> worldRecord,
@@ -250,6 +393,7 @@ internal static class WorldPersistenceWorldRecordReader
             null,
             [],
             identityScratch,
+            [],
             ref strictLayoutBuffers);
 
     private static ReadOnlyMemory<byte> GetPayload(ReadOnlyMemory<byte> record, int fieldIndex)
@@ -268,12 +412,16 @@ internal static class WorldPersistenceWorldRecordReader
         CompiledContentSchemaRegistry? assetReferenceSchemas,
         scoped Span<uint> assetIdScratch,
         scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
+        scoped Span<Guid> lineageMembershipScratch,
         scoped ref WorldPersistenceStrictLayoutReadBuffers strictLayoutBuffers)
     {
         ArgumentNullException.ThrowIfNull(limits);
 
         if (MemoryMarshal.AsBytes(identityScratch).Overlaps(worldRecord.Span)
-            || MemoryMarshal.AsBytes(identityScratch).Overlaps(MemoryMarshal.AsBytes(assetIdScratch)))
+            || MemoryMarshal.AsBytes(identityScratch).Overlaps(MemoryMarshal.AsBytes(assetIdScratch))
+            || MemoryMarshal.AsBytes(lineageMembershipScratch).Overlaps(worldRecord.Span)
+            || MemoryMarshal.AsBytes(lineageMembershipScratch).Overlaps(MemoryMarshal.AsBytes(identityScratch))
+            || MemoryMarshal.AsBytes(lineageMembershipScratch).Overlaps(MemoryMarshal.AsBytes(assetIdScratch)))
         {
             throw new ArgumentException("The identity verification scratch span cannot overlap another buffer.", nameof(identityScratch));
         }
@@ -286,7 +434,10 @@ internal static class WorldPersistenceWorldRecordReader
             || MemoryMarshal.AsBytes(strictLayoutBuffers.ChunkOrdinalScratch).Overlaps(MemoryMarshal.AsBytes(identityScratch))
             || strictLayoutBuffers.ArchetypeDigestScratch.Overlaps(MemoryMarshal.AsBytes(assetIdScratch))
             || strictLayoutBuffers.FreeSlotBitset.Overlaps(MemoryMarshal.AsBytes(assetIdScratch))
-            || MemoryMarshal.AsBytes(strictLayoutBuffers.ChunkOrdinalScratch).Overlaps(MemoryMarshal.AsBytes(assetIdScratch)))
+            || MemoryMarshal.AsBytes(strictLayoutBuffers.ChunkOrdinalScratch).Overlaps(MemoryMarshal.AsBytes(assetIdScratch))
+            || strictLayoutBuffers.ArchetypeDigestScratch.Overlaps(MemoryMarshal.AsBytes(lineageMembershipScratch))
+            || strictLayoutBuffers.FreeSlotBitset.Overlaps(MemoryMarshal.AsBytes(lineageMembershipScratch))
+            || MemoryMarshal.AsBytes(strictLayoutBuffers.ChunkOrdinalScratch).Overlaps(MemoryMarshal.AsBytes(lineageMembershipScratch)))
         {
             throw new ArgumentException("The StrictLocal verification scratch spans cannot overlap the source or sibling buffers.", nameof(strictLayoutBuffers));
         }
@@ -515,7 +666,9 @@ internal static class WorldPersistenceWorldRecordReader
             targetRegistration,
             targetRegistration?.Schemas ?? assetReferenceSchemas,
             liveIdentities,
-            identityScratch);
+            identityScratch,
+            lineageMembershipScratch,
+            out _);
         WorldPersistenceControlRecordReader.ValidateWorldGuidFrames(
             frame2Record,
             frame3Record,
@@ -530,6 +683,12 @@ internal static class WorldPersistenceWorldRecordReader
             parsedConfiguration.MaximumSceneOccurrences,
             liveIdentities,
             identityScratch);
+        WorldPersistenceSceneControlReader.Validate(
+            record,
+            scenesRecord,
+            controlRecordCount,
+            identityScratch,
+            nameof(worldRecord));
 
         if (!strictLayoutRecord.IsEmpty)
         {

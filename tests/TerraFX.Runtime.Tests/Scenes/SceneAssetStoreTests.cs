@@ -379,6 +379,31 @@ internal sealed partial class SceneAssetStoreTests
             sceneEntry);
     }
 
+    private static CompiledContentSchemaRegistry CreatePersistenceScanSchemas(
+        CompiledContentSchemaRegistry schemas)
+        => new([
+            .. schemas.Schemas,
+            .. StandaloneContinuationSchemaCatalogue.Schemas,
+            .. AnimationSchemaCatalogue.Schemas,
+            WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
+                "application/world-root-test/tag/v1",
+                ContentSchemaRole.EntityTag,
+                0),
+            WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
+                "application/world-root-test/system-state/v1",
+                ContentSchemaRole.SystemState,
+                7),
+            WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
+                "application/world-root-test/resource-state/v1",
+                ContentSchemaRole.ResourceState,
+                23,
+                4),
+            WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
+                "application/world-root-test/attachment-state/v1",
+                ContentSchemaRole.AttachmentState,
+                8),
+        ]);
+
     private static byte[] CreateRootPositionRecord(int chunkX, float offsetX = 0.0f)
         => SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
             new ContentSchemaIdentityAssignment("scene/root-position").SchemaId,
@@ -1824,6 +1849,100 @@ internal sealed partial class SceneAssetStoreTests
     [SuppressMessage(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "Each owner-boundary request consumes or releases its detached expansion plan before the prepared wrapper is disposed.")]
+    public async Task SceneControlCapacityRefusalDoesNotConsumeIdentityOrMutateWorld()
+    {
+        const int sceneAssetIdValue = 3;
+        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var scene = SceneAssetReaderTests.Fixtures.CreateScene(new AssetId(sceneAssetIdValue));
+        var package = Package.CreatePackage(new Package.Entry(
+            sceneAssetIdValue,
+            Package.CreateEnvelope(sceneAssetIdValue, scene)));
+        var packagePath = Package.WritePackage(package);
+
+        try
+        {
+            var storeRegistration = SceneSupport.RegisterAssetCodecs(new AssetStoreRegistrationBuilder(schemas)).Build();
+            var assets = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(package), storeRegistration)).ConfigureAwait(false);
+
+            try
+            {
+                var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
+                _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+                var worldRegistration = worldRegistrationBuilder.Build();
+                using var world = World.Create(new WorldOptions(worldRegistration) {
+                    CpuWorkerCount = 0,
+                    InitialReplayLineageId = Guid.NewGuid(),
+                    MaximumRecordedControls = 1,
+                    WorldGuid = Guid.NewGuid(),
+                });
+                var loader = new SceneLoader(world, assets);
+                using var firstPrepared = loader
+                    .PrepareAsync(new AssetId(sceneAssetIdValue), new SceneLoadOptions())
+                    .GetAwaiter()
+                    .GetResult();
+                var firstActivation = loader.ActivateAsync(firstPrepared);
+                world.PumpControlBoundary();
+                var firstReceipt = await firstActivation.ConfigureAwait(false);
+                Assert.That(firstReceipt.Status, Is.EqualTo(SceneActivationStatus.Activated));
+                var instance = firstReceipt.Instance
+                    ?? throw new InvalidOperationException("The successful Scene receipt omitted its instance.");
+                var assignmentCountBeforeRefusal = world.IdentityLedger.AssignmentCount;
+                var mutationRevisionBeforeRefusal = world.CanonicalMutationRevision;
+                var worldBytesBeforeRefusal = world.GetWorldOwnedStateBytes();
+
+                using (var secondPrepared = loader
+                    .PrepareAsync(new AssetId(sceneAssetIdValue), new SceneLoadOptions())
+                    .GetAwaiter()
+                    .GetResult())
+                {
+                    var secondActivation = loader.ActivateAsync(secondPrepared);
+                    world.PumpControlBoundary();
+                    var secondReceipt = await secondActivation.ConfigureAwait(false);
+                    Assert.That(secondReceipt.Status, Is.EqualTo(SceneActivationStatus.Rejected));
+                    Assert.That(secondReceipt.Diagnostics[0].Code, Is.EqualTo("SceneActivation.ControlCapacityExceeded"));
+                }
+
+                Assert.That(world.IdentityLedger.AssignmentCount, Is.EqualTo(assignmentCountBeforeRefusal));
+                Assert.That(world.CanonicalMutationRevision, Is.EqualTo(mutationRevisionBeforeRefusal));
+                Assert.That(world.GetWorldOwnedStateBytes(), Is.EqualTo(worldBytesBeforeRefusal));
+
+                Assert.That(instance.TryGetEntity(SceneAssetReaderTests.Fixtures.RootEntityId, out var root), Is.True);
+
+                using (var transaction = instance.BeginTransaction())
+                {
+                    transaction.SetRootPosition(
+                        root,
+                        new SpatialPosition3(
+                            new ChunkIndex3(0, 0, 0),
+                            new TerraFX.Numerics.Vector3(1.0f, 0.0f, 0.0f)));
+                    var editTask = transaction.CommitAsync();
+                    world.PumpControlBoundary();
+                    var editReceipt = editTask.GetAwaiter().GetResult();
+                    Assert.That(editReceipt.Status, Is.EqualTo(SceneTransactionStatus.Rejected));
+                    Assert.That(editReceipt.Diagnostics[0].Code, Is.EqualTo("SceneTransaction.ControlCapacityExceeded"));
+                }
+
+                Assert.That(world.CanonicalMutationRevision, Is.EqualTo(mutationRevisionBeforeRefusal));
+                Assert.That(world.GetWorldOwnedStateBytes(), Is.EqualTo(worldBytesBeforeRefusal));
+                Assert.That(instance.TryGetEntity(SceneAssetReaderTests.Fixtures.RootEntityId, out _), Is.True);
+            }
+            finally
+            {
+                await assets.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    [SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
         Justification = "ActivateAsync detaches the expansion plan before returning; the awaited request owns it independently of PreparedScene.")]
     public async Task SceneLoaderAllowsExplicitNullForOptionalRootSlot()
     {
@@ -2281,6 +2400,7 @@ internal sealed partial class SceneAssetStoreTests
         const int atlasAssetIdValue = 2;
         const int textureAssetIdValue = 5;
         var schemas = CreateRendererRegistry();
+        var scanSchemas = CreatePersistenceScanSchemas(schemas);
         var rootEntityId = SceneAssetReaderTests.Fixtures.RootEntityId;
         var childEntityId = new Guid("10000000-0000-4000-8000-000000000002");
         var placementId = new Guid("40000000-0000-4000-8000-000000000002");
@@ -2337,6 +2457,7 @@ internal sealed partial class SceneAssetStoreTests
                         new SceneExternalBinding(boundExternalSlotId, target: externalTarget),
                         new SceneExternalBinding(externalSlotId, target: null),
                     ],
+                    SceneInstanceId = new Guid("50000000-0000-4000-8000-000000000003"),
                 };
                 using var prepared = loader
                     .PrepareAsync(new AssetId(sceneAssetIdValue), options)
@@ -2345,10 +2466,27 @@ internal sealed partial class SceneAssetStoreTests
                 var activation = loader.ActivateAsync(prepared);
                 world.PumpControlBoundary();
                 var receipt = await activation.ConfigureAwait(false);
+                var receiptDiagnostic = receipt.Diagnostics.IsEmpty
+                    ? string.Empty
+                    : $"{receipt.Diagnostics[0].Code}: {receipt.Diagnostics[0].Message}";
+                Assert.That(
+                    receipt.Status,
+                    Is.EqualTo(SceneActivationStatus.Activated),
+                    receiptDiagnostic);
                 var instance = receipt.Instance
                     ?? throw new InvalidOperationException("The nested Scene activation did not return its instance.");
+                Assert.That(instance.TryGetEntity(rootEntityId, out var controlRoot), Is.True);
+                var controlChildAddress = new SceneEntityAddress([placementId], childEntityId);
+                Assert.That(instance.TryGetEntity(controlChildAddress, out var controlChild), Is.True);
+                using (var transaction = instance.BeginTransaction())
+                {
+                    transaction.Reparent(controlChild, controlRoot, ReparentMode.KeepLocal);
+                    var transactionTask = transaction.CommitAsync();
+                    world.PumpControlBoundary();
+                    var transactionReceipt = transactionTask.GetAwaiter().GetResult();
+                    Assert.That(transactionReceipt.Status, Is.EqualTo(SceneTransactionStatus.Committed));
+                }
 
-                Assert.That(receipt.Status, Is.EqualTo(SceneActivationStatus.Activated));
                 world.DestroyEntity(externalTarget, HierarchyDestroyMode.DetachChildrenKeepWorld);
                 _ = world.Step();
                 uint[] expectedSceneAssetIds = [checked((uint)sceneAssetIdValue), checked((uint)prefabAssetIdValue)];
@@ -2712,28 +2850,6 @@ internal sealed partial class SceneAssetStoreTests
                             Assert.That(scenesBytesWritten, Is.EqualTo(scenesRecord.Length));
 
                             var ecsRecord = WorldPersistenceEcsTestHelper.CopyEcsRecord(world, in captureLease);
-                            var scanSchemas = new CompiledContentSchemaRegistry([
-                                .. schemas.Schemas,
-                                .. StandaloneContinuationSchemaCatalogue.Schemas,
-                                .. AnimationSchemaCatalogue.Schemas,
-                                WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
-                                    "application/world-root-test/tag/v1",
-                                    ContentSchemaRole.EntityTag,
-                                    0),
-                                WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
-                                    "application/world-root-test/system-state/v1",
-                                    ContentSchemaRole.SystemState,
-                                    7),
-                                WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
-                                    "application/world-root-test/resource-state/v1",
-                                    ContentSchemaRole.ResourceState,
-                                    23,
-                                    4),
-                                WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
-                                    "application/world-root-test/attachment-state/v1",
-                                    ContentSchemaRole.AttachmentState,
-                                    8),
-                            ]);
                             var persistenceLimits = WorldPersistenceEbinLimits.Create(world.Options);
                             var referenceCount = WorldPersistenceAssetIdSetWriter.MeasureReferenceCount(
                                 scanSchemas,
@@ -2794,6 +2910,33 @@ internal sealed partial class SceneAssetStoreTests
                             Assert.That(decodedWorld.Ecs.LiveEntityCount, Is.EqualTo(2));
                             Assert.That(decodedWorld.Ecs.LiveSceneInstanceCount, Is.EqualTo(1));
                             Assert.That(decodedWorld.AssetIdCount, Is.EqualTo(uniqueAssetCount));
+
+                            var missingSceneOriginalIdentityRecord = (byte[])worldRecord.Clone();
+                            var controlWorldBytes = missingSceneOriginalIdentityRecord.AsSpan();
+                            var (controlsOffset, controlsLength) = GetFieldPayloadRange(controlWorldBytes, 8);
+                            var controlsArray = controlWorldBytes.Slice(controlsOffset, controlsLength);
+                            var (activationOffset, activationLength) = GetRecordArrayElementRange(controlsArray, 0);
+                            var activationRecord = controlsArray.Slice(activationOffset, activationLength);
+                            var (sceneControlOffset, sceneControlLength) = GetFieldPayloadRange(activationRecord, 3);
+                            var sceneControlRecord = activationRecord.Slice(sceneControlOffset, sceneControlLength);
+                            var (originalIdentityOffset, originalIdentityLength) = GetFieldPayloadRange(sceneControlRecord, 8);
+                            Assert.That(originalIdentityLength, Is.EqualTo(16));
+                            var absoluteOriginalIdentityOffset = checked(
+                                controlsOffset
+                                + activationOffset
+                                + sceneControlOffset
+                                + originalIdentityOffset);
+                            missingSceneOriginalIdentityRecord.AsSpan(
+                                absoluteOriginalIdentityOffset,
+                                originalIdentityLength).Clear();
+                            _ = Assert.Throws<ArgumentException>(
+                                () => WorldPersistenceWorldRecordReader.Read(
+                                    missingSceneOriginalIdentityRecord,
+                                    persistenceLimits,
+                                    worldRegistration,
+                                    scanSchemas,
+                                    assetIdScratch,
+                                    identityScratch));
 
                             var mismatchedAssetIdWorldRecord = new byte[worldRecord.Length];
                             worldRecord.CopyTo(mismatchedAssetIdWorldRecord, 0);
@@ -2908,6 +3051,23 @@ internal sealed partial class SceneAssetStoreTests
                                 assetIdScratch,
                                 identityScratch);
 
+                            var otherHistoricalTargetBytes = new byte[16];
+                            _ = world.GetEntityId(capturedRootEntity).TryWriteBytes(
+                                otherHistoricalTargetBytes,
+                                bigEndian: true,
+                                out _);
+                            var mismatchedHistoricalTargetRecord = (byte[])worldRecord.Clone();
+                            otherHistoricalTargetBytes.CopyTo(
+                                mismatchedHistoricalTargetRecord.AsSpan(externalTargetOffset, otherHistoricalTargetBytes.Length));
+                            _ = Assert.Throws<ArgumentException>(
+                                () => WorldPersistenceWorldRecordReader.Read(
+                                    mismatchedHistoricalTargetRecord,
+                                    persistenceLimits,
+                                    worldRegistration,
+                                    scanSchemas,
+                                    assetIdScratch,
+                                    identityScratch));
+
                             var sceneInstanceIdBytes = new byte[16];
                             _ = instance.SceneInstanceId.TryWriteBytes(sceneInstanceIdBytes, bigEndian: true, out _);
                             var sceneInstanceTargetRecord = (byte[])worldRecord.Clone();
@@ -2983,6 +3143,25 @@ internal sealed partial class SceneAssetStoreTests
                     world.TryGet<SceneComponentDefinitions.RootPositionComponent>(external, out var externalPosition),
                     Is.True);
                 Assert.That(externalPosition.Position.Offset, Is.EqualTo(new TerraFX.Numerics.Vector3(3.0f, 0.0f, 0.0f)));
+                _ = world.Step();
+                var finalLimits = WorldPersistenceEbinLimits.Create(world.Options);
+                using var finalCaptureLease = world.AcquirePersistenceCaptureLease();
+                var finalWorldRecord = WorldPersistenceWorldRecordWriterTests.ComposeWorldRecord(
+                    world,
+                    in finalCaptureLease,
+                    scanSchemas,
+                    []);
+                var finalIdentityScratch = new WorldPersistenceIdentityScratchEntry[
+                    WorldPersistenceWorldRecordReader.MeasureIdentityAssignmentCount(finalWorldRecord, finalLimits)];
+                var finalContents = WorldPersistenceWorldRecordReader.Read(
+                    finalWorldRecord,
+                    finalLimits,
+                    worldRegistration,
+                    scanSchemas,
+                    [],
+                    finalIdentityScratch);
+                Assert.That(finalContents.Scenes.InstanceCount, Is.Zero);
+                Assert.That(finalContents.Ecs.LiveSceneInstanceCount, Is.Zero);
             }
             finally
             {

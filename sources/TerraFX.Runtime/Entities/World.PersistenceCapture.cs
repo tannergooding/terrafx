@@ -461,6 +461,7 @@ public sealed partial class World
             WorldControlKind.Branch => WorldPersistenceControlKind.Branch,
             WorldControlKind.Frame2 => WorldPersistenceControlKind.Frame2,
             WorldControlKind.Frame3 => WorldPersistenceControlKind.Frame3,
+            WorldControlKind.Scene => WorldPersistenceControlKind.Scene,
             WorldControlKind.Step => WorldPersistenceControlKind.Step,
             WorldControlKind.TimeScale => WorldPersistenceControlKind.TimeScale,
             _ => throw new InvalidOperationException("The World contains an unknown control record."),
@@ -476,7 +477,8 @@ public sealed partial class World
             record.Frame3,
             record.BranchId,
             record.LineageId,
-            record.BranchIndex);
+            record.BranchIndex,
+            record.ScenePayloadRecord);
     }
 
     internal int GetPersistenceEntityCount(WorldPersistenceCaptureLease lease)

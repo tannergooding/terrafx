@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -287,6 +288,11 @@ public sealed partial class World
         return false;
     }
 
+    internal WorldSceneControlAppend? TryPrepareSceneControlAppend(
+        int payloadRecordBytes,
+        long extraPreparationBytes)
+        => WorldSceneControlAppend.TryCreate(this, payloadRecordBytes, extraPreparationBytes);
+
     private FrameChangeReceipt CommitFrame2(SpatialFrame2 frame)
     {
         if ((_controlRecordCount >= _maximumRecordedControls) || (_nextControlSequence == long.MaxValue))
@@ -425,9 +431,13 @@ public sealed partial class World
         return _nextControlSequence;
     }
 
-    private PreparedControlAppend? TryPrepareControlAppend(bool appendBranch, long extraPreparationBytes)
+    private PreparedControlAppend? TryPrepareControlAppend(
+        bool appendBranch,
+        long extraPreparationBytes,
+        long retainedControlPayloadBytes = 0)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(extraPreparationBytes);
+        ArgumentOutOfRangeException.ThrowIfNegative(retainedControlPayloadBytes);
 
         if ((_controlRecordCount >= _maximumRecordedControls)
             || (appendBranch && (_identityBranchCount >= _maximumIdentityBranches)))
@@ -454,7 +464,11 @@ public sealed partial class World
             ? ArrayBytes(branchCapacity, Unsafe.SizeOf<WorldIdentityBranchRecord>())
             : 0;
         var preparationBytes = checked(ControlAppendPreparationBytes + extraPreparationBytes);
-        var reservedBytes = checked(preparedControlBytes + preparedBranchBytes + preparationBytes);
+        var reservedBytes = checked(
+            preparedControlBytes
+            + preparedBranchBytes
+            + preparationBytes
+            + retainedControlPayloadBytes);
 
         if ((checked(GetWorldOwnedStateBytes() + reservedBytes) > _maximumOwnedStateBytes)
             || !_domainReservation.TryReserveAdditional(reservedBytes))
@@ -484,7 +498,8 @@ public sealed partial class World
                 preparedControls,
                 preparedBranches,
                 reservedBytes,
-                preparationBytes);
+                preparationBytes,
+                retainedControlPayloadBytes);
         }
         catch
         {
@@ -507,6 +522,101 @@ public sealed partial class World
         }
     }
 
+    internal sealed class WorldSceneControlAppend : IDisposable
+    {
+        private readonly byte[] _candidateStorage;
+        private bool _isCommitted;
+        private readonly byte[] _payloadRecord;
+        private readonly PreparedControlAppend _preparedAppend;
+        private readonly World _world;
+
+        private WorldSceneControlAppend(
+            World world,
+            PreparedControlAppend preparedAppend,
+            long sequence,
+            long appliedAtNextTick,
+            int payloadRecordBytes)
+        {
+            _world = world;
+            _preparedAppend = preparedAppend;
+            Sequence = sequence;
+            AppliedAtNextTick = appliedAtNextTick;
+            _payloadRecord = new byte[payloadRecordBytes];
+            _candidateStorage = new byte[payloadRecordBytes];
+        }
+
+        internal long AppliedAtNextTick { get; }
+
+        internal byte[] CandidateStorage => _candidateStorage;
+
+        internal byte[] PayloadRecord => _payloadRecord;
+
+        internal long Sequence { get; }
+
+        [SuppressMessage(
+            "Reliability",
+            "CA2000:Dispose objects before losing scope",
+            Justification = "Ownership transfers to the returned append, which releases the reservation on disposal unless committed.")]
+        internal static WorldSceneControlAppend? TryCreate(
+            World world,
+            int payloadRecordBytes,
+            long extraPreparationBytes)
+        {
+            ArgumentNullException.ThrowIfNull(world);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(payloadRecordBytes);
+            ArgumentOutOfRangeException.ThrowIfNegative(extraPreparationBytes);
+            world.ThrowIfDisposed();
+            world.ThrowIfFaulted();
+            world.EnsureOwnerThread();
+
+            var sequence = world.GetNextControlSequence();
+            var retainedPayloadBytes = ArrayBytes(payloadRecordBytes, sizeof(byte));
+            var preparedAppend = world.TryPrepareControlAppend(
+                appendBranch: false,
+                checked(extraPreparationBytes + payloadRecordBytes),
+                retainedControlPayloadBytes: retainedPayloadBytes);
+
+            if (preparedAppend is null)
+            {
+                return null;
+            }
+
+            try
+            {
+                return new WorldSceneControlAppend(
+                    world,
+                    preparedAppend,
+                    sequence,
+                    world._nextTickIndex,
+                    payloadRecordBytes);
+            }
+            catch
+            {
+                preparedAppend.Dispose();
+                throw;
+            }
+        }
+
+        public void Dispose()
+            => _preparedAppend.Dispose();
+
+        internal void Commit()
+        {
+            if (_isCommitted)
+            {
+                throw new InvalidOperationException("The prepared Scene control append was already committed.");
+            }
+
+            var record = new WorldControlRecord(
+                Sequence,
+                AppliedAtNextTick,
+                WorldControlKind.Scene,
+                scenePayloadRecord: _payloadRecord);
+            _preparedAppend.Commit(record, branch: null);
+            _isCommitted = true;
+        }
+    }
+
     private sealed class PreparedControlAppend : IDisposable
     {
         private bool _committed;
@@ -514,6 +624,7 @@ public sealed partial class World
         private readonly WorldIdentityBranchRecord[]? _preparedBranches;
         private readonly WorldControlRecord[]? _preparedControls;
         private readonly long _reservedBytes;
+        private readonly long _retainedControlPayloadBytes;
         private readonly World _world;
 
         internal PreparedControlAppend(
@@ -521,13 +632,15 @@ public sealed partial class World
             WorldControlRecord[]? preparedControls,
             WorldIdentityBranchRecord[]? preparedBranches,
             long reservedBytes,
-            long preparationBytes)
+            long preparationBytes,
+            long retainedControlPayloadBytes)
         {
             _world = world;
             _preparedControls = preparedControls;
             _preparedBranches = preparedBranches;
             _reservedBytes = reservedBytes;
             _preparationBytes = preparationBytes;
+            _retainedControlPayloadBytes = retainedControlPayloadBytes;
         }
 
         public void Dispose()
@@ -546,6 +659,16 @@ public sealed partial class World
             if (_committed)
             {
                 throw new InvalidOperationException("The prepared World control append was already committed.");
+            }
+
+            var retainedPayloadBytes = (record.ScenePayloadRecord is null)
+                ? 0
+                : ArrayBytes(record.ScenePayloadRecord.Length, sizeof(byte));
+
+            if ((record.Kind is WorldControlKind.Scene) != (record.ScenePayloadRecord is not null)
+                || (retainedPayloadBytes != _retainedControlPayloadBytes))
+            {
+                throw new InvalidOperationException("The prepared World control payload does not match its reserved kind and extent.");
             }
 
             var existingControlBytes = (_world._controlRecords.Length == 0)
@@ -591,6 +714,13 @@ public sealed partial class World
                 ? existingBranchBytes
                 : ArrayBytes(_world._identityBranches.Length, Unsafe.SizeOf<WorldIdentityBranchRecord>());
             _world._controlStorageByteReservation = checked(newControlBytes + newBranchBytes);
+
+            if (retainedPayloadBytes != 0)
+            {
+                _world._sceneControlPayloadByteReservation = checked(
+                    _world._sceneControlPayloadByteReservation + retainedPayloadBytes);
+            }
+
             _world._nextControlSequence = nextControlSequence
                 ?? checked(record.Sequence + 1);
             _committed = true;
@@ -609,6 +739,7 @@ public sealed partial class World
         Branch,
         Frame2,
         Frame3,
+        Scene,
         Step,
         TimeScale,
     }
@@ -625,7 +756,8 @@ public sealed partial class World
             SpatialFrame3? frame3 = null,
             Guid branchId = default,
             Guid lineageId = default,
-            ushort branchIndex = 0)
+            ushort branchIndex = 0,
+            byte[]? scenePayloadRecord = null)
         {
             Sequence = sequence;
             AppliedAtNextTick = appliedAtNextTick;
@@ -637,6 +769,7 @@ public sealed partial class World
             BranchId = branchId;
             LineageId = lineageId;
             BranchIndex = branchIndex;
+            ScenePayloadRecord = scenePayloadRecord;
         }
 
         internal long AppliedAtNextTick { get; }
@@ -652,6 +785,8 @@ public sealed partial class World
         internal WorldControlKind Kind { get; }
 
         internal Guid LineageId { get; }
+
+        internal byte[]? ScenePayloadRecord { get; }
 
         internal long SegmentSequence { get; }
 
