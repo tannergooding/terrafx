@@ -196,6 +196,45 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    public async Task AssetPackageLeaseLoadsFromItsPinnedPackageAfterReplacement()
+    {
+        var registration = CreateRegistration();
+        var originalPackage = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 17)));
+        var replacementPackage = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 23)));
+        var originalPath = AssetPackageReaderTests.WritePackage(originalPackage);
+        var replacementPath = AssetPackageReaderTests.WritePackage(replacementPackage);
+        var store = await AssetStore.CreateAsync(
+            CreateOptions(originalPath, originalPackage, registration),
+            CancellationToken.None).ConfigureAwait(false);
+
+        try
+        {
+            using var packageLease = store.AcquirePackageLease();
+            await store.ReplacePackageAsync(
+                CreateOptions(replacementPath, replacementPackage, registration),
+                CancellationToken.None).ConfigureAwait(false);
+
+            using var pinnedAsset = await packageLease.LoadFromPackageAsync<TestAssetValue>(
+                new AssetId(1),
+                CancellationToken.None).ConfigureAwait(false);
+            using var currentAsset = await store.LoadAsync<TestAssetValue>(
+                new AssetId(1),
+                CancellationToken.None).ConfigureAwait(false);
+
+            Assert.That(pinnedAsset.Value.Marker, Is.EqualTo(17));
+            Assert.That(currentAsset.Value.Marker, Is.EqualTo(23));
+        }
+        finally
+        {
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(originalPath);
+            File.Delete(replacementPath);
+        }
+    }
+
+    [Test]
     public async Task AssetPackageLeaseReferenceInspectionHonorsConcurrentDecodeBudget()
     {
         var registration = CreateRegistration();
