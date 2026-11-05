@@ -46,6 +46,59 @@ public sealed partial class AssetStore
         return await LoadAssetAsync(assetId, backing, entry, codec, decodedBytes, cancellationToken).ConfigureAwait(false);
     }
 
+    internal async Task<bool> MatchesAssetReferenceAsync(
+        AssetPackageBacking backing,
+        AssetReference reference,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(backing);
+
+        if (!reference.AssetId.IsValid)
+        {
+            throw new ArgumentOutOfRangeException(nameof(reference));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfEqual(reference.SchemaId, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(reference.SchemaMajor);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!backing.TryGetEntry(reference.AssetId, out var entry))
+        {
+            return false;
+        }
+
+        var decodedBytes = checked((long)entry.DecodedLength);
+        ReserveDecodeBudget(backing, decodedBytes);
+
+        try
+        {
+            var encodedEnvelope = await AssetPayloadReader.ReadAsync(backing, entry, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            var status = AssetEnvelopeDecoder.Inspect(
+                encodedEnvelope,
+                reference.AssetId,
+                backing.Registration.Schemas,
+                backing.ReadLimits,
+                out var actualSchema,
+                out var diagnostic);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (status is not BinaryRecordStatus.Complete)
+            {
+                throw new InvalidDataException(
+                    $"Asset {reference.AssetId} could not be inspected: {diagnostic ?? status.ToString()}.");
+            }
+
+            return (actualSchema.SchemaId == reference.SchemaId)
+                && (actualSchema.Major == reference.SchemaMajor)
+                && backing.Registration.TryGetCodec(actualSchema, out _);
+        }
+        finally
+        {
+            ReleaseDecodeBudget(decodedBytes);
+        }
+    }
+
     private async Task<AssetLease<T>> LoadAssetAsync<T>(
         AssetId assetId,
         AssetPackageBacking backing,

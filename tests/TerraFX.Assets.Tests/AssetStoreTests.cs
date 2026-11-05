@@ -196,6 +196,39 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    public async Task AssetPackageLeaseReferenceInspectionHonorsConcurrentDecodeBudget()
+    {
+        var registration = CreateRegistration();
+        var payload = CreateAssetEnvelope(1, 52);
+        var package = AssetPackageReaderTests.CreatePackage(new AssetPackageReaderTests.TestEntry(1, payload));
+        var path = AssetPackageReaderTests.WritePackage(package);
+
+        try
+        {
+            var store = await AssetStore.CreateAsync(
+                CreateOptions(path, package, registration, maximumConcurrentDecodeBytes: payload.Length - 1),
+                CancellationToken.None).ConfigureAwait(false);
+
+            try
+            {
+                using var packageLease = store.AcquirePackageLease();
+                var reference = new AssetReference(new AssetId(1), s_assetSchema.SchemaId, s_assetSchema.Major);
+
+                _ = Assert.ThrowsAsync<InvalidOperationException>(
+                    async () => await packageLease.MatchesAssetReferenceAsync(reference, CancellationToken.None).ConfigureAwait(false));
+            }
+            finally
+            {
+                await store.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Test]
     public async Task AssetStoreHonorsCancellationWithoutLeakingLoadReservations()
     {
         var registration = CreateRegistration();

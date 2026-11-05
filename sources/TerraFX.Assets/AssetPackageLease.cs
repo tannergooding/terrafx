@@ -104,29 +104,7 @@ public sealed class AssetPackageLease : IDisposable
 
         try
         {
-            if (!backing.TryGetEntry(reference.AssetId, out var entry))
-            {
-                return false;
-            }
-
-            var encodedEnvelope = await AssetPayloadReader.ReadAsync(backing, entry, cancellationToken).ConfigureAwait(false);
-            var status = AssetEnvelopeDecoder.Inspect(
-                encodedEnvelope,
-                reference.AssetId,
-                backing.Registration.Schemas,
-                backing.ReadLimits,
-                out var actualSchema,
-                out var diagnostic);
-
-            if (status is not BinaryRecordStatus.Complete)
-            {
-                throw new InvalidDataException(
-                    $"Asset {reference.AssetId} could not be inspected: {diagnostic ?? status.ToString()}.");
-            }
-
-            return (actualSchema.SchemaId == reference.SchemaId)
-                && (actualSchema.Major == reference.SchemaMajor)
-                && backing.Registration.TryGetCodec(actualSchema, out _);
+            return await state.Store.MatchesAssetReferenceAsync(backing, reference, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
