@@ -24,6 +24,7 @@ internal sealed class WorldGuidRegistry
     private const int CellStateFree = 0;
     private const int CellStateReserved = 1;
     private const int CellStateRetired = 3;
+    private const int CellStateRevoked = 4;
     private const int CellsPerSlab = 256;
     private const int ColdReservationByteCount = 1_060_672;
     private const int FailureCategoryInvariant = 1;
@@ -327,6 +328,81 @@ internal sealed class WorldGuidRegistry
         return true;
     }
 
+    internal bool TryCommitReplacement(in WorldGuidGrant current, in WorldGuidGrant replacement)
+    {
+        if (!current.IsOwnedBy(this)
+            || !replacement.IsOwnedBy(this)
+            || (current.WorldGuid != replacement.WorldGuid)
+            || (current.KeyCellIndex != replacement.KeyCellIndex)
+            || (current.KeyGeneration != replacement.KeyGeneration)
+            || (current.BindingCellIndex == replacement.BindingCellIndex))
+        {
+            return false;
+        }
+
+        using var scope = ReentrantGate.EnterScope(ref _admissionGate);
+
+        if (!IsKeyCellValid(current.KeyCellIndex, current.KeyGeneration)
+            || !IsBindingCellValid(current.BindingCellIndex, current.BindingGeneration)
+            || !IsUseCellValid(current.OwnerUseCellIndex, current.OwnerUseGeneration)
+            || !IsBindingCellValid(replacement.BindingCellIndex, replacement.BindingGeneration)
+            || !IsPreparationCellValid(replacement.PreparationCellIndex, replacement.PreparationGeneration)
+            || !IsUseCellValid(replacement.OwnerUseCellIndex, replacement.OwnerUseGeneration)
+            || !IsUseCellValid(replacement.CoordinatorUseCellIndex, replacement.CoordinatorUseGeneration))
+        {
+            return false;
+        }
+
+        ref var keyCell = ref GetKeyCell(current.KeyCellIndex);
+        ref var currentBinding = ref GetBindingCell(current.BindingCellIndex);
+        ref var currentOwnerUse = ref GetUseCell(current.OwnerUseCellIndex);
+        ref var replacementBinding = ref GetBindingCell(replacement.BindingCellIndex);
+        ref var replacementPreparation = ref GetPreparationCell(replacement.PreparationCellIndex);
+        ref var replacementOwnerUse = ref GetUseCell(replacement.OwnerUseCellIndex);
+        ref var replacementCoordinatorUse = ref GetUseCell(replacement.CoordinatorUseCellIndex);
+
+        if ((keyCell._worldGuid != current.WorldGuid)
+            || (currentBinding._state != CellStateActive)
+            || (currentBinding._keyCellIndex != current.KeyCellIndex)
+            || (currentBinding._keyGeneration != current.KeyGeneration)
+            || (currentOwnerUse._state != CellStateReserved)
+            || (currentOwnerUse._role != UseRoleOwner)
+            || (currentOwnerUse._keyCellIndex != current.KeyCellIndex)
+            || (currentOwnerUse._keyGeneration != current.KeyGeneration)
+            || (currentOwnerUse._bindingCellIndex != current.BindingCellIndex)
+            || (currentOwnerUse._bindingGeneration != current.BindingGeneration)
+            || (replacementBinding._state != CellStateReserved)
+            || (replacementBinding._keyCellIndex != current.KeyCellIndex)
+            || (replacementBinding._keyGeneration != current.KeyGeneration)
+            || (replacementPreparation._state != CellStateReserved)
+            || (replacementPreparation._keyCellIndex != current.KeyCellIndex)
+            || (replacementPreparation._keyGeneration != current.KeyGeneration)
+            || (replacementPreparation._bindingCellIndex != replacement.BindingCellIndex)
+            || (replacementPreparation._bindingGeneration != replacement.BindingGeneration)
+            || (replacementOwnerUse._state != CellStateReserved)
+            || (replacementOwnerUse._role != UseRoleOwner)
+            || (replacementOwnerUse._keyCellIndex != current.KeyCellIndex)
+            || (replacementOwnerUse._keyGeneration != current.KeyGeneration)
+            || (replacementOwnerUse._bindingCellIndex != replacement.BindingCellIndex)
+            || (replacementOwnerUse._bindingGeneration != replacement.BindingGeneration)
+            || (replacementCoordinatorUse._state != CellStateReserved)
+            || (replacementCoordinatorUse._role != UseRoleCoordinator)
+            || (replacementCoordinatorUse._keyCellIndex != current.KeyCellIndex)
+            || (replacementCoordinatorUse._keyGeneration != current.KeyGeneration)
+            || (replacementCoordinatorUse._bindingCellIndex != replacement.BindingCellIndex)
+            || (replacementCoordinatorUse._bindingGeneration != replacement.BindingGeneration))
+        {
+            return false;
+        }
+
+        replacementBinding._state = CellStateActive;
+        ReleasePreparationCell(replacement.PreparationCellIndex, ref replacementPreparation);
+        ReleaseUseCell(replacement.CoordinatorUseCellIndex, ref replacementCoordinatorUse);
+        keyCell._roleCount -= 2;
+        currentBinding._state = CellStateRevoked;
+        return true;
+    }
+
     internal bool TryReleaseFresh(in WorldGuidGrant grant)
     {
         if (!grant.IsOwnedBy(this))
@@ -337,7 +413,7 @@ internal sealed class WorldGuidRegistry
         using var scope = ReentrantGate.EnterScope(ref _admissionGate);
 
         if (!IsKeyCellValid(grant.KeyCellIndex, grant.KeyGeneration)
-         || !IsBindingCellValid(grant.BindingCellIndex, grant.BindingGeneration)
+         || !IsBindingCellReleaseValid(grant.BindingCellIndex, grant.BindingGeneration)
          || !IsUseCellValid(grant.OwnerUseCellIndex, grant.OwnerUseGeneration))
         {
             return false;
@@ -348,8 +424,29 @@ internal sealed class WorldGuidRegistry
         ref var ownerUseCell = ref GetUseCell(grant.OwnerUseCellIndex);
 
         if ((keyCell._worldGuid != grant.WorldGuid)
-         || (bindingCell._state is not (CellStateReserved or CellStateActive))
          || (ownerUseCell._state != CellStateReserved))
+        {
+            return false;
+        }
+
+        if (bindingCell._state == CellStateRevoked)
+        {
+            if ((ownerUseCell._keyCellIndex != grant.KeyCellIndex)
+             || (ownerUseCell._keyGeneration != grant.KeyGeneration)
+             || (ownerUseCell._bindingCellIndex != grant.BindingCellIndex)
+             || (ownerUseCell._bindingGeneration != grant.BindingGeneration))
+            {
+                return false;
+            }
+
+            ReleaseBindingCell(grant.BindingCellIndex, ref bindingCell);
+            ReleaseUseCell(grant.OwnerUseCellIndex, ref ownerUseCell);
+            keyCell._roleCount -= 2;
+            ReleaseKeyIfUnowned(grant.KeyCellIndex, ref keyCell);
+            return true;
+        }
+
+        if (bindingCell._state is not (CellStateReserved or CellStateActive))
         {
             return false;
         }
@@ -446,6 +543,146 @@ internal sealed class WorldGuidRegistry
                     coordinatorUseCellIndex,
                     coordinatorUseGeneration);
 
+                refusal = default;
+                return true;
+            }
+        }
+    }
+
+    internal bool TryReserveReplacement(in WorldGuidGrant current, out WorldGuidGrant replacement, out WorldGuidRefusal refusal)
+    {
+        if (!current.IsOwnedBy(this))
+        {
+            replacement = default;
+            refusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
+            return false;
+        }
+
+        while (true)
+        {
+            using (ReentrantGate.EnterScope(ref _admissionGate))
+            {
+                if (!IsKeyCellValid(current.KeyCellIndex, current.KeyGeneration)
+                    || !IsBindingCellValid(current.BindingCellIndex, current.BindingGeneration)
+                    || !IsUseCellValid(current.OwnerUseCellIndex, current.OwnerUseGeneration))
+                {
+                    replacement = default;
+                    refusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
+                    return false;
+                }
+
+                ref var keyCell = ref GetKeyCell(current.KeyCellIndex);
+                ref var bindingCell = ref GetBindingCell(current.BindingCellIndex);
+                ref var ownerUseCell = ref GetUseCell(current.OwnerUseCellIndex);
+
+                if ((keyCell._worldGuid != current.WorldGuid)
+                    || (bindingCell._state != CellStateActive)
+                    || (bindingCell._keyCellIndex != current.KeyCellIndex)
+                    || (bindingCell._keyGeneration != current.KeyGeneration)
+                    || (ownerUseCell._state != CellStateReserved)
+                    || (ownerUseCell._role != UseRoleOwner)
+                    || (ownerUseCell._bindingCellIndex != current.BindingCellIndex)
+                    || (ownerUseCell._bindingGeneration != current.BindingGeneration))
+                {
+                    replacement = default;
+                    refusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
+                    return false;
+                }
+
+                if (!CanAdmitReplacement(out refusal))
+                {
+                    replacement = default;
+                    return false;
+                }
+            }
+
+            if (!EnsureCellAvailability(SlabCategoryBinding, 1, out refusal)
+                || !EnsureCellAvailability(SlabCategoryPreparation, 1, out refusal)
+                || !EnsureCellAvailability(SlabCategoryUse, 2, out refusal))
+            {
+                replacement = default;
+                return false;
+            }
+
+            using (ReentrantGate.EnterScope(ref _admissionGate))
+            {
+                if (!IsKeyCellValid(current.KeyCellIndex, current.KeyGeneration)
+                    || !IsBindingCellValid(current.BindingCellIndex, current.BindingGeneration)
+                    || !IsUseCellValid(current.OwnerUseCellIndex, current.OwnerUseGeneration))
+                {
+                    replacement = default;
+                    refusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
+                    return false;
+                }
+
+                ref var keyCell = ref GetKeyCell(current.KeyCellIndex);
+                ref var bindingCell = ref GetBindingCell(current.BindingCellIndex);
+                ref var ownerUseCell = ref GetUseCell(current.OwnerUseCellIndex);
+
+                if ((keyCell._worldGuid != current.WorldGuid)
+                    || (bindingCell._state != CellStateActive)
+                    || (bindingCell._keyCellIndex != current.KeyCellIndex)
+                    || (bindingCell._keyGeneration != current.KeyGeneration)
+                    || (ownerUseCell._state != CellStateReserved)
+                    || (ownerUseCell._role != UseRoleOwner)
+                    || (ownerUseCell._bindingCellIndex != current.BindingCellIndex)
+                    || (ownerUseCell._bindingGeneration != current.BindingGeneration))
+                {
+                    replacement = default;
+                    refusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
+                    return false;
+                }
+
+                if (!CanAdmitReplacement(out refusal))
+                {
+                    replacement = default;
+                    return false;
+                }
+
+                if (!HasReplacementCellAvailability())
+                {
+                    continue;
+                }
+
+                var bindingCellIndex = AllocateBindingCell(
+                    current.KeyCellIndex,
+                    current.KeyGeneration,
+                    out var bindingGeneration);
+                var preparationCellIndex = AllocatePreparationCell(
+                    current.KeyCellIndex,
+                    current.KeyGeneration,
+                    bindingCellIndex,
+                    bindingGeneration,
+                    out var preparationGeneration);
+                var ownerUseCellIndex = AllocateUseCell(
+                    current.KeyCellIndex,
+                    current.KeyGeneration,
+                    bindingCellIndex,
+                    bindingGeneration,
+                    UseRoleOwner,
+                    out var ownerUseGeneration);
+                var coordinatorUseCellIndex = AllocateUseCell(
+                    current.KeyCellIndex,
+                    current.KeyGeneration,
+                    bindingCellIndex,
+                    bindingGeneration,
+                    UseRoleCoordinator,
+                    out var coordinatorUseGeneration);
+                keyCell._roleCount = checked(keyCell._roleCount + 4);
+
+                replacement = new WorldGuidGrant(
+                    this,
+                    current.WorldGuid,
+                    current.KeyCellIndex,
+                    current.KeyGeneration,
+                    bindingCellIndex,
+                    bindingGeneration,
+                    preparationCellIndex,
+                    preparationGeneration,
+                    ownerUseCellIndex,
+                    ownerUseGeneration,
+                    coordinatorUseCellIndex,
+                    coordinatorUseGeneration);
                 refusal = default;
                 return true;
             }
@@ -606,6 +843,30 @@ internal sealed class WorldGuidRegistry
             return false;
         }
 
+        if (_bindingRoleCount >= MaximumBindingCells)
+        {
+            refusal = new WorldGuidRefusal(WorldGuidRefusal.BindingCapacity);
+            return false;
+        }
+
+        if (_preparationRoleCount >= MaximumPreparationCells)
+        {
+            refusal = new WorldGuidRefusal(WorldGuidRefusal.PreparationCapacity);
+            return false;
+        }
+
+        if (_useRoleCount > (MaximumUseCells - 2))
+        {
+            refusal = new WorldGuidRefusal(WorldGuidRefusal.UseCapacity);
+            return false;
+        }
+
+        refusal = default;
+        return true;
+    }
+
+    private bool CanAdmitReplacement(out WorldGuidRefusal refusal)
+    {
         if (_bindingRoleCount >= MaximumBindingCells)
         {
             refusal = new WorldGuidRefusal(WorldGuidRefusal.BindingCapacity);
@@ -936,6 +1197,11 @@ internal sealed class WorldGuidRegistry
         && (GetAvailableCellCount(SlabCategoryPreparation) >= 1)
         && (GetAvailableCellCount(SlabCategoryUse) >= 2);
 
+    private bool HasReplacementCellAvailability()
+        => (GetAvailableCellCount(SlabCategoryBinding) >= 1)
+        && (GetAvailableCellCount(SlabCategoryPreparation) >= 1)
+        && (GetAvailableCellCount(SlabCategoryUse) >= 2);
+
     private void InitializeColdBacking()
     {
         Volatile.Write(ref s_initializationStage, InitializationStageIndex);
@@ -985,6 +1251,21 @@ internal sealed class WorldGuidRegistry
         }
 
         throw new InvalidOperationException("The WorldGuid index has no empty bucket.");
+    }
+
+    private bool IsBindingCellReleaseValid(int index, uint generation)
+    {
+        var directory = _bindingDirectory;
+
+        if ((index < 0) || (index >= (_bindingPageCount * CellsPerSlab)) || (directory is null))
+        {
+            return false;
+        }
+
+        var page = directory[index / CellsPerSlab];
+        return (page is not null)
+            && (page[index % CellsPerSlab]._generation == generation)
+            && (page[index % CellsPerSlab]._state is CellStateReserved or CellStateActive or CellStateRevoked);
     }
 
     private bool IsBindingCellValid(int index, uint generation)

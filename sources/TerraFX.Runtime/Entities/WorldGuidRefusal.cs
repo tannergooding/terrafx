@@ -11,6 +11,7 @@ internal readonly struct WorldGuidRefusal
     internal const int None = 0;
     internal const int PendingSlabCapacity = 6;
     internal const int PreparationCapacity = 4;
+    internal const int TargetBindingStale = 8;
     internal const int UseCapacity = 5;
 
     private readonly int _code;

@@ -186,4 +186,51 @@ internal sealed class WorldGuidRegistryTests
             Assert.That(registry.TryReleaseFresh(grant), Is.True);
         }
     }
+
+    [Test]
+    public void ReplacementGrantAtomicallyRevokesOnlyItsCapturedBinding()
+    {
+        var registry = WorldGuidRegistry.GetSelected();
+        var worldGuid = Guid.NewGuid();
+
+        Assert.That(registry.TryReserveFresh(worldGuid, out var current, out _), Is.True);
+        Assert.That(registry.TryCommitFresh(current), Is.True);
+        Assert.That(registry.TryReserveReplacement(current, out var replacement, out _), Is.True);
+        Assert.That(replacement.WorldGuid, Is.EqualTo(current.WorldGuid));
+        Assert.That(replacement.KeyCellIndex, Is.EqualTo(current.KeyCellIndex));
+        Assert.That(replacement.KeyGeneration, Is.EqualTo(current.KeyGeneration));
+        Assert.That(replacement.BindingCellIndex, Is.Not.EqualTo(current.BindingCellIndex));
+
+        Assert.That(registry.TryCommitReplacement(current, replacement), Is.True);
+        Assert.That(registry.TryCommitFresh(replacement), Is.False);
+        Assert.That(
+            registry.TryReserveReplacement(current, out var staleReplacement, out var staleRefusal),
+            Is.False);
+        Assert.That(staleReplacement.IsValid, Is.False);
+        Assert.That(staleRefusal.Code, Is.EqualTo(WorldGuidRefusal.TargetBindingStale));
+
+        Assert.That(registry.TryReleaseFresh(current), Is.True);
+        Assert.That(registry.TryReleaseFresh(current), Is.False);
+        Assert.That(registry.TryReleaseFresh(replacement), Is.True);
+
+        Assert.That(registry.TryReserveFresh(worldGuid, out var next, out _), Is.True);
+        Assert.That(registry.TryReleaseFresh(next), Is.True);
+    }
+
+    [Test]
+    public void ReplacementReservationCannotOutliveItsCurrentBinding()
+    {
+        var registry = WorldGuidRegistry.GetSelected();
+        var worldGuid = Guid.NewGuid();
+
+        Assert.That(registry.TryReserveFresh(worldGuid, out var current, out _), Is.True);
+        Assert.That(registry.TryCommitFresh(current), Is.True);
+        Assert.That(registry.TryReserveReplacement(current, out var replacement, out _), Is.True);
+        Assert.That(registry.TryReleaseFresh(current), Is.True);
+
+        Assert.That(registry.TryCommitReplacement(current, replacement), Is.False);
+        Assert.That(registry.TryReleaseFresh(replacement), Is.True);
+        Assert.That(registry.TryReserveFresh(worldGuid, out var next, out _), Is.True);
+        Assert.That(registry.TryReleaseFresh(next), Is.True);
+    }
 }
