@@ -91,7 +91,9 @@ internal sealed partial class SceneAssetStoreTests
         var atlasRecord = CreateRenderAtlasRecord(
             1,
             CreateRenderAtlasFrameRecord(frameId, page: 0, x: 4, y: 4, width: 4, height: 4));
+        var textureRecord = CreateRenderAtlasPageTextureRecord(17);
         var packageBytes = Package.CreatePackage(
+            new Package.Entry(1, Package.CreateEnvelope(1, textureRecord)),
             new Package.Entry(2, Package.CreateEnvelope(2, atlasRecord)));
         var packagePath = Package.WritePackage(packageBytes);
         var validSavePath = Path.Combine(Path.GetTempPath(), $"terrafx-{Guid.NewGuid():N}.asset-schema-valid.state");
