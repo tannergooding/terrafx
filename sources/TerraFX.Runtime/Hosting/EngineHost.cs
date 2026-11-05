@@ -48,6 +48,7 @@ public sealed partial class EngineHost : IAsyncDisposable
     private int _ownerThreadId;
     private readonly WorldPersistence _persistence;
     private PlatformHost? _platform;
+    private PlatformInputRoutingOwner? _platformInputRouting;
     private PlatformHostOwner? _platformOwner;
     private readonly Renderer _renderer;
     private readonly TaskCompletionSource _startupCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -329,11 +330,10 @@ public sealed partial class EngineHost : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(world);
         ThrowIfStopping();
 
-        var diagnostic = CreateInputBindingDiagnostic(
-            "InteractiveInputUnavailable",
-            "Interactive window input routing is unavailable until the native UI route is implemented.",
-            world.WorldGuid);
-        return new InputBindingReceipt(InputBindingStatus.Rejected, null, window, world.WorldGuid, diagnostic);
+        var worldIsHosted = _worlds.Any(schedule => ReferenceEquals(schedule.World, world));
+        var routingOwner = _platformInputRouting
+            ?? throw new InvalidOperationException("The EngineHost platform input routing owner is not initialized.");
+        return routingOwner.BindGameplayInput(window, world, worldIsHosted);
     }
 
     internal InputBindingReceipt BindHeadlessGameplayInputFromContext(InputRouter router, World world)
@@ -391,53 +391,13 @@ public sealed partial class EngineHost : IAsyncDisposable
             rejection: null);
     }
 
-    [SuppressMessage(
-        "Usage",
-        "CA1031:Do not catch general exception types",
-        Justification = "A router whose host registration fails is disposed before the allocation failure is rethrown.")]
     internal InputRouter CreateInputRouterFromContext(InputRecipientKind recipientKind, WindowHandle? window)
     {
         EnsureOwnerThread();
         ThrowIfStopping();
-
-        if (!Enum.IsDefined(recipientKind))
-        {
-            throw new ArgumentOutOfRangeException(nameof(recipientKind));
-        }
-
-        if (recipientKind is InputRecipientKind.HostLiveUI)
-        {
-            if (window is null)
-            {
-                throw new ArgumentException("A HostLiveUI recipient requires its exact host window.", nameof(window));
-            }
-
-            throw new NotSupportedException("Interactive HostLiveUI recipients require the unfinished native window and UI fanout path.");
-        }
-
-        if (window.HasValue)
-        {
-            throw new ArgumentException("A SimulationTimeline recipient is not constructed with a physical window.", nameof(window));
-        }
-
-        var sequenceLease = _hostEventSequenceLease
-            ?? throw new InvalidOperationException("The EngineHost event-sequence lease is not initialized.");
-        var router = new InputRouter(
-            InputRecipientKind.SimulationTimeline,
-            OwnerIdAllocator.Allocate(),
-            _ownerThreadId,
-            sequenceLease);
-
-        try
-        {
-            _ = _inputRouters.Add(router);
-            return router;
-        }
-        catch (Exception)
-        {
-            _ = router.DisposeAndGetTransitions();
-            throw;
-        }
+        var routingOwner = _platformInputRouting
+            ?? throw new InvalidOperationException("The EngineHost platform input routing owner is not initialized.");
+        return routingOwner.CreateInputRouter(recipientKind, window);
     }
 
     [SuppressMessage(
@@ -651,12 +611,23 @@ public sealed partial class EngineHost : IAsyncDisposable
         try
         {
             _ownerThreadId = Environment.CurrentManagedThreadId;
-            _diagnostics = new DiagnosticsService();
+            var diagnostics = new DiagnosticsService();
+            _diagnostics = diagnostics;
             _workerPool = new WorldWorkerPool(_options.CpuWorkerCount);
             _admissionDomain = new WorldAdmissionDomain(DefaultAdmissionDomainBytes);
-            _hostEventSequenceLease = new HostEventSequenceLease();
-            _platformOwner = PlatformHostOwner.Create(_options, _hostEventSequenceLease);
-            _platform = _platformOwner.Platform;
+            var sequenceLease = new HostEventSequenceLease();
+            _hostEventSequenceLease = sequenceLease;
+            var platformOwner = PlatformHostOwner.Create(_options, sequenceLease);
+            _platformOwner = platformOwner;
+            _platform = platformOwner.Platform;
+            _platformInputRouting = new PlatformInputRoutingOwner(
+                _options.Profile,
+                platformOwner,
+                sequenceLease,
+                diagnostics,
+                _ownerThreadId,
+                _inputRouters,
+                _inputTimelineByRouter);
 
             if (_platform.GamepadStatus is PlatformServiceStatus.Unavailable)
             {
@@ -696,16 +667,20 @@ public sealed partial class EngineHost : IAsyncDisposable
 
                 if (!capturedInput.Diagnostics.IsEmpty)
                 {
-                    var diagnostics = _diagnostics
+                    var capturedDiagnostics = _diagnostics
                         ?? throw new InvalidOperationException("The EngineHost diagnostics service is not initialized.");
 
                     foreach (var diagnostic in capturedInput.Diagnostics)
                     {
-                        diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+                        capturedDiagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
                     }
                 }
 
+                var inputRoutingOwner = _platformInputRouting
+                    ?? throw new InvalidOperationException("The EngineHost platform input routing owner is not initialized.");
+                inputRoutingOwner.RouteCapturedInput(capturedInput);
                 var hostTimestamp = _platformOwner.GetHostTimestamp();
+                inputRoutingOwner.ServiceWindowInputRoutes(hostTimestamp);
 
                 foreach (var schedule in _worlds)
                 {
@@ -735,11 +710,6 @@ public sealed partial class EngineHost : IAsyncDisposable
                     }
 
                     _ = adapter.ServiceHostControlBoundary();
-                }
-
-                if (!capturedInput.Events.IsEmpty || (capturedInput.DiscardedSampleCount != 0))
-                {
-                    throw new InvalidOperationException("The selected non-interactive platform unexpectedly produced physical input.");
                 }
 
                 if (_ownerRequests.IsAddingCompleted)
@@ -845,6 +815,9 @@ public sealed partial class EngineHost : IAsyncDisposable
 
         hostTimestamp = _platformOwner?.GetHostTimestamp()
             ?? throw new InvalidOperationException("The EngineHost platform owner is not initialized.");
+        var inputRoutingOwner = _platformInputRouting
+            ?? throw new InvalidOperationException("The EngineHost platform input routing owner is not initialized.");
+        inputRoutingOwner.ServiceWindowInputRoutes(hostTimestamp);
 
         if (_ownerRequests.IsAddingCompleted || (_ownerRequests.Count != 0))
         {
@@ -900,6 +873,8 @@ public sealed partial class EngineHost : IAsyncDisposable
 
         _inputRouters.Clear();
         _inputTimelineByRouter.Clear();
+        _platformInputRouting?.ClearRoutes();
+        _platformInputRouting = null;
         var worldFailures = new List<Exception>();
 
         for (var index = _worlds.Count - 1; index >= 0; index--)

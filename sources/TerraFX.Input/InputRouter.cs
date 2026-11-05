@@ -90,6 +90,8 @@ public sealed partial class InputRouter
 
     internal long NextOpenTick => _nextOpenTick;
 
+    internal WindowHandle? Window => _window;
+
     private static int CountSetBits(ulong mask)
     {
         var count = 0;
