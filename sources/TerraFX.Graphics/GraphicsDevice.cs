@@ -1712,6 +1712,11 @@ public sealed class GraphicsDevice
         {
             var resource = reflection.Resources[index];
 
+            if (resource.ArrayCount != 1)
+            {
+                throw new NotSupportedException("Fixed shader descriptor arrays are not supported by the current binding-set path.");
+            }
+
             switch (resource.Kind)
             {
                 case ShaderResourceKind.SampledImage:
