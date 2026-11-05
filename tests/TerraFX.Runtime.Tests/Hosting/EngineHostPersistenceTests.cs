@@ -134,27 +134,102 @@ internal sealed partial class EngineHostOptionsTests
                 limits).FileRecord;
             await File.WriteAllBytesAsync(savePath, newerFileRecord).ConfigureAwait(false);
             await File.WriteAllBytesAsync(backupPath, fileRecord).ConfigureAwait(false);
+            var latestSourceBytes = WorldPersistenceRecoveryReader.MeasureCandidateReadWorkspaceBytes(
+                savePath,
+                backupPath,
+                world.Options.MaximumSnapshotBytes);
+            Assert.That(latestSourceBytes, Is.GreaterThan(newerFileRecord.Length + fileRecord.Length));
+            Assert.That(
+                world.TryPrepareLoadReplacement(
+                    latestSourceBytes - 1,
+                    1,
+                    1,
+                    1,
+                    out var underfundedPreparation,
+                    out var underfundedBindingRefusal,
+                    out var underfundedCreditRefusal),
+                Is.True);
+            Assert.That(underfundedBindingRefusal.IsNone, Is.True);
+            Assert.That(underfundedCreditRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+            using var underfundedPreparationScope = underfundedPreparation!;
+            var underfundedReadRejected = false;
+
+            try
+            {
+                var unexpectedCandidate = await WorldPersistenceRecoveryReader.ReadLatestCommittedAsync(
+                    savePath,
+                    backupPath,
+                    underfundedPreparationScope,
+                    world.Options.MaximumSnapshotBytes,
+                    limits,
+                    default).ConfigureAwait(false);
+                unexpectedCandidate?.SourceUse.Dispose();
+            }
+            catch (ArgumentException)
+            {
+                underfundedReadRejected = true;
+            }
+
+            Assert.That(underfundedReadRejected, Is.True);
+            underfundedPreparationScope.Dispose();
+
+            Assert.That(
+                world.TryPrepareLoadReplacement(
+                    latestSourceBytes,
+                    1,
+                    1,
+                    1,
+                    out var latestPreparation,
+                    out var latestBindingRefusal,
+                    out var latestCreditRefusal),
+                Is.True);
+            Assert.That(latestBindingRefusal.IsNone, Is.True);
+            Assert.That(latestCreditRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+            using var latestPreparationScope = latestPreparation!;
             var latestCandidate = await WorldPersistenceRecoveryReader.ReadLatestCommittedAsync(
                 savePath,
                 backupPath,
+                latestPreparationScope,
                 world.Options.MaximumSnapshotBytes,
                 limits,
                 default).ConfigureAwait(false);
             var latest = latestCandidate
                 ?? throw new InvalidOperationException("The newest valid recovery candidate was not selected.");
+            using var latestSourceUse = latest.SourceUse;
             Assert.That(latest.Path, Is.EqualTo(savePath));
             Assert.That(latest.Generation, Is.EqualTo(2));
+            latestSourceUse.Dispose();
+            latestPreparationScope.Dispose();
 
             await File.WriteAllBytesAsync(savePath, [0]).ConfigureAwait(false);
+            var recoverySourceBytes = WorldPersistenceRecoveryReader.MeasureCandidateReadWorkspaceBytes(
+                savePath,
+                backupPath,
+                world.Options.MaximumSnapshotBytes);
+            Assert.That(
+                world.TryPrepareLoadReplacement(
+                    recoverySourceBytes,
+                    1,
+                    1,
+                    1,
+                    out var recoveryPreparation,
+                    out var recoveryBindingRefusal,
+                    out var recoveryCreditRefusal),
+                Is.True);
+            Assert.That(recoveryBindingRefusal.IsNone, Is.True);
+            Assert.That(recoveryCreditRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+            using var recoveryPreparationScope = recoveryPreparation!;
             var recoveredCandidate = await WorldPersistenceRecoveryReader.ReadLatestCommittedAsync(
                 savePath,
                 backupPath,
+                recoveryPreparationScope,
                 world.Options.MaximumSnapshotBytes,
                 limits,
                 default).ConfigureAwait(false);
 
             var recovery = recoveredCandidate
                 ?? throw new InvalidOperationException("The valid backup was not selected as a recovery candidate.");
+            using var recoverySourceUse = recovery.SourceUse;
             Assert.That(recovery.Path, Is.EqualTo(backupPath));
             Assert.That(recovery.Generation, Is.EqualTo(1));
             Assert.That(recovery.FileRecord, Is.EqualTo(fileRecord));

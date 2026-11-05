@@ -5,38 +5,114 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX;
+using TerraFX.Entities;
 
 namespace TerraFX.Hosting;
 
 internal static class WorldPersistenceRecoveryReader
 {
     private const int FileStreamBufferBytes = 65_536;
+    private const long RecoveryControlBytes = 4096;
 
-    internal static async Task<(string Path, long Generation, byte[] FileRecord)?> ReadLatestCommittedAsync(
+    internal static long MeasureCandidateReadWorkspaceBytes(
         string targetPath,
         string backupPath,
+        long maximumSnapshotBytes)
+    {
+        ArgumentNullException.ThrowIfNull(targetPath);
+        ArgumentNullException.ThrowIfNull(backupPath);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSnapshotBytes);
+
+        var targetLength = ReadCandidateLength(targetPath, maximumSnapshotBytes);
+        var backupLength = ReadCandidateLength(backupPath, maximumSnapshotBytes);
+        var candidateBytes = checked(targetLength + backupLength);
+        return (candidateBytes == 0)
+            ? 1
+            : checked(candidateBytes + FileStreamBufferBytes + RecoveryControlBytes);
+    }
+
+    internal static async Task<(string Path, long Generation, byte[] FileRecord, IDisposable SourceUse)?> ReadLatestCommittedAsync(
+        string targetPath,
+        string backupPath,
+        WorldGuidReplacementPreparation preparation,
         long maximumSnapshotBytes,
         EbinReadLimits limits,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(targetPath);
         ArgumentNullException.ThrowIfNull(backupPath);
+        ArgumentNullException.ThrowIfNull(preparation);
         ArgumentNullException.ThrowIfNull(limits);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSnapshotBytes);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        (string Path, long Generation, byte[] FileRecord)? latest = null;
-        string[] candidates = [targetPath, backupPath];
+        var targetLength = ReadCandidateLength(targetPath, maximumSnapshotBytes);
+        var backupLength = ReadCandidateLength(backupPath, maximumSnapshotBytes);
+        var candidateBytes = checked(targetLength + backupLength);
 
-        for (var index = 0; index < candidates.Length; index++)
+        if (candidateBytes == 0)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var candidatePath = candidates[index];
+            return null;
+        }
 
-            if (!File.Exists(candidatePath))
+        var workspaceBytes = checked(candidateBytes + FileStreamBufferBytes + RecoveryControlBytes);
+        IDisposable? sourceUse = null;
+
+        try
+        {
+            sourceUse = preparation.AcquireRetainedUse(workspaceBytes, 0, 0, 0);
+            (string Path, long Generation, byte[] FileRecord)? latest = null;
+            latest = await ReadCandidateAsync(
+                targetPath,
+                targetLength,
+                maximumSnapshotBytes,
+                limits,
+                latest,
+                cancellationToken).ConfigureAwait(false);
+            latest = await ReadCandidateAsync(
+                backupPath,
+                backupLength,
+                maximumSnapshotBytes,
+                limits,
+                latest,
+                cancellationToken).ConfigureAwait(false);
+
+            if (latest is null)
             {
-                continue;
+                return null;
             }
 
+            var result = (
+                latest.Value.Path,
+                latest.Value.Generation,
+                latest.Value.FileRecord,
+                sourceUse);
+            sourceUse = null;
+            return result;
+        }
+        finally
+        {
+            sourceUse?.Dispose();
+        }
+    }
+
+    private static async Task<(string Path, long Generation, byte[] FileRecord)?> ReadCandidateAsync(
+        string candidatePath,
+        long expectedLength,
+        long maximumSnapshotBytes,
+        EbinReadLimits limits,
+        (string Path, long Generation, byte[] FileRecord)? latest,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (expectedLength == 0)
+        {
+            return latest;
+        }
+
+        try
+        {
             var stream = new FileStream(
                 candidatePath,
                 FileMode.Open,
@@ -49,9 +125,14 @@ internal static class WorldPersistenceRecoveryReader
             {
                 var candidateLength = stream.Length;
 
+                if (candidateLength != expectedLength)
+                {
+                    throw new IOException("A State2 candidate changed length after load admission was measured.");
+                }
+
                 if ((candidateLength > maximumSnapshotBytes) || (candidateLength > int.MaxValue))
                 {
-                    continue;
+                    throw new IOException("A State2 candidate exceeded its admitted source-read limit.");
                 }
 
                 var candidate = new byte[checked((int)candidateLength)];
@@ -70,16 +151,51 @@ internal static class WorldPersistenceRecoveryReader
                 }
                 catch (ArgumentException)
                 {
-                    continue;
+                    return latest;
                 }
 
-                if ((latest is null) || (generation > latest.Value.Generation))
-                {
-                    latest = (candidatePath, generation, candidate);
-                }
+                return (latest is null) || (generation > latest.Value.Generation)
+                    ? (candidatePath, generation, candidate)
+                    : latest;
             }
         }
+        catch (FileNotFoundException)
+        {
+            return latest;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return latest;
+        }
+    }
 
-        return latest;
+    private static long ReadCandidateLength(string candidatePath, long maximumSnapshotBytes)
+    {
+        try
+        {
+            var stream = new FileStream(
+                candidatePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 1,
+                FileOptions.None);
+
+            using (stream)
+            {
+                var candidateLength = stream.Length;
+                return (candidateLength > maximumSnapshotBytes) || (candidateLength > int.MaxValue)
+                    ? 0
+                    : candidateLength;
+            }
+        }
+        catch (FileNotFoundException)
+        {
+            return 0;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return 0;
+        }
     }
 }
