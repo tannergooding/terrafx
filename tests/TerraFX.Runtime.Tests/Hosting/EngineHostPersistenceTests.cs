@@ -365,6 +365,103 @@ internal sealed partial class EngineHostOptionsTests
         }
     }
 
+    [Test]
+    public async Task SaveRejectsAssetReferencesMissingFromItsSelectedPackage()
+    {
+        var schemas = new CompiledContentSchemaRegistry([
+            .. CoreContentSchemaCatalogue.PrimitiveSchemas,
+            .. CoreContentSchemaCatalogue.FoundationSchemas,
+            .. NativeAssetSchemaCatalogue.Schemas,
+            .. SceneSchemaCatalogue.Schemas,
+            .. AnimationSchemaCatalogue.Schemas,
+            .. RenderingSchemaCatalogue.Schemas,
+            .. StandaloneContinuationSchemaCatalogue.Schemas,
+            WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
+                "application/world-root-test/tag/v1",
+                ContentSchemaRole.EntityTag,
+                0),
+            WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
+                "application/world-root-test/system-state/v1",
+                ContentSchemaRole.SystemState,
+                7),
+            WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
+                "application/world-root-test/resource-state/v1",
+                ContentSchemaRole.ResourceState,
+                23,
+                4),
+            WorldPersistenceWorldRecordWriterTests.CreateApplicationSchema(
+                "application/world-root-test/attachment-state/v1",
+                ContentSchemaRole.AttachmentState,
+                8),
+        ]);
+        var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
+        var packagePath = SceneAssetStoreTests.Package.WritePackage(packageBytes);
+        var savePath = Path.Combine(Path.GetTempPath(), $"terrafx-{Guid.NewGuid():N}.missing-asset.state");
+
+        try
+        {
+            var assetStoreRegistration = new AssetStoreRegistrationBuilder(schemas).Build();
+            var assets = await AssetStore.CreateAsync(new AssetStoreOptions(
+                packagePath,
+                SHA256.HashData(packageBytes),
+                assetStoreRegistration)).ConfigureAwait(false);
+
+            try
+            {
+                var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
+                _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+                _ = worldRegistrationBuilder.RegisterCpuExtractionSupport(Renderer.CreateCpuExtractionSupportRegistration());
+                using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()) {
+                    CpuWorkerCount = 0,
+                    InitialReplayLineageId = Guid.NewGuid(),
+                    WorldGuid = Guid.NewGuid(),
+                });
+                var sprite = new RenderComponentDefinitions.SpriteComponent(
+                    atlasAssetId: 2,
+                    frameId: Guid.NewGuid(),
+                    new TerraFX.Numerics.Vector2(0.5f, 0.5f),
+                    TerraFX.Numerics.Vector2.One,
+                    TerraFX.Numerics.Vector4.One,
+                    flipMask: 0,
+                    sortingLayer: 0,
+                    sortingOrder: 0,
+                    materialAssetId: default,
+                    pixelSnap: false);
+                _ = world.CreateEntity(new EntityDescription(
+                    components: [ComponentInitialization.Value(in sprite)]));
+                _ = world.Step();
+
+                var persistence = new WorldPersistence(assets, CreatePersistenceMetadata());
+                await using (persistence.ConfigureAwait(false))
+                {
+                    var receipt = await persistence.SaveAsync(
+                        world,
+                        new SaveOptions(savePath, SaveDurabilityPolicy.BestEffort)).ConfigureAwait(false);
+
+                    Assert.That(receipt.Status, Is.EqualTo(SaveStatus.Rejected));
+                    Assert.That(receipt.Diagnostic?.Code, Is.EqualTo("save-package-asset-missing"));
+                    Assert.That(File.Exists(savePath), Is.False);
+                }
+            }
+            finally
+            {
+                await assets.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            if (File.Exists(packagePath))
+            {
+                File.Delete(packagePath);
+            }
+
+            if (File.Exists(savePath))
+            {
+                File.Delete(savePath);
+            }
+        }
+    }
+
     private struct StrictLocalWorldRecordAction : IAction<EbinRecordReadView>
     {
         private static readonly Guid s_checkpointSchemaId = new ContentSchemaIdentityAssignment("state/checkpoint").SchemaId;

@@ -60,6 +60,18 @@ public sealed class AssetPackageLease : IDisposable
         }
     }
 
+    internal bool ContainsAssetId(AssetId assetId)
+    {
+        if (!assetId.IsValid)
+        {
+            throw new ArgumentOutOfRangeException(nameof(assetId));
+        }
+
+        var state = Volatile.Read(ref _state);
+        ObjectDisposedException.ThrowIf(state is null, this);
+        return state.Backing.TryGetEntry(assetId, out _);
+    }
+
     private sealed class LeaseState(AssetStore store, AssetPackageBacking backing)
     {
         internal AssetPackageBacking Backing { get; } = backing;

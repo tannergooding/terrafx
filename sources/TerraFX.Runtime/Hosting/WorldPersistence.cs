@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Diagnostics;
@@ -19,7 +20,10 @@ namespace TerraFX.Hosting;
 public sealed class WorldPersistence : IAsyncDisposable
 {
     private const int FileStreamBufferBytes = 65_536;
+    private const int FixedArrayHeaderBytes = 32;
+    private const ushort FixedArrayKind = 23;
     private const int MaximumQueuedSavesPerPath = 8;
+    private const ushort UInt32Kind = 3;
     private static readonly ConcurrentDictionary<string, SavePathState> s_savePaths = new(
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
     private int _activeSaves;
@@ -75,6 +79,40 @@ public sealed class WorldPersistence : IAsyncDisposable
 
     private static SaveReceipt CreateRejected(string code, string message, Guid? worldGuid)
         => new(SaveStatus.Rejected, transactionGeneration: null, diagnostic: CreateDiagnostic(code, message, worldGuid));
+
+    private static AssetId? FindMissingPackageAssetId(
+        scoped ReadOnlySpan<byte> worldRecord,
+        int assetIdCount,
+        AssetPackageLease packageLease)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(assetIdCount);
+        ArgumentNullException.ThrowIfNull(packageLease);
+        var world = new EbinRecordReadView(worldRecord);
+
+        if (!world.TryGetField(7, out var assetIds)
+            || (assetIds.Kind != FixedArrayKind)
+            || (assetIds.Count != (ulong)assetIdCount)
+            || (assetIds.Payload.Length != checked(FixedArrayHeaderBytes + (assetIdCount * sizeof(uint))))
+            || (BinaryPrimitives.ReadUInt16LittleEndian(assetIds.Payload[16..]) != UInt32Kind)
+            || (BinaryPrimitives.ReadUInt32LittleEndian(assetIds.Payload[20..]) != sizeof(uint)))
+        {
+            throw new InvalidOperationException("The captured state/world AssetIds array has an invalid fixed-array extent.");
+        }
+
+        for (var index = 0; index < assetIdCount; index++)
+        {
+            var value = BinaryPrimitives.ReadUInt32LittleEndian(
+                assetIds.Payload[(FixedArrayHeaderBytes + (index * sizeof(uint)))..]);
+            var assetId = new AssetId(checked((int)value));
+
+            if (!packageLease.ContainsAssetId(assetId))
+            {
+                return assetId;
+            }
+        }
+
+        return null;
+    }
 
     private static bool IsSaveRejection(Exception exception)
         => exception is ArgumentException
@@ -467,7 +505,7 @@ public sealed class WorldPersistence : IAsyncDisposable
                 schemas,
                 out captureReservation,
                 out var capturedWorldRecord,
-                out _,
+                out var assetIdCount,
                 out var captureDiagnostic,
                 cancellationToken);
 
@@ -481,6 +519,21 @@ public sealed class WorldPersistence : IAsyncDisposable
 
             var worldRecord = capturedWorldRecord
                 ?? throw new InvalidOperationException("The successful World capture did not produce its record.");
+            var capturedPackageLease = packageLease
+                ?? throw new InvalidOperationException("The selected package lease was not retained during capture.");
+            var missingPackageAssetId = FindMissingPackageAssetId(
+                worldRecord,
+                assetIdCount,
+                capturedPackageLease);
+
+            if (missingPackageAssetId is { } missingAssetId)
+            {
+                return Task.FromResult(CreateRejected(
+                    "save-package-asset-missing",
+                    $"The selected package does not contain referenced asset {missingAssetId}.",
+                    world.WorldGuid));
+            }
+
             var retainedCaptureReservation = captureReservation
                 ?? throw new InvalidOperationException("The successful World capture did not retain its admission reservation.");
             var foundationMeasureStatus = FoundationProfileWriter.Measure(
