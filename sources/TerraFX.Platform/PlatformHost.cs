@@ -51,6 +51,8 @@ public sealed class PlatformHost
     /// <summary>Gets the optional asynchronous clipboard text service.</summary>
     public ClipboardTextService? ClipboardText => _clipboardText;
 
+    internal PlatformServiceStatus GamepadStatus => _backend.GamepadStatus;
+
     /// <summary>Gets the latest immutable metrics snapshot for a live window.</summary>
     /// <param name="window">The live window owned by this platform host.</param>
     /// <exception cref="ArgumentException">The window handle belongs to another platform owner.</exception>

@@ -114,6 +114,65 @@ internal sealed class PlatformInputBroker
         }
     }
 
+    private static PhysicalInputValue CreateReconciliationValue(PlatformInputStateValue value)
+    {
+        switch (value.Kind)
+        {
+            case PlatformInputStateValueKind.GamepadButton:
+            {
+                if ((value.GamepadButton is not { } button)
+                    || (value.IsDown is not { } isDown)
+                    || !Enum.IsDefined(button))
+                {
+                    throw new InvalidOperationException("A gamepad reconciliation button is incomplete.");
+                }
+
+                return new PhysicalInputValue(button, isDown);
+            }
+
+            case PlatformInputStateValueKind.GamepadAxis:
+            {
+                if ((value.Axis is not { } axis)
+                    || (value.AxisValue is not { } axisValue)
+                    || !Enum.IsDefined(axis))
+                {
+                    throw new InvalidOperationException("A gamepad reconciliation axis is incomplete.");
+                }
+
+                return new PhysicalInputValue(axis, axisValue);
+            }
+
+            case PlatformInputStateValueKind.GamepadStick:
+            {
+                if ((value.Stick is not { } stick)
+                    || (value.StickValue is not { } stickValue)
+                    || !Enum.IsDefined(stick))
+                {
+                    throw new InvalidOperationException("A gamepad reconciliation stick is incomplete.");
+                }
+
+                return new PhysicalInputValue(stick, stickValue);
+            }
+
+            case PlatformInputStateValueKind.GamepadTrigger:
+            {
+                if ((value.Trigger is not { } trigger)
+                    || (value.TriggerValue is not { } triggerValue)
+                    || !Enum.IsDefined(trigger))
+                {
+                    throw new InvalidOperationException("A gamepad reconciliation trigger is incomplete.");
+                }
+
+                return new PhysicalInputValue(trigger, triggerValue);
+            }
+
+            default:
+            {
+                throw new InvalidOperationException("A gamepad reconciliation state contains an unknown value kind.");
+            }
+        }
+    }
+
     private static bool IsDeviceScoped(PhysicalInputEventKind kind)
         => kind is PhysicalInputEventKind.KeyDown
             or PhysicalInputEventKind.KeyRepeat
@@ -129,6 +188,7 @@ internal sealed class PlatformInputBroker
             or PhysicalInputEventKind.GamepadAxis
             or PhysicalInputEventKind.GamepadStick
             or PhysicalInputEventKind.GamepadTrigger
+            or PhysicalInputEventKind.StateReconciliation
             or PhysicalInputEventKind.DeviceAdded
             or PhysicalInputEventKind.DeviceRemoved;
 
@@ -145,6 +205,7 @@ internal sealed class PlatformInputBroker
             or PhysicalInputEventKind.GamepadAxis
             or PhysicalInputEventKind.GamepadStick
             or PhysicalInputEventKind.GamepadTrigger
+            or PhysicalInputEventKind.StateReconciliation
             or PhysicalInputEventKind.DeviceAdded
             or PhysicalInputEventKind.DeviceRemoved;
 
@@ -202,6 +263,27 @@ internal sealed class PlatformInputBroker
             if (IsGamepadInput(sample.Kind) && (sample.DeviceKind != PlatformInputDeviceKind.Gamepad))
             {
                 throw new InvalidOperationException("A gamepad input sample has a non-gamepad device class.");
+            }
+
+            if (sample.Kind is PhysicalInputEventKind.StateReconciliation)
+            {
+                if ((sample.DeviceKind != PlatformInputDeviceKind.Gamepad)
+                    || sample.ReconciliationState.IsDefault
+                    || (sample.Axis is not null)
+                    || (sample.AxisValue is not null)
+                    || (sample.GamepadButton is not null)
+                    || (sample.IsDown is not null)
+                    || (sample.Stick is not null)
+                    || (sample.StickValue is not null)
+                    || (sample.Trigger is not null)
+                    || (sample.TriggerValue is not null))
+                {
+                    throw new InvalidOperationException("A platform state-reconciliation sample has an invalid source or payload.");
+                }
+            }
+            else if (!sample.ReconciliationState.IsDefault)
+            {
+                throw new InvalidOperationException("A platform sample carries reconciliation state for a non-reconciliation event.");
             }
 
             var hostTimestamp = GetHostTimestamp(sample.MonotonicTimestamp);
@@ -323,6 +405,7 @@ internal sealed class PlatformInputBroker
         PhysicalInputValue? gamepadValue = null)
     {
         PhysicalInputValue? value = null;
+        var reconciliationState = default(ImmutableArray<PhysicalInputValue>);
 
         switch (sample.Kind)
         {
@@ -388,6 +471,24 @@ internal sealed class PlatformInputBroker
                 break;
             }
 
+            case PhysicalInputEventKind.StateReconciliation:
+            {
+                if (sample.ReconciliationState.IsDefault)
+                {
+                    throw new InvalidOperationException("A platform state-reconciliation sample omitted its complete source state.");
+                }
+
+                var state = ImmutableArray.CreateBuilder<PhysicalInputValue>(sample.ReconciliationState.Length);
+
+                for (var index = 0; index < sample.ReconciliationState.Length; index++)
+                {
+                    state.Add(CreateReconciliationValue(sample.ReconciliationState[index]));
+                }
+
+                reconciliationState = state.MoveToImmutable();
+                break;
+            }
+
             case PhysicalInputEventKind.PointerAbsoluteMotion:
             case PhysicalInputEventKind.PointerRelativeMotion:
             case PhysicalInputEventKind.VerticalScroll:
@@ -426,7 +527,8 @@ internal sealed class PlatformInputBroker
             nativeVirtualKey: sample.NativeVirtualKey,
             nativeTimestamp: sample.NativeTimestamp,
             nativeClockDomain: sample.NativeClockDomain,
-            flags: sample.Diagnostics);
+            flags: sample.Diagnostics,
+            reconciliationState: reconciliationState);
     }
 
     private void EnsureOwnerThread()

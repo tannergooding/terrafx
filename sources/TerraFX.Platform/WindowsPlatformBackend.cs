@@ -26,6 +26,7 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
     private static WindowsPlatformBackend? s_quarantinedBackend;
     private readonly ClipboardServiceStatus _clipboardStatus;
     private PlatformServiceStatus _displayStatus = PlatformServiceStatus.Unavailable;
+    private readonly WindowsGameInputCapture _gameInputCapture;
     private bool _hasNativeMessageTimestamp;
     private readonly PlatformInputSampleQueue _inputSamples;
     private int _isDisposed;
@@ -69,16 +70,22 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
 
         WindowsPlatformOwnerInitialization? platformOwner = null;
         WindowsRawInputRegistration? rawInputRegistration = null;
+        PlatformInputSampleQueue? inputSamples;
+        WindowsGameInputCapture? gameInputCapture = null;
+        var resolvedTimeProvider = timeProvider ?? TimeProvider.System;
 
         try
         {
             platformOwner = WindowsPlatformOwnerInitialization.Initialize();
             rawInputRegistration = WindowsRawInputRegistration.Register(platformOwner);
+            inputSamples = new PlatformInputSampleQueue(platformOwner.OwnerThreadId);
+            gameInputCapture = new WindowsGameInputCapture(inputSamples, resolvedTimeProvider);
         }
         catch (Exception initializationException)
         {
             try
             {
+                gameInputCapture?.Dispose();
                 rawInputRegistration?.Dispose();
                 platformOwner?.Dispose();
             }
@@ -99,12 +106,15 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
             ?? throw new InvalidOperationException("The Windows Platform owner was not initialized.");
         _rawInputRegistration = rawInputRegistration
             ?? throw new InvalidOperationException("The Windows Raw Input registration was not initialized.");
-        _timeProvider = timeProvider ?? TimeProvider.System;
+        _gameInputCapture = gameInputCapture
+            ?? throw new InvalidOperationException("The Windows GameInput capture service was not initialized.");
+        _timeProvider = resolvedTimeProvider;
         _ownerId = ownerId;
         _ownerThreadId = _platformOwner.OwnerThreadId;
         _windowClassName = windowClassName;
         _windows = windows;
-        _inputSamples = new PlatformInputSampleQueue(_ownerThreadId);
+        _inputSamples = inputSamples
+            ?? throw new InvalidOperationException("The Windows input sample queue was not initialized.");
         _knownInputDevices = [];
         _clipboardStatus = clipboardPolicy is ClipboardServicePolicy.NotRequested
             ? ClipboardServiceStatus.NotRequested
@@ -145,6 +155,15 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
         {
             EnsureOwnerThread();
             return _displayStatus;
+        }
+    }
+
+    public PlatformServiceStatus GamepadStatus
+    {
+        get
+        {
+            EnsureOwnerThread();
+            return _gameInputCapture.GamepadStatus;
         }
     }
 
@@ -241,6 +260,7 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
         try
         {
             DisposeWindows();
+            _gameInputCapture.Dispose();
             _rawInputRegistration.Dispose();
             _platformOwner.Dispose();
         }
@@ -340,6 +360,7 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
 
         ApplyDeferredWindowUpdates();
         ThrowCallbackFailures();
+        _gameInputCapture.Pump();
 
         var monitorCount = GetSystemMetricsNative(SystemMetricMonitorCount);
 

@@ -156,6 +156,8 @@ internal sealed class ClipboardTextServiceTests
 
         public PlatformServiceStatus DisplayStatus => PlatformServiceStatus.NotRequested;
 
+        public PlatformServiceStatus GamepadStatus => PlatformServiceStatus.NotRequested;
+
         public uint OwnerId => _ownerId;
 
         public PlatformServiceStatus PhysicalInputStatus => PlatformServiceStatus.NotRequested;

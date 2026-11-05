@@ -16,6 +16,8 @@ internal interface IPlatformBackend : IDisposable
 
     PlatformServiceStatus DisplayStatus { get; }
 
+    PlatformServiceStatus GamepadStatus { get; }
+
     uint OwnerId { get; }
 
     PlatformServiceStatus PhysicalInputStatus { get; }

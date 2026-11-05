@@ -657,6 +657,32 @@ public sealed partial class EngineHost : IAsyncDisposable
             _hostEventSequenceLease = new HostEventSequenceLease();
             _platformOwner = PlatformHostOwner.Create(_options, _hostEventSequenceLease);
             _platform = _platformOwner.Platform;
+
+            if (_platform.GamepadStatus is PlatformServiceStatus.Unavailable)
+            {
+                var gamepadDiagnostic = new Diagnostic(
+                    "platform-gamepad-unavailable",
+                    DiagnosticSeverity.Warning,
+                    System.Diagnostics.Stopwatch.GetTimestamp(),
+                    hostId: null,
+                    worldGuid: null,
+                    deviceId: null,
+                    surfaceId: null,
+                    deviceEpoch: null,
+                    surfaceEpoch: null,
+                    swapchainEpoch: null,
+                    tick: null,
+                    systemId: null,
+                    passId: null,
+                    assetId: null,
+                    commandIdentity: null,
+                    operation: "PlatformHost.GameInput",
+                    nativeResult: null,
+                    message: "The documented GameInput PC runtime is unavailable; gamepad capture is disabled and no XInput fallback is used.",
+                    context: []);
+                _diagnostics.Write(gamepadDiagnostic, executionSessionId: null, worldOwnerId: null);
+            }
+
             _ = _startupCompletion.TrySetResult();
 
             while (!_ownerRequests.IsCompleted)

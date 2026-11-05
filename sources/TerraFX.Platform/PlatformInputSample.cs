@@ -1,5 +1,6 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
+using System.Collections.Immutable;
 using TerraFX;
 using TerraFX.Input;
 using TerraFX.Numerics;
@@ -32,4 +33,5 @@ internal readonly record struct PlatformInputSample(
     long? NativeTimestamp = null,
     string? NativeClockDomain = null,
     PhysicalInputEventDiagnostic Diagnostics = PhysicalInputEventDiagnostic.None,
-    long MonotonicTimestamp = 0);
+    long MonotonicTimestamp = 0,
+    ImmutableArray<PlatformInputStateValue> ReconciliationState = default);

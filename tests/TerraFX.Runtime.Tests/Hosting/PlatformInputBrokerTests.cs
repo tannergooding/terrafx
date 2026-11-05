@@ -171,6 +171,45 @@ internal sealed class PlatformInputBrokerTests
     }
 
     [Test]
+    public void PreservesStateReconciliationForGamepadControls()
+    {
+        var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());
+        var nativeDevice = (nint)71;
+        var reconciliationState = ImmutableArray.Create(
+            new PlatformInputStateValue(
+                PlatformInputStateValueKind.GamepadButton,
+                GamepadButton: GamepadButtonValue.South,
+                IsDown: true),
+            new PlatformInputStateValue(
+                PlatformInputStateValueKind.GamepadAxis,
+                Axis: GamepadAxis.LeftX,
+                AxisValue: -0.5f),
+            new PlatformInputStateValue(
+                PlatformInputStateValueKind.GamepadTrigger,
+                Trigger: GamepadTrigger.Right,
+                TriggerValue: 0.75f));
+        var sample = new PlatformInputSample(
+            PhysicalInputEventKind.StateReconciliation,
+            null,
+            nativeDevice,
+            PlatformInputDeviceKind.Gamepad,
+            MonotonicTimestamp: 2,
+            ReconciliationState: reconciliationState);
+
+        var captured = broker.Capture(new PlatformInputSampleBatch([sample], DiscardedSampleCount: 0), static _ => true);
+
+        Assert.That(captured.Events, Has.Length.EqualTo(2));
+        Assert.That(captured.Events[0].Kind, Is.EqualTo(PhysicalInputEventKind.DeviceAdded));
+        Assert.That(captured.Events[1].Kind, Is.EqualTo(PhysicalInputEventKind.StateReconciliation));
+        Assert.That(captured.Events[1].ReconciliationState, Has.Length.EqualTo(3));
+        Assert.That(captured.Events[1].ReconciliationState[0].GamepadButton, Is.EqualTo(GamepadButtonValue.South));
+        Assert.That(captured.Events[1].ReconciliationState[0].IsDown, Is.True);
+        Assert.That(captured.Events[1].ReconciliationState[1].AxisValue, Is.EqualTo(-0.5f));
+        Assert.That(captured.Events[1].ReconciliationState[2].TriggerValue, Is.EqualTo(0.75f));
+        broker.Retire();
+    }
+
+    [Test]
     public void RejectsInvalidGamepadSampleBeforeIssuingDeviceGeneration()
     {
         var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());

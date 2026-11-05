@@ -69,6 +69,15 @@ internal sealed class HeadlessPlatformBackend : IPlatformBackend
         }
     }
 
+    public PlatformServiceStatus GamepadStatus
+    {
+        get
+        {
+            EnsureOwnerThread();
+            return PlatformServiceStatus.NotRequested;
+        }
+    }
+
     public uint OwnerId => _ownerId;
 
     public PlatformServiceStatus PhysicalInputStatus

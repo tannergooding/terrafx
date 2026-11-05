@@ -7,12 +7,14 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="TerraFX.Platform.Tests" Key="$(AssemblyOriginatorPublicKey)" />
     <InternalsVisibleTo Include="TerraFX.Runtime" Key="$(AssemblyOriginatorPublicKey)" />
     <InternalsVisibleTo Include="TerraFX.Runtime.Tests" Key="$(AssemblyOriginatorPublicKey)" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\TerraFX.Input\TerraFX.Input.csproj" />
+    <PackageReference Include="GameInputSharp.Core" />
     <PackageReference Include="TerraFX.Interop.Windows" />
   </ItemGroup>
 
