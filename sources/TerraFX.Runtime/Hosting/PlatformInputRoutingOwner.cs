@@ -214,6 +214,24 @@ internal sealed class PlatformInputRoutingOwner
         return assignmentReceipt;
     }
 
+    internal void AttachSimulationTimelineToWindow(WindowHandle window, InputRouter router)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(router);
+
+        if (_profile != HostProfile.Interactive)
+        {
+            throw new NotSupportedException("A native window route requires an Interactive EngineHost.");
+        }
+
+        if ((router.RecipientKind != InputRecipientKind.SimulationTimeline) || !_inputRouters.Contains(router))
+        {
+            throw new ArgumentException("The input router must be a same-host SimulationTimeline recipient.", nameof(router));
+        }
+
+        GetOrCreateWindowInputRoute(window).AttachSimulationTimeline(router);
+    }
+
     internal InputBindingReceipt BindGameplayInput(WindowHandle window, World world, bool worldIsHosted)
     {
         EnsureOwnerThread();
@@ -288,7 +306,7 @@ internal sealed class PlatformInputRoutingOwner
             adapter = new WorldInputTimelineAdapter(world, router, _sequenceLease);
             _ = adapter.BeginPumpBoundary(_platformOwner.GetHostTimestamp(), isPaused: false);
             _inputTimelineByRouter.Add(router, adapter);
-            route.AttachSimulationTimeline(router);
+            AttachSimulationTimelineToWindow(window, router);
             routeAttached = true;
             return new InputBindingReceipt(
                 InputBindingStatus.Bound,
@@ -383,6 +401,30 @@ internal sealed class PlatformInputRoutingOwner
         {
             _ = router.DisposeAndGetTransitions();
             throw;
+        }
+    }
+
+    internal void ResetUiDispositionForWindow(PlatformWindowInputRoute route, long hostTimestamp)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(route);
+
+        if (route.SimulationTimelineRouter is not { IsPaused: false } simulationRouter)
+        {
+            return;
+        }
+
+        var hostSequence = _sequenceLease.Allocate();
+        var resetReceipt = simulationRouter.EnqueueUiDispositionReset(hostTimestamp, hostSequence);
+
+        if (resetReceipt.Status == InputRoutingStatus.CapacityExceeded)
+        {
+            simulationRouter.LatchPlatformInputOverflow(hostTimestamp, hostSequence);
+        }
+
+        if (resetReceipt.Status != InputRoutingStatus.Applied)
+        {
+            WriteInputRoutingDiagnostic(route.Window, resetReceipt);
         }
     }
 
@@ -496,6 +538,7 @@ internal sealed class PlatformInputRoutingOwner
             if (route.ServiceHostControlBoundary(hostTimestamp) is { } overflow)
             {
                 WriteInputOverflowDiagnostic(route.Window, route.HostLiveUiRouter.RecipientId, overflow);
+                ResetUiDispositionForWindow(route, hostTimestamp);
             }
         }
     }

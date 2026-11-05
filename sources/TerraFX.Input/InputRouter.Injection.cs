@@ -1141,6 +1141,45 @@ public sealed partial class InputRouter
         out long discardedInputCount)
         => EnqueuePhysicalEvent(inputEvent, playerSlot, InputClass.None, out discardedInputCount);
 
+    internal InputRoutingReceipt EnqueueUiDispositionReset(long hostTimestamp, long hostSequence)
+    {
+        EnsureOwnerThread();
+        ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
+        ArgumentOutOfRangeException.ThrowIfLessThan(hostSequence, 1);
+
+        if (_recipientKind != InputRecipientKind.SimulationTimeline)
+        {
+            return CreateRoutingRejection("InvalidRecipient", "/RecipientKind");
+        }
+
+        var admission = ValidateHostControlBoundaryAdmission(hostTimestamp, hostSequence);
+
+        if (admission.Status != InputRoutingStatus.Applied)
+        {
+            return admission;
+        }
+
+        _inputControlInbox.Enqueue(new InputControlEnvelope(
+            InputControlCommandKind.ResetUiDisposition,
+            Guid.Empty,
+            0,
+            0,
+            [],
+            _lastInsertionSequence,
+            InputClass.Keyboard | InputClass.Pointing,
+            null,
+            null,
+            [],
+            hostTimestamp,
+            hostSequence,
+            _nextOpenTick));
+        RecordHostControlSequence(hostSequence);
+        _hostControlTimestamp = hostTimestamp;
+        _lastSeenHostTimestamp = hostTimestamp;
+        _controlCommandsInBoundary++;
+        return admission;
+    }
+
     internal void LatchPlatformInputOverflow(long hostTimestamp, long hostSequence)
     {
         EnsureOwnerThread();
@@ -1647,6 +1686,11 @@ public sealed partial class InputRouter
                 return ApplyInputReconciliationEnvelope(control, assignedTick);
             }
 
+            case InputControlCommandKind.ResetUiDisposition:
+            {
+                return ApplyUiDispositionResetEnvelope(control, assignedTick);
+            }
+
             case InputControlCommandKind.RemovePhysicalDevice:
             {
                 return ApplyPhysicalDeviceRemovalEnvelope(control, assignedTick);
@@ -2087,6 +2131,28 @@ public sealed partial class InputRouter
                 effectiveTick,
                 InputCancellationReason.DeviceRemoved)
             : [];
+    }
+
+    private ImmutableArray<InputActionTransition> ApplyUiDispositionResetEnvelope(
+        InputControlEnvelope control,
+        long? assignedTick)
+    {
+        const InputClass windowInputClasses = InputClass.Keyboard | InputClass.Pointing;
+
+        if ((control.InputClasses != windowInputClasses) || (control.PlayerSlot is not null))
+        {
+            throw new InvalidOperationException("An admitted UI-disposition reset has an invalid input scope.");
+        }
+
+        _ = _uiConsumedControls.RemoveWhere(
+            controlKey => MatchesInputScope(controlKey, windowInputClasses, playerSlot: null));
+        MarkUnreconciledControls(windowInputClasses, playerSlot: null);
+        UpdateBindingsForScope(windowInputClasses, playerSlot: null);
+        RefreshAllConsumptionLeases();
+        return RecomputeAllActions(
+            control.HostSequence,
+            assignedTick,
+            InputCancellationReason.InputConsumed);
     }
 
     private bool CanCoalesceInputEnvelope(InputEnvelope previous, InputEnvelope next)
@@ -3664,6 +3730,7 @@ public sealed partial class InputRouter
     {
         CancelInput,
         ReconcileInput,
+        ResetUiDisposition,
         RemovePhysicalDevice,
         SetActiveContextMask,
     }

@@ -58,6 +58,15 @@ internal sealed class PlatformWindowInputRoute
         }
     }
 
+    internal InputRouter? SimulationTimelineRouter
+    {
+        get
+        {
+            EnsureOwnerThread();
+            return _simulationTimelineRouter;
+        }
+    }
+
     internal WindowHandle Window
     {
         get
