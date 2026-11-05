@@ -72,7 +72,7 @@ dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --confi
 dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Release
 ```
 
-Run the D3D12 descriptor-range allocation and graph resource-state mapping tests (36/36 in Debug and Release):
+Run the D3D12 descriptor-range allocation and graph resource-state mapping tests (40/40 in Debug and Release):
 
 ```powershell
 dotnet test .\tests\TerraFX.Graphics.D3D12.Tests\TerraFX.Graphics.D3D12.Tests.csproj --configuration Debug
