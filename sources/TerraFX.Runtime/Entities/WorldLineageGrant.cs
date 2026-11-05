@@ -8,6 +8,7 @@ internal readonly struct WorldLineageGrant
 {
     private readonly WorldAdmissionDomain? _domain;
     private readonly Guid _identityBranchId;
+    private readonly Guid _issuanceNamespace;
     private readonly Guid _lineageId;
     private readonly WorldDomainReservation? _reservation;
     private readonly Guid _worldGuid;
@@ -19,10 +20,12 @@ internal readonly struct WorldLineageGrant
         uint generation,
         Guid worldGuid,
         Guid lineageId,
-        Guid identityBranchId)
+        Guid identityBranchId,
+        Guid issuanceNamespace)
     {
         _domain = domain;
         _identityBranchId = identityBranchId;
+        _issuanceNamespace = issuanceNamespace;
         _lineageId = lineageId;
         _reservation = reservation;
         _worldGuid = worldGuid;
@@ -39,10 +42,13 @@ internal readonly struct WorldLineageGrant
     internal bool IsValid
         => (_domain is not null)
         && (_identityBranchId != Guid.Empty)
+        && (_issuanceNamespace != Guid.Empty)
         && (_lineageId != Guid.Empty)
         && (_reservation is not null)
         && (Generation != 0)
         && (_worldGuid != Guid.Empty);
+
+    internal Guid IssuanceNamespace => _issuanceNamespace;
 
     internal Guid LineageId => _lineageId;
 

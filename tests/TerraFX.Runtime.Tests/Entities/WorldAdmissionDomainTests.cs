@@ -183,6 +183,7 @@ internal sealed class WorldAdmissionDomainTests
         Assert.That(grant.IsValid, Is.True);
         Assert.That(grant.WorldGuid, Is.EqualTo(worldGuid));
         Assert.That(grant.IdentityBranchId, Is.EqualTo(branchId));
+        Assert.That(grant.IssuanceNamespace, Is.EqualTo(branchId));
         Assert.That(domain.TryReserveFreshLineage(
             worldReservation,
             Guid.NewGuid(),
@@ -208,6 +209,114 @@ internal sealed class WorldAdmissionDomainTests
         domain.Dispose();
         worldReservation.Dispose();
         Assert.That(domain.Retirement.IsCompleted, Is.True);
+    }
+
+    [Test]
+    public void FreshRetainedHistoryRegistrationRequiresAndSharesTheExactCommittedHistory()
+    {
+        using var domain = new WorldAdmissionDomain(8 * 1024 * 1024);
+        var worldGuid = Guid.NewGuid();
+        var lineageId = Guid.NewGuid();
+        var branchId = Guid.NewGuid();
+        Guid[] membership = [lineageId, Guid.NewGuid(), Guid.NewGuid()];
+        Array.Sort(membership);
+
+        Assert.That(domain.TryReserveWorld(4096, out var sourceReservation), Is.True);
+        using var sourceWorld = sourceReservation!;
+        Assert.That(
+            domain.TryReserveFreshLineageHistory(
+                sourceWorld,
+                worldGuid,
+                lineageId,
+                branchId,
+                membership,
+                out var sourceGrant,
+                out _),
+            Is.True);
+        Assert.That(domain.TryCommitFreshLineage(sourceGrant), Is.True);
+
+        var mismatchedHistory = WorldPersistenceIdentityHistoryReader.ValidatedLineageMembership.CreateValidated(
+            Guid.NewGuid(),
+            lineageId,
+            branchId,
+            branchId,
+            membership);
+        Assert.That(domain.TryReserveWorld(4096, out var rejectedReservation), Is.True);
+        using var rejectedWorld = rejectedReservation!;
+        Assert.That(
+            domain.TryReserveRetainedLineageHistory(
+                rejectedWorld,
+                mismatchedHistory,
+                out var rejectedGrant,
+                out var rejectedRefusal),
+            Is.False);
+        Assert.That(rejectedGrant.IsValid, Is.False);
+        Assert.That(rejectedRefusal, Is.EqualTo(WorldAdmissionRefusal.LineageHistoryNotRetained));
+
+        var retainedHistory = WorldPersistenceIdentityHistoryReader.ValidatedLineageMembership.CreateValidated(
+            worldGuid,
+            lineageId,
+            branchId,
+            branchId,
+            membership);
+        Assert.That(domain.TryReserveWorld(4096, out var retainedReservation), Is.True);
+        using var retainedWorld = retainedReservation!;
+        Assert.That(
+            domain.TryReserveRetainedLineageHistory(
+                retainedWorld,
+                retainedHistory,
+                out var cancelledGrant,
+                out _),
+            Is.True);
+        Assert.That(domain.TryReleaseFreshLineage(cancelledGrant), Is.True);
+        Assert.That(
+            domain.TryReserveRetainedLineageHistory(
+                retainedWorld,
+                retainedHistory,
+                out var retainedGrant,
+                out _),
+            Is.True);
+
+        Assert.That(domain.TryReserveWorld(4096, out var conflictingReservation), Is.True);
+        using var conflictingWorld = conflictingReservation!;
+        Assert.That(
+            domain.TryReserveRetainedLineageHistory(
+                conflictingWorld,
+                retainedHistory,
+                out var conflictingGrant,
+                out var conflictingRefusal),
+            Is.False);
+        Assert.That(conflictingGrant.IsValid, Is.False);
+        Assert.That(conflictingRefusal, Is.EqualTo(WorldAdmissionRefusal.LineageCapacity));
+        Assert.That(domain.TryCommitFreshLineage(retainedGrant), Is.True);
+        Assert.That(domain.TryRollbackFreshLineage(sourceGrant), Is.True);
+
+        Assert.That(domain.TryReserveWorld(4096, out var duplicateReservation), Is.True);
+        using var duplicateWorld = duplicateReservation!;
+        Assert.That(
+            domain.TryReserveFreshLineage(
+                duplicateWorld,
+                worldGuid,
+                lineageId,
+                branchId,
+                out var duplicateGrant,
+                out var duplicateRefusal),
+            Is.False);
+        Assert.That(duplicateGrant.IsValid, Is.False);
+        Assert.That(duplicateRefusal, Is.EqualTo(WorldAdmissionRefusal.LineageAlreadyRetained));
+
+        Assert.That(domain.TryRollbackFreshLineage(retainedGrant), Is.True);
+        Assert.That(
+            domain.TryReserveFreshLineage(
+                duplicateWorld,
+                worldGuid,
+                lineageId,
+                branchId,
+                out var replacementGrant,
+                out _),
+            Is.True);
+        Assert.That(domain.TryCommitFreshLineage(replacementGrant), Is.True);
+        Assert.That(domain.TryRollbackFreshLineage(replacementGrant), Is.True);
     }
 
     [Test]
@@ -268,6 +377,80 @@ internal sealed class WorldAdmissionDomainTests
         domain.Dispose();
         duplicateWorld.Dispose();
         Assert.That(domain.Retirement.IsCompleted, Is.True);
+    }
+
+    [Test]
+    public void LoadOperationCreditBundleReservesAndRetainsAllRoles()
+    {
+        var domain = new WorldAdmissionDomain(1024 * 1024);
+        Assert.That(
+            domain.TryReserveLoadOperationCredits(
+                long.MaxValue / 2,
+                1,
+                1,
+                1,
+                out var oversizedCredits,
+                out var oversizedRefusal),
+            Is.False);
+        Assert.That(oversizedCredits, Is.Null);
+        Assert.That(oversizedRefusal, Is.EqualTo(WorldAdmissionRefusal.OperationCapacity));
+        oversizedCredits?.Dispose();
+
+        Assert.That(
+            domain.TryReserveLoadOperationCredits(
+                1024,
+                2048,
+                3072,
+                4096,
+                out var credits,
+                out var creditRefusal),
+            Is.True);
+        Assert.That(creditRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+        var retainedCredits = credits!;
+        var sourceUse = retainedCredits.Source.AcquireRetainedUse(1024);
+        var targetUse = retainedCredits.Target.AcquireRetainedUse(2048);
+        var dataUse = retainedCredits.Data.AcquireRetainedUse(3072);
+        var cleanupUse = retainedCredits.Cleanup.AcquireRetainedUse(4096);
+
+        domain.Dispose();
+        retainedCredits.Dispose();
+
+        Assert.That(domain.Retirement.IsCompleted, Is.False);
+        sourceUse.Dispose();
+        targetUse.Dispose();
+        dataUse.Dispose();
+        cleanupUse.Dispose();
+        Assert.That(domain.Retirement.IsCompleted, Is.True);
+    }
+
+    [Test]
+    public void OperationCreditOutlivesWorldReleaseAndDelaysDomainRetirement()
+    {
+        var domain = new WorldAdmissionDomain(1024 * 1024);
+        Assert.That(domain.TryReserveWorld(4096, out var reservation), Is.True);
+        var worldReservation = reservation!;
+        Assert.That(domain.TryReserveOperationCredit(8192, out var operationCredit), Is.True);
+        var retainedCredit = operationCredit!;
+        var operationUse = retainedCredit.AcquireRetainedUse(8192);
+        Assert.That(() => retainedCredit.AcquireRetainedUse(1), Throws.ArgumentException);
+
+        domain.Dispose();
+
+        Assert.That(domain.Retirement.IsCompleted, Is.False);
+        Assert.That(domain.TryReserveOperationCredit(1, out var rejectedCredit), Is.False);
+        Assert.That(rejectedCredit, Is.Null);
+        rejectedCredit?.Dispose();
+
+        worldReservation.Dispose();
+
+        Assert.That(domain.Retirement.IsCompleted, Is.False);
+        retainedCredit.Dispose();
+
+        Assert.That(domain.Retirement.IsCompleted, Is.False);
+        Assert.That(() => retainedCredit.AcquireRetainedUse(0), Throws.TypeOf<ObjectDisposedException>());
+        operationUse.Dispose();
+        Assert.That(domain.Retirement.IsCompleted, Is.True);
+        retainedCredit.Dispose();
     }
 
     [Test]

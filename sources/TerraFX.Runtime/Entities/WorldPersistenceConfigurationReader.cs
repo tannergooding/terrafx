@@ -102,6 +102,19 @@ internal static class WorldPersistenceConfigurationReader
         return ReadBoundedUInt32(record, 8, 33_554_432, parameterName);
     }
 
+    internal static int ReadMaximumIdentityBranches(EbinRecordReadView record, string parameterName)
+    {
+        if ((record.Header.SchemaId != s_configurationSchemaId)
+            || (record.Header.Major != 1)
+            || (record.Header.Minor != 0)
+            || (record.FieldCount != ConfigurationFieldCount))
+        {
+            throw new ArgumentException("The state/configuration record has the wrong schema identity, version, or field count.", parameterName);
+        }
+
+        return ReadBoundedUInt16(record, 11, 1024, parameterName);
+    }
+
     private static EbinFieldReadView GetRequiredField(
         EbinRecordReadView record,
         uint tag,

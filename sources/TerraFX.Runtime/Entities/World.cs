@@ -100,6 +100,7 @@ public sealed partial class World : IDisposable
     private readonly Guid _replayLineageId;
     private ImmutableArray<object> _resourceStorage;
     private readonly long _resourceStorageByteReservation;
+    private long _sceneControlPayloadByteReservation;
     private IWorldSceneParticipant? _sceneParticipant;
     private long _scenePlanStorageByteReservation;
     private readonly Lock _sceneStorageGate = new();
@@ -1207,6 +1208,8 @@ public sealed partial class World : IDisposable
                 _controlRecords = [];
                 _controlRecordCount = 0;
                 _controlStorageByteReservation = 0;
+                var sceneControlPayloadBytes = _sceneControlPayloadByteReservation;
+                _sceneControlPayloadByteReservation = 0;
                 _identityBranches = [];
                 _identityBranchCount = 0;
                 _resourceStorage = [];
@@ -1214,6 +1217,11 @@ public sealed partial class World : IDisposable
                 _ = _attachments.ReleaseOwnedStorage();
 
                 var attachmentQuarantineRetainsReservation = WorldAttachmentInstanceRegistry.HasRetainedDomainReservation(_domainReservation);
+
+                if (sceneControlPayloadBytes != 0)
+                {
+                    _domainReservation.ReleaseAdditional(sceneControlPayloadBytes);
+                }
 
                 if (!_systemQuarantineReservation.RetainsDomainReservation && !attachmentQuarantineRetainsReservation)
                 {
@@ -1560,6 +1568,7 @@ public sealed partial class World : IDisposable
             + Interlocked.Read(ref _scenePlanStorageByteReservation)
             + _componentTagWorkPlanByteReservation
             + _controlStorageByteReservation
+            + _sceneControlPayloadByteReservation
             + _cpuExtractionSupportByteReservation
             + _subscriptionStorageByteReservation
             + _ownerCommandPreparationByteReservation

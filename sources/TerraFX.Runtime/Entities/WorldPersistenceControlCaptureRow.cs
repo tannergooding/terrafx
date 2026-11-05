@@ -17,7 +17,8 @@ internal readonly struct WorldPersistenceControlCaptureRow
         SpatialFrame3? frame3,
         Guid branchId,
         Guid lineageId,
-        ushort branchIndex)
+        ushort branchIndex,
+        byte[]? scenePayloadRecord)
     {
         Sequence = sequence;
         AppliedAtNextTick = appliedAtNextTick;
@@ -29,6 +30,7 @@ internal readonly struct WorldPersistenceControlCaptureRow
         BranchId = branchId;
         LineageId = lineageId;
         BranchIndex = branchIndex;
+        ScenePayloadRecord = scenePayloadRecord;
     }
 
     internal long AppliedAtNextTick { get; }
@@ -44,6 +46,8 @@ internal readonly struct WorldPersistenceControlCaptureRow
     internal WorldPersistenceControlKind Kind { get; }
 
     internal Guid LineageId { get; }
+
+    internal byte[]? ScenePayloadRecord { get; }
 
     internal long SegmentSequence { get; }
 

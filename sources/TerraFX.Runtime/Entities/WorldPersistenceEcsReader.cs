@@ -34,6 +34,29 @@ internal static class WorldPersistenceEcsReader
         CompiledContentSchemaRegistry? schemas,
         WorldPersistenceLiveIdentitySet liveIdentities,
         scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch)
+        => Read(
+            ecsRecord,
+            limits,
+            configuration,
+            clock,
+            targetRegistration,
+            schemas,
+            liveIdentities,
+            identityScratch,
+            [],
+            out _);
+
+    internal static WorldPersistenceEcsContents Read(
+        ReadOnlyMemory<byte> ecsRecord,
+        EbinReadLimits limits,
+        WorldPersistenceConfiguration configuration,
+        WorldPersistenceClockContents clock,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry? schemas,
+        WorldPersistenceLiveIdentitySet liveIdentities,
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
+        scoped Span<Guid> lineageMembershipScratch,
+        out int lineageMembershipCount)
     {
         ArgumentNullException.ThrowIfNull(limits);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -73,14 +96,17 @@ internal static class WorldPersistenceEcsReader
         var historyField = GetRequiredField(record, 5, RecordKind, expectedCount: 1, nameof(ecsRecord));
         var history = new EbinRecordReadView(historyField.Payload);
         var (worldGuid, replayLineageId, activeBranchId, issuanceNamespace, nextAssignmentOrdinal, branchCount, pageCount, liveEntityCount, liveSceneInstanceCount) =
-            WorldPersistenceIdentityHistoryReader.Read(
-                history,
+            WorldPersistenceIdentityHistoryReader.ReadAndIssueLineageMembership(
+                history.EncodedBytes,
                 limits,
                 configuration,
                 liveIdentities,
                 identityScratch,
                 clock.NextTick,
-                nameof(ecsRecord));
+                nameof(ecsRecord),
+                lineageMembershipScratch,
+                out var validatedLineageMembership);
+        lineageMembershipCount = validatedLineageMembership?.Count ?? 0;
         ValidateEntityChildren(
             record,
             entityCount,
@@ -118,7 +144,8 @@ internal static class WorldPersistenceEcsReader
             issuanceNamespace,
             nextAssignmentOrdinal,
             branchCount,
-            pageCount);
+            pageCount,
+            validatedLineageMembership);
     }
 
     internal static void ValidateAttachmentOwner(

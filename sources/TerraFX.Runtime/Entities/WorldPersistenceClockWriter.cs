@@ -1148,9 +1148,10 @@ internal static class WorldPersistenceClockWriter
 
                 currentFrame3 = candidateFrame;
             }
-            else if (control.Kind is not WorldPersistenceControlKind.Branch)
+            else if (control.Kind is not WorldPersistenceControlKind.Branch
+                and not WorldPersistenceControlKind.Scene)
             {
-                diagnostic = CreateDiagnostic("unknown-control-kind", checked((ulong)control.Kind), 3);
+                diagnostic = CreateDiagnostic("unknown-control-kind", checked((ulong)control.Kind), 4);
                 return EbinWriteStatus.InvalidRecord;
             }
         }

@@ -4,11 +4,22 @@ using System;
 using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using TerraFX;
 
 namespace TerraFX.Entities;
 
 public sealed partial class World
 {
+    private static Guid GetAssignedSceneInstanceIdentity(IdentityAssignment assignment)
+        => assignment.Origin switch {
+            IdentityOrigin.Automatic => StableIdentityLedger.CreateAutomaticIdentity(
+                assignment.IssuanceNamespace,
+                assignment.Kind,
+                assignment.Locator),
+            IdentityOrigin.Explicit => assignment.StableId,
+            _ => throw new InvalidOperationException("The prepared Scene instance identity origin is unsupported."),
+        };
+
     private static void ValidateHierarchyParentIndices(
         scoped ReadOnlySpan<int> parentIndices,
         scoped Span<int> hierarchyDepths)
@@ -229,30 +240,12 @@ public sealed partial class World
             throw new InvalidOperationException("The World was not constructed with Scene support.");
         }
 
-        if (requestedSceneInstanceId is Guid sceneInstanceId
-            && ((sceneInstanceId == Guid.Empty) || IsReservedUuidV8ForCommand(sceneInstanceId)))
-        {
-            throw new ArgumentException("A requested Scene instance identity must be nonempty and non-v8.", nameof(requestedSceneInstanceId));
-        }
-
         EnterStructuralOperation();
 
         try
         {
-            var sceneInstanceLocator = checked((uint)(_identityLedger.AssignmentCount + 1));
-            var sceneInstanceAssignment = requestedSceneInstanceId is Guid explicitId
-                ? new IdentityAssignment(
-                    IdentityKind.SceneInstance,
-                    IdentityOrigin.Explicit,
-                    sceneInstanceLocator,
-                    _currentIdentityBranchIndex,
-                    explicitId)
-                : new IdentityAssignment(
-                    IdentityKind.SceneInstance,
-                    IdentityOrigin.Automatic,
-                    sceneInstanceLocator,
-                    _currentIdentityBranchIndex,
-                    issuanceNamespace: _identityBranches[_currentIdentityBranchIndex].NamespaceId);
+            var sceneInstanceAssignment = CreateSceneInstanceAssignment(requestedSceneInstanceId);
+            var sceneInstanceLocator = sceneInstanceAssignment.Locator;
 
             return CreateEntitiesAtomicallyCore(
                 entityCount,
@@ -482,6 +475,14 @@ public sealed partial class World
         }
     }
 
+    internal Guid GetNextSceneInstanceIdentity(Guid? requestedSceneInstanceId)
+    {
+        ThrowIfDisposed();
+        ThrowIfFaulted();
+        EnsureOwnerThread();
+        return GetAssignedSceneInstanceIdentity(CreateSceneInstanceAssignment(requestedSceneInstanceId));
+    }
+
     private WorldSceneEntityBatchCommit CreateEntitiesAtomicallyCore(
         int entityCount,
         Func<ImmutableArray<Entity>, ImmutableArray<EntityDescription>> createDescriptions,
@@ -613,6 +614,30 @@ public sealed partial class World
                 _domainReservation.ReleaseAdditional(preparationBytes);
             }
         }
+    }
+
+    private IdentityAssignment CreateSceneInstanceAssignment(Guid? requestedSceneInstanceId)
+    {
+        if (requestedSceneInstanceId is Guid sceneInstanceId
+            && ((sceneInstanceId == Guid.Empty) || IsReservedUuidV8ForCommand(sceneInstanceId)))
+        {
+            throw new ArgumentException("A requested Scene instance identity must be nonempty and non-v8.", nameof(requestedSceneInstanceId));
+        }
+
+        var locator = checked((uint)(_identityLedger.AssignmentCount + 1));
+        return requestedSceneInstanceId is Guid explicitId
+            ? new IdentityAssignment(
+                IdentityKind.SceneInstance,
+                IdentityOrigin.Explicit,
+                locator,
+                _currentIdentityBranchIndex,
+                explicitId)
+            : new IdentityAssignment(
+                IdentityKind.SceneInstance,
+                IdentityOrigin.Automatic,
+                locator,
+                _currentIdentityBranchIndex,
+                issuanceNamespace: _identityBranches[_currentIdentityBranchIndex].NamespaceId);
     }
 
     private ImmutableArray<Entity> PreviewCandidateEntityHandles(

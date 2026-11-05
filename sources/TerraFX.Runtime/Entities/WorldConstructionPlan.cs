@@ -93,6 +93,7 @@ internal sealed class WorldConstructionPlan
             || (_lineageGrant.WorldGuid != _worldGuid)
             || (_lineageGrant.LineageId != ReplayLineageId)
             || (_lineageGrant.IdentityBranchId != _identityBranchId)
+            || (_lineageGrant.IssuanceNamespace != _identityBranchId)
             || !_domainReservation.IsOwnedBy(_admissionDomain)
             || !_lineageGrant.IsOwnedBy(_admissionDomain)
             || !(_lineageGrant.Reservation?.IsOwnedBy(_admissionDomain) ?? false)

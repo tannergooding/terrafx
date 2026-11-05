@@ -66,6 +66,21 @@ internal sealed class StableIdentityLedger
 
     internal int SceneInstanceCount => _state.SceneReverse.Count;
 
+    internal static Guid CreateAutomaticIdentity(Guid issuanceNamespace, IdentityKind kind, uint ordinal)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(issuanceNamespace, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(ordinal);
+
+        var prefix = kind switch {
+            IdentityKind.Entity => "world/entity/v1/",
+            IdentityKind.SceneInstance => "world/scene-instance/v1/",
+            _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+        };
+        return FoundationNameUuid.Create(
+            issuanceNamespace,
+            string.Create(CultureInfo.InvariantCulture, $"{prefix}{ordinal:x16}"));
+    }
+
     // Only the friend test assembly needs lowered count limits to exercise exhaustion.
     internal static StableIdentityLedger CreateForTesting(int maximumAssignments, int maximumEntitySlots, int maximumSceneInstances)
     {
@@ -87,6 +102,15 @@ internal sealed class StableIdentityLedger
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSceneInstances);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumSceneInstances, MaximumSceneInstances);
         return new StableIdentityLedger(maximumAssignments, maximumEntitySlots, maximumSceneInstances);
+    }
+
+    internal static Guid CreateForkBranchId(Guid worldGuid, Guid sourceBranchId)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(worldGuid, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfEqual(sourceBranchId, Guid.Empty);
+
+        var name = string.Create(CultureInfo.InvariantCulture, $"world/fork/branch/v1/{sourceBranchId:N}");
+        return FoundationNameUuid.Create(worldGuid, name);
     }
 
     // Conservative managed reservations: 64 bytes per array header/alignment, eight-byte
@@ -298,10 +322,7 @@ internal sealed class StableIdentityLedger
 
             if (assignment.Origin == IdentityOrigin.Automatic)
             {
-                var prefix = assignment.Kind == IdentityKind.Entity ? "world/entity/v1/" : "world/scene-instance/v1/";
-                id = FoundationNameUuid.Create(
-                    assignment.IssuanceNamespace,
-                    string.Create(CultureInfo.InvariantCulture, $"{prefix}{ordinal:x16}"));
+                id = CreateAutomaticIdentity(assignment.IssuanceNamespace, assignment.Kind, ordinal);
             }
 
             var record = records.AsSpan(index * RecordSize, RecordSize);

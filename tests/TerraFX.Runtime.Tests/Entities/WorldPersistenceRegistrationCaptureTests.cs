@@ -231,6 +231,20 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
 
         Assert.That(WorldPersistenceCheckpointWriter.ReadTransactionGeneration(firstFileRecord, limits), Is.EqualTo(1));
         Assert.That(WorldPersistenceCheckpointWriter.ReadCheckpointRecord(firstFileRecord, limits), Is.EqualTo(firstCheckpointRecord));
+        var identityAssignmentCount = WorldPersistenceCheckpointWriter.MeasureIdentityAssignmentCount(firstFileRecord, limits);
+        var lineageMembershipCapacity = WorldPersistenceCheckpointWriter.MeasureLineageMembershipScratchCapacity(firstFileRecord, limits);
+        var lineageMembershipScratch = new Guid[lineageMembershipCapacity];
+        var readContents = WorldPersistenceCheckpointWriter.ReadContents(
+            firstFileRecord,
+            limits,
+            null,
+            schemas,
+            new uint[assetIdCount],
+            new WorldPersistenceIdentityScratchEntry[identityAssignmentCount],
+            lineageMembershipScratch);
+        Assert.That(readContents.WorldContents.Ecs.LineageMembershipCount, Is.EqualTo(1));
+        Assert.That(lineageMembershipScratch[0], Is.EqualTo(world.ReplayLineageId));
+
         var tamperedFileRecord = (byte[])firstFileRecord.Clone();
         var fileDigestOffset = FindSequence(tamperedFileRecord, firstFileContentDigest);
         Assert.That(fileDigestOffset, Is.GreaterThanOrEqualTo(0));

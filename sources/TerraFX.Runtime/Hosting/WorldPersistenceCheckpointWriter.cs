@@ -2,6 +2,7 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using TerraFX;
 using TerraFX.Entities;
@@ -110,6 +111,7 @@ internal static class WorldPersistenceCheckpointWriter
     internal static int MeasureIdentityAssignmentCount(scoped ReadOnlySpan<byte> fileRecord, EbinReadLimits limits)
     {
         ArgumentNullException.ThrowIfNull(limits);
+
         var reader = new FileRecordReader(
             limits,
             captureCheckpointRecord: false,
@@ -128,6 +130,31 @@ internal static class WorldPersistenceCheckpointWriter
         }
 
         return reader.IdentityAssignmentCount;
+    }
+
+    internal static int MeasureLineageMembershipScratchCapacity(
+        scoped ReadOnlySpan<byte> fileRecord,
+        EbinReadLimits limits)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+        var reader = new FileRecordReader(
+            limits,
+            captureCheckpointRecord: false,
+            measureLineageMembershipScratchCapacity: true);
+        var status = EbinStructuralReader.Read(
+            fileRecord,
+            limits,
+            EbinReadPolicy.Canonical,
+            ref reader,
+            out var bytesConsumed,
+            out _);
+
+        if ((status is not EbinReadStatus.Complete) || (bytesConsumed != fileRecord.Length))
+        {
+            throw new ArgumentException("The State2 file is not a complete canonical record.", nameof(fileRecord));
+        }
+
+        return reader.LineageMembershipScratchCapacity;
     }
 
     internal static byte[] ReadCheckpointRecord(
@@ -159,7 +186,7 @@ internal static class WorldPersistenceCheckpointWriter
         WorldRegistration? targetRegistration = null)
     {
         var strictLayoutBuffers = default(WorldPersistenceStrictLayoutReadBuffers);
-        return ReadContentsCore(fileRecord, limits, targetRegistration, null, [], [], ref strictLayoutBuffers);
+        return ReadContentsCore(fileRecord, limits, targetRegistration, null, [], [], [], ref strictLayoutBuffers);
     }
 
     internal static WorldPersistenceCheckpointContents ReadContents(
@@ -171,7 +198,7 @@ internal static class WorldPersistenceCheckpointWriter
     {
         ArgumentNullException.ThrowIfNull(assetReferenceSchemas);
         var strictLayoutBuffers = default(WorldPersistenceStrictLayoutReadBuffers);
-        return ReadContentsCore(fileRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch, [], ref strictLayoutBuffers);
+        return ReadContentsCore(fileRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch, [], [], ref strictLayoutBuffers);
     }
 
     internal static WorldPersistenceCheckpointContents ReadContents(
@@ -184,7 +211,29 @@ internal static class WorldPersistenceCheckpointWriter
     {
         ArgumentNullException.ThrowIfNull(assetReferenceSchemas);
         var strictLayoutBuffers = default(WorldPersistenceStrictLayoutReadBuffers);
-        return ReadContentsCore(fileRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch, identityScratch, ref strictLayoutBuffers);
+        return ReadContentsCore(fileRecord, limits, targetRegistration, assetReferenceSchemas, assetIdScratch, identityScratch, [], ref strictLayoutBuffers);
+    }
+
+    internal static WorldPersistenceCheckpointContents ReadContents(
+        scoped ReadOnlySpan<byte> fileRecord,
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration,
+        CompiledContentSchemaRegistry assetReferenceSchemas,
+        scoped Span<uint> assetIdScratch,
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
+        scoped Span<Guid> lineageMembershipScratch)
+    {
+        ArgumentNullException.ThrowIfNull(assetReferenceSchemas);
+        var strictLayoutBuffers = default(WorldPersistenceStrictLayoutReadBuffers);
+        return ReadContentsCore(
+            fileRecord,
+            limits,
+            targetRegistration,
+            assetReferenceSchemas,
+            assetIdScratch,
+            identityScratch,
+            lineageMembershipScratch,
+            ref strictLayoutBuffers);
     }
 
     internal static WorldPersistenceCheckpointContents ReadContents(
@@ -204,6 +253,7 @@ internal static class WorldPersistenceCheckpointWriter
             assetReferenceSchemas,
             assetIdScratch,
             identityScratch,
+            [],
             ref strictLayoutBuffers);
     }
 
@@ -221,6 +271,7 @@ internal static class WorldPersistenceCheckpointWriter
             null,
             [],
             identityScratch,
+            [],
             ref strictLayoutBuffers);
     }
 
@@ -237,6 +288,7 @@ internal static class WorldPersistenceCheckpointWriter
             assetReferenceSchemas: null,
             assetIdScratch: [],
             identityScratch,
+            [],
             ref strictLayoutBuffers);
 
     internal static long ReadTransactionGeneration(
@@ -539,9 +591,18 @@ internal static class WorldPersistenceCheckpointWriter
         CompiledContentSchemaRegistry? assetReferenceSchemas,
         scoped Span<uint> assetIdScratch,
         scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
+        scoped Span<Guid> lineageMembershipScratch,
         scoped ref WorldPersistenceStrictLayoutReadBuffers strictLayoutBuffers)
     {
         ArgumentNullException.ThrowIfNull(limits);
+
+        if (MemoryMarshal.AsBytes(assetIdScratch).Overlaps(fileRecord)
+            || MemoryMarshal.AsBytes(identityScratch).Overlaps(fileRecord)
+            || MemoryMarshal.AsBytes(lineageMembershipScratch).Overlaps(fileRecord))
+        {
+            throw new ArgumentException("The State2 read scratch spans cannot overlap the source file.", nameof(lineageMembershipScratch));
+        }
+
         var reader = new FileRecordReader(
             limits,
             captureCheckpointRecord: false,
@@ -561,12 +622,19 @@ internal static class WorldPersistenceCheckpointWriter
 
         var worldRecord = reader.WorldRecord
             ?? throw new InvalidOperationException("The validated State2 file did not retain its World record.");
+
+        if (MemoryMarshal.AsBytes(lineageMembershipScratch).Overlaps(worldRecord))
+        {
+            throw new ArgumentException("The lineage-membership scratch span cannot overlap the captured World record.", nameof(lineageMembershipScratch));
+        }
+
         var worldContents = (assetReferenceSchemas is null)
             ? WorldPersistenceWorldRecordReader.Read(
                 worldRecord,
                 limits,
                 targetRegistration,
                 identityScratch,
+                lineageMembershipScratch,
                 ref strictLayoutBuffers)
             : WorldPersistenceWorldRecordReader.Read(
                 worldRecord,
@@ -575,6 +643,7 @@ internal static class WorldPersistenceCheckpointWriter
                 assetReferenceSchemas,
                 assetIdScratch,
                 identityScratch,
+                lineageMembershipScratch,
                 ref strictLayoutBuffers);
 
         if ((worldContents.Clock.NextTick != reader.NextTick)
@@ -752,19 +821,23 @@ internal static class WorldPersistenceCheckpointWriter
         private readonly bool _captureCheckpointRecord;
         private readonly EbinReadLimits _limits;
         private readonly bool _measureIdentityAssignmentCount;
+        private readonly bool _measureLineageMembershipScratchCapacity;
 
         internal FileRecordReader(
             EbinReadLimits limits,
             bool captureCheckpointRecord,
             bool captureCheckpointContents = false,
-            bool measureIdentityAssignmentCount = false)
+            bool measureIdentityAssignmentCount = false,
+            bool measureLineageMembershipScratchCapacity = false)
         {
             _captureCheckpointRecord = captureCheckpointRecord;
             _captureCheckpointContents = captureCheckpointContents;
             _limits = limits;
             _measureIdentityAssignmentCount = measureIdentityAssignmentCount;
+            _measureLineageMembershipScratchCapacity = measureLineageMembershipScratchCapacity;
             TransactionGeneration = 0;
             IdentityAssignmentCount = 0;
+            LineageMembershipScratchCapacity = 0;
             CheckpointRecord = null;
             HeaderRecord = null;
             WorldRecord = null;
@@ -787,6 +860,8 @@ internal static class WorldPersistenceCheckpointWriter
         internal int IdentityAssignmentCount { get; private set; }
 
         internal Guid LineageGuid { get; private set; }
+
+        internal int LineageMembershipScratchCapacity { get; private set; }
 
         internal byte Mode { get; private set; }
 
@@ -850,6 +925,12 @@ internal static class WorldPersistenceCheckpointWriter
                 nameof(fileRecord));
             IdentityAssignmentCount = _measureIdentityAssignmentCount
                 ? WorldPersistenceWorldRecordReader.MeasureIdentityAssignmentCount(world, nameof(fileRecord))
+                : 0;
+            LineageMembershipScratchCapacity = _measureLineageMembershipScratchCapacity
+                ? WorldPersistenceWorldRecordReader.MeasureLineageMembershipScratchCapacity(
+                    world,
+                    _limits,
+                    nameof(fileRecord))
                 : 0;
             var projection = ReadHeaderProjection(header.EncodedBytes, _limits);
             ValidateRecord(

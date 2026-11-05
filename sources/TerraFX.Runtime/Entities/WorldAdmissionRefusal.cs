@@ -8,4 +8,6 @@ internal enum WorldAdmissionRefusal
     DomainClosed = 1,
     LineageAlreadyRetained = 2,
     LineageCapacity = 3,
+    LineageHistoryNotRetained = 4,
+    OperationCapacity = 5,
 }

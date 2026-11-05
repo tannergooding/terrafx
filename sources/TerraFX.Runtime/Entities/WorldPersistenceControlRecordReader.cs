@@ -30,6 +30,7 @@ internal static class WorldPersistenceControlRecordReader
     private static readonly Guid s_frame3SchemaId = new ContentSchemaIdentityAssignment("foundation/frame3").SchemaId;
     private static readonly Guid s_identityHistorySchemaId = new ContentSchemaIdentityAssignment("state/identity-history").SchemaId;
     private static readonly Guid s_profileSchemaId = new ContentSchemaIdentityAssignment("foundation/profile").SchemaId;
+    private static readonly Guid s_sceneControlSchemaId = new ContentSchemaIdentityAssignment("state/control-scene").SchemaId;
     private static readonly Guid s_stepSchemaId = new ContentSchemaIdentityAssignment("state/control-step").SchemaId;
     private static readonly Guid s_timeScaleSchemaId = new ContentSchemaIdentityAssignment("state/control-timescale").SchemaId;
 
@@ -214,6 +215,15 @@ internal static class WorldPersistenceControlRecordReader
                     lineageId,
                     appliedAtNextTick,
                     parameterName);
+            }
+            else if (payload.Header.SchemaId == s_sceneControlSchemaId)
+            {
+                if ((payload.Header.Major != 1)
+                    || (payload.Header.Minor != 0)
+                    || (payload.FieldCount is < 3 or > 6))
+                {
+                    throw new ArgumentException("A state/control-scene payload has the wrong schema version or field count.", parameterName);
+                }
             }
             else
             {

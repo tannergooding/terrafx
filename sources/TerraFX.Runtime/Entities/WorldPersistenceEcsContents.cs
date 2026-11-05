@@ -19,7 +19,8 @@ internal sealed class WorldPersistenceEcsContents
         Guid issuanceNamespace,
         long nextAssignmentOrdinal,
         int identityBranchCount,
-        int identityPageCount)
+        int identityPageCount,
+        WorldPersistenceIdentityHistoryReader.ValidatedLineageMembership? lineageMembership)
     {
         EntityCount = entityCount;
         SystemCount = systemCount;
@@ -34,6 +35,7 @@ internal sealed class WorldPersistenceEcsContents
         NextAssignmentOrdinal = nextAssignmentOrdinal;
         IdentityBranchCount = identityBranchCount;
         IdentityPageCount = identityPageCount;
+        LineageMembership = lineageMembership;
     }
 
     internal Guid ActiveBranchId { get; }
@@ -47,6 +49,10 @@ internal sealed class WorldPersistenceEcsContents
     internal int IdentityPageCount { get; }
 
     internal Guid IssuanceNamespace { get; }
+
+    internal WorldPersistenceIdentityHistoryReader.ValidatedLineageMembership? LineageMembership { get; }
+
+    internal int LineageMembershipCount => LineageMembership?.Count ?? 0;
 
     internal int LiveEntityCount { get; }
 
