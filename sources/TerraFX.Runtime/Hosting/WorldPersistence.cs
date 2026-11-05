@@ -7,6 +7,7 @@ using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX;
@@ -22,6 +23,7 @@ public sealed class WorldPersistence : IAsyncDisposable
     private const int FileStreamBufferBytes = 65_536;
     private const int FixedArrayHeaderBytes = 32;
     private const ushort FixedArrayKind = 23;
+    private const int MaximumAssetValidationReadBufferBytes = 65_537;
     private const int MaximumQueuedSavesPerPath = 8;
     private const ushort UInt32Kind = 3;
     private static readonly ConcurrentDictionary<string, SavePathState> s_savePaths = new(
@@ -147,6 +149,8 @@ public sealed class WorldPersistence : IAsyncDisposable
         int worldRecordBytes,
         int foundationProfileBytes,
         long maximumSnapshotBytes,
+        long assetReferenceBytes,
+        long maximumDecodedAssetBytes,
         EbinReadLimits limits)
     {
         var packageDigestBytes = mode is WorldPersistenceMode.StrictLocal ? 32 : 0;
@@ -236,9 +240,15 @@ public sealed class WorldPersistence : IAsyncDisposable
             + metadataProjectionBytes
             + maximumSnapshotBytes
             + FileStreamBufferBytes);
+        var assetValidationPeak = checked(
+            assetReferenceBytes
+            + maximumDecodedAssetBytes
+            + MaximumAssetValidationReadBufferBytes);
         var maximumPeak = Math.Max(
             Math.Max(profilePeak, headerPeak),
-            Math.Max(checkpointPeak, Math.Max(fileRecordPeak, existingFileReadPeak)));
+            Math.Max(
+                checkpointPeak,
+                Math.Max(fileRecordPeak, Math.Max(existingFileReadPeak, assetValidationPeak))));
         return checked(maximumPeak + 4096);
     }
 
@@ -302,6 +312,8 @@ public sealed class WorldPersistence : IAsyncDisposable
         long maximumSnapshotBytes,
         Guid worldGuid,
         byte[] checkpointRecord,
+        AssetReference[] assetReferences,
+        int assetReferenceCount,
         AssetPackageLease packageLease,
         IDisposable? saveUse,
         CancellationToken cancellationToken)
@@ -326,6 +338,20 @@ public sealed class WorldPersistence : IAsyncDisposable
             }
 
             cancellationToken.ThrowIfCancellationRequested();
+
+            for (var index = 0; index < assetReferenceCount; index++)
+            {
+                var reference = assetReferences[index];
+
+                if (!await packageLease.MatchesAssetReferenceAsync(reference, cancellationToken).ConfigureAwait(false))
+                {
+                    return CreateRejected(
+                        "save-package-asset-schema-mismatch",
+                        $"Asset {reference.AssetId} does not match its saved schema reference.",
+                        worldGuid);
+                }
+            }
+
             var directoryPath = Path.GetDirectoryName(targetPath)
                 ?? throw new InvalidOperationException("The absolute save path has no parent directory.");
             _ = Directory.CreateDirectory(directoryPath);
@@ -534,6 +560,17 @@ public sealed class WorldPersistence : IAsyncDisposable
                     world.WorldGuid));
             }
 
+            var worldView = new EbinRecordReadView(worldRecord);
+            var ecsRecord = worldView.GetRecord(5).EncodedBytes;
+            var scenesRecord = worldView.GetRecord(6).EncodedBytes;
+            var assetReferenceCount = WorldPersistenceAssetIdSetWriter.MeasureReferenceCount(
+                schemas,
+                ecsRecord,
+                scenesRecord,
+                limits);
+            var assetReferenceBytes = checked(
+                64L + ((checked((long)assetReferenceCount * Unsafe.SizeOf<AssetReference>()) + 7L) & ~7L));
+            var maximumDecodedAssetBytes = capturedPackageLease.MaximumDecodedAssetBytes;
             var retainedCaptureReservation = captureReservation
                 ?? throw new InvalidOperationException("The successful World capture did not retain its admission reservation.");
             var foundationMeasureStatus = FoundationProfileWriter.Measure(
@@ -557,6 +594,8 @@ public sealed class WorldPersistence : IAsyncDisposable
                 worldRecord.Length,
                 foundationProfileBytes,
                 world.Options.MaximumSnapshotBytes,
+                assetReferenceBytes,
+                maximumDecodedAssetBytes,
                 limits);
 
             if (!captureLease.TryReserveAdmissionBytes(workspaceBytes, out saveReservation))
@@ -577,6 +616,13 @@ public sealed class WorldPersistence : IAsyncDisposable
             retainedCaptureReservation.Dispose();
             captureReservation = null;
 
+            var assetReferences = new AssetReference[assetReferenceCount];
+            var uniqueAssetReferenceCount = WorldPersistenceAssetIdSetWriter.CopySortedUniqueAssetReferences(
+                schemas,
+                ecsRecord,
+                scenesRecord,
+                limits,
+                assetReferences);
             var packageSha256 = options.Mode is WorldPersistenceMode.StrictLocal
                 ? packageLease.PackageSha256.AsSpan()
                 : [];
@@ -628,6 +674,8 @@ public sealed class WorldPersistence : IAsyncDisposable
                 maximumSnapshotBytes,
                 capturedWorldGuid,
                 checkpointRecord,
+                assetReferences,
+                uniqueAssetReferenceCount,
                 retainedPackageLease,
                 retainedSaveUse,
                 cancellationToken));

@@ -11,8 +11,10 @@ using TerraFX;
 using TerraFX.Assets;
 using TerraFX.Entities;
 using TerraFX.Graphics;
+using TerraFX.Hosting;
 using TerraFX.Numerics;
 using TerraFX.Rendering;
+using TerraFX.Runtime.Tests.Hosting;
 using TerraFX.Scenes;
 
 namespace TerraFX.Runtime.Tests.Scenes;
@@ -75,6 +77,104 @@ internal sealed partial class SceneAssetStoreTests
             1,
             0,
             [.. fields]);
+    }
+
+    [Test]
+    [SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "Both synchronous Save waits complete before the owner-thread World and package store are disposed.")]
+    public async Task SaveValidatesPackageSchemaForLiveReferences()
+    {
+        var schemas = CreatePersistenceScanSchemas(CreateRendererRegistry());
+        var frameId = Guid.NewGuid();
+        var atlasRecord = CreateRenderAtlasRecord(
+            1,
+            CreateRenderAtlasFrameRecord(frameId, page: 0, x: 4, y: 4, width: 4, height: 4));
+        var packageBytes = Package.CreatePackage(
+            new Package.Entry(2, Package.CreateEnvelope(2, atlasRecord)));
+        var packagePath = Package.WritePackage(packageBytes);
+        var validSavePath = Path.Combine(Path.GetTempPath(), $"terrafx-{Guid.NewGuid():N}.asset-schema-valid.state");
+        var mismatchSavePath = Path.Combine(Path.GetTempPath(), $"terrafx-{Guid.NewGuid():N}.asset-schema-mismatch.state");
+        var assetRegistrationBuilder = new AssetStoreRegistrationBuilder(schemas);
+        _ = Renderer.RegisterAssetCodecs(assetRegistrationBuilder);
+        var assets = await AssetStore.CreateAsync(new AssetStoreOptions(
+            packagePath,
+            SHA256.HashData(packageBytes),
+            assetRegistrationBuilder.Build())).ConfigureAwait(false);
+
+        try
+        {
+            var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
+            _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+            _ = worldRegistrationBuilder.RegisterCpuExtractionSupport(Renderer.CreateCpuExtractionSupportRegistration());
+            using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()) {
+                CpuWorkerCount = 0,
+                InitialReplayLineageId = Guid.NewGuid(),
+                WorldGuid = Guid.NewGuid(),
+            });
+            var sprite = new RenderComponentDefinitions.SpriteComponent(
+                atlasAssetId: 2,
+                frameId,
+                new Vector2(0.5f, 0.5f),
+                Vector2.One,
+                Vector4.One,
+                flipMask: 0,
+                sortingLayer: 0,
+                sortingOrder: 0,
+                materialAssetId: default,
+                pixelSnap: false);
+            var entity = world.CreateEntity(new EntityDescription(
+                components: [ComponentInitialization.Value(in sprite)]));
+            _ = world.Step();
+
+            var persistence = new WorldPersistence(assets, WorldPersistenceHeaderWriterTests.CreateMetadata());
+            await using (persistence.ConfigureAwait(false))
+            {
+                var validReceipt = persistence.SaveAsync(
+                    world,
+                    new SaveOptions(validSavePath, SaveDurabilityPolicy.BestEffort)).GetAwaiter().GetResult();
+
+                Assert.That(validReceipt.Status, Is.AnyOf(SaveStatus.DurableCommitted, SaveStatus.BestEffortCommitted));
+                Assert.That(File.Exists(validSavePath), Is.True);
+
+                var spriteWithMismatchedMaterial = new RenderComponentDefinitions.SpriteComponent(
+                    atlasAssetId: 2,
+                    frameId,
+                    new Vector2(0.5f, 0.5f),
+                    Vector2.One,
+                    Vector4.One,
+                    flipMask: 0,
+                    sortingLayer: 0,
+                    sortingOrder: 0,
+                    materialAssetId: new RenderComponentDefinitions.OptionalAssetId(2),
+                    pixelSnap: false);
+                world.Set(entity, spriteWithMismatchedMaterial);
+                _ = world.Step();
+                var mismatchReceipt = persistence.SaveAsync(
+                    world,
+                    new SaveOptions(mismatchSavePath, SaveDurabilityPolicy.BestEffort)).GetAwaiter().GetResult();
+
+                Assert.That(mismatchReceipt.Status, Is.EqualTo(SaveStatus.Rejected));
+                Assert.That(mismatchReceipt.Diagnostic?.Code, Is.EqualTo("save-package-asset-schema-mismatch"));
+                Assert.That(File.Exists(mismatchSavePath), Is.False);
+            }
+        }
+        finally
+        {
+            await assets.DisposeAsync().ConfigureAwait(false);
+            File.Delete(packagePath);
+
+            if (File.Exists(validSavePath))
+            {
+                File.Delete(validSavePath);
+            }
+
+            if (File.Exists(mismatchSavePath))
+            {
+                File.Delete(mismatchSavePath);
+            }
+        }
     }
 
     [Test]

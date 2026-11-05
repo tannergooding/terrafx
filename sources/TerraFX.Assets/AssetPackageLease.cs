@@ -2,7 +2,9 @@
 
 using System;
 using System.Collections.Immutable;
+using System.IO;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace TerraFX.Assets;
 
@@ -27,6 +29,16 @@ public sealed class AssetPackageLease : IDisposable
             var state = Volatile.Read(ref _state);
             ObjectDisposedException.ThrowIf(state is null, this);
             return state.Backing.Options.ExpectedPackageSha256;
+        }
+    }
+
+    internal int MaximumDecodedAssetBytes
+    {
+        get
+        {
+            var state = Volatile.Read(ref _state);
+            ObjectDisposedException.ThrowIf(state is null, this);
+            return state.Backing.Options.MaximumDecodedAssetBytes;
         }
     }
 
@@ -70,6 +82,56 @@ public sealed class AssetPackageLease : IDisposable
         var state = Volatile.Read(ref _state);
         ObjectDisposedException.ThrowIf(state is null, this);
         return state.Backing.TryGetEntry(assetId, out _);
+    }
+
+    internal async Task<bool> MatchesAssetReferenceAsync(
+        AssetReference reference,
+        CancellationToken cancellationToken)
+    {
+        if (!reference.AssetId.IsValid)
+        {
+            throw new ArgumentOutOfRangeException(nameof(reference));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfEqual(reference.SchemaId, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(reference.SchemaMajor);
+        cancellationToken.ThrowIfCancellationRequested();
+        var state = Volatile.Read(ref _state);
+        ObjectDisposedException.ThrowIf(state is null, this);
+        var backing = state.Backing;
+
+        ObjectDisposedException.ThrowIf(!backing.TryAcquireReference(), this);
+
+        try
+        {
+            if (!backing.TryGetEntry(reference.AssetId, out var entry))
+            {
+                return false;
+            }
+
+            var encodedEnvelope = await AssetPayloadReader.ReadAsync(backing, entry, cancellationToken).ConfigureAwait(false);
+            var status = AssetEnvelopeDecoder.Inspect(
+                encodedEnvelope,
+                reference.AssetId,
+                backing.Registration.Schemas,
+                backing.ReadLimits,
+                out var actualSchema,
+                out var diagnostic);
+
+            if (status is not BinaryRecordStatus.Complete)
+            {
+                throw new InvalidDataException(
+                    $"Asset {reference.AssetId} could not be inspected: {diagnostic ?? status.ToString()}.");
+            }
+
+            return (actualSchema.SchemaId == reference.SchemaId)
+                && (actualSchema.Major == reference.SchemaMajor)
+                && backing.Registration.TryGetCodec(actualSchema, out _);
+        }
+        finally
+        {
+            backing.ReleaseReference();
+        }
     }
 
     private sealed class LeaseState(AssetStore store, AssetPackageBacking backing)

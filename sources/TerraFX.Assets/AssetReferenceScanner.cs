@@ -30,7 +30,39 @@ internal static class AssetReferenceScanner
         }
 
         var copiedCount = 0;
-        VisitRecord(record, schema, schemas, null, null, destination, true, ref copiedCount, 0);
+        VisitRecord(record, schema, schemas, null, null, destination, true, [], false, ref copiedCount, 0);
+        return copiedCount;
+    }
+
+    internal static int CopyAssetReferences(
+        scoped EbinRecordReadView record,
+        DataSchema schema,
+        CompiledContentSchemaRegistry schemas,
+        scoped Span<AssetReference> destination)
+    {
+        ArgumentNullException.ThrowIfNull(schema);
+        ArgumentNullException.ThrowIfNull(schemas);
+
+        if (MemoryMarshal.AsBytes(destination).Overlaps(record.EncodedBytes))
+        {
+            throw new ArgumentException("The AssetReference destination must not overlap the encoded record.", nameof(destination));
+        }
+
+        var measuredCount = CountAssetIds(record, schema, schemas);
+
+        if (destination.Length != measuredCount)
+        {
+            throw new ArgumentException("The AssetReference destination must match the exact reference count.", nameof(destination));
+        }
+
+        var copiedCount = 0;
+        VisitRecord(record, schema, schemas, null, null, [], false, destination, true, ref copiedCount, 0);
+
+        if (copiedCount != measuredCount)
+        {
+            throw new InvalidOperationException("The AssetReference references changed during capture.");
+        }
+
         return copiedCount;
     }
 
@@ -42,7 +74,7 @@ internal static class AssetReferenceScanner
         ArgumentNullException.ThrowIfNull(schema);
         ArgumentNullException.ThrowIfNull(schemas);
         var referenceCount = 0;
-        VisitRecord(record, schema, schemas, null, null, [], false, ref referenceCount, 0);
+        VisitRecord(record, schema, schemas, null, null, [], false, [], false, ref referenceCount, 0);
         return referenceCount;
     }
 
@@ -56,7 +88,7 @@ internal static class AssetReferenceScanner
         var references = new List<AssetReference>();
         var seen = new HashSet<AssetReference>();
         var referenceCount = 0;
-        VisitRecord(record, schema, schemas, references, seen, [], false, ref referenceCount, 0);
+        VisitRecord(record, schema, schemas, references, seen, [], false, [], false, ref referenceCount, 0);
         return [.. references];
     }
 
@@ -66,6 +98,8 @@ internal static class AssetReferenceScanner
         HashSet<AssetReference>? seen,
         scoped Span<uint> destination,
         bool copyAssetIds,
+        scoped Span<AssetReference> referenceDestination,
+        bool copyAssetReferences,
         ref int referenceCount)
     {
         if (references is not null)
@@ -94,6 +128,16 @@ internal static class AssetReferenceScanner
             }
 
             destination[referenceCount] = checked((uint)reference.AssetId.Value);
+        }
+
+        if (copyAssetReferences)
+        {
+            if (referenceCount >= referenceDestination.Length)
+            {
+                throw new InvalidOperationException("The AssetReference destination is smaller than the measured reference count.");
+            }
+
+            referenceDestination[referenceCount] = reference;
         }
 
         if (references is not null)
@@ -166,6 +210,8 @@ internal static class AssetReferenceScanner
         HashSet<AssetReference>? seen,
         scoped Span<uint> destination,
         bool copyAssetIds,
+        scoped Span<AssetReference> referenceDestination,
+        bool copyAssetReferences,
         ref int referenceCount,
         int depth)
     {
@@ -222,6 +268,8 @@ internal static class AssetReferenceScanner
             seen,
             destination,
             copyAssetIds,
+            referenceDestination,
+            copyAssetReferences,
             ref referenceCount,
             depth + 1);
     }
@@ -234,6 +282,8 @@ internal static class AssetReferenceScanner
         HashSet<AssetReference>? seen,
         scoped Span<uint> destination,
         bool copyAssetIds,
+        scoped Span<AssetReference> referenceDestination,
+        bool copyAssetReferences,
         ref int referenceCount,
         int depth)
     {
@@ -259,6 +309,8 @@ internal static class AssetReferenceScanner
                 seen,
                 destination,
                 copyAssetIds,
+                referenceDestination,
+                copyAssetReferences,
                 ref referenceCount);
             return;
         }
@@ -304,6 +356,8 @@ internal static class AssetReferenceScanner
                     seen,
                     destination,
                     copyAssetIds,
+                    referenceDestination,
+                    copyAssetReferences,
                     ref referenceCount,
                     depth);
             }
@@ -321,6 +375,8 @@ internal static class AssetReferenceScanner
                         seen,
                         destination,
                         copyAssetIds,
+                        referenceDestination,
+                        copyAssetReferences,
                         ref referenceCount,
                         depth);
                 }
