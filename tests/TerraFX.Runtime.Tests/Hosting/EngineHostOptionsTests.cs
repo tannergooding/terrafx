@@ -1671,14 +1671,17 @@ internal sealed partial class EngineHostOptionsTests
                 initialMetrics = owner.Platform.GetMetrics(window);
 
                 var binding = owner.GetNativeWindowBinding(window);
+                var initialClientPixels = initialMetrics.ClientPixelSize;
+                var requestedOuterWidth = checked(initialClientPixels.Width + 256);
+                var requestedOuterHeight = checked(initialClientPixels.Height + 256);
 
                 if (!WindowsTestNativeMethods.SetWindowPos(
                     binding.NativeWindowOrSurface,
                     insertAfter: 0,
                     x: 0,
                     y: 0,
-                    width: 900,
-                    height: 700,
+                    width: requestedOuterWidth,
+                    height: requestedOuterHeight,
                     flags: WindowsTestNativeMethods.WindowPositionNoMove
                         | WindowsTestNativeMethods.WindowPositionNoZOrder
                         | WindowsTestNativeMethods.WindowPositionNoActivate))
