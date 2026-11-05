@@ -113,6 +113,63 @@ internal sealed class WorldAdmissionDomainTests
     }
 
     [Test]
+    public void FreshHistoryMembershipSharesRetainedLineageKeysWithIndexGrowth()
+    {
+        using var domain = new WorldAdmissionDomain(8 * 1024 * 1024);
+        var currentLineageId = Guid.NewGuid();
+        var membership = new Guid[20];
+
+        for (var index = 0; index < membership.Length - 1; index++)
+        {
+            membership[index] = Guid.NewGuid();
+        }
+
+        membership[^1] = currentLineageId;
+        Array.Sort(membership);
+
+        Assert.That(domain.TryReserveWorld(4096, 4096, out var reservation), Is.True);
+        using var world = reservation!;
+        Assert.That(
+            domain.TryReserveFreshLineageHistory(
+                world,
+                Guid.NewGuid(),
+                currentLineageId,
+                Guid.NewGuid(),
+                membership,
+                out var grant,
+                out _),
+            Is.True);
+        Assert.That(domain.TryCommitFreshLineage(grant), Is.True);
+
+        Assert.That(domain.TryReserveWorld(4096, out var duplicateReservation), Is.True);
+        using var duplicateWorld = duplicateReservation!;
+        Assert.That(
+            domain.TryReserveFreshLineage(
+                duplicateWorld,
+                Guid.NewGuid(),
+                membership[0],
+                Guid.NewGuid(),
+                out var duplicateGrant,
+                out var duplicateRefusal),
+            Is.False);
+        Assert.That(duplicateGrant.IsValid, Is.False);
+        Assert.That(duplicateRefusal, Is.EqualTo(WorldAdmissionRefusal.LineageAlreadyRetained));
+
+        Assert.That(domain.TryRollbackFreshLineage(grant), Is.True);
+        Assert.That(
+            domain.TryReserveFreshLineage(
+                duplicateWorld,
+                Guid.NewGuid(),
+                membership[0],
+                Guid.NewGuid(),
+                out var replacementGrant,
+                out _),
+            Is.True);
+        Assert.That(domain.TryCommitFreshLineage(replacementGrant), Is.True);
+        Assert.That(domain.TryRollbackFreshLineage(replacementGrant), Is.True);
+    }
+
+    [Test]
     public void FreshLineageReservationRejectsDuplicatesAndRetainsCommittedHistory()
     {
         var domain = new WorldAdmissionDomain(8 * 1024 * 1024);

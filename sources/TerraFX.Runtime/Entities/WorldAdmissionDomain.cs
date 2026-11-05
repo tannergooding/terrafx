@@ -43,6 +43,8 @@ public sealed class WorldAdmissionDomain : IDisposable
     private LineageEntry[] _lineages;
     private readonly long _maximumBytes;
     private long _pendingGrowthBytes;
+    private int _pendingLineageMembershipEdgeCount;
+    private int _pendingLineageMembershipKeyCount;
     private long _registryCharge;
     private ReservationEntry[] _reservations;
     private readonly TaskCompletionSource _retirement;
@@ -528,6 +530,19 @@ public sealed class WorldAdmissionDomain : IDisposable
             return false;
         }
 
+        if (!EnsureLineageIndexCapacity(FreshRootLineageKeyCount))
+        {
+            using (ReentrantGate.EnterScope(ref _gate))
+            {
+                refusal = _isDisposed
+                    ? WorldAdmissionRefusal.DomainClosed
+                    : WorldAdmissionRefusal.LineageCapacity;
+            }
+
+            grant = default;
+            return false;
+        }
+
         using (ReentrantGate.EnterScope(ref _gate))
         {
             if (_isDisposed)
@@ -550,7 +565,7 @@ public sealed class WorldAdmissionDomain : IDisposable
             }
 
             if ((_activeReservationCount >= MaximumReservations)
-                || (_lineageEdgeCount >= MaximumEdges)
+                || (_lineageEdgeCount >= MaximumEdges - _pendingLineageMembershipEdgeCount)
                 || (_lineageKeyCount >= Math.Min(MaximumLineageKeys, _lineageIndex.Length / 2)))
             {
                 grant = default;
@@ -702,6 +717,19 @@ public sealed class WorldAdmissionDomain : IDisposable
             return false;
         }
 
+        if (!EnsureLineageIndexCapacity(membershipKeys.Length))
+        {
+            using (ReentrantGate.EnterScope(ref _gate))
+            {
+                refusal = _isDisposed
+                    ? WorldAdmissionRefusal.DomainClosed
+                    : WorldAdmissionRefusal.LineageCapacity;
+            }
+
+            grant = default;
+            return false;
+        }
+
         if (!TryReserveLineageMembershipCharge(membershipBytes, out var domainClosed))
         {
             grant = default;
@@ -752,6 +780,10 @@ public sealed class WorldAdmissionDomain : IDisposable
 
                 entry.MembershipKeys = ownedMembershipKeys;
                 entry.MembershipBytes = membershipBytes;
+                entry.PendingMembershipEdgeCount = ownedMembershipKeys.Length - 1;
+                entry.PendingMembershipKeyCount = ownedMembershipKeys.Length - 1;
+                _pendingLineageMembershipEdgeCount = checked(_pendingLineageMembershipEdgeCount + entry.PendingMembershipEdgeCount);
+                _pendingLineageMembershipKeyCount = checked(_pendingLineageMembershipKeyCount + entry.PendingMembershipKeyCount);
                 _lineageMembershipBytes = checked(_lineageMembershipBytes + membershipBytes);
                 _registryCharge = checked(_registryCharge + membershipBytes);
                 _pendingGrowthBytes = checked(_pendingGrowthBytes - membershipBytes);
@@ -929,11 +961,15 @@ public sealed class WorldAdmissionDomain : IDisposable
 
     private void ClearLineageRoot(ref LineageEntry entry, int keyOffset)
     {
+        _pendingLineageMembershipEdgeCount = checked(_pendingLineageMembershipEdgeCount - entry.PendingMembershipEdgeCount);
+        _pendingLineageMembershipKeyCount = checked(_pendingLineageMembershipKeyCount - entry.PendingMembershipKeyCount);
         _lineageKeys[keyOffset] = Guid.Empty;
         entry.WorldGuid = Guid.Empty;
         entry.IdentityBranchId = Guid.Empty;
         entry.MembershipKeys = null;
         entry.MembershipBytes = 0;
+        entry.PendingMembershipEdgeCount = 0;
+        entry.PendingMembershipKeyCount = 0;
         entry.State = (entry.Generation == uint.MaxValue) ? StateRetired : StateFree;
 
         if (entry.State == StateFree)
@@ -982,6 +1018,89 @@ public sealed class WorldAdmissionDomain : IDisposable
         }
 
         return GrowRegistryForOneRoot(0);
+    }
+
+    private bool EnsureLineageIndexCapacity(int additionalKeyCapacity)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(additionalKeyCapacity);
+
+        using var growthScope = ReentrantGate.EnterScope(ref _growthGate);
+
+        LineageIndexBucket[] oldIndex;
+        int newCapacity;
+        long newArrayCharge;
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if (_isDisposed)
+            {
+                return false;
+            }
+
+            var requiredKeyCapacity = checked(_lineageKeyCount + _pendingLineageMembershipKeyCount + additionalKeyCapacity);
+
+            if (requiredKeyCapacity > MaximumLineageKeys)
+            {
+                return false;
+            }
+
+            var requiredIndexCapacity = Math.Max(MinimumLineageIndexCapacity, checked(requiredKeyCapacity * 2));
+            newCapacity = Math.Max(MinimumLineageIndexCapacity, _lineageIndex.Length);
+
+            while ((newCapacity < requiredIndexCapacity) && (newCapacity < MaximumLineageIndexCapacity))
+            {
+                newCapacity = checked(newCapacity * 2);
+            }
+
+            if ((newCapacity < requiredIndexCapacity) || (newCapacity > MaximumLineageIndexCapacity))
+            {
+                return false;
+            }
+
+            if (newCapacity == _lineageIndex.Length)
+            {
+                return true;
+            }
+
+            newArrayCharge = ArrayCharge(newCapacity, Unsafe.SizeOf<LineageIndexBucket>());
+            var registryBudget = Math.Min(MaximumRegistryBytes, _maximumBytes);
+            var newRegistryCharge = checked(GetRegistryCharge(_lineages.Length, newCapacity) + _lineageMembershipBytes);
+            var peakRegistryCharge = checked(_registryCharge + _pendingGrowthBytes + newArrayCharge);
+
+            if ((newRegistryCharge > registryBudget)
+                || (peakRegistryCharge > registryBudget)
+                || (checked(peakRegistryCharge + _worldBytes) > _maximumBytes))
+            {
+                return false;
+            }
+
+            _pendingGrowthBytes = checked(_pendingGrowthBytes + newArrayCharge);
+            oldIndex = _lineageIndex;
+        }
+
+        try
+        {
+            var newIndex = new LineageIndexBucket[newCapacity];
+            RehashLineageIndex(oldIndex, newIndex);
+
+            using (ReentrantGate.EnterScope(ref _gate))
+            {
+                _lineageIndex = newIndex;
+                _registryCharge = checked(GetRegistryCharge(_lineages.Length, newCapacity) + _lineageMembershipBytes);
+                _pendingGrowthBytes = checked(_pendingGrowthBytes - newArrayCharge);
+            }
+        }
+        catch
+        {
+            using (ReentrantGate.EnterScope(ref _gate))
+            {
+                _pendingGrowthBytes = checked(_pendingGrowthBytes - newArrayCharge);
+            }
+
+            throw;
+        }
+
+        return true;
     }
 
     private int FindLineageIndexBucket(Guid lineageId)
@@ -1136,6 +1255,8 @@ public sealed class WorldAdmissionDomain : IDisposable
         _lineageEdgeCount = 0;
         _lineageKeyCount = 0;
         _lineageMembershipBytes = 0;
+        _pendingLineageMembershipEdgeCount = 0;
+        _pendingLineageMembershipKeyCount = 0;
         _pendingGrowthBytes = 0;
         _registryCharge = 0;
     }
@@ -1270,11 +1391,14 @@ public sealed class WorldAdmissionDomain : IDisposable
         scoped ReadOnlySpan<Guid> membershipKeys,
         int reservedBucketIndex)
     {
+        ref var entry = ref _lineages[grant.Index];
         var currentBucket = _lineageIndex[reservedBucketIndex];
 
         if ((currentBucket._lineageId != grant.LineageId)
             || (currentBucket._reservedRootIndexPlusOne != grant.Index + 1)
-            || (currentBucket._reservedGeneration != grant.Generation))
+            || (currentBucket._reservedGeneration != grant.Generation)
+            || (entry.PendingMembershipEdgeCount != membershipKeys.Length - 1)
+            || (entry.PendingMembershipKeyCount != membershipKeys.Length - 1))
         {
             return false;
         }
@@ -1305,9 +1429,13 @@ public sealed class WorldAdmissionDomain : IDisposable
         }
 
         var maximumKeys = Math.Min(MaximumLineageKeys, _lineageIndex.Length / 2);
+        var pendingEdgesAfterCommit = _pendingLineageMembershipEdgeCount - entry.PendingMembershipEdgeCount;
+        var pendingKeysAfterCommit = _pendingLineageMembershipKeyCount - entry.PendingMembershipKeyCount;
 
-        if ((_lineageEdgeCount > MaximumEdges - (membershipKeys.Length - 1))
-            || (_lineageKeyCount > maximumKeys - newKeyCount))
+        if ((pendingEdgesAfterCommit < 0)
+            || (pendingKeysAfterCommit < 0)
+            || (_lineageEdgeCount > MaximumEdges - pendingEdgesAfterCommit - entry.PendingMembershipEdgeCount)
+            || (_lineageKeyCount > maximumKeys - pendingKeysAfterCommit - newKeyCount))
         {
             return false;
         }
@@ -1355,6 +1483,10 @@ public sealed class WorldAdmissionDomain : IDisposable
         ref var updatedCurrentBucket = ref _lineageIndex[updatedCurrentBucketIndex];
         updatedCurrentBucket._reservedRootIndexPlusOne = 0;
         updatedCurrentBucket._reservedGeneration = 0;
+        _pendingLineageMembershipEdgeCount = pendingEdgesAfterCommit;
+        _pendingLineageMembershipKeyCount = pendingKeysAfterCommit;
+        entry.PendingMembershipEdgeCount = 0;
+        entry.PendingMembershipKeyCount = 0;
         return true;
     }
 
@@ -1409,6 +1541,10 @@ public sealed class WorldAdmissionDomain : IDisposable
         internal Guid[]? MembershipKeys;
 
         internal long MembershipBytes;
+
+        internal int PendingMembershipEdgeCount;
+
+        internal int PendingMembershipKeyCount;
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 64)]
