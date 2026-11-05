@@ -403,6 +403,33 @@ internal sealed class WorldGuidRegistry
         return true;
     }
 
+    internal bool TryPrepareReplacement(
+        in WorldGuidGrant current,
+        out WorldGuidReplacementPreparation? preparation,
+        out WorldGuidRefusal refusal)
+    {
+        if (!TryReserveReplacement(current, out var replacementGrant, out refusal))
+        {
+            preparation = null;
+            return false;
+        }
+
+        try
+        {
+            preparation = new WorldGuidReplacementPreparation(this, current, replacementGrant);
+            return true;
+        }
+        catch (OutOfMemoryException exception)
+        {
+            if (!TryReleaseFresh(replacementGrant))
+            {
+                throw new InvalidOperationException("The unwrapped WorldGuid successor grant could not be released.", exception);
+            }
+
+            throw;
+        }
+    }
+
     internal bool TryReleaseFresh(in WorldGuidGrant grant)
     {
         if (!grant.IsOwnedBy(this))

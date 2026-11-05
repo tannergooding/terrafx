@@ -222,6 +222,35 @@ internal sealed class WorldGuidRegistryTests
     }
 
     [Test]
+    public void ReplacementPreparationClosesOnDisposeAndTransfersItsGrantOnce()
+    {
+        var registry = WorldGuidRegistry.GetSelected();
+        var worldGuid = Guid.NewGuid();
+
+        Assert.That(registry.TryReserveFresh(worldGuid, out var current, out _), Is.True);
+        Assert.That(registry.TryCommitFresh(current), Is.True);
+        Assert.That(registry.TryPrepareReplacement(current, out var canceledPreparation, out _), Is.True);
+        using var canceled = canceledPreparation!;
+        canceled.Dispose();
+        Assert.That(canceled.TryCommit(out _), Is.False);
+
+        Assert.That(
+            registry.TryReserveFresh(worldGuid, out var duplicateGrant, out var duplicateRefusal),
+            Is.False);
+        Assert.That(duplicateGrant.IsValid, Is.False);
+        Assert.That(duplicateRefusal.Code, Is.EqualTo(WorldGuidRefusal.GuidAlreadyRetained));
+
+        Assert.That(registry.TryPrepareReplacement(current, out var preparation, out _), Is.True);
+        using var committed = preparation!;
+        Assert.That(committed.TryCommit(out var replacement), Is.True);
+        Assert.That(committed.TryCommit(out var repeatedReplacement), Is.False);
+        Assert.That(repeatedReplacement.IsValid, Is.False);
+        committed.Dispose();
+        Assert.That(registry.TryReleaseFresh(current), Is.True);
+        Assert.That(registry.TryReleaseFresh(replacement), Is.True);
+    }
+
+    [Test]
     public void ReplacementReservationCannotOutliveItsCurrentBinding()
     {
         var registry = WorldGuidRegistry.GetSelected();
