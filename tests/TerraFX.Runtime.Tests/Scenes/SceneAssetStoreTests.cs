@@ -1641,7 +1641,7 @@ internal sealed partial class SceneAssetStoreTests
     public async Task SceneLoaderActivatesAtTheWorldOwnerControlBoundary()
     {
         const int sceneAssetIdValue = 3;
-        var schemas = SceneAssetReaderTests.Fixtures.CreateRegistry();
+        var schemas = CreateRendererRegistry();
         var scene = SceneAssetReaderTests.Fixtures.CreateScene(new AssetId(sceneAssetIdValue));
         var package = Package.CreatePackage(new Package.Entry(
             sceneAssetIdValue,
@@ -1658,7 +1658,8 @@ internal sealed partial class SceneAssetStoreTests
             {
                 var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
                 _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
-                using var world = World.Create(new WorldOptions(worldRegistrationBuilder.Build()));
+                var worldRegistration = worldRegistrationBuilder.Build();
+                using var world = World.Create(new WorldOptions(worldRegistration));
                 var loader = new SceneLoader(world, assets);
                 var initialWorldBytes = world.GetWorldOwnedStateBytes();
                 using var prepared = loader
@@ -1698,6 +1699,58 @@ internal sealed partial class SceneAssetStoreTests
                 Assert.That(world.TryGet<SceneComponentDefinitions.RootPositionComponent>(entity, out _), Is.True);
                 Assert.That(sceneOrdinal, Is.EqualTo(1));
                 Assert.That(entityOrdinal, Is.EqualTo(2));
+
+                var scanSchemas = CreatePersistenceScanSchemas(schemas);
+                _ = world.Step();
+
+                static ReadOnlySpan<byte> GetFieldPayload(ReadOnlySpan<byte> record, uint tag)
+                {
+                    var fieldCount = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(record[12..]));
+
+                    for (var fieldIndex = 0; fieldIndex < fieldCount; fieldIndex++)
+                    {
+                        var entry = record.Slice(64 + (fieldIndex * 32), 32);
+
+                        if (BinaryPrimitives.ReadUInt32LittleEndian(entry) == tag)
+                        {
+                            var offset = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(entry[8..]));
+                            var length = checked((int)BinaryPrimitives.ReadUInt64LittleEndian(entry[16..]));
+                            return record.Slice(offset, length);
+                        }
+                    }
+
+                    throw new AssertionException($"Record field {tag} is absent.");
+                }
+
+                using (var captureLease = world.AcquirePersistenceCaptureLease())
+                {
+                    var worldRecord = WorldPersistenceWorldRecordWriterTests.ComposeWorldRecord(
+                        world,
+                        in captureLease,
+                        scanSchemas,
+                        [sceneAssetIdValue]);
+                    var limits = WorldPersistenceEbinLimits.Create(world.Options);
+                    var worldBytes = worldRecord.AsSpan();
+                    var ecsRecord = GetFieldPayload(worldBytes, 5);
+                    var scenesRecord = GetFieldPayload(worldBytes, 6);
+                    var assetIdScratch = new uint[WorldPersistenceAssetIdSetWriter.MeasureReferenceCount(
+                        scanSchemas,
+                        ecsRecord,
+                        scenesRecord,
+                        limits)];
+                    var identityScratch = new WorldPersistenceIdentityScratchEntry[
+                        WorldPersistenceWorldRecordReader.MeasureIdentityAssignmentCount(worldRecord, limits)];
+                    var persisted = WorldPersistenceWorldRecordReader.Read(
+                        worldRecord,
+                        limits,
+                        worldRegistration,
+                        scanSchemas,
+                        assetIdScratch,
+                        identityScratch);
+
+                    Assert.That(persisted.Scenes.InstanceCount, Is.EqualTo(1));
+                    Assert.That(persisted.Ecs.LiveSceneInstanceCount, Is.EqualTo(1));
+                }
 
                 var activeWorldBytes = world.GetWorldOwnedStateBytes();
                 var unload = instance.UnloadAsync(HierarchyDestroyMode.DestroySubtree);
