@@ -54,6 +54,55 @@ internal static class WorldPersistenceIdentityHistoryReader
         return checked((int)(nextAssignmentOrdinal - 1));
     }
 
+    internal static int MeasureLineageMembershipScratchCapacity(
+        scoped ReadOnlySpan<byte> historyRecord,
+        EbinReadLimits limits,
+        WorldPersistenceConfiguration configuration,
+        string parameterName)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+        ArgumentNullException.ThrowIfNull(configuration);
+        return MeasureLineageMembershipScratchCapacity(
+            historyRecord,
+            limits,
+            configuration.MaximumIdentityAssignments,
+            configuration.MaximumIdentityBranches,
+            parameterName);
+    }
+
+    internal static int MeasureLineageMembershipScratchCapacity(
+        scoped ReadOnlySpan<byte> historyRecord,
+        EbinReadLimits limits,
+        int maximumIdentityAssignments,
+        int maximumIdentityBranches,
+        string parameterName)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+        ArgumentNullException.ThrowIfNull(parameterName);
+        var status = EbinStructuralReader.Validate(
+            historyRecord,
+            limits,
+            EbinReadPolicy.Canonical,
+            out var bytesConsumed,
+            out _);
+
+        if ((status is not EbinReadStatus.Complete) || (bytesConsumed != historyRecord.Length))
+        {
+            throw new ArgumentException("The state/identity-history record is not a complete canonical EBIN record.", parameterName);
+        }
+
+        var record = new EbinRecordReadView(historyRecord);
+        _ = MeasureAssignmentCount(record, maximumIdentityAssignments, parameterName);
+        var branchCount = ReadArrayCount(
+            record,
+            6,
+            maximumIdentityBranches,
+            minimumCount: 1,
+            limits,
+            parameterName);
+        return GetLineageMembershipScratchCapacity(branchCount, limits);
+    }
+
     internal static (
         Guid worldGuid,
         Guid replayLineageId,
@@ -64,18 +113,51 @@ internal static class WorldPersistenceIdentityHistoryReader
         int pageCount,
         int liveEntityCount,
         int liveSceneInstanceCount) Read(
-            EbinRecordReadView record,
+            scoped ReadOnlySpan<byte> historyRecord,
             EbinReadLimits limits,
             WorldPersistenceConfiguration configuration,
             WorldPersistenceLiveIdentitySet liveIdentities,
             scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
             long nextTick,
             string parameterName)
+        => Read(
+            historyRecord,
+            limits,
+            configuration,
+            liveIdentities,
+            identityScratch,
+            nextTick,
+            parameterName,
+            [],
+            out _);
+
+    internal static (
+        Guid worldGuid,
+        Guid replayLineageId,
+        Guid activeBranchId,
+        Guid issuanceNamespace,
+        long nextAssignmentOrdinal,
+        int branchCount,
+        int pageCount,
+        int liveEntityCount,
+        int liveSceneInstanceCount) Read(
+            scoped ReadOnlySpan<byte> historyRecord,
+            EbinReadLimits limits,
+            WorldPersistenceConfiguration configuration,
+            WorldPersistenceLiveIdentitySet liveIdentities,
+            scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
+            long nextTick,
+            string parameterName,
+            scoped Span<Guid> lineageMembershipScratch,
+            out int lineageMembershipCount)
     {
         ArgumentNullException.ThrowIfNull(limits);
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(liveIdentities);
+        ArgumentNullException.ThrowIfNull(parameterName);
+        lineageMembershipCount = 0;
 
+        var record = new EbinRecordReadView(historyRecord);
         var worldGuid = ReadGuid(record, 1, parameterName);
         var replayLineageId = ReadGuid(record, 2, parameterName);
         var activeBranchId = ReadGuid(record, 3, parameterName);
@@ -99,6 +181,22 @@ internal static class WorldPersistenceIdentityHistoryReader
         var branchCount = ReadArrayCount(record, 6, configuration.MaximumIdentityBranches, minimumCount: 1, limits, parameterName);
         var pageCount = ReadArrayCount(record, 7, MaximumPageCount, minimumCount: 0, limits, parameterName);
 
+        if (!lineageMembershipScratch.IsEmpty)
+        {
+            var requiredCapacity = GetLineageMembershipScratchCapacity(branchCount, limits);
+
+            if (lineageMembershipScratch.Length < requiredCapacity)
+            {
+                throw new ArgumentException("The lineage-membership scratch span is smaller than its bounded capacity.", nameof(lineageMembershipScratch));
+            }
+
+            AppendLineageMembership(
+                replayLineageId,
+                lineageMembershipScratch,
+                ref lineageMembershipCount,
+                parameterName);
+        }
+
         var expectedPageCount = checked((int)((assignmentCount + MaximumAssignmentsPerPage - 1) / MaximumAssignmentsPerPage));
 
         if (pageCount != expectedPageCount)
@@ -108,6 +206,8 @@ internal static class WorldPersistenceIdentityHistoryReader
 
         Span<Guid> branchIds = stackalloc Guid[branchCount];
         Span<Guid> branchNamespaces = stackalloc Guid[branchCount];
+        Span<Guid> branchSourceNamespaces = stackalloc Guid[branchCount];
+        Span<byte> branchHasForkSource = stackalloc byte[branchCount];
         var activeBranchFound = false;
         var previousFirstOrdinal = 0L;
         var previousCreatedAtNextTick = 0L;
@@ -115,7 +215,16 @@ internal static class WorldPersistenceIdentityHistoryReader
         for (var index = 0; index < branchCount; index++)
         {
             var branch = record.GetRecordArrayElement(6, index);
-            var branchData = ReadBranch(branch, index, nextAssignmentOrdinal, nextTick, parameterName);
+            var branchData = ReadBranch(
+                branch,
+                index,
+                nextAssignmentOrdinal,
+                nextTick,
+                worldGuid,
+                limits,
+                lineageMembershipScratch,
+                ref lineageMembershipCount,
+                parameterName);
 
             if ((index > 0) && (branchData.firstAssignmentOrdinal < previousFirstOrdinal))
             {
@@ -152,6 +261,8 @@ internal static class WorldPersistenceIdentityHistoryReader
 
             branchIds[index] = branchData.branchId;
             branchNamespaces[index] = branchData.issuanceNamespace;
+            branchSourceNamespaces[index] = branchData.sourceIdentityNamespace;
+            branchHasForkSource[index] = branchData.hasForkSource ? (byte)1 : (byte)0;
             previousFirstOrdinal = branchData.firstAssignmentOrdinal;
             previousCreatedAtNextTick = branchData.createdAtNextTick;
 
@@ -182,7 +293,10 @@ internal static class WorldPersistenceIdentityHistoryReader
                 pageIndex,
                 assignmentCount,
                 branchCount,
+                worldGuid,
                 branchNamespaces,
+                branchSourceNamespaces,
+                branchHasForkSource,
                 liveIdentities,
                 identityScratch,
                 parameterName);
@@ -200,6 +314,22 @@ internal static class WorldPersistenceIdentityHistoryReader
             }
         }
 
+        if (!lineageMembershipScratch.IsEmpty)
+        {
+            lineageMembershipScratch[..lineageMembershipCount].Sort();
+            var uniqueCount = 1;
+
+            for (var index = 1; index < lineageMembershipCount; index++)
+            {
+                if (lineageMembershipScratch[index] != lineageMembershipScratch[uniqueCount - 1])
+                {
+                    lineageMembershipScratch[uniqueCount++] = lineageMembershipScratch[index];
+                }
+            }
+
+            lineageMembershipCount = uniqueCount;
+        }
+
         return (
             worldGuid,
             replayLineageId,
@@ -211,6 +341,167 @@ internal static class WorldPersistenceIdentityHistoryReader
             liveEntityCount,
             liveSceneInstanceCount);
     }
+
+    internal static (
+        Guid worldGuid,
+        Guid replayLineageId,
+        Guid activeBranchId,
+        Guid issuanceNamespace,
+        long nextAssignmentOrdinal,
+        int branchCount,
+        int pageCount,
+        int liveEntityCount,
+        int liveSceneInstanceCount) ReadAndIssueLineageMembership(
+        scoped ReadOnlySpan<byte> historyRecord,
+        EbinReadLimits limits,
+        WorldPersistenceConfiguration configuration,
+        WorldPersistenceLiveIdentitySet liveIdentities,
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
+        long nextTick,
+        string parameterName,
+        scoped Span<Guid> lineageMembershipScratch,
+        out ValidatedLineageMembership? validatedLineageMembership)
+    {
+        var contents = Read(
+            historyRecord,
+            limits,
+            configuration,
+            liveIdentities,
+            identityScratch,
+            nextTick,
+            parameterName,
+            lineageMembershipScratch,
+            out var lineageMembershipCount);
+        validatedLineageMembership = (lineageMembershipCount == 0)
+            ? null
+            : ValidatedLineageMembership.CreateValidated(
+                contents.worldGuid,
+                contents.replayLineageId,
+                contents.activeBranchId,
+                contents.issuanceNamespace,
+                lineageMembershipScratch[..lineageMembershipCount]);
+        return contents;
+    }
+
+    internal static (
+        Guid sourceWorldGuid,
+        Guid sourceBranchId,
+        Guid sourceCreationLineageId,
+        Guid sourceNamespace)
+        ReadForkSource(
+        scoped ReadOnlySpan<byte> forkSourceRecord,
+        EbinReadLimits limits,
+        string parameterName)
+    {
+        var membershipCount = 0;
+        return ReadForkSourceWithLineageMembership(
+            forkSourceRecord,
+            limits,
+            [],
+            ref membershipCount,
+            parameterName);
+    }
+
+    internal static (
+        Guid sourceWorldGuid,
+        Guid sourceBranchId,
+        Guid sourceCreationLineageId,
+        Guid sourceNamespace)
+        ReadForkSourceWithLineageMembership(
+        scoped ReadOnlySpan<byte> forkSourceRecord,
+        EbinReadLimits limits,
+        scoped Span<Guid> lineageMembershipScratch,
+        ref int lineageMembershipCount,
+        string parameterName)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+        ArgumentNullException.ThrowIfNull(parameterName);
+
+        var current = new EbinRecordReadView(forkSourceRecord);
+        var depth = 0;
+        var immediateSourceWorldGuid = Guid.Empty;
+        var immediateSourceBranchId = Guid.Empty;
+        var immediateSourceCreationLineageId = Guid.Empty;
+
+        while (true)
+        {
+            if ((depth >= limits.MaximumDepth)
+                || (current.Header.SchemaId != s_forkSourceSchemaId)
+                || (current.Header.Major != 1)
+                || (current.Header.Minor != 0))
+            {
+                throw new ArgumentException("A state/fork-source has the wrong schema identity, version, or nesting depth.", parameterName);
+            }
+
+            var sourceWorldGuid = ReadGuid(current, 1, parameterName);
+            var sourceBranchId = ReadGuid(current, 2, parameterName);
+            var sourceCreationLineageId = ReadGuid(current, 3, parameterName);
+            var sourceNamespace = ReadGuid(current, 4, parameterName);
+            ValidateDigest(current, 5, parameterName);
+            ValidateDigest(current, 6, parameterName);
+            var hasPrior = current.TryGetField(7, out var priorField);
+            var expectedFieldCount = hasPrior ? 7 : 6;
+
+            if (current.FieldCount != expectedFieldCount)
+            {
+                throw new ArgumentException("A state/fork-source has an invalid field set.", parameterName);
+            }
+
+            if (depth == 0)
+            {
+                immediateSourceWorldGuid = sourceWorldGuid;
+                immediateSourceBranchId = sourceBranchId;
+                immediateSourceCreationLineageId = sourceCreationLineageId;
+            }
+
+            AppendLineageMembership(
+                sourceCreationLineageId,
+                lineageMembershipScratch,
+                ref lineageMembershipCount,
+                parameterName);
+
+            if (!hasPrior)
+            {
+                return (
+                    immediateSourceWorldGuid,
+                    immediateSourceBranchId,
+                    immediateSourceCreationLineageId,
+                    sourceNamespace);
+            }
+
+            if ((priorField.Kind != RecordKind)
+                || priorField.IsRequired
+                || (priorField.Count != 1))
+            {
+                throw new ArgumentException("A state/fork-source prior record has an invalid wire shape.", parameterName);
+            }
+
+            current = new EbinRecordReadView(priorField.Payload);
+            depth++;
+        }
+    }
+
+    private static void AppendLineageMembership(
+        Guid lineageId,
+        scoped Span<Guid> lineageMembershipScratch,
+        ref int lineageMembershipCount,
+        string parameterName)
+    {
+        if (lineageMembershipScratch.IsEmpty)
+        {
+            return;
+        }
+
+        if ((lineageId == Guid.Empty) || (lineageMembershipCount >= lineageMembershipScratch.Length))
+        {
+            throw new ArgumentException("The lineage-membership scratch span is invalid or too small.", parameterName);
+        }
+
+        lineageMembershipScratch[lineageMembershipCount++] = lineageId;
+    }
+
+    private static int GetLineageMembershipScratchCapacity(int branchCount, EbinReadLimits limits)
+        => checked(1 + (branchCount * checked(limits.MaximumDepth + 1)));
 
     private static EbinFieldReadView GetRequiredField(
         EbinRecordReadView record,
@@ -251,12 +542,24 @@ internal static class WorldPersistenceIdentityHistoryReader
         return checked((int)field.Count);
     }
 
-    private static (Guid branchId, Guid creationLineageId, Guid issuanceNamespace, Guid parentBranchId, long createdAtNextTick, long firstAssignmentOrdinal)
+    private static (
+        Guid branchId,
+        Guid creationLineageId,
+        Guid issuanceNamespace,
+        Guid sourceIdentityNamespace,
+        Guid parentBranchId,
+        long createdAtNextTick,
+        long firstAssignmentOrdinal,
+        bool hasForkSource)
         ReadBranch(
             EbinRecordReadView branch,
             int expectedIndex,
             long nextAssignmentOrdinal,
             long nextTick,
+            Guid worldGuid,
+            EbinReadLimits limits,
+            scoped Span<Guid> lineageMembershipScratch,
+            ref int lineageMembershipCount,
             string parameterName)
     {
         if ((branch.Header.SchemaId != s_identityBranchSchemaId)
@@ -278,6 +581,7 @@ internal static class WorldPersistenceIdentityHistoryReader
         var kind = ReadUInt8(branch, 9, parameterName);
         var firstAssignmentOrdinal = ReadInt64(branch, 10, parameterName);
         var expectedFieldCount = MinimumBranchFieldCount + (hasParent ? 1 : 0) + (hasSourceDigest ? 1 : 0) + (hasForkSource ? 1 : 0);
+        var sourceIdentityNamespace = issuanceNamespace;
 
         if ((branch.FieldCount != expectedFieldCount)
             || (directoryIndex != expectedIndex)
@@ -312,6 +616,12 @@ internal static class WorldPersistenceIdentityHistoryReader
             throw new ArgumentException("An optional identity-branch source digest has an invalid wire shape.", parameterName);
         }
 
+        AppendLineageMembership(
+            creationLineageId,
+            lineageMembershipScratch,
+            ref lineageMembershipCount,
+            parameterName);
+
         if (hasForkSource)
         {
             if ((forkSourceField.Kind != RecordKind)
@@ -321,22 +631,37 @@ internal static class WorldPersistenceIdentityHistoryReader
                 throw new ArgumentException("An optional identity-branch fork source has an invalid wire shape.", parameterName);
             }
 
-            var forkSource = new EbinRecordReadView(forkSourceField.Payload);
+            var (sourceWorldGuid, sourceBranchId, sourceCreationLineageId, sourceNamespace) = ReadForkSourceWithLineageMembership(
+                forkSourceField.Payload,
+                limits,
+                lineageMembershipScratch,
+                ref lineageMembershipCount,
+                parameterName);
 
-            if ((forkSource.Header.SchemaId != s_forkSourceSchemaId)
-                || (forkSource.Header.Major != 1)
-                || (forkSource.Header.Minor != 0)
-                || (forkSource.FieldCount is not 6 and not 7))
+            if ((sourceWorldGuid == worldGuid)
+                || (sourceCreationLineageId != creationLineageId)
+                || (branchId != StableIdentityLedger.CreateForkBranchId(worldGuid, sourceBranchId))
+                || (issuanceNamespace != branchId))
             {
-                throw new ArgumentException("A state/fork-source has the wrong schema identity, version, or field count.", parameterName);
+                throw new ArgumentException("An imported identity branch does not preserve its source identity transform.", parameterName);
             }
+
+            sourceIdentityNamespace = sourceNamespace;
         }
 
         var parentBranchId = hasParent
             ? new Guid(parentField.Payload, bigEndian: true)
             : Guid.Empty;
 
-        return (branchId, creationLineageId, issuanceNamespace, parentBranchId, createdAtNextTick, firstAssignmentOrdinal);
+        return (
+            branchId,
+            creationLineageId,
+            issuanceNamespace,
+            sourceIdentityNamespace,
+            parentBranchId,
+            createdAtNextTick,
+            firstAssignmentOrdinal,
+            hasForkSource);
     }
 
     private static ReadOnlySpan<byte> ReadFixedArray(
@@ -448,12 +773,25 @@ internal static class WorldPersistenceIdentityHistoryReader
         }
     }
 
+    private static void ValidateDigest(EbinRecordReadView record, uint tag, string parameterName)
+    {
+        var field = GetRequiredField(record, tag, BlobKind, expectedCount: 32, parameterName);
+
+        if (field.Payload.Length != 32)
+        {
+            throw new ArgumentException("A state/fork-source digest has an invalid payload length.", parameterName);
+        }
+    }
+
     private static (int liveEntityCount, int liveSceneInstanceCount) ValidatePage(
         EbinRecordReadView page,
         int pageIndex,
         long assignmentCount,
         int branchCount,
+        Guid worldGuid,
         scoped ReadOnlySpan<Guid> branchNamespaces,
+        scoped ReadOnlySpan<Guid> branchSourceNamespaces,
+        scoped ReadOnlySpan<byte> branchHasForkSource,
         WorldPersistenceLiveIdentitySet liveIdentities,
         scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
         string parameterName)
@@ -502,9 +840,36 @@ internal static class WorldPersistenceIdentityHistoryReader
 
             var assignmentOrdinal = checked(firstOrdinal + index);
             ValidateAssignmentRecipe(id, identityKind, origin, branchIndex, assignmentOrdinal, branchNamespaces, parameterName);
+            var sourceNamespace = branchNamespaces[checked((int)branchIndex)];
+
+            if (origin == (uint)IdentityOrigin.ForkImported)
+            {
+                var expectedIdentity = StableIdentityLedger.CreateAutomaticIdentity(
+                    worldGuid,
+                    (IdentityKind)identityKind,
+                    checked((uint)assignmentOrdinal));
+
+                if (branchHasForkSource[checked((int)branchIndex)] == 0)
+                {
+                    throw new ArgumentException("A fork-imported identity has no retained fork-source lineage.", parameterName);
+                }
+
+                if (id != expectedIdentity)
+                {
+                    throw new ArgumentException("A fork-imported identity does not match its target World kind and ordinal recipe.", parameterName);
+                }
+
+                sourceNamespace = branchSourceNamespaces[checked((int)branchIndex)];
+            }
+
             identityScratch[checked((int)assignmentOrdinal - 1)] = new WorldPersistenceIdentityScratchEntry(
                 id,
-                checked((byte)identityKind));
+                checked((byte)identityKind),
+                checked((uint)assignmentOrdinal),
+                checked((ushort)branchIndex),
+                sourceNamespace,
+                checked((byte)origin),
+                (value & (1U << 14)) != 0);
 
             if ((value & (1U << 14)) != 0)
             {
@@ -522,5 +887,76 @@ internal static class WorldPersistenceIdentityHistoryReader
         }
 
         return (liveEntityCount, liveSceneInstanceCount);
+    }
+
+    internal sealed class ValidatedLineageMembership
+    {
+        private readonly Guid[] _lineageIds;
+
+        private ValidatedLineageMembership(
+            Guid worldGuid,
+            Guid replayLineageId,
+            Guid activeBranchId,
+            Guid issuanceNamespace,
+            Guid[] lineageIds)
+        {
+            WorldGuid = worldGuid;
+            ReplayLineageId = replayLineageId;
+            ActiveBranchId = activeBranchId;
+            IssuanceNamespace = issuanceNamespace;
+            _lineageIds = lineageIds;
+        }
+
+        internal Guid ActiveBranchId { get; }
+
+        internal int Count => _lineageIds.Length;
+
+        internal Guid IssuanceNamespace { get; }
+
+        internal ReadOnlySpan<Guid> LineageIds => _lineageIds;
+
+        internal Guid ReplayLineageId { get; }
+
+        internal Guid WorldGuid { get; }
+
+        internal static ValidatedLineageMembership CreateValidated(
+            Guid worldGuid,
+            Guid replayLineageId,
+            Guid activeBranchId,
+            Guid issuanceNamespace,
+            scoped ReadOnlySpan<Guid> lineageIds)
+        {
+            ArgumentOutOfRangeException.ThrowIfEqual(worldGuid, Guid.Empty);
+            ArgumentOutOfRangeException.ThrowIfEqual(replayLineageId, Guid.Empty);
+            ArgumentOutOfRangeException.ThrowIfEqual(activeBranchId, Guid.Empty);
+            ArgumentOutOfRangeException.ThrowIfEqual(issuanceNamespace, Guid.Empty);
+
+            var containsReplayLineage = false;
+
+            for (var index = 0; index < lineageIds.Length; index++)
+            {
+                var lineageId = lineageIds[index];
+
+                if ((lineageId == Guid.Empty)
+                    || ((index > 0) && (lineageIds[index - 1].CompareTo(lineageId) >= 0)))
+                {
+                    throw new ArgumentException("The validated lineage membership must be nonempty-keyed, RFC-ordered, and unique.", nameof(lineageIds));
+                }
+
+                containsReplayLineage |= lineageId == replayLineageId;
+            }
+
+            if (lineageIds.IsEmpty || !containsReplayLineage)
+            {
+                throw new ArgumentException("The validated lineage membership must contain its replay lineage.", nameof(lineageIds));
+            }
+
+            return new ValidatedLineageMembership(
+                worldGuid,
+                replayLineageId,
+                activeBranchId,
+                issuanceNamespace,
+                lineageIds.ToArray());
+        }
     }
 }

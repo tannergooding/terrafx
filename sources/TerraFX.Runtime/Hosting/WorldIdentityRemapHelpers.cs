@@ -2,6 +2,7 @@
 
 using System;
 using System.Runtime.CompilerServices;
+using TerraFX.Entities;
 
 namespace TerraFX.Hosting;
 
@@ -19,6 +20,25 @@ internal static class WorldIdentityRemapHelpers
         }
 
         return mappings;
+    }
+
+    internal static int MeasureHistoryMappingCount(
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> sourceHistory,
+        byte identityKind)
+    {
+        ValidateIdentityKind(identityKind);
+        ValidateHistoryOrder(sourceHistory, nameof(sourceHistory));
+        var mappingCount = 0;
+
+        foreach (var entry in sourceHistory)
+        {
+            if (entry.IsLive && (entry.Kind == identityKind))
+            {
+                mappingCount = checked(mappingCount + 1);
+            }
+        }
+
+        return mappingCount;
     }
 
     internal static long MeasureRetainedBytes(int entityCount, int sceneInstanceCount)
@@ -93,6 +113,33 @@ internal static class WorldIdentityRemapHelpers
         }
     }
 
+    internal static void ValidateDisjointSourceIds(
+        scoped ReadOnlySpan<WorldIdentityRemapEntry> entityMappings,
+        scoped ReadOnlySpan<WorldIdentityRemapEntry> sceneMappings)
+    {
+        var entityIndex = 0;
+        var sceneIndex = 0;
+
+        while ((entityIndex < entityMappings.Length) && (sceneIndex < sceneMappings.Length))
+        {
+            var comparison = entityMappings[entityIndex].SourceId.CompareTo(sceneMappings[sceneIndex].SourceId);
+
+            if (comparison == 0)
+            {
+                throw new ArgumentException("Source Entity and SceneInstance remap identities must be unique.");
+            }
+
+            if (comparison < 0)
+            {
+                entityIndex++;
+            }
+            else
+            {
+                sceneIndex++;
+            }
+        }
+    }
+
     internal static void ValidateMappings(
         scoped ReadOnlySpan<Guid> sourceIds,
         scoped ReadOnlySpan<Guid> targetIds,
@@ -114,10 +161,104 @@ internal static class WorldIdentityRemapHelpers
         }
     }
 
+    internal static void WriteHistoryMappings(
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> sourceHistory,
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> targetHistory,
+        Guid sourceWorldGuid,
+        Guid targetWorldGuid,
+        byte identityKind,
+        scoped Span<WorldIdentityRemapEntry> destination)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(sourceWorldGuid, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfEqual(targetWorldGuid, Guid.Empty);
+        ValidateIdentityKind(identityKind);
+        ValidateHistoryOrder(sourceHistory, nameof(sourceHistory));
+        ValidateHistoryOrder(targetHistory, nameof(targetHistory));
+
+        if (sourceHistory.Length != targetHistory.Length)
+        {
+            throw new ArgumentException("Source and target identity histories must preserve the complete assignment ordinal set.");
+        }
+
+        var requiredCount = MeasureHistoryMappingCount(sourceHistory, identityKind);
+
+        if (destination.Length != requiredCount)
+        {
+            throw new ArgumentException("The identity remap destination must exactly match the live source identity count.", nameof(destination));
+        }
+
+        var written = 0;
+
+        foreach (var source in sourceHistory)
+        {
+            var targetIdentity = (sourceWorldGuid == targetWorldGuid)
+                ? source.StableId
+                : StableIdentityLedger.CreateAutomaticIdentity(
+                    targetWorldGuid,
+                    (IdentityKind)source.Kind,
+                    source.AssignmentOrdinal);
+            var targetIndex = WorldPersistenceIdentityScratchEntry.FindIndex(targetHistory, targetIdentity);
+
+            if ((targetIndex < 0)
+                || (targetHistory[targetIndex].AssignmentOrdinal != source.AssignmentOrdinal)
+                || (targetHistory[targetIndex].Kind != source.Kind)
+                || (targetHistory[targetIndex].IsLive != source.IsLive))
+            {
+                throw new ArgumentException("The target identity history does not preserve the validated source assignment transformation.", nameof(targetHistory));
+            }
+
+            if (source.IsLive && (source.Kind == identityKind))
+            {
+                destination[written++] = new WorldIdentityRemapEntry(source.StableId, targetIdentity);
+            }
+        }
+
+        destination.Sort();
+
+        for (var index = 1; index < destination.Length; index++)
+        {
+            if (destination[index - 1].SourceId == destination[index].SourceId)
+            {
+                throw new ArgumentException("The source identity history contains a duplicate live identity.", nameof(sourceHistory));
+            }
+        }
+    }
+
     private static long ArrayCharge(int capacity, int stride)
     {
         var payloadBytes = checked((long)capacity * stride);
         var roundedBytes = checked((payloadBytes + 15L) & ~15L);
         return checked(64L + roundedBytes);
+    }
+
+    private static void ValidateHistoryOrder(
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> history,
+        string parameterName)
+    {
+        for (var index = 0; index < history.Length; index++)
+        {
+            var entry = history[index];
+
+            if ((entry.AssignmentOrdinal == 0)
+                || (entry.AssignmentOrdinal > (uint)history.Length)
+                || (entry.StableId == Guid.Empty)
+                || (entry.Kind is not 1 and not 2))
+            {
+                throw new ArgumentException("The identity history contains an invalid assignment row.", parameterName);
+            }
+
+            if ((index > 0) && (history[index - 1].StableId.CompareTo(entry.StableId) >= 0))
+            {
+                throw new ArgumentException("Identity history must be strictly sorted by stable identity.", parameterName);
+            }
+        }
+    }
+
+    private static void ValidateIdentityKind(byte identityKind)
+    {
+        if (identityKind is not 1 and not 2)
+        {
+            throw new ArgumentOutOfRangeException(nameof(identityKind));
+        }
     }
 }

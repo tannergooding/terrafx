@@ -4,7 +4,7 @@ using System;
 
 namespace TerraFX.Hosting;
 
-internal readonly struct WorldIdentityRemapEntry
+internal readonly struct WorldIdentityRemapEntry : IComparable<WorldIdentityRemapEntry>
 {
     private readonly Guid _sourceId;
 
@@ -19,4 +19,7 @@ internal readonly struct WorldIdentityRemapEntry
     internal Guid SourceId => _sourceId;
 
     internal Guid TargetId => _targetId;
+
+    public int CompareTo(WorldIdentityRemapEntry other)
+        => _sourceId.CompareTo(other._sourceId);
 }

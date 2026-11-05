@@ -174,29 +174,115 @@ public sealed class WorldIdentityRemap : IDisposable
             var checkpointDigest = sourceCheckpointDigest.ToArray();
             var payloadDigest = sourcePayloadDigest.ToArray();
 
-            lock (_gate)
+            Install(
+                sourceWorldGuid,
+                sourceReplayLineageId,
+                sourceIdentityBranchId,
+                targetWorldGuid,
+                targetReplayLineageId,
+                targetIdentityBranchId,
+                checkpointDigest,
+                payloadDigest,
+                entityMappings,
+                sceneMappings,
+                ref remapLease);
+        }
+        finally
+        {
+            remapLease?.Dispose();
+        }
+    }
+
+    internal void InitializeFromIdentityHistories(
+        Guid sourceWorldGuid,
+        Guid sourceReplayLineageId,
+        Guid sourceIdentityBranchId,
+        Guid targetWorldGuid,
+        Guid targetReplayLineageId,
+        Guid targetIdentityBranchId,
+        scoped ReadOnlySpan<byte> sourceCheckpointDigest,
+        scoped ReadOnlySpan<byte> sourcePayloadDigest,
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> sourceHistory,
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> targetHistory,
+        WorldDomainOperationCredit mappingCredit)
+    {
+        ArgumentNullException.ThrowIfNull(mappingCredit);
+        ArgumentOutOfRangeException.ThrowIfEqual(sourceWorldGuid, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfEqual(sourceReplayLineageId, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfEqual(sourceIdentityBranchId, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfEqual(targetWorldGuid, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfEqual(targetReplayLineageId, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfEqual(targetIdentityBranchId, Guid.Empty);
+
+        if ((sourceCheckpointDigest.Length != 32) || (sourcePayloadDigest.Length != 32))
+        {
+            throw new ArgumentException("The remap digests must each contain exactly 32 bytes.");
+        }
+
+        if (sourceHistory.Length != targetHistory.Length)
+        {
+            throw new ArgumentException("Source and target identity histories must preserve the complete assignment ordinal set.");
+        }
+
+        var entityCount = WorldIdentityRemapHelpers.MeasureHistoryMappingCount(sourceHistory, identityKind: 1);
+        var sceneInstanceCount = WorldIdentityRemapHelpers.MeasureHistoryMappingCount(sourceHistory, identityKind: 2);
+        var retainedBytes = WorldIdentityRemapHelpers.MeasureRetainedBytes(entityCount, sceneInstanceCount);
+        IDisposable? remapLease = null;
+
+        try
+        {
+            remapLease = mappingCredit.AcquireRetainedUse(retainedBytes);
+            var entityMappings = new WorldIdentityRemapEntry[entityCount];
+            var sceneMappings = new WorldIdentityRemapEntry[sceneInstanceCount];
+            WorldIdentityRemapHelpers.WriteHistoryMappings(
+                sourceHistory,
+                targetHistory,
+                sourceWorldGuid,
+                targetWorldGuid,
+                1,
+                entityMappings);
+            WorldIdentityRemapHelpers.WriteHistoryMappings(
+                sourceHistory,
+                targetHistory,
+                sourceWorldGuid,
+                targetWorldGuid,
+                2,
+                sceneMappings);
+            WorldIdentityRemapHelpers.ValidateDisjointSourceIds(entityMappings, sceneMappings);
+            var targetIds = new Guid[checked(entityMappings.Length + sceneMappings.Length)];
+
+            for (var index = 0; index < entityMappings.Length; index++)
             {
-                ObjectDisposedException.ThrowIf(_isDisposed, this);
-
-                if (_isInitialized)
-                {
-                    throw new InvalidOperationException("The remap has already been initialized.");
-                }
-
-                _sourceWorldGuid = sourceWorldGuid;
-                _sourceReplayLineageId = sourceReplayLineageId;
-                _sourceIdentityBranchId = sourceIdentityBranchId;
-                _targetWorldGuid = targetWorldGuid;
-                _targetReplayLineageId = targetReplayLineageId;
-                _targetIdentityBranchId = targetIdentityBranchId;
-                _sourceCheckpointDigest = checkpointDigest;
-                _sourcePayloadDigest = payloadDigest;
-                _entities = entityMappings;
-                _sceneInstances = sceneMappings;
-                _remapLease = remapLease;
-                _isInitialized = true;
-                remapLease = null;
+                targetIds[index] = entityMappings[index].TargetId;
             }
+
+            for (var index = 0; index < sceneMappings.Length; index++)
+            {
+                targetIds[entityMappings.Length + index] = sceneMappings[index].TargetId;
+            }
+
+            Array.Sort(targetIds);
+
+            for (var index = 1; index < targetIds.Length; index++)
+            {
+                if (targetIds[index - 1] == targetIds[index])
+                {
+                    throw new ArgumentException("Target Entity and SceneInstance remap identities must be unique.");
+                }
+            }
+
+            Install(
+                sourceWorldGuid,
+                sourceReplayLineageId,
+                sourceIdentityBranchId,
+                targetWorldGuid,
+                targetReplayLineageId,
+                targetIdentityBranchId,
+                sourceCheckpointDigest.ToArray(),
+                sourcePayloadDigest.ToArray(),
+                entityMappings,
+                sceneMappings,
+                ref remapLease);
         }
         finally
         {
@@ -227,6 +313,45 @@ public sealed class WorldIdentityRemap : IDisposable
                 5 => _targetWorldGuid,
                 _ => throw new ArgumentOutOfRangeException(nameof(property)),
             };
+        }
+    }
+
+    private void Install(
+        Guid sourceWorldGuid,
+        Guid sourceReplayLineageId,
+        Guid sourceIdentityBranchId,
+        Guid targetWorldGuid,
+        Guid targetReplayLineageId,
+        Guid targetIdentityBranchId,
+        byte[] sourceCheckpointDigest,
+        byte[] sourcePayloadDigest,
+        WorldIdentityRemapEntry[] entityMappings,
+        WorldIdentityRemapEntry[] sceneMappings,
+        ref IDisposable? remapLease)
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            if (_isInitialized)
+            {
+                throw new InvalidOperationException("The remap has already been initialized.");
+            }
+
+            _sourceWorldGuid = sourceWorldGuid;
+            _sourceReplayLineageId = sourceReplayLineageId;
+            _sourceIdentityBranchId = sourceIdentityBranchId;
+            _targetWorldGuid = targetWorldGuid;
+            _targetReplayLineageId = targetReplayLineageId;
+            _targetIdentityBranchId = targetIdentityBranchId;
+            _sourceCheckpointDigest = sourceCheckpointDigest;
+            _sourcePayloadDigest = sourcePayloadDigest;
+            _entities = entityMappings;
+            _sceneInstances = sceneMappings;
+            _remapLease = remapLease
+                ?? throw new InvalidOperationException("The remap storage was not admitted.");
+            _isInitialized = true;
+            remapLease = null;
         }
     }
 }
