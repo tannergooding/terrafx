@@ -311,6 +311,38 @@ internal sealed class WorldPersistenceAdmissionTests
     }
 
     [Test]
+    public void WorldLoadReplacementAdmissionRetainsUseAfterPreparationDisposal()
+    {
+        var domain = new WorldAdmissionDomain(16 * 1024 * 1024);
+        var world = CreateWorld(8192, domain);
+        Assert.That(
+            world.TryPrepareLoadReplacement(
+                1024,
+                2048,
+                3072,
+                4096,
+                out var preparation,
+                out var bindingRefusal,
+                out var creditRefusal),
+            Is.True);
+        using var preparationScope = preparation!;
+        Assert.That(bindingRefusal.IsNone, Is.True);
+        Assert.That(creditRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+        using var retainedUse = preparationScope.AcquireRetainedUse(1024, 2048, 3072, 4096);
+
+        preparationScope.Dispose();
+        _ = Assert.Throws<ObjectDisposedException>(() => {
+            using var lateUse = preparationScope.AcquireRetainedUse(0, 0, 0, 0);
+        });
+        world.Dispose();
+        domain.Dispose();
+
+        Assert.That(domain.Retirement.IsCompleted, Is.False);
+        retainedUse.Dispose();
+        Assert.That(domain.Retirement.IsCompleted, Is.True);
+    }
+
+    [Test]
     public void WorldLoadReplacementCommitTransfersBindingAndCreditsExactlyOnce()
     {
         var domain = new WorldAdmissionDomain(16 * 1024 * 1024);
