@@ -228,8 +228,12 @@ internal readonly struct GraphResourceAccess
     internal int Version { get; }
 
     internal bool IsAttachmentLoadOf(GraphResourceAccess other)
-        => !IsWrite
+        => IsTexture
+            && other.IsTexture
+            && !IsWrite
             && other.IsWrite
+            && (Version < other.Version)
+            && (_textureRange == other._textureRange)
             && _attachmentUsage.HasValue
             && _attachmentUsage == other._attachmentUsage
             && _attachmentLoadAction == TerraFX.Graphics.AttachmentLoadAction.Load

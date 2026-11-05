@@ -16,6 +16,61 @@ internal sealed class RenderGraphDependencyCompilerTests
         => new(TextureDimension.Dimension2D, 16, 16, 1, 2, 5, TextureFormat.Rgba8Unorm, TextureUsage.Storage | TextureUsage.Sampled, string.Empty);
 
     [Test]
+    public void TryOrderAcceptsOnlyMatchingPriorVersionAttachmentLoads()
+    {
+        var passId = new RenderPassId(7, 0);
+        var description = new TextureDescription(
+            TextureDimension.Dimension2D,
+            16,
+            16,
+            1,
+            2,
+            5,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.ColorAttachment,
+            string.Empty);
+        var fullRange = new GraphTextureRange(0, 2, 0, 1, TextureAspect.Color);
+        var partialRange = new GraphTextureRange(1, 1, 0, 1, TextureAspect.Color);
+        var previousVersion = new GraphTextureVersion(1, 4, 0, description, fullRange);
+        var nextVersion = new GraphTextureVersion(1, 4, 1, description, fullRange);
+        var passes = ImmutableArray.Create(
+            new RenderGraphPassNode(passId, new RenderPassDescription("pass", 0, [], false)));
+        var cases = new[] {
+            (LoadRange: fullRange, WriteRange: fullRange, WriteVersion: nextVersion, ExpectedValid: true),
+            (LoadRange: fullRange, WriteRange: partialRange, WriteVersion: nextVersion, ExpectedValid: false),
+            (LoadRange: fullRange, WriteRange: fullRange, WriteVersion: previousVersion, ExpectedValid: false),
+        };
+
+        foreach (var (loadRange, writeRange, writeVersion, expectedValid) in cases)
+        {
+            var accesses = ImmutableArray.Create(
+                new GraphResourceAccess(
+                    passId,
+                    previousVersion,
+                    loadRange,
+                    TextureUsage.ColorAttachment,
+                    AttachmentLoadAction.Load,
+                    AttachmentStoreAction.Store,
+                    isWrite: false,
+                    contentsValid: true),
+                new GraphResourceAccess(
+                    passId,
+                    writeVersion,
+                    writeRange,
+                    TextureUsage.ColorAttachment,
+                    AttachmentLoadAction.Load,
+                    AttachmentStoreAction.Store,
+                    isWrite: true,
+                    contentsValid: true));
+
+            Assert.That(
+                RenderGraphDependencyCompiler.TryOrder(passes, accesses, out _, out var accessesValid),
+                Is.True);
+            Assert.That(accessesValid, Is.EqualTo(expectedValid));
+        }
+    }
+
+    [Test]
     public void TryOrderAddsBufferReadAfterWriteDependency()
     {
         var writer = new RenderPassId(7, 0);
