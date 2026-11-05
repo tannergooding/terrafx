@@ -23,12 +23,7 @@ internal static class WorldPersistenceRecoveryReader
         ArgumentNullException.ThrowIfNull(backupPath);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSnapshotBytes);
 
-        var targetLength = ReadCandidateLength(targetPath, maximumSnapshotBytes);
-        var backupLength = ReadCandidateLength(backupPath, maximumSnapshotBytes);
-        var candidateBytes = checked(targetLength + backupLength);
-        return (candidateBytes == 0)
-            ? 1
-            : checked(candidateBytes + FileStreamBufferBytes + RecoveryControlBytes);
+        return checked((2 * maximumSnapshotBytes) + FileStreamBufferBytes + RecoveryControlBytes);
     }
 
     internal static async Task<(string Path, long Generation, byte[] FileRecord, IDisposable SourceUse)?> ReadLatestCommittedAsync(
@@ -46,21 +41,17 @@ internal static class WorldPersistenceRecoveryReader
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSnapshotBytes);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var targetLength = ReadCandidateLength(targetPath, maximumSnapshotBytes);
-        var backupLength = ReadCandidateLength(backupPath, maximumSnapshotBytes);
-        var candidateBytes = checked(targetLength + backupLength);
-
-        if (candidateBytes == 0)
-        {
-            return null;
-        }
-
-        var workspaceBytes = checked(candidateBytes + FileStreamBufferBytes + RecoveryControlBytes);
         IDisposable? sourceUse = null;
 
         try
         {
-            sourceUse = preparation.AcquireRetainedUse(workspaceBytes, 0, 0, 0);
+            sourceUse = preparation.AcquireRetainedUse(
+                MeasureCandidateReadWorkspaceBytes(targetPath, backupPath, maximumSnapshotBytes),
+                0,
+                0,
+                0);
+            var targetLength = ReadCandidateLength(targetPath, maximumSnapshotBytes);
+            var backupLength = ReadCandidateLength(backupPath, maximumSnapshotBytes);
             (string Path, long Generation, byte[] FileRecord)? latest = null;
             latest = await ReadCandidateAsync(
                 targetPath,
