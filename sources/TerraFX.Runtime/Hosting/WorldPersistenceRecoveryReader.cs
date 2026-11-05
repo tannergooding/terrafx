@@ -27,13 +27,18 @@ internal static class WorldPersistenceRecoveryReader
         return checked((3 * maximumSnapshotBytes) + FileStreamBufferBytes + RecoveryControlBytes);
     }
 
-    internal static async Task<(string Path, long Generation, byte[] FileRecord, IDisposable SourceUse)?> ReadLatestCommittedAsync(
+    internal static async Task<(
+        string Path,
+        long Generation,
+        byte[] FileRecord,
+        WorldPersistenceCheckpointContents Contents,
+        IDisposable SourceUse)?> ReadLatestCommittedAsync(
         string targetPath,
         string backupPath,
         WorldGuidReplacementPreparation preparation,
         long maximumSnapshotBytes,
         EbinReadLimits limits,
-        Func<ReadOnlyMemory<byte>, bool> validateCandidate,
+        Func<ReadOnlyMemory<byte>, WorldPersistenceCheckpointContents?> validateCandidate,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(targetPath);
@@ -55,7 +60,7 @@ internal static class WorldPersistenceRecoveryReader
                 0);
             var targetLength = ReadCandidateLength(targetPath, maximumSnapshotBytes);
             var backupLength = ReadCandidateLength(backupPath, maximumSnapshotBytes);
-            (string Path, long Generation, byte[] FileRecord)? latest = null;
+            (string Path, long Generation, byte[] FileRecord, WorldPersistenceCheckpointContents Contents)? latest = null;
             latest = await ReadCandidateAsync(
                 targetPath,
                 targetLength,
@@ -82,6 +87,7 @@ internal static class WorldPersistenceRecoveryReader
                 latest.Value.Path,
                 latest.Value.Generation,
                 latest.Value.FileRecord,
+                latest.Value.Contents,
                 sourceUse);
             sourceUse = null;
             return result;
@@ -92,13 +98,17 @@ internal static class WorldPersistenceRecoveryReader
         }
     }
 
-    private static async Task<(string Path, long Generation, byte[] FileRecord)?> ReadCandidateAsync(
+    private static async Task<(
+        string Path,
+        long Generation,
+        byte[] FileRecord,
+        WorldPersistenceCheckpointContents Contents)?> ReadCandidateAsync(
         string candidatePath,
         long expectedLength,
         long maximumSnapshotBytes,
         EbinReadLimits limits,
-        (string Path, long Generation, byte[] FileRecord)? latest,
-        Func<ReadOnlyMemory<byte>, bool> validateCandidate,
+        (string Path, long Generation, byte[] FileRecord, WorldPersistenceCheckpointContents Contents)? latest,
+        Func<ReadOnlyMemory<byte>, WorldPersistenceCheckpointContents?> validateCandidate,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -156,9 +166,10 @@ internal static class WorldPersistenceRecoveryReader
                     return latest;
                 }
 
-                return validateCandidate(candidate)
-                    ? (candidatePath, generation, candidate)
-                    : latest;
+                var contents = validateCandidate(candidate);
+                return (contents is null)
+                    ? latest
+                    : (candidatePath, generation, candidate, contents);
             }
         }
         catch (FileNotFoundException)

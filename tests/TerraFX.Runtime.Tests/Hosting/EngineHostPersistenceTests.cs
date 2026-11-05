@@ -107,20 +107,19 @@ internal sealed partial class EngineHostOptionsTests
             var worldContents = checkpoint.WorldContents;
             var candidateIdentityScratch = new WorldPersistenceIdentityScratchEntry[identityAssignmentCount];
 
-            bool IsValidCandidate(ReadOnlyMemory<byte> candidateFile)
+            WorldPersistenceCheckpointContents? ValidateCandidate(ReadOnlyMemory<byte> candidateFile)
             {
                 try
                 {
-                    _ = WorldPersistenceCheckpointWriter.ReadContents(
+                    return WorldPersistenceCheckpointWriter.ReadContents(
                         candidateFile.Span,
                         limits,
                         world.Options.Registration,
                         identityScratch: candidateIdentityScratch);
-                    return true;
                 }
                 catch (ArgumentException)
                 {
-                    return false;
+                    return null;
                 }
             }
 
@@ -190,7 +189,7 @@ internal sealed partial class EngineHostOptionsTests
                     underfundedPreparationScope,
                     world.Options.MaximumSnapshotBytes,
                     limits,
-                    IsValidCandidate,
+                    ValidateCandidate,
                     default).ConfigureAwait(false);
                 unexpectedCandidate?.SourceUse.Dispose();
             }
@@ -221,13 +220,14 @@ internal sealed partial class EngineHostOptionsTests
                 latestPreparationScope,
                 world.Options.MaximumSnapshotBytes,
                 limits,
-                IsValidCandidate,
+                ValidateCandidate,
                 default).ConfigureAwait(false);
             var latest = latestCandidate
                 ?? throw new InvalidOperationException("The newest valid recovery candidate was not selected.");
             using var latestSourceUse = latest.SourceUse;
             Assert.That(latest.Path, Is.EqualTo(savePath));
             Assert.That(latest.Generation, Is.EqualTo(2));
+            Assert.That(latest.Contents.WorldGuid, Is.EqualTo(checkpoint.WorldGuid));
             latestSourceUse.Dispose();
             latestPreparationScope.Dispose();
 
@@ -255,7 +255,7 @@ internal sealed partial class EngineHostOptionsTests
                 recoveryPreparationScope,
                 world.Options.MaximumSnapshotBytes,
                 limits,
-                IsValidCandidate,
+                ValidateCandidate,
                 default).ConfigureAwait(false);
 
             var recovery = recoveredCandidate
@@ -290,7 +290,7 @@ internal sealed partial class EngineHostOptionsTests
                 recoveryPreparationScope,
                 world.Options.MaximumSnapshotBytes,
                 limits,
-                IsValidCandidate,
+                ValidateCandidate,
                 default).ConfigureAwait(false);
             var semanticFallback = semanticFallbackCandidate
                 ?? throw new InvalidOperationException("The semantically invalid primary did not fall back to the valid backup.");
