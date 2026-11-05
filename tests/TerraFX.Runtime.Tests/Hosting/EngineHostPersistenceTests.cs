@@ -127,6 +127,39 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(worldContents.RegistrationRecord.IsEmpty, Is.False);
             });
 
+            var backupPath = string.Concat(savePath, ".bak");
+            var newerFileRecord = WorldPersistenceCheckpointWriter.CreateFileRecord(
+                2,
+                WorldPersistenceCheckpointWriter.ReadCheckpointRecord(fileRecord, limits),
+                limits).FileRecord;
+            await File.WriteAllBytesAsync(savePath, newerFileRecord).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(backupPath, fileRecord).ConfigureAwait(false);
+            var latestCandidate = await WorldPersistenceRecoveryReader.ReadLatestCommittedAsync(
+                savePath,
+                backupPath,
+                world.Options.MaximumSnapshotBytes,
+                limits,
+                default).ConfigureAwait(false);
+            var latest = latestCandidate
+                ?? throw new InvalidOperationException("The newest valid recovery candidate was not selected.");
+            Assert.That(latest.Path, Is.EqualTo(savePath));
+            Assert.That(latest.Generation, Is.EqualTo(2));
+
+            await File.WriteAllBytesAsync(savePath, [0]).ConfigureAwait(false);
+            var recoveredCandidate = await WorldPersistenceRecoveryReader.ReadLatestCommittedAsync(
+                savePath,
+                backupPath,
+                world.Options.MaximumSnapshotBytes,
+                limits,
+                default).ConfigureAwait(false);
+
+            var recovery = recoveredCandidate
+                ?? throw new InvalidOperationException("The valid backup was not selected as a recovery candidate.");
+            Assert.That(recovery.Path, Is.EqualTo(backupPath));
+            Assert.That(recovery.Generation, Is.EqualTo(1));
+            Assert.That(recovery.FileRecord, Is.EqualTo(fileRecord));
+            await File.WriteAllBytesAsync(savePath, fileRecord).ConfigureAwait(false);
+
             var strictLocalHeaderRecord = WorldPersistenceHeaderWriter.Create(
                 options.PersistenceMetadata,
                 WorldPersistenceMode.StrictLocal,
