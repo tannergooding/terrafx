@@ -343,6 +343,63 @@ internal sealed class WorldPersistenceAdmissionTests
     }
 
     [Test]
+    public void WorldLoadReplacementCommitMovesToDifferentWorldGuid()
+    {
+        var domain = new WorldAdmissionDomain(16 * 1024 * 1024);
+        var world = CreateWorld(8192, domain);
+        var registry = WorldGuidRegistry.GetSelected();
+        var replacementWorldGuid = Guid.NewGuid();
+        WorldGuidReplacementPreparation? preparationScope = null;
+        WorldDomainOperationCreditBundle? creditBundle = null;
+        var replacementGrant = default(WorldGuidGrant);
+        var replacementGrantReleased = true;
+
+        try
+        {
+            Assert.That(
+                world.TryPrepareLoadReplacement(
+                    replacementWorldGuid,
+                    1024,
+                    2048,
+                    3072,
+                    4096,
+                    out var preparation,
+                    out var bindingRefusal,
+                    out var creditRefusal),
+                Is.True);
+            Assert.That(bindingRefusal.IsNone, Is.True);
+            Assert.That(creditRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+            preparationScope = preparation
+                ?? throw new InvalidOperationException("The replacement preparation was not created.");
+            Assert.That(
+                preparationScope.TryCommitWithCredits(out replacementGrant, out var credits),
+                Is.True);
+            creditBundle = credits
+                ?? throw new InvalidOperationException("The replacement operation credits were not transferred.");
+            Assert.That(replacementGrant.WorldGuid, Is.EqualTo(replacementWorldGuid));
+        }
+        finally
+        {
+            preparationScope?.Dispose();
+            creditBundle?.Dispose();
+            world.Dispose();
+            domain.Dispose();
+
+            if (replacementGrant.IsValid)
+            {
+                replacementGrantReleased = registry.TryReleaseFresh(replacementGrant);
+            }
+        }
+
+        if (replacementGrant.IsValid)
+        {
+            Assert.That(replacementGrantReleased, Is.True);
+        }
+
+        Assert.That(domain.Retirement.IsCompleted, Is.True);
+    }
+
+    [Test]
     public void WorldLoadReplacementCommitTransfersBindingAndCreditsExactlyOnce()
     {
         var domain = new WorldAdmissionDomain(16 * 1024 * 1024);

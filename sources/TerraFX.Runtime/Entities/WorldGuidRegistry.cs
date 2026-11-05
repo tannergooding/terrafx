@@ -330,11 +330,13 @@ internal sealed class WorldGuidRegistry
 
     internal bool TryCommitReplacement(in WorldGuidGrant current, in WorldGuidGrant replacement)
     {
+        var sameKey = (current.KeyCellIndex == replacement.KeyCellIndex)
+            && (current.KeyGeneration == replacement.KeyGeneration);
+        var sameIdentity = current.WorldGuid == replacement.WorldGuid;
+
         if (!current.IsOwnedBy(this)
             || !replacement.IsOwnedBy(this)
-            || (current.WorldGuid != replacement.WorldGuid)
-            || (current.KeyCellIndex != replacement.KeyCellIndex)
-            || (current.KeyGeneration != replacement.KeyGeneration)
+            || (sameKey != sameIdentity)
             || (current.BindingCellIndex == replacement.BindingCellIndex))
         {
             return false;
@@ -343,6 +345,7 @@ internal sealed class WorldGuidRegistry
         using var scope = ReentrantGate.EnterScope(ref _admissionGate);
 
         if (!IsKeyCellValid(current.KeyCellIndex, current.KeyGeneration)
+            || !IsKeyCellValid(replacement.KeyCellIndex, replacement.KeyGeneration)
             || !IsBindingCellValid(current.BindingCellIndex, current.BindingGeneration)
             || !IsUseCellValid(current.OwnerUseCellIndex, current.OwnerUseGeneration)
             || !IsBindingCellValid(replacement.BindingCellIndex, replacement.BindingGeneration)
@@ -353,7 +356,8 @@ internal sealed class WorldGuidRegistry
             return false;
         }
 
-        ref var keyCell = ref GetKeyCell(current.KeyCellIndex);
+        ref var currentKeyCell = ref GetKeyCell(current.KeyCellIndex);
+        ref var replacementKeyCell = ref GetKeyCell(replacement.KeyCellIndex);
         ref var currentBinding = ref GetBindingCell(current.BindingCellIndex);
         ref var currentOwnerUse = ref GetUseCell(current.OwnerUseCellIndex);
         ref var replacementBinding = ref GetBindingCell(replacement.BindingCellIndex);
@@ -361,7 +365,8 @@ internal sealed class WorldGuidRegistry
         ref var replacementOwnerUse = ref GetUseCell(replacement.OwnerUseCellIndex);
         ref var replacementCoordinatorUse = ref GetUseCell(replacement.CoordinatorUseCellIndex);
 
-        if ((keyCell._worldGuid != current.WorldGuid)
+        if ((currentKeyCell._worldGuid != current.WorldGuid)
+            || (replacementKeyCell._worldGuid != replacement.WorldGuid)
             || (currentBinding._state != CellStateActive)
             || (currentBinding._keyCellIndex != current.KeyCellIndex)
             || (currentBinding._keyGeneration != current.KeyGeneration)
@@ -372,23 +377,23 @@ internal sealed class WorldGuidRegistry
             || (currentOwnerUse._bindingCellIndex != current.BindingCellIndex)
             || (currentOwnerUse._bindingGeneration != current.BindingGeneration)
             || (replacementBinding._state != CellStateReserved)
-            || (replacementBinding._keyCellIndex != current.KeyCellIndex)
-            || (replacementBinding._keyGeneration != current.KeyGeneration)
+            || (replacementBinding._keyCellIndex != replacement.KeyCellIndex)
+            || (replacementBinding._keyGeneration != replacement.KeyGeneration)
             || (replacementPreparation._state != CellStateReserved)
-            || (replacementPreparation._keyCellIndex != current.KeyCellIndex)
-            || (replacementPreparation._keyGeneration != current.KeyGeneration)
+            || (replacementPreparation._keyCellIndex != replacement.KeyCellIndex)
+            || (replacementPreparation._keyGeneration != replacement.KeyGeneration)
             || (replacementPreparation._bindingCellIndex != replacement.BindingCellIndex)
             || (replacementPreparation._bindingGeneration != replacement.BindingGeneration)
             || (replacementOwnerUse._state != CellStateReserved)
             || (replacementOwnerUse._role != UseRoleOwner)
-            || (replacementOwnerUse._keyCellIndex != current.KeyCellIndex)
-            || (replacementOwnerUse._keyGeneration != current.KeyGeneration)
+            || (replacementOwnerUse._keyCellIndex != replacement.KeyCellIndex)
+            || (replacementOwnerUse._keyGeneration != replacement.KeyGeneration)
             || (replacementOwnerUse._bindingCellIndex != replacement.BindingCellIndex)
             || (replacementOwnerUse._bindingGeneration != replacement.BindingGeneration)
             || (replacementCoordinatorUse._state != CellStateReserved)
             || (replacementCoordinatorUse._role != UseRoleCoordinator)
-            || (replacementCoordinatorUse._keyCellIndex != current.KeyCellIndex)
-            || (replacementCoordinatorUse._keyGeneration != current.KeyGeneration)
+            || (replacementCoordinatorUse._keyCellIndex != replacement.KeyCellIndex)
+            || (replacementCoordinatorUse._keyGeneration != replacement.KeyGeneration)
             || (replacementCoordinatorUse._bindingCellIndex != replacement.BindingCellIndex)
             || (replacementCoordinatorUse._bindingGeneration != replacement.BindingGeneration))
         {
@@ -398,17 +403,18 @@ internal sealed class WorldGuidRegistry
         replacementBinding._state = CellStateActive;
         ReleasePreparationCell(replacement.PreparationCellIndex, ref replacementPreparation);
         ReleaseUseCell(replacement.CoordinatorUseCellIndex, ref replacementCoordinatorUse);
-        keyCell._roleCount -= 2;
+        replacementKeyCell._roleCount -= 2;
         currentBinding._state = CellStateRevoked;
         return true;
     }
 
     internal bool TryPrepareReplacement(
         in WorldGuidGrant current,
+        Guid replacementWorldGuid,
         out WorldGuidReplacementPreparation? preparation,
         out WorldGuidRefusal refusal)
     {
-        if (!TryReserveReplacement(current, out var replacementGrant, out refusal))
+        if (!TryReserveReplacement(current, replacementWorldGuid, out var replacementGrant, out refusal))
         {
             preparation = null;
             return false;
@@ -429,6 +435,12 @@ internal sealed class WorldGuidRegistry
             throw;
         }
     }
+
+    internal bool TryPrepareReplacement(
+        in WorldGuidGrant current,
+        out WorldGuidReplacementPreparation? preparation,
+        out WorldGuidRefusal refusal)
+        => TryPrepareReplacement(current, current.WorldGuid, out preparation, out refusal);
 
     internal bool TryReleaseFresh(in WorldGuidGrant grant)
     {
@@ -576,13 +588,52 @@ internal sealed class WorldGuidRegistry
         }
     }
 
-    internal bool TryReserveReplacement(in WorldGuidGrant current, out WorldGuidGrant replacement, out WorldGuidRefusal refusal)
+    internal bool TryReserveReplacement(
+        in WorldGuidGrant current,
+        Guid replacementWorldGuid,
+        out WorldGuidGrant replacement,
+        out WorldGuidRefusal refusal)
     {
+        if (replacementWorldGuid == Guid.Empty)
+        {
+            throw new ArgumentException("The replacement WorldGuid cannot be empty.", nameof(replacementWorldGuid));
+        }
+
         if (!current.IsOwnedBy(this))
         {
             replacement = default;
             refusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
             return false;
+        }
+
+        if (replacementWorldGuid != current.WorldGuid)
+        {
+            if (!IsCurrentGrantActive(current))
+            {
+                replacement = default;
+                refusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
+                return false;
+            }
+
+            if (!TryReserveFresh(replacementWorldGuid, out replacement, out refusal))
+            {
+                return false;
+            }
+
+            if (!IsCurrentGrantActive(current))
+            {
+                if (!TryReleaseFresh(replacement))
+                {
+                    throw new InvalidOperationException("The stale-target replacement WorldGuid reservation could not be released.");
+                }
+
+                replacement = default;
+                refusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
+                return false;
+            }
+
+            refusal = default;
+            return true;
         }
 
         while (true)
@@ -714,7 +765,40 @@ internal sealed class WorldGuidRegistry
                 return true;
             }
         }
+
+        bool IsCurrentGrantActive(WorldGuidGrant grant)
+        {
+            using var scope = ReentrantGate.EnterScope(ref _admissionGate);
+
+            if (!IsKeyCellValid(grant.KeyCellIndex, grant.KeyGeneration)
+                || !IsBindingCellValid(grant.BindingCellIndex, grant.BindingGeneration)
+                || !IsUseCellValid(grant.OwnerUseCellIndex, grant.OwnerUseGeneration))
+            {
+                return false;
+            }
+
+            ref var keyCell = ref GetKeyCell(grant.KeyCellIndex);
+            ref var bindingCell = ref GetBindingCell(grant.BindingCellIndex);
+            ref var ownerUseCell = ref GetUseCell(grant.OwnerUseCellIndex);
+
+            return (keyCell._worldGuid == grant.WorldGuid)
+                && (bindingCell._state == CellStateActive)
+                && (bindingCell._keyCellIndex == grant.KeyCellIndex)
+                && (bindingCell._keyGeneration == grant.KeyGeneration)
+                && (ownerUseCell._state == CellStateReserved)
+                && (ownerUseCell._role == UseRoleOwner)
+                && (ownerUseCell._keyCellIndex == grant.KeyCellIndex)
+                && (ownerUseCell._keyGeneration == grant.KeyGeneration)
+                && (ownerUseCell._bindingCellIndex == grant.BindingCellIndex)
+                && (ownerUseCell._bindingGeneration == grant.BindingGeneration);
+        }
     }
+
+    internal bool TryReserveReplacement(
+        in WorldGuidGrant current,
+        out WorldGuidGrant replacement,
+        out WorldGuidRefusal refusal)
+        => TryReserveReplacement(current, current.WorldGuid, out replacement, out refusal);
 
     private void AbandonSlabGrant(in WorldGuidSlabGrant grant)
     {

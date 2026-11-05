@@ -222,6 +222,48 @@ internal sealed class WorldGuidRegistryTests
     }
 
     [Test]
+    public void ReplacementGrantMovesToFreshWorldGuidAndRetiresOldKeyAfterOwnerRelease()
+    {
+        var registry = WorldGuidRegistry.GetSelected();
+        var currentWorldGuid = Guid.NewGuid();
+        var replacementWorldGuid = Guid.NewGuid();
+
+        Assert.That(registry.TryReserveFresh(currentWorldGuid, out var current, out _), Is.True);
+        Assert.That(registry.TryCommitFresh(current), Is.True);
+        Assert.That(
+            registry.TryReserveReplacement(current, replacementWorldGuid, out var replacement, out var refusal),
+            Is.True);
+        Assert.That(refusal.IsNone, Is.True);
+        Assert.That(replacement.WorldGuid, Is.EqualTo(replacementWorldGuid));
+        Assert.That(replacement.KeyCellIndex, Is.Not.EqualTo(current.KeyCellIndex));
+        Assert.That(
+            registry.TryReserveFresh(replacementWorldGuid, out var duplicateTarget, out refusal),
+            Is.False);
+        Assert.That(duplicateTarget.IsValid, Is.False);
+        Assert.That(refusal.Code, Is.EqualTo(WorldGuidRefusal.GuidAlreadyRetained));
+
+        Assert.That(registry.TryCommitReplacement(current, replacement), Is.True);
+        Assert.That(
+            registry.TryPrepareReplacement(current, out var stalePreparation, out refusal),
+            Is.False);
+        Assert.That(stalePreparation, Is.Null);
+        stalePreparation?.Dispose();
+        Assert.That(refusal.Code, Is.EqualTo(WorldGuidRefusal.TargetBindingStale));
+        Assert.That(
+            registry.TryReserveFresh(currentWorldGuid, out var retainedSource, out refusal),
+            Is.False);
+        Assert.That(retainedSource.IsValid, Is.False);
+        Assert.That(refusal.Code, Is.EqualTo(WorldGuidRefusal.GuidAlreadyRetained));
+
+        Assert.That(registry.TryReleaseFresh(current), Is.True);
+        Assert.That(registry.TryReserveFresh(currentWorldGuid, out var reusableSource, out _), Is.True);
+        Assert.That(registry.TryReleaseFresh(reusableSource), Is.True);
+        Assert.That(registry.TryReleaseFresh(replacement), Is.True);
+        Assert.That(registry.TryReserveFresh(replacementWorldGuid, out var reusableTarget, out _), Is.True);
+        Assert.That(registry.TryReleaseFresh(reusableTarget), Is.True);
+    }
+
+    [Test]
     public void ReplacementPreparationClosesOnDisposeAndTransfersItsGrantOnce()
     {
         var registry = WorldGuidRegistry.GetSelected();
