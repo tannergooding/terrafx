@@ -428,6 +428,16 @@ internal sealed class PlatformInputBroker
         return Math.Max(timestamp, _lastHostTimestamp);
     }
 
+    internal bool IsActiveGamepadDevice(InputDeviceHandle device)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        return device.IsValid
+            && (device.OwnerId == _ownerId)
+            && _deviceKinds.TryGetValue(device, out var deviceKind)
+            && (deviceKind == PlatformInputDeviceKind.Gamepad);
+    }
+
     internal void Retire()
     {
         EnsureOwnerThread();

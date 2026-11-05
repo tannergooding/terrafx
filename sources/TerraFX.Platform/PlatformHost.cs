@@ -4,7 +4,9 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Threading;
+using System.Threading.Tasks;
 using TerraFX;
+using TerraFX.Input;
 
 namespace TerraFX.Platform;
 
@@ -12,6 +14,7 @@ namespace TerraFX.Platform;
 public sealed class PlatformHost
 {
     internal const int MaximumWindowCount = 32;
+    private readonly Func<InputDeviceHandle, uint, ushort, CancellationToken, Task<InputRoutingReceipt>>? _assignDeviceAsync;
     private readonly IPlatformBackend _backend;
     private readonly ClipboardServiceStatus _clipboardStatus;
     private readonly ClipboardTextService? _clipboardText;
@@ -23,12 +26,14 @@ public sealed class PlatformHost
     /// <param name="clipboardPolicy">The host's clipboard service admission policy.</param>
     /// <param name="timeProvider">The host's private monotonic timestamp source.</param>
     /// <param name="clipboardAllowed">Whether this host profile permits clipboard text.</param>
+    /// <param name="assignDeviceAsync">The Runtime-owned route for host-bound gamepad assignment.</param>
     internal PlatformHost(
         uint ownerId,
         PlatformBackend backend,
         ClipboardServicePolicy clipboardPolicy,
         TimeProvider? timeProvider = null,
-        bool clipboardAllowed = true)
+        bool clipboardAllowed = true,
+        Func<InputDeviceHandle, uint, ushort, CancellationToken, Task<InputRoutingReceipt>>? assignDeviceAsync = null)
     {
         if (!clipboardAllowed && (clipboardPolicy is ClipboardServicePolicy.Required))
         {
@@ -43,6 +48,7 @@ public sealed class PlatformHost
         _clipboardText = (clipboardPolicy is ClipboardServicePolicy.NotRequested)
             ? null
             : new ClipboardTextService(_backend, _clipboardStatus);
+        _assignDeviceAsync = assignDeviceAsync;
     }
 
     /// <summary>Gets the owner's clipboard capability state.</summary>
@@ -52,6 +58,33 @@ public sealed class PlatformHost
     public ClipboardTextService? ClipboardText => _clipboardText;
 
     internal PlatformServiceStatus GamepadStatus => _backend.GamepadStatus;
+
+    /// <summary>Assigns one connected physical gamepad to a host-owned simulation timeline and player slot.</summary>
+    /// <param name="device">The current host-issued gamepad identity.</param>
+    /// <param name="simulationRecipientId">The same-host SimulationTimeline recipient.</param>
+    /// <param name="playerSlot">The player slot that receives the gamepad.</param>
+    /// <param name="cancellationToken">The token that cancels the command before owner-thread application.</param>
+    /// <returns>The recipient-local assignment result and its host sequence/tick when applied.</returns>
+    /// <exception cref="ArgumentException"><paramref name="device"/> is invalid or belongs to another host.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="simulationRecipientId"/> is zero.</exception>
+    /// <exception cref="InvalidOperationException">The PlatformHost has no Runtime assignment command owner.</exception>
+    /// <exception cref="ObjectDisposedException">The owning EngineHost is stopping or has stopped.</exception>
+    public Task<InputRoutingReceipt> AssignDeviceAsync(
+        InputDeviceHandle device,
+        uint simulationRecipientId,
+        ushort playerSlot,
+        CancellationToken cancellationToken = default)
+    {
+        if (!device.IsValid || (device.OwnerId != _backend.OwnerId))
+        {
+            throw new ArgumentException("The device handle is invalid or belongs to another platform owner.", nameof(device));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfZero(simulationRecipientId);
+        var assignDeviceAsync = _assignDeviceAsync
+            ?? throw new InvalidOperationException("The PlatformHost has no Runtime assignment command owner.");
+        return assignDeviceAsync(device, simulationRecipientId, playerSlot, cancellationToken);
+    }
 
     /// <summary>Gets the latest immutable metrics snapshot for a live window.</summary>
     /// <param name="window">The live window owned by this platform host.</param>

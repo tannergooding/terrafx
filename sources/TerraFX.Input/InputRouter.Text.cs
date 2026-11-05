@@ -62,23 +62,14 @@ public sealed partial class InputRouter
     {
         EnsureOwnerThread();
         ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(hostSequence);
+        ArgumentOutOfRangeException.ThrowIfLessThan(hostSequence, 1);
 
         if (_recipientKind != InputRecipientKind.HostLiveUI)
         {
             throw new InvalidOperationException("Only a HostLiveUI recipient can own a text session.");
         }
 
-        if ((hostSequence < _lastSeenHostSequence)
-            || (hostTimestamp < _lastSeenHostTimestamp))
-        {
-            throw new InvalidOperationException("Text overflow must preserve the recipient host sequence and timestamp order.");
-        }
-
-        _lastSeenHostSequence = Math.Max(_lastSeenHostSequence, hostSequence);
-        _lastSeenHostTimestamp = Math.Max(_lastSeenHostTimestamp, hostTimestamp);
-        _inputOverflowed = true;
-        RecordUnacceptedSequence(hostSequence);
+        LatchPlatformInputOverflow(hostTimestamp, hostSequence);
     }
 
     internal void RecordTextInputCapture(long hostTimestamp, long hostSequence)

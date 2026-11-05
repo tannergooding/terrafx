@@ -265,7 +265,7 @@ public sealed partial class EngineHost : IAsyncDisposable
             return Task.FromCanceled(cancellationToken);
         }
 
-        var request = new HostActionRequest(action, cancellationToken);
+        var request = new HostCallbackActionRequest(action, cancellationToken);
 
         if (!TryEnqueue(request))
         {
@@ -312,7 +312,7 @@ public sealed partial class EngineHost : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(action);
         cancellationToken.ThrowIfCancellationRequested();
-        var request = new HostActionRequest(action, cancellationToken);
+        var request = new HostCallbackActionRequest(action, cancellationToken);
 
         if (!TryEnqueue(request))
         {
@@ -519,6 +519,27 @@ public sealed partial class EngineHost : IAsyncDisposable
         return receipts.MoveToImmutable();
     }
 
+    internal Task<TResult> InvokeOwnerRequestAsync<TResult>(
+        Func<EngineContext, TResult> action,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromCanceled<TResult>(cancellationToken);
+        }
+
+        var request = new HostResultActionRequest<TResult>(action, cancellationToken);
+
+        if (!TryEnqueue(request))
+        {
+            request.Fail(new InvalidOperationException($"The EngineHost owner mailbox is full (capacity {MaximumOwnerRequestCount})."));
+        }
+
+        return request.Result;
+    }
+
     private void FailPendingRequests(Exception exception)
     {
         lock (_ownerRequestGate)
@@ -617,17 +638,27 @@ public sealed partial class EngineHost : IAsyncDisposable
             _admissionDomain = new WorldAdmissionDomain(DefaultAdmissionDomainBytes);
             var sequenceLease = new HostEventSequenceLease();
             _hostEventSequenceLease = sequenceLease;
-            var platformOwner = PlatformHostOwner.Create(_options, sequenceLease);
+            var platformOwner = PlatformHostOwner.Create(
+                _options,
+                sequenceLease,
+                (device, recipientId, playerSlot, cancellationToken) =>
+                    InvokeOwnerRequestAsync(
+                        _ => (_platformInputRouting
+                            ?? throw new InvalidOperationException("The EngineHost platform input routing owner is not initialized."))
+                            .AssignDevice(device, recipientId, playerSlot),
+                        cancellationToken));
             _platformOwner = platformOwner;
             _platform = platformOwner.Platform;
             _platformInputRouting = new PlatformInputRoutingOwner(
                 _options.Profile,
-                platformOwner,
+                new PlatformInputRoutingHostAdapter(platformOwner),
                 sequenceLease,
                 diagnostics,
                 _ownerThreadId,
                 _inputRouters,
-                _inputTimelineByRouter);
+                _inputTimelineByRouter,
+                recipientId => _inputTimelineByRouter.Keys
+                    .FirstOrDefault(router => router.RecipientId == recipientId));
 
             if (_platform.GamepadStatus is PlatformServiceStatus.Unavailable)
             {
@@ -708,9 +739,9 @@ public sealed partial class EngineHost : IAsyncDisposable
                     {
                         _ = adapter.BeginPumpBoundary(hostTimestamp, schedule.IsPaused);
                     }
-
-                    _ = adapter.ServiceHostControlBoundary();
                 }
+
+                inputRoutingOwner.ServiceSimulationInputRoutes();
 
                 if (_ownerRequests.IsAddingCompleted)
                 {
@@ -844,7 +875,7 @@ public sealed partial class EngineHost : IAsyncDisposable
                 _ = inputAdapter.BeginPumpBoundary(hostTimestamp, schedule.IsPaused);
             }
 
-            _ = inputAdapter.ServiceHostControlBoundary();
+            inputRoutingOwner.ServiceSimulationInputRoutes(inputAdapter);
         }
 
         var debtTicks = schedule.GetTickDebt(hostTimestamp);
@@ -1057,17 +1088,28 @@ public sealed partial class EngineHost : IAsyncDisposable
         }
     }
 
-    private sealed class HostActionRequest(Action<EngineContext> action, CancellationToken cancellationToken)
+    private abstract class HostActionRequest
+    {
+        internal abstract Task Completion { get; }
+
+        internal abstract void Execute(EngineHost host);
+
+        internal abstract void Fail(Exception exception);
+    }
+
+    private sealed class HostCallbackActionRequest(
+        Action<EngineContext> action,
+        CancellationToken cancellationToken) : HostActionRequest
     {
         private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        internal Task Completion => _completion.Task;
+        internal override Task Completion => _completion.Task;
 
         [SuppressMessage(
             "Usage",
             "CA1031:Do not catch general exception types",
             Justification = "A user callback failure is delivered through that request's task and must not terminate the host owner loop.")]
-        internal void Execute(EngineHost host)
+        internal override void Execute(EngineHost host)
         {
             if (cancellationToken.IsCancellationRequested)
             {
@@ -1092,8 +1134,50 @@ public sealed partial class EngineHost : IAsyncDisposable
             }
         }
 
-        internal void Fail(Exception exception)
+        internal override void Fail(Exception exception)
             => _completion.TrySetException(exception);
+    }
+
+    private sealed class HostResultActionRequest<TResult>(
+        Func<EngineContext, TResult> action,
+        CancellationToken cancellationToken) : HostActionRequest
+    {
+        private readonly TaskCompletionSource<TResult> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal override Task Completion => _completion.Task;
+
+        internal Task<TResult> Result => _completion.Task;
+
+        [SuppressMessage(
+            "Usage",
+            "CA1031:Do not catch general exception types",
+            Justification = "A host command failure is delivered through that request's typed task and must not terminate the owner loop.")]
+        internal override void Execute(EngineHost host)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                _ = _completion.TrySetCanceled(cancellationToken);
+                return;
+            }
+
+            var context = new EngineContext(host);
+
+            try
+            {
+                _ = _completion.TrySetResult(action(context));
+            }
+            catch (Exception exception)
+            {
+                _ = _completion.TrySetException(exception);
+            }
+            finally
+            {
+                context.Invalidate();
+            }
+        }
+
+        internal override void Fail(Exception exception)
+            => _ = _completion.TrySetException(exception);
     }
 
     private sealed class HostedWorldSchedule

@@ -240,11 +240,13 @@ internal sealed class WorldInputTimelineAdapter
         return receipt;
     }
 
-    internal ImmutableArray<InputActionTransition> ServiceHostControlBoundary()
+    internal InputRouter.InputOverflowResult? ServiceHostControlBoundary()
     {
         EnsureOwnerThread();
         ThrowIfDisposed();
-        return _router.ServiceInputControlBoundary();
+        var overflow = _router.ServiceHostControlBoundary();
+        _ = _router.ServiceInputControlBoundary();
+        return overflow;
     }
 
     private SimulationClockSegment CreateClockSegment(

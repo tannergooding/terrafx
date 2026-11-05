@@ -1141,6 +1141,26 @@ public sealed partial class InputRouter
         out long discardedInputCount)
         => EnqueuePhysicalEvent(inputEvent, playerSlot, InputClass.None, out discardedInputCount);
 
+    internal void LatchPlatformInputOverflow(long hostTimestamp, long hostSequence)
+    {
+        EnsureOwnerThread();
+        ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
+        ArgumentOutOfRangeException.ThrowIfLessThan(hostSequence, 1);
+
+        if ((hostSequence < _lastSeenHostSequence)
+            || (hostTimestamp < _hostControlTimestamp)
+            || (hostTimestamp < _lastSeenHostTimestamp))
+        {
+            throw new InvalidOperationException("A platform input overflow must preserve recipient event ordering.");
+        }
+
+        _lastSeenHostSequence = Math.Max(_lastSeenHostSequence, hostSequence);
+        _lastSeenHostTimestamp = Math.Max(_lastSeenHostTimestamp, hostTimestamp);
+        _hostControlTimestamp = Math.Max(_hostControlTimestamp, hostTimestamp);
+        _inputOverflowed = true;
+        RecordUnacceptedSequence(hostSequence);
+    }
+
     internal InputRoutingReceipt ReconcileHeadlessInputState(
         ImmutableArray<InputInjection> heldInputs,
         long hostTimestamp,
@@ -1501,6 +1521,48 @@ public sealed partial class InputRouter
         }
 
         _simulationClockSegment = segment;
+    }
+
+    internal InputRoutingReceipt ValidateHostControlBoundaryAdmission(
+        long hostTimestamp,
+        long hostSequence,
+        int commandCount = 1)
+    {
+        EnsureOwnerThread();
+        ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
+        ArgumentOutOfRangeException.ThrowIfLessThan(hostSequence, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(commandCount, 1);
+
+        if (_recipientKind != InputRecipientKind.SimulationTimeline)
+        {
+            return CreateRoutingRejection("InvalidRecipient", "/RecipientKind");
+        }
+
+        if (_isPaused)
+        {
+            return CreateRoutingRejection("Paused", "/Recipient");
+        }
+
+        if ((hostSequence <= _lastSeenHostSequence)
+            || (hostTimestamp < _hostControlTimestamp)
+            || (hostTimestamp < _lastSeenHostTimestamp))
+        {
+            return CreateRoutingRejection("InvalidEventOrder", "/HostSequence");
+        }
+
+        if ((commandCount > MaximumControlCommandsPerBoundary)
+            || (_controlCommandsInBoundary > (MaximumControlCommandsPerBoundary - commandCount))
+            || (_inputControlInbox.Count > (MaximumControlCommandsPerBoundary - commandCount)))
+        {
+            return CreateRoutingCapacityFailure("/InputControl");
+        }
+
+        return new InputRoutingReceipt(
+            InputRoutingStatus.Applied,
+            _recipientId,
+            hostSequence,
+            _nextOpenTick,
+            null);
     }
 
     private void AddConsumptionChangedControl(

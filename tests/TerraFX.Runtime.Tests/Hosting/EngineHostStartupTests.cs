@@ -21,6 +21,44 @@ namespace TerraFX.Runtime.Tests.Hosting;
 internal sealed partial class EngineHostOptionsTests
 {
     [Test]
+    public async Task CompletesTypedOwnerRequestsAndKeepsTheOwnerLoopAliveAsync()
+    {
+        var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
+        var packagePath = SceneAssetStoreTests.Package.WritePackage(packageBytes);
+        var assetStoreOptions = new AssetStoreOptions(
+            packagePath,
+            SHA256.HashData(packageBytes),
+            CreateAssetStoreOptions().Registration);
+        EngineHost? host = null;
+
+        try
+        {
+            host = await EngineHost.StartAsync(CreateHeadlessOptions(assetStoreOptions, cpuWorkerCount: 0)).ConfigureAwait(false);
+            var callingThreadId = Environment.CurrentManagedThreadId;
+            var ownerThreadId = await host.InvokeOwnerRequestAsync(
+                static _ => Environment.CurrentManagedThreadId,
+                CancellationToken.None).ConfigureAwait(false);
+
+            Assert.That(ownerThreadId, Is.Not.EqualTo(callingThreadId));
+            _ = Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await host.InvokeOwnerRequestAsync<int>(
+                    static _ => throw new InvalidOperationException("Expected typed owner request failure."),
+                    CancellationToken.None).ConfigureAwait(false));
+            await host.InvokeAsync(static _ => { }).ConfigureAwait(false);
+            await host.StopAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            if (host is not null)
+            {
+                await host.DisposeAsync().ConfigureAwait(false);
+            }
+
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
     public async Task DropsHeadlessSimulationDebtAndContinuesTicksAsync()
     {
         var packageBytes = SceneAssetStoreTests.Package.CreatePackage();

@@ -5,7 +5,9 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading;
+using System.Threading.Tasks;
 using TerraFX;
+using TerraFX.Input;
 using TerraFX.Platform;
 
 namespace TerraFX.Hosting;
@@ -60,7 +62,8 @@ internal sealed class PlatformHostOwner
         Justification = "A monitor-snapshot startup failure must dispose the already-created Platform owner.")]
     internal static PlatformHostOwner Create(
         EngineHostOptions options,
-        HostEventSequenceLease? sequenceLease = null)
+        HostEventSequenceLease? sequenceLease = null,
+        Func<InputDeviceHandle, uint, ushort, CancellationToken, Task<InputRoutingReceipt>>? assignDeviceAsync = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         var ownerId = OwnerIdAllocator.Allocate();
@@ -70,7 +73,8 @@ internal sealed class PlatformHostOwner
             options.Platform,
             options.ClipboardServicePolicy,
             timeProvider,
-            clipboardAllowed: options.Profile is HostProfile.Interactive);
+            clipboardAllowed: options.Profile is HostProfile.Interactive,
+            assignDeviceAsync);
         var owner = new PlatformHostOwner(ownerId, options.Profile, platform, timeProvider, sequenceLease);
 
         try
@@ -267,6 +271,13 @@ internal sealed class PlatformHostOwner
         }
 
         return binding;
+    }
+
+    internal bool IsActiveGamepadDevice(InputDeviceHandle device)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        return _inputBroker.IsActiveGamepadDevice(device);
     }
 
     internal PlatformInputCaptureBatch Pump()
