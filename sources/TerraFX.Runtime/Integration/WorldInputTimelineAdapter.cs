@@ -10,6 +10,7 @@ namespace TerraFX.Integration;
 
 internal sealed class WorldInputTimelineAdapter
 {
+    private bool _isAwaitingPhysicalInputReconciliation;
     private bool _isDisposed;
     private readonly int _ownerThreadId;
     private readonly bool _ownsSequenceLease;
@@ -65,6 +66,16 @@ internal sealed class WorldInputTimelineAdapter
         }
     }
 
+    internal bool IsAwaitingPhysicalInputReconciliation
+    {
+        get
+        {
+            EnsureOwnerThread();
+            ThrowIfDisposed();
+            return _isAwaitingPhysicalInputReconciliation;
+        }
+    }
+
     internal InputRouter Router
     {
         get
@@ -85,12 +96,67 @@ internal sealed class WorldInputTimelineAdapter
         }
     }
 
+    internal void BeginPhysicalInputReconciliationAtBoundary(long hostTimestamp)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+
+        if (_isAwaitingPhysicalInputReconciliation)
+        {
+            throw new InvalidOperationException("Physical input reconciliation is already pending.");
+        }
+
+        var nextOpenTick = ValidatePumpBoundary(hostTimestamp, isPaused: true);
+        _router.BeginHostControlBoundary(nextOpenTick, hostTimestamp);
+        _isAwaitingPhysicalInputReconciliation = true;
+    }
+
+    internal void BeginPhysicalInputReconciliationPumpBoundary(long hostTimestamp)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+
+        if (!_isAwaitingPhysicalInputReconciliation)
+        {
+            throw new InvalidOperationException("Physical input reconciliation is not pending.");
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
+
+        if (_segment.IsValid && (hostTimestamp < _segment.HostTimestampStartTicks))
+        {
+            throw new InvalidOperationException("The input clock boundary precedes the active segment.");
+        }
+
+        _router.BeginHostControlBoundary(_world.NextTickIndex, hostTimestamp);
+    }
+
     internal SimulationClockSegment BeginPumpBoundary(long hostTimestamp, bool isPaused)
     {
         EnsureOwnerThread();
         ThrowIfDisposed();
         var nextOpenTick = ValidatePumpBoundary(hostTimestamp, isPaused);
         return CreateClockSegment(hostTimestamp, isPaused, nextOpenTick, beginHostControlBoundary: true);
+    }
+
+    internal bool CompletePhysicalInputReconciliationAtBoundary(long hostTimestamp)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+
+        if (!_isAwaitingPhysicalInputReconciliation || _router.IsPaused)
+        {
+            return false;
+        }
+
+        var nextOpenTick = ValidatePumpBoundary(hostTimestamp, isPaused: false);
+        _ = CreateClockSegment(
+            hostTimestamp,
+            isPaused: false,
+            nextOpenTick: nextOpenTick,
+            beginHostControlBoundary: true);
+        _isAwaitingPhysicalInputReconciliation = false;
+        return true;
     }
 
     internal ImmutableArray<InputActionTransition> DisposeAndGetTransitions()
@@ -238,6 +304,51 @@ internal sealed class WorldInputTimelineAdapter
             nextOpenTick: nextOpenTick,
             beginHostControlBoundary: false);
         return receipt;
+    }
+
+    internal InputRoutingReceipt ReconcileUnassignedGamepadPlayerSlotAtBoundary(
+        ushort playerSlot,
+        long hostTimestamp,
+        out long discardedInputCount)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+
+        if (!_isAwaitingPhysicalInputReconciliation)
+        {
+            throw new InvalidOperationException("Physical input reconciliation is not pending.");
+        }
+
+        return _router.ReconcileInputState(
+            [],
+            InputClass.Gamepad,
+            playerSlot,
+            hostTimestamp,
+            _sequenceLease.Allocate(),
+            out discardedInputCount,
+            physicalInputs: []);
+    }
+
+    internal InputRoutingReceipt ReconcileUnassignedWindowInputAtBoundary(
+        long hostTimestamp,
+        out long discardedInputCount)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+
+        if (!_isAwaitingPhysicalInputReconciliation)
+        {
+            throw new InvalidOperationException("Physical input reconciliation is not pending.");
+        }
+
+        return _router.ReconcileInputState(
+            [],
+            InputClass.Keyboard | InputClass.Pointing,
+            playerSlot: null,
+            hostTimestamp: hostTimestamp,
+            hostSequence: _sequenceLease.Allocate(),
+            out discardedInputCount,
+            physicalInputs: []);
     }
 
     internal InputRouter.InputOverflowResult? ServiceHostControlBoundary()

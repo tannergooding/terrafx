@@ -26,4 +26,10 @@ internal sealed class PlatformInputRoutingHostAdapter : IPlatformInputRoutingHos
 
     public bool IsActiveGamepadDevice(InputDeviceHandle device)
         => _platformOwner.IsActiveGamepadDevice(device);
+
+    public PlatformInputCaptureBatch RequestGamepadStateReconciliation(InputDeviceHandle device)
+        => _platformOwner.RequestGamepadStateReconciliation(device);
+
+    public PlatformInputCaptureBatch RequestInputStateReconciliation(WindowHandle? window)
+        => _platformOwner.RequestInputStateReconciliation(window);
 }

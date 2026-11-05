@@ -128,6 +128,39 @@ internal sealed partial class WindowsGameInputCapture : IDisposable
         }
     }
 
+    internal void RequestDeviceReconciliation(nint nativeIdentity)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero((long)nativeIdentity);
+
+        if (GamepadStatus is PlatformServiceStatus.Available
+            && _devicesByNativeIdentity.TryGetValue(nativeIdentity, out var capture))
+        {
+            capture.NeedsReconciliation = true;
+            ReconcileCurrentState(capture, GetNativeTimestamp());
+        }
+    }
+
+    internal void RequestReconciliation()
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+
+        if (GamepadStatus is not PlatformServiceStatus.Available)
+        {
+            return;
+        }
+
+        Pump();
+
+        foreach (var capture in _gamepadsById.Values)
+        {
+            capture.NeedsReconciliation = true;
+            ReconcileCurrentState(capture, GetNativeTimestamp());
+        }
+    }
+
     private sealed class GamepadCapture(GamepadDevice device, nint nativeIdentity, ulong readingCallbackToken)
     {
         internal readonly GamepadDevice Device = device;

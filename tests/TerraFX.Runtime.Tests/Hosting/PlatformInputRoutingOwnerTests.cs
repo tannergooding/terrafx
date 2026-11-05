@@ -6,6 +6,7 @@ using System.Collections.Immutable;
 using System.Linq;
 using NUnit.Framework;
 using TerraFX;
+using TerraFX.Entities;
 using TerraFX.Hosting;
 using TerraFX.Integration;
 using TerraFX.Input;
@@ -81,6 +82,17 @@ internal sealed class PlatformInputRoutingOwnerTests
             ]);
     }
 
+    private static World CreateWorld()
+    {
+        var registration = new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build();
+        return World.Create(new WorldOptions(registration) {
+            CpuWorkerCount = 0,
+            InitialReplayLineageId = Guid.NewGuid(),
+            TickRate = 60,
+            WorldGuid = Guid.NewGuid(),
+        });
+    }
+
     [Test]
     public void AssignsOneGamepadPerPlayerSlotAndRearmsAfterNeutralInput()
     {
@@ -88,6 +100,7 @@ internal sealed class PlatformInputRoutingOwnerTests
         var ownerId = OwnerIdAllocator.Allocate();
         var platformOwner = new TestPlatformInputRoutingHost(ownerId);
         var sequenceLease = new HostEventSequenceLease();
+        platformOwner.SequenceLease = sequenceLease;
         var router = new InputRouter(
             InputRecipientKind.SimulationTimeline,
             OwnerIdAllocator.Allocate(),
@@ -119,6 +132,7 @@ internal sealed class PlatformInputRoutingOwnerTests
             Assert.That(assignment.Status, Is.EqualTo(InputRoutingStatus.Applied));
             Assert.That(occupiedSlot.Status, Is.EqualTo(InputRoutingStatus.Rejected));
             Assert.That(occupiedSlot.Rejection?.Code, Is.EqualTo("PlayerSlotAlreadyAssigned"));
+            Assert.That(platformOwner.GamepadReconciliationRequests, Is.EqualTo([assignedDevice]));
 
             var unassignedDown = CreateGamepadEvent(
                 PhysicalInputEventKind.GamepadButtonDown,
@@ -248,6 +262,156 @@ internal sealed class PlatformInputRoutingOwnerTests
     }
 
     [Test]
+    public void ReassignsGamepadWithFreshStateOnlyForTheNewTimeline()
+    {
+        var ownerThreadId = Environment.CurrentManagedThreadId;
+        var ownerId = OwnerIdAllocator.Allocate();
+        var sequenceLease = new HostEventSequenceLease();
+        var platformOwner = new TestPlatformInputRoutingHost(ownerId) {
+            SequenceLease = sequenceLease,
+        };
+        var firstRouter = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            OwnerIdAllocator.Allocate(),
+            ownerThreadId,
+            sequenceLease);
+        var secondRouter = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            OwnerIdAllocator.Allocate(),
+            ownerThreadId,
+            sequenceLease);
+        var firstSegment = new SimulationClockSegment(1, 0, sequenceLease.Allocate(), 0, 0.0, 60, 0, 1.0f, isPaused: false);
+        var secondSegment = new SimulationClockSegment(1, 0, sequenceLease.Allocate(), 0, 0.0, 60, 0, 1.0f, isPaused: false);
+        firstRouter.SetSimulationClockSegment(in firstSegment);
+        secondRouter.SetSimulationClockSegment(in secondSegment);
+        Assert.That(firstRouter.RegisterMap(CreateMap(playerSlot: 2)).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(secondRouter.RegisterMap(CreateMap(playerSlot: 2)).Status, Is.EqualTo(InputMapStatus.Registered));
+        var routersById = new Dictionary<uint, InputRouter> {
+            [firstRouter.RecipientId] = firstRouter,
+            [secondRouter.RecipientId] = secondRouter,
+        };
+        var inputRouters = new HashSet<InputRouter> { firstRouter, secondRouter };
+        var routingOwner = new PlatformInputRoutingOwner(
+            HostProfile.Interactive,
+            platformOwner,
+            sequenceLease,
+            new DiagnosticsService(),
+            ownerThreadId,
+            inputRouters,
+            [],
+            recipientId => routersById.GetValueOrDefault(recipientId));
+        var device = new InputDeviceHandle(ownerId, 4, 1);
+
+        try
+        {
+            Assert.That(routingOwner.AssignDevice(device, firstRouter.RecipientId, playerSlot: 2).Status, Is.EqualTo(InputRoutingStatus.Applied));
+            Assert.That(firstRouter.PublishSimulationActionSnapshot(0).Actions[0].Transitions, Is.Empty);
+
+            var release = CreateGamepadEvent(
+                PhysicalInputEventKind.GamepadButtonUp,
+                10,
+                sequenceLease.Allocate(),
+                device,
+                isDown: false);
+            routingOwner.RouteCapturedInput(new PlatformInputCaptureBatch([release], 0, []));
+            Assert.That(firstRouter.PublishSimulationActionSnapshot(1).Actions[0].IsDownAtEnd, Is.False);
+
+            platformOwner.HostTimestamp = 20;
+            var press = CreateGamepadEvent(
+                PhysicalInputEventKind.GamepadButtonDown,
+                20,
+                sequenceLease.Allocate(),
+                device,
+                isDown: true);
+            routingOwner.RouteCapturedInput(new PlatformInputCaptureBatch([press], 0, []));
+            Assert.That(firstRouter.PublishSimulationActionSnapshot(2).Actions[0].IsDownAtEnd, Is.True);
+
+            platformOwner.HostTimestamp = 30;
+            Assert.That(routingOwner.AssignDevice(device, secondRouter.RecipientId, playerSlot: 2).Status, Is.EqualTo(InputRoutingStatus.Applied));
+            var firstTimeline = firstRouter.PublishSimulationActionSnapshot(3).Actions[0];
+            var secondTimeline = secondRouter.PublishSimulationActionSnapshot(0).Actions[0];
+
+            Assert.Multiple(() => {
+                Assert.That(firstTimeline.IsDownAtEnd, Is.False);
+                Assert.That(firstTimeline.Transitions, Has.Length.EqualTo(1));
+                Assert.That(firstTimeline.Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+                Assert.That(firstTimeline.Transitions[0].CancellationReason, Is.EqualTo(InputCancellationReason.DeviceRemoved));
+                Assert.That(secondTimeline.IsDownAtEnd, Is.False);
+                Assert.That(secondTimeline.Transitions, Is.Empty);
+            });
+        }
+        finally
+        {
+            routingOwner.ClearRoutes();
+            _ = firstRouter.DisposeAndGetTransitions();
+            _ = secondRouter.DisposeAndGetTransitions();
+        }
+    }
+
+    [Test]
+    public void ReconcilesWindowAndUnassignedGamepadScopesBeforeResuming()
+    {
+        using var world = CreateWorld();
+        var ownerThreadId = Environment.CurrentManagedThreadId;
+        var ownerId = OwnerIdAllocator.Allocate();
+        var sequenceLease = new HostEventSequenceLease();
+        var platformOwner = new TestPlatformInputRoutingHost(ownerId) {
+            HostTimestamp = 0,
+            SequenceLease = sequenceLease,
+        };
+        var inputRouters = new HashSet<InputRouter>();
+        var timelineRouters = new Dictionary<InputRouter, WorldInputTimelineAdapter>();
+        InputRouter? simulationRouter = null;
+        var routingOwner = new PlatformInputRoutingOwner(
+            HostProfile.Interactive,
+            platformOwner,
+            sequenceLease,
+            new DiagnosticsService(),
+            ownerThreadId,
+            inputRouters,
+            timelineRouters,
+            recipientId => (simulationRouter?.RecipientId == recipientId) ? simulationRouter : null);
+        var window = new WindowHandle(ownerId, 0, 1);
+        var binding = routingOwner.BindGameplayInput(window, world, worldIsHosted: true);
+        var boundRouter = binding.Router
+            ?? throw new InvalidOperationException("The gameplay input route did not return its timeline router.");
+        simulationRouter = boundRouter;
+        Assert.That(binding.Status, Is.EqualTo(InputBindingStatus.Bound));
+        Assert.That(boundRouter.RegisterMap(CreateKeyboardMap(new KeyboardControl(7, 4))).Status, Is.EqualTo(InputMapStatus.Registered));
+        Assert.That(boundRouter.RegisterMap(CreateMap(playerSlot: 2)).Status, Is.EqualTo(InputMapStatus.Registered));
+
+        var adapter = timelineRouters[boundRouter];
+
+        try
+        {
+            Assert.That(adapter.PauseHeadlessInput(10, out _, out _).Status, Is.EqualTo(InputRoutingStatus.Applied));
+            platformOwner.HostTimestamp = 20;
+            Assert.That(routingOwner.BeginPhysicalInputReconciliationAtBoundary(adapter, 20), Is.True);
+
+            routingOwner.ServiceSimulationInputRoutes(adapter);
+
+            Assert.That(boundRouter.IsPaused, Is.False);
+            Assert.That(boundRouter.GetUnreconciledGamepadPlayerSlots(), Is.Empty);
+            Assert.That(adapter.CompletePhysicalInputReconciliationAtBoundary(20), Is.True);
+            Assert.That(platformOwner.ReconciliationRequests, Is.EqualTo(new WindowHandle?[] { window }));
+        }
+        finally
+        {
+            routingOwner.ClearRoutes();
+
+            foreach (var timelineAdapter in timelineRouters.Values)
+            {
+                _ = timelineAdapter.DisposeAndGetTransitions();
+            }
+
+            foreach (var router in inputRouters)
+            {
+                _ = router.DisposeAndGetTransitions();
+            }
+        }
+    }
+
+    [Test]
     public void ResetsTheGameplayDispositionAfterHostUiOverflow()
     {
         var ownerThreadId = Environment.CurrentManagedThreadId;
@@ -362,7 +526,13 @@ internal sealed class PlatformInputRoutingOwnerTests
     {
         public uint OwnerId { get; } = ownerId;
 
+        internal List<InputDeviceHandle> GamepadReconciliationRequests { get; } = [];
+
         internal long HostTimestamp { get; set; }
+
+        internal List<WindowHandle?> ReconciliationRequests { get; } = [];
+
+        internal HostEventSequenceLease? SequenceLease { get; set; }
 
         public long GetHostTimestamp() => HostTimestamp;
 
@@ -371,5 +541,49 @@ internal sealed class PlatformInputRoutingOwnerTests
 
         public bool IsActiveGamepadDevice(InputDeviceHandle device)
             => (device.OwnerId == OwnerId) && device.IsValid;
+
+        public PlatformInputCaptureBatch RequestGamepadStateReconciliation(InputDeviceHandle device)
+        {
+            GamepadReconciliationRequests.Add(device);
+
+            if (SequenceLease is not { } sequenceLease)
+            {
+                return new PlatformInputCaptureBatch([], 0, []);
+            }
+
+            return new PlatformInputCaptureBatch(
+                [
+                    new PhysicalInputEvent(
+                        PhysicalInputEventKind.StateReconciliation,
+                        HostTimestamp,
+                        sequenceLease.Allocate(),
+                        device: device,
+                        reconciliationState: [new PhysicalInputValue(GamepadButtonValue.South, isDown: true)]),
+                ],
+                0,
+                []);
+        }
+
+        public PlatformInputCaptureBatch RequestInputStateReconciliation(WindowHandle? window)
+        {
+            ReconciliationRequests.Add(window);
+
+            if ((window is not { } windowHandle) || (SequenceLease is not { } sequenceLease))
+            {
+                return new PlatformInputCaptureBatch([], 0, []);
+            }
+
+            return new PlatformInputCaptureBatch(
+                [
+                    new PhysicalInputEvent(
+                        PhysicalInputEventKind.StateReconciliation,
+                        HostTimestamp,
+                        sequenceLease.Allocate(),
+                        window: windowHandle,
+                        reconciliationState: []),
+                ],
+                0,
+                []);
+        }
     }
 }

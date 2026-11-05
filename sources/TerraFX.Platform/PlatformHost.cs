@@ -156,6 +156,30 @@ public sealed class PlatformHost
         _clipboardText?.Pump();
     }
 
+    internal void RequestGamepadStateReconciliation(nint nativeDeviceIdentity)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero((long)nativeDeviceIdentity);
+        _backend.RequestGamepadStateReconciliation(nativeDeviceIdentity);
+    }
+
+    internal void RequestInputStateReconciliation(WindowHandle? window)
+    {
+        if (window is { } windowHandle)
+        {
+            if (!windowHandle.IsValid || (windowHandle.OwnerId != _backend.OwnerId))
+            {
+                throw new ArgumentException("The window handle belongs to another platform owner.", nameof(window));
+            }
+
+            if (!_backend.TryGetNativeWindowBinding(windowHandle, out _))
+            {
+                throw new InvalidOperationException("The window handle is stale or no longer active.");
+            }
+        }
+
+        _backend.RequestInputStateReconciliation(window);
+    }
+
     internal void SetMonitorHandles(ImmutableArray<MonitorHandle> monitorHandles)
         => _backend.SetMonitorHandles(monitorHandles);
 

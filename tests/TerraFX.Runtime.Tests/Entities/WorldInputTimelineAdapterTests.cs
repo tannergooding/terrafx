@@ -23,6 +23,16 @@ internal sealed class WorldInputTimelineAdapterTests
         return new InputActionMapV1(1, Guid.NewGuid(), 1, 1, [action], [context], [binding]);
     }
 
+    private static InputActionMapV1 CreateGamepadDigitalMap(ushort playerSlot)
+    {
+        var action = new ActionDefinition(Guid.NewGuid(), "Confirm", InputActionKind.Digital);
+        var context = new ContextDefinition(Guid.NewGuid(), 0);
+        var binding = new BindingDefinition(Guid.NewGuid(), action.ActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(playerSlot, GamepadButtonValue.South),
+        };
+        return new InputActionMapV1(1, Guid.NewGuid(), 1, 1, [action], [context], [binding]);
+    }
+
     private static World CreateWorld(float initialTimeScale)
     {
         var registration = new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build();
@@ -129,6 +139,58 @@ internal sealed class WorldInputTimelineAdapterTests
             Assert.That(secondSnapshot.AssignedTick, Is.EqualTo(1));
             Assert.That(secondSnapshot.Actions[0].IsDownAtEnd, Is.False);
             Assert.That(secondSnapshot.Actions[0].ReleasedThisTick, Is.True);
+        }
+        finally
+        {
+            _ = adapter.DisposeAndGetTransitions();
+        }
+    }
+
+    [Test]
+    public void ReconcilesPhysicalScopesBeforeResumingATimeline()
+    {
+        using var world = CreateWorld(initialTimeScale: 1.0f);
+        var sequenceLease = new HostEventSequenceLease();
+        var adapter = new WorldInputTimelineAdapter(
+            world,
+            new InputRouter(
+                InputRecipientKind.SimulationTimeline,
+                OwnerIdAllocator.Allocate(),
+                Environment.CurrentManagedThreadId,
+                sequenceLease),
+            sequenceLease);
+
+        try
+        {
+            Assert.That(adapter.Router.RegisterMap(CreateDigitalMap(new KeyboardControl(7, 4))).Status, Is.EqualTo(InputMapStatus.Registered));
+            Assert.That(adapter.Router.RegisterMap(CreateGamepadDigitalMap(playerSlot: 2)).Status, Is.EqualTo(InputMapStatus.Registered));
+            _ = adapter.BeginPumpBoundary(hostTimestamp: 0, isPaused: false);
+            Assert.That(
+                adapter.PauseHeadlessInput(10, out _, out _).Status,
+                Is.EqualTo(InputRoutingStatus.Applied));
+
+            adapter.BeginPhysicalInputReconciliationAtBoundary(hostTimestamp: 20);
+            Assert.That(adapter.Router.GetUnreconciledGamepadPlayerSlots(), Is.EqualTo(new ushort[] { 2 }));
+            Assert.That(
+                adapter.ReconcileUnassignedGamepadPlayerSlotAtBoundary(2, 20, out _).Status,
+                Is.EqualTo(InputRoutingStatus.Applied));
+
+            var window = new WindowHandle(OwnerIdAllocator.Allocate(), 0, 1);
+            var keyboardReconciliation = new PhysicalInputEvent(
+                PhysicalInputEventKind.StateReconciliation,
+                hostTimestamp: 20,
+                hostSequence: sequenceLease.Allocate(),
+                window: window,
+                reconciliationState: []);
+            Assert.That(
+                adapter.EnqueueCapturedPhysicalEvent(keyboardReconciliation, playerSlot: null, out _).Status,
+                Is.EqualTo(InputRoutingStatus.Applied));
+
+            _ = adapter.ServiceHostControlBoundary();
+            Assert.That(adapter.Router.IsPaused, Is.False);
+            Assert.That(adapter.Router.GetUnreconciledGamepadPlayerSlots(), Is.Empty);
+            Assert.That(adapter.CompletePhysicalInputReconciliationAtBoundary(hostTimestamp: 20), Is.True);
+            Assert.That(adapter.CurrentSegment.IsPaused, Is.False);
         }
         finally
         {

@@ -469,6 +469,27 @@ internal sealed class PlatformInputBroker
         return Math.Max(timestamp, _lastHostTimestamp);
     }
 
+    internal nint GetNativeDeviceIdentity(InputDeviceHandle device)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+
+        if (!IsActiveGamepadDevice(device))
+        {
+            throw new InvalidOperationException("The gamepad device handle is stale or no longer active.");
+        }
+
+        foreach (var (nativeIdentity, currentDevice) in _devicesByNativeIdentity)
+        {
+            if (currentDevice == device)
+            {
+                return nativeIdentity;
+            }
+        }
+
+        throw new InvalidOperationException("The active gamepad has no native identity in the input broker.");
+    }
+
     internal bool IsActiveGamepadDevice(InputDeviceHandle device)
     {
         EnsureOwnerThread();

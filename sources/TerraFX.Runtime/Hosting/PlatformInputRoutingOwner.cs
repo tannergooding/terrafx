@@ -174,6 +174,8 @@ internal sealed class PlatformInputRoutingOwner
             return assignmentAdmission;
         }
 
+        var capturedInput = _platformOwner.RequestGamepadStateReconciliation(device);
+
         if (hasPreviousControl)
         {
             var removalReceipt = previousAssignment.Router.CancelInputState(
@@ -211,6 +213,7 @@ internal sealed class PlatformInputRoutingOwner
 
         _deviceAssignments.Add(device, (targetRouter, playerSlot));
         _devicesByTimelinePlayer.Add(targetRoute, device);
+        RouteCapturedInput(capturedInput);
         return assignmentReceipt;
     }
 
@@ -230,6 +233,28 @@ internal sealed class PlatformInputRoutingOwner
         }
 
         GetOrCreateWindowInputRoute(window).AttachSimulationTimeline(router);
+    }
+
+    internal bool BeginPhysicalInputReconciliationAtBoundary(
+        WorldInputTimelineAdapter adapter,
+        long hostTimestamp)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(adapter);
+
+        var router = adapter.Router;
+        var windowRoute = FindWindowInputRoute(router);
+        var hasAssignedGamepad = _deviceAssignments.Values.Any(
+            assignment => ReferenceEquals(assignment.Router, router));
+
+        if ((windowRoute is null) && !hasAssignedGamepad)
+        {
+            return false;
+        }
+
+        adapter.BeginPhysicalInputReconciliationAtBoundary(hostTimestamp);
+        RequestPhysicalInputReconciliation(adapter, windowRoute, hostTimestamp);
+        return true;
     }
 
     internal InputBindingReceipt BindGameplayInput(WindowHandle window, World world, bool worldIsHosted)
@@ -351,6 +376,16 @@ internal sealed class PlatformInputRoutingOwner
         _windowInputRoutes.Clear();
         _deviceAssignments.Clear();
         _devicesByTimelinePlayer.Clear();
+    }
+
+    internal void ContinuePhysicalInputReconciliationAtBoundary(
+        WorldInputTimelineAdapter adapter,
+        long hostTimestamp)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(adapter);
+        adapter.BeginPhysicalInputReconciliationPumpBoundary(hostTimestamp);
+        RequestPhysicalInputReconciliation(adapter, FindWindowInputRoute(adapter.Router), hostTimestamp);
     }
 
     [SuppressMessage(
@@ -576,6 +611,19 @@ internal sealed class PlatformInputRoutingOwner
         }
     }
 
+    private PlatformWindowInputRoute? FindWindowInputRoute(InputRouter router)
+    {
+        foreach (var route in _windowInputRoutes.Values)
+        {
+            if (ReferenceEquals(route.SimulationTimelineRouter, router))
+            {
+                return route;
+            }
+        }
+
+        return null;
+    }
+
     [SuppressMessage(
         "Usage",
         "CA1031:Do not catch general exception types",
@@ -641,6 +689,107 @@ internal sealed class PlatformInputRoutingOwner
         {
             router.LatchPlatformInputOverflow(hostTimestamp, hostSequence);
         }
+    }
+
+    private void ReconcileUnassignedGamepadPlayerSlot(
+        WorldInputTimelineAdapter adapter,
+        WindowHandle? window,
+        ushort playerSlot,
+        long hostTimestamp)
+    {
+        var receipt = adapter.ReconcileUnassignedGamepadPlayerSlotAtBoundary(
+            playerSlot,
+            hostTimestamp,
+            out var discardedInputCount);
+        ReportReconciliationAdmission(adapter, window, receipt, discardedInputCount, "unassigned gamepad slot");
+    }
+
+    private void ReconcileUnassignedWindowInput(WorldInputTimelineAdapter adapter, long hostTimestamp)
+    {
+        var receipt = adapter.ReconcileUnassignedWindowInputAtBoundary(
+            hostTimestamp,
+            out var discardedInputCount);
+        ReportReconciliationAdmission(adapter, window: null, receipt, discardedInputCount, "unassigned window input");
+    }
+
+    private void ReportReconciliationAdmission(
+        WorldInputTimelineAdapter adapter,
+        WindowHandle? window,
+        InputRoutingReceipt receipt,
+        long discardedInputCount,
+        string scope)
+    {
+        if (receipt.Status != InputRoutingStatus.Applied)
+        {
+            var severity = (receipt.Status == InputRoutingStatus.CapacityExceeded)
+                ? DiagnosticSeverity.Warning
+                : DiagnosticSeverity.Error;
+            var reason = receipt.Rejection?.Code ?? receipt.Status.ToString();
+            var world = adapter.World;
+            _diagnostics.Write(
+                new Diagnostic(
+                    "input-state-reconciliation-rejected",
+                    severity,
+                    System.Diagnostics.Stopwatch.GetTimestamp(),
+                    _platformOwner.OwnerId,
+                    world.WorldGuid,
+                    deviceId: null,
+                    deviceEpoch: null,
+                    surfaceId: null,
+                    surfaceEpoch: null,
+                    swapchainEpoch: null,
+                    tick: null,
+                    systemId: null,
+                    passId: null,
+                    assetId: null,
+                    commandIdentity: receipt.HostSequence?.ToString(CultureInfo.InvariantCulture),
+                    operation: "PlatformInputRoute.Reconcile",
+                    nativeResult: null,
+                    message: $"The {scope} reconciliation was not admitted: {reason}.",
+                    context: [
+                        new DiagnosticContextEntry("RecipientId", receipt.RecipientId.ToString(CultureInfo.InvariantCulture)),
+                        new DiagnosticContextEntry("Reason", reason),
+                    ]),
+                executionSessionId: null,
+                worldOwnerId: world.OwnerId);
+            return;
+        }
+
+        if (discardedInputCount != 0)
+        {
+            WriteDiscardedInputDiagnostic(
+                _platformOwner.OwnerId,
+                window,
+                device: null,
+                receipt.RecipientId,
+                receipt.HostSequence.GetValueOrDefault(),
+                discardedInputCount,
+                scope);
+        }
+    }
+
+    private void RequestPhysicalInputReconciliation(
+        WorldInputTimelineAdapter adapter,
+        PlatformWindowInputRoute? windowRoute,
+        long hostTimestamp)
+    {
+        var router = adapter.Router;
+
+        if (windowRoute is null)
+        {
+            ReconcileUnassignedWindowInput(adapter, hostTimestamp);
+        }
+
+        foreach (var playerSlot in router.GetUnreconciledGamepadPlayerSlots())
+        {
+            if (!_devicesByTimelinePlayer.ContainsKey((router.RecipientId, playerSlot)))
+            {
+                ReconcileUnassignedGamepadPlayerSlot(adapter, windowRoute?.Window, playerSlot, hostTimestamp);
+            }
+        }
+
+        var capturedInput = _platformOwner.RequestInputStateReconciliation(windowRoute?.Window);
+        RouteCapturedInput(capturedInput);
     }
 
     private bool RouteDeviceInput(PhysicalInputEvent inputEvent)

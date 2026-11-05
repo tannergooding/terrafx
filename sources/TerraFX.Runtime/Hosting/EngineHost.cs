@@ -540,6 +540,24 @@ public sealed partial class EngineHost : IAsyncDisposable
         return request.Result;
     }
 
+    private void CompletePhysicalInputReconciliationAtBoundary()
+    {
+        var hostTimestamp = _platformOwner?.GetHostTimestamp()
+            ?? throw new InvalidOperationException("The EngineHost platform owner is not initialized.");
+
+        foreach (var adapter in _inputTimelineByRouter.Values)
+        {
+            if (!adapter.IsAwaitingPhysicalInputReconciliation
+                || !adapter.CompletePhysicalInputReconciliationAtBoundary(hostTimestamp))
+            {
+                continue;
+            }
+
+            var schedule = _worlds.First(candidate => ReferenceEquals(candidate.World, adapter.World));
+            schedule.CompleteInputReconciliationWait(hostTimestamp);
+        }
+    }
+
     private void FailPendingRequests(Exception exception)
     {
         lock (_ownerRequestGate)
@@ -581,7 +599,24 @@ public sealed partial class EngineHost : IAsyncDisposable
         {
             _ = (inputAdapter?.PauseHeadlessInput(hostTimestamp, out _, out _));
             schedule.DropDebtAtBoundary(hostTimestamp);
-            _ = (inputAdapter?.ReconcileHeadlessInputAtBoundary([], hostTimestamp, out _, out _));
+
+            if (inputAdapter is not null)
+            {
+                var inputRoutingOwner = _platformInputRouting
+                    ?? throw new InvalidOperationException("The EngineHost platform input routing owner is not initialized.");
+
+                if (inputRoutingOwner.BeginPhysicalInputReconciliationAtBoundary(inputAdapter, hostTimestamp))
+                {
+                    schedule.BeginInputReconciliationWait(hostTimestamp);
+                    inputRoutingOwner.ServiceSimulationInputRoutes(inputAdapter);
+                    CompletePhysicalInputReconciliationAtBoundary();
+                }
+                else
+                {
+                    _ = inputAdapter.ReconcileHeadlessInputAtBoundary([], hostTimestamp, out _, out _);
+                }
+            }
+
             RecordSimulationDebt(schedule, debtTicks, dropped: true);
         }
 
@@ -727,7 +762,16 @@ public sealed partial class EngineHost : IAsyncDisposable
                 {
                     var schedule = _worlds.First(candidate => ReferenceEquals(candidate.World, adapter.World));
 
-                    if (schedule.DidResumeAtLastBoundary)
+                    if (adapter.IsAwaitingPhysicalInputReconciliation)
+                    {
+                        inputRoutingOwner.ContinuePhysicalInputReconciliationAtBoundary(adapter, hostTimestamp);
+                    }
+                    else if (schedule.DidResumeAtLastBoundary
+                        && inputRoutingOwner.BeginPhysicalInputReconciliationAtBoundary(adapter, hostTimestamp))
+                    {
+                        schedule.BeginInputReconciliationWait(hostTimestamp);
+                    }
+                    else if (schedule.DidResumeAtLastBoundary)
                     {
                         _ = adapter.ReconcileHeadlessInputAtBoundary(
                             [],
@@ -742,6 +786,7 @@ public sealed partial class EngineHost : IAsyncDisposable
                 }
 
                 inputRoutingOwner.ServiceSimulationInputRoutes();
+                CompletePhysicalInputReconciliationAtBoundary();
 
                 if (_ownerRequests.IsAddingCompleted)
                 {
@@ -862,7 +907,16 @@ public sealed partial class EngineHost : IAsyncDisposable
 
         if (inputAdapter is not null)
         {
-            if (schedule.DidResumeAtLastBoundary)
+            if (inputAdapter.IsAwaitingPhysicalInputReconciliation)
+            {
+                inputRoutingOwner.ContinuePhysicalInputReconciliationAtBoundary(inputAdapter, hostTimestamp);
+            }
+            else if (schedule.DidResumeAtLastBoundary
+                && inputRoutingOwner.BeginPhysicalInputReconciliationAtBoundary(inputAdapter, hostTimestamp))
+            {
+                schedule.BeginInputReconciliationWait(hostTimestamp);
+            }
+            else if (schedule.DidResumeAtLastBoundary)
             {
                 _ = inputAdapter.ReconcileHeadlessInputAtBoundary(
                     [],
@@ -876,6 +930,7 @@ public sealed partial class EngineHost : IAsyncDisposable
             }
 
             inputRoutingOwner.ServiceSimulationInputRoutes(inputAdapter);
+            CompletePhysicalInputReconciliationAtBoundary();
         }
 
         var debtTicks = schedule.GetTickDebt(hostTimestamp);
@@ -889,6 +944,7 @@ public sealed partial class EngineHost : IAsyncDisposable
     private void ShutdownOwnerServices()
     {
         var inputFailures = new List<Exception>();
+        _platformInputRouting?.ClearRoutes();
 
         foreach (var router in _inputRouters)
         {
@@ -904,7 +960,6 @@ public sealed partial class EngineHost : IAsyncDisposable
 
         _inputRouters.Clear();
         _inputTimelineByRouter.Clear();
-        _platformInputRouting?.ClearRoutes();
         _platformInputRouting = null;
         var worldFailures = new List<Exception>();
 
@@ -1184,6 +1239,7 @@ public sealed partial class EngineHost : IAsyncDisposable
     {
         private const uint TimeSpanTicksPerSecond = 10_000_000;
 
+        private bool _isAwaitingInputReconciliation;
         private bool _isPaused;
         private bool _isRecoveringOverrun;
         private SimulationClockSegment _segment;
@@ -1201,9 +1257,21 @@ public sealed partial class EngineHost : IAsyncDisposable
 
         internal bool DidResumeAtLastBoundary { get; private set; }
 
-        internal bool IsPaused => _isPaused;
+        internal bool IsPaused => _isPaused || _isAwaitingInputReconciliation;
 
         internal World World => _world;
+
+        internal void BeginInputReconciliationWait(long hostTimestamp)
+        {
+            if (_isAwaitingInputReconciliation)
+            {
+                throw new InvalidOperationException("Physical input reconciliation is already pending for this World.");
+            }
+
+            _isAwaitingInputReconciliation = true;
+            _isRecoveringOverrun = false;
+            BeginSegment(hostTimestamp, isPaused: true);
+        }
 
         internal bool BeginPumpBoundary(long hostTimestamp)
         {
@@ -1216,8 +1284,19 @@ public sealed partial class EngineHost : IAsyncDisposable
             }
 
             DidResumeAtLastBoundary = wasPaused && !_isPaused;
-            BeginSegment(hostTimestamp, _isPaused);
+            BeginSegment(hostTimestamp, _isPaused || _isAwaitingInputReconciliation);
             return DidResumeAtLastBoundary;
+        }
+
+        internal void CompleteInputReconciliationWait(long hostTimestamp)
+        {
+            if (!_isAwaitingInputReconciliation)
+            {
+                throw new InvalidOperationException("Physical input reconciliation is not pending for this World.");
+            }
+
+            _isAwaitingInputReconciliation = false;
+            BeginSegment(hostTimestamp, isPaused: _isPaused);
         }
 
         internal void DropDebtAtBoundary(long hostTimestamp)
@@ -1249,7 +1328,7 @@ public sealed partial class EngineHost : IAsyncDisposable
 
         internal long GetTickDebt(long hostTimestamp)
         {
-            if (_isPaused || !_segment.IsValid || (_segment.TimeScale == 0.0f))
+            if (_isPaused || _isAwaitingInputReconciliation || !_segment.IsValid || (_segment.TimeScale == 0.0f))
             {
                 return 0;
             }

@@ -212,6 +212,12 @@ internal sealed class ClipboardTextServiceTests
             return new ClipboardReadResponse(ClipboardTextResult.Completed, "clipboard", diagnostic: null);
         }
 
+        public void RequestGamepadStateReconciliation(nint nativeDeviceIdentity)
+            => _ = nativeDeviceIdentity;
+
+        public void RequestInputStateReconciliation(WindowHandle? window)
+            => _ = window;
+
         public void SetMonitorHandles(ImmutableArray<MonitorHandle> monitorHandles)
             => _ = monitorHandles;
 

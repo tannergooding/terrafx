@@ -300,6 +300,45 @@ internal sealed class PlatformHostOwner
         return _inputBroker.Capture(_platform.DrainInputSamples(), _activeWindowHandles.Contains);
     }
 
+    internal PlatformInputCaptureBatch RequestGamepadStateReconciliation(InputDeviceHandle device)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        ThrowIfStopping();
+
+        if (!_inputBroker.IsActiveGamepadDevice(device))
+        {
+            throw new InvalidOperationException("The gamepad device handle is stale or no longer active.");
+        }
+
+        var nativeDeviceIdentity = _inputBroker.GetNativeDeviceIdentity(device);
+        _platform.RequestGamepadStateReconciliation(nativeDeviceIdentity);
+        return _inputBroker.Capture(_platform.DrainInputSamples(), _activeWindowHandles.Contains);
+    }
+
+    internal PlatformInputCaptureBatch RequestInputStateReconciliation(WindowHandle? window)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        ThrowIfStopping();
+
+        if (window is { } windowHandle)
+        {
+            if (!windowHandle.IsValid || (windowHandle.OwnerId != _ownerId))
+            {
+                throw new ArgumentException("The window handle belongs to another platform owner.", nameof(window));
+            }
+
+            if (!_activeWindowHandles.Contains(windowHandle))
+            {
+                throw new InvalidOperationException("The window handle is stale or no longer active.");
+            }
+        }
+
+        _platform.RequestInputStateReconciliation(window);
+        return _inputBroker.Capture(_platform.DrainInputSamples(), _activeWindowHandles.Contains);
+    }
+
     private void EnsureOwnerThread()
     {
         if (_ownerThreadId != Environment.CurrentManagedThreadId)

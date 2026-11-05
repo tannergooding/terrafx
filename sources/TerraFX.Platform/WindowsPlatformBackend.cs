@@ -361,6 +361,7 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
         ApplyDeferredWindowUpdates();
         ThrowCallbackFailures();
         _gameInputCapture.Pump();
+        ReconcileRequestedWindowInputStates();
 
         var monitorCount = GetSystemMetricsNative(SystemMetricMonitorCount);
 
@@ -447,6 +448,9 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
         _lastNativeMessageTimestamp = currentTimestamp;
         return (checked((long)(_nativeMessageTimestampEpoch + currentTimestamp)), diagnostics);
     }
+
+    private bool TryCaptureNativeInputSample(PlatformInputSample sample)
+        => _inputSamples.TryEnqueue(in sample);
 
     private sealed class MonitorEnumerationContext
     {

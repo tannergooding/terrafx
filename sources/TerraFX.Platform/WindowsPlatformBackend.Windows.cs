@@ -607,6 +607,28 @@ internal sealed unsafe partial class WindowsPlatformBackend
             DpiConfidence.Reported);
     }
 
+    public void RequestGamepadStateReconciliation(nint nativeDeviceIdentity)
+    {
+        EnsureOwnerThread();
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero((long)nativeDeviceIdentity);
+        _gameInputCapture.RequestDeviceReconciliation(nativeDeviceIdentity);
+    }
+
+    public void RequestInputStateReconciliation(WindowHandle? window)
+    {
+        EnsureOwnerThread();
+
+        if (window is { } windowHandle)
+        {
+            var state = FindWindowState(windowHandle)
+                ?? throw new InvalidOperationException("The window handle is stale or no longer active.");
+            state.NeedsInputReconciliation = true;
+            QueueWindowInputStateReconciliation(state);
+        }
+
+        _gameInputCapture.RequestReconciliation();
+    }
+
     public bool TryGetNativeWindowBinding(WindowHandle window, out PlatformNativeWindowBinding binding)
     {
         EnsureOwnerThread();
@@ -970,6 +992,7 @@ internal sealed unsafe partial class WindowsPlatformBackend
 
     private void CaptureWindowFocus(WindowState state, PhysicalInputEventKind kind)
     {
+        state.IsFocused = kind == PhysicalInputEventKind.FocusGained;
         var monotonicTimestamp = _timeProvider.GetTimestamp();
         var (nativeTimestamp, diagnostics) = GetNativeMessageTimestamp();
         CaptureNativeInputSample(new PlatformInputSample(
@@ -984,16 +1007,8 @@ internal sealed unsafe partial class WindowsPlatformBackend
 
         if (kind == PhysicalInputEventKind.FocusGained)
         {
-            CaptureNativeInputSample(new PlatformInputSample(
-                PhysicalInputEventKind.StateReconciliation,
-                state.Window,
-                NativeDeviceIdentity: 0,
-                PlatformInputDeviceKind.Unknown,
-                NativeTimestamp: nativeTimestamp,
-                NativeClockDomain: WindowsMessageTimeClockDomain,
-                Diagnostics: diagnostics,
-                MonotonicTimestamp: monotonicTimestamp,
-                ReconciliationState: CaptureWindowInputState()));
+            state.NeedsInputReconciliation = true;
+            QueueWindowInputStateReconciliation(state, nativeTimestamp, diagnostics, monotonicTimestamp);
         }
     }
 
@@ -1194,6 +1209,41 @@ internal sealed unsafe partial class WindowsPlatformBackend
         _ = Interlocked.Exchange(ref state.PendingDpiBoundsAvailable, 1);
     }
 
+    private void QueueWindowInputStateReconciliation(
+        WindowState state,
+        long? nativeTimestamp = null,
+        PhysicalInputEventDiagnostic diagnostics = PhysicalInputEventDiagnostic.None,
+        long? monotonicTimestamp = null)
+    {
+        var observedMonotonicTimestamp = monotonicTimestamp ?? _timeProvider.GetTimestamp();
+        var (observedNativeTimestamp, observedDiagnostics) = nativeTimestamp is { } timestamp
+            ? (timestamp, diagnostics)
+            : GetNativeMessageTimestamp();
+        var sample = new PlatformInputSample(
+            PhysicalInputEventKind.StateReconciliation,
+            state.Window,
+            NativeDeviceIdentity: 0,
+            PlatformInputDeviceKind.Unknown,
+            NativeTimestamp: observedNativeTimestamp,
+            NativeClockDomain: WindowsMessageTimeClockDomain,
+            Diagnostics: observedDiagnostics,
+            MonotonicTimestamp: observedMonotonicTimestamp,
+            ReconciliationState: state.IsFocused ? CaptureWindowInputState() : []);
+
+        state.NeedsInputReconciliation = !TryCaptureNativeInputSample(sample);
+    }
+
+    private void ReconcileRequestedWindowInputStates()
+    {
+        foreach (var state in _windows)
+        {
+            if ((state is not null) && state.NeedsInputReconciliation && !state.IsClosing && !state.NativeDestroyed)
+            {
+                QueueWindowInputStateReconciliation(state);
+            }
+        }
+    }
+
     private void ThrowCallbackFailures()
     {
         foreach (var state in _windows)
@@ -1301,11 +1351,13 @@ internal sealed unsafe partial class WindowsPlatformBackend
         internal int CloseRequested;
         internal uint ExtendedStyle;
         internal bool IsClosing;
+        internal bool IsFocused;
         internal float MinimumClientHeight;
         internal float MinimumClientWidth;
         internal WindowMode Mode;
         internal bool NativeDestroyed;
         internal nint NativeWindow;
+        internal bool NeedsInputReconciliation;
         internal WindowsPlatformBackend Owner;
         internal NativeRect PendingDpiBounds;
         internal int PendingDpiBoundsAvailable;

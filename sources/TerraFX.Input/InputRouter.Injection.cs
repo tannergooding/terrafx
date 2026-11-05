@@ -1180,6 +1180,18 @@ public sealed partial class InputRouter
         return admission;
     }
 
+    internal ImmutableArray<ushort> GetUnreconciledGamepadPlayerSlots()
+    {
+        EnsureOwnerThread();
+        return [
+            .. _unreconciledControls
+                .Where(static control => GetInputClass(control) == InputClass.Gamepad)
+                .Select(static control => control.PlayerSlot)
+                .Distinct()
+                .OrderBy(static playerSlot => playerSlot),
+        ];
+    }
+
     internal void LatchPlatformInputOverflow(long hostTimestamp, long hostSequence)
     {
         EnsureOwnerThread();

@@ -40,6 +40,10 @@ internal interface IPlatformBackend : IDisposable
 
     ClipboardReadResponse ReadClipboardText(ClipboardReadRequest request);
 
+    void RequestGamepadStateReconciliation(nint nativeDeviceIdentity);
+
+    void RequestInputStateReconciliation(WindowHandle? window);
+
     void SetMonitorHandles(ImmutableArray<MonitorHandle> monitorHandles);
 
     bool TakeMonitorTopologyChanged();

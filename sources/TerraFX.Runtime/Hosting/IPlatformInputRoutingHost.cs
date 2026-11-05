@@ -14,4 +14,8 @@ internal interface IPlatformInputRoutingHost
     PlatformNativeWindowBinding GetNativeWindowBinding(WindowHandle window);
 
     bool IsActiveGamepadDevice(InputDeviceHandle device);
+
+    PlatformInputCaptureBatch RequestGamepadStateReconciliation(InputDeviceHandle device);
+
+    PlatformInputCaptureBatch RequestInputStateReconciliation(WindowHandle? window);
 }

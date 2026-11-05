@@ -167,6 +167,23 @@ internal sealed class HeadlessPlatformBackend : IPlatformBackend
                 "The Headless platform does not provide clipboard text."));
     }
 
+    public void RequestGamepadStateReconciliation(nint nativeDeviceIdentity)
+    {
+        EnsureOwnerThread();
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero((long)nativeDeviceIdentity);
+        throw new NotSupportedException("The Headless platform does not capture physical gamepads.");
+    }
+
+    public void RequestInputStateReconciliation(WindowHandle? window)
+    {
+        EnsureOwnerThread();
+
+        if (window is not null)
+        {
+            throw new NotSupportedException("The Headless platform does not create windows or capture physical input.");
+        }
+    }
+
     public void SetMonitorHandles(ImmutableArray<MonitorHandle> monitorHandles)
     {
         EnsureOwnerThread();
