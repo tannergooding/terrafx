@@ -1834,11 +1834,27 @@ internal sealed partial class SceneAssetStoreTests
 
             var repositoryRoot = repositoryDirectory?.FullName
                 ?? throw new DirectoryNotFoundException("The Scene activation public consumer could not locate the repository root.");
-            var consumerProject = Path.Combine(
-                repositoryRoot,
-                "tests",
+
+#if DEBUG
+            const string configuration = "Debug";
+#else
+            const string configuration = "Release";
+#endif
+            var testOutputDirectory = new DirectoryInfo(AppContext.BaseDirectory);
+            var configurationDirectory = testOutputDirectory.Parent
+                ?? throw new InvalidOperationException("The Scene activation test output has no configuration directory.");
+            var testProjectOutputDirectory = configurationDirectory.Parent
+                ?? throw new InvalidOperationException("The Scene activation test output has no project directory.");
+            var testsOutputDirectory = testProjectOutputDirectory.Parent
+                ?? throw new InvalidOperationException("The Scene activation test output has no tests directory.");
+            var consumerAssembly = Path.Combine(
+                testsOutputDirectory.FullName,
                 "TerraFX.Runtime.ComponentConsumer",
-                "TerraFX.Runtime.ComponentConsumer.csproj");
+                configuration,
+                testOutputDirectory.Name,
+                "TerraFX.Runtime.ComponentConsumer.dll");
+            Assert.That(File.Exists(consumerAssembly), Is.True, "The consumer project reference must build the separate witness.");
+
             var sceneActivationConsumer = Environment.GetEnvironmentVariable("TERRAFX_SCENE_ACTIVATION_CONSUMER");
 
             if (sceneActivationConsumer is not null
@@ -1857,18 +1873,7 @@ internal sealed partial class SceneAssetStoreTests
 
             if (sceneActivationConsumer is null)
             {
-#if DEBUG
-                const string configuration = "Debug";
-#else
-                const string configuration = "Release";
-#endif
-                startInfo.ArgumentList.Add("run");
-                startInfo.ArgumentList.Add("--project");
-                startInfo.ArgumentList.Add(consumerProject);
-                startInfo.ArgumentList.Add("--configuration");
-                startInfo.ArgumentList.Add(configuration);
-                startInfo.ArgumentList.Add("--no-build");
-                startInfo.ArgumentList.Add("--");
+                startInfo.ArgumentList.Add(consumerAssembly);
             }
 
             startInfo.ArgumentList.Add(hosted ? "--scene-activation-host" : "--scene-activation");
