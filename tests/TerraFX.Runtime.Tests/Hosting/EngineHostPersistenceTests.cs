@@ -3,6 +3,7 @@
 using System;
 using System.IO;
 using System.Security.Cryptography;
+using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
@@ -70,6 +71,15 @@ internal sealed partial class EngineHostOptionsTests
                 InitialReplayLineageId = Guid.NewGuid(),
                 WorldGuid = Guid.NewGuid(),
             })).ConfigureAwait(false);
+            var canceledSavePath = Path.Combine(Path.GetTempPath(), $"terrafx-{Guid.NewGuid():N}.canceled.state");
+            using var canceledSave = new CancellationTokenSource();
+            await canceledSave.CancelAsync().ConfigureAwait(false);
+            await host.InvokeAsync(_ => Assert.Throws<OperationCanceledException>(() =>
+                host.Persistence.SaveAsync(
+                    world!,
+                    new SaveOptions(canceledSavePath, SaveDurabilityPolicy.BestEffort),
+                    canceledSave.Token))).ConfigureAwait(false);
+            Assert.That(File.Exists(canceledSavePath), Is.False);
             await Task.Delay(50).ConfigureAwait(false);
             Task<SaveReceipt>? saveTask = null;
 
