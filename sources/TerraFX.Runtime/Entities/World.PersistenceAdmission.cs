@@ -49,6 +49,29 @@ public sealed partial class World
         return false;
     }
 
+    internal bool TryPrepareGuidReplacement(
+        out WorldGuidReplacementPreparation? preparation,
+        out WorldGuidRefusal refusal)
+    {
+        lock (_sceneStorageGate)
+        {
+            lock (_persistenceAdmissionGate)
+            {
+                lock (_ownerControlGate)
+                {
+                    if (Volatile.Read(ref _disposed) != 0)
+                    {
+                        preparation = null;
+                        refusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
+                        return false;
+                    }
+
+                    return _registry.TryPrepareReplacement(_worldGuidGrant, out preparation, out refusal);
+                }
+            }
+        }
+    }
+
     [SuppressMessage(
         "Reliability",
         "CA2000:Dispose objects before losing scope",

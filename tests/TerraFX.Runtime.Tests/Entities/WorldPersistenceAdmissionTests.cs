@@ -153,4 +153,21 @@ internal sealed class WorldPersistenceAdmissionTests
         Assert.That(replacement, Is.Not.Null);
         replacement!.Dispose();
     }
+
+    [Test]
+    public void WorldReplacementPreparationIsBoundToItsLiveBinding()
+    {
+        using var world = CreateWorld(8192);
+        Assert.That(world.TryPrepareGuidReplacement(out var preparation, out var refusal), Is.True);
+        Assert.That(refusal.IsNone, Is.True);
+        Assert.That(preparation, Is.Not.Null);
+        preparation!.Dispose();
+
+        world.Dispose();
+
+        Assert.That(world.TryPrepareGuidReplacement(out var stalePreparation, out refusal), Is.False);
+        Assert.That(stalePreparation, Is.Null);
+        Assert.That(refusal.Code, Is.EqualTo(WorldGuidRefusal.TargetBindingStale));
+        stalePreparation?.Dispose();
+    }
 }
