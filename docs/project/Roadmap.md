@@ -111,7 +111,7 @@ M04 render-graph progress: the internal registry unifies imports/transients, pas
 
 ### Current Windows x64 NativeAOT qualification
 
-The Windows x64 NativeAOT Release witnesses publish and execute the handwritten `TerraFX.Runtime.ComponentConsumer` and `TerraFX.Graphics.D3D12.Consumer`. The four standalone/Headless-host Scene activation cases pass 4/4 when the activation test launches the exact published Runtime consumer; the D3D12 consumer verifies public registration and transfer/pipeline/sampler signatures without activating a native device. Latest fixture-enabled JIT results are Runtime.Tests 697/698 (one distinct-DPI skip), D3D12.Tests 40/40, and Vulkan.Tests 96/96 with validation in Debug and Release; the D3D12 descriptor-set witness passes 1/1. These selected observations do not qualify Load/replacement, native input, public graph submission, presentation, or final Q acceptance. Linux remains deferred per user instruction.
+The handwritten and generated `TerraFX.Runtime` consumers and `TerraFX.Graphics.D3D12.Consumer` republish and execute as Windows x64 NativeAOT Release. The four standalone/Headless-host Scene activation cases pass 4/4 when the activation test launches the published Runtime consumer. Latest fixture-enabled JIT results are Runtime.Tests 697/698 (one distinct-DPI skip), D3D12.Tests 40/40, and Vulkan.Tests 96/96 with validation in Debug and Release; the D3D12 descriptor-set witness passes 1/1. These selected observations do not qualify Load/replacement, native input, public graph submission, presentation, or final Q acceptance. Linux remains deferred per user instruction.
 
 ### Current Persistence producer status
 
