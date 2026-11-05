@@ -23,7 +23,8 @@ internal static class WorldPersistenceRecoveryReader
         ArgumentNullException.ThrowIfNull(backupPath);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSnapshotBytes);
 
-        return checked((2 * maximumSnapshotBytes) + FileStreamBufferBytes + RecoveryControlBytes);
+        // Both candidate buffers and the largest semantic-validation copy can coexist.
+        return checked((3 * maximumSnapshotBytes) + FileStreamBufferBytes + RecoveryControlBytes);
     }
 
     internal static async Task<(string Path, long Generation, byte[] FileRecord, IDisposable SourceUse)?> ReadLatestCommittedAsync(
@@ -32,12 +33,14 @@ internal static class WorldPersistenceRecoveryReader
         WorldGuidReplacementPreparation preparation,
         long maximumSnapshotBytes,
         EbinReadLimits limits,
+        Func<ReadOnlyMemory<byte>, bool> validateCandidate,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(targetPath);
         ArgumentNullException.ThrowIfNull(backupPath);
         ArgumentNullException.ThrowIfNull(preparation);
         ArgumentNullException.ThrowIfNull(limits);
+        ArgumentNullException.ThrowIfNull(validateCandidate);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSnapshotBytes);
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -59,6 +62,7 @@ internal static class WorldPersistenceRecoveryReader
                 maximumSnapshotBytes,
                 limits,
                 latest,
+                validateCandidate,
                 cancellationToken).ConfigureAwait(false);
             latest = await ReadCandidateAsync(
                 backupPath,
@@ -66,6 +70,7 @@ internal static class WorldPersistenceRecoveryReader
                 maximumSnapshotBytes,
                 limits,
                 latest,
+                validateCandidate,
                 cancellationToken).ConfigureAwait(false);
 
             if (latest is null)
@@ -93,6 +98,7 @@ internal static class WorldPersistenceRecoveryReader
         long maximumSnapshotBytes,
         EbinReadLimits limits,
         (string Path, long Generation, byte[] FileRecord)? latest,
+        Func<ReadOnlyMemory<byte>, bool> validateCandidate,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -145,7 +151,12 @@ internal static class WorldPersistenceRecoveryReader
                     return latest;
                 }
 
-                return (latest is null) || (generation > latest.Value.Generation)
+                if ((latest is not null) && (generation <= latest.Value.Generation))
+                {
+                    return latest;
+                }
+
+                return validateCandidate(candidate)
                     ? (candidatePath, generation, candidate)
                     : latest;
             }

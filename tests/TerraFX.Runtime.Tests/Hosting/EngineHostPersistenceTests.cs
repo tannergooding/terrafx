@@ -95,6 +95,24 @@ internal sealed partial class EngineHostOptionsTests
                 world.Options.Registration,
                 identityScratch: new WorldPersistenceIdentityScratchEntry[identityAssignmentCount]);
             var worldContents = checkpoint.WorldContents;
+            var candidateIdentityScratch = new WorldPersistenceIdentityScratchEntry[identityAssignmentCount];
+
+            bool IsValidCandidate(ReadOnlyMemory<byte> candidateFile)
+            {
+                try
+                {
+                    _ = WorldPersistenceCheckpointWriter.ReadContents(
+                        candidateFile.Span,
+                        limits,
+                        world.Options.Registration,
+                        identityScratch: candidateIdentityScratch);
+                    return true;
+                }
+                catch (ArgumentException)
+                {
+                    return false;
+                }
+            }
 
             Assert.Multiple(() => {
                 Assert.That(checkpoint.TransactionGeneration, Is.EqualTo(1));
@@ -162,6 +180,7 @@ internal sealed partial class EngineHostOptionsTests
                     underfundedPreparationScope,
                     world.Options.MaximumSnapshotBytes,
                     limits,
+                    IsValidCandidate,
                     default).ConfigureAwait(false);
                 unexpectedCandidate?.SourceUse.Dispose();
             }
@@ -192,6 +211,7 @@ internal sealed partial class EngineHostOptionsTests
                 latestPreparationScope,
                 world.Options.MaximumSnapshotBytes,
                 limits,
+                IsValidCandidate,
                 default).ConfigureAwait(false);
             var latest = latestCandidate
                 ?? throw new InvalidOperationException("The newest valid recovery candidate was not selected.");
@@ -225,6 +245,7 @@ internal sealed partial class EngineHostOptionsTests
                 recoveryPreparationScope,
                 world.Options.MaximumSnapshotBytes,
                 limits,
+                IsValidCandidate,
                 default).ConfigureAwait(false);
 
             var recovery = recoveredCandidate
@@ -233,7 +254,42 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(recovery.Path, Is.EqualTo(backupPath));
             Assert.That(recovery.Generation, Is.EqualTo(1));
             Assert.That(recovery.FileRecord, Is.EqualTo(fileRecord));
+            recoverySourceUse.Dispose();
+
+            var mismatchedHeaderRecord = WorldPersistenceHeaderWriter.Create(
+                options.PersistenceMetadata,
+                WorldPersistenceMode.Standard,
+                [],
+                Guid.NewGuid(),
+                checkpoint.LineageGuid,
+                checkpoint.NextTick,
+                checked((byte)host.CpuWorkerCount),
+                WorldPersistenceHeaderWriterTests.CreateFoundationProfileRecord());
+            var mismatchedCheckpointRecord = WorldPersistenceCheckpointWriter.CreateCheckpoint(
+                mismatchedHeaderRecord,
+                checkpoint.WorldRecord,
+                limits).CheckpointRecord;
+            var semanticallyInvalidPrimary = WorldPersistenceCheckpointWriter.CreateFileRecord(
+                transactionGeneration: 2,
+                checkpointRecord: mismatchedCheckpointRecord,
+                limits: limits).FileRecord;
+            await File.WriteAllBytesAsync(savePath, semanticallyInvalidPrimary).ConfigureAwait(false);
+            var semanticFallbackCandidate = await WorldPersistenceRecoveryReader.ReadLatestCommittedAsync(
+                savePath,
+                backupPath,
+                recoveryPreparationScope,
+                world.Options.MaximumSnapshotBytes,
+                limits,
+                IsValidCandidate,
+                default).ConfigureAwait(false);
+            var semanticFallback = semanticFallbackCandidate
+                ?? throw new InvalidOperationException("The semantically invalid primary did not fall back to the valid backup.");
+            using var semanticFallbackSourceUse = semanticFallback.SourceUse;
+            Assert.That(semanticFallback.Path, Is.EqualTo(backupPath));
+            Assert.That(semanticFallback.Generation, Is.EqualTo(1));
+            semanticFallbackSourceUse.Dispose();
             await File.WriteAllBytesAsync(savePath, fileRecord).ConfigureAwait(false);
+            recoveryPreparationScope.Dispose();
 
             var strictLocalHeaderRecord = WorldPersistenceHeaderWriter.Create(
                 options.PersistenceMetadata,
