@@ -12,6 +12,7 @@ namespace TerraFX.Entities;
 public sealed class WorldAdmissionDomain : IDisposable
 {
     private const int FreshRootLineageKeyCount = 1;
+    private const int LineageEntryChargeStride = 256;
     private const int MaximumEdges = 1_048_576;
     private const int MaximumInterests = 65_536;
     private const int MaximumLineageIndexCapacity = 524_288;
@@ -38,6 +39,7 @@ public sealed class WorldAdmissionDomain : IDisposable
     private LineageIndexBucket[] _lineageIndex;
     private int _lineageKeyCount;
     private Guid[] _lineageKeys;
+    private long _lineageMembershipBytes;
     private LineageEntry[] _lineages;
     private readonly long _maximumBytes;
     private long _pendingGrowthBytes;
@@ -83,6 +85,7 @@ public sealed class WorldAdmissionDomain : IDisposable
         int currentIndexCapacity,
         long maximumBytes,
         long currentRegistryCharge,
+        long retainedMembershipBytes,
         long pendingGrowthBytes,
         long worldBytes,
         long additionalWorldBytes)
@@ -95,7 +98,7 @@ public sealed class WorldAdmissionDomain : IDisposable
         for (var rootCapacity = firstCapacity; rootCapacity > currentRootCapacity; rootCapacity--)
         {
             var indexCapacity = GetIndexCapacityForRoots(rootCapacity, currentIndexCapacity);
-            var registryCharge = GetRegistryCharge(rootCapacity, indexCapacity);
+            var registryCharge = checked(GetRegistryCharge(rootCapacity, indexCapacity) + retainedMembershipBytes);
             var newArrayCharge = GetRegistryArrayCharge(rootCapacity, indexCapacity);
             var peakRegistryCharge = checked(currentRegistryCharge + pendingGrowthBytes + newArrayCharge);
 
@@ -146,7 +149,7 @@ public sealed class WorldAdmissionDomain : IDisposable
         if (rootCapacity > 0)
         {
             charge = checked(charge
-                + ArrayCharge(rootCapacity, Unsafe.SizeOf<LineageEntry>())
+                + ArrayCharge(rootCapacity, LineageEntryChargeStride)
                 + ArrayCharge(rootCapacity, Unsafe.SizeOf<InterestEntry>())
                 + ArrayCharge(rootCapacity, Unsafe.SizeOf<ReservationEntry>())
                 + ArrayCharge(checked(rootCapacity * FreshRootLineageKeyCount), Unsafe.SizeOf<Guid>()));
@@ -335,15 +338,45 @@ public sealed class WorldAdmissionDomain : IDisposable
             ref var entry = ref _lineages[grant.Index];
             var keyOffset = grant.Index * FreshRootLineageKeyCount;
             ref var reservation = ref _reservations[grant.Index];
+            var lineageBucketIndex = FindLineageIndexBucket(grant.LineageId);
 
             if ((entry.Generation != grant.Generation)
                 || (entry.WorldGuid != grant.WorldGuid)
                 || (entry.IdentityBranchId != grant.IdentityBranchId)
                 || (_lineageKeys[keyOffset] != grant.LineageId)
+                || (lineageBucketIndex < 0)
                 || !IsMatchingReservation(reservation, grant)
                 || (entry.State != StateReserved))
             {
                 return false;
+            }
+
+            ref var lineageBucket = ref _lineageIndex[lineageBucketIndex];
+
+            if ((lineageBucket._reservedRootIndexPlusOne != grant.Index + 1)
+                || (lineageBucket._reservedGeneration != grant.Generation))
+            {
+                return false;
+            }
+
+            if (_lineages[grant.Index].MembershipKeys is { } membershipKeys
+                && !TryCommitLineageMembership(grant, membershipKeys, lineageBucketIndex))
+            {
+                return false;
+            }
+
+            if (_lineages[grant.Index].MembershipKeys is null)
+            {
+                var committedBucketIndex = FindLineageIndexBucket(grant.LineageId);
+
+                if (committedBucketIndex < 0)
+                {
+                    return false;
+                }
+
+                ref var committedBucket = ref _lineageIndex[committedBucketIndex];
+                committedBucket._reservedRootIndexPlusOne = 0;
+                committedBucket._reservedGeneration = 0;
             }
 
             entry.State = StateCommitted;
@@ -423,9 +456,25 @@ public sealed class WorldAdmissionDomain : IDisposable
                 return false;
             }
 
+            var lineageBucketIndex = FindLineageIndexBucket(grant.LineageId);
+
+            if ((lineageBucketIndex < 0)
+                || (_lineageIndex[lineageBucketIndex]._reservedRootIndexPlusOne != grant.Index + 1)
+                || (_lineageIndex[lineageBucketIndex]._reservedGeneration != grant.Generation))
+            {
+                return false;
+            }
+
             RemoveLineageIndexEntry(grant.LineageId);
+            var membershipBytes = entry.MembershipBytes;
             ClearLineageRoot(ref entry, keyOffset);
             ReleaseReservation(grant.Index);
+
+            if (membershipBytes > 0)
+            {
+                ReleaseRetainedLineageMembershipCharge(membershipBytes);
+            }
+
             return true;
         }
     }
@@ -552,6 +601,10 @@ public sealed class WorldAdmissionDomain : IDisposable
                 return false;
             }
 
+            var reservedLineageBucketIndex = FindLineageIndexBucket(lineageId);
+            ref var reservedLineageBucket = ref _lineageIndex[reservedLineageBucketIndex];
+            reservedLineageBucket._reservedRootIndexPlusOne = freeIndex + 1;
+            reservedLineageBucket._reservedGeneration = reservedEntry.Generation;
             _lineageKeys[reservedKeyOffset] = lineageId;
             reservationEntry.Generation = reservedEntry.Generation;
             reservationEntry.RootIndex = freeIndex;
@@ -568,6 +621,159 @@ public sealed class WorldAdmissionDomain : IDisposable
                 identityBranchId);
             refusal = WorldAdmissionRefusal.None;
             return true;
+        }
+    }
+
+    internal bool TryReserveFreshLineageHistory(
+        WorldDomainReservation reservation,
+        Guid worldGuid,
+        Guid lineageId,
+        Guid identityBranchId,
+        scoped ReadOnlySpan<Guid> membershipKeys,
+        out WorldLineageGrant grant,
+        out WorldAdmissionRefusal refusal)
+    {
+        ArgumentNullException.ThrowIfNull(reservation);
+        ArgumentOutOfRangeException.ThrowIfEqual(worldGuid, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfEqual(lineageId, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfEqual(identityBranchId, Guid.Empty);
+
+        if (membershipKeys.IsEmpty
+            || (membershipKeys.Length > MaximumLineageKeys)
+            || (membershipKeys.Length > MaximumEdges))
+        {
+            throw new ArgumentException("The validated lineage membership is empty or outside its bound.", nameof(membershipKeys));
+        }
+
+        var containsCurrentLineage = false;
+
+        for (var index = 0; index < membershipKeys.Length; index++)
+        {
+            var membershipKey = membershipKeys[index];
+
+            if (membershipKey == Guid.Empty)
+            {
+                throw new ArgumentException("A validated lineage membership contains an empty key.", nameof(membershipKeys));
+            }
+
+            if ((index > 0) && (membershipKeys[index - 1].CompareTo(membershipKey) >= 0))
+            {
+                throw new ArgumentException("A validated lineage membership must be RFC-ordered and unique.", nameof(membershipKeys));
+            }
+
+            containsCurrentLineage |= membershipKey == lineageId;
+        }
+
+        if (!containsCurrentLineage)
+        {
+            throw new ArgumentException("The validated lineage membership does not contain its current lineage.", nameof(membershipKeys));
+        }
+
+        if (membershipKeys.Length == 1)
+        {
+            return TryReserveFreshLineage(
+                reservation,
+                worldGuid,
+                lineageId,
+                identityBranchId,
+                out grant,
+                out refusal);
+        }
+
+        if (!reservation.IsOwnedBy(this))
+        {
+            throw new ArgumentException("A fresh lineage requires a live reservation from this exact domain.", nameof(reservation));
+        }
+
+        var membershipBytes = ArrayCharge(membershipKeys.Length, Unsafe.SizeOf<Guid>());
+
+        using var growthScope = ReentrantGate.EnterScope(ref _growthGate);
+
+        if (!EnsureLineageCapacity())
+        {
+            using (ReentrantGate.EnterScope(ref _gate))
+            {
+                refusal = _isDisposed
+                    ? WorldAdmissionRefusal.DomainClosed
+                    : WorldAdmissionRefusal.LineageCapacity;
+            }
+
+            grant = default;
+            return false;
+        }
+
+        if (!TryReserveLineageMembershipCharge(membershipBytes, out var domainClosed))
+        {
+            grant = default;
+            refusal = domainClosed
+                ? WorldAdmissionRefusal.DomainClosed
+                : WorldAdmissionRefusal.LineageCapacity;
+            return false;
+        }
+
+        WorldLineageGrant reservedGrant = default;
+        var grantCreated = false;
+        var membershipBytesTransferred = false;
+
+        try
+        {
+            var ownedMembershipKeys = membershipKeys.ToArray();
+
+            if (!TryReserveFreshLineage(
+                reservation,
+                worldGuid,
+                lineageId,
+                identityBranchId,
+                out reservedGrant,
+                out refusal))
+            {
+                grant = default;
+                return false;
+            }
+
+            using (ReentrantGate.EnterScope(ref _gate))
+            {
+                if (!IsActiveWorldReservation(reservation)
+                    || ((uint)reservedGrant.Index >= (uint)_lineages.Length))
+                {
+                    throw new InvalidOperationException("The World reservation changed during fresh lineage history admission.");
+                }
+
+                ref var entry = ref _lineages[reservedGrant.Index];
+
+                if ((entry.Generation != reservedGrant.Generation)
+                    || (entry.State != StateReserved)
+                    || (entry.WorldGuid != worldGuid)
+                    || (entry.IdentityBranchId != identityBranchId)
+                    || (entry.MembershipKeys is not null))
+                {
+                    throw new InvalidOperationException("The reserved root changed during fresh lineage history admission.");
+                }
+
+                entry.MembershipKeys = ownedMembershipKeys;
+                entry.MembershipBytes = membershipBytes;
+                _lineageMembershipBytes = checked(_lineageMembershipBytes + membershipBytes);
+                _registryCharge = checked(_registryCharge + membershipBytes);
+                _pendingGrowthBytes = checked(_pendingGrowthBytes - membershipBytes);
+            }
+
+            grant = reservedGrant;
+            grantCreated = true;
+            membershipBytesTransferred = true;
+            refusal = WorldAdmissionRefusal.None;
+            return true;
+        }
+        finally
+        {
+            if (!grantCreated && reservedGrant.IsValid)
+            {
+                _ = TryReleaseFreshLineage(reservedGrant);
+            }
+
+            if (!membershipBytesTransferred)
+            {
+                ReleaseLineageMembershipCharge(membershipBytes);
+            }
         }
     }
 
@@ -679,12 +885,42 @@ public sealed class WorldAdmissionDomain : IDisposable
                 return false;
             }
 
-            RemoveLineageIndexEntry(grant.LineageId);
+            if (reservationActive)
+            {
+                var reservedBucketIndex = FindLineageIndexBucket(grant.LineageId);
+
+                if ((reservedBucketIndex < 0)
+                    || (_lineageIndex[reservedBucketIndex]._reservedRootIndexPlusOne != grant.Index + 1)
+                    || (_lineageIndex[reservedBucketIndex]._reservedGeneration != grant.Generation))
+                {
+                    return false;
+                }
+
+                RemoveLineageIndexEntry(grant.LineageId);
+            }
+            else if (entry.MembershipKeys is { } membershipKeys)
+            {
+                foreach (var membershipKey in membershipKeys)
+                {
+                    RemoveLineageIndexEntry(membershipKey);
+                }
+            }
+            else
+            {
+                RemoveLineageIndexEntry(grant.LineageId);
+            }
+
+            var membershipBytes = entry.MembershipBytes;
             ClearLineageRoot(ref entry, keyOffset);
 
             if (reservationActive)
             {
                 ReleaseReservation(grant.Index);
+            }
+
+            if (membershipBytes > 0)
+            {
+                ReleaseRetainedLineageMembershipCharge(membershipBytes);
             }
 
             return true;
@@ -696,6 +932,8 @@ public sealed class WorldAdmissionDomain : IDisposable
         _lineageKeys[keyOffset] = Guid.Empty;
         entry.WorldGuid = Guid.Empty;
         entry.IdentityBranchId = Guid.Empty;
+        entry.MembershipKeys = null;
+        entry.MembershipBytes = 0;
         entry.State = (entry.Generation == uint.MaxValue) ? StateRetired : StateFree;
 
         if (entry.State == StateFree)
@@ -799,6 +1037,7 @@ public sealed class WorldAdmissionDomain : IDisposable
                 _lineageIndex.Length,
                 _maximumBytes,
                 _registryCharge,
+                _lineageMembershipBytes,
                 _pendingGrowthBytes,
                 _worldBytes,
                 additionalWorldBytes);
@@ -836,7 +1075,7 @@ public sealed class WorldAdmissionDomain : IDisposable
                 _lineageKeys = newLineageKeys;
                 _interests = newInterests;
                 _reservations = newReservations;
-                _registryCharge = GetRegistryCharge(newRootCapacity, newIndexCapacity);
+                _registryCharge = checked(GetRegistryCharge(newRootCapacity, newIndexCapacity) + _lineageMembershipBytes);
                 _pendingGrowthBytes = 0;
             }
         }
@@ -868,6 +1107,23 @@ public sealed class WorldAdmissionDomain : IDisposable
             && (interest.Bytes > 0);
     }
 
+    private void ReleaseLineageMembershipCharge(long bytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        using (ReentrantGate.EnterScope(ref _growthGate))
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if (bytes > _pendingGrowthBytes)
+            {
+                throw new InvalidOperationException("The released lineage-membership charge exceeds the pending reservation.");
+            }
+
+            _pendingGrowthBytes = checked(_pendingGrowthBytes - bytes);
+        }
+    }
+
     private void ReleaseRegistry()
     {
         _lineages = [];
@@ -879,6 +1135,7 @@ public sealed class WorldAdmissionDomain : IDisposable
         _activeReservationCount = 0;
         _lineageEdgeCount = 0;
         _lineageKeyCount = 0;
+        _lineageMembershipBytes = 0;
         _pendingGrowthBytes = 0;
         _registryCharge = 0;
     }
@@ -902,6 +1159,24 @@ public sealed class WorldAdmissionDomain : IDisposable
         }
 
         _activeReservationCount--;
+    }
+
+    private void ReleaseRetainedLineageMembershipCharge(long bytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        using (ReentrantGate.EnterScope(ref _growthGate))
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if ((bytes > _lineageMembershipBytes) || (bytes > _registryCharge))
+            {
+                throw new InvalidOperationException("The released lineage-membership charge exceeds the retained registry bytes.");
+            }
+
+            _lineageMembershipBytes = checked(_lineageMembershipBytes - bytes);
+            _registryCharge = checked(_registryCharge - bytes);
+        }
     }
 
     private void RemoveLineageIndexEntry(Guid lineageId)
@@ -990,6 +1265,126 @@ public sealed class WorldAdmissionDomain : IDisposable
         return false;
     }
 
+    private bool TryCommitLineageMembership(
+        in WorldLineageGrant grant,
+        scoped ReadOnlySpan<Guid> membershipKeys,
+        int reservedBucketIndex)
+    {
+        var currentBucket = _lineageIndex[reservedBucketIndex];
+
+        if ((currentBucket._lineageId != grant.LineageId)
+            || (currentBucket._reservedRootIndexPlusOne != grant.Index + 1)
+            || (currentBucket._reservedGeneration != grant.Generation))
+        {
+            return false;
+        }
+
+        var newKeyCount = 0;
+
+        for (var index = 0; index < membershipKeys.Length; index++)
+        {
+            var membershipKey = membershipKeys[index];
+
+            if (membershipKey == grant.LineageId)
+            {
+                continue;
+            }
+
+            var bucketIndex = FindLineageIndexBucket(membershipKey);
+
+            if (bucketIndex < 0)
+            {
+                newKeyCount++;
+                continue;
+            }
+
+            if (_lineageIndex[bucketIndex]._reservedRootIndexPlusOne != 0)
+            {
+                return false;
+            }
+        }
+
+        var maximumKeys = Math.Min(MaximumLineageKeys, _lineageIndex.Length / 2);
+
+        if ((_lineageEdgeCount > MaximumEdges - (membershipKeys.Length - 1))
+            || (_lineageKeyCount > maximumKeys - newKeyCount))
+        {
+            return false;
+        }
+
+        for (var index = 0; index < membershipKeys.Length; index++)
+        {
+            var membershipKey = membershipKeys[index];
+
+            if (membershipKey == grant.LineageId)
+            {
+                continue;
+            }
+
+            var bucketIndex = FindLineageIndexBucket(membershipKey);
+
+            if (bucketIndex >= 0)
+            {
+                ref var bucket = ref _lineageIndex[bucketIndex];
+                bucket._edgeCount++;
+                _lineageEdgeCount++;
+            }
+            else if (!TryAddLineageIndexEntry(membershipKey))
+            {
+                for (var rollbackIndex = 0; rollbackIndex < index; rollbackIndex++)
+                {
+                    var rollbackKey = membershipKeys[rollbackIndex];
+
+                    if (rollbackKey != grant.LineageId)
+                    {
+                        RemoveLineageIndexEntry(rollbackKey);
+                    }
+                }
+
+                return false;
+            }
+        }
+
+        var updatedCurrentBucketIndex = FindLineageIndexBucket(grant.LineageId);
+
+        if (updatedCurrentBucketIndex < 0)
+        {
+            throw new InvalidOperationException("The committed lineage membership lost its reserved current-lineage index entry.");
+        }
+
+        ref var updatedCurrentBucket = ref _lineageIndex[updatedCurrentBucketIndex];
+        updatedCurrentBucket._reservedRootIndexPlusOne = 0;
+        updatedCurrentBucket._reservedGeneration = 0;
+        return true;
+    }
+
+    private bool TryReserveLineageMembershipCharge(long bytes, out bool domainClosed)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if (_isDisposed)
+            {
+                domainClosed = true;
+                return false;
+            }
+
+            var registryBudget = Math.Min(MaximumRegistryBytes, _maximumBytes);
+
+            if ((bytes > registryBudget - _registryCharge - _pendingGrowthBytes)
+                || (bytes > _maximumBytes - _registryCharge - _pendingGrowthBytes - _worldBytes))
+            {
+                domainClosed = false;
+                return false;
+            }
+
+            _pendingGrowthBytes = checked(_pendingGrowthBytes + bytes);
+            domainClosed = false;
+            return true;
+        }
+    }
+
     [StructLayout(LayoutKind.Sequential, Pack = 8, Size = 128)]
     private struct InterestEntry
     {
@@ -1010,6 +1405,10 @@ public sealed class WorldAdmissionDomain : IDisposable
         internal Guid WorldGuid;
 
         internal Guid IdentityBranchId;
+
+        internal Guid[]? MembershipKeys;
+
+        internal long MembershipBytes;
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 64)]
@@ -1022,6 +1421,10 @@ public sealed class WorldAdmissionDomain : IDisposable
         internal Guid _lineageId;
 
         internal uint _probeDistance;
+
+        internal int _reservedRootIndexPlusOne;
+
+        internal uint _reservedGeneration;
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 8, Size = 256)]

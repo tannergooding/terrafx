@@ -20,7 +20,8 @@ internal sealed class WorldAdmissionDomainTests
         Assert.That(exactDomain.Retirement.IsCompleted, Is.True);
 
         using var overBudgetDomain = new WorldAdmissionDomain(8192);
-        Assert.That(overBudgetDomain.TryReserveWorld(2097, out var overBudgetReservation), Is.False);
+        var overBudgetSucceeded = overBudgetDomain.TryReserveWorld(2097, out var overBudgetReservation);
+        Assert.That(overBudgetSucceeded, Is.False);
         Assert.That(overBudgetReservation, Is.Null);
         overBudgetReservation?.Dispose();
         overBudgetDomain.Dispose();
@@ -47,6 +48,68 @@ internal sealed class WorldAdmissionDomainTests
 
         Assert.That(domain.Retirement.IsCompleted, Is.True);
         reservation.Dispose();
+    }
+
+    [Test]
+    public void FreshHistoryMembershipSharesRetainedLineageKeys()
+    {
+        using var domain = new WorldAdmissionDomain(8 * 1024 * 1024);
+        var firstLineageId = new Guid("10000000-0000-4000-8000-000000000001");
+        var sharedLineageId = new Guid("20000000-0000-4000-8000-000000000002");
+        var secondLineageId = new Guid("30000000-0000-4000-8000-000000000003");
+        var thirdLineageId = new Guid("40000000-0000-4000-8000-000000000004");
+        Guid[] firstMembership = [firstLineageId, sharedLineageId];
+        Guid[] secondMembership = [sharedLineageId, secondLineageId];
+        Guid[] thirdMembership = [sharedLineageId, thirdLineageId];
+
+        Assert.That(domain.TryReserveWorld(4096, 4096, out var firstReservation), Is.True);
+        using var firstWorld = firstReservation!;
+        Assert.That(
+            domain.TryReserveFreshLineageHistory(
+                firstWorld,
+                Guid.NewGuid(),
+                firstLineageId,
+                Guid.NewGuid(),
+                firstMembership,
+                out var firstGrant,
+                out _),
+            Is.True);
+        Assert.That(domain.TryCommitFreshLineage(firstGrant), Is.True);
+
+        Assert.That(domain.TryReserveWorld(4096, 4096, out var secondReservation), Is.True);
+        using var secondWorld = secondReservation!;
+        Assert.That(
+            domain.TryReserveFreshLineageHistory(
+                secondWorld,
+                Guid.NewGuid(),
+                secondLineageId,
+                Guid.NewGuid(),
+                secondMembership,
+                out var secondGrant,
+                out _),
+            Is.True);
+        Assert.That(domain.TryCommitFreshLineage(secondGrant), Is.True);
+
+        Assert.That(domain.TryRollbackFreshLineage(firstGrant), Is.True);
+        Assert.That(firstWorld.Bytes, Is.EqualTo(4096));
+        Assert.That(domain.TryReserveWorld(4096, 4096, out var thirdReservation), Is.True);
+        using var thirdWorld = thirdReservation!;
+        Assert.That(
+            domain.TryReserveFreshLineageHistory(
+                thirdWorld,
+                Guid.NewGuid(),
+                thirdLineageId,
+                Guid.NewGuid(),
+                thirdMembership,
+                out var thirdGrant,
+                out _),
+            Is.True);
+        Assert.That(domain.TryCommitFreshLineage(thirdGrant), Is.True);
+
+        Assert.That(domain.TryRollbackFreshLineage(secondGrant), Is.True);
+        Assert.That(domain.TryRollbackFreshLineage(thirdGrant), Is.True);
+        Assert.That(secondWorld.Bytes, Is.EqualTo(4096));
+        Assert.That(thirdWorld.Bytes, Is.EqualTo(4096));
     }
 
     [Test]
@@ -183,6 +246,51 @@ internal sealed class WorldAdmissionDomainTests
         Assert.That(domain.TryReleaseFreshLineage(nextGrant), Is.True);
         worldReservation.Dispose();
         Assert.That(domain.Retirement.IsCompleted, Is.True);
+    }
+
+    [Test]
+    public void StartNewHistoryCommitRejectsForeignPendingLineageMembership()
+    {
+        using var domain = new WorldAdmissionDomain(8 * 1024 * 1024);
+        var pendingLineageId = Guid.NewGuid();
+        var firstHistoryLineageId = Guid.NewGuid();
+        var secondLineageId = Guid.NewGuid();
+        var firstMembership = new[] { pendingLineageId, firstHistoryLineageId };
+        var secondMembership = new[] { pendingLineageId, secondLineageId };
+        Array.Sort(firstMembership);
+        Array.Sort(secondMembership);
+
+        Assert.That(domain.TryReserveWorld(4096, 4096, out var firstReservation), Is.True);
+        using var firstWorld = firstReservation!;
+        Assert.That(
+            domain.TryReserveFreshLineageHistory(
+                firstWorld,
+                Guid.NewGuid(),
+                pendingLineageId,
+                Guid.NewGuid(),
+                firstMembership,
+                out var firstGrant,
+                out _),
+            Is.True);
+
+        Assert.That(domain.TryReserveWorld(4096, 4096, out var secondReservation), Is.True);
+        using var secondWorld = secondReservation!;
+        Assert.That(
+            domain.TryReserveFreshLineageHistory(
+                secondWorld,
+                Guid.NewGuid(),
+                secondLineageId,
+                Guid.NewGuid(),
+                secondMembership,
+                out var secondGrant,
+                out _),
+            Is.True);
+        Assert.That(domain.TryCommitFreshLineage(secondGrant), Is.False);
+        Assert.That(domain.TryCommitFreshLineage(firstGrant), Is.True);
+        Assert.That(domain.TryCommitFreshLineage(secondGrant), Is.True);
+
+        Assert.That(domain.TryRollbackFreshLineage(firstGrant), Is.True);
+        Assert.That(domain.TryRollbackFreshLineage(secondGrant), Is.True);
     }
 
     [Test]
