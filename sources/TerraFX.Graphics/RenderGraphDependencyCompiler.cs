@@ -235,10 +235,11 @@ internal static class RenderGraphDependencyCompiler
                     {
                         var attachmentLoadPair =
                             left.IsAttachmentLoadOf(right) || right.IsAttachmentLoadOf(left);
+                        var storageReadWritePair = left.IsStorageReadWritePairOf(right);
 
                         if ((left.IsWrite && right.IsWrite)
-                            || (left.IsTexture && (left.IsWrite != right.IsWrite) && !attachmentLoadPair)
-                            || ((left.RequiredState != right.RequiredState) && !attachmentLoadPair))
+                            || ((left.IsWrite != right.IsWrite) && !attachmentLoadPair && !storageReadWritePair)
+                            || ((left.RequiredState != right.RequiredState) && !attachmentLoadPair && !storageReadWritePair))
                         {
                             accessesValid = false;
                         }

@@ -37,7 +37,7 @@ internal static class D3D12GraphResourceStateMapper
                     => D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
                 GraphResourceState.IndexRead
                     => D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_INDEX_BUFFER,
-                GraphResourceState.StorageRead or GraphResourceState.StorageWrite
+                GraphResourceState.StorageRead or GraphResourceState.StorageWrite or GraphResourceState.StorageReadWrite
                     => D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 GraphResourceState.CopySource
                     => D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_SOURCE,
@@ -94,7 +94,7 @@ internal static class D3D12GraphResourceStateMapper
             GraphResourceState.ShaderSampledRead
                 => D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
                     | D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            GraphResourceState.StorageRead or GraphResourceState.StorageWrite
+            GraphResourceState.StorageRead or GraphResourceState.StorageWrite or GraphResourceState.StorageReadWrite
                 => D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             GraphResourceState.ColorAttachment => D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_RENDER_TARGET,
             GraphResourceState.DepthRead => D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_DEPTH_READ,
@@ -109,7 +109,7 @@ internal static class D3D12GraphResourceStateMapper
             GraphResourceState.VertexRead => BufferUsage.Vertex,
             GraphResourceState.IndexRead => BufferUsage.Index,
             GraphResourceState.UniformRead => BufferUsage.Uniform,
-            GraphResourceState.StorageRead or GraphResourceState.StorageWrite => BufferUsage.Storage,
+            GraphResourceState.StorageRead or GraphResourceState.StorageWrite or GraphResourceState.StorageReadWrite => BufferUsage.Storage,
             GraphResourceState.CopySource => BufferUsage.CopySource,
             GraphResourceState.CopyDestination => BufferUsage.CopyDestination,
             _ => throw new ArgumentOutOfRangeException(nameof(state)),
@@ -120,7 +120,7 @@ internal static class D3D12GraphResourceStateMapper
             GraphResourceState.CopySource => TextureUsage.CopySource,
             GraphResourceState.CopyDestination => TextureUsage.CopyDestination,
             GraphResourceState.ShaderSampledRead => TextureUsage.Sampled,
-            GraphResourceState.StorageRead or GraphResourceState.StorageWrite => TextureUsage.Storage,
+            GraphResourceState.StorageRead or GraphResourceState.StorageWrite or GraphResourceState.StorageReadWrite => TextureUsage.Storage,
             GraphResourceState.ColorAttachment => TextureUsage.ColorAttachment,
             GraphResourceState.DepthRead or GraphResourceState.DepthWrite => TextureUsage.DepthAttachment,
             GraphResourceState.Present => TextureUsage.ColorAttachment,

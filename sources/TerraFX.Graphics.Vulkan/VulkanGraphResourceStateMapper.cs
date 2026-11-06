@@ -30,6 +30,9 @@ internal static class VulkanGraphResourceStateMapper
             GraphResourceState.ShaderSampledRead => VkAccessFlags2.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             GraphResourceState.StorageRead => VkAccessFlags2.VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
             GraphResourceState.StorageWrite => VkAccessFlags2.VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            GraphResourceState.StorageReadWrite
+                => VkAccessFlags2.VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+                    | VkAccessFlags2.VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
             GraphResourceState.ColorAttachment
                 => VkAccessFlags2.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
                     | VkAccessFlags2.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -55,7 +58,7 @@ internal static class VulkanGraphResourceStateMapper
             GraphResourceState.CopySource => VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             GraphResourceState.CopyDestination => VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             GraphResourceState.ShaderSampledRead => VkImageLayout.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            GraphResourceState.StorageRead or GraphResourceState.StorageWrite or GraphResourceState.General
+            GraphResourceState.StorageRead or GraphResourceState.StorageWrite or GraphResourceState.StorageReadWrite or GraphResourceState.General
                 => VkImageLayout.VK_IMAGE_LAYOUT_GENERAL,
             GraphResourceState.ColorAttachment => VkImageLayout.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             GraphResourceState.DepthRead => VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
@@ -79,7 +82,8 @@ internal static class VulkanGraphResourceStateMapper
         if (state is GraphResourceState.UniformRead
             or GraphResourceState.ShaderSampledRead
             or GraphResourceState.StorageRead
-            or GraphResourceState.StorageWrite)
+            or GraphResourceState.StorageWrite
+            or GraphResourceState.StorageReadWrite)
         {
             if ((shaderStages == VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE)
                 || ((shaderStages & ~SupportedShaderStages) != VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE))

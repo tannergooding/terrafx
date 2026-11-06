@@ -851,6 +851,7 @@ internal sealed class GraphicsPipelineRequestTests
         GpuPipeline? pipeline = null;
         GpuPipeline? storagePipeline = null;
         RecordedPassCommandList? commandList = null;
+        RecordedPassCommandList? storageCommandList = null;
 
         try
         {
@@ -879,6 +880,24 @@ internal sealed class GraphicsPipelineRequestTests
                 if (access.PassId == reader)
                 {
                     readerAccesses.Add(access);
+                }
+            }
+
+            var readWritePass = resources.AddPass(new RenderPassDescription("storage-read-write", 2, [], false));
+            var readWriteVersion = resources.ReadWriteBuffer(readWritePass, version1, declaredRange);
+            var readWriteAccesses = ImmutableArray.CreateBuilder<GraphResourceAccess>();
+            var writeOnlyAccesses = ImmutableArray.CreateBuilder<GraphResourceAccess>();
+
+            foreach (var access in resources.Accesses)
+            {
+                if (access.PassId == readWritePass)
+                {
+                    readWriteAccesses.Add(access);
+                }
+
+                if (access.PassId == writer)
+                {
+                    writeOnlyAccesses.Add(access);
                 }
             }
 
@@ -939,32 +958,153 @@ internal sealed class GraphicsPipelineRequestTests
                 .WaitAsync(TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
             var storageBindingSet = new BindingSet(
-                [new BufferBinding(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, version1, declaredRange)],
+                [new BufferBinding(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, readWriteVersion, declaredRange)],
                 [],
                 []);
             var storagePipelineHandle = storagePipeline.Handle;
 
-            void BindUnsupportedStorageReadWrite(scoped ref CommandRecorder recorder)
+            void RecordStorageReadWrite(scoped ref CommandRecorder recorder)
             {
                 recorder.SetPipeline(storagePipelineHandle);
                 recorder.SetBindings(storageBindingSet);
+                recorder.Dispatch(new DispatchSize(1, 1, 1));
             }
 
-            _ = Assert.ThrowsAsync<NotSupportedException>(
-                async () => await graphicsDevice.RecordPassAsync(
-                    reader,
+            storageCommandList = await graphicsDevice.RecordPassAsync(
+                    readWritePass,
                     CommandRecorderPassKind.Compute,
-                    readerAccesses.ToImmutable(),
+                    readWriteAccesses.ToImmutable(),
                     [],
                     depthTargetFormat: null,
-                    BindUnsupportedStorageReadWrite)
+                    RecordStorageReadWrite)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert.That(storageCommandList.Commands.Length, Is.EqualTo(3));
+            Assert.That(storageCommandList.Commands[1].Kind, Is.EqualTo(GraphicsCommandKind.SetBindings));
+            Assert.That(storageCommandList.Commands[2].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
+
+            var writeOnlyBindingSet = new BindingSet(
+                [new BufferBinding(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, version1, declaredRange)],
+                [],
+                []);
+            void BindReadWritePipelineToWriteOnlyRange(scoped ref CommandRecorder recorder)
+            {
+                recorder.SetPipeline(storagePipelineHandle);
+                recorder.SetBindings(writeOnlyBindingSet);
+            }
+
+            _ = Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await graphicsDevice.RecordPassAsync(
+                    writer,
+                    CommandRecorderPassKind.Compute,
+                    writeOnlyAccesses.ToImmutable(),
+                    [],
+                    depthTargetFormat: null,
+                    BindReadWritePipelineToWriteOnlyRange)
                     .WaitAsync(TimeSpan.FromSeconds(5))
                     .ConfigureAwait(false));
         }
         finally
         {
+            storageCommandList?.Dispose();
             commandList?.Dispose();
             storagePipeline?.Dispose();
+            pipeline?.Dispose();
+            callerBytecodeLease.Dispose();
+            bufferOwner.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task PipelineRecorderBindsReadWriteStorageImagePairs()
+    {
+        using var continuePipelineCreation = new ManualResetEventSlim(initialState: true);
+        using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
+        var backendDevice = new FakeBackendDevice(
+            CreateCapabilities(),
+            pipelineCreationEntered,
+            continuePipelineCreation);
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var graphicsDevice = await GraphicsDevice.CreateAsync(
+            ownerId: 31,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        var bufferOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        var callerBytecodeLease = bufferOwner.AcquireRead(0, 4);
+        var resourceSignature = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.StorageImage,
+            1,
+            ShaderResourceAccess.ReadWrite);
+        GpuPipeline? pipeline = null;
+        RecordedPassCommandList? commandList = null;
+
+        try
+        {
+            pipeline = await graphicsDevice.CreatePipelineAsync(
+                CreateComputePipelineDescription(callerBytecodeLease, [resourceSignature]))
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+
+            var resources = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 11);
+            var seedPass = resources.AddPass(new RenderPassDescription("storage-image-seed", 0, [], false));
+            var readWritePass = resources.AddPass(new RenderPassDescription("storage-image-read-write", 1, [], false));
+            var range = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+            var version0 = resources.CreateTransientTexture(new TextureDescription(
+                TextureDimension.Dimension2D,
+                4,
+                4,
+                1,
+                1,
+                1,
+                TextureFormat.Rgba16Float,
+                TextureUsage.Storage,
+                "command-recorder-storage-image"));
+            var version1 = resources.WriteTexture(seedPass, version0, range, GraphTextureUsage.StorageWrite);
+            var version2 = resources.ReadWriteTexture(readWritePass, version1, range);
+            var readWriteAccesses = ImmutableArray.CreateBuilder<GraphResourceAccess>();
+
+            foreach (var access in resources.Accesses)
+            {
+                if (access.PassId == readWritePass)
+                {
+                    readWriteAccesses.Add(access);
+                }
+            }
+
+            var bindingSet = new BindingSet(
+                [],
+                [new TextureBinding(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageImage, version2, range)],
+                []);
+            var pipelineHandle = pipeline.Handle;
+
+            void RecordStorageImageReadWrite(scoped ref CommandRecorder recorder)
+            {
+                recorder.SetPipeline(pipelineHandle);
+                recorder.SetBindings(bindingSet);
+                recorder.Dispatch(new DispatchSize(1, 1, 1));
+            }
+
+            commandList = await graphicsDevice.RecordPassAsync(
+                    readWritePass,
+                    CommandRecorderPassKind.Compute,
+                    readWriteAccesses.ToImmutable(),
+                    [],
+                    depthTargetFormat: null,
+                    RecordStorageImageReadWrite)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert.That(commandList.Commands.Length, Is.EqualTo(3));
+            Assert.That(commandList.Commands[1].Kind, Is.EqualTo(GraphicsCommandKind.SetBindings));
+            Assert.That(commandList.Commands[2].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
+        }
+        finally
+        {
+            commandList?.Dispose();
             pipeline?.Dispose();
             callerBytecodeLease.Dispose();
             bufferOwner.Dispose();

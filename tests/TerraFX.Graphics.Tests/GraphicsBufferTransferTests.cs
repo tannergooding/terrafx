@@ -445,6 +445,91 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task GraphResourceRegistryRejectsUninitializedStorageReadWriteAndTracksValidPairs()
+    {
+        var backendDevice = new FakeBackendDevice();
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var registry = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 7);
+        var bufferDescription = new BufferDescription(
+            16,
+            BufferUsage.Storage,
+            GpuMemoryKind.DeviceLocal,
+            structuredStride: null,
+            debugName: "Storage read-write buffer");
+        var textureDescription = new TextureDescription(
+            TextureDimension.Dimension2D,
+            4,
+            4,
+            1,
+            1,
+            1,
+            TextureFormat.Rgba16Float,
+            TextureUsage.Storage,
+            "Storage read-write texture");
+        var bufferRange = new GraphBufferRange(0, 16);
+        var textureRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+
+        try
+        {
+            var bufferSeed = registry.AddPass(new RenderPassDescription("buffer-seed", 0, [], false));
+            var bufferReadWrite = registry.AddPass(new RenderPassDescription("buffer-read-write", 1, [], false));
+            var bufferRead = registry.AddPass(new RenderPassDescription("buffer-read", 2, [], false));
+            var textureSeed = registry.AddPass(new RenderPassDescription("texture-seed", 3, [], false));
+            var textureReadWrite = registry.AddPass(new RenderPassDescription("texture-read-write", 4, [], false));
+            var textureRead = registry.AddPass(new RenderPassDescription("texture-read", 5, [], false));
+            var bufferVersion0 = registry.CreateTransientBuffer(bufferDescription);
+            var bufferVersion1 = registry.WriteBuffer(
+                bufferSeed,
+                bufferVersion0,
+                bufferRange,
+                GraphBufferUsage.StorageWrite);
+            var bufferVersion2 = registry.ReadWriteBuffer(bufferReadWrite, bufferVersion1, bufferRange);
+            registry.ReadBuffer(bufferRead, bufferVersion2, bufferRange, GraphBufferUsage.StorageRead);
+            var textureVersion0 = registry.CreateTransientTexture(textureDescription);
+            var textureVersion1 = registry.WriteTexture(
+                textureSeed,
+                textureVersion0,
+                textureRange,
+                GraphTextureUsage.StorageWrite);
+            var textureVersion2 = registry.ReadWriteTexture(textureReadWrite, textureVersion1, textureRange);
+            registry.ReadTexture(textureRead, textureVersion2, textureRange, GraphTextureUsage.StorageRead);
+
+            var result = registry.ValidateCompilation();
+            var readWriteTransitions = 0;
+
+            foreach (var transition in result.StateTransitions)
+            {
+                if (transition.AfterState == GraphResourceState.StorageReadWrite)
+                {
+                    readWriteTransitions++;
+                }
+            }
+
+            Assert.That(result.IsValid, Is.True);
+            Assert.That(result.AccessesValid, Is.True);
+            Assert.That(result.ContentsValid, Is.True);
+            Assert.That(result.DependenciesValid, Is.True);
+            Assert.That(result.OrderedPasses.IndexOf(bufferSeed), Is.LessThan(result.OrderedPasses.IndexOf(bufferReadWrite)));
+            Assert.That(result.OrderedPasses.IndexOf(bufferReadWrite), Is.LessThan(result.OrderedPasses.IndexOf(bufferRead)));
+            Assert.That(result.OrderedPasses.IndexOf(textureSeed), Is.LessThan(result.OrderedPasses.IndexOf(textureReadWrite)));
+            Assert.That(result.OrderedPasses.IndexOf(textureReadWrite), Is.LessThan(result.OrderedPasses.IndexOf(textureRead)));
+            Assert.That(readWriteTransitions, Is.EqualTo(2));
+
+            var uninitializedVersion = registry.CreateTransientBuffer(bufferDescription);
+            var invalidReadWritePass = registry.AddPass(new RenderPassDescription("invalid-read-write", 6, [], false));
+            _ = registry.ReadWriteBuffer(invalidReadWritePass, uninitializedVersion, bufferRange);
+            var invalidResult = registry.ValidateCompilation();
+            Assert.That(invalidResult.IsValid, Is.False);
+            Assert.That(invalidResult.AccessesValid, Is.True);
+            Assert.That(invalidResult.ContentsValid, Is.False);
+        }
+        finally
+        {
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task GraphResourceRegistryTracksAttachmentLoadAndDiscardValidity()
     {
         var backendDevice = new FakeBackendDevice();

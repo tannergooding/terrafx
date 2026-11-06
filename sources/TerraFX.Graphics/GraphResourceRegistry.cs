@@ -16,6 +16,7 @@ internal sealed class GraphResourceRegistry
     private readonly uint _deviceEpoch;
     private readonly uint _graphOwnerId;
     private ulong _nextResourceId;
+    private ulong _nextStorageReadWritePairId;
     private readonly int _ownerThreadId;
     private readonly GraphPassRegistry _passRegistry;
     private readonly List<GraphTextureImportRecord> _textureImports = [];
@@ -398,6 +399,80 @@ internal sealed class GraphResourceRegistry
             contentsValid: contentsValid));
     }
 
+    internal GraphBufferVersion ReadWriteBuffer(
+        RenderPassId passId,
+        GraphBufferVersion previousVersion,
+        GraphBufferRange range)
+    {
+        EnsureOwnerThread();
+        ValidatePass(passId);
+        ArgumentNullException.ThrowIfNull(previousVersion);
+        ValidateBufferUsage(previousVersion.Description, GraphBufferUsage.StorageRead, isWrite: false);
+        ValidateBufferUsage(previousVersion.Description, GraphBufferUsage.StorageWrite, isWrite: true);
+
+        var resource = GetBufferResource(previousVersion);
+        var contentsValid = resource.IsInitialized(previousVersion, range);
+        var pairId = GetNextStorageReadWritePairId();
+        var nextVersion = resource.Write(previousVersion, range);
+        _bufferResourcesByVersion.Add(nextVersion, resource);
+        var readAccess = new GraphResourceAccess(
+            passId,
+            previousVersion,
+            range,
+            GraphBufferUsage.StorageRead,
+            isWrite: false,
+            contentsValid: contentsValid,
+            storageReadWritePairId: pairId);
+        var writeAccess = new GraphResourceAccess(
+            passId,
+            nextVersion,
+            range,
+            GraphBufferUsage.StorageWrite,
+            isWrite: true,
+            contentsValid: true,
+            pairId);
+        _accesses.Add(readAccess);
+        _accesses.Add(writeAccess);
+        return nextVersion;
+    }
+
+    internal GraphTextureVersion ReadWriteTexture(
+        RenderPassId passId,
+        GraphTextureVersion previousVersion,
+        GraphTextureRange range)
+    {
+        EnsureOwnerThread();
+        ValidatePass(passId);
+        ArgumentNullException.ThrowIfNull(previousVersion);
+        ValidateTextureUsage(previousVersion.Description, GraphTextureUsage.StorageRead, isWrite: false);
+        ValidateTextureUsage(previousVersion.Description, GraphTextureUsage.StorageWrite, isWrite: true);
+
+        var resource = GetTextureResource(previousVersion);
+        var contentsValid = resource.IsInitialized(previousVersion, range);
+        var pairId = GetNextStorageReadWritePairId();
+        var nextVersion = resource.Write(previousVersion, range);
+        _textureResourcesByVersion.Add(nextVersion, resource);
+        var readAccess = new GraphResourceAccess(
+            passId,
+            previousVersion,
+            range,
+            GraphTextureUsage.StorageRead,
+            isWrite: false,
+            contentsValid: contentsValid,
+            storageReadWritePairId: pairId);
+        var writeAccess = new GraphResourceAccess(
+            passId,
+            nextVersion,
+            range,
+            GraphTextureUsage.StorageWrite,
+            isWrite: true,
+            contentsValid: true,
+            pairId);
+        _accesses.Add(readAccess);
+        _accesses.Add(writeAccess);
+        return nextVersion;
+    }
+
     internal bool TryOrder(out ImmutableArray<RenderPassId> orderedPasses)
     {
         EnsureOwnerThread();
@@ -644,6 +719,12 @@ internal sealed class GraphResourceRegistry
     {
         _nextResourceId = checked(_nextResourceId + 1);
         return _nextResourceId;
+    }
+
+    private ulong GetNextStorageReadWritePairId()
+    {
+        _nextStorageReadWritePairId = checked(_nextStorageReadWritePairId + 1);
+        return _nextStorageReadWritePairId;
     }
 
     private GraphTextureResourceRecord GetTextureResource(GraphTextureVersion version)

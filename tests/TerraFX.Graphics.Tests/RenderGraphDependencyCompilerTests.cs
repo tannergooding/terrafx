@@ -90,6 +90,48 @@ internal sealed class RenderGraphDependencyCompilerTests
     }
 
     [Test]
+    public void TryOrderAddsBufferReadWritePairs()
+    {
+        var pass = new RenderPassId(7, 0);
+        var description = CreateBufferDescription();
+        var range = new GraphBufferRange(0, 16);
+        var previousVersion = new GraphBufferVersion(1, 4, 0, description, new GraphBufferRange(0, 64));
+        var nextVersion = new GraphBufferVersion(1, 4, 1, description, previousVersion.Range);
+        var passes = ImmutableArray.Create(
+            new RenderGraphPassNode(pass, new RenderPassDescription("storage-read-write", 0, [], false)));
+
+        foreach (var (readPairId, writePairId, expectedValid) in new (ulong, ulong, bool)[] {
+            (1, 1, true),
+            (1, 2, false),
+            (0, 0, false),
+        })
+        {
+            var accesses = ImmutableArray.Create(
+                new GraphResourceAccess(
+                    pass,
+                    previousVersion,
+                    range,
+                    GraphBufferUsage.StorageRead,
+                    isWrite: false,
+                    contentsValid: true,
+                    storageReadWritePairId: readPairId),
+                new GraphResourceAccess(
+                    pass,
+                    nextVersion,
+                    range,
+                    GraphBufferUsage.StorageWrite,
+                    isWrite: true,
+                    contentsValid: true,
+                    storageReadWritePairId: writePairId));
+
+            Assert.That(
+                RenderGraphDependencyCompiler.TryOrder(passes, accesses, out _, out var accessesValid),
+                Is.True);
+            Assert.That(accessesValid, Is.EqualTo(expectedValid));
+        }
+    }
+
+    [Test]
     public void TryOrderAddsBufferWriteAfterReadAndWriteAfterWriteDependencies()
     {
         var reader = new RenderPassId(7, 0);
@@ -143,6 +185,49 @@ internal sealed class RenderGraphDependencyCompilerTests
 
         Assert.That(RenderGraphDependencyCompiler.TryOrder(passes, accesses, out var orderedPasses), Is.True);
         Assert.That(orderedPasses, Is.EqualTo(ImmutableArray.Create(writer, reader)));
+    }
+
+    [Test]
+    public void TryOrderAddsTextureSubresourceReadWritePairs()
+    {
+        var pass = new RenderPassId(7, 0);
+        var description = CreateTextureDescription();
+        var range = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+        var fullRange = new GraphTextureRange(0, 5, 0, 2, TextureAspect.Color);
+        var previousVersion = new GraphTextureVersion(1, 4, 0, description, fullRange);
+        var nextVersion = new GraphTextureVersion(1, 4, 1, description, fullRange);
+        var passes = ImmutableArray.Create(
+            new RenderGraphPassNode(pass, new RenderPassDescription("storage-read-write", 0, [], false)));
+
+        foreach (var (readPairId, writePairId, expectedValid) in new (ulong, ulong, bool)[] {
+            (1, 1, true),
+            (1, 2, false),
+            (0, 0, false),
+        })
+        {
+            var accesses = ImmutableArray.Create(
+                new GraphResourceAccess(
+                    pass,
+                    previousVersion,
+                    range,
+                    GraphTextureUsage.StorageRead,
+                    isWrite: false,
+                    contentsValid: true,
+                    storageReadWritePairId: readPairId),
+                new GraphResourceAccess(
+                    pass,
+                    nextVersion,
+                    range,
+                    GraphTextureUsage.StorageWrite,
+                    isWrite: true,
+                    contentsValid: true,
+                    storageReadWritePairId: writePairId));
+
+            Assert.That(
+                RenderGraphDependencyCompiler.TryOrder(passes, accesses, out _, out var accessesValid),
+                Is.True);
+            Assert.That(accessesValid, Is.EqualTo(expectedValid));
+        }
     }
 
     [Test]

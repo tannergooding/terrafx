@@ -68,6 +68,36 @@ internal sealed class GraphResourceAccessStateTests
         Assert.That(access.RequiredState, Is.EqualTo(expectedState));
     }
 
+    [Test]
+    public void StorageReadWritePairMapsBothVersionsToOneRequiredState()
+    {
+        var pass = new RenderPassId(7, 0);
+        var description = new BufferDescription(64, BufferUsage.Storage, GpuMemoryKind.DeviceLocal, null, string.Empty);
+        var range = new GraphBufferRange(0, 64);
+        var previousVersion = new GraphBufferVersion(1, 1, 0, description, range);
+        var nextVersion = new GraphBufferVersion(1, 1, 1, description, range);
+        var readAccess = new GraphResourceAccess(
+            pass,
+            previousVersion,
+            range,
+            GraphBufferUsage.StorageRead,
+            isWrite: false,
+            contentsValid: true,
+            storageReadWritePairId: 1);
+        var writeAccess = new GraphResourceAccess(
+            pass,
+            nextVersion,
+            range,
+            GraphBufferUsage.StorageWrite,
+            isWrite: true,
+            contentsValid: true,
+            storageReadWritePairId: 1);
+
+        Assert.That(readAccess.IsStorageReadWritePairOf(writeAccess), Is.True);
+        Assert.That(readAccess.RequiredState, Is.EqualTo(GraphResourceState.StorageReadWrite));
+        Assert.That(writeAccess.RequiredState, Is.EqualTo(GraphResourceState.StorageReadWrite));
+    }
+
     [TestCase(GraphTextureUsage.SampledRead, GraphResourceState.ShaderSampledRead)]
     [TestCase(GraphTextureUsage.StorageRead, GraphResourceState.StorageRead)]
     [TestCase(GraphTextureUsage.StorageWrite, GraphResourceState.StorageWrite)]

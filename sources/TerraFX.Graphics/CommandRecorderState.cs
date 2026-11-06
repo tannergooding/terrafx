@@ -89,7 +89,7 @@ internal sealed class CommandRecorderState : IDisposable
             (ShaderResourceKind.StorageBuffer, ShaderResourceAccess.Read) => GraphBufferUsage.StorageRead,
             (ShaderResourceKind.StorageBuffer, ShaderResourceAccess.Write) => GraphBufferUsage.StorageWrite,
             (ShaderResourceKind.StorageBuffer, ShaderResourceAccess.ReadWrite)
-                => throw new NotSupportedException("The graph has no explicit in-pass storage read-write declaration."),
+                => GraphBufferUsage.StorageWrite,
             _ => throw new ArgumentOutOfRangeException(nameof(kind)),
         };
 
@@ -140,7 +140,7 @@ internal sealed class CommandRecorderState : IDisposable
             (ShaderResourceKind.StorageImage, ShaderResourceAccess.Read) => GraphTextureUsage.StorageRead,
             (ShaderResourceKind.StorageImage, ShaderResourceAccess.Write) => GraphTextureUsage.StorageWrite,
             (ShaderResourceKind.StorageImage, ShaderResourceAccess.ReadWrite)
-                => throw new NotSupportedException("The graph has no explicit in-pass storage read-write declaration."),
+                => GraphTextureUsage.StorageWrite,
             _ => throw new ArgumentOutOfRangeException(nameof(kind)),
         };
 
@@ -325,9 +325,16 @@ internal sealed class CommandRecorderState : IDisposable
 
             var usage = GetBufferUsage(binding.Kind, access);
 
-            if (!HasBufferAccess(binding.Resource, binding.Range, usage))
+            if (!HasBufferAccess(
+                binding.Resource,
+                binding.Range,
+                usage,
+                requiresStorageReadWritePair: access == ShaderResourceAccess.ReadWrite))
             {
-                throw new InvalidOperationException($"A {binding.Kind} binding must fit a {usage} range declared by this pass.");
+                var requiredAccess = access == ShaderResourceAccess.ReadWrite
+                    ? "an explicit storage read-write version pair"
+                    : $"a {usage} range";
+                throw new InvalidOperationException($"A {binding.Kind} binding must fit {requiredAccess} declared by this pass.");
             }
         }
 
@@ -342,9 +349,16 @@ internal sealed class CommandRecorderState : IDisposable
 
             var usage = GetTextureUsage(binding.Kind, access);
 
-            if (!HasTextureAccess(binding.Resource, binding.Range, usage))
+            if (!HasTextureAccess(
+                binding.Resource,
+                binding.Range,
+                usage,
+                requiresStorageReadWritePair: access == ShaderResourceAccess.ReadWrite))
             {
-                throw new InvalidOperationException($"A {binding.Kind} binding must fit a {usage} range declared by this pass.");
+                var requiredAccess = access == ShaderResourceAccess.ReadWrite
+                    ? "an explicit storage read-write version pair"
+                    : $"a {usage} range";
+                throw new InvalidOperationException($"A {binding.Kind} binding must fit {requiredAccess} declared by this pass.");
             }
         }
 
@@ -497,12 +511,17 @@ internal sealed class CommandRecorderState : IDisposable
         }
     }
 
-    private bool HasBufferAccess(GraphBufferVersion version, GraphBufferRange range, GraphBufferUsage usage)
+    private bool HasBufferAccess(
+        GraphBufferVersion version,
+        GraphBufferRange range,
+        GraphBufferUsage usage,
+        bool requiresStorageReadWritePair = false)
     {
         foreach (var access in _declaredAccesses)
         {
             if (!access.IsTexture
                 && (access.BufferUsage == usage)
+                && (access.IsStorageReadWritePair == requiresStorageReadWritePair)
                 && ReferenceEquals(access.BufferVersion, version)
                 && range.IsWithin(access.BufferRange))
             {
@@ -513,12 +532,17 @@ internal sealed class CommandRecorderState : IDisposable
         return false;
     }
 
-    private bool HasTextureAccess(GraphTextureVersion version, GraphTextureRange range, GraphTextureUsage usage)
+    private bool HasTextureAccess(
+        GraphTextureVersion version,
+        GraphTextureRange range,
+        GraphTextureUsage usage,
+        bool requiresStorageReadWritePair = false)
     {
         foreach (var access in _declaredAccesses)
         {
             if (access.IsTexture
                 && (access.TextureUsage == usage)
+                && (access.IsStorageReadWritePair == requiresStorageReadWritePair)
                 && ReferenceEquals(access.TextureVersion, version)
                 && range.IsWithin(access.TextureRange))
             {

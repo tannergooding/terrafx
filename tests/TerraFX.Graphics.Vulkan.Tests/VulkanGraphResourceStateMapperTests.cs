@@ -22,6 +22,9 @@ internal sealed class VulkanGraphResourceStateMapperTests
     [TestCase(GraphResourceState.StorageRead, VkAccessFlags2.VK_ACCESS_2_SHADER_STORAGE_READ_BIT)]
     [TestCase(GraphResourceState.StorageWrite, VkAccessFlags2.VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)]
     [TestCase(
+        GraphResourceState.StorageReadWrite,
+        VkAccessFlags2.VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VkAccessFlags2.VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)]
+    [TestCase(
         GraphResourceState.ColorAttachment,
         VkAccessFlags2.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VkAccessFlags2.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT)]
     [TestCase(GraphResourceState.DepthRead, VkAccessFlags2.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT)]
@@ -45,6 +48,7 @@ internal sealed class VulkanGraphResourceStateMapperTests
     [TestCase(GraphResourceState.ShaderSampledRead, VkImageLayout.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)]
     [TestCase(GraphResourceState.StorageRead, VkImageLayout.VK_IMAGE_LAYOUT_GENERAL)]
     [TestCase(GraphResourceState.StorageWrite, VkImageLayout.VK_IMAGE_LAYOUT_GENERAL)]
+    [TestCase(GraphResourceState.StorageReadWrite, VkImageLayout.VK_IMAGE_LAYOUT_GENERAL)]
     [TestCase(GraphResourceState.ColorAttachment, VkImageLayout.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)]
     [TestCase(GraphResourceState.DepthRead, VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL)]
     [TestCase(GraphResourceState.DepthWrite, VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL)]
@@ -80,6 +84,7 @@ internal sealed class VulkanGraphResourceStateMapperTests
     [TestCase(GraphResourceState.ShaderSampledRead, VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT)]
     [TestCase(GraphResourceState.StorageRead, VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)]
     [TestCase(GraphResourceState.StorageWrite, VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)]
+    [TestCase(GraphResourceState.StorageReadWrite, VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)]
     public void ShaderResourceStatesRequireTheActualShaderStages(
         GraphResourceState state,
         VkPipelineStageFlags2 shaderStages)

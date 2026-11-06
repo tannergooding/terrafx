@@ -780,6 +780,50 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(rejectedRead.Diagnostics.Length, Is.EqualTo(1));
             Assert.That(rejectedRead.Diagnostics[0].Code, Is.EqualTo("render-graph.uninitialized-read"));
 
+            var readWriteGraph = new RenderGraph(new RenderGraphOptions(
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                0,
+                RenderFrameDimension.TwoDimensional,
+                SpatialProfileId.Default,
+                1,
+                [Guid.NewGuid()],
+                targetExtent,
+                target));
+            var readWriteTarget = readWriteGraph.OffscreenColorTargetVersion;
+            var readWriteClearPass = readWriteGraph.AddRasterPass(new RenderPassDescription("read-write-target-clear", 0, [], false));
+            var readWriteOutput = readWriteGraph.WriteColorAttachment(
+                readWriteClearPass,
+                readWriteTarget,
+                targetRange,
+                AttachmentLoadAction.Clear,
+                AttachmentStoreAction.Store,
+                new Vector4(0.0f, 0.0f, 0.0f, 1.0f));
+            var storageSeedPass = readWriteGraph.AddComputePass(new RenderPassDescription("storage-seed", 1, [], false));
+            var storageReadWritePass = readWriteGraph.AddComputePass(new RenderPassDescription("storage-read-write", 2, [], false));
+            var storageReadPass = readWriteGraph.AddComputePass(new RenderPassDescription("storage-read", 3, [], false));
+            var storageRange = new GraphBufferRange(0, 16);
+            var storageVersion0 = readWriteGraph.CreateTransientBuffer(
+                new BufferDescription(
+                    16,
+                    BufferUsage.Storage,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: 4,
+                    debugName: "storage-read-write-buffer"));
+            var storageVersion1 = readWriteGraph.WriteBuffer(
+                storageSeedPass,
+                storageVersion0,
+                GraphBufferUsage.StorageWrite,
+                storageRange);
+            var storageVersion2 = readWriteGraph.ReadWriteBuffer(storageReadWritePass, storageVersion1, storageRange);
+            readWriteGraph.ReadBuffer(storageReadPass, storageVersion2, GraphBufferUsage.StorageRead, storageRange);
+            readWriteGraph.SetPresentationSource(readWriteOutput);
+
+            var compiledReadWrite = readWriteGraph.Compile();
+            Assert.That(compiledReadWrite.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
+            Assert.That(compiledReadWrite.Diagnostics, Is.Empty);
+            Assert.That(compiledReadWrite.Plan, Is.Not.Null);
+
             var cycleGraph = new RenderGraph(new RenderGraphOptions(
                 Guid.NewGuid(),
                 Guid.NewGuid(),

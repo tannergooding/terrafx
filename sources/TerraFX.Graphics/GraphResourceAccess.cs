@@ -14,6 +14,7 @@ internal readonly struct GraphResourceAccess
     private readonly GraphBufferVersion? _bufferVersion;
     private readonly bool _contentsValid;
     private readonly GraphResourceState? _requiredStateOverride;
+    private readonly ulong _storageReadWritePairId;
     private readonly GraphTextureRange _textureRange;
     private readonly GraphTextureUsage? _textureUsage;
     private readonly GraphTextureVersion? _textureVersion;
@@ -24,7 +25,8 @@ internal readonly struct GraphResourceAccess
         GraphBufferRange range,
         GraphBufferUsage usage,
         bool isWrite,
-        bool contentsValid = true)
+        bool contentsValid = true,
+        ulong storageReadWritePairId = 0)
     {
         if (!passId.IsValid)
         {
@@ -43,6 +45,12 @@ internal readonly struct GraphResourceAccess
             throw new ArgumentOutOfRangeException(nameof(usage));
         }
 
+        if ((storageReadWritePairId != 0)
+            && (usage != (isWrite ? GraphBufferUsage.StorageWrite : GraphBufferUsage.StorageRead)))
+        {
+            throw new ArgumentException("A storage read-write pair must contain storage-read and storage-write accesses.", nameof(storageReadWritePairId));
+        }
+
         DeviceEpoch = version.DeviceEpoch;
         IsTexture = false;
         IsWrite = isWrite;
@@ -54,6 +62,7 @@ internal readonly struct GraphResourceAccess
         _attachmentUsage = null;
         _contentsValid = contentsValid;
         _requiredStateOverride = null;
+        _storageReadWritePairId = storageReadWritePairId;
         _bufferRange = range;
         _bufferUsage = usage;
         _bufferVersion = version;
@@ -97,6 +106,7 @@ internal readonly struct GraphResourceAccess
         _attachmentUsage = null;
         _contentsValid = contentsValid;
         _requiredStateOverride = requiredState;
+        _storageReadWritePairId = 0;
         _bufferRange = default;
         _bufferUsage = null;
         _bufferVersion = null;
@@ -111,7 +121,8 @@ internal readonly struct GraphResourceAccess
         GraphTextureRange range,
         GraphTextureUsage usage,
         bool isWrite,
-        bool contentsValid = true)
+        bool contentsValid = true,
+        ulong storageReadWritePairId = 0)
     {
         if (!passId.IsValid)
         {
@@ -130,6 +141,12 @@ internal readonly struct GraphResourceAccess
             throw new ArgumentOutOfRangeException(nameof(usage));
         }
 
+        if ((storageReadWritePairId != 0)
+            && (usage != (isWrite ? GraphTextureUsage.StorageWrite : GraphTextureUsage.StorageRead)))
+        {
+            throw new ArgumentException("A storage read-write pair must contain storage-read and storage-write accesses.", nameof(storageReadWritePairId));
+        }
+
         DeviceEpoch = version.DeviceEpoch;
         IsTexture = true;
         IsWrite = isWrite;
@@ -141,6 +158,7 @@ internal readonly struct GraphResourceAccess
         _attachmentUsage = null;
         _contentsValid = contentsValid;
         _requiredStateOverride = null;
+        _storageReadWritePairId = storageReadWritePairId;
         _bufferRange = default;
         _bufferUsage = null;
         _bufferVersion = null;
@@ -203,6 +221,7 @@ internal readonly struct GraphResourceAccess
         _attachmentUsage = attachmentUsage;
         _contentsValid = contentsValid;
         _requiredStateOverride = null;
+        _storageReadWritePairId = 0;
         _bufferRange = default;
         _bufferUsage = null;
         _bufferVersion = null;
@@ -227,6 +246,8 @@ internal readonly struct GraphResourceAccess
 
     internal uint DeviceEpoch { get; }
 
+    internal bool IsStorageReadWritePair => _storageReadWritePairId != 0;
+
     internal bool IsTexture { get; }
 
     internal bool IsWrite { get; }
@@ -240,6 +261,11 @@ internal readonly struct GraphResourceAccess
             if (_requiredStateOverride is GraphResourceState requiredState)
             {
                 return requiredState;
+            }
+
+            if (IsStorageReadWritePair)
+            {
+                return GraphResourceState.StorageReadWrite;
             }
 
             if (_attachmentUsage is TextureUsage attachmentUsage)
@@ -303,6 +329,36 @@ internal readonly struct GraphResourceAccess
             && _attachmentLoadAction == TerraFX.Graphics.AttachmentLoadAction.Load
             && _attachmentLoadAction == other._attachmentLoadAction
             && _attachmentStoreAction == other._attachmentStoreAction;
+
+    internal bool IsStorageReadWritePairOf(GraphResourceAccess other)
+    {
+        if ((_storageReadWritePairId == 0)
+            || (_storageReadWritePairId != other._storageReadWritePairId)
+            || (DeviceEpoch != other.DeviceEpoch)
+            || (PassId != other.PassId)
+            || (ResourceId != other.ResourceId)
+            || (IsTexture != other.IsTexture)
+            || (IsWrite == other.IsWrite))
+        {
+            return false;
+        }
+
+        var read = IsWrite ? other : this;
+        var write = IsWrite ? this : other;
+
+        if (((long)read.Version + 1) != write.Version)
+        {
+            return false;
+        }
+
+        return IsTexture
+            ? (read._textureUsage == GraphTextureUsage.StorageRead)
+                && (write._textureUsage == GraphTextureUsage.StorageWrite)
+                && read._textureRange.Equals(write._textureRange)
+            : (read._bufferUsage == GraphBufferUsage.StorageRead)
+                && (write._bufferUsage == GraphBufferUsage.StorageWrite)
+                && read._bufferRange.Equals(write._bufferRange);
+    }
 
     internal bool Overlaps(GraphResourceAccess other)
         => IsTexture

@@ -46,4 +46,7 @@ public enum GraphResourceState
 
     /// <summary>The resource is in the backend's neutral state with no graph usage implied.</summary>
     General = 13,
+
+    /// <summary>The resource is read and written as storage data.</summary>
+    StorageReadWrite = 14,
 }

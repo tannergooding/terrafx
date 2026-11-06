@@ -239,6 +239,40 @@ public sealed class RenderGraph
         _resources.ReadTexture(pass, version, range, usage);
     }
 
+    /// <summary>Declares a same-pass storage read of a buffer version and write to its next version.</summary>
+    /// <param name="pass">The graph-owned raster or compute pass identity.</param>
+    /// <param name="previousVersion">The graph-owned version read by the pass.</param>
+    /// <param name="range">The exact byte range both read and written.</param>
+    /// <returns>The next version written by the pass.</returns>
+    /// <remarks>The prior range must be initialized. A shader using this result must declare <see cref="ShaderResourceAccess.ReadWrite"/>.</remarks>
+    public GraphBufferVersion ReadWriteBuffer(
+        RenderPassId pass,
+        GraphBufferVersion previousVersion,
+        GraphBufferRange range)
+    {
+        EnsureCanMutate();
+        ValidateBufferUsage(pass, GraphBufferUsage.StorageRead, isWrite: false);
+        ValidateBufferUsage(pass, GraphBufferUsage.StorageWrite, isWrite: true);
+        return _resources.ReadWriteBuffer(pass, previousVersion, range);
+    }
+
+    /// <summary>Declares a same-pass storage read of a texture version and write to its next version.</summary>
+    /// <param name="pass">The graph-owned raster or compute pass identity.</param>
+    /// <param name="previousVersion">The graph-owned version read by the pass.</param>
+    /// <param name="range">The exact mip/layer/aspect range both read and written.</param>
+    /// <returns>The next version written by the pass.</returns>
+    /// <remarks>The prior range must be initialized. A shader using this result must declare <see cref="ShaderResourceAccess.ReadWrite"/>.</remarks>
+    public GraphTextureVersion ReadWriteTexture(
+        RenderPassId pass,
+        GraphTextureVersion previousVersion,
+        GraphTextureRange range)
+    {
+        EnsureCanMutate();
+        ValidateTextureUsage(pass, GraphTextureUsage.StorageRead, isWrite: false);
+        ValidateTextureUsage(pass, GraphTextureUsage.StorageWrite, isWrite: true);
+        return _resources.ReadWriteTexture(pass, previousVersion, range);
+    }
+
     /// <summary>Selects the latest initialized mip-0/layer-0 color version of the offscreen target.</summary>
     /// <param name="version">The graph-owned version of the selected output target.</param>
     /// <exception cref="ArgumentException">The version is not a current, exact offscreen color-target version.</exception>
