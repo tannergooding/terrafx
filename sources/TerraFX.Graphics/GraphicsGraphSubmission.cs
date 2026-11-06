@@ -218,6 +218,19 @@ internal sealed class GraphicsGraphSubmission
             var usage = import.Version.Description.Usage;
             var hasUniformUsage = (usage & BufferUsage.Uniform) != 0;
             var hasStorageUsage = (usage & BufferUsage.Storage) != 0;
+            var hasCopySourceImportAccess = false;
+            var hasCopyDestinationImportAccess = false;
+
+            foreach (var access in Accesses)
+            {
+                if (access.IsTexture || (access.ResourceId != import.Version.ResourceId))
+                {
+                    continue;
+                }
+
+                hasCopySourceImportAccess |= (access.RequiredState == GraphResourceState.CopySource) && !access.IsWrite;
+                hasCopyDestinationImportAccess |= (access.RequiredState == GraphResourceState.CopyDestination) && access.IsWrite;
+            }
 
             if (hasUniformUsage || hasStorageUsage)
             {
@@ -244,23 +257,37 @@ internal sealed class GraphicsGraphSubmission
 
                     storageBufferImport = import;
                 }
+
+                if (hasCopySourceImportAccess || hasCopyDestinationImportAccess)
+                {
+                    if (!hasStorageUsage)
+                    {
+                        throw new NotSupportedException("Native graph copy buffers with additional usages must also be storage buffers.");
+                    }
+
+                    if (hasCopySourceImportAccess)
+                    {
+                        if (((usage & BufferUsage.CopySource) == 0) || (copySourceBufferImport is not null))
+                        {
+                            throw new NotSupportedException("Native graph submission supports one declared copy-source buffer.");
+                        }
+
+                        copySourceBufferImport = import;
+                    }
+
+                    if (hasCopyDestinationImportAccess)
+                    {
+                        if (((usage & BufferUsage.CopyDestination) == 0) || (copyDestinationBufferImport is not null))
+                        {
+                            throw new NotSupportedException("Native graph submission supports one declared copy-destination buffer.");
+                        }
+
+                        copyDestinationBufferImport = import;
+                    }
+                }
             }
             else
             {
-                var hasCopySourceImportAccess = false;
-                var hasCopyDestinationImportAccess = false;
-
-                foreach (var access in Accesses)
-                {
-                    if (access.IsTexture || (access.ResourceId != import.Version.ResourceId))
-                    {
-                        continue;
-                    }
-
-                    hasCopySourceImportAccess |= (access.RequiredState == GraphResourceState.CopySource) && !access.IsWrite;
-                    hasCopyDestinationImportAccess |= (access.RequiredState == GraphResourceState.CopyDestination) && access.IsWrite;
-                }
-
                 if (hasCopySourceImportAccess == hasCopyDestinationImportAccess)
                 {
                     throw new NotSupportedException("Native graph submission supports distinct copy-source and copy-destination buffer imports.");
@@ -357,6 +384,8 @@ internal sealed class GraphicsGraphSubmission
                 || (storageBufferImport.InitialState is not (
                     GraphResourceState.Undefined
                     or GraphResourceState.General
+                    or GraphResourceState.CopySource
+                    or GraphResourceState.CopyDestination
                     or GraphResourceState.StorageWrite
                     or GraphResourceState.StorageReadWrite))))
         {
@@ -369,7 +398,10 @@ internal sealed class GraphicsGraphSubmission
                 || (copySourceBufferImport.InitialState is not (
                     GraphResourceState.General
                     or GraphResourceState.CopySource
-                    or GraphResourceState.CopyDestination))))
+                    or GraphResourceState.CopyDestination
+                    or GraphResourceState.StorageRead
+                    or GraphResourceState.StorageWrite
+                    or GraphResourceState.StorageReadWrite))))
         {
             throw new NotSupportedException("Native graph submission requires an initialized full-range copy-source buffer.");
         }
@@ -382,7 +414,10 @@ internal sealed class GraphicsGraphSubmission
                     GraphResourceState.Undefined
                     or GraphResourceState.General
                     or GraphResourceState.CopySource
-                    or GraphResourceState.CopyDestination))))
+                    or GraphResourceState.CopyDestination
+                    or GraphResourceState.StorageRead
+                    or GraphResourceState.StorageWrite
+                    or GraphResourceState.StorageReadWrite))))
         {
             throw new NotSupportedException("Native graph submission requires a full-range copy-destination buffer.");
         }
@@ -1132,7 +1167,10 @@ internal sealed class GraphicsGraphSubmission
                 && (transition.BeforeState is
                     GraphResourceState.General
                     or GraphResourceState.CopySource
-                    or GraphResourceState.CopyDestination)
+                    or GraphResourceState.CopyDestination
+                    or GraphResourceState.StorageRead
+                    or GraphResourceState.StorageWrite
+                    or GraphResourceState.StorageReadWrite)
                 && copySourcePasses.Contains(transition.PassId))
             {
                 continue;
@@ -1146,7 +1184,10 @@ internal sealed class GraphicsGraphSubmission
                     GraphResourceState.Undefined
                     or GraphResourceState.General
                     or GraphResourceState.CopySource
-                    or GraphResourceState.CopyDestination)
+                    or GraphResourceState.CopyDestination
+                    or GraphResourceState.StorageRead
+                    or GraphResourceState.StorageWrite
+                    or GraphResourceState.StorageReadWrite)
                 && copyDestinationPasses.Contains(transition.PassId))
             {
                 continue;
@@ -1158,6 +1199,8 @@ internal sealed class GraphicsGraphSubmission
                 && (transition.AfterState == GraphResourceState.StorageReadWrite)
                 && (transition.BeforeState is
                     GraphResourceState.General
+                    or GraphResourceState.CopySource
+                    or GraphResourceState.CopyDestination
                     or GraphResourceState.StorageRead
                     or GraphResourceState.StorageWrite
                     or GraphResourceState.StorageReadWrite)

@@ -397,34 +397,41 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(storageImageUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
             }
 
-            if (useBufferCopy)
+            if (useBufferCopy || useCompute)
             {
-                expectedCopiedBytes = [
-                    0x11,
-                    0x23,
-                    0x47,
-                    0x8B,
-                    0xD1,
-                    0x2D,
-                    0x5B,
-                    0xA7,
-                    0x13,
-                    0x29,
-                    0x4F,
-                    0x97,
-                    0xE3,
-                    0x35,
-                    0x6B,
-                    0xB9,
-                ];
-                copySourceBuffer = await graphicsDevice.CreateBufferAsync(
-                    new BufferDescription(
-                        expectedCopiedBytes.Length,
-                        BufferUsage.CopySource | BufferUsage.CopyDestination,
-                        GpuMemoryKind.DeviceLocal,
-                        structuredStride: null,
-                        debugName: $"m04-{backend}-copy-source"))
-                    .ConfigureAwait(false);
+                expectedCopiedBytes = useCompute
+                    ? [0x2A, 0x00, 0x00, 0x00]
+                    : [
+                        0x11,
+                        0x23,
+                        0x47,
+                        0x8B,
+                        0xD1,
+                        0x2D,
+                        0x5B,
+                        0xA7,
+                        0x13,
+                        0x29,
+                        0x4F,
+                        0x97,
+                        0xE3,
+                        0x35,
+                        0x6B,
+                        0xB9,
+                    ];
+
+                if (useBufferCopy)
+                {
+                    copySourceBuffer = await graphicsDevice.CreateBufferAsync(
+                        new BufferDescription(
+                            expectedCopiedBytes.Length,
+                            BufferUsage.CopySource | BufferUsage.CopyDestination,
+                            GpuMemoryKind.DeviceLocal,
+                            structuredStride: null,
+                            debugName: $"m04-{backend}-copy-source"))
+                        .ConfigureAwait(false);
+                }
+
                 copyDestinationBuffer = await graphicsDevice.CreateBufferAsync(
                     new BufferDescription(
                         expectedCopiedBytes.Length,
@@ -433,12 +440,16 @@ internal sealed partial class EngineHostOptionsTests
                         structuredStride: null,
                         debugName: $"m04-{backend}-copy-destination"))
                     .ConfigureAwait(false);
-                var copyUploadReceipt = await graphicsDevice.UploadBufferAsync(
-                    copySourceBuffer,
-                    0,
-                    expectedCopiedBytes.AsSpan())
-                    .ConfigureAwait(false);
-                Assert.That(copyUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+
+                if (copySourceBuffer is GpuBuffer copyUploadSourceBuffer)
+                {
+                    var copyUploadReceipt = await graphicsDevice.UploadBufferAsync(
+                        copyUploadSourceBuffer,
+                        0,
+                        expectedCopiedBytes.AsSpan())
+                        .ConfigureAwait(false);
+                    Assert.That(copyUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+                }
             }
 
             var graph = renderer.BuildGraph(
@@ -633,6 +644,7 @@ internal sealed partial class EngineHostOptionsTests
                     computePass,
                     initialStorageBuffer,
                     initialStorageBuffer.Range);
+                copySourceVersion = computeStorageWriteVersion;
                 computeBindingSet = new BindingSet(
                     [
                         new BufferBinding(
@@ -648,10 +660,17 @@ internal sealed partial class EngineHostOptionsTests
 
             RenderPassId? copyPassId = null;
 
-            if (useBufferCopy)
+            if (useBufferCopy || useCompute)
             {
+                ImmutableArray<RenderPassId> copyPredecessors = computePassId is RenderPassId copyComputePredecessor
+                    ? [copyComputePredecessor]
+                    : [];
                 var copyPass = graph.AddCopyPass(
-                    new RenderPassDescription("offscreen-buffer-copy", 0, [], hasExternalSideEffects: false),
+                    new RenderPassDescription(
+                        "offscreen-buffer-copy",
+                        computePassId.HasValue ? 1 : 0,
+                        copyPredecessors,
+                        hasExternalSideEffects: false),
                     RecordCopy);
                 copyPassId = copyPass;
                 var selectedCopySource = copySourceVersion
@@ -686,7 +705,7 @@ internal sealed partial class EngineHostOptionsTests
             var pass = graph.AddRasterPass(
                 new RenderPassDescription(
                     "offscreen-clear",
-                    rasterPredecessors.IsEmpty ? 0 : 1,
+                    rasterPredecessors.Length,
                     rasterPredecessors,
                     hasExternalSideEffects: false),
                 RecordClear);
@@ -1144,7 +1163,7 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(BitConverter.ToUInt32(computeStorageBytes, 0), Is.EqualTo(42u));
             }
 
-            if (useBufferCopy)
+            if (useBufferCopy || useCompute)
             {
                 var destinationBufferForReadback = copyDestinationBuffer
                     ?? throw new InvalidOperationException("The graph copy test has no destination buffer.");
@@ -1174,7 +1193,7 @@ internal sealed partial class EngineHostOptionsTests
                 + $"UniformBuffer={useUniformBuffer}; "
                 + $"SampledTexture={useSampledTexture}; "
                 + $"StorageResources={useStorageResources}; "
-                + $"BufferCopy={useBufferCopy}; "
+                + $"BufferCopy={useBufferCopy || useCompute}; "
                 + $"Compute={useCompute}; "
                 + $"Pixel={padded[centerPixelOffset]:X2}{padded[centerPixelOffset + 1]:X2}"
                 + $"{padded[centerPixelOffset + 2]:X2}{padded[centerPixelOffset + 3]:X2}; "

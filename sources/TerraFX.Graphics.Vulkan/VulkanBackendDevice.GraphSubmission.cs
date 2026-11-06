@@ -163,6 +163,18 @@ internal sealed unsafe partial class VulkanBackendDevice
             VulkanBackendBuffer Buffer,
             VkPipelineStageFlags2 StageMask,
             VkAccessFlags2 AccessMask)>(submission.BufferImports.Length);
+        var currentBufferScopes = new Dictionary<ulong, (
+            VkPipelineStageFlags2 StageMask,
+            VkAccessFlags2 AccessMask)>(submission.BufferImports.Length);
+
+        foreach (var import in submission.BufferImports)
+        {
+            var buffer = submission.GetBuffer(import.Version.ResourceId) as VulkanBackendBuffer
+                ?? throw new InvalidOperationException("The graph buffer import is not a Vulkan buffer.");
+            currentBufferScopes.Add(
+                import.Version.ResourceId,
+                (buffer.LastStageMask, buffer.LastAccessMask));
+        }
 
         foreach (var pass in submission.Passes)
         {
@@ -283,6 +295,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                         sourceAccess,
                         shaderStages,
                         storageAccess);
+                    currentBufferScopes[resourceId] = (shaderStages, storageAccess);
                 }
 
                 for (var importIndex = 1; importIndex < submission.TextureImports.Length; importIndex++)
@@ -389,7 +402,13 @@ internal sealed unsafe partial class VulkanBackendDevice
                     {
                         var buffer = submission.GetBuffer(transition.ResourceId) as VulkanBackendBuffer
                             ?? throw new InvalidOperationException("The graph transition lost its Vulkan buffer.");
-                        RecordGraphBufferBarrier(pass, buffer, transition);
+                        var (bufferScopeStageMask, bufferScopeAccessMask) = currentBufferScopes[transition.ResourceId];
+                        currentBufferScopes[transition.ResourceId] = RecordGraphBufferBarrier(
+                            pass,
+                            buffer,
+                            transition,
+                            bufferScopeStageMask,
+                            bufferScopeAccessMask);
                     }
                 }
 
@@ -809,10 +828,12 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
     }
 
-    private void RecordGraphBufferBarrier(
+    private (VkPipelineStageFlags2 StageMask, VkAccessFlags2 AccessMask) RecordGraphBufferBarrier(
         GraphicsGraphSubmissionPass pass,
         VulkanBackendBuffer buffer,
-        GraphResourceStateTransition transition)
+        GraphResourceStateTransition transition,
+        VkPipelineStageFlags2 currentStageMask,
+        VkAccessFlags2 currentAccessMask)
     {
         if (transition.AfterState is not (
             GraphResourceState.UniformRead
@@ -841,8 +862,8 @@ internal sealed unsafe partial class VulkanBackendDevice
             or GraphResourceState.StorageWrite
             or GraphResourceState.StorageReadWrite)
         {
-            sourceStage = buffer.LastStageMask;
-            sourceAccess = buffer.LastAccessMask;
+            sourceStage = currentStageMask;
+            sourceAccess = currentAccessMask;
         }
         else
         {
@@ -850,14 +871,19 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
 
         var shaderStages = GetShaderStageMask(pass, transition.ResourceId);
+        var destinationStage = VulkanGraphResourceStateMapper.GetStageMask(
+            transition.AfterState,
+            shaderStages);
+        var destinationAccess = VulkanGraphResourceStateMapper.GetAccessMask(transition.AfterState);
         RecordBufferBarrier(
             buffer,
             transition.BufferRange.ByteOffset,
             checked((nint)transition.BufferRange.ByteLength),
             sourceStage,
             sourceAccess,
-            VulkanGraphResourceStateMapper.GetStageMask(transition.AfterState, shaderStages),
-            VulkanGraphResourceStateMapper.GetAccessMask(transition.AfterState));
+            destinationStage,
+            destinationAccess);
+        return (destinationStage, destinationAccess);
     }
 
     private void RecordGraphImageBarrier(
