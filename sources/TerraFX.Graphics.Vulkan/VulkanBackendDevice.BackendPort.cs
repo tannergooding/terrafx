@@ -34,14 +34,22 @@ internal sealed unsafe partial class VulkanBackendDevice
 
     OwnedBuffer<byte> IGraphicsBackendDevice.ReadbackBuffer(
         IGraphicsBackendBuffer source,
+        GraphResourceState sourceState,
         long sourceOffset,
         nint byteLength)
-        => ReadbackBuffer(RequireBuffer(source, nameof(source)), sourceOffset, byteLength);
+    {
+        _ = sourceState;
+        return ReadbackBuffer(RequireBuffer(source, nameof(source)), sourceOffset, byteLength);
+    }
 
     TextureReadback IGraphicsBackendDevice.ReadbackTexture(
         IGraphicsBackendTexture source,
+        GraphResourceState sourceState,
         TextureSubresource subresource)
-        => ReadbackTexture(RequireTexture(source, nameof(source)), subresource);
+    {
+        _ = sourceState;
+        return ReadbackTexture(RequireTexture(source, nameof(source)), subresource);
+    }
 
     private VulkanBackendBuffer RequireBuffer(IGraphicsBackendBuffer resource, string parameterName)
     {
@@ -72,33 +80,45 @@ internal sealed unsafe partial class VulkanBackendDevice
 
     long IGraphicsBackendDevice.UploadBuffer(
         IGraphicsBackendBuffer destination,
+        GraphResourceState destinationState,
         long destinationOffset,
         BufferReadLease<byte> source,
         nint sourceOffset,
         nint byteLength)
-        => UploadBuffer(
+    {
+        _ = destinationState;
+        return UploadBuffer(
             RequireBuffer(destination, nameof(destination)),
             destinationOffset,
             source,
             sourceOffset,
             byteLength);
+    }
 
     long IGraphicsBackendDevice.UploadBuffer(
         IGraphicsBackendBuffer destination,
+        GraphResourceState destinationState,
         long destinationOffset,
         ReadOnlySpan<byte> source)
-        => UploadBuffer(RequireBuffer(destination, nameof(destination)), destinationOffset, source);
+    {
+        _ = destinationState;
+        return UploadBuffer(RequireBuffer(destination, nameof(destination)), destinationOffset, source);
+    }
 
     long IGraphicsBackendDevice.UploadTexture(
         IGraphicsBackendTexture destination,
+        GraphResourceState destinationState,
         TextureSubresource subresource,
         BufferReadLease<byte> source,
         nint sourceOffset,
         TextureDataLayout sourceLayout)
-        => UploadTexture(
+    {
+        _ = destinationState;
+        return UploadTexture(
             RequireTexture(destination, nameof(destination)),
             subresource,
             source,
             sourceOffset,
             sourceLayout);
+    }
 }

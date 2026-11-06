@@ -1593,10 +1593,17 @@ internal sealed class GraphicsPipelineRequestTests
         public GraphicsResourceAllocationInfo GetTextureAllocationInfo(TextureDescription description)
             => throw new NotSupportedException();
 
-        public OwnedBuffer<byte> ReadbackBuffer(IGraphicsBackendBuffer source, long sourceOffset, nint byteLength)
+        public OwnedBuffer<byte> ReadbackBuffer(
+            IGraphicsBackendBuffer source,
+            GraphResourceState sourceState,
+            long sourceOffset,
+            nint byteLength)
             => throw new NotSupportedException();
 
-        public TextureReadback ReadbackTexture(IGraphicsBackendTexture source, TextureSubresource subresource)
+        public TextureReadback ReadbackTexture(
+            IGraphicsBackendTexture source,
+            GraphResourceState sourceState,
+            TextureSubresource subresource)
             => throw new NotSupportedException();
 
         public long SubmitGraph(GraphicsGraphSubmission submission)
@@ -1604,17 +1611,23 @@ internal sealed class GraphicsPipelineRequestTests
 
         public long UploadBuffer(
             IGraphicsBackendBuffer destination,
+            GraphResourceState destinationState,
             long destinationOffset,
             BufferReadLease<byte> source,
             nint sourceOffset,
             nint byteLength)
             => throw new NotSupportedException();
 
-        public long UploadBuffer(IGraphicsBackendBuffer destination, long destinationOffset, ReadOnlySpan<byte> source)
+        public long UploadBuffer(
+            IGraphicsBackendBuffer destination,
+            GraphResourceState destinationState,
+            long destinationOffset,
+            ReadOnlySpan<byte> source)
             => throw new NotSupportedException();
 
         public long UploadTexture(
             IGraphicsBackendTexture destination,
+            GraphResourceState destinationState,
             TextureSubresource subresource,
             BufferReadLease<byte> source,
             nint sourceOffset,

@@ -1270,7 +1270,11 @@ public static unsafe class D3D12GraphicsBackend
                 "Usage",
                 "CA1031:Do not catch general exception types",
                 Justification = "A failed readback closes an unsubmitted command list before releasing its staging owner.")]
-            public OwnedBuffer<byte> ReadbackBuffer(IGraphicsBackendBuffer source, long sourceOffset, nint byteLength)
+            public OwnedBuffer<byte> ReadbackBuffer(
+                IGraphicsBackendBuffer source,
+                GraphResourceState sourceState,
+                long sourceOffset,
+                nint byteLength)
             {
                 var sourceBuffer = GetTransferBuffer(source, BufferUsage.CopySource, nameof(source));
                 ValidateTransferRange(sourceBuffer.Description.ByteLength, sourceOffset, byteLength, nameof(sourceOffset), nameof(byteLength));
@@ -1282,11 +1286,12 @@ public static unsafe class D3D12GraphicsBackend
                 {
                     var commandList = transferQueue.BeginRecording();
                     var sourceResource = sourceBuffer.GetResource();
-                    var initialState = D3D12GraphResourceStateMapper.GetBufferState(
-                        GraphResourceState.General,
-                        sourceBuffer.Description);
+                    var initialState = D3D12GraphResourceStateMapper.GetBufferState(sourceState, sourceBuffer.Description);
                     var copySourceState = D3D12GraphResourceStateMapper.GetBufferState(
                         GraphResourceState.CopySource,
+                        sourceBuffer.Description);
+                    var generalState = D3D12GraphResourceStateMapper.GetBufferState(
+                        GraphResourceState.General,
                         sourceBuffer.Description);
                     var requiresTransition = initialState != copySourceState;
 
@@ -1308,12 +1313,12 @@ public static unsafe class D3D12GraphicsBackend
                         checked((ulong)sourceOffset),
                         checked((ulong)byteLength));
 
-                    if (requiresTransition)
+                    if (copySourceState != generalState)
                     {
                         var toCommon = D3D12_RESOURCE_BARRIER.InitTransition(
                             sourceResource,
                             copySourceState,
-                            initialState,
+                            generalState,
                             0,
                             D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
                         commandList->ResourceBarrier(1, &toCommon);
@@ -1375,7 +1380,10 @@ public static unsafe class D3D12GraphicsBackend
                 "Usage",
                 "CA1031:Do not catch general exception types",
                 Justification = "A failed texture readback closes an unsubmitted command list before releasing its staging owner.")]
-            public TextureReadback ReadbackTexture(IGraphicsBackendTexture source, TextureSubresource subresource)
+            public TextureReadback ReadbackTexture(
+                IGraphicsBackendTexture source,
+                GraphResourceState sourceState,
+                TextureSubresource subresource)
             {
                 var sourceTexture = GetTransferTexture(source, TextureUsage.CopySource, nameof(source));
                 var extent = GraphicsDevice.GetTextureSubresourceExtent(sourceTexture.Description, subresource);
@@ -1390,31 +1398,40 @@ public static unsafe class D3D12GraphicsBackend
                     var commandList = transferQueue.BeginRecording();
                     var sourceResource = sourceTexture.GetResource();
                     var subresourceIndex = GetTextureSubresourceIndex(sourceTexture.Description, subresource);
-                    var initialState = D3D12GraphResourceStateMapper.GetTextureState(
-                        GraphResourceState.General,
-                        sourceTexture.Description);
+                    var initialState = D3D12GraphResourceStateMapper.GetTextureState(sourceState, sourceTexture.Description);
                     var copySourceState = D3D12GraphResourceStateMapper.GetTextureState(
                         GraphResourceState.CopySource,
                         sourceTexture.Description);
-                    var toCopySource = D3D12_RESOURCE_BARRIER.InitTransition(
-                        sourceResource,
-                        initialState,
-                        copySourceState,
-                        subresourceIndex,
-                        D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
-                    commandList->ResourceBarrier(1, &toCopySource);
+                    var generalState = D3D12GraphResourceStateMapper.GetTextureState(
+                        GraphResourceState.General,
+                        sourceTexture.Description);
+
+                    if (initialState != copySourceState)
+                    {
+                        var toCopySource = D3D12_RESOURCE_BARRIER.InitTransition(
+                            sourceResource,
+                            initialState,
+                            copySourceState,
+                            subresourceIndex,
+                            D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                        commandList->ResourceBarrier(1, &toCopySource);
+                    }
 
                     var sourceLocation = CreateSubresourceLocation(sourceResource, subresourceIndex);
                     var destinationLocation = CreateFootprintLocation(stagingResource, footprint.Layout);
                     commandList->CopyTextureRegion(&destinationLocation, 0, 0, 0, &sourceLocation, null);
 
-                    var toCommon = D3D12_RESOURCE_BARRIER.InitTransition(
-                        sourceResource,
-                        copySourceState,
-                        initialState,
-                        subresourceIndex,
-                        D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
-                    commandList->ResourceBarrier(1, &toCommon);
+                    if (copySourceState != generalState)
+                    {
+                        var toCommon = D3D12_RESOURCE_BARRIER.InitTransition(
+                            sourceResource,
+                            copySourceState,
+                            generalState,
+                            subresourceIndex,
+                            D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                        commandList->ResourceBarrier(1, &toCommon);
+                    }
+
                     _ = transferQueue.SubmitAndWait();
 
                     var readRange = new D3D12_RANGE {
@@ -1665,26 +1682,56 @@ public static unsafe class D3D12GraphicsBackend
                                             ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
                                         var uniformBufferBindings =
                                             ImmutableArray.CreateBuilder<D3D12BackendUniformBufferBinding>(bindings.Buffers.Length);
+                                        var storageBufferBindings =
+                                            ImmutableArray.CreateBuilder<D3D12BackendStorageBufferBinding>(bindings.Buffers.Length);
 
                                         foreach (var binding in bindings.Buffers)
                                         {
-                                            uniformBufferBindings.Add(new D3D12BackendUniformBufferBinding(
-                                                binding.Group,
-                                                binding.Binding,
-                                                submission.GetBuffer(binding.Resource.ResourceId),
-                                                binding.Range.ByteOffset,
-                                                binding.Range.ByteLength));
+                                            var buffer = submission.GetBuffer(binding.Resource.ResourceId);
+
+                                            if (binding.Kind == ShaderResourceKind.UniformBuffer)
+                                            {
+                                                uniformBufferBindings.Add(new D3D12BackendUniformBufferBinding(
+                                                    binding.Group,
+                                                    binding.Binding,
+                                                    buffer,
+                                                    binding.Range.ByteOffset,
+                                                    binding.Range.ByteLength));
+                                            }
+                                            else
+                                            {
+                                                storageBufferBindings.Add(new D3D12BackendStorageBufferBinding(
+                                                    binding.Group,
+                                                    binding.Binding,
+                                                    buffer,
+                                                    binding.Range.ByteOffset,
+                                                    binding.Range.ByteLength));
+                                            }
                                         }
 
                                         var sampledImageBindings =
                                             ImmutableArray.CreateBuilder<D3D12BackendSampledImageBinding>(bindings.Textures.Length);
+                                        var storageImageBindings =
+                                            ImmutableArray.CreateBuilder<D3D12BackendStorageImageBinding>(bindings.Textures.Length);
 
                                         foreach (var binding in bindings.Textures)
                                         {
-                                            sampledImageBindings.Add(new D3D12BackendSampledImageBinding(
-                                                binding.Group,
-                                                binding.Binding,
-                                                submission.GetTexture(binding.Resource.ResourceId)));
+                                            var texture = submission.GetTexture(binding.Resource.ResourceId);
+
+                                            if (binding.Kind == ShaderResourceKind.SampledImage)
+                                            {
+                                                sampledImageBindings.Add(new D3D12BackendSampledImageBinding(
+                                                    binding.Group,
+                                                    binding.Binding,
+                                                    texture));
+                                            }
+                                            else
+                                            {
+                                                storageImageBindings.Add(new D3D12BackendStorageImageBinding(
+                                                    binding.Group,
+                                                    binding.Binding,
+                                                    texture));
+                                            }
                                         }
 
                                         var samplerBindings =
@@ -1702,11 +1749,11 @@ public static unsafe class D3D12GraphicsBackend
 
                                         var descriptorSet = CreateDescriptorSet(
                                             pipeline,
-                                            uniformBufferBindings.MoveToImmutable(),
-                                            sampledImageBindings.MoveToImmutable(),
-                                            [],
-                                            [],
-                                            samplerBindings.MoveToImmutable());
+                                            uniformBufferBindings.ToImmutable(),
+                                            sampledImageBindings.ToImmutable(),
+                                            storageBufferBindings.ToImmutable(),
+                                            storageImageBindings.ToImmutable(),
+                                            samplerBindings.ToImmutable());
                                         descriptorSets.Add(descriptorSet);
 
                                         if ((descriptorSet.DescriptorTableCount == 0)
@@ -1840,6 +1887,7 @@ public static unsafe class D3D12GraphicsBackend
                 Justification = "A failed upload closes an unsubmitted command list before releasing its staging owner.")]
             public long UploadBuffer(
                 IGraphicsBackendBuffer destination,
+                GraphResourceState destinationState,
                 long destinationOffset,
                 BufferReadLease<byte> source,
                 nint sourceOffset,
@@ -1873,31 +1921,44 @@ public static unsafe class D3D12GraphicsBackend
                     var commandList = transferQueue.BeginRecording();
                     var destinationResource = destinationBuffer.GetResource();
                     var initialState = D3D12GraphResourceStateMapper.GetBufferState(
-                        GraphResourceState.General,
+                        destinationState,
                         destinationBuffer.Description);
                     var copyDestinationState = D3D12GraphResourceStateMapper.GetBufferState(
                         GraphResourceState.CopyDestination,
                         destinationBuffer.Description);
-                    var toCopyDestination = D3D12_RESOURCE_BARRIER.InitTransition(
-                        destinationResource,
-                        initialState,
-                        copyDestinationState,
-                        0,
-                        D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
-                    commandList->ResourceBarrier(1, &toCopyDestination);
+                    var generalState = D3D12GraphResourceStateMapper.GetBufferState(
+                        GraphResourceState.General,
+                        destinationBuffer.Description);
+
+                    if (initialState != copyDestinationState)
+                    {
+                        var toCopyDestination = D3D12_RESOURCE_BARRIER.InitTransition(
+                            destinationResource,
+                            initialState,
+                            copyDestinationState,
+                            0,
+                            D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                        commandList->ResourceBarrier(1, &toCopyDestination);
+                    }
+
                     commandList->CopyBufferRegion(
                         destinationResource,
                         checked((ulong)destinationOffset),
                         stagingResource,
                         0,
                         checked((ulong)byteLength));
-                    var toCommon = D3D12_RESOURCE_BARRIER.InitTransition(
-                        destinationResource,
-                        copyDestinationState,
-                        initialState,
-                        0,
-                        D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
-                    commandList->ResourceBarrier(1, &toCommon);
+
+                    if (copyDestinationState != generalState)
+                    {
+                        var toCommon = D3D12_RESOURCE_BARRIER.InitTransition(
+                            destinationResource,
+                            copyDestinationState,
+                            generalState,
+                            0,
+                            D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                        commandList->ResourceBarrier(1, &toCommon);
+                    }
+
                     return transferQueue.SubmitAndWait();
                 }
                 catch (Exception exception)
@@ -1930,7 +1991,11 @@ public static unsafe class D3D12GraphicsBackend
                 "Usage",
                 "CA1031:Do not catch general exception types",
                 Justification = "A failed upload closes an unsubmitted command list before releasing its staging owner.")]
-            public long UploadBuffer(IGraphicsBackendBuffer destination, long destinationOffset, ReadOnlySpan<byte> source)
+            public long UploadBuffer(
+                IGraphicsBackendBuffer destination,
+                GraphResourceState destinationState,
+                long destinationOffset,
+                ReadOnlySpan<byte> source)
             {
                 ArgumentOutOfRangeException.ThrowIfNegativeOrZero(source.Length);
                 var destinationBuffer = GetTransferBuffer(destination, BufferUsage.CopyDestination, nameof(destination));
@@ -1956,31 +2021,44 @@ public static unsafe class D3D12GraphicsBackend
                     var commandList = transferQueue.BeginRecording();
                     var destinationResource = destinationBuffer.GetResource();
                     var initialState = D3D12GraphResourceStateMapper.GetBufferState(
-                        GraphResourceState.General,
+                        destinationState,
                         destinationBuffer.Description);
                     var copyDestinationState = D3D12GraphResourceStateMapper.GetBufferState(
                         GraphResourceState.CopyDestination,
                         destinationBuffer.Description);
-                    var toCopyDestination = D3D12_RESOURCE_BARRIER.InitTransition(
-                        destinationResource,
-                        initialState,
-                        copyDestinationState,
-                        0,
-                        D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
-                    commandList->ResourceBarrier(1, &toCopyDestination);
+                    var generalState = D3D12GraphResourceStateMapper.GetBufferState(
+                        GraphResourceState.General,
+                        destinationBuffer.Description);
+
+                    if (initialState != copyDestinationState)
+                    {
+                        var toCopyDestination = D3D12_RESOURCE_BARRIER.InitTransition(
+                            destinationResource,
+                            initialState,
+                            copyDestinationState,
+                            0,
+                            D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                        commandList->ResourceBarrier(1, &toCopyDestination);
+                    }
+
                     commandList->CopyBufferRegion(
                         destinationResource,
                         checked((ulong)destinationOffset),
                         stagingResource,
                         0,
                         checked((ulong)byteLength));
-                    var toCommon = D3D12_RESOURCE_BARRIER.InitTransition(
-                        destinationResource,
-                        copyDestinationState,
-                        initialState,
-                        0,
-                        D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
-                    commandList->ResourceBarrier(1, &toCommon);
+
+                    if (copyDestinationState != generalState)
+                    {
+                        var toCommon = D3D12_RESOURCE_BARRIER.InitTransition(
+                            destinationResource,
+                            copyDestinationState,
+                            generalState,
+                            0,
+                            D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                        commandList->ResourceBarrier(1, &toCommon);
+                    }
+
                     return transferQueue.SubmitAndWait();
                 }
                 catch (Exception exception)
@@ -2015,6 +2093,7 @@ public static unsafe class D3D12GraphicsBackend
                 Justification = "A failed texture upload closes an unsubmitted command list before releasing its staging owner.")]
             public long UploadTexture(
                 IGraphicsBackendTexture destination,
+                GraphResourceState destinationState,
                 TextureSubresource subresource,
                 BufferReadLease<byte> source,
                 nint sourceOffset,
@@ -2051,30 +2130,41 @@ public static unsafe class D3D12GraphicsBackend
                     var destinationResource = destinationTexture.GetResource();
                     var subresourceIndex = GetTextureSubresourceIndex(destinationTexture.Description, subresource);
                     var initialState = D3D12GraphResourceStateMapper.GetTextureState(
-                        GraphResourceState.General,
+                        destinationState,
                         destinationTexture.Description);
                     var copyDestinationState = D3D12GraphResourceStateMapper.GetTextureState(
                         GraphResourceState.CopyDestination,
                         destinationTexture.Description);
-                    var toCopyDestination = D3D12_RESOURCE_BARRIER.InitTransition(
-                        destinationResource,
-                        initialState,
-                        copyDestinationState,
-                        subresourceIndex,
-                        D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
-                    commandList->ResourceBarrier(1, &toCopyDestination);
+                    var generalState = D3D12GraphResourceStateMapper.GetTextureState(
+                        GraphResourceState.General,
+                        destinationTexture.Description);
+
+                    if (initialState != copyDestinationState)
+                    {
+                        var toCopyDestination = D3D12_RESOURCE_BARRIER.InitTransition(
+                            destinationResource,
+                            initialState,
+                            copyDestinationState,
+                            subresourceIndex,
+                            D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                        commandList->ResourceBarrier(1, &toCopyDestination);
+                    }
 
                     var sourceLocation = CreateFootprintLocation(stagingResource, footprint.Layout);
                     var destinationLocation = CreateSubresourceLocation(destinationResource, subresourceIndex);
                     commandList->CopyTextureRegion(&destinationLocation, 0, 0, 0, &sourceLocation, null);
 
-                    var toCommon = D3D12_RESOURCE_BARRIER.InitTransition(
-                        destinationResource,
-                        copyDestinationState,
-                        initialState,
-                        subresourceIndex,
-                        D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
-                    commandList->ResourceBarrier(1, &toCommon);
+                    if (copyDestinationState != generalState)
+                    {
+                        var toCommon = D3D12_RESOURCE_BARRIER.InitTransition(
+                            destinationResource,
+                            copyDestinationState,
+                            generalState,
+                            subresourceIndex,
+                            D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                        commandList->ResourceBarrier(1, &toCommon);
+                    }
+
                     return transferQueue.SubmitAndWait();
                 }
                 catch (Exception exception)

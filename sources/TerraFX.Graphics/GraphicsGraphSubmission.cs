@@ -120,38 +120,116 @@ internal sealed class GraphicsGraphSubmission
 
     internal void ValidateOffscreenRasterSubmission()
     {
-        if ((BufferImports.Length > 1)
-            || (TextureImports.Length is < 1 or > 2)
+        if ((BufferImports.Length > 2)
+            || (TextureImports.Length is < 1 or > 3)
             || !ReferenceEquals(TextureImports[0].Texture, OffscreenColorTarget))
         {
-            throw new NotSupportedException("Native graph submission supports one offscreen color target, one Frame uniform buffer, and one sampled image.");
+            throw new NotSupportedException("Native graph submission supports one offscreen color target, Frame uniform/storage buffers, and sampled/storage images.");
         }
 
         var targetResourceId = TextureImports[0].Version.ResourceId;
-        var uniformBufferImport = (BufferImports.Length == 1) ? BufferImports[0] : null;
-        var sampledTextureImport = (TextureImports.Length == 2) ? TextureImports[1] : null;
+        GraphBufferImportRecord? uniformBufferImport = null;
+        GraphBufferImportRecord? storageBufferImport = null;
+
+        foreach (var import in BufferImports)
+        {
+            var usage = import.Version.Description.Usage;
+            var hasUniformUsage = (usage & BufferUsage.Uniform) != 0;
+            var hasStorageUsage = (usage & BufferUsage.Storage) != 0;
+
+            if (hasUniformUsage == hasStorageUsage)
+            {
+                throw new NotSupportedException("Native graph submission supports only separately imported uniform or storage buffers.");
+            }
+
+            if (hasUniformUsage)
+            {
+                if (uniformBufferImport is not null)
+                {
+                    throw new NotSupportedException("Native graph submission supports one Frame uniform buffer.");
+                }
+
+                uniformBufferImport = import;
+            }
+            else
+            {
+                if (storageBufferImport is not null)
+                {
+                    throw new NotSupportedException("Native graph submission supports one Frame storage buffer.");
+                }
+
+                storageBufferImport = import;
+            }
+        }
 
         if (uniformBufferImport is not null
-            && (((uniformBufferImport.Version.Description.Usage & BufferUsage.Uniform) == 0)
-                || (uniformBufferImport.Version.Range != new GraphBufferRange(0, uniformBufferImport.Buffer.ByteLength))
+            && ((uniformBufferImport.Version.Range != new GraphBufferRange(0, uniformBufferImport.Buffer.ByteLength))
                 || !uniformBufferImport.InitialContentsValid
                 || (uniformBufferImport.InitialState is not (GraphResourceState.General or GraphResourceState.UniformRead))))
         {
-            throw new NotSupportedException("Native graph submission requires imported uniform buffers to declare uniform usage.");
+            throw new NotSupportedException("Native graph submission requires an initialized full-range Frame uniform buffer.");
         }
 
-        if (sampledTextureImport is not null
-            && (ReferenceEquals(sampledTextureImport.Texture, OffscreenColorTarget)
-                || (sampledTextureImport.Version.ResourceId == targetResourceId)
-                || ((sampledTextureImport.Version.Description.Usage & TextureUsage.Sampled) == 0)
-                || (sampledTextureImport.Version.Description.Dimension != TextureDimension.Dimension2D)
-                || (sampledTextureImport.Version.Description.MipLevels != 1)
-                || (sampledTextureImport.Version.Description.ArrayLayers != 1)
-                || (sampledTextureImport.Version.Range != new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color))
-                || !sampledTextureImport.InitialContentsValid
-                || (sampledTextureImport.InitialState is not (GraphResourceState.General or GraphResourceState.ShaderSampledRead))))
+        GraphTextureImportRecord? sampledTextureImport = null;
+        GraphTextureImportRecord? storageTextureImport = null;
+
+        for (var index = 1; index < TextureImports.Length; index++)
         {
-            throw new NotSupportedException("Native graph submission requires one initialized, single-subresource Frame sampled image.");
+            var import = TextureImports[index];
+            var usage = import.Version.Description.Usage;
+            var hasSampledUsage = (usage & TextureUsage.Sampled) != 0;
+            var hasStorageUsage = (usage & TextureUsage.Storage) != 0;
+
+            if (ReferenceEquals(import.Texture, OffscreenColorTarget)
+                || (import.Version.ResourceId == targetResourceId)
+                || (hasSampledUsage == hasStorageUsage)
+                || (import.Version.Description.Dimension != TextureDimension.Dimension2D)
+                || (import.Version.Description.MipLevels != 1)
+                || (import.Version.Description.ArrayLayers != 1)
+                || (import.Version.Range != new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)))
+            {
+                throw new NotSupportedException("Native graph submission supports distinct single-subresource sampled and storage textures.");
+            }
+
+            if (hasSampledUsage)
+            {
+                if (sampledTextureImport is not null
+                    || !import.InitialContentsValid
+                    || (import.InitialState is not (GraphResourceState.General or GraphResourceState.ShaderSampledRead)))
+                {
+                    throw new NotSupportedException("Native graph submission requires one initialized Frame sampled image.");
+                }
+
+                sampledTextureImport = import;
+            }
+            else
+            {
+                if ((import.Version.Description.Format != TextureFormat.R32UInt)
+                    || (storageTextureImport is not null)
+                    || (import.InitialContentsValid && import.InitialState == GraphResourceState.Undefined)
+                    || (import.InitialState is not (
+                        GraphResourceState.Undefined
+                        or GraphResourceState.General
+                        or GraphResourceState.StorageWrite
+                        or GraphResourceState.StorageReadWrite)))
+                {
+                    throw new NotSupportedException("Native graph submission supports one R32UInt Frame storage image in an initialized or undefined state.");
+                }
+
+                storageTextureImport = import;
+            }
+        }
+
+        if (storageBufferImport is not null
+            && (storageBufferImport.Version.Range != new GraphBufferRange(0, storageBufferImport.Buffer.ByteLength)
+                || (storageBufferImport.InitialContentsValid && storageBufferImport.InitialState == GraphResourceState.Undefined)
+                || (storageBufferImport.InitialState is not (
+                    GraphResourceState.Undefined
+                    or GraphResourceState.General
+                    or GraphResourceState.StorageWrite
+                    or GraphResourceState.StorageReadWrite))))
+        {
+            throw new NotSupportedException("Native graph submission requires one full-range Frame storage buffer.");
         }
 
         var hasColorClear = false;
@@ -163,8 +241,16 @@ internal sealed class GraphicsGraphSubmission
         var hasSampledImageAccess = false;
         var hasSamplerPipeline = false;
         var hasSamplerBinding = false;
+        var hasStorageBufferPipeline = false;
+        var hasStorageBufferBinding = false;
+        var hasStorageBufferAccess = false;
+        var hasStorageImagePipeline = false;
+        var hasStorageImageBinding = false;
+        var hasStorageImageAccess = false;
         var uniformBufferPasses = new HashSet<RenderPassId>();
         var sampledTexturePasses = new HashSet<RenderPassId>();
+        var storageBufferPasses = new HashSet<RenderPassId>();
+        var storageTexturePasses = new HashSet<RenderPassId>();
 
         foreach (var pass in Passes)
         {
@@ -199,6 +285,8 @@ internal sealed class GraphicsGraphSubmission
             var currentPipelineRequiresUniformBuffer = false;
             var currentPipelineRequiresSampledImage = false;
             var currentPipelineRequiresSampler = false;
+            var currentPipelineRequiresStorageBuffer = false;
+            var currentPipelineRequiresStorageImage = false;
             var currentPipelineBindingsSet = false;
             var hasDraw = false;
 
@@ -235,14 +323,23 @@ internal sealed class GraphicsGraphSubmission
                                     || (resource.Kind is not (
                                         ShaderResourceKind.UniformBuffer
                                         or ShaderResourceKind.SampledImage
-                                        or ShaderResourceKind.Sampler))
-                                    || (resource.Binding != 0)
+                                        or ShaderResourceKind.Sampler
+                                        or ShaderResourceKind.StorageBuffer
+                                        or ShaderResourceKind.StorageImage))
+                                    || (resource.Binding != ((resource.Kind == ShaderResourceKind.StorageImage) ? 1 : 0))
                                     || (resource.ArrayCount != 1)
-                                    || (resource.Access != ShaderResourceAccess.Read)
+                                    || ((resource.Kind is ShaderResourceKind.UniformBuffer
+                                            or ShaderResourceKind.SampledImage
+                                            or ShaderResourceKind.Sampler)
+                                        && (resource.Access != ShaderResourceAccess.Read))
+                                    || ((resource.Kind is ShaderResourceKind.StorageBuffer or ShaderResourceKind.StorageImage)
+                                        && (resource.Access != ShaderResourceAccess.ReadWrite))
+                                    || ((resource.Kind is ShaderResourceKind.StorageBuffer or ShaderResourceKind.StorageImage)
+                                        && (reflection.Stage != ShaderStage.Pixel))
                                     || (reflection.Stage is not (ShaderStage.Vertex or ShaderStage.Pixel)))
                                 {
                                     throw new NotSupportedException(
-                                        "Native graph submission supports only Frame-group uniform, sampled-image, and sampler bindings at binding 0.");
+                                        "Native graph submission supports Frame uniform, sampled-image, sampler, and pixel-stage storage bindings.");
                                 }
 
                                 _ = reflectedResources.Add(resource);
@@ -270,6 +367,18 @@ internal sealed class GraphicsGraphSubmission
                                     currentPipelineRequiresSampler = true;
                                     break;
                                 }
+
+                                case ShaderResourceKind.StorageBuffer:
+                                {
+                                    currentPipelineRequiresStorageBuffer = true;
+                                    break;
+                                }
+
+                                case ShaderResourceKind.StorageImage:
+                                {
+                                    currentPipelineRequiresStorageImage = true;
+                                    break;
+                                }
                             }
                         }
 
@@ -283,6 +392,8 @@ internal sealed class GraphicsGraphSubmission
                         hasUniformBufferPipeline |= currentPipelineRequiresUniformBuffer;
                         hasSampledImagePipeline |= currentPipelineRequiresSampledImage;
                         hasSamplerPipeline |= currentPipelineRequiresSampler;
+                        hasStorageBufferPipeline |= currentPipelineRequiresStorageBuffer;
+                        hasStorageImagePipeline |= currentPipelineRequiresStorageImage;
                         break;
                     }
 
@@ -291,7 +402,9 @@ internal sealed class GraphicsGraphSubmission
                         if ((currentPipeline is null)
                             || (!currentPipelineRequiresUniformBuffer
                                 && !currentPipelineRequiresSampledImage
-                                && !currentPipelineRequiresSampler)
+                                && !currentPipelineRequiresSampler
+                                && !currentPipelineRequiresStorageBuffer
+                                && !currentPipelineRequiresStorageImage)
                             || currentPipelineBindingsSet)
                         {
                             throw new NotSupportedException("Native graph submission requires one complete Frame binding set after each resource-bearing pipeline.");
@@ -300,89 +413,207 @@ internal sealed class GraphicsGraphSubmission
                         var bindings = command.Bindings
                             ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
 
-                        if ((bindings.Buffers.Length != (currentPipelineRequiresUniformBuffer ? 1 : 0))
-                            || (bindings.Textures.Length != (currentPipelineRequiresSampledImage ? 1 : 0))
+                        var expectedBufferBindingCount = (currentPipelineRequiresUniformBuffer ? 1 : 0)
+                            + (currentPipelineRequiresStorageBuffer ? 1 : 0);
+
+                        if ((bindings.Textures.Length != ((currentPipelineRequiresSampledImage ? 1 : 0)
+                                + (currentPipelineRequiresStorageImage ? 1 : 0)))
+                            || (bindings.Buffers.Length != expectedBufferBindingCount)
                             || (bindings.Samplers.Length != (currentPipelineRequiresSampler ? 1 : 0)))
                         {
-                            throw new NotSupportedException("The Frame binding set must provide every reflected uniform, sampled-image, and sampler resource exactly once.");
+                            throw new NotSupportedException("The Frame binding set must provide every reflected uniform, sampled, storage, and sampler resource exactly once.");
                         }
 
-                        if (currentPipelineRequiresUniformBuffer)
+                        foreach (var binding in bindings.Buffers)
                         {
-                            var binding = bindings.Buffers[0];
-
-                            if ((uniformBufferImport is null)
-                                || (binding.Group != ShaderBindingGroup.Frame)
-                                || (binding.Binding != 0)
-                                || (binding.Kind != ShaderResourceKind.UniformBuffer)
-                                || (binding.Resource.ResourceId != uniformBufferImport.Version.ResourceId)
-                                || (binding.Range != uniformBufferImport.Version.Range))
+                            switch (binding.Kind)
                             {
-                                throw new NotSupportedException("The Frame uniform-buffer binding must exactly match the imported graph buffer range.");
-                            }
-
-                            var accessDeclared = false;
-
-                            foreach (var access in Accesses)
-                            {
-                                if (!access.IsTexture
-                                    && (access.PassId == pass.PassId)
-                                    && (access.ResourceId == binding.Resource.ResourceId)
-                                    && (access.RequiredState == GraphResourceState.UniformRead)
-                                    && !access.IsWrite
-                                    && binding.Range.IsWithin(access.BufferRange))
+                                case ShaderResourceKind.UniformBuffer:
                                 {
-                                    accessDeclared = true;
+                                    if ((uniformBufferImport is null)
+                                        || (binding.Group != ShaderBindingGroup.Frame)
+                                        || (binding.Binding != 0)
+                                        || (binding.Resource.ResourceId != uniformBufferImport.Version.ResourceId)
+                                        || (binding.Range != uniformBufferImport.Version.Range))
+                                    {
+                                        throw new NotSupportedException("The Frame uniform-buffer binding must exactly match the imported graph buffer range.");
+                                    }
+
+                                    var accessDeclared = false;
+
+                                    foreach (var access in Accesses)
+                                    {
+                                        if (!access.IsTexture
+                                            && (access.PassId == pass.PassId)
+                                            && (access.ResourceId == binding.Resource.ResourceId)
+                                            && (access.RequiredState == GraphResourceState.UniformRead)
+                                            && !access.IsWrite
+                                            && binding.Range.IsWithin(access.BufferRange))
+                                        {
+                                            accessDeclared = true;
+                                            break;
+                                        }
+                                    }
+
+                                    if (!accessDeclared)
+                                    {
+                                        throw new InvalidOperationException("The Frame uniform-buffer binding has no matching declared UniformRead access.");
+                                    }
+
+                                    hasUniformBufferBinding = true;
+                                    _ = uniformBufferPasses.Add(pass.PassId);
                                     break;
                                 }
-                            }
 
-                            if (!accessDeclared)
-                            {
-                                throw new InvalidOperationException("The Frame uniform-buffer binding has no matching declared UniformRead access.");
-                            }
+                                case ShaderResourceKind.StorageBuffer:
+                                {
+                                    if ((storageBufferImport is null)
+                                        || (binding.Group != ShaderBindingGroup.Frame)
+                                        || (binding.Binding != 0)
+                                        || (binding.Resource.ResourceId != storageBufferImport.Version.ResourceId)
+                                        || (binding.Range != storageBufferImport.Version.Range))
+                                    {
+                                        throw new NotSupportedException("The Frame storage-buffer binding must exactly match the imported graph buffer range.");
+                                    }
 
-                            hasUniformBufferBinding = true;
-                            _ = uniformBufferPasses.Add(pass.PassId);
+                                    GraphResourceAccess? storageReadAccess = null;
+                                    GraphResourceAccess? storageWriteAccess = null;
+
+                                    foreach (var access in Accesses)
+                                    {
+                                        if (!access.IsTexture
+                                            && (access.PassId == pass.PassId)
+                                            && (access.ResourceId == binding.Resource.ResourceId)
+                                            && (access.RequiredState == GraphResourceState.StorageReadWrite)
+                                            && access.IsStorageReadWritePair
+                                            && binding.Range.IsWithin(access.BufferRange))
+                                        {
+                                            if (access.IsWrite
+                                                && ReferenceEquals(access.BufferVersion, binding.Resource))
+                                            {
+                                                storageWriteAccess = access;
+                                            }
+                                            else if (!access.IsWrite)
+                                            {
+                                                storageReadAccess = access;
+                                            }
+                                        }
+                                    }
+
+                                    if ((storageReadAccess is not GraphResourceAccess readAccess)
+                                        || (storageWriteAccess is not GraphResourceAccess writeAccess)
+                                        || !readAccess.ContentsValid
+                                        || !readAccess.IsStorageReadWritePairOf(writeAccess))
+                                    {
+                                        throw new InvalidOperationException("The Frame storage-buffer binding has no matching initialized StorageReadWrite version pair.");
+                                    }
+
+                                    hasStorageBufferBinding = true;
+                                    _ = storageBufferPasses.Add(pass.PassId);
+                                    break;
+                                }
+
+                                default:
+                                {
+                                    throw new NotSupportedException($"Native graph submission does not support {binding.Kind} buffer bindings.");
+                                }
+                            }
                         }
 
-                        if (currentPipelineRequiresSampledImage)
+                        foreach (var binding in bindings.Textures)
                         {
-                            var binding = bindings.Textures[0];
-
-                            if ((sampledTextureImport is null)
-                                || (binding.Group != ShaderBindingGroup.Frame)
-                                || (binding.Binding != 0)
-                                || (binding.Kind != ShaderResourceKind.SampledImage)
-                                || (binding.Resource.ResourceId != sampledTextureImport.Version.ResourceId)
-                                || (binding.Range != sampledTextureImport.Version.Range))
+                            switch (binding.Kind)
                             {
-                                throw new NotSupportedException("The Frame sampled-image binding must exactly match the imported graph texture range.");
-                            }
-
-                            var accessDeclared = false;
-
-                            foreach (var access in Accesses)
-                            {
-                                if (access.IsTexture
-                                    && (access.PassId == pass.PassId)
-                                    && (access.ResourceId == binding.Resource.ResourceId)
-                                    && (access.RequiredState == GraphResourceState.ShaderSampledRead)
-                                    && !access.IsWrite
-                                    && binding.Range.IsWithin(access.TextureRange))
+                                case ShaderResourceKind.SampledImage:
                                 {
-                                    accessDeclared = true;
+                                    if ((sampledTextureImport is null)
+                                        || (binding.Group != ShaderBindingGroup.Frame)
+                                        || (binding.Binding != 0)
+                                        || (binding.Resource.ResourceId != sampledTextureImport.Version.ResourceId)
+                                        || (binding.Range != sampledTextureImport.Version.Range))
+                                    {
+                                        throw new NotSupportedException("The Frame sampled-image binding must exactly match the imported graph texture range.");
+                                    }
+
+                                    var accessDeclared = false;
+
+                                    foreach (var access in Accesses)
+                                    {
+                                        if (access.IsTexture
+                                            && (access.PassId == pass.PassId)
+                                            && (access.ResourceId == binding.Resource.ResourceId)
+                                            && (access.RequiredState == GraphResourceState.ShaderSampledRead)
+                                            && !access.IsWrite
+                                            && binding.Range.IsWithin(access.TextureRange))
+                                        {
+                                            accessDeclared = true;
+                                            break;
+                                        }
+                                    }
+
+                                    if (!accessDeclared)
+                                    {
+                                        throw new InvalidOperationException("The Frame sampled-image binding has no matching declared SampledRead access.");
+                                    }
+
+                                    hasSampledImageBinding = true;
+                                    _ = sampledTexturePasses.Add(pass.PassId);
                                     break;
                                 }
-                            }
 
-                            if (!accessDeclared)
-                            {
-                                throw new InvalidOperationException("The Frame sampled-image binding has no matching declared SampledRead access.");
-                            }
+                                case ShaderResourceKind.StorageImage:
+                                {
+                                    if ((storageTextureImport is null)
+                                        || (binding.Group != ShaderBindingGroup.Frame)
+                                        || (binding.Binding != 1)
+                                        || (binding.Resource.ResourceId != storageTextureImport.Version.ResourceId)
+                                        || (binding.Range != storageTextureImport.Version.Range))
+                                    {
+                                        throw new NotSupportedException("The Frame storage-image binding must exactly match the imported graph texture range.");
+                                    }
 
-                            hasSampledImageBinding = true;
-                            _ = sampledTexturePasses.Add(pass.PassId);
+                                    GraphResourceAccess? storageReadAccess = null;
+                                    GraphResourceAccess? storageWriteAccess = null;
+
+                                    foreach (var access in Accesses)
+                                    {
+                                        if (access.IsTexture
+                                            && (access.PassId == pass.PassId)
+                                            && (access.ResourceId == binding.Resource.ResourceId)
+                                            && (access.RequiredState == GraphResourceState.StorageReadWrite)
+                                            && access.IsStorageReadWritePair
+                                            && binding.Range.IsWithin(access.TextureRange))
+                                        {
+                                            if (access.IsWrite
+                                                && ReferenceEquals(access.TextureVersion, binding.Resource))
+                                            {
+                                                storageWriteAccess = access;
+                                            }
+                                            else if (!access.IsWrite)
+                                            {
+                                                storageReadAccess = access;
+                                            }
+                                        }
+                                    }
+
+                                    if ((storageReadAccess is not GraphResourceAccess readAccess)
+                                        || (storageWriteAccess is not GraphResourceAccess writeAccess)
+                                        || !readAccess.ContentsValid
+                                        || !readAccess.IsStorageReadWritePairOf(writeAccess))
+                                    {
+                                        throw new InvalidOperationException("The Frame storage-image binding has no matching initialized StorageReadWrite version pair.");
+                                    }
+
+                                    hasStorageImageBinding = true;
+                                    _ = storageTexturePasses.Add(pass.PassId);
+                                    break;
+                                }
+
+                                default:
+                                {
+                                    throw new NotSupportedException($"Native graph submission does not support {binding.Kind} texture bindings.");
+                                }
+                            }
                         }
 
                         if (currentPipelineRequiresSampler)
@@ -413,7 +644,9 @@ internal sealed class GraphicsGraphSubmission
 
                         if ((currentPipelineRequiresUniformBuffer
                                 || currentPipelineRequiresSampledImage
-                                || currentPipelineRequiresSampler)
+                                || currentPipelineRequiresSampler
+                                || currentPipelineRequiresStorageBuffer
+                                || currentPipelineRequiresStorageImage)
                             && !currentPipelineBindingsSet)
                         {
                             throw new InvalidOperationException("A resource-bearing graph draw has no recorded binding set.");
@@ -458,6 +691,21 @@ internal sealed class GraphicsGraphSubmission
                 continue;
             }
 
+            if (!access.IsTexture
+                && (storageBufferImport is not null)
+                && (access.ResourceId == storageBufferImport.Version.ResourceId)
+                && (access.RequiredState == GraphResourceState.StorageReadWrite)
+                && access.IsStorageReadWritePair)
+            {
+                if (!storageBufferPasses.Contains(access.PassId))
+                {
+                    throw new InvalidOperationException("The imported Frame storage buffer is declared by a pass without a matching binding set.");
+                }
+
+                hasStorageBufferAccess = true;
+                continue;
+            }
+
             if (access.IsTexture
                 && (sampledTextureImport is not null)
                 && (access.ResourceId == sampledTextureImport.Version.ResourceId)
@@ -473,12 +721,27 @@ internal sealed class GraphicsGraphSubmission
                 continue;
             }
 
-            if (access.IsTexture || (uniformBufferImport is null) || (access.ResourceId != uniformBufferImport.Version.ResourceId))
+            if (access.IsTexture
+                && (storageTextureImport is not null)
+                && (access.ResourceId == storageTextureImport.Version.ResourceId)
+                && (access.RequiredState == GraphResourceState.StorageReadWrite)
+                && access.IsStorageReadWritePair)
             {
-                throw new NotSupportedException("Native graph submission does not support imported resources other than its target and Frame uniform buffer.");
+                if (!storageTexturePasses.Contains(access.PassId))
+                {
+                    throw new InvalidOperationException("The imported Frame storage image is declared by a pass without a matching binding set.");
+                }
+
+                hasStorageImageAccess = true;
+                continue;
             }
 
-            throw new NotSupportedException("Native graph submission supports only UniformRead accesses for its imported Frame buffer.");
+            if (access.IsTexture || (uniformBufferImport is null) || (access.ResourceId != uniformBufferImport.Version.ResourceId))
+            {
+                throw new NotSupportedException("Native graph submission does not support imported resources outside its Frame resource set.");
+            }
+
+            throw new NotSupportedException("Native graph submission supports only its declared Frame resource access states.");
         }
 
         foreach (var transition in StateTransitions)
@@ -498,6 +761,20 @@ internal sealed class GraphicsGraphSubmission
                 continue;
             }
 
+            if (!transition.IsTexture
+                && (storageBufferImport is not null)
+                && (transition.ResourceId == storageBufferImport.Version.ResourceId)
+                && (transition.AfterState == GraphResourceState.StorageReadWrite)
+                && (transition.BeforeState is
+                    GraphResourceState.General
+                    or GraphResourceState.StorageRead
+                    or GraphResourceState.StorageWrite
+                    or GraphResourceState.StorageReadWrite)
+                && storageBufferPasses.Contains(transition.PassId))
+            {
+                continue;
+            }
+
             if (transition.IsTexture
                 && (sampledTextureImport is not null)
                 && (transition.ResourceId == sampledTextureImport.Version.ResourceId)
@@ -508,12 +785,29 @@ internal sealed class GraphicsGraphSubmission
                 continue;
             }
 
-            if (transition.IsTexture || (uniformBufferImport is null) || (transition.ResourceId != uniformBufferImport.Version.ResourceId))
+            if (transition.IsTexture
+                && (storageTextureImport is not null)
+                && (transition.ResourceId == storageTextureImport.Version.ResourceId)
+                && (transition.AfterState == GraphResourceState.StorageReadWrite)
+                && (transition.BeforeState is
+                    GraphResourceState.General
+                    or GraphResourceState.StorageRead
+                    or GraphResourceState.StorageWrite
+                    or GraphResourceState.StorageReadWrite)
+                && storageTexturePasses.Contains(transition.PassId))
+            {
+                continue;
+            }
+
+            if ((uniformBufferImport is null || transition.ResourceId != uniformBufferImport.Version.ResourceId)
+                && (storageBufferImport is null || transition.ResourceId != storageBufferImport.Version.ResourceId)
+                && (sampledTextureImport is null || transition.ResourceId != sampledTextureImport.Version.ResourceId)
+                && (storageTextureImport is null || transition.ResourceId != storageTextureImport.Version.ResourceId))
             {
                 throw new NotSupportedException("Native graph submission does not support state transitions for other imported resources.");
             }
 
-            throw new NotSupportedException("Native graph submission supports only transitions into UniformRead for its imported Frame buffer.");
+            throw new NotSupportedException("Native graph submission supports only declared Frame resource transitions.");
         }
 
         if ((uniformBufferImport is not null)
@@ -530,6 +824,18 @@ internal sealed class GraphicsGraphSubmission
                 || !hasSamplerBinding))
         {
             throw new NotSupportedException("An imported Frame sampled image must be reflected, bound with a sampler, and declared by a graph pass.");
+        }
+
+        if ((storageBufferImport is not null)
+            && (!hasStorageBufferPipeline || !hasStorageBufferBinding || !hasStorageBufferAccess))
+        {
+            throw new NotSupportedException("An imported Frame storage buffer must be reflected, bound, and declared by a graph pass.");
+        }
+
+        if ((storageTextureImport is not null)
+            && (!hasStorageImagePipeline || !hasStorageImageBinding || !hasStorageImageAccess))
+        {
+            throw new NotSupportedException("An imported Frame storage image must be reflected, bound, and declared by a graph pass.");
         }
 
         if (!hasColorClear)

@@ -25,23 +25,36 @@ internal interface IGraphicsBackendDevice : IDisposable
 
     GraphicsResourceAllocationInfo GetTextureAllocationInfo(TextureDescription description);
 
-    OwnedBuffer<byte> ReadbackBuffer(IGraphicsBackendBuffer source, long sourceOffset, nint byteLength);
+    OwnedBuffer<byte> ReadbackBuffer(
+        IGraphicsBackendBuffer source,
+        GraphResourceState sourceState,
+        long sourceOffset,
+        nint byteLength);
 
-    TextureReadback ReadbackTexture(IGraphicsBackendTexture source, TextureSubresource subresource);
+    TextureReadback ReadbackTexture(
+        IGraphicsBackendTexture source,
+        GraphResourceState sourceState,
+        TextureSubresource subresource);
 
     long SubmitGraph(GraphicsGraphSubmission submission);
 
     long UploadBuffer(
         IGraphicsBackendBuffer destination,
+        GraphResourceState destinationState,
         long destinationOffset,
         BufferReadLease<byte> source,
         nint sourceOffset,
         nint byteLength);
 
-    long UploadBuffer(IGraphicsBackendBuffer destination, long destinationOffset, ReadOnlySpan<byte> source);
+    long UploadBuffer(
+        IGraphicsBackendBuffer destination,
+        GraphResourceState destinationState,
+        long destinationOffset,
+        ReadOnlySpan<byte> source);
 
     long UploadTexture(
         IGraphicsBackendTexture destination,
+        GraphResourceState destinationState,
         TextureSubresource subresource,
         BufferReadLease<byte> source,
         nint sourceOffset,

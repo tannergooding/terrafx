@@ -114,31 +114,29 @@ internal sealed class GraphicsResourceOwner : IDisposable
     }
 
     internal (GraphResourceState State, bool ContentsValid, long LastUseSequence, bool IsIdle) CaptureGraphImportState(
-        GraphBufferRange range)
+        GraphBufferRange range,
+        UseLease? useLease = null)
     {
-        ObjectDisposedException.ThrowIf(!IsLiveForNewWork, typeof(GpuBuffer));
-
         lock (_useGate)
         {
+            ObjectDisposedException.ThrowIf(!CanCaptureGraphState(useLease), typeof(GpuBuffer));
             (var state, var contentsValid) = (_graphState
                 ?? throw new InvalidOperationException("The Graphics resource does not support graph import."))
                 .GetBufferState(range);
-            ObjectDisposedException.ThrowIf(!IsLiveForNewWork, typeof(GpuBuffer));
             return (state, contentsValid, _nextUseSequence, _activeUseSequences.Count == 0);
         }
     }
 
     internal (GraphResourceState State, bool ContentsValid, long LastUseSequence, bool IsIdle) CaptureGraphImportState(
-        GraphTextureRange range)
+        GraphTextureRange range,
+        UseLease? useLease = null)
     {
-        ObjectDisposedException.ThrowIf(!IsLiveForNewWork, typeof(GpuTexture));
-
         lock (_useGate)
         {
+            ObjectDisposedException.ThrowIf(!CanCaptureGraphState(useLease), typeof(GpuTexture));
             (var state, var contentsValid) = (_graphState
                 ?? throw new InvalidOperationException("The Graphics resource does not support graph import."))
                 .GetTextureState(range);
-            ObjectDisposedException.ThrowIf(!IsLiveForNewWork, typeof(GpuTexture));
             return (state, contentsValid, _nextUseSequence, _activeUseSequences.Count == 0);
         }
     }
@@ -278,6 +276,11 @@ internal sealed class GraphicsResourceOwner : IDisposable
         }
     }
 
+    private bool CanCaptureGraphState(UseLease? useLease)
+        => (useLease is null)
+            ? IsLiveForNewWork
+            : useLease.IsOwnedBy(this) && _activeUseSequences.Contains(useLease.Sequence);
+
     private bool HasActiveUseAtOrBefore(long sequence)
         => (_activeUseSequences.Count != 0) && (_activeUseSequences.Min <= sequence);
 
@@ -337,6 +340,9 @@ internal sealed class GraphicsResourceOwner : IDisposable
             var owner = Interlocked.Exchange(ref _owner, null);
             owner?.ReleaseUse(_sequence);
         }
+
+        internal bool IsOwnedBy(GraphicsResourceOwner owner)
+            => ReferenceEquals(Volatile.Read(ref _owner), owner);
     }
 
     private sealed class UseCompletionWaiter

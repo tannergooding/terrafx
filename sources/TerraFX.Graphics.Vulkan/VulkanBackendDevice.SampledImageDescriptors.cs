@@ -352,7 +352,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                 throw new ArgumentException("A bound texture does not declare storage-image usage.", nameof(storageImageBindings));
             }
 
-            storageImageInfos[index].imageLayout = GetStorageImageLayout(binding.Texture);
+            storageImageInfos[index].imageLayout = GetStorageImageLayout(binding.Texture, binding.ImageLayout);
             retainedStorageTextures[index] = binding.Texture;
 
             var write = default(VkWriteDescriptorSet);

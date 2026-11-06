@@ -26,18 +26,21 @@ namespace TerraFX.Runtime.Tests.Hosting;
 
 internal sealed partial class EngineHostOptionsTests
 {
-    [TestCase(GraphicsBackend.D3D12, false, false)]
-    [TestCase(GraphicsBackend.Vulkan, false, false)]
-    [TestCase(GraphicsBackend.D3D12, true, false)]
-    [TestCase(GraphicsBackend.Vulkan, true, false)]
-    [TestCase(GraphicsBackend.D3D12, false, true)]
-    [TestCase(GraphicsBackend.Vulkan, false, true)]
-    [TestCase(GraphicsBackend.D3D12, true, true)]
-    [TestCase(GraphicsBackend.Vulkan, true, true)]
+    [TestCase(GraphicsBackend.D3D12, false, false, false)]
+    [TestCase(GraphicsBackend.Vulkan, false, false, false)]
+    [TestCase(GraphicsBackend.D3D12, true, false, false)]
+    [TestCase(GraphicsBackend.Vulkan, true, false, false)]
+    [TestCase(GraphicsBackend.D3D12, false, true, false)]
+    [TestCase(GraphicsBackend.Vulkan, false, true, false)]
+    [TestCase(GraphicsBackend.D3D12, true, true, false)]
+    [TestCase(GraphicsBackend.Vulkan, true, true, false)]
+    [TestCase(GraphicsBackend.D3D12, true, true, true)]
+    [TestCase(GraphicsBackend.Vulkan, true, true, true)]
     public async Task SubmitsOffscreenClearGraphAndReadsBackAsync(
         GraphicsBackend backend,
         bool useUniformBuffer,
-        bool useSampledTexture)
+        bool useSampledTexture,
+        bool useStorageResources)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -47,7 +50,8 @@ internal sealed partial class EngineHostOptionsTests
 
         var shaderFixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
 
-        if ((useUniformBuffer || useSampledTexture) && string.IsNullOrWhiteSpace(shaderFixtureDirectory))
+        if ((useUniformBuffer || useSampledTexture || useStorageResources)
+            && string.IsNullOrWhiteSpace(shaderFixtureDirectory))
         {
             Assert.Ignore("The M04 shader fixture is required for resource-bound graph cases.");
             return;
@@ -80,7 +84,9 @@ internal sealed partial class EngineHostOptionsTests
         EngineHost? host = null;
         GpuTexture? target = null;
         GpuTexture? sampledTexture = null;
+        GpuTexture? storageImage = null;
         GpuBuffer? frameUniformBuffer = null;
+        GpuBuffer? storageBuffer = null;
         GpuPipeline? pipeline = null;
         GpuSampler? frameSampler = null;
         RenderSnapshot? snapshot = null;
@@ -251,9 +257,11 @@ internal sealed partial class EngineHostOptionsTests
             if (!string.IsNullOrWhiteSpace(shaderFixtureDirectory))
             {
                 var shaderExtension = backend == GraphicsBackend.D3D12 ? "dxil" : "spv";
-                var pixelStage = useSampledTexture
-                    ? (useUniformBuffer ? "pixel-sampled-frame" : "pixel-sampled")
-                    : (useUniformBuffer ? "pixel" : "pixel-graph");
+                var pixelStage = useStorageResources
+                    ? "pixel-sampled-frame-storage"
+                    : useSampledTexture
+                        ? (useUniformBuffer ? "pixel-sampled-frame" : "pixel-sampled")
+                        : (useUniformBuffer ? "pixel" : "pixel-graph");
                 using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
                     shaderFixtureDirectory,
                     $"M04OffscreenTriangle.vertex.{shaderExtension}"));
@@ -313,15 +321,66 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(uploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
             }
 
+            if (useStorageResources)
+            {
+                storageBuffer = await graphicsDevice.CreateBufferAsync(
+                    new BufferDescription(
+                        sizeof(uint),
+                        BufferUsage.Storage | BufferUsage.CopySource | BufferUsage.CopyDestination,
+                        GpuMemoryKind.DeviceLocal,
+                        structuredStride: sizeof(uint),
+                        debugName: $"m04-{backend}-frame-storage-buffer"))
+                    .ConfigureAwait(false);
+                var storageBufferInitialBytes = new byte[sizeof(uint)];
+                var storageBufferUploadReceipt = await graphicsDevice.UploadBufferAsync(
+                    storageBuffer,
+                    0,
+                    storageBufferInitialBytes.AsSpan())
+                    .ConfigureAwait(false);
+                Assert.That(storageBufferUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+                storageImage = await graphicsDevice.CreateTextureAsync(
+                    new TextureDescription(
+                        TextureDimension.Dimension2D,
+                        1,
+                        1,
+                        depth: 1,
+                        arrayLayers: 1,
+                        mipLevels: 1,
+                        TextureFormat.R32UInt,
+                        TextureUsage.Storage | TextureUsage.CopySource | TextureUsage.CopyDestination,
+                        $"m04-{backend}-frame-storage-image"))
+                    .ConfigureAwait(false);
+                var storageImageInitialBytes = new byte[sizeof(uint)];
+                var storageImageInitialStorage = UnmanagedBuffer<byte>.Allocate(
+                    storageImageInitialBytes.Length,
+                    new BufferAllocationOptions(storageImageInitialBytes.Length, alignment: 1));
+                storageImageInitialStorage.CopyFrom(storageImageInitialBytes.AsSpan(), 0);
+
+                using var ownedStorageImageInitialBytes = storageImageInitialStorage.TransferToOwnedBuffer();
+                using var storageImageInitialLease = ownedStorageImageInitialBytes.AcquireReadLease(0, storageImageInitialBytes.Length);
+                var storageImageUploadReceipt = await graphicsDevice.UploadTextureAsync(
+                    storageImage,
+                    new TextureSubresource(0, 0, TextureAspect.Color),
+                    storageImageInitialLease,
+                    0,
+                    new TextureDataLayout(rowPitch: sizeof(uint), slicePitch: sizeof(uint)))
+                    .ConfigureAwait(false);
+                Assert.That(storageImageUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+            }
+
             var graph = renderer.BuildGraph(
                 renderSnapshot,
                 target);
             var sampleRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
             GraphBufferVersion? frameUniformVersion = null;
+            GraphBufferVersion? storageBufferInitialVersion = null;
             GraphTextureVersion? sampledTextureVersion = null;
+            GraphTextureVersion? storageImageInitialVersion = null;
             BindingSet? frameBindingSet = null;
             var bufferBindings = ImmutableArray.CreateBuilder<BufferBinding>(useUniformBuffer ? 1 : 0);
-            var textureBindings = ImmutableArray.CreateBuilder<TextureBinding>(useSampledTexture ? 1 : 0);
+            var storageBufferBindings = ImmutableArray.CreateBuilder<BufferBinding>(useStorageResources ? 1 : 0);
+            var textureBindings = ImmutableArray.CreateBuilder<TextureBinding>(
+                (useSampledTexture ? 1 : 0) + (useStorageResources ? 1 : 0));
             var samplerBindings = ImmutableArray.CreateBuilder<SamplerBinding>(useSampledTexture ? 1 : 0);
 
             if (frameUniformBuffer is GpuBuffer selectedBuffer)
@@ -340,6 +399,18 @@ internal sealed partial class EngineHostOptionsTests
                     ShaderResourceKind.UniformBuffer,
                     frameUniformVersion,
                     range));
+            }
+
+            if (storageBuffer is GpuBuffer selectedStorageBuffer)
+            {
+                var range = new GraphBufferRange(0, selectedStorageBuffer.ByteLength);
+                storageBufferInitialVersion = graph.ImportBuffer(
+                    selectedStorageBuffer,
+                    range,
+                    new GraphImportOptions(
+                        GraphResourceState.General,
+                        contentsValid: true,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
             }
 
             if (sampledTexture is GpuTexture selectedSampledTexture)
@@ -364,12 +435,15 @@ internal sealed partial class EngineHostOptionsTests
                         ?? throw new InvalidOperationException("The sampled Frame pipeline has no sampler.")));
             }
 
-            if (useUniformBuffer || useSampledTexture)
+            if (storageImage is GpuTexture selectedStorageImage)
             {
-                frameBindingSet = new BindingSet(
-                    bufferBindings.MoveToImmutable(),
-                    textureBindings.MoveToImmutable(),
-                    samplerBindings.MoveToImmutable());
+                storageImageInitialVersion = graph.ImportTexture(
+                    selectedStorageImage,
+                    sampleRange,
+                    new GraphImportOptions(
+                        GraphResourceState.General,
+                        contentsValid: true,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
             }
 
             GraphBufferVersion? secondFrameUniformVersion = null;
@@ -428,6 +502,46 @@ internal sealed partial class EngineHostOptionsTests
                     sampledTextureVersion.Range);
             }
 
+            if (storageBufferInitialVersion is not null)
+            {
+                var range = storageBufferInitialVersion.Range;
+                var storageBufferWriteVersion = graph.ReadWriteBuffer(
+                    pass,
+                    storageBufferInitialVersion,
+                    range);
+                storageBufferBindings.Add(new BufferBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    ShaderResourceKind.StorageBuffer,
+                    storageBufferWriteVersion,
+                    range));
+            }
+
+            if (storageImageInitialVersion is not null)
+            {
+                var storageImageWriteVersion = graph.ReadWriteTexture(
+                    pass,
+                    storageImageInitialVersion,
+                    sampleRange);
+                textureBindings.Add(new TextureBinding(
+                    ShaderBindingGroup.Frame,
+                    1,
+                    ShaderResourceKind.StorageImage,
+                    storageImageWriteVersion,
+                    sampleRange));
+            }
+
+            if (useUniformBuffer || useSampledTexture || useStorageResources)
+            {
+                frameBindingSet = new BindingSet(
+                    [
+                        .. bufferBindings.ToImmutable(),
+                        .. storageBufferBindings.ToImmutable(),
+                    ],
+                    textureBindings.ToImmutable(),
+                    samplerBindings.ToImmutable());
+            }
+
             var outputVersion = graph.WriteColorAttachment(
                 pass,
                 graph.OffscreenColorTargetVersion,
@@ -442,95 +556,99 @@ internal sealed partial class EngineHostOptionsTests
             var plan = compileResponse.Plan
                 ?? throw new InvalidOperationException("The compiled graph response omitted its plan.");
             var receipt = await renderer.SubmitAsync(renderSnapshot, plan).ConfigureAwait(false);
+            RenderSubmissionReceipt? secondReceipt = null;
 
-            var secondGraph = renderer.BuildGraph(renderSnapshot, target);
-            var secondBufferBindings = ImmutableArray.CreateBuilder<BufferBinding>(useUniformBuffer ? 1 : 0);
-            var secondTextureBindings = ImmutableArray.CreateBuilder<TextureBinding>(useSampledTexture ? 1 : 0);
-            var secondSamplerBindings = ImmutableArray.CreateBuilder<SamplerBinding>(useSampledTexture ? 1 : 0);
-
-            if (frameUniformBuffer is GpuBuffer secondSelectedBuffer)
+            if (!useStorageResources)
             {
-                var range = new GraphBufferRange(0, secondSelectedBuffer.ByteLength);
-                secondFrameUniformVersion = secondGraph.ImportBuffer(
-                    secondSelectedBuffer,
-                    range,
-                    new GraphImportOptions(
-                        GraphResourceState.UniformRead,
-                        contentsValid: true,
-                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
-                secondBufferBindings.Add(new BufferBinding(
-                    ShaderBindingGroup.Frame,
-                    0,
-                    ShaderResourceKind.UniformBuffer,
-                    secondFrameUniformVersion,
-                    range));
-            }
+                var secondGraph = renderer.BuildGraph(renderSnapshot, target);
+                var secondBufferBindings = ImmutableArray.CreateBuilder<BufferBinding>(useUniformBuffer ? 1 : 0);
+                var secondTextureBindings = ImmutableArray.CreateBuilder<TextureBinding>(useSampledTexture ? 1 : 0);
+                var secondSamplerBindings = ImmutableArray.CreateBuilder<SamplerBinding>(useSampledTexture ? 1 : 0);
 
-            if (sampledTexture is GpuTexture secondSampledTexture)
-            {
-                secondSampledTextureVersion = secondGraph.ImportTexture(
-                    secondSampledTexture,
-                    sampleRange,
-                    new GraphImportOptions(
-                        GraphResourceState.ShaderSampledRead,
-                        contentsValid: true,
-                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
-                secondTextureBindings.Add(new TextureBinding(
-                    ShaderBindingGroup.Frame,
-                    0,
-                    ShaderResourceKind.SampledImage,
-                    secondSampledTextureVersion,
-                    sampleRange));
-                secondSamplerBindings.Add(new SamplerBinding(
-                    ShaderBindingGroup.Frame,
-                    0,
-                    frameSampler
-                        ?? throw new InvalidOperationException("The sampled Frame pipeline has no sampler.")));
-            }
+                if (frameUniformBuffer is GpuBuffer secondSelectedBuffer)
+                {
+                    var range = new GraphBufferRange(0, secondSelectedBuffer.ByteLength);
+                    secondFrameUniformVersion = secondGraph.ImportBuffer(
+                        secondSelectedBuffer,
+                        range,
+                        new GraphImportOptions(
+                            GraphResourceState.UniformRead,
+                            contentsValid: true,
+                            completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                    secondBufferBindings.Add(new BufferBinding(
+                        ShaderBindingGroup.Frame,
+                        0,
+                        ShaderResourceKind.UniformBuffer,
+                        secondFrameUniformVersion,
+                        range));
+                }
 
-            if (useUniformBuffer || useSampledTexture)
-            {
-                secondFrameBindingSet = new BindingSet(
-                    secondBufferBindings.MoveToImmutable(),
-                    secondTextureBindings.MoveToImmutable(),
-                    secondSamplerBindings.MoveToImmutable());
-            }
+                if (sampledTexture is GpuTexture secondSampledTexture)
+                {
+                    secondSampledTextureVersion = secondGraph.ImportTexture(
+                        secondSampledTexture,
+                        sampleRange,
+                        new GraphImportOptions(
+                            GraphResourceState.ShaderSampledRead,
+                            contentsValid: true,
+                            completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                    secondTextureBindings.Add(new TextureBinding(
+                        ShaderBindingGroup.Frame,
+                        0,
+                        ShaderResourceKind.SampledImage,
+                        secondSampledTextureVersion,
+                        sampleRange));
+                    secondSamplerBindings.Add(new SamplerBinding(
+                        ShaderBindingGroup.Frame,
+                        0,
+                        frameSampler
+                            ?? throw new InvalidOperationException("The sampled Frame pipeline has no sampler.")));
+                }
 
-            var secondPass = secondGraph.AddRasterPass(
-                new RenderPassDescription("offscreen-clear-again", 0, [], hasExternalSideEffects: false),
-                RecordSecondClear);
+                if (useUniformBuffer || useSampledTexture)
+                {
+                    secondFrameBindingSet = new BindingSet(
+                        secondBufferBindings.MoveToImmutable(),
+                        secondTextureBindings.MoveToImmutable(),
+                        secondSamplerBindings.MoveToImmutable());
+                }
 
-            if (secondFrameUniformVersion is not null)
-            {
-                secondGraph.ReadBuffer(
+                var secondPass = secondGraph.AddRasterPass(
+                    new RenderPassDescription("offscreen-clear-again", 0, [], hasExternalSideEffects: false),
+                    RecordSecondClear);
+
+                if (secondFrameUniformVersion is not null)
+                {
+                    secondGraph.ReadBuffer(
+                        secondPass,
+                        secondFrameUniformVersion,
+                        GraphBufferUsage.UniformRead,
+                        secondFrameUniformVersion.Range);
+                }
+
+                if (secondSampledTextureVersion is not null)
+                {
+                    secondGraph.ReadTexture(
+                        secondPass,
+                        secondSampledTextureVersion,
+                        GraphTextureUsage.SampledRead,
+                        secondSampledTextureVersion.Range);
+                }
+
+                var secondOutputVersion = secondGraph.WriteColorAttachment(
                     secondPass,
-                    secondFrameUniformVersion,
-                    GraphBufferUsage.UniformRead,
-                    secondFrameUniformVersion.Range);
+                    secondGraph.OffscreenColorTargetVersion,
+                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
+                    AttachmentLoadAction.Clear,
+                    AttachmentStoreAction.Store,
+                    new Vector4(0.75f, 0.25f, 0.5f, 1.0f));
+                secondGraph.SetPresentationSource(secondOutputVersion);
+                var secondCompileResponse = secondGraph.Compile();
+                Assert.That(secondCompileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
+                var secondPlan = secondCompileResponse.Plan
+                    ?? throw new InvalidOperationException("The second compiled graph response omitted its plan.");
+                secondReceipt = await renderer.SubmitAsync(renderSnapshot, secondPlan).ConfigureAwait(false);
             }
-
-            if (secondSampledTextureVersion is not null)
-            {
-                secondGraph.ReadTexture(
-                    secondPass,
-                    secondSampledTextureVersion,
-                    GraphTextureUsage.SampledRead,
-                    secondSampledTextureVersion.Range);
-            }
-
-            var secondOutputVersion = secondGraph.WriteColorAttachment(
-                secondPass,
-                secondGraph.OffscreenColorTargetVersion,
-                new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
-                AttachmentLoadAction.Clear,
-                AttachmentStoreAction.Store,
-                new Vector4(0.75f, 0.25f, 0.5f, 1.0f));
-            secondGraph.SetPresentationSource(secondOutputVersion);
-            var secondCompileResponse = secondGraph.Compile();
-            Assert.That(secondCompileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
-            var secondPlan = secondCompileResponse.Plan
-                ?? throw new InvalidOperationException("The second compiled graph response omitted its plan.");
-            var secondReceipt = await renderer.SubmitAsync(renderSnapshot, secondPlan).ConfigureAwait(false);
 
             Assert.Multiple(() => {
                 Assert.That(receipt.SubmissionSequence, Is.GreaterThan(0));
@@ -539,8 +657,16 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(receipt.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
                 Assert.That(receipt.SurfaceEpoch, Is.Zero);
                 Assert.That(receipt.SwapchainEpoch, Is.Zero);
-                Assert.That(secondReceipt.SubmissionSequence, Is.EqualTo(receipt.SubmissionSequence + 1));
-                Assert.That(secondReceipt.CompletedFence, Is.GreaterThan(receipt.CompletedFence));
+
+                if (secondReceipt is RenderSubmissionReceipt completedSecondReceipt)
+                {
+                    Assert.That(completedSecondReceipt.SubmissionSequence, Is.EqualTo(receipt.SubmissionSequence + 1));
+                    Assert.That(completedSecondReceipt.CompletedFence, Is.GreaterThan(receipt.CompletedFence));
+                }
+                else
+                {
+                    Assert.That(useStorageResources, Is.True);
+                }
             });
 
             using var readback = await graphicsDevice.ReadbackTextureAsync(
@@ -558,9 +684,18 @@ internal sealed partial class EngineHostOptionsTests
             var centerPixelOffset = checked(
                 (int)((readback.RowPitch * (targetExtent.Height / 2)) + (targetExtent.Width / 2 * 4)));
             var drawPixelCount = 0;
-            var expectedRed = useSampledTexture ? (byte)32 : (useUniformBuffer ? (byte)0 : (byte)255);
-            var expectedGreen = useSampledTexture ? (byte)128 : (useUniformBuffer ? (byte)255 : (byte)0);
-            var expectedBlue = useSampledTexture ? (byte)224 : (useUniformBuffer ? (byte)0 : (byte)255);
+            var expectedRed = useStorageResources
+                ? (byte)255
+                : (useSampledTexture ? (byte)32 : (useUniformBuffer ? (byte)0 : (byte)255));
+            var expectedGreen = useStorageResources
+                ? (byte)255
+                : (useSampledTexture ? (byte)128 : (useUniformBuffer ? (byte)255 : (byte)0));
+            var expectedBlue = useStorageResources
+                ? (byte)255
+                : (useSampledTexture ? (byte)224 : (useUniformBuffer ? (byte)0 : (byte)255));
+            var expectedBackgroundRed = useStorageResources ? 64 : 191;
+            var expectedBackgroundGreen = useStorageResources ? 128 : 64;
+            var expectedBackgroundBlue = useStorageResources ? 191 : 128;
 
             for (var y = 0; y < readback.Height; y++)
             {
@@ -579,9 +714,9 @@ internal sealed partial class EngineHostOptionsTests
             }
 
             Assert.Multiple(() => {
-                Assert.That(padded[0], Is.InRange(190, 192));
-                Assert.That(padded[1], Is.InRange(63, 65));
-                Assert.That(padded[2], Is.InRange(127, 129));
+                Assert.That(padded[0], Is.InRange(expectedBackgroundRed - 1, expectedBackgroundRed + 1));
+                Assert.That(padded[1], Is.InRange(expectedBackgroundGreen - 1, expectedBackgroundGreen + 1));
+                Assert.That(padded[2], Is.InRange(expectedBackgroundBlue - 1, expectedBackgroundBlue + 1));
                 Assert.That(padded[3], Is.EqualTo(255));
 
                 if (pipeline is not null)
@@ -595,12 +730,55 @@ internal sealed partial class EngineHostOptionsTests
                     Assert.That(padded[centerPixelOffset + 2], Is.InRange(127, 129));
                 }
             });
+
+            if (useStorageResources)
+            {
+                var storageBufferForReadback = storageBuffer
+                    ?? throw new InvalidOperationException("The graph storage test has no storage buffer.");
+                using var storageBufferReadback = await graphicsDevice.ReadbackBufferAsync(
+                    storageBufferForReadback,
+                    0,
+                    sizeof(uint))
+                    .ConfigureAwait(false);
+                var storageBufferBytes = new byte[sizeof(uint)];
+
+                using (var bufferReadLease = storageBufferReadback.AcquireReadLease(0, storageBufferBytes.Length))
+                {
+                    var copyAction = new ReadbackCopyAction(storageBufferBytes);
+                    bufferReadLease.UseWindow(0, storageBufferBytes.Length, ref copyAction);
+                }
+
+                Assert.That(
+                    BitConverter.ToUInt32(storageBufferBytes, 0),
+                    Is.EqualTo(BitConverter.SingleToUInt32Bits(1.0f)));
+
+                var storageImageForReadback = storageImage
+                    ?? throw new InvalidOperationException("The graph storage test has no storage image.");
+                using var storageImageReadback = await graphicsDevice.ReadbackTextureAsync(
+                    storageImageForReadback,
+                    new TextureSubresource(0, 0, TextureAspect.Color))
+                    .ConfigureAwait(false);
+                var storageImageBytes = new byte[checked((int)storageImageReadback.ByteLength)];
+
+                using (var imageReadLease = storageImageReadback.AcquireReadLease())
+                {
+                    var copyAction = new ReadbackCopyAction(storageImageBytes);
+                    imageReadLease.UseWindow(0, storageImageBytes.Length, ref copyAction);
+                }
+
+                Assert.That(
+                    BitConverter.UInt32BitsToSingle(BitConverter.ToUInt32(storageImageBytes, 0)),
+                    Is.EqualTo(32.0f / 255.0f).Within(1e-6f));
+            }
+
+            var finalReceipt = secondReceipt ?? receipt;
             TestContext.WriteLine(
                 $"Backend={backend}; Adapter={graphicsDevice.Capabilities.AdapterName}; "
-                + $"Submissions={receipt.SubmissionSequence}/{secondReceipt.SubmissionSequence}; "
-                + $"Fence={secondReceipt.CompletedFence}; "
+                + $"Submissions={receipt.SubmissionSequence}/{finalReceipt.SubmissionSequence}; "
+                + $"Fence={finalReceipt.CompletedFence}; "
                 + $"UniformBuffer={useUniformBuffer}; "
                 + $"SampledTexture={useSampledTexture}; "
+                + $"StorageResources={useStorageResources}; "
                 + $"Pixel={padded[centerPixelOffset]:X2}{padded[centerPixelOffset + 1]:X2}"
                 + $"{padded[centerPixelOffset + 2]:X2}{padded[centerPixelOffset + 3]:X2}; "
                 + $"DrawPixels={drawPixelCount}");
@@ -611,7 +789,9 @@ internal sealed partial class EngineHostOptionsTests
             pipeline?.Dispose();
             frameSampler?.Dispose();
             frameUniformBuffer?.Dispose();
+            storageBuffer?.Dispose();
             sampledTexture?.Dispose();
+            storageImage?.Dispose();
             target?.Dispose();
 
             if (host is not null)

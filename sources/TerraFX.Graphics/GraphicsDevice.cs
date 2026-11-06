@@ -1246,7 +1246,11 @@ public sealed partial class GraphicsDevice
         resource.RetirementReservation.Dispose();
     }
 
-    private OwnedBuffer<byte> ReadbackBufferOnOwner(GpuBuffer source, long sourceOffset, nint byteLength)
+    private OwnedBuffer<byte> ReadbackBufferOnOwner(
+        GpuBuffer source,
+        GraphicsResourceOwner.UseLease sourceUse,
+        long sourceOffset,
+        nint byteLength)
     {
         var backendDevice = _backendDevice
             ?? throw new InvalidOperationException("The GraphicsDevice has no live backend owner.");
@@ -1263,12 +1267,17 @@ public sealed partial class GraphicsDevice
             throw new InvalidOperationException("The source buffer has no backend buffer owner.");
         }
 
-        var result = backendDevice.ReadbackBuffer(backendBuffer, sourceOffset, byteLength);
+        var sourceRange = new GraphBufferRange(sourceOffset, checked((long)byteLength));
+        var (sourceState, _, _, _) = source.ResourceOwner.CaptureGraphImportState(sourceRange, sourceUse);
+        var result = backendDevice.ReadbackBuffer(backendBuffer, sourceState, sourceOffset, byteLength);
         source.ResourceOwner.RecordBufferReadback();
         return result;
     }
 
-    private TextureReadback ReadbackTextureOnOwner(GpuTexture source, TextureSubresource subresource)
+    private TextureReadback ReadbackTextureOnOwner(
+        GpuTexture source,
+        GraphicsResourceOwner.UseLease sourceUse,
+        TextureSubresource subresource)
     {
         var backendDevice = _backendDevice
             ?? throw new InvalidOperationException("The GraphicsDevice has no live backend owner.");
@@ -1286,7 +1295,14 @@ public sealed partial class GraphicsDevice
             throw new InvalidOperationException("The source texture has no backend texture owner.");
         }
 
-        var result = backendDevice.ReadbackTexture(backendTexture, subresource);
+        var sourceRange = new GraphTextureRange(
+            subresource.MipLevel,
+            1,
+            subresource.ArrayLayer,
+            1,
+            subresource.Aspect);
+        var (sourceState, _, _, _) = source.ResourceOwner.CaptureGraphImportState(sourceRange, sourceUse);
+        var result = backendDevice.ReadbackTexture(backendTexture, sourceState, subresource);
         source.ResourceOwner.RecordTextureReadback(subresource);
         return result;
     }
@@ -1548,6 +1564,7 @@ public sealed partial class GraphicsDevice
 
     private long UploadBufferOnOwner(
         GpuBuffer destination,
+        GraphicsResourceOwner.UseLease destinationUse,
         long destinationOffset,
         BufferReadLease<byte> source,
         nint sourceOffset,
@@ -1573,12 +1590,24 @@ public sealed partial class GraphicsDevice
             throw new InvalidOperationException("The destination buffer has no backend buffer owner.");
         }
 
-        var completedFence = backendDevice.UploadBuffer(backendBuffer, destinationOffset, source, sourceOffset, byteLength);
+        var destinationRange = new GraphBufferRange(destinationOffset, checked((long)byteLength));
+        var (destinationState, _, _, _) = destination.ResourceOwner.CaptureGraphImportState(destinationRange, destinationUse);
+        var completedFence = backendDevice.UploadBuffer(
+            backendBuffer,
+            destinationState,
+            destinationOffset,
+            source,
+            sourceOffset,
+            byteLength);
         destination.ResourceOwner.RecordBufferUpload(destinationOffset, byteLength);
         return completedFence;
     }
 
-    private long UploadBufferOnOwner(GpuBuffer destination, long destinationOffset, ReadOnlySpan<byte> source)
+    private long UploadBufferOnOwner(
+        GpuBuffer destination,
+        GraphicsResourceOwner.UseLease destinationUse,
+        long destinationOffset,
+        ReadOnlySpan<byte> source)
     {
         var backendDevice = _backendDevice
             ?? throw new InvalidOperationException("The GraphicsDevice has no live backend owner.");
@@ -1600,13 +1629,20 @@ public sealed partial class GraphicsDevice
             throw new InvalidOperationException("The destination buffer has no backend buffer owner.");
         }
 
-        var completedFence = backendDevice.UploadBuffer(backendBuffer, destinationOffset, source);
+        var destinationRange = new GraphBufferRange(destinationOffset, source.Length);
+        var (destinationState, _, _, _) = destination.ResourceOwner.CaptureGraphImportState(destinationRange, destinationUse);
+        var completedFence = backendDevice.UploadBuffer(
+            backendBuffer,
+            destinationState,
+            destinationOffset,
+            source);
         destination.ResourceOwner.RecordBufferUpload(destinationOffset, source.Length);
         return completedFence;
     }
 
     private long UploadTextureOnOwner(
         GpuTexture destination,
+        GraphicsResourceOwner.UseLease destinationUse,
         TextureSubresource subresource,
         BufferReadLease<byte> source,
         nint sourceOffset,
@@ -1636,7 +1672,20 @@ public sealed partial class GraphicsDevice
             throw new InvalidOperationException("The destination texture has no backend texture owner.");
         }
 
-        var completedFence = backendDevice.UploadTexture(backendTexture, subresource, source, sourceOffset, sourceLayout);
+        var destinationRange = new GraphTextureRange(
+            subresource.MipLevel,
+            1,
+            subresource.ArrayLayer,
+            1,
+            subresource.Aspect);
+        var (destinationState, _, _, _) = destination.ResourceOwner.CaptureGraphImportState(destinationRange, destinationUse);
+        var completedFence = backendDevice.UploadTexture(
+            backendTexture,
+            destinationState,
+            subresource,
+            source,
+            sourceOffset,
+            sourceLayout);
         destination.ResourceOwner.RecordTextureUpload(subresource);
         return completedFence;
     }
@@ -2587,7 +2636,11 @@ public sealed partial class GraphicsDevice
             try
             {
                 Volatile.Write(ref _nativeWorkStarted, 1);
-                readback = device.ReadbackBufferOnOwner(_source, _sourceOffset, _byteLength);
+                readback = device.ReadbackBufferOnOwner(
+                    _source,
+                    _sourceUse ?? throw new InvalidOperationException("The readback request has no retained source use."),
+                    _sourceOffset,
+                    _byteLength);
 
                 if (Interlocked.CompareExchange(ref _state, 2, 0) == 0)
                 {
@@ -2718,7 +2771,10 @@ public sealed partial class GraphicsDevice
             try
             {
                 Volatile.Write(ref _nativeWorkStarted, 1);
-                readback = device.ReadbackTextureOnOwner(_source, _subresource);
+                readback = device.ReadbackTextureOnOwner(
+                    _source,
+                    _sourceUse ?? throw new InvalidOperationException("The texture readback request has no retained source use."),
+                    _subresource);
 
                 if (Interlocked.CompareExchange(ref _state, 2, 0) == 0)
                 {
@@ -2884,11 +2940,14 @@ public sealed partial class GraphicsDevice
             try
             {
                 Volatile.Write(ref _nativeWorkStarted, 1);
+                var destinationUse = _destinationUse
+                    ?? throw new InvalidOperationException("The upload request has no retained destination use.");
 
                 var completedFence = (_sourceBytes is byte[] sourceBytes)
-                    ? device.UploadBufferOnOwner(_destination, _destinationOffset, sourceBytes)
+                    ? device.UploadBufferOnOwner(_destination, destinationUse, _destinationOffset, sourceBytes)
                     : device.UploadBufferOnOwner(
                         _destination,
+                        destinationUse,
                         _destinationOffset,
                         _sourceLease ?? throw new InvalidOperationException("The upload request has no retained source lease."),
                         _sourceOffset,
@@ -3035,6 +3094,8 @@ public sealed partial class GraphicsDevice
                 Volatile.Write(ref _nativeWorkStarted, 1);
                 var completedFence = device.UploadTextureOnOwner(
                     _destination,
+                    _destinationUse
+                        ?? throw new InvalidOperationException("The texture upload request has no retained destination use."),
                     _subresource,
                     _sourceLease ?? throw new InvalidOperationException("The texture upload request has no retained source lease."),
                     _sourceOffset,

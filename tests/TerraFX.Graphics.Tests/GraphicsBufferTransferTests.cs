@@ -1865,7 +1865,11 @@ internal sealed class GraphicsBufferTransferTests
                 budgetBytes: _textureBudgetBytes);
         }
 
-        public OwnedBuffer<byte> ReadbackBuffer(IGraphicsBackendBuffer source, long sourceOffset, nint byteLength)
+        public OwnedBuffer<byte> ReadbackBuffer(
+            IGraphicsBackendBuffer source,
+            GraphResourceState sourceState,
+            long sourceOffset,
+            nint byteLength)
         {
             var buffer = GetBuffer(source);
             var storage = UnmanagedBuffer<byte>.Allocate(byteLength, new BufferAllocationOptions(byteLength, 1));
@@ -1873,7 +1877,10 @@ internal sealed class GraphicsBufferTransferTests
             return storage.TransferToOwnedBuffer();
         }
 
-        public TextureReadback ReadbackTexture(IGraphicsBackendTexture source, TextureSubresource subresource)
+        public TextureReadback ReadbackTexture(
+            IGraphicsBackendTexture source,
+            GraphResourceState sourceState,
+            TextureSubresource subresource)
         {
             var texture = GetTexture(source);
             var width = Math.Max(texture.Description.Width >> subresource.MipLevel, 1);
@@ -1937,6 +1944,7 @@ internal sealed class GraphicsBufferTransferTests
 
         public long UploadBuffer(
             IGraphicsBackendBuffer destination,
+            GraphResourceState destinationState,
             long destinationOffset,
             BufferReadLease<byte> source,
             nint sourceOffset,
@@ -1962,7 +1970,11 @@ internal sealed class GraphicsBufferTransferTests
             return Interlocked.Increment(ref _completedFence);
         }
 
-        public long UploadBuffer(IGraphicsBackendBuffer destination, long destinationOffset, ReadOnlySpan<byte> source)
+        public long UploadBuffer(
+            IGraphicsBackendBuffer destination,
+            GraphResourceState destinationState,
+            long destinationOffset,
+            ReadOnlySpan<byte> source)
         {
             WaitForUpload();
             source.CopyTo(GetBuffer(destination).Bytes.AsSpan(checked((int)destinationOffset), source.Length));
@@ -1971,6 +1983,7 @@ internal sealed class GraphicsBufferTransferTests
 
         public long UploadTexture(
             IGraphicsBackendTexture destination,
+            GraphResourceState destinationState,
             TextureSubresource subresource,
             BufferReadLease<byte> source,
             nint sourceOffset,

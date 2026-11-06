@@ -74,13 +74,20 @@ internal sealed unsafe partial class VulkanBackendDevice
         return layout;
     }
 
-    private static VkImageLayout GetStorageImageLayout(VulkanBackendTexture texture)
+    private static VkImageLayout GetStorageImageLayout(
+        VulkanBackendTexture texture,
+        VkImageLayout? descriptorLayout = null)
     {
         var description = texture.Description;
         var aspect = description.Format == TextureFormat.D32Float
             ? TextureAspect.Depth
             : TextureAspect.Color;
-        var layout = VkImageLayout.VK_IMAGE_LAYOUT_GENERAL;
+        var layout = descriptorLayout ?? VkImageLayout.VK_IMAGE_LAYOUT_GENERAL;
+
+        if (layout != VkImageLayout.VK_IMAGE_LAYOUT_GENERAL)
+        {
+            throw new ArgumentOutOfRangeException(nameof(descriptorLayout));
+        }
 
         for (var arrayLayer = 0; arrayLayer < description.ArrayLayers; arrayLayer++)
         {
@@ -88,7 +95,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             {
                 var subresource = new TextureSubresource(mipLevel, arrayLayer, aspect);
 
-                if (texture.GetLayout(subresource) != layout)
+                if (!descriptorLayout.HasValue && (texture.GetLayout(subresource) != layout))
                 {
                     throw new NotSupportedException("All storage-image subresources must be in the Vulkan GENERAL layout.");
                 }
