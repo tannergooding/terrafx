@@ -4684,79 +4684,6 @@ public sealed class RenderPassDescription
     public bool HasExternalSideEffects { get; }
 }
 
-public enum RenderFrameDimension
-{
-    TwoDimensional,
-    ThreeDimensional
-}
-
-public sealed class RenderGraphOptions
-{
-    public RenderGraphOptions(Guid snapshotId, Guid worldGuid, long tickIndex, RenderFrameDimension frameDimension, SpatialProfileId profileId, long frameRevision, ImmutableArray<Guid> cameraIds, PixelSize targetExtent, Surface surface);
-    public RenderGraphOptions(Guid snapshotId, Guid worldGuid, long tickIndex, RenderFrameDimension frameDimension, SpatialProfileId profileId, long frameRevision, ImmutableArray<Guid> cameraIds, PixelSize targetExtent, GpuTexture offscreenColorTarget);
-    public Guid SnapshotId { get; }
-    public Guid WorldGuid { get; }
-    public long TickIndex { get; }
-    public RenderFrameDimension FrameDimension { get; }
-    public SpatialProfileId ProfileId { get; }
-    public long FrameRevision { get; }
-    public ImmutableArray<Guid> CameraIds { get; }
-    public PixelSize TargetExtent { get; }
-    public Surface? Surface { get; }
-    public GpuTexture? OffscreenColorTarget { get; }
-}
-
-public sealed class RenderGraph
-{
-    public RenderGraph(RenderGraphOptions options);
-    public GraphBufferVersion ImportBuffer(GpuBuffer buffer, GraphBufferRange range, GraphImportOptions options);
-    public GraphTextureVersion ImportTexture(GpuTexture texture, GraphTextureRange range, GraphImportOptions options);
-    public GraphBufferVersion CreateTransientBuffer(BufferDescription description);
-    public GraphTextureVersion CreateTransientTexture(TextureDescription description);
-    public RenderPassId AddRasterPass(RenderPassDescription description, RenderPassCallback callback);
-    public RenderPassId AddComputePass(RenderPassDescription description, RenderPassCallback callback);
-    public RenderPassId AddCopyPass(RenderPassDescription description, RenderPassCallback callback);
-    public void ReadBuffer(RenderPassId pass, GraphBufferVersion version, GraphBufferUsage usage, GraphBufferRange range);
-    public GraphBufferVersion WriteBuffer(RenderPassId pass, GraphBufferVersion previousVersion, GraphBufferUsage usage, GraphBufferRange range);
-    public void ReadTexture(RenderPassId pass, GraphTextureVersion version, GraphTextureUsage usage, GraphTextureRange range);
-    public GraphTextureVersion WriteTexture(RenderPassId pass, GraphTextureVersion previousVersion, GraphTextureUsage usage, GraphTextureRange range);
-    public GraphTextureVersion WriteColorAttachment(RenderPassId pass, GraphTextureVersion previousVersion, GraphTextureRange range, AttachmentLoadAction loadAction, AttachmentStoreAction storeAction, TerraFX.Numerics.Vector4 clearColor);
-    public GraphTextureVersion WriteDepthAttachment(RenderPassId pass, GraphTextureVersion previousVersion, GraphTextureRange range, AttachmentLoadAction loadAction, AttachmentStoreAction storeAction, float clearDepth);
-    public GraphTextureVersion? PresentationSource { get; }
-    public void SetPresentationSource(GraphTextureVersion version);
-    public RenderGraphCompileResponse Compile();
-}
-
-public enum RenderGraphCompileStatus
-{
-    Compiled,
-    Rejected
-}
-
-public sealed class RenderGraphCompileResponse
-{
-    internal RenderGraphCompileResponse(RenderGraphCompileStatus status, RenderGraphPlan? plan, ImmutableArray<Diagnostic> diagnostics);
-    public RenderGraphCompileStatus Status { get; }
-    public RenderGraphPlan? Plan { get; }
-    public ImmutableArray<Diagnostic> Diagnostics { get; }
-}
-
-public sealed class RenderGraphPlan
-{
-    internal RenderGraphPlan(Guid snapshotId, Guid worldGuid, long tickIndex, RenderFrameDimension frameDimension, SpatialProfileId profileId, long frameRevision, ImmutableArray<Guid> cameraIds, PixelSize targetExtent, uint deviceEpoch, Surface? surface, GpuTexture? offscreenColorTarget, uint surfaceEpoch, uint swapchainEpoch);
-    public Guid SnapshotId { get; }
-    public Guid WorldGuid { get; }
-    public long TickIndex { get; }
-    public RenderFrameDimension FrameDimension { get; }
-    public SpatialProfileId ProfileId { get; }
-    public long FrameRevision { get; }
-    public ImmutableArray<Guid> CameraIds { get; }
-    public PixelSize TargetExtent { get; }
-    public uint DeviceEpoch { get; }
-    public uint SurfaceEpoch { get; }
-    public uint SwapchainEpoch { get; }
-}
-
 public sealed class BufferBinding
 {
     public BufferBinding(ShaderBindingGroup group, int binding, ShaderResourceKind kind, GraphBufferVersion resource, GraphBufferRange range);
@@ -4964,6 +4891,79 @@ using TerraFX;
 using TerraFX.Entities;
 using TerraFX.Graphics;
 using TerraFX.Scenes;
+
+public enum RenderFrameDimension
+{
+    TwoDimensional,
+    ThreeDimensional
+}
+
+public sealed class RenderGraphOptions
+{
+    public RenderGraphOptions(Guid snapshotId, Guid worldGuid, long tickIndex, RenderFrameDimension frameDimension, SpatialProfileId profileId, long frameRevision, ImmutableArray<Guid> cameraIds, PixelSize targetExtent, Surface surface);
+    public RenderGraphOptions(Guid snapshotId, Guid worldGuid, long tickIndex, RenderFrameDimension frameDimension, SpatialProfileId profileId, long frameRevision, ImmutableArray<Guid> cameraIds, PixelSize targetExtent, GpuTexture offscreenColorTarget);
+    public Guid SnapshotId { get; }
+    public Guid WorldGuid { get; }
+    public long TickIndex { get; }
+    public RenderFrameDimension FrameDimension { get; }
+    public SpatialProfileId ProfileId { get; }
+    public long FrameRevision { get; }
+    public ImmutableArray<Guid> CameraIds { get; }
+    public PixelSize TargetExtent { get; }
+    public Surface? Surface { get; }
+    public GpuTexture? OffscreenColorTarget { get; }
+}
+
+public sealed class RenderGraph
+{
+    public RenderGraph(RenderGraphOptions options);
+    public GraphBufferVersion ImportBuffer(GpuBuffer buffer, GraphBufferRange range, GraphImportOptions options);
+    public GraphTextureVersion ImportTexture(GpuTexture texture, GraphTextureRange range, GraphImportOptions options);
+    public GraphBufferVersion CreateTransientBuffer(BufferDescription description);
+    public GraphTextureVersion CreateTransientTexture(TextureDescription description);
+    public RenderPassId AddRasterPass(RenderPassDescription description, RenderPassCallback callback);
+    public RenderPassId AddComputePass(RenderPassDescription description, RenderPassCallback callback);
+    public RenderPassId AddCopyPass(RenderPassDescription description, RenderPassCallback callback);
+    public void ReadBuffer(RenderPassId pass, GraphBufferVersion version, GraphBufferUsage usage, GraphBufferRange range);
+    public GraphBufferVersion WriteBuffer(RenderPassId pass, GraphBufferVersion previousVersion, GraphBufferUsage usage, GraphBufferRange range);
+    public void ReadTexture(RenderPassId pass, GraphTextureVersion version, GraphTextureUsage usage, GraphTextureRange range);
+    public GraphTextureVersion WriteTexture(RenderPassId pass, GraphTextureVersion previousVersion, GraphTextureUsage usage, GraphTextureRange range);
+    public GraphTextureVersion WriteColorAttachment(RenderPassId pass, GraphTextureVersion previousVersion, GraphTextureRange range, AttachmentLoadAction loadAction, AttachmentStoreAction storeAction, TerraFX.Numerics.Vector4 clearColor);
+    public GraphTextureVersion WriteDepthAttachment(RenderPassId pass, GraphTextureVersion previousVersion, GraphTextureRange range, AttachmentLoadAction loadAction, AttachmentStoreAction storeAction, float clearDepth);
+    public GraphTextureVersion? PresentationSource { get; }
+    public void SetPresentationSource(GraphTextureVersion version);
+    public RenderGraphCompileResponse Compile();
+}
+
+public enum RenderGraphCompileStatus
+{
+    Compiled,
+    Rejected
+}
+
+public sealed class RenderGraphCompileResponse
+{
+    internal RenderGraphCompileResponse(RenderGraphCompileStatus status, RenderGraphPlan? plan, ImmutableArray<Diagnostic> diagnostics);
+    public RenderGraphCompileStatus Status { get; }
+    public RenderGraphPlan? Plan { get; }
+    public ImmutableArray<Diagnostic> Diagnostics { get; }
+}
+
+public sealed class RenderGraphPlan
+{
+    internal RenderGraphPlan(Guid snapshotId, Guid worldGuid, long tickIndex, RenderFrameDimension frameDimension, SpatialProfileId profileId, long frameRevision, ImmutableArray<Guid> cameraIds, PixelSize targetExtent, uint deviceEpoch, Surface? surface, GpuTexture? offscreenColorTarget, uint surfaceEpoch, uint swapchainEpoch);
+    public Guid SnapshotId { get; }
+    public Guid WorldGuid { get; }
+    public long TickIndex { get; }
+    public RenderFrameDimension FrameDimension { get; }
+    public SpatialProfileId ProfileId { get; }
+    public long FrameRevision { get; }
+    public ImmutableArray<Guid> CameraIds { get; }
+    public PixelSize TargetExtent { get; }
+    public uint DeviceEpoch { get; }
+    public uint SurfaceEpoch { get; }
+    public uint SwapchainEpoch { get; }
+}
 
 public sealed class GpuResidencyLease : IDisposable
 {
