@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Assets;
+using TerraFX.Buffers;
 using TerraFX.Content.Tools;
 using TerraFX.Entities;
 using TerraFX.Graphics;
@@ -139,6 +140,13 @@ internal sealed partial class EngineHostOptionsTests
                     ?? throw new InvalidOperationException("The successful extraction omitted its render snapshot.");
             }).ConfigureAwait(false);
 
+            var targetUsage = TextureUsage.ColorAttachment | TextureUsage.CopySource;
+
+            if (backend == GraphicsBackend.Vulkan)
+            {
+                targetUsage |= TextureUsage.CopyDestination;
+            }
+
             target = await graphicsDevice.CreateTextureAsync(
                 new TextureDescription(
                     TextureDimension.Dimension2D,
@@ -148,9 +156,31 @@ internal sealed partial class EngineHostOptionsTests
                     arrayLayers: 1,
                     mipLevels: 1,
                     TextureFormat.Rgba8Unorm,
-                    TextureUsage.ColorAttachment | TextureUsage.CopySource,
+                    targetUsage,
                     $"m04-{backend}-offscreen-clear"))
                 .ConfigureAwait(false);
+
+            if (backend == GraphicsBackend.Vulkan)
+            {
+                var initialTargetBytes = new byte[checked(targetExtent.Width * targetExtent.Height * 4)];
+                Array.Fill(initialTargetBytes, (byte)0x3D);
+                var initialTargetStorage = UnmanagedBuffer<byte>.Allocate(
+                    initialTargetBytes.Length,
+                    new BufferAllocationOptions(initialTargetBytes.Length, alignment: 1));
+                initialTargetStorage.CopyFrom(initialTargetBytes.AsSpan(), 0);
+
+                using var ownedInitialTarget = initialTargetStorage.TransferToOwnedBuffer();
+                using var initialTargetLease = ownedInitialTarget.AcquireReadLease(0, initialTargetBytes.Length);
+                var uploadReceipt = await graphicsDevice.UploadTextureAsync(
+                    target,
+                    new TextureSubresource(0, 0, TextureAspect.Color),
+                    initialTargetLease,
+                    0,
+                    new TextureDataLayout(targetExtent.Width * 4, initialTargetBytes.Length))
+                    .ConfigureAwait(false);
+                Assert.That(uploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+            }
+
             var renderer = engineHost.Renderer;
             var renderSnapshot = snapshot
                 ?? throw new InvalidOperationException("The host renderer omitted its render snapshot.");

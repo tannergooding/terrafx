@@ -13,6 +13,8 @@ internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
     private VkImage _image;
     private bool[] _initialized;
     private bool _isDisposed;
+    private VkAccessFlags2[] _lastAccessMasks;
+    private VkPipelineStageFlags2[] _lastStageMasks;
     private VkImageLayout[] _layouts;
     private VkDeviceMemory _memory;
     private uint _memoryTypeIndex;
@@ -33,6 +35,10 @@ internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
         _initialized = new bool[checked(description.MipLevels * description.ArrayLayers)];
         _memory = memory;
         _memoryTypeIndex = memoryTypeIndex;
+        _lastAccessMasks = new VkAccessFlags2[_initialized.Length];
+        Array.Fill(_lastAccessMasks, VkAccessFlags2.VK_ACCESS_2_NONE);
+        _lastStageMasks = new VkPipelineStageFlags2[_initialized.Length];
+        Array.Fill(_lastStageMasks, VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE);
         _layouts = new VkImageLayout[_initialized.Length];
         Array.Fill(_layouts, VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED);
     }
@@ -59,6 +65,12 @@ internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
         }
     }
 
+    internal VkAccessFlags2 GetLastAccessMask(TextureSubresource subresource)
+        => _lastAccessMasks[GetSubresourceIndex(subresource)];
+
+    internal VkPipelineStageFlags2 GetLastStageMask(TextureSubresource subresource)
+        => _lastStageMasks[GetSubresourceIndex(subresource)];
+
     internal VkImageLayout GetLayout(TextureSubresource subresource)
         => _layouts[GetSubresourceIndex(subresource)];
 
@@ -72,6 +84,8 @@ internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
         _isDisposed = true;
         _descriptorSetReferenceCount = 0;
         _initialized = [];
+        _lastAccessMasks = [];
+        _lastStageMasks = [];
         _layouts = [];
         _memory = default;
         _memoryTypeIndex = 0;
@@ -92,6 +106,16 @@ internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
 
     internal void RetainDescriptorSet()
         => _descriptorSetReferenceCount = checked(_descriptorSetReferenceCount + 1);
+
+    internal void SetLastAccessScope(
+        TextureSubresource subresource,
+        VkPipelineStageFlags2 stageMask,
+        VkAccessFlags2 accessMask)
+    {
+        var index = GetSubresourceIndex(subresource);
+        _lastStageMasks[index] = stageMask;
+        _lastAccessMasks[index] = accessMask;
+    }
 
     internal void SetLayout(TextureSubresource subresource, VkImageLayout layout)
         => _layouts[GetSubresourceIndex(subresource)] = layout;

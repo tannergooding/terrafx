@@ -84,6 +84,10 @@ internal sealed unsafe partial class VulkanBackendDevice
                 VkAccessFlags2.VK_ACCESS_2_HOST_READ_BIT);
             _ = SubmitAndWait(source);
             source.SetLayout(subresource, VkImageLayout.VK_IMAGE_LAYOUT_GENERAL);
+            source.SetLastAccessScope(
+                subresource,
+                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
+                VkAccessFlags2.VK_ACCESS_2_TRANSFER_READ_BIT);
             var storage = ReadMappedBuffer(staging, byteLength);
 
             try
@@ -183,6 +187,10 @@ internal sealed unsafe partial class VulkanBackendDevice
                 VkImageLayout.VK_IMAGE_LAYOUT_GENERAL);
             var completionValue = SubmitAndWait(destination);
             destination.SetLayout(subresource, VkImageLayout.VK_IMAGE_LAYOUT_GENERAL);
+            destination.SetLastAccessScope(
+                subresource,
+                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
+                VkAccessFlags2.VK_ACCESS_2_TRANSFER_WRITE_BIT);
             destination.MarkInitialized(subresource);
             return completionValue;
         }
@@ -219,9 +227,8 @@ internal sealed unsafe partial class VulkanBackendDevice
 
             case VkImageLayout.VK_IMAGE_LAYOUT_GENERAL:
             {
-                barrier.srcStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-                barrier.srcAccessMask =
-                    VkAccessFlags2.VK_ACCESS_2_MEMORY_READ_BIT | VkAccessFlags2.VK_ACCESS_2_MEMORY_WRITE_BIT;
+                barrier.srcStageMask = texture.GetLastStageMask(subresource);
+                barrier.srcAccessMask = texture.GetLastAccessMask(subresource);
                 break;
             }
 
@@ -263,9 +270,8 @@ internal sealed unsafe partial class VulkanBackendDevice
 
             case VkImageLayout.VK_IMAGE_LAYOUT_GENERAL:
             {
-                barrier.dstStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-                barrier.dstAccessMask =
-                    VkAccessFlags2.VK_ACCESS_2_MEMORY_READ_BIT | VkAccessFlags2.VK_ACCESS_2_MEMORY_WRITE_BIT;
+                barrier.dstStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
+                barrier.dstAccessMask = VkAccessFlags2.VK_ACCESS_2_NONE;
                 break;
             }
 

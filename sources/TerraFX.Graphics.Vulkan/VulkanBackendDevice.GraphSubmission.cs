@@ -47,6 +47,8 @@ internal sealed unsafe partial class VulkanBackendDevice
         var imageView = CreateGraphColorImageView(_device, target);
         var subresource = new TextureSubresource(0, 0, TextureAspect.Color);
         var currentLayout = target.GetLayout(subresource);
+        var currentStageMask = target.GetLastStageMask(subresource);
+        var currentAccessMask = target.GetLastAccessMask(subresource);
         var ownsImageView = true;
 
         try
@@ -64,7 +66,12 @@ internal sealed unsafe partial class VulkanBackendDevice
                         continue;
                     }
 
-                    RecordGraphImageBarrier(target, transition, ref currentLayout);
+                    RecordGraphImageBarrier(
+                        target,
+                        transition,
+                        ref currentLayout,
+                        ref currentStageMask,
+                        ref currentAccessMask);
                 }
 
                 if (pass.Kind != CommandRecorderPassKind.Raster)
@@ -150,6 +157,7 @@ internal sealed unsafe partial class VulkanBackendDevice
 
             var completedFence = SubmitAndWaitCore(retainedBuffer: null, retainedTexture: null);
             target.SetLayout(subresource, currentLayout);
+            target.SetLastAccessScope(subresource, currentStageMask, currentAccessMask);
             target.MarkInitialized(subresource);
             return completedFence;
         }
@@ -172,11 +180,17 @@ internal sealed unsafe partial class VulkanBackendDevice
     private void RecordGraphImageBarrier(
         VulkanBackendTexture texture,
         GraphResourceStateTransition transition,
-        ref VkImageLayout currentLayout)
+        ref VkImageLayout currentLayout,
+        ref VkPipelineStageFlags2 currentStageMask,
+        ref VkAccessFlags2 currentAccessMask)
     {
-        if (transition.BeforeState == GraphResourceState.General)
+        if (transition.BeforeState is not (
+            GraphResourceState.Undefined
+            or GraphResourceState.General
+            or GraphResourceState.ColorAttachment
+            or GraphResourceState.OffscreenOutput))
         {
-            throw new NotSupportedException("Vulkan graph submission requires an explicit owner synchronization scope for General-state imports.");
+            throw new NotSupportedException($"Vulkan graph submission does not support a transition from {transition.BeforeState}.");
         }
 
         var expectedBeforeLayout = VulkanGraphResourceStateMapper.GetImageLayout(transition.BeforeState);
@@ -200,28 +214,8 @@ internal sealed unsafe partial class VulkanBackendDevice
         barrier.subresourceRange.baseArrayLayer = checked((uint)transition.TextureRange.FirstLayer);
         barrier.subresourceRange.layerCount = checked((uint)transition.TextureRange.LayerCount);
 
-        switch (transition.BeforeState)
-        {
-            case GraphResourceState.Undefined:
-            case GraphResourceState.OffscreenOutput:
-            {
-                barrier.srcStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
-                barrier.srcAccessMask = VkAccessFlags2.VK_ACCESS_2_NONE;
-                break;
-            }
-
-            case GraphResourceState.ColorAttachment:
-            {
-                barrier.srcStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-                barrier.srcAccessMask = VkAccessFlags2.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-                break;
-            }
-
-            default:
-            {
-                throw new NotSupportedException($"Vulkan graph submission does not support a transition from {transition.BeforeState}.");
-            }
-        }
+        barrier.srcStageMask = currentStageMask;
+        barrier.srcAccessMask = currentAccessMask;
 
         switch (transition.AfterState)
         {
@@ -251,5 +245,11 @@ internal sealed unsafe partial class VulkanBackendDevice
         dependencyInfo.pImageMemoryBarriers = &barrier;
         VulkanApi.vkCmdPipelineBarrier2(_commandBuffer, &dependencyInfo);
         currentLayout = afterLayout;
+
+        if (transition.AfterState == GraphResourceState.ColorAttachment)
+        {
+            currentStageMask = barrier.dstStageMask;
+            currentAccessMask = barrier.dstAccessMask;
+        }
     }
 }
