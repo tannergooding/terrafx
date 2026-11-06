@@ -87,6 +87,22 @@ internal sealed partial class EngineHostOptionsTests
             overlapTransientBufferLifetimes,
             holdGraphCompletion: false);
 
+    [Test]
+    public Task SubmitsPackageBackedTextureGraphOnVulkan()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.Vulkan,
+            useUniformBuffer: false,
+            useSampledTexture: true,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            usePackageResidencyTexture: true);
+
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
@@ -102,7 +118,8 @@ internal sealed partial class EngineHostOptionsTests
         bool useMultipleComputeStorageBuffers,
         bool useTransientBufferAliasing,
         bool overlapTransientBufferLifetimes,
-        bool holdGraphCompletion)
+        bool holdGraphCompletion,
+        bool usePackageResidencyTexture = false)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -131,9 +148,52 @@ internal sealed partial class EngineHostOptionsTests
             .. SceneSchemaCatalogue.Schemas,
             .. RenderingSchemaCatalogue.Schemas,
         ]);
+        const int PackageTextureAssetId = 71;
+        var sampleBytes = new byte[] { 32, 128, 224, 255 };
         var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
+
+        if (usePackageResidencyTexture)
+        {
+            var mipRecord = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                new ContentSchemaIdentityAssignment("native/texture-mip").SchemaId,
+                1,
+                0,
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(1, 0),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(2, 1),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(3, 1),
+                new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(
+                    4,
+                    13,
+                    1,
+                    checked((ulong)sampleBytes.Length),
+                    sampleBytes));
+            var textureRecord = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                new ContentSchemaIdentityAssignment("native/texture").SchemaId,
+                1,
+                0,
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(1, 1),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(2, 1),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(3, 0),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(4, (byte)RenderTextureColorSpace.Linear),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(5, (byte)RenderTextureAlphaMode.Straight),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(6, (byte)RenderTextureSemantic.Color),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(7, (byte)RenderTextureMipPolicy.BaseOnly),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8, [mipRecord]));
+            packageBytes = SceneAssetStoreTests.Package.CreatePackage(
+                new SceneAssetStoreTests.Package.Entry(
+                    PackageTextureAssetId,
+                    SceneAssetStoreTests.Package.CreateEnvelope(PackageTextureAssetId, textureRecord)));
+        }
+
         var packagePath = SceneAssetStoreTests.Package.WritePackage(packageBytes);
-        var assetStoreRegistration = new AssetStoreRegistrationBuilder(schemas).Build();
+        var assetStoreRegistrationBuilder = new AssetStoreRegistrationBuilder(schemas);
+
+        if (usePackageResidencyTexture)
+        {
+            _ = Renderer.RegisterAssetCodecs(assetStoreRegistrationBuilder);
+        }
+
+        var assetStoreRegistration = assetStoreRegistrationBuilder.Build();
         using var fenceWaitEntered = new ManualResetEventSlim(initialState: false);
         using var continueFenceWait = new ManualResetEventSlim(initialState: false);
         var holdNextFenceWait = 0;
@@ -179,6 +239,7 @@ internal sealed partial class EngineHostOptionsTests
         EngineHost? host = null;
         GpuTexture? target = null;
         GpuTexture? sampledTexture = null;
+        GpuResidencyLease? sampledTextureResidencyLease = null;
         GpuTexture? storageImage = null;
         GpuBuffer? frameUniformBuffer = null;
         GpuBuffer? storageBuffer = null;
@@ -320,34 +381,47 @@ internal sealed partial class EngineHostOptionsTests
 
             if (useSampledTexture)
             {
-                var sampleBytes = new byte[] { 32, 128, 224, 255 };
-                sampledTexture = await graphicsDevice.CreateTextureAsync(
-                    new TextureDescription(
-                        TextureDimension.Dimension2D,
-                        1,
-                        1,
-                        depth: 1,
-                        arrayLayers: 1,
-                        mipLevels: 1,
-                        TextureFormat.Rgba8Unorm,
-                        TextureUsage.Sampled | TextureUsage.CopyDestination,
-                        $"m04-{backend}-frame-sampled-texture"))
-                    .ConfigureAwait(false);
-                var sampleStorage = UnmanagedBuffer<byte>.Allocate(
-                    sampleBytes.Length,
-                    new BufferAllocationOptions(sampleBytes.Length, alignment: 1));
-                sampleStorage.CopyFrom(sampleBytes.AsSpan(), 0);
+                if (usePackageResidencyTexture)
+                {
+                    using var sampleAssetLease = await engineHost.Assets.LoadAsync<RenderTextureAsset>(
+                        new AssetId(PackageTextureAssetId)).ConfigureAwait(false);
+                    sampledTextureResidencyLease = await (engineHost.GpuResidency
+                        ?? throw new InvalidOperationException("OffscreenNative startup returned no GPU residency service."))
+                        .EnsureGpuResidencyAsync(sampleAssetLease, new ResidencyOptions())
+                        .ConfigureAwait(false);
+                    sampledTexture = sampledTextureResidencyLease.Texture;
+                }
+                else
+                {
+                    sampledTexture = await graphicsDevice.CreateTextureAsync(
+                        new TextureDescription(
+                            TextureDimension.Dimension2D,
+                            1,
+                            1,
+                            depth: 1,
+                            arrayLayers: 1,
+                            mipLevels: 1,
+                            TextureFormat.Rgba8Unorm,
+                            TextureUsage.Sampled | TextureUsage.CopyDestination,
+                            $"m04-{backend}-frame-sampled-texture"))
+                        .ConfigureAwait(false);
+                    var sampleStorage = UnmanagedBuffer<byte>.Allocate(
+                        sampleBytes.Length,
+                        new BufferAllocationOptions(sampleBytes.Length, alignment: 1));
+                    sampleStorage.CopyFrom(sampleBytes.AsSpan(), 0);
 
-                using var ownedSampleBytes = sampleStorage.TransferToOwnedBuffer();
-                using var sampleLease = ownedSampleBytes.AcquireReadLease(0, sampleBytes.Length);
-                var sampleUploadReceipt = await graphicsDevice.UploadTextureAsync(
-                    sampledTexture,
-                    new TextureSubresource(0, 0, TextureAspect.Color),
-                    sampleLease,
-                    0,
-                    new TextureDataLayout(rowPitch: 4, slicePitch: 4))
-                    .ConfigureAwait(false);
-                Assert.That(sampleUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+                    using var ownedSampleBytes = sampleStorage.TransferToOwnedBuffer();
+                    using var sampleLease = ownedSampleBytes.AcquireReadLease(0, sampleBytes.Length);
+                    var sampleUploadReceipt = await graphicsDevice.UploadTextureAsync(
+                        sampledTexture,
+                        new TextureSubresource(0, 0, TextureAspect.Color),
+                        sampleLease,
+                        0,
+                        new TextureDataLayout(rowPitch: 4, slicePitch: 4))
+                        .ConfigureAwait(false);
+                    Assert.That(sampleUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+                }
+
                 frameSampler = await graphicsDevice.CreateSamplerAsync(
                     new SamplerDescription(
                         SamplerFilter.Linear,
@@ -1917,7 +1991,16 @@ internal sealed partial class EngineHostOptionsTests
             secondCopySourceBuffer?.Dispose();
             copyDestinationBuffer?.Dispose();
             secondCopyDestinationBuffer?.Dispose();
-            sampledTexture?.Dispose();
+
+            if (sampledTextureResidencyLease is not null)
+            {
+                sampledTextureResidencyLease.Dispose();
+            }
+            else
+            {
+                sampledTexture?.Dispose();
+            }
+
             storageImage?.Dispose();
             target?.Dispose();
 

@@ -127,6 +127,8 @@ internal sealed partial class EngineHostOptionsTests
         try
         {
             host = await EngineHost.StartAsync(options).ConfigureAwait(false);
+            Assert.That(host.GraphicsDevice, Is.Null);
+            Assert.That(host.GpuResidency, Is.Null);
             var callingThreadId = Environment.CurrentManagedThreadId;
             var ownerThreadId = -1;
             var clipboardStatus = ClipboardServiceStatus.Unsupported;

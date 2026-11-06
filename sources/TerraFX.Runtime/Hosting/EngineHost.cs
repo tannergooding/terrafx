@@ -37,6 +37,7 @@ public sealed partial class EngineHost : IAsyncDisposable
     private readonly AssetStore _assets;
     private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private DiagnosticsService? _diagnostics;
+    private readonly GpuResidencyService? _gpuResidency;
     private readonly GraphicsDevice? _graphicsDevice;
     private HostEventSequenceLease? _hostEventSequenceLease;
     private readonly HashSet<InputRouter> _inputRouters = [];
@@ -72,6 +73,7 @@ public sealed partial class EngineHost : IAsyncDisposable
         _options = options;
         _assets = assets;
         _graphicsDevice = graphicsDevice;
+        _gpuResidency = (graphicsDevice is null) ? null : new GpuResidencyService(graphicsDevice);
         _persistence = new WorldPersistence(assets, options.PersistenceMetadata);
         _renderer = Renderer.Create(graphicsDevice);
         _ownerThread = new Thread(RunOwnerLoop) {
@@ -93,6 +95,9 @@ public sealed partial class EngineHost : IAsyncDisposable
     /// <exception cref="InvalidOperationException">Host startup has not completed.</exception>
     public DiagnosticsService Diagnostics
         => _diagnostics ?? throw new InvalidOperationException("EngineHost startup has not completed.");
+
+    /// <summary>Gets the host-owned GPU texture residency service, or null for Headless.</summary>
+    public GpuResidencyService? GpuResidency => _gpuResidency;
 
     /// <summary>Gets the selected offscreen GraphicsDevice, or null for Headless.</summary>
     public GraphicsDevice? GraphicsDevice => _graphicsDevice;
@@ -1071,6 +1076,18 @@ public sealed partial class EngineHost : IAsyncDisposable
     private async Task StopAndDisposeAsync()
     {
         var failures = new List<Exception>();
+
+        if (_gpuResidency is not null)
+        {
+            try
+            {
+                await _gpuResidency.StopAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                failures.Add(exception);
+            }
+        }
 
         try
         {
