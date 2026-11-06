@@ -205,13 +205,15 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "Name~D3D12GraphSubmissionRetainsTargetUntilFenceCompletion"
 ```
 
-`CommandRecorder.CopyTexture` copies one complete imported 2D color mip/layer between distinct textures with matching format and mip extent. The imported 2x2 RGBA8 witness copies mip 1/layer 1 from 4x4 two-mip, two-layer textures; a second witness copies through a transient texture and verifies the imported output byte-for-byte. Windows Debug/Release pass on Vulkan; D3D12 skips when adapter-budget admission refuses staging. WSLg Debug/Release pass both Vulkan witnesses with Khronos validation. Run both backends in Debug/Release on Windows and Vulkan in the WSLg lane:
+`CommandRecorder.CopyTexture` copies one complete imported 2D color mip/layer between distinct textures with matching format and mip extent. The imported 2x2 RGBA8 witness copies mip 1/layer 1 from 4x4 two-mip, two-layer textures; a second witness copies through a transient texture; a third records two independent copies in one graph. Each verifies imported output bytes. Windows Debug/Release pass all Vulkan witnesses and the multi-pair D3D12 witness; the single-pair and transient D3D12 tests skip when adapter-budget admission refuses staging. WSLg Debug/Release pass all three Vulkan witnesses with Khronos validation. Run the owning Runtime selections in Debug/Release on Windows and Vulkan in the WSLg lane:
 
 ```powershell
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SubmitsTextureCopyGraphAndReadsBackAsync"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SubmitsTextureCopyGraphAndReadsBackAsync"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SubmitsTransientTextureCopyGraphAndReadsBackAsync"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SubmitsTransientTextureCopyGraphAndReadsBackAsync"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SubmitsMultipleTextureCopyGraphAndReadsBackAsync"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SubmitsMultipleTextureCopyGraphAndReadsBackAsync"
 ```
 
 For WSLg, set `WORKTREE` to the checkout's Linux path and run outside the checkout so the Linux-local SDK is selected instead of the Windows `.dotnet` candidate in `global.json`:
@@ -230,6 +232,8 @@ export TERRAFX_M04_SHADER_FIXTURE_DIRECTORY=
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SubmitsTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~SubmitsTransientTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SubmitsTransientTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~SubmitsMultipleTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SubmitsMultipleTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
 ### Vulkan GraphicsDevice startup through the host issuer

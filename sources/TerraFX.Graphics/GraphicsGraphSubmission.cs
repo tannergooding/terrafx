@@ -211,10 +211,10 @@ internal sealed class GraphicsGraphSubmission
     internal void ValidateOffscreenRasterSubmission()
     {
         if ((BufferImports.Length > 8)
-            || (TextureImports.Length is < 1 or > 4)
+            || (TextureImports.Length is < 1 or > 8)
             || !ReferenceEquals(TextureImports[0].Texture, OffscreenColorTarget))
         {
-            throw new NotSupportedException("Native graph submission supports one offscreen color target and up to three imported or transient Frame resource textures.");
+            throw new NotSupportedException("Native graph submission supports one offscreen color target and up to seven imported or transient Frame resource textures.");
         }
 
         var targetResourceId = TextureImports[0].Version.ResourceId;
