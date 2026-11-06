@@ -7,6 +7,8 @@ using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Assets;
+using TerraFX.Buffers;
+using TerraFX.Content.Tools;
 using TerraFX.Entities;
 using TerraFX.Graphics;
 using TerraFX.Graphics.Vulkan;
@@ -21,8 +23,33 @@ namespace TerraFX.Runtime.Tests.Scenes;
 internal sealed partial class SceneAssetStoreTests
 {
     [Test]
-    public async Task SnapshotPinnedAtlasPageBecomesResidentAfterSceneAndSnapshotRetireAsync()
+    public Task SnapshotPinnedAtlasPageBecomesResidentAfterSceneAndSnapshotRetireAsync()
+        => RunSnapshotAtlasPageResidencyAsync(renderThroughNativeGraph: false);
+
+    [Test]
+    public Task SnapshotPinnedAtlasPageSamplesThroughNativeGraphAsync()
+        => RunSnapshotAtlasPageResidencyAsync(renderThroughNativeGraph: true);
+
+    private async Task RunSnapshotAtlasPageResidencyAsync(bool renderThroughNativeGraph)
     {
+        static OwnedBuffer<byte> CreateBytecodeStorage(string path)
+        {
+            var bytecode = File.ReadAllBytes(path);
+            var storage = UnmanagedBuffer<byte>.Allocate(
+                bytecode.Length,
+                new BufferAllocationOptions(bytecode.Length, alignment: 1));
+            storage.CopyFrom(bytecode.AsSpan(), destinationOffset: 0);
+            return storage.TransferToOwnedBuffer();
+        }
+
+        var shaderFixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
+
+        if (renderThroughNativeGraph && string.IsNullOrWhiteSpace(shaderFixtureDirectory))
+        {
+            Assert.Ignore("The M04 shader fixture is required for package-backed Sprite graph submission.");
+            return;
+        }
+
         const int TextureAssetId = 1;
         const int AtlasAssetId = 2;
         const int MaterialAssetId = 3;
@@ -73,6 +100,9 @@ internal sealed partial class SceneAssetStoreTests
         EngineHost? host = null;
         RenderSnapshot3D? snapshot = null;
         GpuResidencyLease? residencyLease = null;
+        GpuTexture? targetTexture = null;
+        GpuSampler? sampler = null;
+        GpuPipeline? pipeline = null;
 
         try
         {
@@ -100,8 +130,6 @@ internal sealed partial class SceneAssetStoreTests
                 ?? throw new InvalidOperationException("Vulkan EngineHost startup returned no host.");
             var graphicsDevice = engineHost.GraphicsDevice
                 ?? throw new InvalidOperationException("OffscreenNative Vulkan startup returned no GraphicsDevice.");
-            var residencyService = engineHost.GpuResidency
-                ?? throw new InvalidOperationException("OffscreenNative Vulkan startup returned no GPU residency service.");
             var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
             _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
             _ = worldRegistrationBuilder.RegisterCpuExtractionSupport(Renderer.CreateCpuExtractionSupportRegistration());
@@ -118,18 +146,26 @@ internal sealed partial class SceneAssetStoreTests
                 loader = new SceneLoader(world, engineHost.Assets);
             }).ConfigureAwait(false);
 
-            using var prepared = await loader!.PrepareAsync(
-                new AssetId(SceneAssetId),
-                new SceneLoadOptions()).ConfigureAwait(false);
-            var activation = await loader.ActivateAsync(prepared)
-                .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            Assert.That(activation.Status, Is.EqualTo(SceneActivationStatus.Activated));
-            var sceneInstance = activation.Instance
+            SceneInstance? sceneInstance = null;
+
+            using (var prepared = await loader!.PrepareAsync(
+                    new AssetId(SceneAssetId),
+                    new SceneLoadOptions()).ConfigureAwait(false))
+            {
+                var activation = await loader.ActivateAsync(prepared)
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.That(activation.Status, Is.EqualTo(SceneActivationStatus.Activated));
+                sceneInstance = activation.Instance
+                    ?? throw new InvalidOperationException("The activated Sprite Scene omitted its instance.");
+            }
+
+            var activeSceneInstance = sceneInstance
                 ?? throw new InvalidOperationException("The activated Sprite Scene omitted its instance.");
             var cameraId = Guid.Empty;
+            var targetExtent = new PixelSize(32, 32);
 
             await engineHost.InvokeAsync(_ => {
-                if (!sceneInstance.TryGetEntity(SceneAssetReaderTests.Fixtures.RootEntityId, out var cameraEntity))
+                if (!activeSceneInstance.TryGetEntity(SceneAssetReaderTests.Fixtures.RootEntityId, out var cameraEntity))
                 {
                     throw new InvalidOperationException("The activated Sprite Scene did not retain its camera Entity.");
                 }
@@ -139,7 +175,7 @@ internal sealed partial class SceneAssetStoreTests
                     world,
                     new RenderExtractionOptions3D(
                         world.CurrentFrame3,
-                        new PixelSize(32, 32),
+                        targetExtent,
                         [cameraId]));
 
                 if (extraction.Status != RenderExtractionStatus.Extracted)
@@ -155,18 +191,153 @@ internal sealed partial class SceneAssetStoreTests
             var spriteSnapshot = snapshot
                 ?? throw new InvalidOperationException("The host renderer omitted its Sprite snapshot.");
             Assert.That(spriteSnapshot.SpriteDraws, Has.Length.EqualTo(1));
-            var assetPins = spriteSnapshot.AssetPins
-                ?? throw new InvalidOperationException("The Sprite snapshot did not pin its package assets.");
-            var sceneAssets = assetPins.GetSceneAssets(sceneInstance.SceneInstanceId);
-            using var pageAssetLease = sceneAssets
-                .GetAtlasPageSet(AtlasAssetId)
-                .RetainPageLease(pageIndex: 0);
-            residencyLease = await residencyService.EnsureGpuResidencyAsync(
-                pageAssetLease,
+            Assert.That(spriteSnapshot.AssetPins, Is.Not.Null);
+            residencyLease = await engineHost.Renderer.EnsureSpritePageResidencyAsync(
+                spriteSnapshot,
+                spriteDrawIndex: 0,
                 new ResidencyOptions(TextureUsage.Sampled | TextureUsage.CopySource)).ConfigureAwait(false);
-            pageAssetLease.Dispose();
 
-            var unload = await sceneInstance.UnloadAsync(HierarchyDestroyMode.DestroySubtree)
+            if (renderThroughNativeGraph)
+            {
+                var fixtureDirectory = shaderFixtureDirectory
+                    ?? throw new InvalidOperationException("The package-backed Sprite graph has no shader fixture directory.");
+                using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
+                    fixtureDirectory,
+                    "M04OffscreenTriangle.vertex.spv"));
+                using var pixelBytecodeStorage = CreateBytecodeStorage(Path.Combine(
+                    fixtureDirectory,
+                    "M04OffscreenTriangle.pixel-sampled.spv"));
+                using var vertexBytecode = vertexBytecodeStorage.AcquireReadLease(
+                    0,
+                    vertexBytecodeStorage.Length);
+                using var pixelBytecode = pixelBytecodeStorage.AcquireReadLease(
+                    0,
+                    pixelBytecodeStorage.Length);
+                var vertexReflection = M04ShaderFixtureCompiler.ReadTypedReflection(fixtureDirectory, "vertex");
+                var pixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(fixtureDirectory, "pixel-sampled");
+                var pipelineDescription = new GraphicsPipelineDescription(
+                    [
+                        new ShaderBytecodeInput(
+                            ShaderStage.Vertex,
+                            ShaderBinaryFormat.SpirV,
+                            vertexBytecode,
+                            vertexReflection),
+                        new ShaderBytecodeInput(
+                            ShaderStage.Pixel,
+                            ShaderBinaryFormat.SpirV,
+                            pixelBytecode,
+                            pixelReflection),
+                    ],
+                    [],
+                    vertexStride: 0,
+                    [TextureFormat.Rgba8Unorm],
+                    depthTargetFormat: null,
+                    PrimitiveTopology.TriangleList,
+                    PipelineBlendMode.Opaque,
+                    PipelineDepthMode.Disabled,
+                    PipelineCullMode.None,
+                    frontFaceClockwise: false,
+                    bindingLayoutVersion: 1);
+                pipeline = await graphicsDevice.CreatePipelineAsync(pipelineDescription).ConfigureAwait(false);
+                sampler = await graphicsDevice.CreateSamplerAsync(
+                    new SamplerDescription(
+                        SamplerFilter.Linear,
+                        SamplerFilter.Linear,
+                        SamplerFilter.None,
+                        SamplerAddressMode.Clamp,
+                        SamplerAddressMode.Clamp,
+                        SamplerAddressMode.Clamp,
+                        maximumAnisotropy: 1.0f)).ConfigureAwait(false);
+                targetTexture = await graphicsDevice.CreateTextureAsync(
+                    new TextureDescription(
+                        TextureDimension.Dimension2D,
+                        targetExtent.Width,
+                        targetExtent.Height,
+                        depth: 1,
+                        arrayLayers: 1,
+                        mipLevels: 1,
+                        TextureFormat.Rgba8Unorm,
+                        TextureUsage.ColorAttachment | TextureUsage.CopySource,
+                        "snapshot-atlas-residency-target")).ConfigureAwait(false);
+
+                var graph = engineHost.Renderer.BuildGraph(spriteSnapshot, targetTexture);
+                var sampleRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+                var sampledPage = graph.ImportTexture(
+                    residencyLease.Texture,
+                    sampleRange,
+                    new GraphImportOptions(
+                        GraphResourceState.General,
+                        contentsValid: true,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                var graphBindingSet = new BindingSet(
+                    [],
+                    [
+                        new TextureBinding(
+                            ShaderBindingGroup.Frame,
+                            0,
+                            ShaderResourceKind.SampledImage,
+                            sampledPage,
+                            sampleRange),
+                    ],
+                    [
+                        new SamplerBinding(
+                            ShaderBindingGroup.Frame,
+                            0,
+                            sampler
+                                ?? throw new InvalidOperationException("The snapshot-atlas graph has no sampler.")),
+                    ]);
+                var selectedPipeline = pipeline
+                    ?? throw new InvalidOperationException("The snapshot-atlas graph has no graphics pipeline.");
+
+                void RecordPackageSample(scoped ref CommandRecorder recorder)
+                {
+                    recorder.SetPipeline(selectedPipeline.Handle);
+                    recorder.SetBindings(graphBindingSet);
+                    recorder.Draw(new DrawArguments(3, 1, 0, 0));
+                }
+
+                var rasterPass = graph.AddRasterPass(
+                    new RenderPassDescription("snapshot-atlas-page-sample", 0, [], hasExternalSideEffects: false),
+                    RecordPackageSample);
+                graph.ReadTexture(rasterPass, sampledPage, GraphTextureUsage.SampledRead, sampleRange);
+                var targetRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+                var output = graph.WriteColorAttachment(
+                    rasterPass,
+                    graph.OffscreenColorTargetVersion,
+                    targetRange,
+                    AttachmentLoadAction.Clear,
+                    AttachmentStoreAction.Store,
+                    spriteSnapshot.Cameras[0].ClearColor);
+                graph.SetPresentationSource(output);
+
+                var compileResponse = graph.Compile();
+                Assert.That(compileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
+                var plan = compileResponse.Plan
+                    ?? throw new InvalidOperationException("The snapshot-atlas graph compile omitted its plan.");
+                var submission = await engineHost.Renderer.SubmitAsync(spriteSnapshot, plan).ConfigureAwait(false);
+                Assert.That(submission.CompletedFence, Is.GreaterThan(0));
+
+                using var graphReadback = await graphicsDevice.ReadbackTextureAsync(
+                    targetTexture,
+                    new TextureSubresource(0, 0, TextureAspect.Color)).ConfigureAwait(false);
+                var graphReadbackBytes = new byte[checked((int)graphReadback.ByteLength)];
+
+                using (var readLease = graphReadback.AcquireReadLease())
+                {
+                    readLease.CopyWindow(0, graphReadbackBytes);
+                }
+
+                var centerPixelOffset = checked(
+                    (int)((graphReadback.RowPitch * (targetExtent.Height / 2)) + (targetExtent.Width / 2 * 4)));
+                Assert.Multiple(() => {
+                    Assert.That(graphReadbackBytes[centerPixelOffset], Is.EqualTo(17));
+                    Assert.That(graphReadbackBytes[centerPixelOffset + 1], Is.EqualTo(17));
+                    Assert.That(graphReadbackBytes[centerPixelOffset + 2], Is.EqualTo(17));
+                    Assert.That(graphReadbackBytes[centerPixelOffset + 3], Is.EqualTo(17));
+                });
+            }
+
+            var unload = await activeSceneInstance.UnloadAsync(HierarchyDestroyMode.DestroySubtree)
                 .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             Assert.That(unload.Status, Is.EqualTo(SceneUnloadStatus.Unloaded));
             spriteSnapshot.Dispose();
@@ -211,6 +382,9 @@ internal sealed partial class SceneAssetStoreTests
         }
         finally
         {
+            pipeline?.Dispose();
+            sampler?.Dispose();
+            targetTexture?.Dispose();
             snapshot?.Dispose();
             residencyLease?.Dispose();
 

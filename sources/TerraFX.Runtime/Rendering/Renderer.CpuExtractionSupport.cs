@@ -13,10 +13,17 @@ namespace TerraFX.Rendering;
 /// <summary>Creates immutable CPU render snapshots from committed World state.</summary>
 public sealed partial class Renderer
 {
+    private readonly GpuResidencyService? _gpuResidencyService;
     private readonly GraphicsDevice? _graphicsDevice;
 
-    private Renderer(GraphicsDevice? graphicsDevice)
+    private Renderer(GraphicsDevice? graphicsDevice, GpuResidencyService? gpuResidencyService)
     {
+        if ((graphicsDevice is null) != (gpuResidencyService is null))
+        {
+            throw new ArgumentException("GPU residency and GraphicsDevice ownership must be selected together.", nameof(gpuResidencyService));
+        }
+
+        _gpuResidencyService = gpuResidencyService;
         _graphicsDevice = graphicsDevice;
     }
 
@@ -27,7 +34,7 @@ public sealed partial class Renderer
 
     /// <summary>Creates a Renderer that performs CPU extraction without activating a graphics device.</summary>
     /// <returns>The headless Renderer service.</returns>
-    public static Renderer CreateHeadless() => new(graphicsDevice: null);
+    public static Renderer CreateHeadless() => new(graphicsDevice: null, gpuResidencyService: null);
 
     /// <summary>Registers the built-in native Texture, Atlas, and Material asset codecs with an Assets builder.</summary>
     /// <param name="builder">The asset-store builder whose schema registry contains the Rendering schemas.</param>
@@ -42,8 +49,10 @@ public sealed partial class Renderer
         return builder.RegisterCodec(new RenderMaterialAssetCodec());
     }
 
-    internal static Renderer Create(GraphicsDevice? graphicsDevice)
-        => new(graphicsDevice);
+    internal static Renderer Create(
+        GraphicsDevice? graphicsDevice,
+        GpuResidencyService? gpuResidencyService)
+        => new(graphicsDevice, gpuResidencyService);
 
     private sealed class BuiltInCpuExtractionSupportRegistration : IWorldCpuExtractionSupportRegistration
     {
