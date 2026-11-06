@@ -74,5 +74,5 @@ void CSStorageMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
-    FrameStorageBuffer[0] = 42;
+    FrameStorageBuffer[0] = FrameStorageBuffer[0] + 1;
 }

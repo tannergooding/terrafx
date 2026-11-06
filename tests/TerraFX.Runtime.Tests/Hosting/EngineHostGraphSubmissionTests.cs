@@ -400,7 +400,7 @@ internal sealed partial class EngineHostOptionsTests
             if (useBufferCopy || useCompute)
             {
                 expectedCopiedBytes = useCompute
-                    ? [0x2A, 0x00, 0x00, 0x00]
+                    ? [0x02, 0x00, 0x00, 0x00]
                     : [
                         0x11,
                         0x23,
@@ -627,6 +627,7 @@ internal sealed partial class EngineHostOptionsTests
                     ?? throw new InvalidOperationException("The graph compute test has no storage binding set.");
                 recorder.SetPipeline(selectedPipeline.Handle);
                 recorder.SetBindings(selectedBindings);
+                recorder.Dispatch(new DispatchSize(1, 1, 1));
                 recorder.Dispatch(new DispatchSize(1, 1, 1));
             }
 
@@ -1160,7 +1161,7 @@ internal sealed partial class EngineHostOptionsTests
                     computeReadLease.UseWindow(0, computeStorageBytes.Length, ref copyAction);
                 }
 
-                Assert.That(BitConverter.ToUInt32(computeStorageBytes, 0), Is.EqualTo(42u));
+                Assert.That(BitConverter.ToUInt32(computeStorageBytes, 0), Is.EqualTo(2u));
             }
 
             if (useBufferCopy || useCompute)
