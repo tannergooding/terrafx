@@ -46,6 +46,8 @@ internal sealed partial class EngineHostOptionsTests
     [TestCase(GraphicsBackend.Vulkan, false, false, false, false, false, false, true, false)]
     [TestCase(GraphicsBackend.D3D12, false, false, false, false, false, false, false, true)]
     [TestCase(GraphicsBackend.Vulkan, false, false, false, false, false, false, false, true)]
+    [TestCase(GraphicsBackend.D3D12, false, false, false, false, false, false, false, true, true)]
+    [TestCase(GraphicsBackend.Vulkan, false, false, false, false, false, false, false, true, true)]
     public async Task SubmitsOffscreenClearGraphAndReadsBackAsync(
         GraphicsBackend backend,
         bool useUniformBuffer,
@@ -55,7 +57,8 @@ internal sealed partial class EngineHostOptionsTests
         bool useCompute,
         bool useTransientStorage,
         bool useMultipleComputeStorageBuffers,
-        bool useTransientBufferAliasing)
+        bool useTransientBufferAliasing,
+        bool overlapTransientBufferLifetimes = false)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -1009,7 +1012,7 @@ internal sealed partial class EngineHostOptionsTests
                 var copyFirstPass = graph.AddCopyPass(
                     new RenderPassDescription(
                         "offscreen-transient-alias-a-out",
-                        1,
+                        overlapTransientBufferLifetimes ? 2 : 1,
                         [initializationFirstPass],
                         hasExternalSideEffects: false),
                     RecordCopy);
@@ -1036,11 +1039,14 @@ internal sealed partial class EngineHostOptionsTests
                     $"m04-{backend}-transient-alias-b"));
                 var secondInitializationSource = transientSecondInitializationSourceVersion
                     ?? throw new InvalidOperationException("The graph transient alias test has no second initialization source.");
+                var secondInitializationPredecessor = overlapTransientBufferLifetimes
+                    ? initializationFirstPass
+                    : copyFirstPass;
                 var initializationSecondPass = graph.AddCopyPass(
                     new RenderPassDescription(
                         "offscreen-transient-alias-b-in",
-                        2,
-                        [copyFirstPass],
+                        overlapTransientBufferLifetimes ? 1 : 2,
+                        [secondInitializationPredecessor],
                         hasExternalSideEffects: false),
                     RecordTransientBufferSecondInitialize);
                 graph.ReadBuffer(
@@ -1312,9 +1318,19 @@ internal sealed partial class EngineHostOptionsTests
 
             if (useTransientBufferAliasing)
             {
-                Assert.That(plan.TransientBufferGroups.Length, Is.EqualTo(1));
-                Assert.That(plan.TransientBufferGroups[0].Length, Is.EqualTo(2));
-                Assert.That(plan.TransientBufferAliasingBarriers.Length, Is.EqualTo(1));
+                if (overlapTransientBufferLifetimes)
+                {
+                    Assert.That(plan.TransientBufferGroups.Length, Is.EqualTo(2));
+                    Assert.That(plan.TransientBufferGroups[0].Length, Is.EqualTo(1));
+                    Assert.That(plan.TransientBufferGroups[1].Length, Is.EqualTo(1));
+                    Assert.That(plan.TransientBufferAliasingBarriers, Is.Empty);
+                }
+                else
+                {
+                    Assert.That(plan.TransientBufferGroups.Length, Is.EqualTo(1));
+                    Assert.That(plan.TransientBufferGroups[0].Length, Is.EqualTo(2));
+                    Assert.That(plan.TransientBufferAliasingBarriers.Length, Is.EqualTo(1));
+                }
             }
 
             var receipt = await renderer.SubmitAsync(renderSnapshot, plan).ConfigureAwait(false);
@@ -1720,6 +1736,7 @@ internal sealed partial class EngineHostOptionsTests
                 + $"Compute={useCompute}; "
                 + $"MultipleComputeStorageBuffers={useMultipleComputeStorageBuffers}; "
                 + $"TransientBufferAliasing={useTransientBufferAliasing}; "
+                + $"OverlappingTransientLifetimes={overlapTransientBufferLifetimes}; "
                 + $"Pixel={padded[centerPixelOffset]:X2}{padded[centerPixelOffset + 1]:X2}"
                 + $"{padded[centerPixelOffset + 2]:X2}{padded[centerPixelOffset + 3]:X2}; "
                 + $"DrawPixels={drawPixelCount}");
