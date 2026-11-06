@@ -1170,34 +1170,140 @@ internal sealed class GraphicsPipelineRequestTests
                 source1,
                 overlappingRange,
                 GraphBufferUsage.CopyDestination);
-            var copyAccesses = ImmutableArray.CreateBuilder<GraphResourceAccess>();
+            var textureDescription = new TextureDescription(
+                TextureDimension.Dimension2D,
+                width: 2,
+                height: 2,
+                depth: 1,
+                arrayLayers: 1,
+                mipLevels: 1,
+                TextureFormat.Rgba8Unorm,
+                TextureUsage.CopySource | TextureUsage.CopyDestination,
+                debugName: "command-recorder-copy-texture");
+            var textureRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+            var textureSourceInitialVersion = resources.CreateTransientTexture(textureDescription);
+            var textureSourceVersion = resources.WriteTexture(
+                initializer,
+                textureSourceInitialVersion,
+                textureRange,
+                GraphTextureUsage.CopyDestination);
+            var textureDestinationInitialVersion = resources.CreateTransientTexture(textureDescription);
+            var textureDestinationVersion = resources.WriteTexture(
+                copyPass,
+                textureDestinationInitialVersion,
+                textureRange,
+                GraphTextureUsage.CopyDestination);
+            resources.ReadTexture(copyPass, textureSourceVersion, textureRange, GraphTextureUsage.CopySource);
 
-            foreach (var access in resources.Accesses)
+            ImmutableArray<GraphResourceAccess> GetPassAccesses(RenderPassId passId)
             {
-                if (access.PassId == copyPass)
+                var accesses = ImmutableArray.CreateBuilder<GraphResourceAccess>();
+
+                foreach (var access in resources.Accesses)
                 {
-                    copyAccesses.Add(access);
+                    if (access.PassId == passId)
+                    {
+                        accesses.Add(access);
+                    }
                 }
+
+                return accesses.ToImmutable();
             }
+
+            var copyAccesses = GetPassAccesses(copyPass);
 
             void RecordCopy(scoped ref CommandRecorder recorder)
             {
                 recorder.CopyBuffer(source1, 0, destination1, 0, 64);
+                recorder.CopyTexture(textureSourceVersion, textureDestinationVersion);
             }
+
+            var formatMismatchDescription = new TextureDescription(
+                TextureDimension.Dimension2D,
+                width: 2,
+                height: 2,
+                depth: 1,
+                arrayLayers: 1,
+                mipLevels: 1,
+                TextureFormat.R32UInt,
+                TextureUsage.CopyDestination,
+                debugName: "command-recorder-copy-format-mismatch");
+            var formatMismatchPass = resources.AddPass(new RenderPassDescription("copy-format-mismatch", 1, [initializer], false));
+            var formatMismatchInitialVersion = resources.CreateTransientTexture(formatMismatchDescription);
+            var formatMismatchVersion = resources.WriteTexture(
+                formatMismatchPass,
+                formatMismatchInitialVersion,
+                textureRange,
+                GraphTextureUsage.CopyDestination);
+            resources.ReadTexture(formatMismatchPass, textureSourceVersion, textureRange, GraphTextureUsage.CopySource);
+            var formatMismatchAccesses = GetPassAccesses(formatMismatchPass);
+
+            var extentMismatchDescription = new TextureDescription(
+                TextureDimension.Dimension2D,
+                width: 1,
+                height: 4,
+                depth: 1,
+                arrayLayers: 1,
+                mipLevels: 1,
+                TextureFormat.Rgba8Unorm,
+                TextureUsage.CopyDestination,
+                debugName: "command-recorder-copy-extent-mismatch");
+            var extentMismatchPass = resources.AddPass(new RenderPassDescription("copy-extent-mismatch", 1, [initializer], false));
+            var extentMismatchInitialVersion = resources.CreateTransientTexture(extentMismatchDescription);
+            var extentMismatchVersion = resources.WriteTexture(
+                extentMismatchPass,
+                extentMismatchInitialVersion,
+                textureRange,
+                GraphTextureUsage.CopyDestination);
+            resources.ReadTexture(extentMismatchPass, textureSourceVersion, textureRange, GraphTextureUsage.CopySource);
+            var extentMismatchAccesses = GetPassAccesses(extentMismatchPass);
 
             using (var commandList = await graphicsDevice.RecordPassAsync(
                 copyPass,
                 CommandRecorderPassKind.Copy,
-                copyAccesses.ToImmutable(),
+                copyAccesses,
                 [],
                 depthTargetFormat: null,
                 RecordCopy)
                 .WaitAsync(TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false))
             {
-                Assert.That(commandList.Commands.Length, Is.EqualTo(1));
+                Assert.That(commandList.Commands.Length, Is.EqualTo(2));
                 Assert.That(commandList.Commands[0].Kind, Is.EqualTo(GraphicsCommandKind.CopyBuffer));
+                Assert.That(commandList.Commands[1].Kind, Is.EqualTo(GraphicsCommandKind.CopyTexture));
             }
+
+            void RecordFormatMismatch(scoped ref CommandRecorder recorder)
+            {
+                recorder.CopyTexture(textureSourceVersion, formatMismatchVersion);
+            }
+
+            _ = Assert.ThrowsAsync<ArgumentException>(
+                async () => await graphicsDevice.RecordPassAsync(
+                    formatMismatchPass,
+                    CommandRecorderPassKind.Copy,
+                    formatMismatchAccesses,
+                    [],
+                    depthTargetFormat: null,
+                    RecordFormatMismatch)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+
+            void RecordExtentMismatch(scoped ref CommandRecorder recorder)
+            {
+                recorder.CopyTexture(textureSourceVersion, extentMismatchVersion);
+            }
+
+            _ = Assert.ThrowsAsync<ArgumentException>(
+                async () => await graphicsDevice.RecordPassAsync(
+                    extentMismatchPass,
+                    CommandRecorderPassKind.Copy,
+                    extentMismatchAccesses,
+                    [],
+                    depthTargetFormat: null,
+                    RecordExtentMismatch)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
 
             void RecordOverlappingCopy(scoped ref CommandRecorder recorder)
             {
@@ -1208,7 +1314,7 @@ internal sealed class GraphicsPipelineRequestTests
                 async () => await graphicsDevice.RecordPassAsync(
                     copyPass,
                     CommandRecorderPassKind.Copy,
-                    copyAccesses.ToImmutable(),
+                    copyAccesses,
                     [],
                     depthTargetFormat: null,
                     RecordOverlappingCopy)
