@@ -968,6 +968,7 @@ internal sealed class GraphicsPipelineRequestTests
                 recorder.SetPipeline(storagePipelineHandle);
                 recorder.SetBindings(storageBindingSet);
                 recorder.Dispatch(new DispatchSize(1, 1, 1));
+                recorder.Dispatch(new DispatchSize(1, 1, 1));
             }
 
             storageCommandList = await graphicsDevice.RecordPassAsync(
@@ -979,9 +980,17 @@ internal sealed class GraphicsPipelineRequestTests
                     RecordStorageReadWrite)
                 .WaitAsync(TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
-            Assert.That(storageCommandList.Commands.Length, Is.EqualTo(3));
+            Assert.That(storageCommandList.Commands.Length, Is.EqualTo(5));
             Assert.That(storageCommandList.Commands[1].Kind, Is.EqualTo(GraphicsCommandKind.SetBindings));
             Assert.That(storageCommandList.Commands[2].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
+            Assert.That(storageCommandList.Commands[3].Kind, Is.EqualTo(GraphicsCommandKind.StorageBarrier));
+            Assert.That(storageCommandList.Commands[3].StorageBarrierBuffer, Is.SameAs(readWriteVersion));
+            Assert.That(storageCommandList.Commands[3].StorageBarrierBufferRange, Is.EqualTo(readWriteVersion.Range));
+            Assert.That(storageCommandList.Commands[3].StorageBarrierSourceReads, Is.True);
+            Assert.That(storageCommandList.Commands[3].StorageBarrierSourceWrites, Is.True);
+            Assert.That(storageCommandList.Commands[3].StorageBarrierDestinationReads, Is.True);
+            Assert.That(storageCommandList.Commands[3].StorageBarrierDestinationWrites, Is.True);
+            Assert.That(storageCommandList.Commands[4].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
 
             var writeOnlyBindingSet = new BindingSet(
                 [new BufferBinding(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, version1, declaredRange)],
@@ -1087,6 +1096,7 @@ internal sealed class GraphicsPipelineRequestTests
                 recorder.SetPipeline(pipelineHandle);
                 recorder.SetBindings(bindingSet);
                 recorder.Dispatch(new DispatchSize(1, 1, 1));
+                recorder.Dispatch(new DispatchSize(1, 1, 1));
             }
 
             commandList = await graphicsDevice.RecordPassAsync(
@@ -1098,9 +1108,17 @@ internal sealed class GraphicsPipelineRequestTests
                     RecordStorageImageReadWrite)
                 .WaitAsync(TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
-            Assert.That(commandList.Commands.Length, Is.EqualTo(3));
+            Assert.That(commandList.Commands.Length, Is.EqualTo(5));
             Assert.That(commandList.Commands[1].Kind, Is.EqualTo(GraphicsCommandKind.SetBindings));
             Assert.That(commandList.Commands[2].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
+            Assert.That(commandList.Commands[3].Kind, Is.EqualTo(GraphicsCommandKind.StorageBarrier));
+            Assert.That(commandList.Commands[3].StorageBarrierTexture, Is.SameAs(version2));
+            Assert.That(commandList.Commands[3].StorageBarrierTextureRange, Is.EqualTo(version2.Range));
+            Assert.That(commandList.Commands[3].StorageBarrierSourceReads, Is.True);
+            Assert.That(commandList.Commands[3].StorageBarrierSourceWrites, Is.True);
+            Assert.That(commandList.Commands[3].StorageBarrierDestinationReads, Is.True);
+            Assert.That(commandList.Commands[3].StorageBarrierDestinationWrites, Is.True);
+            Assert.That(commandList.Commands[4].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
         }
         finally
         {

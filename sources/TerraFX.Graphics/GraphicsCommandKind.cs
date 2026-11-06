@@ -12,4 +12,5 @@ internal enum GraphicsCommandKind
     SetIndexBuffer,
     SetPipeline,
     SetVertexBuffer,
+    StorageBarrier,
 }

@@ -18,6 +18,8 @@ internal sealed class CommandRecorderState : IDisposable
     private readonly RenderPassId _passId;
     private readonly CommandRecorderPassKind _passKind;
     private readonly List<GraphicsResourceOwner.UseLease> _useLeases = [];
+    private readonly List<StorageResourceUse> _pendingStorageWrites = [];
+    private ImmutableArray<StorageResourceUse> _boundStorageUses;
     private IndexBufferBinding? _indexBuffer;
     private bool _isCompleted;
     private bool _isDisposed;
@@ -81,6 +83,7 @@ internal sealed class CommandRecorderState : IDisposable
         _ownerThreadId = Environment.CurrentManagedThreadId;
         _passId = passId;
         _passKind = passKind;
+        _boundStorageUses = [];
     }
 
     private static GraphBufferUsage GetBufferUsage(ShaderResourceKind kind, ShaderResourceAccess access)
@@ -251,6 +254,12 @@ internal sealed class CommandRecorderState : IDisposable
         }
 
         ValidateShaderBindings(pipelineLayout);
+
+        if ((size.GroupCountX != 0) && (size.GroupCountY != 0) && (size.GroupCountZ != 0))
+        {
+            RecordStorageBarriers();
+        }
+
         _commands.Add(new RecordedGraphicsCommand(GraphicsCommandKind.Dispatch, dispatch: size));
     }
 
@@ -272,6 +281,11 @@ internal sealed class CommandRecorderState : IDisposable
             {
                 throw new ArgumentOutOfRangeException(nameof(arguments), "The draw reads beyond the bound vertex-buffer range.");
             }
+        }
+
+        if ((arguments.VertexCount > 0) && (arguments.InstanceCount > 0))
+        {
+            RecordStorageBarriers();
         }
 
         _commands.Add(new RecordedGraphicsCommand(GraphicsCommandKind.Draw, draw: arguments));
@@ -303,6 +317,11 @@ internal sealed class CommandRecorderState : IDisposable
             }
         }
 
+        if ((arguments.IndexCount > 0) && (arguments.InstanceCount > 0))
+        {
+            RecordStorageBarriers();
+        }
+
         _commands.Add(new RecordedGraphicsCommand(GraphicsCommandKind.DrawIndexed, drawIndexed: arguments));
     }
 
@@ -313,6 +332,7 @@ internal sealed class CommandRecorderState : IDisposable
         var pipelineLayout = RequirePipelineLayout();
         var expectedBindings = GetExpectedBindings(pipelineLayout);
         var actualBindings = new HashSet<(ShaderBindingGroup Group, ShaderResourceKind Kind, int Binding)>();
+        var storageUses = ImmutableArray.CreateBuilder<StorageResourceUse>();
 
         foreach (var binding in bindings.Buffers)
         {
@@ -335,6 +355,11 @@ internal sealed class CommandRecorderState : IDisposable
                     ? "an explicit storage read-write version pair"
                     : $"a {usage} range";
                 throw new InvalidOperationException($"A {binding.Kind} binding must fit {requiredAccess} declared by this pass.");
+            }
+
+            if (binding.Kind == ShaderResourceKind.StorageBuffer)
+            {
+                storageUses.Add(new StorageResourceUse(binding, access));
             }
         }
 
@@ -359,6 +384,11 @@ internal sealed class CommandRecorderState : IDisposable
                     ? "an explicit storage read-write version pair"
                     : $"a {usage} range";
                 throw new InvalidOperationException($"A {binding.Kind} binding must fit {requiredAccess} declared by this pass.");
+            }
+
+            if (binding.Kind == ShaderResourceKind.StorageImage)
+            {
+                storageUses.Add(new StorageResourceUse(binding, access));
             }
         }
 
@@ -396,6 +426,7 @@ internal sealed class CommandRecorderState : IDisposable
 
             _useLeases.AddRange(newUseLeases);
             newUseLeases.Clear();
+            _boundStorageUses = storageUses.ToImmutable();
             _isShaderBindingsSet = true;
             _commands.Add(new RecordedGraphicsCommand(GraphicsCommandKind.SetBindings, bindings: bindings));
         }
@@ -445,6 +476,7 @@ internal sealed class CommandRecorderState : IDisposable
 
             _useLeases.Add(useLease);
             _pipelineLayout = layout;
+            _boundStorageUses = [];
             _isShaderBindingsSet = false;
             _indexBuffer = null;
             _vertexBuffer = null;
@@ -551,6 +583,113 @@ internal sealed class CommandRecorderState : IDisposable
         }
 
         return false;
+    }
+
+    private void RecordStorageBarriers()
+    {
+        if (_boundStorageUses.IsEmpty)
+        {
+            return;
+        }
+
+        var barrierResources = new List<(bool IsTexture, ulong ResourceId)>();
+
+        foreach (var currentUse in _boundStorageUses)
+        {
+            foreach (var pendingWrite in _pendingStorageWrites)
+            {
+                if (!pendingWrite.HasHazardWith(currentUse))
+                {
+                    continue;
+                }
+
+                var key = (pendingWrite.IsTexture, pendingWrite.ResourceId);
+
+                if (!barrierResources.Contains(key))
+                {
+                    barrierResources.Add(key);
+                }
+            }
+        }
+
+        foreach (var (isTexture, resourceId) in barrierResources)
+        {
+            var sourceReads = false;
+            var sourceWrites = false;
+            var destinationReads = false;
+            var destinationWrites = false;
+
+            foreach (var pendingWrite in _pendingStorageWrites)
+            {
+                if ((pendingWrite.IsTexture != isTexture) || (pendingWrite.ResourceId != resourceId))
+                {
+                    continue;
+                }
+
+                sourceReads |= pendingWrite.Reads;
+                sourceWrites |= pendingWrite.Writes;
+            }
+
+            foreach (var currentUse in _boundStorageUses)
+            {
+                if ((currentUse.IsTexture != isTexture) || (currentUse.ResourceId != resourceId))
+                {
+                    continue;
+                }
+
+                destinationReads |= currentUse.Reads;
+                destinationWrites |= currentUse.Writes;
+            }
+
+            foreach (var pendingWrite in _pendingStorageWrites)
+            {
+                if ((pendingWrite.IsTexture != isTexture) || (pendingWrite.ResourceId != resourceId))
+                {
+                    continue;
+                }
+
+                if (pendingWrite.TextureVersion is GraphTextureVersion textureVersion)
+                {
+                    _commands.Add(new RecordedGraphicsCommand(
+                        GraphicsCommandKind.StorageBarrier,
+                        storageBarrierTexture: textureVersion,
+                        storageBarrierTextureRange: textureVersion.Range,
+                        storageBarrierDestinationReads: destinationReads,
+                        storageBarrierDestinationWrites: destinationWrites,
+                        storageBarrierSourceReads: sourceReads,
+                        storageBarrierSourceWrites: sourceWrites));
+                }
+                else if (pendingWrite.BufferVersion is GraphBufferVersion bufferVersion)
+                {
+                    _commands.Add(new RecordedGraphicsCommand(
+                        GraphicsCommandKind.StorageBarrier,
+                        storageBarrierBuffer: bufferVersion,
+                        storageBarrierBufferRange: bufferVersion.Range,
+                        storageBarrierDestinationReads: destinationReads,
+                        storageBarrierDestinationWrites: destinationWrites,
+                        storageBarrierSourceReads: sourceReads,
+                        storageBarrierSourceWrites: sourceWrites));
+                }
+                else
+                {
+                    throw new InvalidOperationException("A storage use lost its graph resource version.");
+                }
+
+                break;
+            }
+
+            _ = _pendingStorageWrites.RemoveAll(
+                pendingWrite => (pendingWrite.IsTexture == isTexture)
+                    && (pendingWrite.ResourceId == resourceId));
+        }
+
+        foreach (var currentUse in _boundStorageUses)
+        {
+            if (currentUse.Writes)
+            {
+                _pendingStorageWrites.Add(currentUse);
+            }
+        }
     }
 
     private void ReleaseUseLeases()

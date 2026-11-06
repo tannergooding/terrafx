@@ -1,5 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
+using System;
+
 namespace TerraFX.Graphics;
 
 internal readonly struct RecordedGraphicsCommand
@@ -17,8 +19,56 @@ internal readonly struct RecordedGraphicsCommand
         GraphBufferVersion? copyDestination = null,
         long sourceOffset = 0,
         long destinationOffset = 0,
-        long byteLength = 0)
+        long byteLength = 0,
+        GraphBufferVersion? storageBarrierBuffer = null,
+        GraphBufferRange storageBarrierBufferRange = default,
+        bool storageBarrierDestinationReads = false,
+        bool storageBarrierDestinationWrites = false,
+        bool storageBarrierSourceReads = false,
+        bool storageBarrierSourceWrites = false,
+        GraphTextureVersion? storageBarrierTexture = null,
+        GraphTextureRange storageBarrierTextureRange = default)
     {
+        var hasStorageBarrierBuffer = storageBarrierBuffer is not null;
+        var hasStorageBarrierTexture = storageBarrierTexture is not null;
+
+        if (kind == GraphicsCommandKind.StorageBarrier)
+        {
+            if (hasStorageBarrierBuffer == hasStorageBarrierTexture)
+            {
+                throw new ArgumentException("A storage barrier must target exactly one graph resource.");
+            }
+
+            if (!storageBarrierSourceWrites
+                || (!storageBarrierDestinationReads && !storageBarrierDestinationWrites))
+            {
+                throw new ArgumentException("A storage barrier must order prior writes before a later shader-storage access.");
+            }
+
+            if (storageBarrierBuffer is GraphBufferVersion selectedBuffer
+                && !storageBarrierBufferRange.IsWithin(selectedBuffer.Range))
+            {
+                throw new ArgumentException("A storage-barrier buffer range must fit its graph version.", nameof(storageBarrierBufferRange));
+            }
+
+            if (storageBarrierTexture is GraphTextureVersion selectedTexture
+                && !storageBarrierTextureRange.IsWithin(selectedTexture.Range))
+            {
+                throw new ArgumentException("A storage-barrier texture range must fit its graph version.", nameof(storageBarrierTextureRange));
+            }
+        }
+        else if (hasStorageBarrierBuffer
+            || hasStorageBarrierTexture
+            || storageBarrierBufferRange != default
+            || storageBarrierDestinationReads
+            || storageBarrierDestinationWrites
+            || storageBarrierSourceReads
+            || storageBarrierSourceWrites
+            || storageBarrierTextureRange != default)
+        {
+            throw new ArgumentException("Only a storage-barrier command can identify storage-barrier resources.");
+        }
+
         Bindings = bindings;
         ByteLength = byteLength;
         CopyDestination = copyDestination;
@@ -31,6 +81,14 @@ internal readonly struct RecordedGraphicsCommand
         Kind = kind;
         Pipeline = pipeline;
         SourceOffset = sourceOffset;
+        StorageBarrierBuffer = storageBarrierBuffer;
+        StorageBarrierBufferRange = storageBarrierBufferRange;
+        StorageBarrierDestinationReads = storageBarrierDestinationReads;
+        StorageBarrierDestinationWrites = storageBarrierDestinationWrites;
+        StorageBarrierSourceReads = storageBarrierSourceReads;
+        StorageBarrierSourceWrites = storageBarrierSourceWrites;
+        StorageBarrierTexture = storageBarrierTexture;
+        StorageBarrierTextureRange = storageBarrierTextureRange;
         VertexBuffer = vertexBuffer;
     }
 
@@ -57,6 +115,22 @@ internal readonly struct RecordedGraphicsCommand
     internal GpuPipelineHandle Pipeline { get; }
 
     internal long SourceOffset { get; }
+
+    internal GraphBufferVersion? StorageBarrierBuffer { get; }
+
+    internal GraphBufferRange StorageBarrierBufferRange { get; }
+
+    internal bool StorageBarrierDestinationReads { get; }
+
+    internal bool StorageBarrierDestinationWrites { get; }
+
+    internal bool StorageBarrierSourceReads { get; }
+
+    internal bool StorageBarrierSourceWrites { get; }
+
+    internal GraphTextureVersion? StorageBarrierTexture { get; }
+
+    internal GraphTextureRange StorageBarrierTextureRange { get; }
 
     internal VertexBufferBinding VertexBuffer { get; }
 }
