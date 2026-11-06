@@ -26,6 +26,21 @@ namespace TerraFX.Runtime.Tests.Hosting;
 
 internal sealed partial class EngineHostOptionsTests
 {
+    [Test]
+    public Task D3D12GraphSubmissionRetainsTargetUntilFenceCompletion()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.D3D12,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: true);
+
     [TestCase(GraphicsBackend.D3D12, false, false, false, false, false, false, false, false)]
     [TestCase(GraphicsBackend.Vulkan, false, false, false, false, false, false, false, false)]
     [TestCase(GraphicsBackend.D3D12, true, false, false, false, false, false, false, false)]
@@ -48,7 +63,7 @@ internal sealed partial class EngineHostOptionsTests
     [TestCase(GraphicsBackend.Vulkan, false, false, false, false, false, false, false, true)]
     [TestCase(GraphicsBackend.D3D12, false, false, false, false, false, false, false, true, true)]
     [TestCase(GraphicsBackend.Vulkan, false, false, false, false, false, false, false, true, true)]
-    public async Task SubmitsOffscreenClearGraphAndReadsBackAsync(
+    public Task SubmitsOffscreenClearGraphAndReadsBackAsync(
         GraphicsBackend backend,
         bool useUniformBuffer,
         bool useSampledTexture,
@@ -59,6 +74,35 @@ internal sealed partial class EngineHostOptionsTests
         bool useMultipleComputeStorageBuffers,
         bool useTransientBufferAliasing,
         bool overlapTransientBufferLifetimes = false)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer,
+            useSampledTexture,
+            useStorageResources,
+            useBufferCopy,
+            useCompute,
+            useTransientStorage,
+            useMultipleComputeStorageBuffers,
+            useTransientBufferAliasing,
+            overlapTransientBufferLifetimes,
+            holdGraphCompletion: false);
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "The gated graph test requests target retirement while GPU completion is withheld.")]
+    private async Task RunOffscreenGraphAsync(
+        GraphicsBackend backend,
+        bool useUniformBuffer,
+        bool useSampledTexture,
+        bool useStorageResources,
+        bool useBufferCopy,
+        bool useCompute,
+        bool useTransientStorage,
+        bool useMultipleComputeStorageBuffers,
+        bool useTransientBufferAliasing,
+        bool overlapTransientBufferLifetimes,
+        bool holdGraphCompletion)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -90,7 +134,35 @@ internal sealed partial class EngineHostOptionsTests
         var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
         var packagePath = SceneAssetStoreTests.Package.WritePackage(packageBytes);
         var assetStoreRegistration = new AssetStoreRegistrationBuilder(schemas).Build();
+        using var fenceWaitEntered = new ManualResetEventSlim(initialState: false);
+        using var continueFenceWait = new ManualResetEventSlim(initialState: false);
+        var holdNextFenceWait = 0;
+        var nativeFenceWaitResult = -1;
+
+        uint WaitForFence(nint fenceEvent, uint timeout)
+        {
+            if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+            {
+                throw new PlatformNotSupportedException("The graph fence-wait witness requires Windows 11.");
+            }
+
+            var result = WindowsTestNativeMethods.WaitForSingleObject(fenceEvent, timeout);
+
+            if (Interlocked.Exchange(ref holdNextFenceWait, 0) != 0)
+            {
+                Volatile.Write(ref nativeFenceWaitResult, unchecked((int)result));
+                fenceWaitEntered.Set();
+                return continueFenceWait.Wait(TimeSpan.FromSeconds(10), CancellationToken.None)
+                    ? result
+                    : 0xFFFFFFFF;
+            }
+
+            return result;
+        }
+
         var graphicsRegistration = backend switch {
+            GraphicsBackend.D3D12 when holdGraphCompletion => new GraphicsBackendRegistration(
+                new D3D12GraphicsBackend.D3D12BackendFactory(WaitForFence)),
             GraphicsBackend.D3D12 => D3D12GraphicsBackend.CreateRegistration(),
             GraphicsBackend.Vulkan => VulkanGraphicsBackend.CreateRegistration(),
             _ => throw new ArgumentOutOfRangeException(nameof(backend)),
@@ -1340,11 +1412,46 @@ internal sealed partial class EngineHostOptionsTests
                 }
             }
 
-            var receipt = await renderer.SubmitAsync(renderSnapshot, plan).ConfigureAwait(false);
+            RenderSubmissionReceipt receipt;
+
+            if (holdGraphCompletion)
+            {
+                _ = Interlocked.Exchange(ref holdNextFenceWait, 1);
+                var submissionTask = renderer.SubmitAsync(renderSnapshot, plan);
+
+                Assert.That(fenceWaitEntered.Wait(TimeSpan.FromSeconds(5)), Is.True);
+                Assert.That(Volatile.Read(ref nativeFenceWaitResult), Is.EqualTo(0));
+                Assert.That(submissionTask.IsCompleted, Is.False);
+
+                var submittedTarget = target
+                    ?? throw new InvalidOperationException("The delayed graph test has no imported color target.");
+                var submittedTargetOwner = submittedTarget.ResourceOwner;
+                submittedTarget.Dispose();
+                target = null;
+                Assert.That(submittedTargetOwner.HasActiveUses, Is.True);
+                Assert.That(submittedTargetOwner.IsRetirementRequested, Is.True);
+
+                continueFenceWait.Set();
+                receipt = await submissionTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.That(submittedTargetOwner.HasActiveUses, Is.False);
+            }
+            else
+            {
+                receipt = await renderer.SubmitAsync(renderSnapshot, plan).ConfigureAwait(false);
+            }
+
+            if (holdGraphCompletion)
+            {
+                Assert.That(receipt.CompletedFence, Is.GreaterThan(0));
+                return;
+            }
+
+            var activeTarget = target
+                ?? throw new InvalidOperationException("The graph witness lost its color target before the second submission.");
             RenderSubmissionReceipt? secondReceipt = null;
 
             using (var firstReadback = await graphicsDevice.ReadbackTextureAsync(
-                target,
+                activeTarget,
                 new TextureSubresource(0, 0, TextureAspect.Color))
                 .ConfigureAwait(false))
             {
@@ -1390,7 +1497,7 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(updatedSnapshot.Cameras[0].ClearColor, Is.EqualTo(new Vector4(0.0f, 0.0f, 0.0f, 1.0f)));
 
             {
-                var secondGraph = renderer.BuildGraph(updatedSnapshot, target);
+                var secondGraph = renderer.BuildGraph(updatedSnapshot, activeTarget);
                 var secondBufferBindings = ImmutableArray.CreateBuilder<BufferBinding>(
                     (useUniformBuffer ? 1 : 0) + (useStorageResources ? 1 : 0));
                 var secondTextureBindings = ImmutableArray.CreateBuilder<TextureBinding>(
@@ -1555,7 +1662,7 @@ internal sealed partial class EngineHostOptionsTests
             });
 
             using var readback = await graphicsDevice.ReadbackTextureAsync(
-                target,
+                activeTarget,
                 new TextureSubresource(0, 0, TextureAspect.Color))
                 .ConfigureAwait(false);
             var padded = new byte[checked((int)readback.ByteLength)];
@@ -1797,6 +1904,7 @@ internal sealed partial class EngineHostOptionsTests
         }
         finally
         {
+            continueFenceWait.Set();
             snapshot?.Dispose();
             secondSnapshot?.Dispose();
             pipeline?.Dispose();
