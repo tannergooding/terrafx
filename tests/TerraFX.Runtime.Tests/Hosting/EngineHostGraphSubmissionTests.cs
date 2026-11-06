@@ -26,21 +26,24 @@ namespace TerraFX.Runtime.Tests.Hosting;
 
 internal sealed partial class EngineHostOptionsTests
 {
-    [TestCase(GraphicsBackend.D3D12, false, false, false)]
-    [TestCase(GraphicsBackend.Vulkan, false, false, false)]
-    [TestCase(GraphicsBackend.D3D12, true, false, false)]
-    [TestCase(GraphicsBackend.Vulkan, true, false, false)]
-    [TestCase(GraphicsBackend.D3D12, false, true, false)]
-    [TestCase(GraphicsBackend.Vulkan, false, true, false)]
-    [TestCase(GraphicsBackend.D3D12, true, true, false)]
-    [TestCase(GraphicsBackend.Vulkan, true, true, false)]
-    [TestCase(GraphicsBackend.D3D12, true, true, true)]
-    [TestCase(GraphicsBackend.Vulkan, true, true, true)]
+    [TestCase(GraphicsBackend.D3D12, false, false, false, false)]
+    [TestCase(GraphicsBackend.Vulkan, false, false, false, false)]
+    [TestCase(GraphicsBackend.D3D12, true, false, false, false)]
+    [TestCase(GraphicsBackend.Vulkan, true, false, false, false)]
+    [TestCase(GraphicsBackend.D3D12, false, true, false, false)]
+    [TestCase(GraphicsBackend.Vulkan, false, true, false, false)]
+    [TestCase(GraphicsBackend.D3D12, true, true, false, false)]
+    [TestCase(GraphicsBackend.Vulkan, true, true, false, false)]
+    [TestCase(GraphicsBackend.D3D12, true, true, true, false)]
+    [TestCase(GraphicsBackend.Vulkan, true, true, true, false)]
+    [TestCase(GraphicsBackend.D3D12, false, false, false, true)]
+    [TestCase(GraphicsBackend.Vulkan, false, false, false, true)]
     public async Task SubmitsOffscreenClearGraphAndReadsBackAsync(
         GraphicsBackend backend,
         bool useUniformBuffer,
         bool useSampledTexture,
-        bool useStorageResources)
+        bool useStorageResources,
+        bool useBufferCopy)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -87,6 +90,9 @@ internal sealed partial class EngineHostOptionsTests
         GpuTexture? storageImage = null;
         GpuBuffer? frameUniformBuffer = null;
         GpuBuffer? storageBuffer = null;
+        GpuBuffer? copySourceBuffer = null;
+        GpuBuffer? copyDestinationBuffer = null;
+        byte[]? expectedCopiedBytes = null;
         GpuPipeline? pipeline = null;
         GpuSampler? frameSampler = null;
         RenderSnapshot? snapshot = null;
@@ -368,6 +374,50 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(storageImageUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
             }
 
+            if (useBufferCopy)
+            {
+                expectedCopiedBytes = [
+                    0x11,
+                    0x23,
+                    0x47,
+                    0x8B,
+                    0xD1,
+                    0x2D,
+                    0x5B,
+                    0xA7,
+                    0x13,
+                    0x29,
+                    0x4F,
+                    0x97,
+                    0xE3,
+                    0x35,
+                    0x6B,
+                    0xB9,
+                ];
+                copySourceBuffer = await graphicsDevice.CreateBufferAsync(
+                    new BufferDescription(
+                        expectedCopiedBytes.Length,
+                        BufferUsage.CopySource | BufferUsage.CopyDestination,
+                        GpuMemoryKind.DeviceLocal,
+                        structuredStride: null,
+                        debugName: $"m04-{backend}-copy-source"))
+                    .ConfigureAwait(false);
+                copyDestinationBuffer = await graphicsDevice.CreateBufferAsync(
+                    new BufferDescription(
+                        expectedCopiedBytes.Length,
+                        BufferUsage.CopySource | BufferUsage.CopyDestination,
+                        GpuMemoryKind.DeviceLocal,
+                        structuredStride: null,
+                        debugName: $"m04-{backend}-copy-destination"))
+                    .ConfigureAwait(false);
+                var copyUploadReceipt = await graphicsDevice.UploadBufferAsync(
+                    copySourceBuffer,
+                    0,
+                    expectedCopiedBytes.AsSpan())
+                    .ConfigureAwait(false);
+                Assert.That(copyUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+            }
+
             var graph = renderer.BuildGraph(
                 renderSnapshot,
                 target);
@@ -375,6 +425,9 @@ internal sealed partial class EngineHostOptionsTests
             GraphBufferVersion? frameUniformVersion = null;
             GraphBufferVersion? storageBufferInitialVersion = null;
             GraphBufferVersion? storageBufferWriteVersion = null;
+            GraphBufferVersion? copySourceVersion = null;
+            GraphBufferVersion? copyDestinationInitialVersion = null;
+            GraphBufferVersion? copyDestinationWriteVersion = null;
             GraphTextureVersion? sampledTextureVersion = null;
             GraphTextureVersion? storageImageInitialVersion = null;
             GraphTextureVersion? storageImageWriteVersion = null;
@@ -412,6 +465,30 @@ internal sealed partial class EngineHostOptionsTests
                     new GraphImportOptions(
                         GraphResourceState.General,
                         contentsValid: true,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+            }
+
+            if (copySourceBuffer is GpuBuffer selectedCopySourceBuffer)
+            {
+                var range = new GraphBufferRange(0, selectedCopySourceBuffer.ByteLength);
+                copySourceVersion = graph.ImportBuffer(
+                    selectedCopySourceBuffer,
+                    range,
+                    new GraphImportOptions(
+                        GraphResourceState.General,
+                        contentsValid: true,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+            }
+
+            if (copyDestinationBuffer is GpuBuffer selectedCopyDestinationBuffer)
+            {
+                var range = new GraphBufferRange(0, selectedCopyDestinationBuffer.ByteLength);
+                copyDestinationInitialVersion = graph.ImportBuffer(
+                    selectedCopyDestinationBuffer,
+                    range,
+                    new GraphImportOptions(
+                        GraphResourceState.Undefined,
+                        contentsValid: false,
                         completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
             }
 
@@ -492,8 +569,53 @@ internal sealed partial class EngineHostOptionsTests
                 }
             }
 
+            void RecordCopy(scoped ref CommandRecorder recorder)
+            {
+                if ((copySourceVersion is GraphBufferVersion selectedSource)
+                    && (copyDestinationWriteVersion is GraphBufferVersion selectedDestination))
+                {
+                    recorder.CopyBuffer(
+                        selectedSource,
+                        0,
+                        selectedDestination,
+                        0,
+                        selectedSource.Range.ByteLength);
+                }
+            }
+
+            RenderPassId? copyPassId = null;
+
+            if (useBufferCopy)
+            {
+                var copyPass = graph.AddCopyPass(
+                    new RenderPassDescription("offscreen-buffer-copy", 0, [], hasExternalSideEffects: false),
+                    RecordCopy);
+                copyPassId = copyPass;
+                var selectedCopySource = copySourceVersion
+                    ?? throw new InvalidOperationException("The graph copy test has no source buffer version.");
+                var selectedCopyDestination = copyDestinationInitialVersion
+                    ?? throw new InvalidOperationException("The graph copy test has no destination buffer version.");
+                graph.ReadBuffer(
+                    copyPass,
+                    selectedCopySource,
+                    GraphBufferUsage.CopySource,
+                    selectedCopySource.Range);
+                copyDestinationWriteVersion = graph.WriteBuffer(
+                    copyPass,
+                    selectedCopyDestination,
+                    GraphBufferUsage.CopyDestination,
+                    selectedCopyDestination.Range);
+            }
+
+            ImmutableArray<RenderPassId> rasterPredecessors = copyPassId is RenderPassId copyPredecessor
+                ? [copyPredecessor]
+                : [];
             var pass = graph.AddRasterPass(
-                new RenderPassDescription("offscreen-clear", 0, [], hasExternalSideEffects: false),
+                new RenderPassDescription(
+                    "offscreen-clear",
+                    useBufferCopy ? 1 : 0,
+                    rasterPredecessors,
+                    hasExternalSideEffects: false),
                 RecordClear);
 
             if (frameUniformVersion is not null)
@@ -929,6 +1051,28 @@ internal sealed partial class EngineHostOptionsTests
                     Is.EqualTo(6u));
             }
 
+            if (useBufferCopy)
+            {
+                var destinationBufferForReadback = copyDestinationBuffer
+                    ?? throw new InvalidOperationException("The graph copy test has no destination buffer.");
+                var expectedBytes = expectedCopiedBytes
+                    ?? throw new InvalidOperationException("The graph copy test has no expected bytes.");
+                using var copyReadback = await graphicsDevice.ReadbackBufferAsync(
+                    destinationBufferForReadback,
+                    0,
+                    expectedBytes.Length)
+                    .ConfigureAwait(false);
+                var copiedBytes = new byte[expectedBytes.Length];
+
+                using (var copyReadLease = copyReadback.AcquireReadLease(0, copiedBytes.Length))
+                {
+                    var copyAction = new ReadbackCopyAction(copiedBytes);
+                    copyReadLease.UseWindow(0, copiedBytes.Length, ref copyAction);
+                }
+
+                Assert.That(copiedBytes, Is.EqualTo(expectedBytes));
+            }
+
             var finalReceipt = secondReceipt ?? receipt;
             TestContext.WriteLine(
                 $"Backend={backend}; Adapter={graphicsDevice.Capabilities.AdapterName}; "
@@ -937,6 +1081,7 @@ internal sealed partial class EngineHostOptionsTests
                 + $"UniformBuffer={useUniformBuffer}; "
                 + $"SampledTexture={useSampledTexture}; "
                 + $"StorageResources={useStorageResources}; "
+                + $"BufferCopy={useBufferCopy}; "
                 + $"Pixel={padded[centerPixelOffset]:X2}{padded[centerPixelOffset + 1]:X2}"
                 + $"{padded[centerPixelOffset + 2]:X2}{padded[centerPixelOffset + 3]:X2}; "
                 + $"DrawPixels={drawPixelCount}");
@@ -948,6 +1093,8 @@ internal sealed partial class EngineHostOptionsTests
             frameSampler?.Dispose();
             frameUniformBuffer?.Dispose();
             storageBuffer?.Dispose();
+            copySourceBuffer?.Dispose();
+            copyDestinationBuffer?.Dispose();
             sampledTexture?.Dispose();
             storageImage?.Dispose();
             target?.Dispose();

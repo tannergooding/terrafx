@@ -1693,6 +1693,35 @@ public static unsafe class D3D12GraphicsBackend
                             commandList->ClearRenderTargetView(renderTargetView, clearColor, 0, null);
                         }
 
+                        if (pass.Kind == CommandRecorderPassKind.Copy)
+                        {
+                            foreach (var command in pass.Commands)
+                            {
+                                if (command.Kind != GraphicsCommandKind.CopyBuffer)
+                                {
+                                    throw new NotSupportedException(
+                                        $"Native D3D12 graph copy pass does not support {command.Kind} commands.");
+                                }
+
+                                var sourceVersion = command.CopySource
+                                    ?? throw new InvalidOperationException("The graph copy command has no source buffer version.");
+                                var destinationVersion = command.CopyDestination
+                                    ?? throw new InvalidOperationException("The graph copy command has no destination buffer version.");
+                                var sourceBuffer = submission.GetBuffer(sourceVersion.ResourceId) as D3D12BackendBuffer
+                                    ?? throw new InvalidOperationException("The graph copy source is not a D3D12 buffer.");
+                                var destinationBuffer = submission.GetBuffer(destinationVersion.ResourceId) as D3D12BackendBuffer
+                                    ?? throw new InvalidOperationException("The graph copy destination is not a D3D12 buffer.");
+                                commandList->CopyBufferRegion(
+                                    destinationBuffer.GetResource(),
+                                    checked((ulong)command.DestinationOffset),
+                                    sourceBuffer.GetResource(),
+                                    checked((ulong)command.SourceOffset),
+                                    checked((ulong)command.ByteLength));
+                            }
+
+                            continue;
+                        }
+
                         if (pass.Kind == CommandRecorderPassKind.Raster)
                         {
                             commandList->OMSetRenderTargets(1, &renderTargetView, false, null);

@@ -393,6 +393,38 @@ internal sealed unsafe partial class VulkanBackendDevice
                     }
                 }
 
+                if (pass.Kind == CommandRecorderPassKind.Copy)
+                {
+                    foreach (var command in pass.Commands)
+                    {
+                        if (command.Kind != GraphicsCommandKind.CopyBuffer)
+                        {
+                            throw new NotSupportedException($"Native Vulkan graph copy pass does not support {command.Kind} commands.");
+                        }
+
+                        var sourceVersion = command.CopySource
+                            ?? throw new InvalidOperationException("The graph copy command has no source buffer version.");
+                        var destinationVersion = command.CopyDestination
+                            ?? throw new InvalidOperationException("The graph copy command has no destination buffer version.");
+                        var sourceBuffer = submission.GetBuffer(sourceVersion.ResourceId) as VulkanBackendBuffer
+                            ?? throw new InvalidOperationException("The graph copy source is not a Vulkan buffer.");
+                        var destinationBuffer = submission.GetBuffer(destinationVersion.ResourceId) as VulkanBackendBuffer
+                            ?? throw new InvalidOperationException("The graph copy destination is not a Vulkan buffer.");
+                        var region = default(VkBufferCopy);
+                        region.srcOffset = checked((ulong)command.SourceOffset);
+                        region.dstOffset = checked((ulong)command.DestinationOffset);
+                        region.size = checked((ulong)command.ByteLength);
+                        VulkanApi.vkCmdCopyBuffer(
+                            _commandBuffer,
+                            sourceBuffer.Buffer,
+                            destinationBuffer.Buffer,
+                            1,
+                            &region);
+                    }
+
+                    continue;
+                }
+
                 if (pass.Kind != CommandRecorderPassKind.Raster)
                 {
                     continue;
@@ -684,6 +716,8 @@ internal sealed unsafe partial class VulkanBackendDevice
     {
         if (transition.AfterState is not (
             GraphResourceState.UniformRead
+            or GraphResourceState.CopySource
+            or GraphResourceState.CopyDestination
             or GraphResourceState.StorageWrite
             or GraphResourceState.StorageReadWrite))
         {
@@ -701,6 +735,8 @@ internal sealed unsafe partial class VulkanBackendDevice
         else if (transition.BeforeState is
             GraphResourceState.General
             or GraphResourceState.UniformRead
+            or GraphResourceState.CopySource
+            or GraphResourceState.CopyDestination
             or GraphResourceState.StorageRead
             or GraphResourceState.StorageWrite
             or GraphResourceState.StorageReadWrite)
