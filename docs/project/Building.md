@@ -205,7 +205,7 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "Name~D3D12GraphSubmissionRetainsTargetUntilFenceCompletion"
 ```
 
-`CommandRecorder.CopyTexture` copies one complete imported 2D color mip/layer between distinct textures with matching format and mip extent. The 2x2 RGBA8 witness copies mip 1 from 4x4 two-mip textures and verifies every copied byte. Windows Debug/Release pass on D3D12 and Vulkan; WSLg Debug/Release pass Vulkan with Khronos validation. The D3D12 test skips only when its required host-visible staging allocation is refused by adapter-budget admission. Run both backends in Debug/Release on Windows and Vulkan in the WSLg lane:
+`CommandRecorder.CopyTexture` copies one complete imported 2D color mip/layer between distinct textures with matching format and mip extent. The 2x2 RGBA8 witness copies mip 1/layer 1 from 4x4 two-mip, two-layer textures and verifies every copied byte. Windows Debug/Release pass on D3D12 and Vulkan; WSLg Debug/Release pass Vulkan with Khronos validation. The D3D12 test skips only when its required host-visible staging allocation is refused by adapter-budget admission. Run both backends in Debug/Release on Windows and Vulkan in the WSLg lane:
 
 ```powershell
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SubmitsTextureCopyGraphAndReadsBackAsync"

@@ -414,7 +414,7 @@ internal sealed partial class EngineHostOptionsTests
                     width: 4,
                     height: 4,
                     depth: 1,
-                    arrayLayers: 1,
+                    arrayLayers: 2,
                     mipLevels: 2,
                     TextureFormat.Rgba8Unorm,
                     copyTextureUsage,
@@ -434,7 +434,7 @@ internal sealed partial class EngineHostOptionsTests
                 {
                     sourceUploadReceipt = await graphicsDevice.UploadTextureAsync(
                         copySourceTexture,
-                        new TextureSubresource(1, 0, TextureAspect.Color),
+                        new TextureSubresource(1, 1, TextureAspect.Color),
                         sourceLease,
                         0,
                         new TextureDataLayout(rowPitch: 2 * 4, slicePitch: expectedTextureCopyBytes.Length))
@@ -929,7 +929,7 @@ internal sealed partial class EngineHostOptionsTests
 
             if (copySourceTexture is GpuTexture selectedCopySourceTexture)
             {
-                var copyRange = new GraphTextureRange(1, 1, 0, 1, TextureAspect.Color);
+                var copyRange = new GraphTextureRange(1, 1, 1, 1, TextureAspect.Color);
                 copySourceTextureVersion = graph.ImportTexture(
                     selectedCopySourceTexture,
                     copyRange,
@@ -941,7 +941,7 @@ internal sealed partial class EngineHostOptionsTests
 
             if (copyDestinationTexture is GpuTexture selectedCopyDestinationTexture)
             {
-                var copyRange = new GraphTextureRange(1, 1, 0, 1, TextureAspect.Color);
+                var copyRange = new GraphTextureRange(1, 1, 1, 1, TextureAspect.Color);
                 copyDestinationTextureInitialVersion = graph.ImportTexture(
                     selectedCopyDestinationTexture,
                     copyRange,
@@ -1679,7 +1679,7 @@ internal sealed partial class EngineHostOptionsTests
                     ?? throw new InvalidOperationException("The graph texture-copy test has no expected bytes.");
                 using var copyTextureReadback = await graphicsDevice.ReadbackTextureAsync(
                     copiedTexture,
-                    new TextureSubresource(1, 0, TextureAspect.Color))
+                    new TextureSubresource(1, 1, TextureAspect.Color))
                     .ConfigureAwait(false);
                 var paddedBytes = new byte[checked((int)copyTextureReadback.ByteLength)];
 
