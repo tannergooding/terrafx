@@ -708,6 +708,59 @@ internal sealed class GraphicsPipelineRequestTests
     }
 
     [Test]
+    public async Task PipelineHandleRecordingRequiresALiveDeviceOwnedPipeline()
+    {
+        using var continuePipelineCreation = new ManualResetEventSlim(initialState: true);
+        using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
+        var backendDevice = new FakeBackendDevice(
+            CreateCapabilities(),
+            pipelineCreationEntered,
+            continuePipelineCreation);
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var graphicsDevice = await GraphicsDevice.CreateAsync(
+            ownerId: 26,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        var bufferOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        var callerBytecodeLease = bufferOwner.AcquireRead(0, 4);
+        GpuPipeline? pipeline = null;
+
+        try
+        {
+            pipeline = await graphicsDevice.CreatePipelineAsync(
+                CreateComputePipelineDescription(callerBytecodeLease, []))
+                .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var handle = pipeline.Handle;
+            var (layout, useLease) = graphicsDevice.AcquirePipelineForRecording(handle);
+
+            try
+            {
+                Assert.That(layout.IsCompute, Is.True);
+                Assert.That(layout.BindingLayoutVersion, Is.EqualTo(1));
+                Assert.That(layout.ShaderReflections[0].Stage, Is.EqualTo(ShaderStage.Compute));
+            }
+            finally
+            {
+                useLease.Dispose();
+            }
+
+            pipeline.Dispose();
+            pipeline = null;
+            _ = Assert.Throws<ObjectDisposedException>(
+                () => graphicsDevice.AcquirePipelineForRecording(handle));
+        }
+        finally
+        {
+            pipeline?.Dispose();
+            callerBytecodeLease.Dispose();
+            bufferOwner.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task PipelineRequestRetainsBytecodeUntilBackendCreationCompletes()
     {
         using var continuePipelineCreation = new ManualResetEventSlim(initialState: false);

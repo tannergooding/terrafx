@@ -16,7 +16,7 @@ namespace TerraFX.Graphics;
     "Design",
     "CA1001:Types that own disposable fields should be disposable",
     Justification = "The event is released by the dedicated graphics owner thread after shutdown; callers control lifetime through ShutdownAsync.")]
-public sealed class GraphicsDevice
+public sealed partial class GraphicsDevice
 {
     private const long DefaultOwnedAllocationBudgetBytes = 512L * 1024 * 1024;
 
@@ -969,14 +969,20 @@ public sealed class GraphicsDevice
 
         try
         {
+            var bindingLayout = new PipelineBindingLayout(description);
             backendPipeline = backendDevice.CreatePipeline(description, bytecodeLeases);
             var handle = new GpuPipelineHandle(_ownerId, DeviceEpoch, GetNextPipelineIndex(), generation: 1);
             var resourceOwner = new GraphicsResourceOwner(this, allocationInfo: null, backendPipeline, retirementReservation);
-            var pipeline = new GpuPipeline(handle, DeviceEpoch, resourceOwner);
+            var pipeline = new GpuPipeline(handle, DeviceEpoch, resourceOwner, bindingLayout);
 
             if (!_resources.Add(resourceOwner))
             {
                 throw new InvalidOperationException("The newly created Graphics pipeline already exists in its owner registry.");
+            }
+
+            if (!_pipelinesByHandle.TryAdd(handle, pipeline))
+            {
+                throw new InvalidOperationException("The newly created Graphics pipeline handle is already registered.");
             }
 
             backendPipeline = null;
@@ -1513,6 +1519,7 @@ public sealed class GraphicsDevice
             var backendDevice = _backendDevice
                 ?? throw new InvalidOperationException("A ready GraphicsDevice must own its backend device.");
             backendDevice.Dispose();
+            _pipelinesByHandle.Clear();
             _backendDevice = null;
             Volatile.Write(ref _status, (int)GraphicsDeviceStatus.Disposed);
             _ = _shutdownCompletion.TrySetResult();
