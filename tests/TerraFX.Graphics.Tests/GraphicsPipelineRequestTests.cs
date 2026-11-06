@@ -1064,6 +1064,193 @@ internal sealed class GraphicsPipelineRequestTests
     }
 
     [Test]
+    public async Task PipelineRecorderValidatesRasterVertexAndIndexRanges()
+    {
+        using var continuePipelineCreation = new ManualResetEventSlim(initialState: true);
+        using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
+        var backendDevice = new FakeBackendDevice(
+            CreateCapabilities(),
+            pipelineCreationEntered,
+            continuePipelineCreation);
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var graphicsDevice = await GraphicsDevice.CreateAsync(
+            ownerId: 29,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        var bufferOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        var callerBytecodeLease = bufferOwner.AcquireRead(0, 4);
+        GpuPipeline? pipeline = null;
+        RecordedPassCommandList? commandList = null;
+
+        try
+        {
+            var compilerIdentity = CreateCompilerIdentity();
+            var vertexReflection = new ShaderReflection(
+                ShaderStage.Vertex,
+                "VSMain",
+                compilerIdentity,
+                [new ShaderIoSignature("POSITION", 0, 0, ShaderValueType.Float4, ShaderInterpolation.Smooth)],
+                [new ShaderIoSignature("SV_Position", 0, null, ShaderValueType.Float4, ShaderInterpolation.Smooth)],
+                [],
+                [],
+                [],
+                bindingLayoutVersion: 1,
+                groupSizeX: 0,
+                groupSizeY: 0,
+                groupSizeZ: 0);
+            var pixelReflection = new ShaderReflection(
+                ShaderStage.Pixel,
+                "PSMain",
+                compilerIdentity,
+                [],
+                [new ShaderIoSignature("SV_Target", 0, null, ShaderValueType.Float4, ShaderInterpolation.Smooth)],
+                [],
+                [],
+                [],
+                bindingLayoutVersion: 1,
+                groupSizeX: 0,
+                groupSizeY: 0,
+                groupSizeZ: 0);
+            var description = new GraphicsPipelineDescription(
+                [
+                    new ShaderBytecodeInput(ShaderStage.Vertex, ShaderBinaryFormat.Dxil, callerBytecodeLease, vertexReflection),
+                    new ShaderBytecodeInput(ShaderStage.Pixel, ShaderBinaryFormat.Dxil, callerBytecodeLease, pixelReflection),
+                ],
+                [new VertexElementDescription(0, VertexElementFormat.Float4, 0)],
+                vertexStride: 16,
+                [TextureFormat.Rgba8Unorm],
+                depthTargetFormat: null,
+                PrimitiveTopology.TriangleList,
+                PipelineBlendMode.Opaque,
+                PipelineDepthMode.Disabled,
+                PipelineCullMode.None,
+                frontFaceClockwise: false,
+                bindingLayoutVersion: 1);
+            pipeline = await graphicsDevice.CreatePipelineAsync(description)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+
+            var resources = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 12);
+            var rasterPass = resources.AddPass(new RenderPassDescription("raster-pass", 0, [], false));
+            var vertexRange = new GraphBufferRange(0, 48);
+            var indexRange = new GraphBufferRange(0, 8);
+            var vertexBuffer = resources.CreateTransientBuffer(new BufferDescription(
+                48,
+                BufferUsage.Vertex,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: null,
+                debugName: "command-recorder-vertex"));
+            var indexBuffer = resources.CreateTransientBuffer(new BufferDescription(
+                8,
+                BufferUsage.Index,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: null,
+                debugName: "command-recorder-index"));
+            resources.ReadBuffer(rasterPass, vertexBuffer, vertexRange, GraphBufferUsage.VertexRead);
+            resources.ReadBuffer(rasterPass, indexBuffer, indexRange, GraphBufferUsage.IndexRead);
+            var targetRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+            var target = resources.CreateTransientTexture(new TextureDescription(
+                TextureDimension.Dimension2D,
+                4,
+                4,
+                depth: 1,
+                arrayLayers: 1,
+                mipLevels: 1,
+                format: TextureFormat.Rgba8Unorm,
+                usage: TextureUsage.ColorAttachment,
+                debugName: "command-recorder-color"));
+            _ = resources.WriteAttachment(
+                rasterPass,
+                target,
+                targetRange,
+                AttachmentLoadAction.Clear,
+                AttachmentStoreAction.Store);
+            var rasterAccesses = ImmutableArray.CreateBuilder<GraphResourceAccess>();
+
+            foreach (var access in resources.Accesses)
+            {
+                if (access.PassId == rasterPass)
+                {
+                    rasterAccesses.Add(access);
+                }
+            }
+
+            var pipelineHandle = pipeline.Handle;
+            var vertexBinding = new VertexBufferBinding(0, vertexBuffer, vertexRange, 16);
+            var indexBinding = new IndexBufferBinding(indexBuffer, indexRange, IndexFormat.UInt16);
+
+            void RecordIndexedDraw(scoped ref CommandRecorder recorder)
+            {
+                recorder.SetPipeline(pipelineHandle);
+                recorder.SetVertexBuffer(vertexBinding);
+                recorder.SetIndexBuffer(indexBinding);
+                recorder.DrawIndexed(new DrawIndexedArguments(4, 1, 0, -1, 0));
+            }
+
+            commandList = await graphicsDevice.RecordPassAsync(
+                rasterPass,
+                CommandRecorderPassKind.Raster,
+                rasterAccesses.ToImmutable(),
+                [TextureFormat.Rgba8Unorm],
+                depthTargetFormat: null,
+                RecordIndexedDraw)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert.That(commandList.Commands.Length, Is.EqualTo(4));
+            Assert.That(commandList.Commands[3].Kind, Is.EqualTo(GraphicsCommandKind.DrawIndexed));
+            commandList.Dispose();
+            commandList = null;
+
+            void DrawPastVertexRange(scoped ref CommandRecorder recorder)
+            {
+                recorder.SetPipeline(pipelineHandle);
+                recorder.SetVertexBuffer(vertexBinding);
+                recorder.Draw(new DrawArguments(4, 1, 0, 0));
+            }
+
+            _ = Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+                async () => await graphicsDevice.RecordPassAsync(
+                    rasterPass,
+                    CommandRecorderPassKind.Raster,
+                    rasterAccesses.ToImmutable(),
+                    [TextureFormat.Rgba8Unorm],
+                    depthTargetFormat: null,
+                    DrawPastVertexRange)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+
+            void DrawPastIndexRange(scoped ref CommandRecorder recorder)
+            {
+                recorder.SetPipeline(pipelineHandle);
+                recorder.SetVertexBuffer(vertexBinding);
+                recorder.SetIndexBuffer(indexBinding);
+                recorder.DrawIndexed(new DrawIndexedArguments(5, 1, 0, 0, 0));
+            }
+
+            _ = Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+                async () => await graphicsDevice.RecordPassAsync(
+                    rasterPass,
+                    CommandRecorderPassKind.Raster,
+                    rasterAccesses.ToImmutable(),
+                    [TextureFormat.Rgba8Unorm],
+                    depthTargetFormat: null,
+                    DrawPastIndexRange)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+        }
+        finally
+        {
+            commandList?.Dispose();
+            pipeline?.Dispose();
+            callerBytecodeLease.Dispose();
+            bufferOwner.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task PipelineRequestRetainsBytecodeUntilBackendCreationCompletes()
     {
         using var continuePipelineCreation = new ManualResetEventSlim(initialState: false);
