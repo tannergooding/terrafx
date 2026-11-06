@@ -27,8 +27,10 @@ internal static class M04ShaderReflectionReader
     private const uint CapabilityShader = 1;
     private const uint CapabilityShaderNonUniform = 5301;
     private const uint CapabilityTessellation = 3;
+    private const uint ExecutionModeLocalSize = 17;
     private const uint MagicNumber = 0x07230203;
     private const ushort OpCapability = 17;
+    private const ushort OpExecutionMode = 16;
 
     internal static ShaderReflection Read(
         string dxilReflection,
@@ -68,18 +70,25 @@ internal static class M04ShaderReflectionReader
         var resources = ParseResources(root, imageTypes, descriptorBindings);
         SpirvImageTypeReader.ValidateDescriptorBindings(resources, descriptorBindings);
         ValidateDxilResourceBindings(dxilReflection, resources);
-        var inputs = ParseDxilSignatures(dxilReflection, "Input signature:", stage, isInput: true);
-        var outputs = ParseDxilSignatures(dxilReflection, "Output signature:", stage, isInput: false);
-        ValidateSpirvCrossIo(root, "inputs", inputs, stage, isInput: true);
-        ValidateSpirvCrossIo(root, "outputs", outputs, stage, isInput: false);
+        var inputs = stage == ShaderStage.Compute
+            ? []
+            : ParseDxilSignatures(dxilReflection, "Input signature:", stage, isInput: true);
+        var outputs = stage == ShaderStage.Compute
+            ? []
+            : ParseDxilSignatures(dxilReflection, "Output signature:", stage, isInput: false);
+
+        if (stage != ShaderStage.Compute)
+        {
+            ValidateSpirvCrossIo(root, "inputs", inputs, stage, isInput: true);
+            ValidateSpirvCrossIo(root, "outputs", outputs, stage, isInput: false);
+        }
+
         var recordLayouts = ParseRecordLayouts(root);
         DxilRecordLayoutReader.Validate(dxilReflection, recordLayouts);
         var requiredCapabilities = ParseCapabilities(spirvBytecode);
-
-        if (stage == ShaderStage.Compute)
-        {
-            throw new NotSupportedException("The selected M04 reflection reader only converts graphics-stage fixtures.");
-        }
+        var (groupSizeX, groupSizeY, groupSizeZ) = stage == ShaderStage.Compute
+            ? ReadComputeGroupSize(spirvBytecode)
+            : (0, 0, 0);
 
         var signatures = ImmutableArray.CreateBuilder<ShaderResourceSignature>(resources.Length);
 
@@ -98,9 +107,9 @@ internal static class M04ShaderReflectionReader
             recordLayouts,
             requiredCapabilities,
             bindingLayoutVersion: 1,
-            groupSizeX: 0,
-            groupSizeY: 0,
-            groupSizeZ: 0);
+            groupSizeX,
+            groupSizeY,
+            groupSizeZ);
     }
 
     private static void AddResourceCollection(
@@ -412,6 +421,7 @@ internal static class M04ShaderReflectionReader
 
     private static ShaderStage GetStage(string mode)
         => mode switch {
+            "comp" => ShaderStage.Compute,
             "vert" => ShaderStage.Vertex,
             "frag" => ShaderStage.Pixel,
             _ => throw new NotSupportedException($"SPIRV-Cross stage '{mode}' is not supported by the M04 reflection reader."),
@@ -734,6 +744,50 @@ internal static class M04ShaderReflectionReader
         }
 
         return rows;
+    }
+
+    private static (int X, int Y, int Z) ReadComputeGroupSize(ReadOnlySpan<byte> bytecode)
+    {
+        var words = GetSpirvWords(bytecode);
+        (int X, int Y, int Z)? groupSize = null;
+
+        for (var cursor = 5; cursor < words.Length;)
+        {
+            var instruction = words[cursor];
+            var wordCount = checked((int)(instruction >> 16));
+            var opcode = checked((ushort)(instruction & 0xFFFF));
+
+            if ((wordCount == 0) || (wordCount > words.Length - cursor))
+            {
+                throw new InvalidDataException("The compute SPIR-V module contains a truncated instruction.");
+            }
+
+            if ((opcode == OpExecutionMode)
+                && (wordCount >= 3)
+                && (words[cursor + 2] == ExecutionModeLocalSize))
+            {
+                if ((wordCount != 6) || (groupSize is not null))
+                {
+                    throw new InvalidDataException("The compute SPIR-V module must declare exactly one literal local workgroup size.");
+                }
+
+                var x = checked((int)words[cursor + 3]);
+                var y = checked((int)words[cursor + 4]);
+                var z = checked((int)words[cursor + 5]);
+
+                if ((x <= 0) || (y <= 0) || (z <= 0))
+                {
+                    throw new InvalidDataException("The compute SPIR-V local workgroup dimensions must be positive.");
+                }
+
+                groupSize = (x, y, z);
+            }
+
+            cursor += wordCount;
+        }
+
+        return groupSize
+            ?? throw new InvalidDataException("The compute SPIR-V module does not declare a literal local workgroup size.");
     }
 
     private static ShaderStage ReadStage(JsonElement root, out string entryPointName)

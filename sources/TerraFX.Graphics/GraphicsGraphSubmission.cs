@@ -430,9 +430,16 @@ internal sealed class GraphicsGraphSubmission
                     throw new NotSupportedException("A native graph copy pass cannot declare raster attachments.");
                 }
             }
+            else if (pass.Kind == CommandRecorderPassKind.Compute)
+            {
+                if (!pass.Attachments.IsEmpty)
+                {
+                    throw new NotSupportedException("A native graph compute pass cannot declare raster attachments.");
+                }
+            }
             else if ((pass.Kind != CommandRecorderPassKind.Raster) || (pass.Attachments.Length != 1))
             {
-                throw new NotSupportedException("Native graph submission currently supports copy passes and raster color-clear passes.");
+                throw new NotSupportedException("Native graph submission currently supports copy, compute, and raster color-clear passes.");
             }
             else
             {
@@ -458,6 +465,7 @@ internal sealed class GraphicsGraphSubmission
             var currentPipelineRequiresStorageImage = false;
             var currentPipelineBindingsSet = false;
             var hasDraw = false;
+            var hasDispatch = false;
             var hasBufferCopy = false;
 
             foreach (var command in pass.Commands)
@@ -466,41 +474,55 @@ internal sealed class GraphicsGraphSubmission
                 {
                     case GraphicsCommandKind.SetPipeline:
                     {
-                        if (pass.Kind != CommandRecorderPassKind.Raster)
+                        if (pass.Kind is not (CommandRecorderPassKind.Raster or CommandRecorderPassKind.Compute))
                         {
-                            throw new NotSupportedException("Native graph copy passes cannot bind graphics pipelines.");
+                            throw new NotSupportedException("Native graph copy passes cannot bind pipelines.");
                         }
 
                         var pipeline = command.PipelineOwner
                             ?? throw new InvalidOperationException("A recorded pipeline command lost its pipeline owner.");
                         var layout = pipeline.BindingLayout;
+                        var isComputePass = pass.Kind == CommandRecorderPassKind.Compute;
 
                         if ((pipeline.DeviceEpoch != DeviceEpoch)
                             || !ReferenceEquals(pipeline.ResourceOwner.Device, OffscreenColorTarget.ResourceOwner.Device)
-                            || layout.IsCompute
+                            || (layout.IsCompute != isComputePass)
                             || (layout.VertexStride != 0)
-                            || !layout.VertexElements.IsEmpty
-                            || layout.DepthTargetFormat.HasValue
-                            || (layout.Topology != PrimitiveTopology.TriangleList)
-                            || (layout.ColorTargetFormats.Length != 1)
-                            || (layout.ColorTargetFormats[0] != TextureImports[0].Version.Description.Format))
+                            || !layout.VertexElements.IsEmpty)
                         {
-                            throw new NotSupportedException("Native graph submission requires a same-device vertex-ID graphics pipeline for its offscreen color format.");
+                            throw new NotSupportedException("Native graph submission requires a same-device pipeline matching the pass kind.");
+                        }
+
+                        if (isComputePass
+                            ? (layout.DepthTargetFormat.HasValue || !layout.ColorTargetFormats.IsEmpty)
+                            : (layout.DepthTargetFormat.HasValue
+                                || (layout.Topology != PrimitiveTopology.TriangleList)
+                                || (layout.ColorTargetFormats.Length != 1)
+                                || (layout.ColorTargetFormats[0] != TextureImports[0].Version.Description.Format)))
+                        {
+                            throw new NotSupportedException("Native graph submission requires compute pipelines without attachments and vertex-ID graphics pipelines for its offscreen color format.");
                         }
 
                         var reflectedResources = new HashSet<ShaderResourceSignature>();
 
                         foreach (var reflection in layout.ShaderReflections)
                         {
+                            var supportedStage = isComputePass
+                                ? reflection.Stage == ShaderStage.Compute
+                                : reflection.Stage is ShaderStage.Vertex or ShaderStage.Pixel;
+
                             foreach (var resource in reflection.Resources)
                             {
-                                if ((resource.Group != ShaderBindingGroup.Frame)
-                                    || (resource.Kind is not (
-                                        ShaderResourceKind.UniformBuffer
+                                var supportedKind = isComputePass
+                                    ? resource.Kind == ShaderResourceKind.StorageBuffer
+                                    : resource.Kind is ShaderResourceKind.UniformBuffer
                                         or ShaderResourceKind.SampledImage
                                         or ShaderResourceKind.Sampler
                                         or ShaderResourceKind.StorageBuffer
-                                        or ShaderResourceKind.StorageImage))
+                                        or ShaderResourceKind.StorageImage;
+
+                                if ((resource.Group != ShaderBindingGroup.Frame)
+                                    || !supportedKind
                                     || (resource.Binding != ((resource.Kind == ShaderResourceKind.StorageImage) ? 1 : 0))
                                     || (resource.ArrayCount != 1)
                                     || ((resource.Kind is ShaderResourceKind.UniformBuffer
@@ -509,12 +531,10 @@ internal sealed class GraphicsGraphSubmission
                                         && (resource.Access != ShaderResourceAccess.Read))
                                     || ((resource.Kind is ShaderResourceKind.StorageBuffer or ShaderResourceKind.StorageImage)
                                         && (resource.Access != ShaderResourceAccess.ReadWrite))
-                                    || ((resource.Kind is ShaderResourceKind.StorageBuffer or ShaderResourceKind.StorageImage)
-                                        && (reflection.Stage != ShaderStage.Pixel))
-                                    || (reflection.Stage is not (ShaderStage.Vertex or ShaderStage.Pixel)))
+                                    || !supportedStage)
                                 {
                                     throw new NotSupportedException(
-                                        "Native graph submission supports Frame uniform, sampled-image, sampler, and pixel-stage storage bindings.");
+                                        "Native graph submission supports Frame graphics resources and compute-stage storage-buffer bindings.");
                                 }
 
                                 _ = reflectedResources.Add(resource);
@@ -853,7 +873,7 @@ internal sealed class GraphicsGraphSubmission
                     {
                         if (pass.Kind != CommandRecorderPassKind.Raster)
                         {
-                            throw new NotSupportedException("Native graph copy passes cannot record draws.");
+                            throw new NotSupportedException("Native graph non-raster passes cannot record draws.");
                         }
 
                         if (currentPipeline is null)
@@ -872,6 +892,29 @@ internal sealed class GraphicsGraphSubmission
                         }
 
                         hasDraw |= (command.Draw.VertexCount > 0) && (command.Draw.InstanceCount > 0);
+                        break;
+                    }
+
+                    case GraphicsCommandKind.Dispatch:
+                    {
+                        if (pass.Kind != CommandRecorderPassKind.Compute)
+                        {
+                            throw new NotSupportedException("Native graph dispatches must be recorded by a compute pass.");
+                        }
+
+                        if ((currentPipeline is null) || !currentPipeline.BindingLayout.IsCompute)
+                        {
+                            throw new InvalidOperationException("A recorded dispatch has no preceding compute pipeline.");
+                        }
+
+                        if (currentPipelineRequiresStorageBuffer && !currentPipelineBindingsSet)
+                        {
+                            throw new InvalidOperationException("A resource-bearing graph dispatch has no recorded binding set.");
+                        }
+
+                        hasDispatch |= (command.Dispatch.GroupCountX > 0)
+                            && (command.Dispatch.GroupCountY > 0)
+                            && (command.Dispatch.GroupCountZ > 0);
                         break;
                     }
 
@@ -947,6 +990,11 @@ internal sealed class GraphicsGraphSubmission
             if ((pass.Kind == CommandRecorderPassKind.Raster) && !pass.Commands.IsEmpty && !hasDraw)
             {
                 throw new NotSupportedException("Native graph submission requires at least one nonempty draw in a command-bearing raster pass.");
+            }
+
+            if ((pass.Kind == CommandRecorderPassKind.Compute) && !pass.Commands.IsEmpty && !hasDispatch)
+            {
+                throw new NotSupportedException("Native graph compute passes require a nonempty dispatch.");
             }
 
             if ((pass.Kind == CommandRecorderPassKind.Copy) && !pass.Commands.IsEmpty && !hasBufferCopy)

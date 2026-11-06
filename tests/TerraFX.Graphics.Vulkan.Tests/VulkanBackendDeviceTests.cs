@@ -1542,6 +1542,50 @@ internal sealed class VulkanBackendDeviceTests
     }
 
     [Test]
+    public void SpirvPreflightRejectsComputeWorkgroupSizeMetadataMismatchWithoutCreatingDevice()
+    {
+        var fixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
+
+        if (string.IsNullOrWhiteSpace(fixtureDirectory))
+        {
+            Assert.Ignore("The compiled M04 shader fixture is not selected through TERRAFX_M04_SHADER_FIXTURE_DIRECTORY.");
+            return;
+        }
+
+        var reflection = M04ShaderFixtureCompiler.ReadTypedReflection(fixtureDirectory, "compute-storage");
+        using var storage = CreateBytecodeStorage(Path.Combine(
+            fixtureDirectory,
+            "M04OffscreenTriangle.compute-storage.spv"));
+        using var lease = storage.AcquireReadLease(0, storage.Length);
+        var mismatchedReflection = new ShaderReflection(
+            reflection.Stage,
+            reflection.EntryPoint,
+            reflection.CompilerIdentity,
+            reflection.Inputs,
+            reflection.Outputs,
+            reflection.Resources,
+            reflection.RecordLayouts,
+            reflection.RequiredCapabilities,
+            reflection.BindingLayoutVersion,
+            groupSizeX: reflection.GroupSizeX + 1,
+            groupSizeY: reflection.GroupSizeY,
+            groupSizeZ: reflection.GroupSizeZ);
+        var shader = new ShaderBytecodeInput(
+            ShaderStage.Compute,
+            ShaderBinaryFormat.SpirV,
+            lease,
+            mismatchedReflection);
+
+        Assert.That(
+            () => SpirvReflectionValidator.Validate(
+                shader,
+                lease,
+                index: 0,
+                enabledSpirvExtensions: s_enabledFixtureSpirvExtensions),
+            Throws.ArgumentException);
+    }
+
+    [Test]
     public void SpirvPreflightRejectsMissingShaderCapabilityWithoutCreatingDevice()
     {
         var fixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");

@@ -425,6 +425,101 @@ internal sealed unsafe partial class VulkanBackendDevice
                     continue;
                 }
 
+                if (pass.Kind == CommandRecorderPassKind.Compute)
+                {
+                    VulkanBackendPipeline? currentComputePipeline = null;
+
+                    foreach (var command in pass.Commands)
+                    {
+                        switch (command.Kind)
+                        {
+                            case GraphicsCommandKind.SetPipeline:
+                            {
+                                var pipeline = GraphicsGraphSubmission.GetPipeline(command) as VulkanBackendPipeline
+                                    ?? throw new InvalidOperationException("The graph compute pipeline is not a Vulkan pipeline.");
+
+                                VulkanApi.vkCmdBindPipeline(
+                                    _commandBuffer,
+                                    VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    pipeline.Pipeline);
+                                currentComputePipeline = pipeline;
+                                break;
+                            }
+
+                            case GraphicsCommandKind.SetBindings:
+                            {
+                                var pipeline = currentComputePipeline
+                                    ?? throw new InvalidOperationException("A recorded binding set has no preceding Vulkan compute pipeline.");
+                                var bindings = command.Bindings
+                                    ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
+                                var storageBufferBindings =
+                                    ImmutableArray.CreateBuilder<VulkanBackendStorageBufferBinding>(bindings.Buffers.Length);
+
+                                foreach (var binding in bindings.Buffers)
+                                {
+                                    if (binding.Kind != ShaderResourceKind.StorageBuffer)
+                                    {
+                                        throw new NotSupportedException("Native Vulkan compute graphs currently support storage-buffer bindings only.");
+                                    }
+
+                                    var buffer = submission.GetBuffer(binding.Resource.ResourceId) as VulkanBackendBuffer
+                                        ?? throw new InvalidOperationException("A compute storage-buffer binding is not a Vulkan buffer.");
+                                    storageBufferBindings.Add(new VulkanBackendStorageBufferBinding(
+                                        binding.Group,
+                                        binding.Binding,
+                                        buffer,
+                                        binding.Range.ByteOffset,
+                                        binding.Range.ByteLength));
+                                }
+
+                                var descriptorSet = CreateFrameDescriptorSet(
+                                    pipeline,
+                                    [],
+                                    storageBufferBindings.ToImmutable(),
+                                    [],
+                                    [],
+                                    []);
+                                descriptorSets.Add(descriptorSet);
+                                var nativeDescriptorSet = descriptorSet.DescriptorSet;
+                                VulkanApi.vkCmdBindDescriptorSets(
+                                    _commandBuffer,
+                                    VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    pipeline.PipelineLayout,
+                                    GetNativeDescriptorSetIndex(ShaderBindingGroup.Frame),
+                                    1,
+                                    &nativeDescriptorSet,
+                                    0,
+                                    null);
+                                break;
+                            }
+
+                            case GraphicsCommandKind.StorageBarrier:
+                            {
+                                RecordGraphStorageBarrier(pass, submission, command);
+                                break;
+                            }
+
+                            case GraphicsCommandKind.Dispatch:
+                            {
+                                var dispatch = command.Dispatch;
+                                VulkanApi.vkCmdDispatch(
+                                    _commandBuffer,
+                                    checked((uint)dispatch.GroupCountX),
+                                    checked((uint)dispatch.GroupCountY),
+                                    checked((uint)dispatch.GroupCountZ));
+                                break;
+                            }
+
+                            default:
+                            {
+                                throw new NotSupportedException($"Native Vulkan graph compute passes do not support {command.Kind} commands.");
+                            }
+                        }
+                    }
+
+                    continue;
+                }
+
                 if (pass.Kind != CommandRecorderPassKind.Raster)
                 {
                     continue;
@@ -582,7 +677,12 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                         case GraphicsCommandKind.StorageBarrier:
                         {
+                            VulkanApi.vkCmdEndRendering(_commandBuffer);
+                            renderingAttachment.loadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_LOAD;
                             RecordGraphStorageBarrier(pass, submission, command);
+                            VulkanApi.vkCmdBeginRendering(_commandBuffer, &renderingInfo);
+                            VulkanApi.vkCmdSetViewport(_commandBuffer, 0, 1, &viewport);
+                            VulkanApi.vkCmdSetScissor(_commandBuffer, 0, 1, &scissor);
                             break;
                         }
 
@@ -913,7 +1013,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             barrier.size = checked((ulong)command.StorageBarrierBufferRange.ByteLength);
             var dependencyInfo = default(VkDependencyInfo);
             dependencyInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            dependencyInfo.dependencyFlags = VkDependencyFlags.VK_DEPENDENCY_BY_REGION_BIT;
+            dependencyInfo.dependencyFlags = default;
             dependencyInfo.bufferMemoryBarrierCount = 1;
             dependencyInfo.pBufferMemoryBarriers = &barrier;
             VulkanApi.vkCmdPipelineBarrier2(_commandBuffer, &dependencyInfo);
@@ -943,7 +1043,7 @@ internal sealed unsafe partial class VulkanBackendDevice
         imageBarrier.subresourceRange.layerCount = checked((uint)command.StorageBarrierTextureRange.LayerCount);
         var imageDependencyInfo = default(VkDependencyInfo);
         imageDependencyInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        imageDependencyInfo.dependencyFlags = VkDependencyFlags.VK_DEPENDENCY_BY_REGION_BIT;
+        imageDependencyInfo.dependencyFlags = default;
         imageDependencyInfo.imageMemoryBarrierCount = 1;
         imageDependencyInfo.pImageMemoryBarriers = &imageBarrier;
         VulkanApi.vkCmdPipelineBarrier2(_commandBuffer, &imageDependencyInfo);

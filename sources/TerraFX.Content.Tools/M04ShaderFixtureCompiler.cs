@@ -13,6 +13,7 @@ namespace TerraFX.Content.Tools;
 
 internal static class M04ShaderFixtureCompiler
 {
+    private const string ShaderEntryPointComputeStorage = "CSStorageMain";
     private const string ShaderEntryPointGraphPixel = "PSGraphMain";
     private const string ShaderEntryPointPixel = "PSMain";
     private const string ShaderEntryPointSampledFramePixel = "PSSampledFrameMain";
@@ -21,6 +22,7 @@ internal static class M04ShaderFixtureCompiler
     private const string ShaderEntryPointVertex = "VSMain";
     private const string ShaderFileName = "M04OffscreenTriangle.hlsl";
     private static readonly string[] s_stageNames = [
+        "compute-storage",
         "vertex",
         "pixel",
         "pixel-graph",
@@ -78,6 +80,17 @@ internal static class M04ShaderFixtureCompiler
 
         try
         {
+            await CompileStageAsync(
+                manifest,
+                dxcExecutable,
+                spirvCrossExecutable,
+                spirvValidationExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointComputeStorage,
+                "cs_6_0",
+                "compute-storage",
+                cancellationToken).ConfigureAwait(false);
             await CompileStageAsync(
                 manifest,
                 dxcExecutable,
@@ -207,6 +220,15 @@ internal static class M04ShaderFixtureCompiler
                 dxcExecutable,
                 shaderPath,
                 stagingDirectory,
+                ShaderEntryPointComputeStorage,
+                "cs_6_0",
+                "compute-storage",
+                cancellationToken).ConfigureAwait(false);
+            await CompileDxilStageAsync(
+                manifest,
+                dxcExecutable,
+                shaderPath,
+                stagingDirectory,
                 ShaderEntryPointVertex,
                 "vs_6_0",
                 "vertex",
@@ -276,6 +298,7 @@ internal static class M04ShaderFixtureCompiler
 
         var entryPoint = stageName switch {
             "vertex" => ShaderEntryPointVertex,
+            "compute-storage" => ShaderEntryPointComputeStorage,
             "pixel" => ShaderEntryPointPixel,
             "pixel-graph" => ShaderEntryPointGraphPixel,
             "pixel-sampled" => ShaderEntryPointSampledPixel,
@@ -472,6 +495,18 @@ internal static class M04ShaderFixtureCompiler
 
     private static void ValidateDxilReflection(string text, string entryPoint, string stageName)
     {
+        if (stageName == "compute-storage")
+        {
+            if (!text.Contains($"EntryFunctionName: {entryPoint}", StringComparison.Ordinal)
+                || !text.Contains("NumThreads=(1,1,1)", StringComparison.Ordinal)
+                || !text.Contains("FrameStorageBuffer", StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("DXC reflection from the compiled compute DXIL does not contain its entry point, one-thread group size, and storage buffer.");
+            }
+
+            return;
+        }
+
         var expectedOutputSemantic = stageName switch {
             "vertex" => "SV_Position",
             "pixel" or "pixel-graph" or "pixel-sampled" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => "SV_Target",
@@ -619,6 +654,7 @@ internal static class M04ShaderFixtureCompiler
 
         var mode = modeElement.GetString();
         var expectedMode = stageName switch {
+            "compute-storage" => mode is "comp" or "compute",
             "vertex" => mode is "vert" or "vertex",
             "pixel" or "pixel-graph" or "pixel-sampled" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => mode is "frag" or "fragment",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
@@ -642,6 +678,11 @@ internal static class M04ShaderFixtureCompiler
         if (stageName == "pixel-sampled-frame-storage")
         {
             ValidatePixelStorageResourceReflection(root);
+        }
+
+        if (stageName == "compute-storage")
+        {
+            ValidateSampledResource(root, "ssbos", "FrameStorageBuffer", 32);
         }
     }
 

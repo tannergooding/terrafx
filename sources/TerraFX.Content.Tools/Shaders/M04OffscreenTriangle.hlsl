@@ -65,3 +65,14 @@ float4 PSSampledFrameStorageMain(VertexOutput input) : SV_Target0
 
     return color;
 }
+
+[numthreads(1, 1, 1)]
+void CSStorageMain(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    if (any(dispatchThreadId != uint3(0, 0, 0)))
+    {
+        return;
+    }
+
+    FrameStorageBuffer[0] = 42;
+}

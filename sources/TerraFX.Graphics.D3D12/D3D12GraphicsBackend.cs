@@ -1722,6 +1722,123 @@ public static unsafe class D3D12GraphicsBackend
                             continue;
                         }
 
+                        if (pass.Kind == CommandRecorderPassKind.Compute)
+                        {
+                            ID3D12BackendPipelineDescriptorOwner? currentPipeline = null;
+
+                            foreach (var command in pass.Commands)
+                            {
+                                switch (command.Kind)
+                                {
+                                    case GraphicsCommandKind.SetPipeline:
+                                    {
+                                        var pipeline = GraphicsGraphSubmission.GetPipeline(command) as ID3D12BackendPipelineDescriptorOwner
+                                            ?? throw new InvalidOperationException("The graph compute pipeline is not a D3D12 pipeline.");
+
+                                        if (!ReferenceEquals(pipeline.Owner, this)
+                                            || pipeline.IsDisposed)
+                                        {
+                                            throw new InvalidOperationException("The graph D3D12 compute pipeline is not live on this device.");
+                                        }
+
+                                        commandList->SetPipelineState(pipeline.PipelineState);
+                                        commandList->SetComputeRootSignature(pipeline.RootSignature);
+                                        currentPipeline = pipeline;
+                                        break;
+                                    }
+
+                                    case GraphicsCommandKind.SetBindings:
+                                    {
+                                        var pipeline = currentPipeline
+                                            ?? throw new InvalidOperationException("A recorded binding set has no preceding D3D12 compute pipeline.");
+                                        var bindings = command.Bindings
+                                            ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
+                                        var storageBufferBindings =
+                                            ImmutableArray.CreateBuilder<D3D12BackendStorageBufferBinding>(bindings.Buffers.Length);
+
+                                        foreach (var binding in bindings.Buffers)
+                                        {
+                                            if (binding.Kind != ShaderResourceKind.StorageBuffer)
+                                            {
+                                                throw new NotSupportedException("Native D3D12 compute graphs currently support storage-buffer bindings only.");
+                                            }
+
+                                            storageBufferBindings.Add(new D3D12BackendStorageBufferBinding(
+                                                binding.Group,
+                                                binding.Binding,
+                                                submission.GetBuffer(binding.Resource.ResourceId),
+                                                binding.Range.ByteOffset,
+                                                binding.Range.ByteLength));
+                                        }
+
+                                        var descriptorSet = CreateDescriptorSet(
+                                            pipeline,
+                                            [],
+                                            [],
+                                            storageBufferBindings.ToImmutable(),
+                                            [],
+                                            []);
+                                        descriptorSets.Add(descriptorSet);
+
+                                        if ((descriptorSet.DescriptorTableCount == 0)
+                                            || !descriptorSet.AreDescriptorTableHandlesValid)
+                                        {
+                                            throw new InvalidOperationException("The graph compute descriptor set has an invalid root table.");
+                                        }
+
+                                        var resourceHeap = _resourceDescriptorHeap;
+
+                                        if (resourceHeap is null)
+                                        {
+                                            throw new InvalidOperationException("The D3D12 resource descriptor heap is unavailable.");
+                                        }
+
+                                        var descriptorHeap = resourceHeap;
+                                        commandList->SetDescriptorHeaps(1, &descriptorHeap);
+
+                                        for (var rootParameterIndex = 0;
+                                            rootParameterIndex < descriptorSet.DescriptorTableCount;
+                                            rootParameterIndex++)
+                                        {
+                                            commandList->SetComputeRootDescriptorTable(
+                                                checked((uint)rootParameterIndex),
+                                                descriptorSet._descriptorTableHandles[rootParameterIndex]);
+                                        }
+
+                                        break;
+                                    }
+
+                                    case GraphicsCommandKind.StorageBarrier:
+                                    {
+                                        var barrierBuffer = command.StorageBarrierBuffer
+                                            ?? throw new NotSupportedException("Native D3D12 compute graphs support storage-buffer barriers only.");
+                                        var buffer = submission.GetBuffer(barrierBuffer.ResourceId) as D3D12BackendBuffer
+                                            ?? throw new InvalidOperationException("The compute storage barrier lost its D3D12 buffer.");
+                                        var barrier = D3D12_RESOURCE_BARRIER.InitUAV(buffer.GetResource());
+                                        commandList->ResourceBarrier(1, &barrier);
+                                        break;
+                                    }
+
+                                    case GraphicsCommandKind.Dispatch:
+                                    {
+                                        var dispatch = command.Dispatch;
+                                        commandList->Dispatch(
+                                            checked((uint)dispatch.GroupCountX),
+                                            checked((uint)dispatch.GroupCountY),
+                                            checked((uint)dispatch.GroupCountZ));
+                                        break;
+                                    }
+
+                                    default:
+                                    {
+                                        throw new NotSupportedException($"Native D3D12 graph compute passes do not support {command.Kind} commands.");
+                                    }
+                                }
+                            }
+
+                            continue;
+                        }
+
                         if (pass.Kind == CommandRecorderPassKind.Raster)
                         {
                             commandList->OMSetRenderTargets(1, &renderTargetView, false, null);

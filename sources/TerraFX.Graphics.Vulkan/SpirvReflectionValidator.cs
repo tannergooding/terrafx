@@ -36,6 +36,8 @@ internal static class SpirvReflectionValidator
     private const uint DecorationOffset = 35;
     private const uint DecorationRowMajor = 4;
     private const uint DecorationSample = 17;
+    private const uint ExecutionModeLocalSize = 17;
+    private const uint ExecutionModeLocalSizeId = 38;
     private const uint ExecutionModelCompute = 5;
     private const uint ExecutionModelFragment = 4;
     private const uint ExecutionModelVertex = 0;
@@ -49,6 +51,8 @@ internal static class SpirvReflectionValidator
     private const ushort OpDecorate = 71;
     private const ushort OpDecorationGroup = 73;
     private const ushort OpEntryPoint = 15;
+    private const ushort OpExecutionMode = 16;
+    private const ushort OpExecutionModeId = 331;
     private const ushort OpExtension = 10;
     private const ushort OpGroupDecorate = 74;
     private const ushort OpGroupMemberDecorate = 75;
@@ -110,6 +114,12 @@ internal static class SpirvReflectionValidator
         }
 
         var entryPoint = FindEntryPoint(module, shader, index);
+
+        if (shader.Stage == ShaderStage.Compute)
+        {
+            ValidateComputeGroupSize(words, entryPoint, shader.Reflection, index);
+        }
+
         ValidateStageIo(module, entryPoint, shader, index);
         var resources = new List<ShaderResourceSignature>();
         ReadResources(module, index, resources);
@@ -1043,7 +1053,7 @@ internal static class SpirvReflectionValidator
                 }
 
                 EnsureId(module, operands[1]);
-                module.EntryPoints.Add(new EntryPoint(operands[0], name, interfaceIdArray));
+                module.EntryPoints.Add(new EntryPoint(operands[1], operands[0], name, interfaceIdArray));
                 break;
             }
 
@@ -1219,6 +1229,70 @@ internal static class SpirvReflectionValidator
         if (bufferBlock ? !decorations.HasBufferBlock : !decorations.HasBlock)
         {
             throw new ArgumentException("SPIR-V buffer descriptor structure has no required block decoration.");
+        }
+    }
+
+    private static void ValidateComputeGroupSize(
+        ReadOnlySpan<uint> words,
+        EntryPoint entryPoint,
+        ShaderReflection reflection,
+        int shaderIndex)
+    {
+        (int X, int Y, int Z)? groupSize = null;
+
+        for (var cursor = HeaderWordCount; cursor < words.Length;)
+        {
+            var instruction = words[cursor];
+            var wordCount = checked((int)(instruction >> 16));
+            var opcode = checked((ushort)(instruction & 0xFFFF));
+
+            if ((wordCount == 0) || (wordCount > words.Length - cursor))
+            {
+                throw new ArgumentException("SPIR-V compute workgroup reflection contains a truncated instruction.");
+            }
+
+            if ((wordCount >= 4)
+                && (words[cursor + 1] == entryPoint.Id)
+                && (opcode == OpExecutionModeId)
+                && (words[cursor + 2] == ExecutionModeLocalSizeId))
+            {
+                throw new NotSupportedException("SPIR-V specialization-sized compute workgroups are not supported.");
+            }
+
+            if ((wordCount >= 3)
+                && (words[cursor + 1] == entryPoint.Id)
+                && (opcode == OpExecutionMode)
+                && (words[cursor + 2] == ExecutionModeLocalSize))
+            {
+                if ((wordCount != 6) || (groupSize is not null))
+                {
+                    throw new ArgumentException("SPIR-V compute shaders must declare exactly one literal local workgroup size.");
+                }
+
+                var x = checked((int)words[cursor + 3]);
+                var y = checked((int)words[cursor + 4]);
+                var z = checked((int)words[cursor + 5]);
+
+                if ((x <= 0) || (y <= 0) || (z <= 0))
+                {
+                    throw new ArgumentException("SPIR-V compute local workgroup dimensions must be positive.");
+                }
+
+                groupSize = (x, y, z);
+            }
+
+            cursor += wordCount;
+        }
+
+        var (groupSizeX, groupSizeY, groupSizeZ) = groupSize
+            ?? throw new ArgumentException("SPIR-V compute shaders must declare a literal local workgroup size.");
+
+        if ((groupSizeX != reflection.GroupSizeX)
+            || (groupSizeY != reflection.GroupSizeY)
+            || (groupSizeZ != reflection.GroupSizeZ))
+        {
+            throw new ArgumentException(
+                $"SPIR-V compute workgroup size for shader input at index {shaderIndex} does not match its reflected dimensions.");
         }
     }
 
@@ -1510,14 +1584,17 @@ internal static class SpirvReflectionValidator
 
     private sealed class EntryPoint
     {
-        internal EntryPoint(uint executionModel, string name, uint[] interfaceIds)
+        internal EntryPoint(uint id, uint executionModel, string name, uint[] interfaceIds)
         {
+            Id = id;
             ExecutionModel = executionModel;
             InterfaceIds = interfaceIds;
             Name = name;
         }
 
         internal uint ExecutionModel { get; }
+
+        internal uint Id { get; }
 
         internal uint[] InterfaceIds { get; }
 
