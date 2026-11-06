@@ -69,6 +69,31 @@ internal sealed class GraphResourceAccessStateTests
     }
 
     [Test]
+    public void OffscreenOutputIsATerminalTextureState()
+    {
+        var description = new TextureDescription(
+            TextureDimension.Dimension2D,
+            4,
+            4,
+            1,
+            1,
+            1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.ColorAttachment,
+            string.Empty);
+        var range = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+        var version = new GraphTextureVersion(1, 1, 1, description, range);
+        var access = new GraphResourceAccess(
+            new RenderPassId(7, 0),
+            version,
+            range,
+            GraphResourceState.OffscreenOutput,
+            contentsValid: true);
+
+        Assert.That(access.RequiredState, Is.EqualTo(GraphResourceState.OffscreenOutput));
+    }
+
+    [Test]
     public void StorageReadWritePairMapsBothVersionsToOneRequiredState()
     {
         var pass = new RenderPassId(7, 0);

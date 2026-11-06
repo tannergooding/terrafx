@@ -13,6 +13,7 @@ internal sealed class VulkanGraphResourceStateMapperTests
 {
     [TestCase(GraphResourceState.Undefined, VkAccessFlags2.VK_ACCESS_2_NONE)]
     [TestCase(GraphResourceState.Present, VkAccessFlags2.VK_ACCESS_2_NONE)]
+    [TestCase(GraphResourceState.OffscreenOutput, VkAccessFlags2.VK_ACCESS_2_NONE)]
     [TestCase(GraphResourceState.CopySource, VkAccessFlags2.VK_ACCESS_2_TRANSFER_READ_BIT)]
     [TestCase(GraphResourceState.CopyDestination, VkAccessFlags2.VK_ACCESS_2_TRANSFER_WRITE_BIT)]
     [TestCase(GraphResourceState.VertexRead, VkAccessFlags2.VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT)]
@@ -43,6 +44,7 @@ internal sealed class VulkanGraphResourceStateMapperTests
 
     [TestCase(GraphResourceState.Undefined, VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED)]
     [TestCase(GraphResourceState.General, VkImageLayout.VK_IMAGE_LAYOUT_GENERAL)]
+    [TestCase(GraphResourceState.OffscreenOutput, VkImageLayout.VK_IMAGE_LAYOUT_GENERAL)]
     [TestCase(GraphResourceState.CopySource, VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)]
     [TestCase(GraphResourceState.CopyDestination, VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)]
     [TestCase(GraphResourceState.ShaderSampledRead, VkImageLayout.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)]
@@ -93,6 +95,9 @@ internal sealed class VulkanGraphResourceStateMapperTests
     [Test]
     public void TransferAndAttachmentStatesUsePrecisePipelineStages()
     {
+        Assert.That(
+            VulkanGraphResourceStateMapper.GetStageMask(GraphResourceState.OffscreenOutput),
+            Is.EqualTo(VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE));
         Assert.That(
             VulkanGraphResourceStateMapper.GetStageMask(GraphResourceState.CopySource),
             Is.EqualTo(VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT));

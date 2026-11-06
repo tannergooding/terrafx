@@ -91,6 +91,7 @@ internal sealed class D3D12GraphResourceStateMapperTests
     [TestCase(TextureFormat.Rgba16Float, GraphResourceState.StorageReadWrite, D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_UNORDERED_ACCESS)]
     [TestCase(TextureFormat.Rgba16Float, GraphResourceState.ColorAttachment, D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_RENDER_TARGET)]
     [TestCase(TextureFormat.Rgba16Float, GraphResourceState.Present, D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_PRESENT)]
+    [TestCase(TextureFormat.Rgba16Float, GraphResourceState.OffscreenOutput, D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON)]
     [TestCase(TextureFormat.D32Float, GraphResourceState.Undefined, D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON)]
     [TestCase(TextureFormat.D32Float, GraphResourceState.General, D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON)]
     [TestCase(TextureFormat.D32Float, GraphResourceState.CopySource, D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_SOURCE)]

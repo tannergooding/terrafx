@@ -100,6 +100,7 @@ internal static class D3D12GraphResourceStateMapper
             GraphResourceState.DepthRead => D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_DEPTH_READ,
             GraphResourceState.DepthWrite => D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_DEPTH_WRITE,
             GraphResourceState.Present => D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_PRESENT,
+            GraphResourceState.OffscreenOutput => D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON,
             _ => throw new ArgumentOutOfRangeException(nameof(state)),
         };
     }
@@ -123,7 +124,7 @@ internal static class D3D12GraphResourceStateMapper
             GraphResourceState.StorageRead or GraphResourceState.StorageWrite or GraphResourceState.StorageReadWrite => TextureUsage.Storage,
             GraphResourceState.ColorAttachment => TextureUsage.ColorAttachment,
             GraphResourceState.DepthRead or GraphResourceState.DepthWrite => TextureUsage.DepthAttachment,
-            GraphResourceState.Present => TextureUsage.ColorAttachment,
+            GraphResourceState.Present or GraphResourceState.OffscreenOutput => TextureUsage.ColorAttachment,
             _ => throw new ArgumentOutOfRangeException(nameof(state)),
         };
 }

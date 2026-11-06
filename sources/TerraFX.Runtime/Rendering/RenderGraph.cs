@@ -141,11 +141,11 @@ public sealed class RenderGraph
 
         if (!_presentationPassId.HasValue)
         {
-            _presentationPassId = _resources.AddPresentationSourcePass(
+            _presentationPassId = _resources.AddOffscreenOutputSourcePass(
                 _presentationSource
                     ?? throw new InvalidOperationException("The graph has no selected presentation source."),
                 new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
-            _passKinds.Add(_presentationPassId.Value, RenderGraphPassKind.Presentation);
+            _passKinds.Add(_presentationPassId.Value, RenderGraphPassKind.OffscreenOutput);
             _isSealed = true;
             validation = _resources.ValidateCompilation();
         }
@@ -429,7 +429,8 @@ public sealed class RenderGraph
         EnsureCanMutate();
         ArgumentNullException.ThrowIfNull(description);
 
-        if (!Enum.IsDefined(passKind) || (passKind == RenderGraphPassKind.Presentation))
+        if (!Enum.IsDefined(passKind)
+            || (passKind is RenderGraphPassKind.Presentation or RenderGraphPassKind.OffscreenOutput))
         {
             throw new ArgumentOutOfRangeException(nameof(passKind));
         }

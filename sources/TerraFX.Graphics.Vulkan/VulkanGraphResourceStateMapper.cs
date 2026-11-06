@@ -21,7 +21,8 @@ internal static class VulkanGraphResourceStateMapper
         }
 
         return state switch {
-            GraphResourceState.Undefined or GraphResourceState.Present => VkAccessFlags2.VK_ACCESS_2_NONE,
+            GraphResourceState.Undefined or GraphResourceState.Present or GraphResourceState.OffscreenOutput
+                => VkAccessFlags2.VK_ACCESS_2_NONE,
             GraphResourceState.CopySource => VkAccessFlags2.VK_ACCESS_2_TRANSFER_READ_BIT,
             GraphResourceState.CopyDestination => VkAccessFlags2.VK_ACCESS_2_TRANSFER_WRITE_BIT,
             GraphResourceState.VertexRead => VkAccessFlags2.VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT,
@@ -60,6 +61,7 @@ internal static class VulkanGraphResourceStateMapper
             GraphResourceState.ShaderSampledRead => VkImageLayout.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             GraphResourceState.StorageRead or GraphResourceState.StorageWrite or GraphResourceState.StorageReadWrite or GraphResourceState.General
                 => VkImageLayout.VK_IMAGE_LAYOUT_GENERAL,
+            GraphResourceState.OffscreenOutput => VkImageLayout.VK_IMAGE_LAYOUT_GENERAL,
             GraphResourceState.ColorAttachment => VkImageLayout.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             GraphResourceState.DepthRead => VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
             GraphResourceState.DepthWrite => VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
@@ -100,7 +102,7 @@ internal static class VulkanGraphResourceStateMapper
         }
 
         return state switch {
-            GraphResourceState.Undefined or GraphResourceState.Present
+            GraphResourceState.Undefined or GraphResourceState.Present or GraphResourceState.OffscreenOutput
                 => VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE,
             GraphResourceState.CopySource or GraphResourceState.CopyDestination
                 => VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,

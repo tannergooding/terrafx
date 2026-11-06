@@ -8,4 +8,5 @@ internal enum RenderGraphPassKind
     Compute,
     Copy,
     Presentation,
+    OffscreenOutput,
 }

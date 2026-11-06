@@ -49,4 +49,7 @@ public enum GraphResourceState
 
     /// <summary>The resource is read and written as storage data.</summary>
     StorageReadWrite = 14,
+
+    /// <summary>The final offscreen color range is available without presentation or further access.</summary>
+    OffscreenOutput = 15,
 }

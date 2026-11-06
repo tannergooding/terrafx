@@ -40,7 +40,8 @@ public sealed partial class RenderGraphPlan
                     RenderGraphPassKind.Copy => CommandRecorderPassKind.Copy,
                     RenderGraphPassKind.Compute => CommandRecorderPassKind.Compute,
                     RenderGraphPassKind.Raster => CommandRecorderPassKind.Raster,
-                    RenderGraphPassKind.Presentation => throw new InvalidOperationException("The synthetic presentation pass cannot have a recording callback."),
+                    RenderGraphPassKind.Presentation or RenderGraphPassKind.OffscreenOutput
+                        => throw new InvalidOperationException("A synthetic terminal-output pass cannot have a recording callback."),
                     _ => throw new ArgumentOutOfRangeException(nameof(passKind)),
                 };
                 var accesses = ImmutableArray.CreateBuilder<GraphResourceAccess>();

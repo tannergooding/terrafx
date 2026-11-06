@@ -823,6 +823,19 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(compiledReadWrite.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
             Assert.That(compiledReadWrite.Diagnostics, Is.Empty);
             Assert.That(compiledReadWrite.Plan, Is.Not.Null);
+            var compiledReadWritePlan = compiledReadWrite.Plan
+                ?? throw new InvalidOperationException("The compiled graph response did not contain its plan.");
+            var hasOffscreenOutputTransition = false;
+            var hasPresentTransition = false;
+
+            foreach (var transition in compiledReadWritePlan.StateTransitions)
+            {
+                hasOffscreenOutputTransition |= transition.AfterState == GraphResourceState.OffscreenOutput;
+                hasPresentTransition |= transition.AfterState == GraphResourceState.Present;
+            }
+
+            Assert.That(hasOffscreenOutputTransition, Is.True);
+            Assert.That(hasPresentTransition, Is.False);
 
             var cycleGraph = new RenderGraph(new RenderGraphOptions(
                 Guid.NewGuid(),
