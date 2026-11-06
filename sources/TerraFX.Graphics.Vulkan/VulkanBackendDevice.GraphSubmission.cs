@@ -252,6 +252,65 @@ internal sealed unsafe partial class VulkanBackendDevice
 
             foreach (var pass in submission.Passes)
             {
+                foreach (var import in submission.BufferImports)
+                {
+                    if (((import.Version.Description.Usage & BufferUsage.Storage) == 0)
+                        || !submission.HasPriorStorageWriteHazard(pass.PassId, import.Version.ResourceId))
+                    {
+                        continue;
+                    }
+
+                    var buffer = submission.GetBuffer(import.Version.ResourceId) as VulkanBackendBuffer
+                        ?? throw new InvalidOperationException("The graph storage hazard lost its Vulkan buffer.");
+                    var shaderStages = GetShaderStageMask(pass, import.Version.ResourceId);
+                    var storageAccess = VulkanGraphResourceStateMapper.GetAccessMask(GraphResourceState.StorageReadWrite);
+                    RecordBufferBarrier(
+                        buffer,
+                        import.Version.Range.ByteOffset,
+                        checked((nint)import.Version.Range.ByteLength),
+                        shaderStages,
+                        storageAccess,
+                        shaderStages,
+                        storageAccess);
+                }
+
+                for (var importIndex = 1; importIndex < submission.TextureImports.Length; importIndex++)
+                {
+                    var import = submission.TextureImports[importIndex];
+
+                    if (((import.Version.Description.Usage & TextureUsage.Storage) == 0)
+                        || !submission.HasPriorStorageWriteHazard(pass.PassId, import.Version.ResourceId))
+                    {
+                        continue;
+                    }
+
+                    var texture = submission.GetTexture(import.Version.ResourceId) as VulkanBackendTexture
+                        ?? throw new InvalidOperationException("The graph storage hazard lost its Vulkan texture.");
+                    var shaderStages = GetShaderStageMask(pass, import.Version.ResourceId);
+                    var storageAccess = VulkanGraphResourceStateMapper.GetAccessMask(GraphResourceState.StorageReadWrite);
+                    var barrier = default(VkImageMemoryBarrier2);
+                    barrier.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                    barrier.srcStageMask = shaderStages;
+                    barrier.srcAccessMask = storageAccess;
+                    barrier.dstStageMask = shaderStages;
+                    barrier.dstAccessMask = storageAccess;
+                    barrier.oldLayout = VkImageLayout.VK_IMAGE_LAYOUT_GENERAL;
+                    barrier.newLayout = VkImageLayout.VK_IMAGE_LAYOUT_GENERAL;
+                    barrier.srcQueueFamilyIndex = uint.MaxValue;
+                    barrier.dstQueueFamilyIndex = uint.MaxValue;
+                    barrier.image = texture.Image;
+                    barrier.subresourceRange.aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT;
+                    barrier.subresourceRange.baseMipLevel = checked((uint)import.Version.Range.FirstMip);
+                    barrier.subresourceRange.levelCount = checked((uint)import.Version.Range.MipCount);
+                    barrier.subresourceRange.baseArrayLayer = checked((uint)import.Version.Range.FirstLayer);
+                    barrier.subresourceRange.layerCount = checked((uint)import.Version.Range.LayerCount);
+                    var dependencyInfo = default(VkDependencyInfo);
+                    dependencyInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                    dependencyInfo.imageMemoryBarrierCount = 1;
+                    dependencyInfo.pImageMemoryBarriers = &barrier;
+                    VulkanApi.vkCmdPipelineBarrier2(_commandBuffer, &dependencyInfo);
+                }
+
                 foreach (var transition in submission.StateTransitions)
                 {
                     if (transition.PassId != pass.PassId)

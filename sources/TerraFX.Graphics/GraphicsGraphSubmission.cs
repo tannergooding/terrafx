@@ -97,6 +97,50 @@ internal sealed class GraphicsGraphSubmission
             ?? throw new InvalidOperationException("The imported texture lost its backend resource.");
     }
 
+    internal bool HasPriorStorageWriteHazard(RenderPassId passId, ulong resourceId)
+    {
+        var priorWrites = new List<GraphResourceAccess>();
+
+        foreach (var orderedPass in OrderedPasses)
+        {
+            if (orderedPass == passId)
+            {
+                foreach (var currentAccess in Accesses)
+                {
+                    if ((currentAccess.PassId != passId)
+                        || (currentAccess.ResourceId != resourceId)
+                        || !currentAccess.IsStorageReadWritePair)
+                    {
+                        continue;
+                    }
+
+                    foreach (var priorWrite in priorWrites)
+                    {
+                        if (priorWrite.Overlaps(currentAccess))
+                        {
+                            return true;
+                        }
+                    }
+                }
+
+                return false;
+            }
+
+            foreach (var access in Accesses)
+            {
+                if ((access.PassId == orderedPass)
+                    && (access.ResourceId == resourceId)
+                    && access.IsStorageReadWritePair
+                    && access.IsWrite)
+                {
+                    priorWrites.Add(access);
+                }
+            }
+        }
+
+        throw new ArgumentException("The pass is not part of this ordered graph.", nameof(passId));
+    }
+
     internal void RecordCompletedOwnerStates()
     {
         foreach (var passId in OrderedPasses)

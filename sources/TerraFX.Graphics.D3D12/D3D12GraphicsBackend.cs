@@ -1575,6 +1575,36 @@ public static unsafe class D3D12GraphicsBackend
 
                     foreach (var pass in submission.Passes)
                     {
+                        foreach (var import in submission.BufferImports)
+                        {
+                            if (((import.Version.Description.Usage & BufferUsage.Storage) == 0)
+                                || !submission.HasPriorStorageWriteHazard(pass.PassId, import.Version.ResourceId))
+                            {
+                                continue;
+                            }
+
+                            var buffer = submission.GetBuffer(import.Version.ResourceId) as D3D12BackendBuffer
+                                ?? throw new InvalidOperationException("The graph storage hazard lost its D3D12 buffer.");
+                            var barrier = D3D12_RESOURCE_BARRIER.InitUAV(buffer.GetResource());
+                            commandList->ResourceBarrier(1, &barrier);
+                        }
+
+                        for (var importIndex = 1; importIndex < submission.TextureImports.Length; importIndex++)
+                        {
+                            var import = submission.TextureImports[importIndex];
+
+                            if (((import.Version.Description.Usage & TextureUsage.Storage) == 0)
+                                || !submission.HasPriorStorageWriteHazard(pass.PassId, import.Version.ResourceId))
+                            {
+                                continue;
+                            }
+
+                            var texture = submission.GetTexture(import.Version.ResourceId) as D3D12BackendTexture
+                                ?? throw new InvalidOperationException("The graph storage hazard lost its D3D12 texture.");
+                            var barrier = D3D12_RESOURCE_BARRIER.InitUAV(texture.GetResource());
+                            commandList->ResourceBarrier(1, &barrier);
+                        }
+
                         foreach (var transition in submission.StateTransitions)
                         {
                             if (transition.PassId != pass.PassId)
