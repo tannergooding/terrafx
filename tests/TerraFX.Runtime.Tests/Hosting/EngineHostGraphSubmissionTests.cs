@@ -662,12 +662,15 @@ internal sealed partial class EngineHostOptionsTests
             var receipt = await renderer.SubmitAsync(renderSnapshot, plan).ConfigureAwait(false);
             RenderSubmissionReceipt? secondReceipt = null;
 
-            if (!useStorageResources)
             {
                 var secondGraph = renderer.BuildGraph(renderSnapshot, target);
-                var secondBufferBindings = ImmutableArray.CreateBuilder<BufferBinding>(useUniformBuffer ? 1 : 0);
-                var secondTextureBindings = ImmutableArray.CreateBuilder<TextureBinding>(useSampledTexture ? 1 : 0);
+                var secondBufferBindings = ImmutableArray.CreateBuilder<BufferBinding>(
+                    (useUniformBuffer ? 1 : 0) + (useStorageResources ? 1 : 0));
+                var secondTextureBindings = ImmutableArray.CreateBuilder<TextureBinding>(
+                    (useSampledTexture ? 1 : 0) + (useStorageResources ? 1 : 0));
                 var secondSamplerBindings = ImmutableArray.CreateBuilder<SamplerBinding>(useSampledTexture ? 1 : 0);
+                GraphBufferVersion? secondStorageBufferInitialVersion = null;
+                GraphTextureVersion? secondStorageImageInitialVersion = null;
 
                 if (frameUniformBuffer is GpuBuffer secondSelectedBuffer)
                 {
@@ -709,12 +712,27 @@ internal sealed partial class EngineHostOptionsTests
                             ?? throw new InvalidOperationException("The sampled Frame pipeline has no sampler.")));
                 }
 
-                if (useUniformBuffer || useSampledTexture)
+                if (storageBuffer is GpuBuffer secondStorageBuffer)
                 {
-                    secondFrameBindingSet = new BindingSet(
-                        secondBufferBindings.MoveToImmutable(),
-                        secondTextureBindings.MoveToImmutable(),
-                        secondSamplerBindings.MoveToImmutable());
+                    var range = new GraphBufferRange(0, secondStorageBuffer.ByteLength);
+                    secondStorageBufferInitialVersion = secondGraph.ImportBuffer(
+                        secondStorageBuffer,
+                        range,
+                        new GraphImportOptions(
+                            GraphResourceState.StorageReadWrite,
+                            contentsValid: true,
+                            completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                }
+
+                if (storageImage is GpuTexture secondStorageImage)
+                {
+                    secondStorageImageInitialVersion = secondGraph.ImportTexture(
+                        secondStorageImage,
+                        sampleRange,
+                        new GraphImportOptions(
+                            GraphResourceState.StorageReadWrite,
+                            contentsValid: true,
+                            completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
                 }
 
                 var secondPass = secondGraph.AddRasterPass(
@@ -737,6 +755,42 @@ internal sealed partial class EngineHostOptionsTests
                         secondSampledTextureVersion,
                         GraphTextureUsage.SampledRead,
                         secondSampledTextureVersion.Range);
+                }
+
+                if (secondStorageBufferInitialVersion is GraphBufferVersion storageBufferVersion)
+                {
+                    var secondStorageBufferWriteVersion = secondGraph.ReadWriteBuffer(
+                        secondPass,
+                        storageBufferVersion,
+                        storageBufferVersion.Range);
+                    secondBufferBindings.Add(new BufferBinding(
+                        ShaderBindingGroup.Frame,
+                        0,
+                        ShaderResourceKind.StorageBuffer,
+                        secondStorageBufferWriteVersion,
+                        storageBufferVersion.Range));
+                }
+
+                if (secondStorageImageInitialVersion is GraphTextureVersion storageImageVersion)
+                {
+                    var secondStorageImageWriteVersion = secondGraph.ReadWriteTexture(
+                        secondPass,
+                        storageImageVersion,
+                        sampleRange);
+                    secondTextureBindings.Add(new TextureBinding(
+                        ShaderBindingGroup.Frame,
+                        1,
+                        ShaderResourceKind.StorageImage,
+                        secondStorageImageWriteVersion,
+                        sampleRange));
+                }
+
+                if (useUniformBuffer || useSampledTexture || useStorageResources)
+                {
+                    secondFrameBindingSet = new BindingSet(
+                        secondBufferBindings.MoveToImmutable(),
+                        secondTextureBindings.MoveToImmutable(),
+                        secondSamplerBindings.MoveToImmutable());
                 }
 
                 var secondOutputVersion = secondGraph.WriteColorAttachment(
@@ -769,7 +823,7 @@ internal sealed partial class EngineHostOptionsTests
                 }
                 else
                 {
-                    Assert.That(useStorageResources, Is.True);
+                    Assert.Fail("The graph witness omitted its second submission.");
                 }
             });
 
@@ -797,9 +851,9 @@ internal sealed partial class EngineHostOptionsTests
             var expectedBlue = useStorageResources
                 ? (byte)255
                 : (useSampledTexture ? (byte)224 : (useUniformBuffer ? (byte)0 : (byte)255));
-            var expectedBackgroundRed = useStorageResources ? 64 : 191;
-            var expectedBackgroundGreen = useStorageResources ? 128 : 64;
-            var expectedBackgroundBlue = useStorageResources ? 191 : 128;
+            var expectedBackgroundRed = 191;
+            var expectedBackgroundGreen = 64;
+            var expectedBackgroundBlue = 128;
 
             for (var y = 0; y < readback.Height; y++)
             {
@@ -854,7 +908,7 @@ internal sealed partial class EngineHostOptionsTests
 
                 Assert.That(
                     BitConverter.ToUInt32(storageBufferBytes, 0),
-                    Is.EqualTo(4u));
+                    Is.EqualTo(6u));
 
                 var storageImageForReadback = storageImage
                     ?? throw new InvalidOperationException("The graph storage test has no storage image.");
@@ -872,7 +926,7 @@ internal sealed partial class EngineHostOptionsTests
 
                 Assert.That(
                     BitConverter.ToUInt32(storageImageBytes, 0),
-                    Is.EqualTo(4u));
+                    Is.EqualTo(6u));
             }
 
             var finalReceipt = secondReceipt ?? receipt;

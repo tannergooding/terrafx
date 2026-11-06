@@ -254,22 +254,33 @@ internal sealed unsafe partial class VulkanBackendDevice
             {
                 foreach (var import in submission.BufferImports)
                 {
-                    if (((import.Version.Description.Usage & BufferUsage.Storage) == 0)
-                        || !submission.HasPriorStorageWriteHazard(pass.PassId, import.Version.ResourceId))
+                    if ((import.Version.Description.Usage & BufferUsage.Storage) == 0)
                     {
                         continue;
                     }
 
-                    var buffer = submission.GetBuffer(import.Version.ResourceId) as VulkanBackendBuffer
+                    var resourceId = import.Version.ResourceId;
+                    var initialUseNeedsBarrier = (import.InitialState == GraphResourceState.StorageReadWrite)
+                        && submission.HasFirstStorageUse(pass.PassId, resourceId);
+                    var priorPassNeedsBarrier = submission.HasPriorStorageWriteHazard(pass.PassId, resourceId);
+
+                    if (!initialUseNeedsBarrier && !priorPassNeedsBarrier)
+                    {
+                        continue;
+                    }
+
+                    var buffer = submission.GetBuffer(resourceId) as VulkanBackendBuffer
                         ?? throw new InvalidOperationException("The graph storage hazard lost its Vulkan buffer.");
-                    var shaderStages = GetShaderStageMask(pass, import.Version.ResourceId);
+                    var shaderStages = GetShaderStageMask(pass, resourceId);
                     var storageAccess = VulkanGraphResourceStateMapper.GetAccessMask(GraphResourceState.StorageReadWrite);
+                    var sourceStage = initialUseNeedsBarrier ? buffer.LastStageMask : shaderStages;
+                    var sourceAccess = initialUseNeedsBarrier ? buffer.LastAccessMask : storageAccess;
                     RecordBufferBarrier(
                         buffer,
                         import.Version.Range.ByteOffset,
                         checked((nint)import.Version.Range.ByteLength),
-                        shaderStages,
-                        storageAccess,
+                        sourceStage,
+                        sourceAccess,
                         shaderStages,
                         storageAccess);
                 }
@@ -278,20 +289,37 @@ internal sealed unsafe partial class VulkanBackendDevice
                 {
                     var import = submission.TextureImports[importIndex];
 
-                    if (((import.Version.Description.Usage & TextureUsage.Storage) == 0)
-                        || !submission.HasPriorStorageWriteHazard(pass.PassId, import.Version.ResourceId))
+                    if ((import.Version.Description.Usage & TextureUsage.Storage) == 0)
                     {
                         continue;
                     }
 
-                    var texture = submission.GetTexture(import.Version.ResourceId) as VulkanBackendTexture
+                    var resourceId = import.Version.ResourceId;
+                    var initialUseNeedsBarrier = (import.InitialState == GraphResourceState.StorageReadWrite)
+                        && submission.HasFirstStorageUse(pass.PassId, resourceId);
+                    var priorPassNeedsBarrier = submission.HasPriorStorageWriteHazard(pass.PassId, resourceId);
+
+                    if (!initialUseNeedsBarrier && !priorPassNeedsBarrier)
+                    {
+                        continue;
+                    }
+
+                    var texture = submission.GetTexture(resourceId) as VulkanBackendTexture
                         ?? throw new InvalidOperationException("The graph storage hazard lost its Vulkan texture.");
-                    var shaderStages = GetShaderStageMask(pass, import.Version.ResourceId);
+                    var shaderStages = GetShaderStageMask(pass, resourceId);
                     var storageAccess = VulkanGraphResourceStateMapper.GetAccessMask(GraphResourceState.StorageReadWrite);
+                    var sourceStage = initialUseNeedsBarrier ? storageCurrentStageMask : shaderStages;
+                    var sourceAccess = initialUseNeedsBarrier ? storageCurrentAccessMask : storageAccess;
+
+                    if (storageCurrentLayout != VulkanGraphResourceStateMapper.GetImageLayout(import.InitialState))
+                    {
+                        throw new InvalidOperationException("The storage barrier does not match the Vulkan texture's tracked image layout.");
+                    }
+
                     var barrier = default(VkImageMemoryBarrier2);
                     barrier.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-                    barrier.srcStageMask = shaderStages;
-                    barrier.srcAccessMask = storageAccess;
+                    barrier.srcStageMask = sourceStage;
+                    barrier.srcAccessMask = sourceAccess;
                     barrier.dstStageMask = shaderStages;
                     barrier.dstAccessMask = storageAccess;
                     barrier.oldLayout = VkImageLayout.VK_IMAGE_LAYOUT_GENERAL;

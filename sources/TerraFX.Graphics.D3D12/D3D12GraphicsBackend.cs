@@ -1577,8 +1577,17 @@ public static unsafe class D3D12GraphicsBackend
                     {
                         foreach (var import in submission.BufferImports)
                         {
-                            if (((import.Version.Description.Usage & BufferUsage.Storage) == 0)
-                                || !submission.HasPriorStorageWriteHazard(pass.PassId, import.Version.ResourceId))
+                            if ((import.Version.Description.Usage & BufferUsage.Storage) == 0)
+                            {
+                                continue;
+                            }
+
+                            var resourceId = import.Version.ResourceId;
+                            var initialUseNeedsBarrier = (import.InitialState == GraphResourceState.StorageReadWrite)
+                                && submission.HasFirstStorageUse(pass.PassId, resourceId);
+                            var priorPassNeedsBarrier = submission.HasPriorStorageWriteHazard(pass.PassId, resourceId);
+
+                            if (!initialUseNeedsBarrier && !priorPassNeedsBarrier)
                             {
                                 continue;
                             }
@@ -1593,8 +1602,17 @@ public static unsafe class D3D12GraphicsBackend
                         {
                             var import = submission.TextureImports[importIndex];
 
-                            if (((import.Version.Description.Usage & TextureUsage.Storage) == 0)
-                                || !submission.HasPriorStorageWriteHazard(pass.PassId, import.Version.ResourceId))
+                            if ((import.Version.Description.Usage & TextureUsage.Storage) == 0)
+                            {
+                                continue;
+                            }
+
+                            var resourceId = import.Version.ResourceId;
+                            var initialUseNeedsBarrier = (import.InitialState == GraphResourceState.StorageReadWrite)
+                                && submission.HasFirstStorageUse(pass.PassId, resourceId);
+                            var priorPassNeedsBarrier = submission.HasPriorStorageWriteHazard(pass.PassId, resourceId);
+
+                            if (!initialUseNeedsBarrier && !priorPassNeedsBarrier)
                             {
                                 continue;
                             }

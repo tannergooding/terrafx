@@ -97,6 +97,42 @@ internal sealed class GraphicsGraphSubmission
             ?? throw new InvalidOperationException("The imported texture lost its backend resource.");
     }
 
+    internal bool HasFirstStorageUse(RenderPassId passId, ulong resourceId)
+    {
+        var hasPriorStorageWrite = false;
+
+        foreach (var orderedPass in OrderedPasses)
+        {
+            if (orderedPass == passId)
+            {
+                foreach (var access in Accesses)
+                {
+                    if ((access.PassId == passId)
+                        && (access.ResourceId == resourceId)
+                        && access.IsStorageReadWritePair)
+                    {
+                        return !hasPriorStorageWrite;
+                    }
+                }
+
+                return false;
+            }
+
+            foreach (var access in Accesses)
+            {
+                if ((access.PassId == orderedPass)
+                    && (access.ResourceId == resourceId)
+                    && access.IsStorageReadWritePair
+                    && access.IsWrite)
+                {
+                    hasPriorStorageWrite = true;
+                }
+            }
+        }
+
+        throw new ArgumentException("The pass is not part of this ordered graph.", nameof(passId));
+    }
+
     internal bool HasPriorStorageWriteHazard(RenderPassId passId, ulong resourceId)
     {
         var priorWrites = new List<GraphResourceAccess>();
