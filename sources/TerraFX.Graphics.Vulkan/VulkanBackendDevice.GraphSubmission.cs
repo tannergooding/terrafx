@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using TerraFX.Graphics;
 using TerraFX.Interop.Vulkan;
@@ -57,28 +58,43 @@ internal sealed unsafe partial class VulkanBackendDevice
                     continue;
                 }
 
-                foreach (var reflection in selectedPipeline.BindingLayout.ShaderReflections)
+                AddStages(selectedPipeline, binding.Group, binding.Binding, binding.Kind);
+            }
+
+            foreach (var binding in bindings.Textures)
+            {
+                if (binding.Resource.ResourceId != resourceId)
                 {
-                    foreach (var resource in reflection.Resources)
-                    {
-                        if ((resource.Group == binding.Group)
-                            && (resource.Binding == binding.Binding)
-                            && (resource.Kind == binding.Kind))
-                        {
-                            stageMask |= reflection.Stage switch {
-                                ShaderStage.Vertex => VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
-                                ShaderStage.Pixel => VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                                ShaderStage.Compute => VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                _ => throw new NotSupportedException(
-                                    $"Vulkan graph submission does not support {reflection.Stage} resource stages."),
-                            };
-                        }
-                    }
+                    continue;
                 }
+
+                AddStages(selectedPipeline, binding.Group, binding.Binding, binding.Kind);
             }
         }
 
         return stageMask;
+
+        void AddStages(GpuPipeline selectedPipeline, ShaderBindingGroup group, int binding, ShaderResourceKind kind)
+        {
+            foreach (var reflection in selectedPipeline.BindingLayout.ShaderReflections)
+            {
+                foreach (var resource in reflection.Resources)
+                {
+                    if ((resource.Group == group)
+                        && (resource.Binding == binding)
+                        && (resource.Kind == kind))
+                    {
+                        stageMask |= reflection.Stage switch {
+                            ShaderStage.Vertex => VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                            ShaderStage.Pixel => VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                            ShaderStage.Compute => VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                            _ => throw new NotSupportedException(
+                                $"Vulkan graph submission does not support {reflection.Stage} resource stages."),
+                        };
+                    }
+                }
+            }
+        }
     }
 
     [SuppressMessage(
@@ -119,6 +135,12 @@ internal sealed unsafe partial class VulkanBackendDevice
         var descriptorSets = new List<VulkanBackendDescriptorSet>(descriptorSetCapacity);
         _ = _uncertainGraphDescriptorSets.EnsureCapacity(
             checked(_uncertainGraphDescriptorSets.Count + descriptorSetCapacity));
+        var targetResourceId = submission.TextureImports[0].Version.ResourceId;
+        var sampledTextureImport = (submission.TextureImports.Length == 2) ? submission.TextureImports[1] : null;
+        var sampledTextureResourceId = sampledTextureImport?.Version.ResourceId ?? 0;
+        VulkanBackendTexture? sampledTexture = null;
+        var sampledTextureStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
+        var sampledTextureAccessMask = VkAccessFlags2.VK_ACCESS_2_NONE;
         VulkanBackendBuffer? graphBuffer = null;
         var graphBufferStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
         var graphBufferAccessMask = VkAccessFlags2.VK_ACCESS_2_NONE;
@@ -127,14 +149,28 @@ internal sealed unsafe partial class VulkanBackendDevice
         {
             foreach (var access in submission.Accesses)
             {
-                if (access.IsTexture || (access.PassId != pass.PassId))
+                if (access.PassId != pass.PassId)
                 {
+                    continue;
+                }
+
+                var shaderStages = GetShaderStageMask(pass, access.ResourceId);
+
+                if (access.IsTexture)
+                {
+                    if (access.ResourceId == sampledTextureResourceId)
+                    {
+                        sampledTexture = submission.GetTexture(access.ResourceId) as VulkanBackendTexture
+                            ?? throw new InvalidOperationException("The Frame sampled image is not a Vulkan texture.");
+                        sampledTextureStageMask |= VulkanGraphResourceStateMapper.GetStageMask(access.RequiredState, shaderStages);
+                        sampledTextureAccessMask |= VulkanGraphResourceStateMapper.GetAccessMask(access.RequiredState);
+                    }
+
                     continue;
                 }
 
                 graphBuffer = submission.GetBuffer(access.ResourceId) as VulkanBackendBuffer
                     ?? throw new InvalidOperationException("The graph uniform buffer is not a Vulkan buffer.");
-                var shaderStages = GetShaderStageMask(pass, access.ResourceId);
                 graphBufferStageMask |= VulkanGraphResourceStateMapper.GetStageMask(access.RequiredState, shaderStages);
                 graphBufferAccessMask |= VulkanGraphResourceStateMapper.GetAccessMask(access.RequiredState);
             }
@@ -145,6 +181,12 @@ internal sealed unsafe partial class VulkanBackendDevice
         var currentLayout = target.GetLayout(subresource);
         var currentStageMask = target.GetLastStageMask(subresource);
         var currentAccessMask = target.GetLastAccessMask(subresource);
+        var sampledSubresource = new TextureSubresource(0, 0, TextureAspect.Color);
+        var sampledCurrentLayout = sampledTexture?.GetLayout(sampledSubresource) ?? default;
+        var sampledCurrentStageMask = sampledTexture?.GetLastStageMask(sampledSubresource)
+            ?? VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
+        var sampledCurrentAccessMask = sampledTexture?.GetLastAccessMask(sampledSubresource)
+            ?? VkAccessFlags2.VK_ACCESS_2_NONE;
         var ownsImageView = true;
 
         try
@@ -164,12 +206,31 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                     if (transition.IsTexture)
                     {
-                        RecordGraphImageBarrier(
-                            target,
-                            transition,
-                            ref currentLayout,
-                            ref currentStageMask,
-                            ref currentAccessMask);
+                        if (transition.ResourceId == targetResourceId)
+                        {
+                            RecordGraphImageBarrier(
+                                pass,
+                                target,
+                                transition,
+                                ref currentLayout,
+                                ref currentStageMask,
+                                ref currentAccessMask);
+                        }
+                        else if ((sampledTexture is not null)
+                            && (transition.ResourceId == sampledTextureResourceId))
+                        {
+                            RecordGraphImageBarrier(
+                                pass,
+                                sampledTexture,
+                                transition,
+                                ref sampledCurrentLayout,
+                                ref sampledCurrentStageMask,
+                                ref sampledCurrentAccessMask);
+                        }
+                        else
+                        {
+                            throw new NotSupportedException("The graph transition references an unsupported Vulkan texture.");
+                        }
                     }
                     else
                     {
@@ -242,19 +303,55 @@ internal sealed unsafe partial class VulkanBackendDevice
                                 ?? throw new InvalidOperationException("A recorded binding set has no preceding Vulkan pipeline.");
                             var bindings = command.Bindings
                                 ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
-                            var binding = bindings.Buffers[0];
-                            var buffer = submission.GetBuffer(binding.Resource.ResourceId) as VulkanBackendBuffer
-                                ?? throw new InvalidOperationException("The Frame uniform binding is not a Vulkan buffer.");
-                            var descriptorSet = CreateUniformBufferDescriptorSet(
+                            var uniformBufferBindings =
+                                ImmutableArray.CreateBuilder<VulkanBackendUniformBufferBinding>(bindings.Buffers.Length);
+
+                            foreach (var binding in bindings.Buffers)
+                            {
+                                var buffer = submission.GetBuffer(binding.Resource.ResourceId) as VulkanBackendBuffer
+                                    ?? throw new InvalidOperationException("A Frame uniform binding is not a Vulkan buffer.");
+                                uniformBufferBindings.Add(new VulkanBackendUniformBufferBinding(
+                                    binding.Group,
+                                    binding.Binding,
+                                    buffer,
+                                    binding.Range.ByteOffset,
+                                    binding.Range.ByteLength));
+                            }
+
+                            var sampledImageBindings =
+                                ImmutableArray.CreateBuilder<VulkanBackendSampledImageBinding>(bindings.Textures.Length);
+
+                            foreach (var binding in bindings.Textures)
+                            {
+                                var texture = submission.GetTexture(binding.Resource.ResourceId) as VulkanBackendTexture
+                                    ?? throw new InvalidOperationException("A Frame sampled-image binding is not a Vulkan texture.");
+                                sampledImageBindings.Add(new VulkanBackendSampledImageBinding(
+                                    binding.Group,
+                                    binding.Binding,
+                                    texture,
+                                    VkImageLayout.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+                            }
+
+                            var samplerBindings =
+                                ImmutableArray.CreateBuilder<VulkanBackendSamplerBinding>(bindings.Samplers.Length);
+
+                            foreach (var binding in bindings.Samplers)
+                            {
+                                var sampler = binding.Sampler.ResourceOwner.BackendResource as VulkanBackendSampler
+                                    ?? throw new InvalidOperationException("A Frame sampler lost its Vulkan backend resource.");
+                                samplerBindings.Add(new VulkanBackendSamplerBinding(
+                                    binding.Group,
+                                    binding.Binding,
+                                    sampler));
+                            }
+
+                            var descriptorSet = CreateFrameDescriptorSet(
                                 pipeline,
-                                [
-                                    new VulkanBackendUniformBufferBinding(
-                                        binding.Group,
-                                        binding.Binding,
-                                        buffer,
-                                        binding.Range.ByteOffset,
-                                        binding.Range.ByteLength),
-                                ]);
+                                uniformBufferBindings.MoveToImmutable(),
+                                [],
+                                sampledImageBindings.MoveToImmutable(),
+                                [],
+                                samplerBindings.MoveToImmutable());
                             descriptorSets.Add(descriptorSet);
                             var nativeDescriptorSet = descriptorSet.DescriptorSet;
                             VulkanApi.vkCmdBindDescriptorSets(
@@ -296,10 +393,26 @@ internal sealed unsafe partial class VulkanBackendDevice
                 throw new InvalidOperationException("The compiled graph did not transition its offscreen target to the output layout.");
             }
 
+            if (sampledTexture is not null
+                && (sampledCurrentLayout != VulkanGraphResourceStateMapper.GetImageLayout(GraphResourceState.ShaderSampledRead)))
+            {
+                throw new InvalidOperationException("The compiled graph did not transition its Frame sampled image to the shader-read layout.");
+            }
+
             var completedFence = SubmitAndWaitCore(retainedBuffer: null, retainedTexture: null);
             target.SetLayout(subresource, currentLayout);
             target.SetLastAccessScope(subresource, currentStageMask, currentAccessMask);
             target.MarkInitialized(subresource);
+
+            if (sampledTexture is not null)
+            {
+                sampledTexture.SetLayout(sampledSubresource, sampledCurrentLayout);
+                sampledTexture.SetLastAccessScope(
+                    sampledSubresource,
+                    sampledTextureStageMask,
+                    sampledTextureAccessMask);
+            }
+
             graphBuffer?.SetLastAccessScope(graphBufferStageMask, graphBufferAccessMask);
             return completedFence;
         }
@@ -394,6 +507,7 @@ internal sealed unsafe partial class VulkanBackendDevice
     }
 
     private void RecordGraphImageBarrier(
+        GraphicsGraphSubmissionPass pass,
         VulkanBackendTexture texture,
         GraphResourceStateTransition transition,
         ref VkImageLayout currentLayout,
@@ -403,6 +517,7 @@ internal sealed unsafe partial class VulkanBackendDevice
         if (transition.BeforeState is not (
             GraphResourceState.Undefined
             or GraphResourceState.General
+            or GraphResourceState.ShaderSampledRead
             or GraphResourceState.ColorAttachment
             or GraphResourceState.OffscreenOutput))
         {
@@ -435,6 +550,16 @@ internal sealed unsafe partial class VulkanBackendDevice
 
         switch (transition.AfterState)
         {
+            case GraphResourceState.ShaderSampledRead:
+            {
+                var shaderStages = GetShaderStageMask(pass, transition.ResourceId);
+                barrier.dstStageMask = VulkanGraphResourceStateMapper.GetStageMask(
+                    transition.AfterState,
+                    shaderStages);
+                barrier.dstAccessMask = VulkanGraphResourceStateMapper.GetAccessMask(transition.AfterState);
+                break;
+            }
+
             case GraphResourceState.ColorAttachment:
             {
                 barrier.dstStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -462,7 +587,7 @@ internal sealed unsafe partial class VulkanBackendDevice
         VulkanApi.vkCmdPipelineBarrier2(_commandBuffer, &dependencyInfo);
         currentLayout = afterLayout;
 
-        if (transition.AfterState == GraphResourceState.ColorAttachment)
+        if (transition.AfterState is GraphResourceState.ColorAttachment or GraphResourceState.ShaderSampledRead)
         {
             currentStageMask = barrier.dstStageMask;
             currentAccessMask = barrier.dstAccessMask;

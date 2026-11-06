@@ -302,7 +302,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                 throw new ArgumentException("A bound texture does not declare sampled usage.", nameof(imageBindings));
             }
 
-            imageInfos[index].imageLayout = GetSampledImageLayout(binding.Texture);
+            imageInfos[index].imageLayout = GetSampledImageLayout(binding.Texture, binding.ImageLayout);
             retainedSampledTextures[index] = binding.Texture;
 
             var write = default(VkWriteDescriptorSet);

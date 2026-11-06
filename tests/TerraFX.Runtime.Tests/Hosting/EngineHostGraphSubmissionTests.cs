@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Immutable;
 using System.IO;
 using System.Security.Cryptography;
 using System.Threading;
@@ -25,11 +26,18 @@ namespace TerraFX.Runtime.Tests.Hosting;
 
 internal sealed partial class EngineHostOptionsTests
 {
-    [TestCase(GraphicsBackend.D3D12, false)]
-    [TestCase(GraphicsBackend.Vulkan, false)]
-    [TestCase(GraphicsBackend.D3D12, true)]
-    [TestCase(GraphicsBackend.Vulkan, true)]
-    public async Task SubmitsOffscreenClearGraphAndReadsBackAsync(GraphicsBackend backend, bool useUniformBuffer)
+    [TestCase(GraphicsBackend.D3D12, false, false)]
+    [TestCase(GraphicsBackend.Vulkan, false, false)]
+    [TestCase(GraphicsBackend.D3D12, true, false)]
+    [TestCase(GraphicsBackend.Vulkan, true, false)]
+    [TestCase(GraphicsBackend.D3D12, false, true)]
+    [TestCase(GraphicsBackend.Vulkan, false, true)]
+    [TestCase(GraphicsBackend.D3D12, true, true)]
+    [TestCase(GraphicsBackend.Vulkan, true, true)]
+    public async Task SubmitsOffscreenClearGraphAndReadsBackAsync(
+        GraphicsBackend backend,
+        bool useUniformBuffer,
+        bool useSampledTexture)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -39,9 +47,9 @@ internal sealed partial class EngineHostOptionsTests
 
         var shaderFixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
 
-        if (useUniformBuffer && string.IsNullOrWhiteSpace(shaderFixtureDirectory))
+        if ((useUniformBuffer || useSampledTexture) && string.IsNullOrWhiteSpace(shaderFixtureDirectory))
         {
-            Assert.Ignore("The M04 shader fixture is required for the Frame uniform-buffer graph case.");
+            Assert.Ignore("The M04 shader fixture is required for resource-bound graph cases.");
             return;
         }
 
@@ -71,8 +79,10 @@ internal sealed partial class EngineHostOptionsTests
         };
         EngineHost? host = null;
         GpuTexture? target = null;
+        GpuTexture? sampledTexture = null;
         GpuBuffer? frameUniformBuffer = null;
         GpuPipeline? pipeline = null;
+        GpuSampler? frameSampler = null;
         RenderSnapshot? snapshot = null;
 
         try
@@ -192,6 +202,48 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(uploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
             }
 
+            if (useSampledTexture)
+            {
+                var sampleBytes = new byte[] { 32, 128, 224, 255 };
+                sampledTexture = await graphicsDevice.CreateTextureAsync(
+                    new TextureDescription(
+                        TextureDimension.Dimension2D,
+                        1,
+                        1,
+                        depth: 1,
+                        arrayLayers: 1,
+                        mipLevels: 1,
+                        TextureFormat.Rgba8Unorm,
+                        TextureUsage.Sampled | TextureUsage.CopyDestination,
+                        $"m04-{backend}-frame-sampled-texture"))
+                    .ConfigureAwait(false);
+                var sampleStorage = UnmanagedBuffer<byte>.Allocate(
+                    sampleBytes.Length,
+                    new BufferAllocationOptions(sampleBytes.Length, alignment: 1));
+                sampleStorage.CopyFrom(sampleBytes.AsSpan(), 0);
+
+                using var ownedSampleBytes = sampleStorage.TransferToOwnedBuffer();
+                using var sampleLease = ownedSampleBytes.AcquireReadLease(0, sampleBytes.Length);
+                var sampleUploadReceipt = await graphicsDevice.UploadTextureAsync(
+                    sampledTexture,
+                    new TextureSubresource(0, 0, TextureAspect.Color),
+                    sampleLease,
+                    0,
+                    new TextureDataLayout(rowPitch: 4, slicePitch: 4))
+                    .ConfigureAwait(false);
+                Assert.That(sampleUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+                frameSampler = await graphicsDevice.CreateSamplerAsync(
+                    new SamplerDescription(
+                        SamplerFilter.Linear,
+                        SamplerFilter.Linear,
+                        SamplerFilter.None,
+                        SamplerAddressMode.Clamp,
+                        SamplerAddressMode.Clamp,
+                        SamplerAddressMode.Clamp,
+                        maximumAnisotropy: 1.0f))
+                    .ConfigureAwait(false);
+            }
+
             var renderer = engineHost.Renderer;
             var renderSnapshot = snapshot
                 ?? throw new InvalidOperationException("The host renderer omitted its render snapshot.");
@@ -199,7 +251,9 @@ internal sealed partial class EngineHostOptionsTests
             if (!string.IsNullOrWhiteSpace(shaderFixtureDirectory))
             {
                 var shaderExtension = backend == GraphicsBackend.D3D12 ? "dxil" : "spv";
-                var pixelStage = useUniformBuffer ? "pixel" : "pixel-graph";
+                var pixelStage = useSampledTexture
+                    ? (useUniformBuffer ? "pixel-sampled-frame" : "pixel-sampled")
+                    : (useUniformBuffer ? "pixel" : "pixel-graph");
                 using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
                     shaderFixtureDirectory,
                     $"M04OffscreenTriangle.vertex.{shaderExtension}"));
@@ -235,9 +289,13 @@ internal sealed partial class EngineHostOptionsTests
             if (useUniformBuffer)
             {
                 var frameUniformBytes = new byte[256];
-                _ = BitConverter.TryWriteBytes(frameUniformBytes.AsSpan(0, sizeof(float)), 0.0f);
+                _ = BitConverter.TryWriteBytes(
+                    frameUniformBytes.AsSpan(0, sizeof(float)),
+                    useSampledTexture ? 1.0f : 0.0f);
                 _ = BitConverter.TryWriteBytes(frameUniformBytes.AsSpan(sizeof(float), sizeof(float)), 1.0f);
-                _ = BitConverter.TryWriteBytes(frameUniformBytes.AsSpan(sizeof(float) * 2, sizeof(float)), 0.0f);
+                _ = BitConverter.TryWriteBytes(
+                    frameUniformBytes.AsSpan(sizeof(float) * 2, sizeof(float)),
+                    useSampledTexture ? 1.0f : 0.0f);
                 _ = BitConverter.TryWriteBytes(frameUniformBytes.AsSpan(sizeof(float) * 3, sizeof(float)), 1.0f);
                 frameUniformBuffer = await graphicsDevice.CreateBufferAsync(
                     new BufferDescription(
@@ -258,8 +316,13 @@ internal sealed partial class EngineHostOptionsTests
             var graph = renderer.BuildGraph(
                 renderSnapshot,
                 target);
+            var sampleRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
             GraphBufferVersion? frameUniformVersion = null;
+            GraphTextureVersion? sampledTextureVersion = null;
             BindingSet? frameBindingSet = null;
+            var bufferBindings = ImmutableArray.CreateBuilder<BufferBinding>(useUniformBuffer ? 1 : 0);
+            var textureBindings = ImmutableArray.CreateBuilder<TextureBinding>(useSampledTexture ? 1 : 0);
+            var samplerBindings = ImmutableArray.CreateBuilder<SamplerBinding>(useSampledTexture ? 1 : 0);
 
             if (frameUniformBuffer is GpuBuffer selectedBuffer)
             {
@@ -271,20 +334,46 @@ internal sealed partial class EngineHostOptionsTests
                         GraphResourceState.General,
                         contentsValid: true,
                         completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                bufferBindings.Add(new BufferBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    ShaderResourceKind.UniformBuffer,
+                    frameUniformVersion,
+                    range));
+            }
+
+            if (sampledTexture is GpuTexture selectedSampledTexture)
+            {
+                sampledTextureVersion = graph.ImportTexture(
+                    selectedSampledTexture,
+                    sampleRange,
+                    new GraphImportOptions(
+                        GraphResourceState.General,
+                        contentsValid: true,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                textureBindings.Add(new TextureBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    ShaderResourceKind.SampledImage,
+                    sampledTextureVersion,
+                    sampleRange));
+                samplerBindings.Add(new SamplerBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    frameSampler
+                        ?? throw new InvalidOperationException("The sampled Frame pipeline has no sampler.")));
+            }
+
+            if (useUniformBuffer || useSampledTexture)
+            {
                 frameBindingSet = new BindingSet(
-                    [
-                        new BufferBinding(
-                            ShaderBindingGroup.Frame,
-                            0,
-                            ShaderResourceKind.UniformBuffer,
-                            frameUniformVersion,
-                            range),
-                    ],
-                    [],
-                    []);
+                    bufferBindings.MoveToImmutable(),
+                    textureBindings.MoveToImmutable(),
+                    samplerBindings.MoveToImmutable());
             }
 
             GraphBufferVersion? secondFrameUniformVersion = null;
+            GraphTextureVersion? secondSampledTextureVersion = null;
             BindingSet? secondFrameBindingSet = null;
 
             void RecordClear(scoped ref CommandRecorder recorder)
@@ -330,6 +419,15 @@ internal sealed partial class EngineHostOptionsTests
                     frameUniformVersion.Range);
             }
 
+            if (sampledTextureVersion is not null)
+            {
+                graph.ReadTexture(
+                    pass,
+                    sampledTextureVersion,
+                    GraphTextureUsage.SampledRead,
+                    sampledTextureVersion.Range);
+            }
+
             var outputVersion = graph.WriteColorAttachment(
                 pass,
                 graph.OffscreenColorTargetVersion,
@@ -346,6 +444,9 @@ internal sealed partial class EngineHostOptionsTests
             var receipt = await renderer.SubmitAsync(renderSnapshot, plan).ConfigureAwait(false);
 
             var secondGraph = renderer.BuildGraph(renderSnapshot, target);
+            var secondBufferBindings = ImmutableArray.CreateBuilder<BufferBinding>(useUniformBuffer ? 1 : 0);
+            var secondTextureBindings = ImmutableArray.CreateBuilder<TextureBinding>(useSampledTexture ? 1 : 0);
+            var secondSamplerBindings = ImmutableArray.CreateBuilder<SamplerBinding>(useSampledTexture ? 1 : 0);
 
             if (frameUniformBuffer is GpuBuffer secondSelectedBuffer)
             {
@@ -357,17 +458,42 @@ internal sealed partial class EngineHostOptionsTests
                         GraphResourceState.UniformRead,
                         contentsValid: true,
                         completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                secondBufferBindings.Add(new BufferBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    ShaderResourceKind.UniformBuffer,
+                    secondFrameUniformVersion,
+                    range));
+            }
+
+            if (sampledTexture is GpuTexture secondSampledTexture)
+            {
+                secondSampledTextureVersion = secondGraph.ImportTexture(
+                    secondSampledTexture,
+                    sampleRange,
+                    new GraphImportOptions(
+                        GraphResourceState.ShaderSampledRead,
+                        contentsValid: true,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                secondTextureBindings.Add(new TextureBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    ShaderResourceKind.SampledImage,
+                    secondSampledTextureVersion,
+                    sampleRange));
+                secondSamplerBindings.Add(new SamplerBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    frameSampler
+                        ?? throw new InvalidOperationException("The sampled Frame pipeline has no sampler.")));
+            }
+
+            if (useUniformBuffer || useSampledTexture)
+            {
                 secondFrameBindingSet = new BindingSet(
-                    [
-                        new BufferBinding(
-                            ShaderBindingGroup.Frame,
-                            0,
-                            ShaderResourceKind.UniformBuffer,
-                            secondFrameUniformVersion,
-                            range),
-                    ],
-                    [],
-                    []);
+                    secondBufferBindings.MoveToImmutable(),
+                    secondTextureBindings.MoveToImmutable(),
+                    secondSamplerBindings.MoveToImmutable());
             }
 
             var secondPass = secondGraph.AddRasterPass(
@@ -381,6 +507,15 @@ internal sealed partial class EngineHostOptionsTests
                     secondFrameUniformVersion,
                     GraphBufferUsage.UniformRead,
                     secondFrameUniformVersion.Range);
+            }
+
+            if (secondSampledTextureVersion is not null)
+            {
+                secondGraph.ReadTexture(
+                    secondPass,
+                    secondSampledTextureVersion,
+                    GraphTextureUsage.SampledRead,
+                    secondSampledTextureVersion.Range);
             }
 
             var secondOutputVersion = secondGraph.WriteColorAttachment(
@@ -423,9 +558,9 @@ internal sealed partial class EngineHostOptionsTests
             var centerPixelOffset = checked(
                 (int)((readback.RowPitch * (targetExtent.Height / 2)) + (targetExtent.Width / 2 * 4)));
             var drawPixelCount = 0;
-            var expectedRed = useUniformBuffer ? (byte)0 : (byte)255;
-            var expectedGreen = useUniformBuffer ? (byte)255 : (byte)0;
-            var expectedBlue = useUniformBuffer ? (byte)0 : (byte)255;
+            var expectedRed = useSampledTexture ? (byte)32 : (useUniformBuffer ? (byte)0 : (byte)255);
+            var expectedGreen = useSampledTexture ? (byte)128 : (useUniformBuffer ? (byte)255 : (byte)0);
+            var expectedBlue = useSampledTexture ? (byte)224 : (useUniformBuffer ? (byte)0 : (byte)255);
 
             for (var y = 0; y < readback.Height; y++)
             {
@@ -465,6 +600,7 @@ internal sealed partial class EngineHostOptionsTests
                 + $"Submissions={receipt.SubmissionSequence}/{secondReceipt.SubmissionSequence}; "
                 + $"Fence={secondReceipt.CompletedFence}; "
                 + $"UniformBuffer={useUniformBuffer}; "
+                + $"SampledTexture={useSampledTexture}; "
                 + $"Pixel={padded[centerPixelOffset]:X2}{padded[centerPixelOffset + 1]:X2}"
                 + $"{padded[centerPixelOffset + 2]:X2}{padded[centerPixelOffset + 3]:X2}; "
                 + $"DrawPixels={drawPixelCount}");
@@ -473,7 +609,9 @@ internal sealed partial class EngineHostOptionsTests
         {
             snapshot?.Dispose();
             pipeline?.Dispose();
+            frameSampler?.Dispose();
             frameUniformBuffer?.Dispose();
+            sampledTexture?.Dispose();
             target?.Dispose();
 
             if (host is not null)

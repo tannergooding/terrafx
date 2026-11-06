@@ -1663,40 +1663,98 @@ public static unsafe class D3D12GraphicsBackend
                                             ?? throw new InvalidOperationException("A recorded binding set has no preceding D3D12 pipeline.");
                                         var bindings = command.Bindings
                                             ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
-                                        var binding = bindings.Buffers[0];
+                                        var uniformBufferBindings =
+                                            ImmutableArray.CreateBuilder<D3D12BackendUniformBufferBinding>(bindings.Buffers.Length);
+
+                                        foreach (var binding in bindings.Buffers)
+                                        {
+                                            uniformBufferBindings.Add(new D3D12BackendUniformBufferBinding(
+                                                binding.Group,
+                                                binding.Binding,
+                                                submission.GetBuffer(binding.Resource.ResourceId),
+                                                binding.Range.ByteOffset,
+                                                binding.Range.ByteLength));
+                                        }
+
+                                        var sampledImageBindings =
+                                            ImmutableArray.CreateBuilder<D3D12BackendSampledImageBinding>(bindings.Textures.Length);
+
+                                        foreach (var binding in bindings.Textures)
+                                        {
+                                            sampledImageBindings.Add(new D3D12BackendSampledImageBinding(
+                                                binding.Group,
+                                                binding.Binding,
+                                                submission.GetTexture(binding.Resource.ResourceId)));
+                                        }
+
+                                        var samplerBindings =
+                                            ImmutableArray.CreateBuilder<D3D12BackendSamplerBinding>(bindings.Samplers.Length);
+
+                                        foreach (var binding in bindings.Samplers)
+                                        {
+                                            var sampler = binding.Sampler.ResourceOwner.BackendResource as IGraphicsBackendSampler
+                                                ?? throw new InvalidOperationException("The graph sampler lost its D3D12 backend resource.");
+                                            samplerBindings.Add(new D3D12BackendSamplerBinding(
+                                                binding.Group,
+                                                binding.Binding,
+                                                sampler));
+                                        }
+
                                         var descriptorSet = CreateDescriptorSet(
                                             pipeline,
-                                            [
-                                                new D3D12BackendUniformBufferBinding(
-                                                    binding.Group,
-                                                    binding.Binding,
-                                                    submission.GetBuffer(binding.Resource.ResourceId),
-                                                    binding.Range.ByteOffset,
-                                                    binding.Range.ByteLength),
-                                            ],
+                                            uniformBufferBindings.MoveToImmutable(),
+                                            sampledImageBindings.MoveToImmutable(),
                                             [],
                                             [],
-                                            [],
-                                            []);
+                                            samplerBindings.MoveToImmutable());
                                         descriptorSets.Add(descriptorSet);
 
-                                        if ((descriptorSet.DescriptorTableCount != 1)
+                                        if ((descriptorSet.DescriptorTableCount == 0)
                                             || !descriptorSet.AreDescriptorTableHandlesValid)
                                         {
-                                            throw new InvalidOperationException("The Frame uniform-buffer descriptor set has an invalid root table.");
+                                            throw new InvalidOperationException("The graph descriptor set has an invalid root table.");
                                         }
 
-                                        var descriptorHeap = _resourceDescriptorHeap;
+                                        var descriptorHeaps = stackalloc ID3D12DescriptorHeap*[2];
+                                        var descriptorHeapCount = 0;
 
-                                        if (descriptorHeap is null)
+                                        if ((descriptorSet.BufferCount + descriptorSet.TextureCount) > 0)
                                         {
-                                            throw new InvalidOperationException("The D3D12 resource descriptor heap is unavailable.");
+                                            var resourceHeap = _resourceDescriptorHeap;
+
+                                            if (resourceHeap is null)
+                                            {
+                                                throw new InvalidOperationException("The D3D12 resource descriptor heap is unavailable.");
+                                            }
+
+                                            descriptorHeaps[descriptorHeapCount++] = resourceHeap;
                                         }
 
-                                        commandList->SetDescriptorHeaps(1, &descriptorHeap);
-                                        commandList->SetGraphicsRootDescriptorTable(
-                                            0,
-                                            descriptorSet._descriptorTableHandles[0]);
+                                        if (descriptorSet.SamplerCount > 0)
+                                        {
+                                            var samplerHeap = _samplerDescriptorHeap;
+
+                                            if (samplerHeap is null)
+                                            {
+                                                throw new InvalidOperationException("The D3D12 sampler descriptor heap is unavailable.");
+                                            }
+
+                                            descriptorHeaps[descriptorHeapCount++] = samplerHeap;
+                                        }
+
+                                        commandList->SetDescriptorHeaps(
+                                            checked((uint)descriptorHeapCount),
+                                            descriptorHeaps);
+
+                                        for (var rootParameterIndex = 0;
+                                            rootParameterIndex < descriptorSet.DescriptorTableCount;
+                                            rootParameterIndex++)
+                                        {
+                                            commandList->SetGraphicsRootDescriptorTable(
+                                                checked((uint)rootParameterIndex),
+                                                descriptorSet._descriptorTableHandles[rootParameterIndex]);
+                                        }
+
                                         break;
                                     }
 
