@@ -26,22 +26,24 @@ namespace TerraFX.Runtime.Tests.Hosting;
 
 internal sealed partial class EngineHostOptionsTests
 {
-    [TestCase(GraphicsBackend.D3D12, false, false, false, false, false, false)]
-    [TestCase(GraphicsBackend.Vulkan, false, false, false, false, false, false)]
-    [TestCase(GraphicsBackend.D3D12, true, false, false, false, false, false)]
-    [TestCase(GraphicsBackend.Vulkan, true, false, false, false, false, false)]
-    [TestCase(GraphicsBackend.D3D12, false, true, false, false, false, false)]
-    [TestCase(GraphicsBackend.Vulkan, false, true, false, false, false, false)]
-    [TestCase(GraphicsBackend.D3D12, true, true, false, false, false, false)]
-    [TestCase(GraphicsBackend.Vulkan, true, true, false, false, false, false)]
-    [TestCase(GraphicsBackend.D3D12, true, true, true, false, false, false)]
-    [TestCase(GraphicsBackend.Vulkan, true, true, true, false, false, false)]
-    [TestCase(GraphicsBackend.D3D12, false, false, false, true, false, false)]
-    [TestCase(GraphicsBackend.Vulkan, false, false, false, true, false, false)]
-    [TestCase(GraphicsBackend.D3D12, false, false, false, false, true, false)]
-    [TestCase(GraphicsBackend.Vulkan, false, false, false, false, true, false)]
-    [TestCase(GraphicsBackend.D3D12, false, false, false, false, false, true)]
-    [TestCase(GraphicsBackend.Vulkan, false, false, false, false, false, true)]
+    [TestCase(GraphicsBackend.D3D12, false, false, false, false, false, false, false)]
+    [TestCase(GraphicsBackend.Vulkan, false, false, false, false, false, false, false)]
+    [TestCase(GraphicsBackend.D3D12, true, false, false, false, false, false, false)]
+    [TestCase(GraphicsBackend.Vulkan, true, false, false, false, false, false, false)]
+    [TestCase(GraphicsBackend.D3D12, false, true, false, false, false, false, false)]
+    [TestCase(GraphicsBackend.Vulkan, false, true, false, false, false, false, false)]
+    [TestCase(GraphicsBackend.D3D12, true, true, false, false, false, false, false)]
+    [TestCase(GraphicsBackend.Vulkan, true, true, false, false, false, false, false)]
+    [TestCase(GraphicsBackend.D3D12, true, true, true, false, false, false, false)]
+    [TestCase(GraphicsBackend.Vulkan, true, true, true, false, false, false, false)]
+    [TestCase(GraphicsBackend.D3D12, false, false, false, true, false, false, false)]
+    [TestCase(GraphicsBackend.Vulkan, false, false, false, true, false, false, false)]
+    [TestCase(GraphicsBackend.D3D12, false, false, false, false, true, false, false)]
+    [TestCase(GraphicsBackend.Vulkan, false, false, false, false, true, false, false)]
+    [TestCase(GraphicsBackend.D3D12, false, false, false, false, false, true, false)]
+    [TestCase(GraphicsBackend.Vulkan, false, false, false, false, false, true, false)]
+    [TestCase(GraphicsBackend.D3D12, false, false, false, false, false, false, true)]
+    [TestCase(GraphicsBackend.Vulkan, false, false, false, false, false, false, true)]
     public async Task SubmitsOffscreenClearGraphAndReadsBackAsync(
         GraphicsBackend backend,
         bool useUniformBuffer,
@@ -49,7 +51,8 @@ internal sealed partial class EngineHostOptionsTests
         bool useStorageResources,
         bool useBufferCopy,
         bool useCompute,
-        bool useTransientStorage)
+        bool useTransientStorage,
+        bool useMultipleComputeStorageBuffers)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -59,7 +62,12 @@ internal sealed partial class EngineHostOptionsTests
 
         var shaderFixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
 
-        if ((useUniformBuffer || useSampledTexture || useStorageResources || useCompute || useTransientStorage)
+        if ((useUniformBuffer
+                || useSampledTexture
+                || useStorageResources
+                || useCompute
+                || useTransientStorage
+                || useMultipleComputeStorageBuffers)
             && string.IsNullOrWhiteSpace(shaderFixtureDirectory))
         {
             Assert.Ignore("The M04 shader fixture is required for resource-bound graph cases.");
@@ -96,9 +104,12 @@ internal sealed partial class EngineHostOptionsTests
         GpuTexture? storageImage = null;
         GpuBuffer? frameUniformBuffer = null;
         GpuBuffer? storageBuffer = null;
+        GpuBuffer? secondStorageBuffer = null;
         GpuBuffer? copySourceBuffer = null;
         GpuBuffer? copyDestinationBuffer = null;
+        GpuBuffer? secondCopyDestinationBuffer = null;
         byte[]? expectedCopiedBytes = null;
+        byte[]? expectedSecondCopiedBytes = null;
         GpuPipeline? pipeline = null;
         GpuPipeline? computePipeline = null;
         GpuSampler? frameSampler = null;
@@ -306,9 +317,11 @@ internal sealed partial class EngineHostOptionsTests
                 pipeline = await graphicsDevice.CreatePipelineAsync(pipelineDescription, CancellationToken.None)
                     .ConfigureAwait(false);
 
-                if (useCompute || useTransientStorage)
+                if (useCompute || useTransientStorage || useMultipleComputeStorageBuffers)
                 {
-                    const string computeStage = "compute-storage";
+                    var computeStage = useMultipleComputeStorageBuffers
+                        ? "compute-storage-buffers"
+                        : "compute-storage";
                     using var computeBytecodeStorage = CreateBytecodeStorage(Path.Combine(
                         shaderFixtureDirectory,
                         $"M04OffscreenTriangle.{computeStage}.{shaderExtension}"));
@@ -350,7 +363,7 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(uploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
             }
 
-            if (useStorageResources || useCompute)
+            if (useStorageResources || useCompute || useMultipleComputeStorageBuffers)
             {
                 storageBuffer = await graphicsDevice.CreateBufferAsync(
                     new BufferDescription(
@@ -367,6 +380,25 @@ internal sealed partial class EngineHostOptionsTests
                     storageBufferInitialBytes.AsSpan())
                     .ConfigureAwait(false);
                 Assert.That(storageBufferUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+            }
+
+            if (useMultipleComputeStorageBuffers)
+            {
+                secondStorageBuffer = await graphicsDevice.CreateBufferAsync(
+                    new BufferDescription(
+                        sizeof(uint),
+                        BufferUsage.Storage | BufferUsage.CopySource | BufferUsage.CopyDestination,
+                        GpuMemoryKind.DeviceLocal,
+                        structuredStride: sizeof(uint),
+                        debugName: $"m04-{backend}-frame-second-storage-buffer"))
+                    .ConfigureAwait(false);
+                var secondStorageBufferInitialBytes = new byte[sizeof(uint)];
+                var secondStorageBufferUploadReceipt = await graphicsDevice.UploadBufferAsync(
+                    secondStorageBuffer,
+                    0,
+                    secondStorageBufferInitialBytes.AsSpan())
+                    .ConfigureAwait(false);
+                Assert.That(secondStorageBufferUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
             }
 
             if (useStorageResources || useCompute || useTransientStorage)
@@ -401,9 +433,9 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(storageImageUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
             }
 
-            if (useBufferCopy || useCompute || useTransientStorage)
+            if (useBufferCopy || useCompute || useTransientStorage || useMultipleComputeStorageBuffers)
             {
-                expectedCopiedBytes = useCompute || useTransientStorage
+                expectedCopiedBytes = useCompute || useTransientStorage || useMultipleComputeStorageBuffers
                     ? [0x02, 0x00, 0x00, 0x00]
                     : [
                         0x11,
@@ -423,6 +455,9 @@ internal sealed partial class EngineHostOptionsTests
                         0x6B,
                         0xB9,
                     ];
+                expectedSecondCopiedBytes = useMultipleComputeStorageBuffers
+                    ? [0x04, 0x00, 0x00, 0x00]
+                    : null;
 
                 if (useBufferCopy || useTransientStorage)
                 {
@@ -445,6 +480,19 @@ internal sealed partial class EngineHostOptionsTests
                         debugName: $"m04-{backend}-copy-destination"))
                     .ConfigureAwait(false);
 
+                if (useMultipleComputeStorageBuffers)
+                {
+                    secondCopyDestinationBuffer = await graphicsDevice.CreateBufferAsync(
+                        new BufferDescription(
+                            expectedSecondCopiedBytes?.Length
+                                ?? throw new InvalidOperationException("The graph multi-buffer compute test has no second expected output."),
+                            BufferUsage.CopySource | BufferUsage.CopyDestination,
+                            GpuMemoryKind.DeviceLocal,
+                            structuredStride: null,
+                            debugName: $"m04-{backend}-second-copy-destination"))
+                        .ConfigureAwait(false);
+                }
+
                 if (copySourceBuffer is GpuBuffer copyUploadSourceBuffer)
                 {
                     var sourceBytes = useTransientStorage
@@ -465,11 +513,16 @@ internal sealed partial class EngineHostOptionsTests
             var sampleRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
             GraphBufferVersion? frameUniformVersion = null;
             GraphBufferVersion? storageBufferInitialVersion = null;
+            GraphBufferVersion? secondStorageBufferInitialVersion = null;
             GraphBufferVersion? storageBufferWriteVersion = null;
             GraphBufferVersion? computeStorageWriteVersion = null;
+            GraphBufferVersion? secondComputeStorageWriteVersion = null;
             GraphBufferVersion? copySourceVersion = null;
+            GraphBufferVersion? secondCopySourceVersion = null;
             GraphBufferVersion? copyDestinationInitialVersion = null;
             GraphBufferVersion? copyDestinationWriteVersion = null;
+            GraphBufferVersion? secondCopyDestinationInitialVersion = null;
+            GraphBufferVersion? secondCopyDestinationWriteVersion = null;
             GraphBufferVersion? transientBufferCopyWriteVersion = null;
             GraphBufferVersion? transientInitializationSourceVersion = null;
             GraphTextureVersion? sampledTextureVersion = null;
@@ -514,6 +567,18 @@ internal sealed partial class EngineHostOptionsTests
                         completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
             }
 
+            if (secondStorageBuffer is GpuBuffer selectedSecondStorageBuffer)
+            {
+                var range = new GraphBufferRange(0, selectedSecondStorageBuffer.ByteLength);
+                secondStorageBufferInitialVersion = graph.ImportBuffer(
+                    selectedSecondStorageBuffer,
+                    range,
+                    new GraphImportOptions(
+                        GraphResourceState.General,
+                        contentsValid: true,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+            }
+
             if (copySourceBuffer is GpuBuffer selectedCopySourceBuffer)
             {
                 var range = new GraphBufferRange(0, selectedCopySourceBuffer.ByteLength);
@@ -532,6 +597,18 @@ internal sealed partial class EngineHostOptionsTests
                 var range = new GraphBufferRange(0, selectedCopyDestinationBuffer.ByteLength);
                 copyDestinationInitialVersion = graph.ImportBuffer(
                     selectedCopyDestinationBuffer,
+                    range,
+                    new GraphImportOptions(
+                        GraphResourceState.Undefined,
+                        contentsValid: false,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+            }
+
+            if (secondCopyDestinationBuffer is GpuBuffer selectedSecondCopyDestinationBuffer)
+            {
+                var range = new GraphBufferRange(0, selectedSecondCopyDestinationBuffer.ByteLength);
+                secondCopyDestinationInitialVersion = graph.ImportBuffer(
+                    selectedSecondCopyDestinationBuffer,
                     range,
                     new GraphImportOptions(
                         GraphResourceState.Undefined,
@@ -628,6 +705,18 @@ internal sealed partial class EngineHostOptionsTests
                         0,
                         selectedSource.Range.ByteLength);
                 }
+
+                if (useMultipleComputeStorageBuffers
+                    && (secondCopySourceVersion is GraphBufferVersion selectedSecondSource)
+                    && (secondCopyDestinationWriteVersion is GraphBufferVersion selectedSecondDestination))
+                {
+                    recorder.CopyBuffer(
+                        selectedSecondSource,
+                        0,
+                        selectedSecondDestination,
+                        0,
+                        selectedSecondSource.Range.ByteLength);
+                }
             }
 
             void RecordTransientBufferInitialize(scoped ref CommandRecorder recorder)
@@ -658,7 +747,7 @@ internal sealed partial class EngineHostOptionsTests
 
             RenderPassId? computePassId = null;
 
-            if (useCompute || useTransientStorage)
+            if (useCompute || useTransientStorage || useMultipleComputeStorageBuffers)
             {
                 ImmutableArray<RenderPassId> computePredecessors = [];
 
@@ -697,7 +786,41 @@ internal sealed partial class EngineHostOptionsTests
                     RecordCompute);
                 computePassId = computePass;
 
-                if (useTransientStorage)
+                if (useMultipleComputeStorageBuffers)
+                {
+                    var initialStorageBuffer = storageBufferInitialVersion
+                        ?? throw new InvalidOperationException("The graph multi-buffer compute test has no first imported storage buffer.");
+                    var initialSecondStorageBuffer = secondStorageBufferInitialVersion
+                        ?? throw new InvalidOperationException("The graph multi-buffer compute test has no second imported storage buffer.");
+                    computeStorageWriteVersion = graph.ReadWriteBuffer(
+                        computePass,
+                        initialStorageBuffer,
+                        initialStorageBuffer.Range);
+                    secondComputeStorageWriteVersion = graph.ReadWriteBuffer(
+                        computePass,
+                        initialSecondStorageBuffer,
+                        initialSecondStorageBuffer.Range);
+                    copySourceVersion = computeStorageWriteVersion;
+                    secondCopySourceVersion = secondComputeStorageWriteVersion;
+                    computeBindingSet = new BindingSet(
+                        [
+                            new BufferBinding(
+                                ShaderBindingGroup.Frame,
+                                0,
+                                ShaderResourceKind.StorageBuffer,
+                                computeStorageWriteVersion,
+                                initialStorageBuffer.Range),
+                            new BufferBinding(
+                                ShaderBindingGroup.Frame,
+                                2,
+                                ShaderResourceKind.StorageBuffer,
+                                secondComputeStorageWriteVersion,
+                                initialSecondStorageBuffer.Range),
+                        ],
+                        [],
+                        []);
+                }
+                else if (useTransientStorage)
                 {
                     var transientBufferCopyDestination = transientBufferCopyWriteVersion
                         ?? throw new InvalidOperationException("The graph transient test has no initialized transient storage buffer.");
@@ -769,7 +892,7 @@ internal sealed partial class EngineHostOptionsTests
 
             RenderPassId? copyPassId = null;
 
-            if (useBufferCopy || useCompute || useTransientStorage)
+            if (useBufferCopy || useCompute || useTransientStorage || useMultipleComputeStorageBuffers)
             {
                 ImmutableArray<RenderPassId> copyPredecessors = computePassId is RenderPassId copyComputePredecessor
                     ? [copyComputePredecessor]
@@ -796,6 +919,24 @@ internal sealed partial class EngineHostOptionsTests
                     selectedCopyDestination,
                     GraphBufferUsage.CopyDestination,
                     selectedCopyDestination.Range);
+
+                if (useMultipleComputeStorageBuffers)
+                {
+                    var selectedSecondCopySource = secondCopySourceVersion
+                        ?? throw new InvalidOperationException("The graph multi-buffer compute test has no second copy-source version.");
+                    var selectedSecondCopyDestination = secondCopyDestinationInitialVersion
+                        ?? throw new InvalidOperationException("The graph multi-buffer compute test has no second copy-destination version.");
+                    graph.ReadBuffer(
+                        copyPass,
+                        selectedSecondCopySource,
+                        GraphBufferUsage.CopySource,
+                        selectedSecondCopySource.Range);
+                    secondCopyDestinationWriteVersion = graph.WriteBuffer(
+                        copyPass,
+                        selectedSecondCopyDestination,
+                        GraphBufferUsage.CopyDestination,
+                        selectedSecondCopyDestination.Range);
+                }
             }
 
             var rasterPredecessorBuilder = ImmutableArray.CreateBuilder<RenderPassId>(2);
@@ -992,7 +1133,7 @@ internal sealed partial class EngineHostOptionsTests
                 var secondTextureBindings = ImmutableArray.CreateBuilder<TextureBinding>(
                     (useSampledTexture ? 1 : 0) + (useStorageResources ? 1 : 0));
                 var secondSamplerBindings = ImmutableArray.CreateBuilder<SamplerBinding>(useSampledTexture ? 1 : 0);
-                GraphBufferVersion? secondStorageBufferInitialVersion = null;
+                GraphBufferVersion? secondGraphStorageBufferInitialVersion = null;
                 GraphTextureVersion? secondStorageImageInitialVersion = null;
 
                 if (frameUniformBuffer is GpuBuffer secondSelectedBuffer)
@@ -1035,11 +1176,11 @@ internal sealed partial class EngineHostOptionsTests
                             ?? throw new InvalidOperationException("The sampled Frame pipeline has no sampler.")));
                 }
 
-                if (useStorageResources && (storageBuffer is GpuBuffer secondStorageBuffer))
+                if (useStorageResources && (storageBuffer is GpuBuffer selectedSecondGraphStorageBuffer))
                 {
-                    var range = new GraphBufferRange(0, secondStorageBuffer.ByteLength);
-                    secondStorageBufferInitialVersion = secondGraph.ImportBuffer(
-                        secondStorageBuffer,
+                    var range = new GraphBufferRange(0, selectedSecondGraphStorageBuffer.ByteLength);
+                    secondGraphStorageBufferInitialVersion = secondGraph.ImportBuffer(
+                        selectedSecondGraphStorageBuffer,
                         range,
                         new GraphImportOptions(
                             GraphResourceState.StorageReadWrite,
@@ -1080,7 +1221,7 @@ internal sealed partial class EngineHostOptionsTests
                         secondSampledTextureVersion.Range);
                 }
 
-                if (secondStorageBufferInitialVersion is GraphBufferVersion storageBufferVersion)
+                if (secondGraphStorageBufferInitialVersion is GraphBufferVersion storageBufferVersion)
                 {
                     var secondStorageBufferWriteVersion = secondGraph.ReadWriteBuffer(
                         secondPass,
@@ -1288,7 +1429,44 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(BitConverter.ToUInt32(computeStorageImageBytes, 0), Is.EqualTo(2u));
             }
 
-            if (useBufferCopy || useCompute || useTransientStorage)
+            if (useMultipleComputeStorageBuffers)
+            {
+                var computeStorageBuffer = storageBuffer
+                    ?? throw new InvalidOperationException("The graph multi-buffer compute test has no first storage buffer.");
+                using var firstComputeReadback = await graphicsDevice.ReadbackBufferAsync(
+                    computeStorageBuffer,
+                    0,
+                    sizeof(uint))
+                    .ConfigureAwait(false);
+                var firstComputeBytes = new byte[sizeof(uint)];
+
+                using (var firstComputeReadLease = firstComputeReadback.AcquireReadLease(0, firstComputeBytes.Length))
+                {
+                    var copyAction = new ReadbackCopyAction(firstComputeBytes);
+                    firstComputeReadLease.UseWindow(0, firstComputeBytes.Length, ref copyAction);
+                }
+
+                Assert.That(BitConverter.ToUInt32(firstComputeBytes, 0), Is.EqualTo(2u));
+
+                var secondComputeStorageBuffer = secondStorageBuffer
+                    ?? throw new InvalidOperationException("The graph multi-buffer compute test has no second storage buffer.");
+                using var secondComputeReadback = await graphicsDevice.ReadbackBufferAsync(
+                    secondComputeStorageBuffer,
+                    0,
+                    sizeof(uint))
+                    .ConfigureAwait(false);
+                var secondComputeBytes = new byte[sizeof(uint)];
+
+                using (var secondComputeReadLease = secondComputeReadback.AcquireReadLease(0, secondComputeBytes.Length))
+                {
+                    var copyAction = new ReadbackCopyAction(secondComputeBytes);
+                    secondComputeReadLease.UseWindow(0, secondComputeBytes.Length, ref copyAction);
+                }
+
+                Assert.That(BitConverter.ToUInt32(secondComputeBytes, 0), Is.EqualTo(4u));
+            }
+
+            if (useBufferCopy || useCompute || useTransientStorage || useMultipleComputeStorageBuffers)
             {
                 var destinationBufferForReadback = copyDestinationBuffer
                     ?? throw new InvalidOperationException("The graph copy test has no destination buffer.");
@@ -1308,6 +1486,28 @@ internal sealed partial class EngineHostOptionsTests
                 }
 
                 Assert.That(copiedBytes, Is.EqualTo(expectedBytes));
+
+                if (useMultipleComputeStorageBuffers)
+                {
+                    var secondDestinationBufferForReadback = secondCopyDestinationBuffer
+                        ?? throw new InvalidOperationException("The graph multi-buffer compute test has no second destination buffer.");
+                    var secondExpectedBytes = expectedSecondCopiedBytes
+                        ?? throw new InvalidOperationException("The graph multi-buffer compute test has no second expected output.");
+                    using var secondCopyReadback = await graphicsDevice.ReadbackBufferAsync(
+                        secondDestinationBufferForReadback,
+                        0,
+                        secondExpectedBytes.Length)
+                        .ConfigureAwait(false);
+                    var secondCopiedBytes = new byte[secondExpectedBytes.Length];
+
+                    using (var secondCopyReadLease = secondCopyReadback.AcquireReadLease(0, secondCopiedBytes.Length))
+                    {
+                        var copyAction = new ReadbackCopyAction(secondCopiedBytes);
+                        secondCopyReadLease.UseWindow(0, secondCopiedBytes.Length, ref copyAction);
+                    }
+
+                    Assert.That(secondCopiedBytes, Is.EqualTo(secondExpectedBytes));
+                }
             }
 
             var finalReceipt = secondReceipt ?? receipt;
@@ -1318,8 +1518,9 @@ internal sealed partial class EngineHostOptionsTests
                 + $"UniformBuffer={useUniformBuffer}; "
                 + $"SampledTexture={useSampledTexture}; "
                 + $"StorageResources={useStorageResources}; "
-                + $"BufferCopy={useBufferCopy || useCompute}; "
+                + $"BufferCopy={useBufferCopy || useCompute || useMultipleComputeStorageBuffers}; "
                 + $"Compute={useCompute}; "
+                + $"MultipleComputeStorageBuffers={useMultipleComputeStorageBuffers}; "
                 + $"Pixel={padded[centerPixelOffset]:X2}{padded[centerPixelOffset + 1]:X2}"
                 + $"{padded[centerPixelOffset + 2]:X2}{padded[centerPixelOffset + 3]:X2}; "
                 + $"DrawPixels={drawPixelCount}");
@@ -1332,8 +1533,10 @@ internal sealed partial class EngineHostOptionsTests
             frameSampler?.Dispose();
             frameUniformBuffer?.Dispose();
             storageBuffer?.Dispose();
+            secondStorageBuffer?.Dispose();
             copySourceBuffer?.Dispose();
             copyDestinationBuffer?.Dispose();
+            secondCopyDestinationBuffer?.Dispose();
             sampledTexture?.Dispose();
             storageImage?.Dispose();
             target?.Dispose();

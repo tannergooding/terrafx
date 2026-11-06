@@ -18,6 +18,9 @@ SamplerState FrameSampler : register(s0, space0);
 [[vk::binding(32, 0)]]
 RWStructuredBuffer<uint> FrameStorageBuffer : register(u0, space0);
 
+[[vk::binding(34, 0)]]
+RWStructuredBuffer<uint> FrameSecondStorageBuffer : register(u2, space0);
+
 [[vk::binding(33, 0)]]
 RWTexture2D<uint> FrameStorageImage : register(u1, space0);
 
@@ -76,4 +79,16 @@ void CSStorageMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     FrameStorageBuffer[0] = FrameStorageBuffer[0] + 1;
     FrameStorageImage[uint2(0, 0)] = FrameStorageImage[uint2(0, 0)] + 1;
+}
+
+[numthreads(1, 1, 1)]
+void CSStorageBuffersMain(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    if (any(dispatchThreadId != uint3(0, 0, 0)))
+    {
+        return;
+    }
+
+    FrameStorageBuffer[0] = FrameStorageBuffer[0] + 1;
+    FrameSecondStorageBuffer[0] = FrameSecondStorageBuffer[0] + 2;
 }

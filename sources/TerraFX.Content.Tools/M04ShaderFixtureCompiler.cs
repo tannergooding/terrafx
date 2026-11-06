@@ -14,6 +14,7 @@ namespace TerraFX.Content.Tools;
 internal static class M04ShaderFixtureCompiler
 {
     private const string ShaderEntryPointComputeStorage = "CSStorageMain";
+    private const string ShaderEntryPointComputeStorageBuffers = "CSStorageBuffersMain";
     private const string ShaderEntryPointGraphPixel = "PSGraphMain";
     private const string ShaderEntryPointPixel = "PSMain";
     private const string ShaderEntryPointSampledFramePixel = "PSSampledFrameMain";
@@ -23,6 +24,7 @@ internal static class M04ShaderFixtureCompiler
     private const string ShaderFileName = "M04OffscreenTriangle.hlsl";
     private static readonly string[] s_stageNames = [
         "compute-storage",
+        "compute-storage-buffers",
         "vertex",
         "pixel",
         "pixel-graph",
@@ -90,6 +92,17 @@ internal static class M04ShaderFixtureCompiler
                 ShaderEntryPointComputeStorage,
                 "cs_6_0",
                 "compute-storage",
+                cancellationToken).ConfigureAwait(false);
+            await CompileStageAsync(
+                manifest,
+                dxcExecutable,
+                spirvCrossExecutable,
+                spirvValidationExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointComputeStorageBuffers,
+                "cs_6_0",
+                "compute-storage-buffers",
                 cancellationToken).ConfigureAwait(false);
             await CompileStageAsync(
                 manifest,
@@ -229,6 +242,15 @@ internal static class M04ShaderFixtureCompiler
                 dxcExecutable,
                 shaderPath,
                 stagingDirectory,
+                ShaderEntryPointComputeStorageBuffers,
+                "cs_6_0",
+                "compute-storage-buffers",
+                cancellationToken).ConfigureAwait(false);
+            await CompileDxilStageAsync(
+                manifest,
+                dxcExecutable,
+                shaderPath,
+                stagingDirectory,
                 ShaderEntryPointVertex,
                 "vs_6_0",
                 "vertex",
@@ -299,6 +321,7 @@ internal static class M04ShaderFixtureCompiler
         var entryPoint = stageName switch {
             "vertex" => ShaderEntryPointVertex,
             "compute-storage" => ShaderEntryPointComputeStorage,
+            "compute-storage-buffers" => ShaderEntryPointComputeStorageBuffers,
             "pixel" => ShaderEntryPointPixel,
             "pixel-graph" => ShaderEntryPointGraphPixel,
             "pixel-sampled" => ShaderEntryPointSampledPixel,
@@ -493,14 +516,30 @@ internal static class M04ShaderFixtureCompiler
             cancellationToken).ConfigureAwait(false);
     }
 
+    private static void ValidateComputeStorageBufferResourcesReflection(JsonElement root)
+    {
+        if (!root.TryGetProperty("ssbos", out var storageBuffers)
+            || (storageBuffers.ValueKind != JsonValueKind.Array)
+            || (storageBuffers.GetArrayLength() != 2))
+        {
+            throw new InvalidDataException("SPIRV-Cross reflection must report both compute storage buffers.");
+        }
+
+        ValidateResourceDescriptor(storageBuffers[0], "FrameStorageBuffer", 32);
+        ValidateResourceDescriptor(storageBuffers[1], "FrameSecondStorageBuffer", 34);
+    }
+
     private static void ValidateDxilReflection(string text, string entryPoint, string stageName)
     {
-        if (stageName == "compute-storage")
+        if (stageName is "compute-storage" or "compute-storage-buffers")
         {
             if (!text.Contains($"EntryFunctionName: {entryPoint}", StringComparison.Ordinal)
                 || !text.Contains("NumThreads=(1,1,1)", StringComparison.Ordinal)
                 || !text.Contains("FrameStorageBuffer", StringComparison.Ordinal)
-                || !text.Contains("FrameStorageImage", StringComparison.Ordinal))
+                || ((stageName == "compute-storage")
+                    && !text.Contains("FrameStorageImage", StringComparison.Ordinal))
+                || ((stageName == "compute-storage-buffers")
+                    && !text.Contains("FrameSecondStorageBuffer", StringComparison.Ordinal)))
             {
                 throw new InvalidDataException("DXC reflection from the compiled compute DXIL does not contain its entry point, one-thread group size, and expected storage resources.");
             }
@@ -655,7 +694,7 @@ internal static class M04ShaderFixtureCompiler
 
         var mode = modeElement.GetString();
         var expectedMode = stageName switch {
-            "compute-storage" => mode is "comp" or "compute",
+            "compute-storage" or "compute-storage-buffers" => mode is "comp" or "compute",
             "vertex" => mode is "vert" or "vertex",
             "pixel" or "pixel-graph" or "pixel-sampled" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => mode is "frag" or "fragment",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
@@ -685,19 +724,15 @@ internal static class M04ShaderFixtureCompiler
         {
             ValidatePixelStorageResourceReflection(root);
         }
+
+        if (stageName == "compute-storage-buffers")
+        {
+            ValidateComputeStorageBufferResourcesReflection(root);
+        }
     }
 
-    private static void ValidateSampledResource(JsonElement root, string collectionName, string expectedName, int expectedBinding)
+    private static void ValidateResourceDescriptor(JsonElement resource, string expectedName, int expectedBinding)
     {
-        if (!root.TryGetProperty(collectionName, out var resources)
-            || (resources.ValueKind != JsonValueKind.Array)
-            || (resources.GetArrayLength() != 1))
-        {
-            throw new InvalidDataException($"SPIRV-Cross reflection must report one {expectedName} resource.");
-        }
-
-        var resource = resources[0];
-
         if (!resource.TryGetProperty("name", out var nameElement)
             || (nameElement.ValueKind != JsonValueKind.String)
             || !StringComparer.Ordinal.Equals(nameElement.GetString(), expectedName)
@@ -710,6 +745,18 @@ internal static class M04ShaderFixtureCompiler
         {
             throw new InvalidDataException($"SPIRV-Cross reflection does not match the {expectedName} descriptor binding.");
         }
+    }
+
+    private static void ValidateSampledResource(JsonElement root, string collectionName, string expectedName, int expectedBinding)
+    {
+        if (!root.TryGetProperty(collectionName, out var resources)
+            || (resources.ValueKind != JsonValueKind.Array)
+            || (resources.GetArrayLength() != 1))
+        {
+            throw new InvalidDataException($"SPIRV-Cross reflection must report one {expectedName} resource.");
+        }
+
+        ValidateResourceDescriptor(resources[0], expectedName, expectedBinding);
     }
 
     private static async Task VerifyCompilerVersionAsync(
