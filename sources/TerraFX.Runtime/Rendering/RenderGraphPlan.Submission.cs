@@ -10,11 +10,33 @@ namespace TerraFX.Rendering;
 public sealed partial class RenderGraphPlan
 {
     internal GraphicsGraphSubmission CreateGraphicsSubmission(
-        ImmutableArray<RecordedPassCommandList> recordedPassCommandLists)
+        ImmutableArray<RecordedPassCommandList> recordedPassCommandLists,
+        ImmutableArray<GraphBufferImportRecord> transientBufferImports)
     {
         if (recordedPassCommandLists.IsDefault)
         {
             throw new ArgumentException("Recorded pass command lists must be initialized.", nameof(recordedPassCommandLists));
+        }
+
+        if (transientBufferImports.IsDefault || (transientBufferImports.Length != TransientBuffers.Length))
+        {
+            throw new ArgumentException("The graph submission requires one materialized buffer per transient graph buffer.", nameof(transientBufferImports));
+        }
+
+        var bufferImports = ImmutableArray.CreateBuilder<GraphBufferImportRecord>(
+            checked(BufferImports.Length + transientBufferImports.Length));
+        bufferImports.AddRange(BufferImports);
+
+        for (var index = 0; index < transientBufferImports.Length; index++)
+        {
+            var import = transientBufferImports[index];
+
+            if (!import.IsTransient || !ReferenceEquals(import.Version, TransientBuffers[index]))
+            {
+                throw new ArgumentException("The materialized transient buffer order does not match the compiled graph.", nameof(transientBufferImports));
+            }
+
+            bufferImports.Add(import);
         }
 
         var commandListsByPass = new Dictionary<RenderPassId, RecordedPassCommandList>();
@@ -92,7 +114,7 @@ public sealed partial class RenderGraphPlan
             passes.ToImmutable(),
             StateTransitions,
             Accesses,
-            BufferImports,
+            bufferImports.MoveToImmutable(),
             TextureImports,
             recordedPassCommandLists);
     }

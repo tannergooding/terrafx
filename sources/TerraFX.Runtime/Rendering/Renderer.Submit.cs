@@ -1,6 +1,8 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX.Graphics;
@@ -59,30 +61,59 @@ public sealed partial class Renderer
             throw new ArgumentException("The graph output target belongs to another device or epoch.", nameof(graph));
         }
 
-        var commandLists = await graph.RecordPassCallbacksAsync().ConfigureAwait(false);
-        GraphicsGraphSubmission submission;
+        var transientBuffers = new List<GpuBuffer>(graph.TransientBuffers.Length);
 
         try
         {
-            submission = graph.CreateGraphicsSubmission(commandLists);
-        }
-        catch
-        {
-            foreach (var commandList in commandLists)
+            foreach (var transientVersion in graph.TransientBuffers)
             {
-                commandList.Dispose();
+                transientBuffers.Add(await device.CreateBufferAsync(
+                    transientVersion.Description,
+                    cancellationToken).ConfigureAwait(false));
             }
 
-            throw;
-        }
+            var transientBufferImports = ImmutableArray.CreateBuilder<GraphBufferImportRecord>(transientBuffers.Count);
 
-        var result = await device.SubmitGraphAsync(submission, cancellationToken).ConfigureAwait(false);
-        return new RenderSubmissionReceipt(
-            result.SubmissionSequence,
-            result.CompletedFence,
-            presentationSequence: null,
-            result.DeviceEpoch,
-            surfaceEpoch: 0,
-            swapchainEpoch: 0);
+            for (var index = 0; index < transientBuffers.Count; index++)
+            {
+                transientBufferImports.Add(new GraphBufferImportRecord(
+                    transientBuffers[index],
+                    graph.TransientBuffers[index],
+                    isTransient: true));
+            }
+
+            var commandLists = await graph.RecordPassCallbacksAsync().ConfigureAwait(false);
+            GraphicsGraphSubmission submission;
+
+            try
+            {
+                submission = graph.CreateGraphicsSubmission(commandLists, transientBufferImports.MoveToImmutable());
+            }
+            catch
+            {
+                foreach (var commandList in commandLists)
+                {
+                    commandList.Dispose();
+                }
+
+                throw;
+            }
+
+            var result = await device.SubmitGraphAsync(submission, cancellationToken).ConfigureAwait(false);
+            return new RenderSubmissionReceipt(
+                result.SubmissionSequence,
+                result.CompletedFence,
+                presentationSequence: null,
+                result.DeviceEpoch,
+                surfaceEpoch: 0,
+                swapchainEpoch: 0);
+        }
+        finally
+        {
+            foreach (var transientBuffer in transientBuffers)
+            {
+                transientBuffer.Dispose();
+            }
+        }
     }
 }

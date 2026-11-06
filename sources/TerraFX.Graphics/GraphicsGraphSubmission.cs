@@ -191,7 +191,12 @@ internal sealed class GraphicsGraphSubmission
                     }
                     else
                     {
-                        GetBufferImport(access.ResourceId).Buffer.ResourceOwner.RecordGraphAccess(access);
+                        var import = GetBufferImport(access.ResourceId);
+
+                        if (!import.IsTransient)
+                        {
+                            import.Buffer.ResourceOwner.RecordGraphAccess(access);
+                        }
                     }
                 }
             }
@@ -200,7 +205,7 @@ internal sealed class GraphicsGraphSubmission
 
     internal void ValidateOffscreenRasterSubmission()
     {
-        if ((BufferImports.Length > 2)
+        if ((BufferImports.Length > 4)
             || (TextureImports.Length is < 1 or > 3)
             || !ReferenceEquals(TextureImports[0].Texture, OffscreenColorTarget))
         {
@@ -210,8 +215,8 @@ internal sealed class GraphicsGraphSubmission
         var targetResourceId = TextureImports[0].Version.ResourceId;
         GraphBufferImportRecord? uniformBufferImport = null;
         GraphBufferImportRecord? storageBufferImport = null;
-        GraphBufferImportRecord? copySourceBufferImport = null;
-        GraphBufferImportRecord? copyDestinationBufferImport = null;
+        var copySourceBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
+        var copyDestinationBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
 
         foreach (var import in BufferImports)
         {
@@ -258,66 +263,37 @@ internal sealed class GraphicsGraphSubmission
                     storageBufferImport = import;
                 }
 
-                if (hasCopySourceImportAccess || hasCopyDestinationImportAccess)
+                if ((hasCopySourceImportAccess || hasCopyDestinationImportAccess) && !hasStorageUsage)
                 {
-                    if (!hasStorageUsage)
-                    {
-                        throw new NotSupportedException("Native graph copy buffers with additional usages must also be storage buffers.");
-                    }
-
-                    if (hasCopySourceImportAccess)
-                    {
-                        if (((usage & BufferUsage.CopySource) == 0) || (copySourceBufferImport is not null))
-                        {
-                            throw new NotSupportedException("Native graph submission supports one declared copy-source buffer.");
-                        }
-
-                        copySourceBufferImport = import;
-                    }
-
-                    if (hasCopyDestinationImportAccess)
-                    {
-                        if (((usage & BufferUsage.CopyDestination) == 0) || (copyDestinationBufferImport is not null))
-                        {
-                            throw new NotSupportedException("Native graph submission supports one declared copy-destination buffer.");
-                        }
-
-                        copyDestinationBufferImport = import;
-                    }
+                    throw new NotSupportedException("Native graph copy buffers with additional usages must also be storage buffers.");
                 }
             }
-            else
+
+            if (hasCopySourceImportAccess)
             {
-                if (hasCopySourceImportAccess == hasCopyDestinationImportAccess)
+                if (((usage & BufferUsage.CopySource) == 0)
+                    || !copySourceBufferImports.TryAdd(import.Version.ResourceId, import))
                 {
-                    throw new NotSupportedException("Native graph submission supports distinct copy-source and copy-destination buffer imports.");
-                }
-
-                if (hasCopySourceImportAccess)
-                {
-                    if (((usage & BufferUsage.CopySource) == 0) || (copySourceBufferImport is not null))
-                    {
-                        throw new NotSupportedException("Native graph submission supports one declared copy-source buffer.");
-                    }
-
-                    copySourceBufferImport = import;
-                }
-                else
-                {
-                    if (((usage & BufferUsage.CopyDestination) == 0) || (copyDestinationBufferImport is not null))
-                    {
-                        throw new NotSupportedException("Native graph submission supports one declared copy-destination buffer.");
-                    }
-
-                    copyDestinationBufferImport = import;
+                    throw new NotSupportedException("Native graph submission requires each copy-source resource to have copy-source usage and one import.");
                 }
             }
-        }
 
-        if ((copySourceBufferImport is not null)
-            && (copySourceBufferImport.Version.ResourceId == copyDestinationBufferImport?.Version.ResourceId))
-        {
-            throw new NotSupportedException("Native graph submission requires distinct copy-source and copy-destination buffers.");
+            if (hasCopyDestinationImportAccess)
+            {
+                if (((usage & BufferUsage.CopyDestination) == 0)
+                    || !copyDestinationBufferImports.TryAdd(import.Version.ResourceId, import))
+                {
+                    throw new NotSupportedException("Native graph submission requires each copy-destination resource to have copy-destination usage and one import.");
+                }
+            }
+
+            if (!hasUniformUsage
+                && !hasStorageUsage
+                && !hasCopySourceImportAccess
+                && !hasCopyDestinationImportAccess)
+            {
+                throw new NotSupportedException("Native graph submission requires each imported buffer to have a supported declared usage.");
+            }
         }
 
         if (uniformBufferImport is not null
@@ -392,34 +368,39 @@ internal sealed class GraphicsGraphSubmission
             throw new NotSupportedException("Native graph submission requires one full-range Frame storage buffer.");
         }
 
-        if (copySourceBufferImport is not null
-            && ((copySourceBufferImport.Version.Range != new GraphBufferRange(0, copySourceBufferImport.Buffer.ByteLength))
-                || !copySourceBufferImport.InitialContentsValid
-                || (copySourceBufferImport.InitialState is not (
-                    GraphResourceState.General
-                    or GraphResourceState.CopySource
-                    or GraphResourceState.CopyDestination
-                    or GraphResourceState.StorageRead
-                    or GraphResourceState.StorageWrite
-                    or GraphResourceState.StorageReadWrite))))
+        foreach (var import in copySourceBufferImports.Values)
         {
-            throw new NotSupportedException("Native graph submission requires an initialized full-range copy-source buffer.");
+            if ((import.Version.Range != new GraphBufferRange(0, import.Buffer.ByteLength))
+                || (import.IsTransient
+                    ? (import.InitialContentsValid || (import.InitialState != GraphResourceState.Undefined))
+                    : (!import.InitialContentsValid
+                        || (import.InitialState is not (
+                            GraphResourceState.General
+                            or GraphResourceState.CopySource
+                            or GraphResourceState.CopyDestination
+                            or GraphResourceState.StorageRead
+                            or GraphResourceState.StorageWrite
+                            or GraphResourceState.StorageReadWrite)))))
+            {
+                throw new NotSupportedException("Native graph submission requires full-range copy-source buffers with valid imported or transient state.");
+            }
         }
 
-        if (copyDestinationBufferImport is not null
-            && ((copyDestinationBufferImport.Version.Range != new GraphBufferRange(0, copyDestinationBufferImport.Buffer.ByteLength))
-                || (copyDestinationBufferImport.InitialContentsValid
-                    && (copyDestinationBufferImport.InitialState == GraphResourceState.Undefined))
-                || (copyDestinationBufferImport.InitialState is not (
+        foreach (var import in copyDestinationBufferImports.Values)
+        {
+            if ((import.Version.Range != new GraphBufferRange(0, import.Buffer.ByteLength))
+                || (import.InitialContentsValid && (import.InitialState == GraphResourceState.Undefined))
+                || (import.InitialState is not (
                     GraphResourceState.Undefined
                     or GraphResourceState.General
                     or GraphResourceState.CopySource
                     or GraphResourceState.CopyDestination
                     or GraphResourceState.StorageRead
                     or GraphResourceState.StorageWrite
-                    or GraphResourceState.StorageReadWrite))))
-        {
-            throw new NotSupportedException("Native graph submission requires a full-range copy-destination buffer.");
+                    or GraphResourceState.StorageReadWrite)))
+            {
+                throw new NotSupportedException("Native graph submission requires full-range copy-destination buffers with a supported initial state.");
+            }
         }
 
         var hasColorClear = false;
@@ -437,8 +418,8 @@ internal sealed class GraphicsGraphSubmission
         var hasStorageImagePipeline = false;
         var hasStorageImageBinding = false;
         var hasStorageImageAccess = false;
-        var hasCopySourceAccess = false;
-        var hasCopyDestinationAccess = false;
+        var copySourceResourcesUsed = new HashSet<ulong>();
+        var copyDestinationResourcesUsed = new HashSet<ulong>();
         var uniformBufferPasses = new HashSet<RenderPassId>();
         var sampledTexturePasses = new HashSet<RenderPassId>();
         var storageBufferPasses = new HashSet<RenderPassId>();
@@ -497,6 +478,7 @@ internal sealed class GraphicsGraphSubmission
             var currentPipelineRequiresSampledImage = false;
             var currentPipelineRequiresSampler = false;
             var currentPipelineRequiresStorageBuffer = false;
+            var currentPipelineStorageBufferWriteOnly = false;
             var currentPipelineRequiresStorageImage = false;
             var currentPipelineBindingsSet = false;
             var hasDraw = false;
@@ -539,6 +521,7 @@ internal sealed class GraphicsGraphSubmission
                         }
 
                         var reflectedResources = new HashSet<ShaderResourceSignature>();
+                        currentPipelineStorageBufferWriteOnly = false;
 
                         foreach (var reflection in layout.ShaderReflections)
                         {
@@ -555,6 +538,9 @@ internal sealed class GraphicsGraphSubmission
                                         or ShaderResourceKind.Sampler
                                         or ShaderResourceKind.StorageBuffer
                                         or ShaderResourceKind.StorageImage;
+                                var isWriteOnlyComputeBuffer = isComputePass
+                                    && (resource.Kind == ShaderResourceKind.StorageBuffer)
+                                    && (resource.Access == ShaderResourceAccess.Write);
 
                                 if ((resource.Group != ShaderBindingGroup.Frame)
                                     || !supportedKind
@@ -565,13 +551,15 @@ internal sealed class GraphicsGraphSubmission
                                             or ShaderResourceKind.Sampler)
                                         && (resource.Access != ShaderResourceAccess.Read))
                                     || ((resource.Kind is ShaderResourceKind.StorageBuffer or ShaderResourceKind.StorageImage)
-                                        && (resource.Access != ShaderResourceAccess.ReadWrite))
+                                        && (resource.Access != ShaderResourceAccess.ReadWrite)
+                                        && !isWriteOnlyComputeBuffer)
                                     || !supportedStage)
                                 {
                                     throw new NotSupportedException(
                                         "Native graph submission supports Frame graphics resources and compute-stage storage bindings.");
                                 }
 
+                                currentPipelineStorageBufferWriteOnly |= isWriteOnlyComputeBuffer;
                                 _ = reflectedResources.Add(resource);
                             }
                         }
@@ -601,6 +589,7 @@ internal sealed class GraphicsGraphSubmission
                                 case ShaderResourceKind.StorageBuffer:
                                 {
                                     currentPipelineRequiresStorageBuffer = true;
+                                    currentPipelineStorageBufferWriteOnly |= resource.Access == ShaderResourceAccess.Write;
                                     break;
                                 }
 
@@ -706,36 +695,63 @@ internal sealed class GraphicsGraphSubmission
                                         throw new NotSupportedException("The Frame storage-buffer binding must exactly match the imported graph buffer range.");
                                     }
 
-                                    GraphResourceAccess? storageReadAccess = null;
-                                    GraphResourceAccess? storageWriteAccess = null;
-
-                                    foreach (var access in Accesses)
+                                    if (currentPipelineStorageBufferWriteOnly)
                                     {
-                                        if (!access.IsTexture
-                                            && (access.PassId == pass.PassId)
-                                            && (access.ResourceId == binding.Resource.ResourceId)
-                                            && (access.RequiredState == GraphResourceState.StorageReadWrite)
-                                            && access.IsStorageReadWritePair
-                                            && binding.Range.IsWithin(access.BufferRange))
+                                        var writeAccessDeclared = false;
+
+                                        foreach (var access in Accesses)
                                         {
-                                            if (access.IsWrite
-                                                && ReferenceEquals(access.BufferVersion, binding.Resource))
+                                            if (!access.IsTexture
+                                                && (access.PassId == pass.PassId)
+                                                && (access.ResourceId == binding.Resource.ResourceId)
+                                                && (access.RequiredState == GraphResourceState.StorageWrite)
+                                                && access.IsWrite
+                                                && ReferenceEquals(access.BufferVersion, binding.Resource)
+                                                && binding.Range.IsWithin(access.BufferRange))
                                             {
-                                                storageWriteAccess = access;
-                                            }
-                                            else if (!access.IsWrite)
-                                            {
-                                                storageReadAccess = access;
+                                                writeAccessDeclared = true;
+                                                break;
                                             }
                                         }
-                                    }
 
-                                    if ((storageReadAccess is not GraphResourceAccess readAccess)
-                                        || (storageWriteAccess is not GraphResourceAccess writeAccess)
-                                        || !readAccess.ContentsValid
-                                        || !readAccess.IsStorageReadWritePairOf(writeAccess))
+                                        if (!writeAccessDeclared)
+                                        {
+                                            throw new InvalidOperationException("The compute Frame storage-buffer binding has no matching declared StorageWrite access.");
+                                        }
+                                    }
+                                    else
                                     {
-                                        throw new InvalidOperationException("The Frame storage-buffer binding has no matching initialized StorageReadWrite version pair.");
+                                        GraphResourceAccess? storageReadAccess = null;
+                                        GraphResourceAccess? storageWriteAccess = null;
+
+                                        foreach (var access in Accesses)
+                                        {
+                                            if (!access.IsTexture
+                                                && (access.PassId == pass.PassId)
+                                                && (access.ResourceId == binding.Resource.ResourceId)
+                                                && (access.RequiredState == GraphResourceState.StorageReadWrite)
+                                                && access.IsStorageReadWritePair
+                                                && binding.Range.IsWithin(access.BufferRange))
+                                            {
+                                                if (access.IsWrite
+                                                    && ReferenceEquals(access.BufferVersion, binding.Resource))
+                                                {
+                                                    storageWriteAccess = access;
+                                                }
+                                                else if (!access.IsWrite)
+                                                {
+                                                    storageReadAccess = access;
+                                                }
+                                            }
+                                        }
+
+                                        if ((storageReadAccess is not GraphResourceAccess readAccess)
+                                            || (storageWriteAccess is not GraphResourceAccess writeAccess)
+                                            || !readAccess.ContentsValid
+                                            || !readAccess.IsStorageReadWritePairOf(writeAccess))
+                                        {
+                                            throw new InvalidOperationException("The Frame storage-buffer binding has no matching initialized StorageReadWrite version pair.");
+                                        }
                                     }
 
                                     hasStorageBufferBinding = true;
@@ -965,12 +981,11 @@ internal sealed class GraphicsGraphSubmission
                         var destination = command.CopyDestination
                             ?? throw new InvalidOperationException("The graph copy command has no destination buffer version.");
 
-                        if ((copySourceBufferImport is null)
-                            || (copyDestinationBufferImport is null)
-                            || (source.ResourceId != copySourceBufferImport.Version.ResourceId)
-                            || (destination.ResourceId != copyDestinationBufferImport.Version.ResourceId))
+                        if (!copySourceBufferImports.TryGetValue(source.ResourceId, out var copySourceBufferImport)
+                            || !copyDestinationBufferImports.TryGetValue(destination.ResourceId, out var copyDestinationBufferImport)
+                            || (source.ResourceId == destination.ResourceId))
                         {
-                            throw new NotSupportedException("Native graph buffer copies require the imported copy-source and copy-destination buffers.");
+                            throw new NotSupportedException("Native graph buffer copies require distinct imported copy-source and copy-destination buffers.");
                         }
 
                         var sourceRange = new GraphBufferRange(command.SourceOffset, command.ByteLength);
@@ -995,6 +1010,7 @@ internal sealed class GraphicsGraphSubmission
                             sourceAccessDeclared |= (access.ResourceId == source.ResourceId)
                                 && (access.RequiredState == GraphResourceState.CopySource)
                                 && !access.IsWrite
+                                && access.ContentsValid
                                 && ReferenceEquals(access.BufferVersion, source)
                                 && sourceRange.IsWithin(access.BufferRange);
                             destinationAccessDeclared |= (access.ResourceId == destination.ResourceId)
@@ -1046,8 +1062,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!access.IsTexture
-                && (copySourceBufferImport is not null)
-                && (access.ResourceId == copySourceBufferImport.Version.ResourceId)
+                && copySourceBufferImports.ContainsKey(access.ResourceId)
                 && (access.RequiredState == GraphResourceState.CopySource)
                 && !access.IsWrite)
             {
@@ -1056,13 +1071,12 @@ internal sealed class GraphicsGraphSubmission
                     throw new InvalidOperationException("The imported copy-source buffer is declared by a pass without a matching copy command.");
                 }
 
-                hasCopySourceAccess = true;
+                _ = copySourceResourcesUsed.Add(access.ResourceId);
                 continue;
             }
 
             if (!access.IsTexture
-                && (copyDestinationBufferImport is not null)
-                && (access.ResourceId == copyDestinationBufferImport.Version.ResourceId)
+                && copyDestinationBufferImports.ContainsKey(access.ResourceId)
                 && (access.RequiredState == GraphResourceState.CopyDestination)
                 && access.IsWrite)
             {
@@ -1071,7 +1085,7 @@ internal sealed class GraphicsGraphSubmission
                     throw new InvalidOperationException("The imported copy-destination buffer is declared by a pass without a matching copy command.");
                 }
 
-                hasCopyDestinationAccess = true;
+                _ = copyDestinationResourcesUsed.Add(access.ResourceId);
                 continue;
             }
 
@@ -1087,6 +1101,21 @@ internal sealed class GraphicsGraphSubmission
                 }
 
                 hasUniformBufferAccess = true;
+                continue;
+            }
+
+            if (!access.IsTexture
+                && (storageBufferImport is not null)
+                && (access.ResourceId == storageBufferImport.Version.ResourceId)
+                && (access.RequiredState == GraphResourceState.StorageWrite)
+                && access.IsWrite)
+            {
+                if (!storageBufferPasses.Contains(access.PassId))
+                {
+                    throw new InvalidOperationException("The imported Frame storage buffer is declared by a pass without a matching binding set.");
+                }
+
+                hasStorageBufferAccess = true;
                 continue;
             }
 
@@ -1161,8 +1190,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!transition.IsTexture
-                && (copySourceBufferImport is not null)
-                && (transition.ResourceId == copySourceBufferImport.Version.ResourceId)
+                && copySourceBufferImports.ContainsKey(transition.ResourceId)
                 && (transition.AfterState == GraphResourceState.CopySource)
                 && (transition.BeforeState is
                     GraphResourceState.General
@@ -1177,8 +1205,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!transition.IsTexture
-                && (copyDestinationBufferImport is not null)
-                && (transition.ResourceId == copyDestinationBufferImport.Version.ResourceId)
+                && copyDestinationBufferImports.ContainsKey(transition.ResourceId)
                 && (transition.AfterState == GraphResourceState.CopyDestination)
                 && (transition.BeforeState is
                     GraphResourceState.Undefined
@@ -1196,9 +1223,10 @@ internal sealed class GraphicsGraphSubmission
             if (!transition.IsTexture
                 && (storageBufferImport is not null)
                 && (transition.ResourceId == storageBufferImport.Version.ResourceId)
-                && (transition.AfterState == GraphResourceState.StorageReadWrite)
+                && (transition.AfterState is GraphResourceState.StorageWrite or GraphResourceState.StorageReadWrite)
                 && (transition.BeforeState is
-                    GraphResourceState.General
+                    GraphResourceState.Undefined
+                    or GraphResourceState.General
                     or GraphResourceState.CopySource
                     or GraphResourceState.CopyDestination
                     or GraphResourceState.StorageRead
@@ -1250,14 +1278,14 @@ internal sealed class GraphicsGraphSubmission
             throw new NotSupportedException("An imported Frame uniform buffer must be reflected, bound, and declared by a graph pass.");
         }
 
-        if ((copySourceBufferImport is not null) && !hasCopySourceAccess)
+        if (copySourceResourcesUsed.Count != copySourceBufferImports.Count)
         {
-            throw new NotSupportedException("An imported copy-source buffer must be read by a graph copy command.");
+            throw new NotSupportedException("Every imported copy-source buffer must be read by a graph copy command.");
         }
 
-        if ((copyDestinationBufferImport is not null) && !hasCopyDestinationAccess)
+        if (copyDestinationResourcesUsed.Count != copyDestinationBufferImports.Count)
         {
-            throw new NotSupportedException("An imported copy-destination buffer must be written by a graph copy command.");
+            throw new NotSupportedException("Every imported copy-destination buffer must be written by a graph copy command.");
         }
 
         if ((sampledTextureImport is not null)

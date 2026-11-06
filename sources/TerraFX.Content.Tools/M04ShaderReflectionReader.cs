@@ -894,9 +894,9 @@ internal static class M04ShaderReflectionReader
             var expectedShape = GetDxilResourceShape(matchedResource);
 
             if ((matchedResource.Signature.Kind is ShaderResourceKind.StorageBuffer or ShaderResourceKind.StorageImage)
-                && (matchedResource.Signature.Access != ShaderResourceAccess.ReadWrite))
+                && (matchedResource.Signature.Access == ShaderResourceAccess.Read))
             {
-                throw new NotSupportedException("The selected DXIL storage descriptor profile admits only read-write UAV resources.");
+                throw new NotSupportedException("The selected DXIL storage descriptor profile requires writable UAV resources.");
             }
 
             if ((matchedResource.Signature.Kind == ShaderResourceKind.StorageImage)

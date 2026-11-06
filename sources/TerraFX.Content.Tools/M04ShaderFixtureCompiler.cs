@@ -502,7 +502,7 @@ internal static class M04ShaderFixtureCompiler
                 || !text.Contains("FrameStorageBuffer", StringComparison.Ordinal)
                 || !text.Contains("FrameStorageImage", StringComparison.Ordinal))
             {
-                throw new InvalidDataException("DXC reflection from the compiled compute DXIL does not contain its entry point, one-thread group size, and storage resources.");
+                throw new InvalidDataException("DXC reflection from the compiled compute DXIL does not contain its entry point, one-thread group size, and expected storage resources.");
             }
 
             return;

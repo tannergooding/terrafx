@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using TerraFX;
 using TerraFX.Graphics;
@@ -46,6 +47,25 @@ public sealed partial class RenderGraphPlan
             throw new ArgumentException("A compiled graph plan must preserve pass identities, kinds, and descriptions.");
         }
 
+        var importedBufferResourceIds = new HashSet<ulong>();
+
+        foreach (var import in bufferImports)
+        {
+            _ = importedBufferResourceIds.Add(import.Version.ResourceId);
+        }
+
+        var transientBuffers = new SortedDictionary<ulong, GraphBufferVersion>();
+
+        foreach (var access in accesses)
+        {
+            if (!access.IsTexture
+                && (access.BufferVersion is GraphBufferVersion version)
+                && !importedBufferResourceIds.Contains(version.ResourceId))
+            {
+                _ = transientBuffers.TryAdd(version.ResourceId, version);
+            }
+        }
+
         Accesses = [.. accesses];
         AttachmentWrites = [.. attachmentWrites];
         BufferImports = [.. bufferImports];
@@ -66,6 +86,7 @@ public sealed partial class RenderGraphPlan
         TargetExtent = options.TargetExtent;
         TextureImports = [.. textureImports];
         TickIndex = options.TickIndex;
+        TransientBuffers = [.. transientBuffers.Values];
         WorldGuid = options.WorldGuid;
     }
 
@@ -122,4 +143,6 @@ public sealed partial class RenderGraphPlan
     internal ImmutableArray<GraphResourceStateTransition> StateTransitions { get; }
 
     internal ImmutableArray<GraphTextureImportRecord> TextureImports { get; }
+
+    internal ImmutableArray<GraphBufferVersion> TransientBuffers { get; }
 }
