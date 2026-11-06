@@ -5,6 +5,7 @@ namespace TerraFX.Graphics;
 internal enum GraphicsCommandKind
 {
     CopyBuffer,
+    CopyTexture,
     Dispatch,
     Draw,
     DrawIndexed,

@@ -1812,26 +1812,60 @@ public static unsafe class D3D12GraphicsBackend
                         {
                             foreach (var command in pass.Commands)
                             {
-                                if (command.Kind != GraphicsCommandKind.CopyBuffer)
+                                if (command.Kind == GraphicsCommandKind.CopyBuffer)
+                                {
+                                    var sourceVersion = command.CopySource
+                                        ?? throw new InvalidOperationException("The graph copy command has no source buffer version.");
+                                    var destinationVersion = command.CopyDestination
+                                        ?? throw new InvalidOperationException("The graph copy command has no destination buffer version.");
+                                    var sourceBuffer = submission.GetBuffer(sourceVersion.ResourceId) as D3D12BackendBuffer
+                                        ?? throw new InvalidOperationException("The graph copy source is not a D3D12 buffer.");
+                                    var destinationBuffer = submission.GetBuffer(destinationVersion.ResourceId) as D3D12BackendBuffer
+                                        ?? throw new InvalidOperationException("The graph copy destination is not a D3D12 buffer.");
+                                    commandList->CopyBufferRegion(
+                                        destinationBuffer.GetResource(),
+                                        checked((ulong)command.DestinationOffset),
+                                        sourceBuffer.GetResource(),
+                                        checked((ulong)command.SourceOffset),
+                                        checked((ulong)command.ByteLength));
+                                }
+                                else if (command.Kind == GraphicsCommandKind.CopyTexture)
+                                {
+                                    var sourceVersion = command.CopySourceTexture
+                                        ?? throw new InvalidOperationException("The graph copy command has no source texture version.");
+                                    var destinationVersion = command.CopyDestinationTexture
+                                        ?? throw new InvalidOperationException("The graph copy command has no destination texture version.");
+                                    var sourceTexture = submission.GetTexture(sourceVersion.ResourceId) as D3D12BackendTexture
+                                        ?? throw new InvalidOperationException("The graph copy source is not a D3D12 texture.");
+                                    var destinationTexture = submission.GetTexture(destinationVersion.ResourceId) as D3D12BackendTexture
+                                        ?? throw new InvalidOperationException("The graph copy destination is not a D3D12 texture.");
+                                    var sourceSubresource = new TextureSubresource(
+                                        sourceVersion.Range.FirstMip,
+                                        sourceVersion.Range.FirstLayer,
+                                        sourceVersion.Range.Aspect);
+                                    var destinationSubresource = new TextureSubresource(
+                                        destinationVersion.Range.FirstMip,
+                                        destinationVersion.Range.FirstLayer,
+                                        destinationVersion.Range.Aspect);
+                                    var sourceLocation = CreateSubresourceLocation(
+                                        sourceTexture.GetResource(),
+                                        GetTextureSubresourceIndex(sourceTexture.Description, sourceSubresource));
+                                    var destinationLocation = CreateSubresourceLocation(
+                                        destinationTexture.GetResource(),
+                                        GetTextureSubresourceIndex(destinationTexture.Description, destinationSubresource));
+                                    commandList->CopyTextureRegion(
+                                        &destinationLocation,
+                                        0,
+                                        0,
+                                        0,
+                                        &sourceLocation,
+                                        null);
+                                }
+                                else
                                 {
                                     throw new NotSupportedException(
                                         $"Native D3D12 graph copy pass does not support {command.Kind} commands.");
                                 }
-
-                                var sourceVersion = command.CopySource
-                                    ?? throw new InvalidOperationException("The graph copy command has no source buffer version.");
-                                var destinationVersion = command.CopyDestination
-                                    ?? throw new InvalidOperationException("The graph copy command has no destination buffer version.");
-                                var sourceBuffer = submission.GetBuffer(sourceVersion.ResourceId) as D3D12BackendBuffer
-                                    ?? throw new InvalidOperationException("The graph copy source is not a D3D12 buffer.");
-                                var destinationBuffer = submission.GetBuffer(destinationVersion.ResourceId) as D3D12BackendBuffer
-                                    ?? throw new InvalidOperationException("The graph copy destination is not a D3D12 buffer.");
-                                commandList->CopyBufferRegion(
-                                    destinationBuffer.GetResource(),
-                                    checked((ulong)command.DestinationOffset),
-                                    sourceBuffer.GetResource(),
-                                    checked((ulong)command.SourceOffset),
-                                    checked((ulong)command.ByteLength));
                             }
 
                             continue;

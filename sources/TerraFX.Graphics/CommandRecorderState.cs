@@ -235,6 +235,70 @@ internal sealed class CommandRecorderState : IDisposable
             byteLength: byteLength));
     }
 
+    internal void CopyTexture(GraphTextureVersion source, GraphTextureVersion destination)
+    {
+        EnsureActive();
+        EnsurePassKind(CommandRecorderPassKind.Copy);
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(destination);
+        ArgumentOutOfRangeException.ThrowIfNotEqual(source.DeviceEpoch, _device.DeviceEpoch, nameof(source));
+        ArgumentOutOfRangeException.ThrowIfNotEqual(destination.DeviceEpoch, _device.DeviceEpoch, nameof(destination));
+
+        if ((source.ResourceId == destination.ResourceId)
+            || (source.Description.Dimension != TextureDimension.Dimension2D)
+            || (destination.Description.Dimension != TextureDimension.Dimension2D)
+            || (source.Range.MipCount != 1)
+            || (source.Range.LayerCount != 1)
+            || (destination.Range.MipCount != 1)
+            || (destination.Range.LayerCount != 1)
+            || (source.Range.Aspect != TextureAspect.Color)
+            || (destination.Range.Aspect != TextureAspect.Color))
+        {
+            throw new NotSupportedException("A graph texture copy requires distinct 2D color subresources with one mip and layer.");
+        }
+
+        if ((source.Description.Usage & TextureUsage.CopySource) == 0)
+        {
+            throw new ArgumentException("The source graph texture does not permit copy-source use.", nameof(source));
+        }
+
+        if ((destination.Description.Usage & TextureUsage.CopyDestination) == 0)
+        {
+            throw new ArgumentException("The destination graph texture does not permit copy-destination use.", nameof(destination));
+        }
+
+        if (source.Description.Format != destination.Description.Format)
+        {
+            throw new ArgumentException("Graph texture copies require matching formats.", nameof(destination));
+        }
+
+        var sourceSubresource = new TextureSubresource(
+            source.Range.FirstMip,
+            source.Range.FirstLayer,
+            source.Range.Aspect);
+        var destinationSubresource = new TextureSubresource(
+            destination.Range.FirstMip,
+            destination.Range.FirstLayer,
+            destination.Range.Aspect);
+
+        if (GraphicsDevice.GetTextureSubresourceExtent(source.Description, sourceSubresource)
+            != GraphicsDevice.GetTextureSubresourceExtent(destination.Description, destinationSubresource))
+        {
+            throw new ArgumentException("Graph texture copies require matching mip extents.", nameof(destination));
+        }
+
+        if (!HasTextureAccess(source, source.Range, GraphTextureUsage.CopySource)
+            || !HasTextureAccess(destination, destination.Range, GraphTextureUsage.CopyDestination))
+        {
+            throw new InvalidOperationException("A texture copy must match exact source and destination ranges declared by this pass.");
+        }
+
+        _commands.Add(new RecordedGraphicsCommand(
+            GraphicsCommandKind.CopyTexture,
+            copySourceTexture: source,
+            copyDestinationTexture: destination));
+    }
+
     internal void Dispatch(DispatchSize size)
     {
         EnsureActive();

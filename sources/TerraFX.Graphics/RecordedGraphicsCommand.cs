@@ -18,6 +18,8 @@ internal readonly struct RecordedGraphicsCommand
         DispatchSize dispatch = default,
         GraphBufferVersion? copySource = null,
         GraphBufferVersion? copyDestination = null,
+        GraphTextureVersion? copySourceTexture = null,
+        GraphTextureVersion? copyDestinationTexture = null,
         long sourceOffset = 0,
         long destinationOffset = 0,
         long byteLength = 0,
@@ -42,6 +44,21 @@ internal readonly struct RecordedGraphicsCommand
         else if (pipeline.IsValid || (pipelineOwner is not null))
         {
             throw new ArgumentException("Only a pipeline command can identify a pipeline.", nameof(pipelineOwner));
+        }
+
+        if (kind == GraphicsCommandKind.CopyTexture)
+        {
+            ArgumentNullException.ThrowIfNull(copySourceTexture);
+            ArgumentNullException.ThrowIfNull(copyDestinationTexture);
+
+            if (copySourceTexture.ResourceId == copyDestinationTexture.ResourceId)
+            {
+                throw new ArgumentException("A graph texture copy requires distinct source and destination resources.");
+            }
+        }
+        else if ((copySourceTexture is not null) || (copyDestinationTexture is not null))
+        {
+            throw new ArgumentException("Only a texture-copy command can identify texture-copy resources.");
         }
 
         var hasStorageBarrierBuffer = storageBarrierBuffer is not null;
@@ -88,6 +105,8 @@ internal readonly struct RecordedGraphicsCommand
         ByteLength = byteLength;
         CopyDestination = copyDestination;
         CopySource = copySource;
+        CopyDestinationTexture = copyDestinationTexture;
+        CopySourceTexture = copySourceTexture;
         DestinationOffset = destinationOffset;
         Dispatch = dispatch;
         Draw = draw;
@@ -114,7 +133,11 @@ internal readonly struct RecordedGraphicsCommand
 
     internal GraphBufferVersion? CopyDestination { get; }
 
+    internal GraphTextureVersion? CopyDestinationTexture { get; }
+
     internal GraphBufferVersion? CopySource { get; }
+
+    internal GraphTextureVersion? CopySourceTexture { get; }
 
     internal long DestinationOffset { get; }
 

@@ -205,6 +205,29 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "Name~D3D12GraphSubmissionRetainsTargetUntilFenceCompletion"
 ```
 
+`CommandRecorder.CopyTexture` copies one complete imported 2D color mip/layer between distinct textures with matching format and mip extent. The 2x2 RGBA8 witness copies mip 1 from 4x4 two-mip textures and verifies every copied byte. Windows Debug/Release pass on D3D12 and Vulkan; WSLg Debug/Release pass Vulkan with Khronos validation. The D3D12 test skips only when its required host-visible staging allocation is refused by adapter-budget admission. Run both backends in Debug/Release on Windows and Vulkan in the WSLg lane:
+
+```powershell
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SubmitsTextureCopyGraphAndReadsBackAsync"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SubmitsTextureCopyGraphAndReadsBackAsync"
+```
+
+For WSLg, set `WORKTREE` to the checkout's Linux path and run outside the checkout so the Linux-local SDK is selected instead of the Windows `.dotnet` candidate in `global.json`:
+
+```bash
+export WORKTREE=/mnt/d/path/to/worktree
+cd /tmp
+export DOTNET_ROOT="$WORKTREE/artifacts/linux/dotnet"
+export DOTNET_ROOT_X64="$DOTNET_ROOT"
+export DOTNET_MULTILEVEL_LOOKUP=0
+export LD_LIBRARY_PATH="$WORKTREE/artifacts/linux/native/extracted/usr/lib/x86_64-linux-gnu"
+export VK_LAYER_PATH="$WORKTREE/artifacts/linux/native/extracted/usr/share/vulkan/explicit_layer.d"
+export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
+export TERRAFX_M04_SHADER_FIXTURE_DIRECTORY=
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~SubmitsTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SubmitsTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
 ### Vulkan GraphicsDevice startup through the host issuer
 
 This focused Runtime test supplies a real `PlatformHostOwner`-issued identity to `GraphicsDevice.CreateAsync`, starts an OffscreenNative device through `VulkanGraphicsBackend.CreateRegistration`, records the reported adapter/driver/API and validation-layer environment in the TRX output, then uses `CreateBufferAsync`, `UploadBufferAsync`, and `ReadbackBufferAsync` to verify an exact 32-byte round trip before shutting down the device and platform owner:

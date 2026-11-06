@@ -103,6 +103,23 @@ internal sealed partial class EngineHostOptionsTests
             holdGraphCompletion: false,
             usePackageResidencyTexture: true);
 
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsTextureCopyGraphAndReadsBackAsync(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useTextureCopy: true);
+
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
@@ -119,7 +136,8 @@ internal sealed partial class EngineHostOptionsTests
         bool useTransientBufferAliasing,
         bool overlapTransientBufferLifetimes,
         bool holdGraphCompletion,
-        bool usePackageResidencyTexture = false)
+        bool usePackageResidencyTexture = false,
+        bool useTextureCopy = false)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -238,6 +256,9 @@ internal sealed partial class EngineHostOptionsTests
         };
         EngineHost? host = null;
         GpuTexture? target = null;
+        GpuTexture? copySourceTexture = null;
+        GpuTexture? copyDestinationTexture = null;
+        byte[]? expectedTextureCopyBytes = null;
         GpuTexture? sampledTexture = null;
         GpuResidencyLease? sampledTextureResidencyLease = null;
         GpuTexture? storageImage = null;
@@ -377,6 +398,57 @@ internal sealed partial class EngineHostOptionsTests
                     new TextureDataLayout(targetExtent.Width * 4, initialTargetBytes.Length))
                     .ConfigureAwait(false);
                 Assert.That(uploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+            }
+
+            if (useTextureCopy)
+            {
+                expectedTextureCopyBytes = [
+                    0x13, 0x29, 0x4F, 0x97,
+                    0xE3, 0x35, 0x6B, 0xB9,
+                    0x11, 0x23, 0x47, 0x8B,
+                    0xD1, 0x2D, 0x5B, 0xA7,
+                ];
+                var copyTextureUsage = TextureUsage.CopySource | TextureUsage.CopyDestination;
+                var copyTextureDescription = new TextureDescription(
+                    TextureDimension.Dimension2D,
+                    width: 4,
+                    height: 4,
+                    depth: 1,
+                    arrayLayers: 1,
+                    mipLevels: 2,
+                    TextureFormat.Rgba8Unorm,
+                    copyTextureUsage,
+                    $"m04-{backend}-graph-copy-texture");
+                copySourceTexture = await graphicsDevice.CreateTextureAsync(copyTextureDescription).ConfigureAwait(false);
+                copyDestinationTexture = await graphicsDevice.CreateTextureAsync(copyTextureDescription).ConfigureAwait(false);
+                var sourceStorage = UnmanagedBuffer<byte>.Allocate(
+                    expectedTextureCopyBytes.Length,
+                    new BufferAllocationOptions(expectedTextureCopyBytes.Length, alignment: 1));
+                sourceStorage.CopyFrom(expectedTextureCopyBytes.AsSpan(), 0);
+
+                using var ownedSourceBytes = sourceStorage.TransferToOwnedBuffer();
+                using var sourceLease = ownedSourceBytes.AcquireReadLease(0, expectedTextureCopyBytes.Length);
+                UploadReceipt sourceUploadReceipt;
+
+                try
+                {
+                    sourceUploadReceipt = await graphicsDevice.UploadTextureAsync(
+                        copySourceTexture,
+                        new TextureSubresource(1, 0, TextureAspect.Color),
+                        sourceLease,
+                        0,
+                        new TextureDataLayout(rowPitch: 2 * 4, slicePitch: expectedTextureCopyBytes.Length))
+                        .ConfigureAwait(false);
+                }
+                catch (OutOfMemoryException exception) when (
+                    (backend == GraphicsBackend.D3D12)
+                    && exception.Message.Contains("staging budget", StringComparison.Ordinal))
+                {
+                    Assert.Ignore($"{backend} graph texture-copy validation requires an available staging budget: {exception.Message}");
+                    throw;
+                }
+
+                Assert.That(sourceUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
             }
 
             if (useSampledTexture)
@@ -727,6 +799,9 @@ internal sealed partial class EngineHostOptionsTests
             GraphBufferVersion? transientInitializationSourceVersion = null;
             GraphBufferVersion? transientSecondInitializationSourceVersion = null;
             GraphTextureVersion? sampledTextureVersion = null;
+            GraphTextureVersion? copySourceTextureVersion = null;
+            GraphTextureVersion? copyDestinationTextureInitialVersion = null;
+            GraphTextureVersion? copyDestinationTextureWriteVersion = null;
             GraphTextureVersion? storageImageInitialVersion = null;
             GraphTextureVersion? storageImageWriteVersion = null;
             GraphTextureVersion? computeStorageImageWriteVersion = null;
@@ -852,6 +927,30 @@ internal sealed partial class EngineHostOptionsTests
                         ?? throw new InvalidOperationException("The sampled Frame pipeline has no sampler.")));
             }
 
+            if (copySourceTexture is GpuTexture selectedCopySourceTexture)
+            {
+                var copyRange = new GraphTextureRange(1, 1, 0, 1, TextureAspect.Color);
+                copySourceTextureVersion = graph.ImportTexture(
+                    selectedCopySourceTexture,
+                    copyRange,
+                    new GraphImportOptions(
+                        GraphResourceState.General,
+                        contentsValid: true,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+            }
+
+            if (copyDestinationTexture is GpuTexture selectedCopyDestinationTexture)
+            {
+                var copyRange = new GraphTextureRange(1, 1, 0, 1, TextureAspect.Color);
+                copyDestinationTextureInitialVersion = graph.ImportTexture(
+                    selectedCopyDestinationTexture,
+                    copyRange,
+                    new GraphImportOptions(
+                        GraphResourceState.Undefined,
+                        contentsValid: false,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+            }
+
             if (storageImage is GpuTexture selectedStorageImage)
             {
                 storageImageInitialVersion = graph.ImportTexture(
@@ -930,6 +1029,12 @@ internal sealed partial class EngineHostOptionsTests
                         selectedSecondDestination,
                         0,
                         selectedSecondSource.Range.ByteLength);
+                }
+
+                if ((copySourceTextureVersion is GraphTextureVersion selectedTextureSource)
+                    && (copyDestinationTextureWriteVersion is GraphTextureVersion selectedTextureDestination))
+                {
+                    recorder.CopyTexture(selectedTextureSource, selectedTextureDestination);
                 }
             }
 
@@ -1237,7 +1342,11 @@ internal sealed partial class EngineHostOptionsTests
                     secondCopyDestination.Range);
                 copyPassId = copySecondPass;
             }
-            else if (useBufferCopy || useCompute || useTransientStorage || useMultipleComputeStorageBuffers)
+            else if (useBufferCopy
+                || useCompute
+                || useTransientStorage
+                || useMultipleComputeStorageBuffers
+                || useTextureCopy)
             {
                 ImmutableArray<RenderPassId> copyPredecessors = computePassId is RenderPassId copyComputePredecessor
                     ? [copyComputePredecessor]
@@ -1250,20 +1359,36 @@ internal sealed partial class EngineHostOptionsTests
                         hasExternalSideEffects: false),
                     RecordCopy);
                 copyPassId = copyPass;
-                var selectedCopySource = copySourceVersion
-                    ?? throw new InvalidOperationException("The graph copy test has no source buffer version.");
-                var selectedCopyDestination = copyDestinationInitialVersion
-                    ?? throw new InvalidOperationException("The graph copy test has no destination buffer version.");
-                graph.ReadBuffer(
-                    copyPass,
-                    selectedCopySource,
-                    GraphBufferUsage.CopySource,
-                    selectedCopySource.Range);
-                copyDestinationWriteVersion = graph.WriteBuffer(
-                    copyPass,
-                    selectedCopyDestination,
-                    GraphBufferUsage.CopyDestination,
-                    selectedCopyDestination.Range);
+
+                if ((copySourceVersion is GraphBufferVersion selectedCopySource)
+                    && (copyDestinationInitialVersion is GraphBufferVersion selectedCopyDestination))
+                {
+                    graph.ReadBuffer(
+                        copyPass,
+                        selectedCopySource,
+                        GraphBufferUsage.CopySource,
+                        selectedCopySource.Range);
+                    copyDestinationWriteVersion = graph.WriteBuffer(
+                        copyPass,
+                        selectedCopyDestination,
+                        GraphBufferUsage.CopyDestination,
+                        selectedCopyDestination.Range);
+                }
+
+                if ((copySourceTextureVersion is GraphTextureVersion selectedTextureSource)
+                    && (copyDestinationTextureInitialVersion is GraphTextureVersion selectedTextureDestination))
+                {
+                    graph.ReadTexture(
+                        copyPass,
+                        selectedTextureSource,
+                        GraphTextureUsage.CopySource,
+                        selectedTextureSource.Range);
+                    copyDestinationTextureWriteVersion = graph.WriteTexture(
+                        copyPass,
+                        selectedTextureDestination,
+                        GraphTextureUsage.CopyDestination,
+                        selectedTextureDestination.Range);
+                }
 
                 if (useMultipleComputeStorageBuffers)
                 {
@@ -1544,6 +1669,36 @@ internal sealed partial class EngineHostOptionsTests
                     Assert.That(firstPixel[3], Is.EqualTo(255));
                     Assert.That(renderSnapshot.Cameras[0].ClearColor, Is.EqualTo(new Vector4(0.5f, 0.5f, 0.5f, 1.0f)));
                 });
+            }
+
+            if (useTextureCopy)
+            {
+                var copiedTexture = copyDestinationTexture
+                    ?? throw new InvalidOperationException("The graph texture-copy test has no destination texture.");
+                var expectedBytes = expectedTextureCopyBytes
+                    ?? throw new InvalidOperationException("The graph texture-copy test has no expected bytes.");
+                using var copyTextureReadback = await graphicsDevice.ReadbackTextureAsync(
+                    copiedTexture,
+                    new TextureSubresource(1, 0, TextureAspect.Color))
+                    .ConfigureAwait(false);
+                var paddedBytes = new byte[checked((int)copyTextureReadback.ByteLength)];
+
+                using (var copyTextureReadLease = copyTextureReadback.AcquireReadLease())
+                {
+                    var copyAction = new ReadbackCopyAction(paddedBytes);
+                    copyTextureReadLease.UseWindow(0, paddedBytes.Length, ref copyAction);
+                }
+
+                for (var y = 0; y < copyTextureReadback.Height; y++)
+                {
+                    var actualRow = paddedBytes.AsSpan(
+                        checked((int)(copyTextureReadback.RowPitch * y)),
+                        checked((int)(copyTextureReadback.Width * 4)));
+                    var expectedRow = expectedBytes.AsSpan(
+                        checked((int)(copyTextureReadback.Width * 4 * y)),
+                        checked((int)(copyTextureReadback.Width * 4)));
+                    Assert.That(actualRow.ToArray(), Is.EqualTo(expectedRow.ToArray()));
+                }
             }
 
             var selectedWorld = world
@@ -1967,6 +2122,7 @@ internal sealed partial class EngineHostOptionsTests
                 + $"SampledTexture={useSampledTexture}; "
                 + $"StorageResources={useStorageResources}; "
                 + $"BufferCopy={useBufferCopy || useCompute || useMultipleComputeStorageBuffers || useTransientBufferAliasing}; "
+                + $"TextureCopy={useTextureCopy}; "
                 + $"Compute={useCompute}; "
                 + $"MultipleComputeStorageBuffers={useMultipleComputeStorageBuffers}; "
                 + $"TransientBufferAliasing={useTransientBufferAliasing}; "
@@ -1991,6 +2147,8 @@ internal sealed partial class EngineHostOptionsTests
             secondCopySourceBuffer?.Dispose();
             copyDestinationBuffer?.Dispose();
             secondCopyDestinationBuffer?.Dispose();
+            copySourceTexture?.Dispose();
+            copyDestinationTexture?.Dispose();
 
             if (sampledTextureResidencyLease is not null)
             {

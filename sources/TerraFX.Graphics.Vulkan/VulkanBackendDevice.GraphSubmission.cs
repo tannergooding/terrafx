@@ -166,6 +166,13 @@ internal sealed unsafe partial class VulkanBackendDevice
         var currentBufferScopes = new Dictionary<ulong, (
             VkPipelineStageFlags2 StageMask,
             VkAccessFlags2 AccessMask)>(submission.BufferImports.Length);
+        var copyTextureScopes = new Dictionary<ulong, (
+            VulkanBackendTexture Texture,
+            TextureSubresource Subresource,
+            VkImageLayout Layout,
+            VkPipelineStageFlags2 StageMask,
+            VkAccessFlags2 AccessMask,
+            bool IsDestination)>(2);
 
         foreach (var import in submission.BufferImports)
         {
@@ -174,6 +181,90 @@ internal sealed unsafe partial class VulkanBackendDevice
             currentBufferScopes.Add(
                 import.Version.ResourceId,
                 (buffer.LastStageMask, buffer.LastAccessMask));
+        }
+
+        foreach (var import in submission.TextureImports)
+        {
+            var isCopySource = false;
+            var isCopyDestination = false;
+
+            foreach (var access in submission.Accesses)
+            {
+                if (!access.IsTexture || (access.ResourceId != import.Version.ResourceId))
+                {
+                    continue;
+                }
+
+                isCopySource |= (access.RequiredState == GraphResourceState.CopySource) && !access.IsWrite;
+                isCopyDestination |= (access.RequiredState == GraphResourceState.CopyDestination) && access.IsWrite;
+            }
+
+            if (!isCopySource && !isCopyDestination)
+            {
+                continue;
+            }
+
+            var texture = submission.GetTexture(import.Version.ResourceId) as VulkanBackendTexture
+                ?? throw new InvalidOperationException("The graph copy texture import is not a Vulkan texture.");
+            var copySubresource = new TextureSubresource(
+                import.Version.Range.FirstMip,
+                import.Version.Range.FirstLayer,
+                import.Version.Range.Aspect);
+            copyTextureScopes.Add(
+                import.Version.ResourceId,
+                (
+                    texture,
+                    copySubresource,
+                    texture.GetLayout(copySubresource),
+                    texture.GetLastStageMask(copySubresource),
+                    texture.GetLastAccessMask(copySubresource),
+                    isCopyDestination));
+        }
+
+        void RecordGraphCopyImageBarrier(ulong resourceId, bool isDestination)
+        {
+            var scopeTexture = copyTextureScopes[resourceId].Texture;
+            var scopeSubresource = copyTextureScopes[resourceId].Subresource;
+            var scopeLayout = copyTextureScopes[resourceId].Layout;
+            var scopeStageMask = copyTextureScopes[resourceId].StageMask;
+            var scopeAccessMask = copyTextureScopes[resourceId].AccessMask;
+            var isScopeDestination = copyTextureScopes[resourceId].IsDestination;
+            var state = isDestination ? GraphResourceState.CopyDestination : GraphResourceState.CopySource;
+            var expectedLayout = VulkanGraphResourceStateMapper.GetImageLayout(state);
+
+            if (scopeLayout != expectedLayout)
+            {
+                throw new InvalidOperationException("The graph texture copy does not match the Vulkan texture's tracked image layout.");
+            }
+
+            var barrier = default(VkImageMemoryBarrier2);
+            barrier.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            barrier.srcStageMask = scopeStageMask;
+            barrier.srcAccessMask = scopeAccessMask;
+            barrier.dstStageMask = VulkanGraphResourceStateMapper.GetStageMask(state);
+            barrier.dstAccessMask = VulkanGraphResourceStateMapper.GetAccessMask(state);
+            barrier.oldLayout = expectedLayout;
+            barrier.newLayout = expectedLayout;
+            barrier.srcQueueFamilyIndex = uint.MaxValue;
+            barrier.dstQueueFamilyIndex = uint.MaxValue;
+            barrier.image = scopeTexture.Image;
+            barrier.subresourceRange.aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT;
+            barrier.subresourceRange.baseMipLevel = checked((uint)scopeSubresource.MipLevel);
+            barrier.subresourceRange.levelCount = 1;
+            barrier.subresourceRange.baseArrayLayer = checked((uint)scopeSubresource.ArrayLayer);
+            barrier.subresourceRange.layerCount = 1;
+            var dependencyInfo = default(VkDependencyInfo);
+            dependencyInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dependencyInfo.imageMemoryBarrierCount = 1;
+            dependencyInfo.pImageMemoryBarriers = &barrier;
+            VulkanApi.vkCmdPipelineBarrier2(_commandBuffer, &dependencyInfo);
+            copyTextureScopes[resourceId] = (
+                scopeTexture,
+                scopeSubresource,
+                expectedLayout,
+                barrier.dstStageMask,
+                barrier.dstAccessMask,
+                isScopeDestination);
         }
 
         foreach (var pass in submission.Passes)
@@ -415,6 +506,26 @@ internal sealed unsafe partial class VulkanBackendDevice
                                 ref storageCurrentStageMask,
                                 ref storageCurrentAccessMask);
                         }
+                        else if (copyTextureScopes.TryGetValue(transition.ResourceId, out var copyTextureScope))
+                        {
+                            var copyTextureLayout = copyTextureScope.Layout;
+                            var copyTextureStageMask = copyTextureScope.StageMask;
+                            var copyTextureAccessMask = copyTextureScope.AccessMask;
+                            RecordGraphImageBarrier(
+                                pass,
+                                copyTextureScope.Texture,
+                                transition,
+                                ref copyTextureLayout,
+                                ref copyTextureStageMask,
+                                ref copyTextureAccessMask);
+                            copyTextureScopes[transition.ResourceId] = (
+                                copyTextureScope.Texture,
+                                copyTextureScope.Subresource,
+                                copyTextureLayout,
+                                copyTextureStageMask,
+                                copyTextureAccessMask,
+                                copyTextureScope.IsDestination);
+                        }
                         else
                         {
                             throw new NotSupportedException("The graph transition references an unsupported Vulkan texture.");
@@ -438,29 +549,68 @@ internal sealed unsafe partial class VulkanBackendDevice
                 {
                     foreach (var command in pass.Commands)
                     {
-                        if (command.Kind != GraphicsCommandKind.CopyBuffer)
+                        if (command.Kind == GraphicsCommandKind.CopyBuffer)
+                        {
+                            var sourceVersion = command.CopySource
+                                ?? throw new InvalidOperationException("The graph copy command has no source buffer version.");
+                            var destinationVersion = command.CopyDestination
+                                ?? throw new InvalidOperationException("The graph copy command has no destination buffer version.");
+                            var sourceBuffer = submission.GetBuffer(sourceVersion.ResourceId) as VulkanBackendBuffer
+                                ?? throw new InvalidOperationException("The graph copy source is not a Vulkan buffer.");
+                            var destinationBuffer = submission.GetBuffer(destinationVersion.ResourceId) as VulkanBackendBuffer
+                                ?? throw new InvalidOperationException("The graph copy destination is not a Vulkan buffer.");
+                            var region = default(VkBufferCopy);
+                            region.srcOffset = checked((ulong)command.SourceOffset);
+                            region.dstOffset = checked((ulong)command.DestinationOffset);
+                            region.size = checked((ulong)command.ByteLength);
+                            VulkanApi.vkCmdCopyBuffer(
+                                _commandBuffer,
+                                sourceBuffer.Buffer,
+                                destinationBuffer.Buffer,
+                                1,
+                                &region);
+                        }
+                        else if (command.Kind == GraphicsCommandKind.CopyTexture)
+                        {
+                            var sourceVersion = command.CopySourceTexture
+                                ?? throw new InvalidOperationException("The graph copy command has no source texture version.");
+                            var destinationVersion = command.CopyDestinationTexture
+                                ?? throw new InvalidOperationException("The graph copy command has no destination texture version.");
+                            var sourceTexture = copyTextureScopes[sourceVersion.ResourceId].Texture;
+                            var sourceSubresource = copyTextureScopes[sourceVersion.ResourceId].Subresource;
+                            var destinationTexture = copyTextureScopes[destinationVersion.ResourceId].Texture;
+                            var destinationSubresource = copyTextureScopes[destinationVersion.ResourceId].Subresource;
+                            RecordGraphCopyImageBarrier(sourceVersion.ResourceId, isDestination: false);
+                            RecordGraphCopyImageBarrier(destinationVersion.ResourceId, isDestination: true);
+
+                            var (width, height, depth) = GraphicsDevice.GetTextureSubresourceExtent(
+                                sourceVersion.Description,
+                                sourceSubresource);
+                            var region = default(VkImageCopy);
+                            region.srcSubresource.aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT;
+                            region.srcSubresource.mipLevel = checked((uint)sourceSubresource.MipLevel);
+                            region.srcSubresource.baseArrayLayer = checked((uint)sourceSubresource.ArrayLayer);
+                            region.srcSubresource.layerCount = 1;
+                            region.dstSubresource.aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT;
+                            region.dstSubresource.mipLevel = checked((uint)destinationSubresource.MipLevel);
+                            region.dstSubresource.baseArrayLayer = checked((uint)destinationSubresource.ArrayLayer);
+                            region.dstSubresource.layerCount = 1;
+                            region.extent.width = checked((uint)width);
+                            region.extent.height = checked((uint)height);
+                            region.extent.depth = checked((uint)depth);
+                            VulkanApi.vkCmdCopyImage(
+                                _commandBuffer,
+                                sourceTexture.Image,
+                                VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                destinationTexture.Image,
+                                VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                1,
+                                &region);
+                        }
+                        else
                         {
                             throw new NotSupportedException($"Native Vulkan graph copy pass does not support {command.Kind} commands.");
                         }
-
-                        var sourceVersion = command.CopySource
-                            ?? throw new InvalidOperationException("The graph copy command has no source buffer version.");
-                        var destinationVersion = command.CopyDestination
-                            ?? throw new InvalidOperationException("The graph copy command has no destination buffer version.");
-                        var sourceBuffer = submission.GetBuffer(sourceVersion.ResourceId) as VulkanBackendBuffer
-                            ?? throw new InvalidOperationException("The graph copy source is not a Vulkan buffer.");
-                        var destinationBuffer = submission.GetBuffer(destinationVersion.ResourceId) as VulkanBackendBuffer
-                            ?? throw new InvalidOperationException("The graph copy destination is not a Vulkan buffer.");
-                        var region = default(VkBufferCopy);
-                        region.srcOffset = checked((ulong)command.SourceOffset);
-                        region.dstOffset = checked((ulong)command.DestinationOffset);
-                        region.size = checked((ulong)command.ByteLength);
-                        VulkanApi.vkCmdCopyBuffer(
-                            _commandBuffer,
-                            sourceBuffer.Buffer,
-                            destinationBuffer.Buffer,
-                            1,
-                            &region);
                     }
 
                     continue;
@@ -784,6 +934,24 @@ internal sealed unsafe partial class VulkanBackendDevice
                 throw new InvalidOperationException("The compiled graph did not transition its Frame storage image to GENERAL.");
             }
 
+            foreach (var (
+                _,
+                _,
+                copyTextureLayout,
+                _,
+                _,
+                copyTextureIsDestination) in copyTextureScopes.Values)
+            {
+                var finalState = copyTextureIsDestination
+                    ? GraphResourceState.CopyDestination
+                    : GraphResourceState.CopySource;
+
+                if (copyTextureLayout != VulkanGraphResourceStateMapper.GetImageLayout(finalState))
+                {
+                    throw new InvalidOperationException("The compiled graph did not transition each copy texture to its transfer layout.");
+                }
+            }
+
             var completedFence = SubmitAndWaitCore(retainedBuffer: null, retainedTexture: null);
             target.SetLayout(subresource, currentLayout);
             target.SetLastAccessScope(subresource, currentStageMask, currentAccessMask);
@@ -806,6 +974,26 @@ internal sealed unsafe partial class VulkanBackendDevice
                     storageTextureStageMask,
                     storageTextureAccessMask);
                 storageTexture.MarkInitialized(storageSubresource);
+            }
+
+            foreach (var (
+                copyTexture,
+                copyTextureSubresource,
+                copyTextureLayout,
+                copyTextureStageMask,
+                copyTextureAccessMask,
+                copyTextureIsDestination) in copyTextureScopes.Values)
+            {
+                copyTexture.SetLayout(copyTextureSubresource, copyTextureLayout);
+                copyTexture.SetLastAccessScope(
+                    copyTextureSubresource,
+                    copyTextureStageMask,
+                    copyTextureAccessMask);
+
+                if (copyTextureIsDestination)
+                {
+                    copyTexture.MarkInitialized(copyTextureSubresource);
+                }
             }
 
             foreach (var graphBufferScope in graphBufferScopes)
@@ -940,6 +1128,8 @@ internal sealed unsafe partial class VulkanBackendDevice
             or GraphResourceState.ShaderSampledRead
             or GraphResourceState.ColorAttachment
             or GraphResourceState.OffscreenOutput
+            or GraphResourceState.CopySource
+            or GraphResourceState.CopyDestination
             or GraphResourceState.StorageRead
             or GraphResourceState.StorageWrite
             or GraphResourceState.StorageReadWrite))
@@ -994,6 +1184,14 @@ internal sealed unsafe partial class VulkanBackendDevice
                 break;
             }
 
+            case GraphResourceState.CopySource:
+            case GraphResourceState.CopyDestination:
+            {
+                barrier.dstStageMask = VulkanGraphResourceStateMapper.GetStageMask(transition.AfterState);
+                barrier.dstAccessMask = VulkanGraphResourceStateMapper.GetAccessMask(transition.AfterState);
+                break;
+            }
+
             case GraphResourceState.ColorAttachment:
             {
                 barrier.dstStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -1023,6 +1221,8 @@ internal sealed unsafe partial class VulkanBackendDevice
 
         if (transition.AfterState is
             GraphResourceState.ColorAttachment
+            or GraphResourceState.CopySource
+            or GraphResourceState.CopyDestination
             or GraphResourceState.ShaderSampledRead
             or GraphResourceState.StorageWrite
             or GraphResourceState.StorageReadWrite)
