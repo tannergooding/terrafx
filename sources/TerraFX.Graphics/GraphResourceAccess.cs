@@ -11,10 +11,12 @@ internal readonly struct GraphResourceAccess
     private readonly TextureUsage? _attachmentUsage;
     private readonly GraphBufferRange _bufferRange;
     private readonly GraphBufferUsage? _bufferUsage;
+    private readonly GraphBufferVersion? _bufferVersion;
     private readonly bool _contentsValid;
     private readonly GraphResourceState? _requiredStateOverride;
     private readonly GraphTextureRange _textureRange;
     private readonly GraphTextureUsage? _textureUsage;
+    private readonly GraphTextureVersion? _textureVersion;
 
     internal GraphResourceAccess(
         RenderPassId passId,
@@ -54,8 +56,10 @@ internal readonly struct GraphResourceAccess
         _requiredStateOverride = null;
         _bufferRange = range;
         _bufferUsage = usage;
+        _bufferVersion = version;
         _textureRange = default;
         _textureUsage = null;
+        _textureVersion = null;
     }
 
     internal GraphResourceAccess(
@@ -95,8 +99,10 @@ internal readonly struct GraphResourceAccess
         _requiredStateOverride = requiredState;
         _bufferRange = default;
         _bufferUsage = null;
+        _bufferVersion = null;
         _textureRange = range;
         _textureUsage = null;
+        _textureVersion = version;
     }
 
     internal GraphResourceAccess(
@@ -137,8 +143,10 @@ internal readonly struct GraphResourceAccess
         _requiredStateOverride = null;
         _bufferRange = default;
         _bufferUsage = null;
+        _bufferVersion = null;
         _textureRange = range;
         _textureUsage = usage;
+        _textureVersion = version;
     }
 
     internal GraphResourceAccess(
@@ -197,8 +205,10 @@ internal readonly struct GraphResourceAccess
         _requiredStateOverride = null;
         _bufferRange = default;
         _bufferUsage = null;
+        _bufferVersion = null;
         _textureRange = range;
         _textureUsage = null;
+        _textureVersion = version;
     }
 
     internal AttachmentLoadAction? AttachmentLoadAction => _attachmentLoadAction;
@@ -210,6 +220,8 @@ internal readonly struct GraphResourceAccess
     internal GraphBufferRange BufferRange => _bufferRange;
 
     internal GraphBufferUsage? BufferUsage => _bufferUsage;
+
+    internal GraphBufferVersion? BufferVersion => _bufferVersion;
 
     internal bool ContentsValid => _contentsValid;
 
@@ -274,6 +286,8 @@ internal readonly struct GraphResourceAccess
     internal GraphTextureRange TextureRange => _textureRange;
 
     internal GraphTextureUsage? TextureUsage => _textureUsage;
+
+    internal GraphTextureVersion? TextureVersion => _textureVersion;
 
     internal int Version { get; }
 

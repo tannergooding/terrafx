@@ -67,6 +67,8 @@ public sealed partial class GraphicsDevice
         => (GraphicsDeviceStatus)Volatile.Read(ref _status);
 
     /// <summary>Gets the host-issued owner identity used by device resource handles.</summary>
+    internal bool IsOwnerThread => ReferenceEquals(Thread.CurrentThread, _ownerThread);
+
     internal uint OwnerId => _ownerId;
 
     internal static Task<GraphicsDevice> CreateAsync(

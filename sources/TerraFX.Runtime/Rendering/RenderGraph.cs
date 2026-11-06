@@ -25,6 +25,7 @@ public sealed class RenderGraph
     private readonly uint _graphOwnerId;
     private bool _isSealed;
     private readonly RenderGraphOptions _options;
+    private readonly Dictionary<RenderPassId, RenderPassCallback> _passCallbacks = [];
     private readonly Dictionary<RenderPassId, RenderGraphPassKind> _passKinds = [];
     private RenderPassId? _presentationPassId;
     private GraphTextureVersion? _presentationSource;
@@ -73,35 +74,49 @@ public sealed class RenderGraph
     /// <returns>The graph-owned pass identity.</returns>
     public RenderPassId AddComputePass(RenderPassDescription description)
     {
-        EnsureCanMutate();
-        ArgumentNullException.ThrowIfNull(description);
-        var passId = _resources.AddPass(description);
-        _passKinds.Add(passId, RenderGraphPassKind.Compute);
-        return passId;
+        return AddPass(description, RenderGraphPassKind.Compute, callback: null);
+    }
+
+    /// <summary>Adds one compute pass with a scoped synchronous recorder callback.</summary>
+    /// <param name="description">The immutable pass ordering and predecessor declaration.</param>
+    /// <param name="callback">The graphics-owner callback that records this pass.</param>
+    /// <returns>The graph-owned pass identity.</returns>
+    public RenderPassId AddComputePass(RenderPassDescription description, RenderPassCallback callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        return AddPass(description, RenderGraphPassKind.Compute, callback);
     }
 
     /// <summary>Adds one copy pass.</summary>
     /// <param name="description">The immutable pass ordering and predecessor declaration.</param>
     /// <returns>The graph-owned pass identity.</returns>
     public RenderPassId AddCopyPass(RenderPassDescription description)
+        => AddPass(description, RenderGraphPassKind.Copy, callback: null);
+
+    /// <summary>Adds one copy pass with a scoped synchronous recorder callback.</summary>
+    /// <param name="description">The immutable pass ordering and predecessor declaration.</param>
+    /// <param name="callback">The graphics-owner callback that records this pass.</param>
+    /// <returns>The graph-owned pass identity.</returns>
+    public RenderPassId AddCopyPass(RenderPassDescription description, RenderPassCallback callback)
     {
-        EnsureCanMutate();
-        ArgumentNullException.ThrowIfNull(description);
-        var passId = _resources.AddPass(description);
-        _passKinds.Add(passId, RenderGraphPassKind.Copy);
-        return passId;
+        ArgumentNullException.ThrowIfNull(callback);
+        return AddPass(description, RenderGraphPassKind.Copy, callback);
     }
 
     /// <summary>Adds one raster pass.</summary>
     /// <param name="description">The immutable pass ordering and predecessor declaration.</param>
     /// <returns>The graph-owned pass identity.</returns>
     public RenderPassId AddRasterPass(RenderPassDescription description)
+        => AddPass(description, RenderGraphPassKind.Raster, callback: null);
+
+    /// <summary>Adds one raster pass with a scoped synchronous recorder callback.</summary>
+    /// <param name="description">The immutable pass ordering and predecessor declaration.</param>
+    /// <param name="callback">The graphics-owner callback that records this pass.</param>
+    /// <returns>The graph-owned pass identity.</returns>
+    public RenderPassId AddRasterPass(RenderPassDescription description, RenderPassCallback callback)
     {
-        EnsureCanMutate();
-        ArgumentNullException.ThrowIfNull(description);
-        var passId = _resources.AddPass(description);
-        _passKinds.Add(passId, RenderGraphPassKind.Raster);
-        return passId;
+        ArgumentNullException.ThrowIfNull(callback);
+        return AddPass(description, RenderGraphPassKind.Raster, callback);
     }
 
     /// <summary>Compiles graph declarations into an immutable plan or exact rejection diagnostics.</summary>
@@ -148,6 +163,7 @@ public sealed class RenderGraph
             _resources.DeviceEpoch,
             validation.OrderedPasses,
             GetOrderedPassKinds(validation.OrderedPasses),
+            GetOrderedPassCallbacks(validation.OrderedPasses),
             _resources.Passes,
             validation.StateTransitions,
             _resources.Accesses,
@@ -371,6 +387,30 @@ public sealed class RenderGraph
         return _resources.WriteTexture(pass, previousVersion, range, usage);
     }
 
+    private RenderPassId AddPass(
+        RenderPassDescription description,
+        RenderGraphPassKind passKind,
+        RenderPassCallback? callback)
+    {
+        EnsureCanMutate();
+        ArgumentNullException.ThrowIfNull(description);
+
+        if (!Enum.IsDefined(passKind) || (passKind == RenderGraphPassKind.Presentation))
+        {
+            throw new ArgumentOutOfRangeException(nameof(passKind));
+        }
+
+        var passId = _resources.AddPass(description);
+        _passKinds.Add(passId, passKind);
+
+        if (callback is not null)
+        {
+            _passCallbacks.Add(passId, callback);
+        }
+
+        return passId;
+    }
+
     private Diagnostic CreateDiagnostic(string code, string message)
         => new(
             code,
@@ -431,6 +471,18 @@ public sealed class RenderGraph
         {
             throw new InvalidOperationException("A successfully compiled render graph is immutable.");
         }
+    }
+
+    private ImmutableArray<RenderPassCallback?> GetOrderedPassCallbacks(ImmutableArray<RenderPassId> orderedPasses)
+    {
+        var callbacks = ImmutableArray.CreateBuilder<RenderPassCallback?>(orderedPasses.Length);
+
+        foreach (var pass in orderedPasses)
+        {
+            callbacks.Add(_passCallbacks.TryGetValue(pass, out var callback) ? callback : null);
+        }
+
+        return callbacks.MoveToImmutable();
     }
 
     private ImmutableArray<RenderGraphPassKind> GetOrderedPassKinds(ImmutableArray<RenderPassId> orderedPasses)

@@ -683,6 +683,11 @@ internal sealed partial class EngineHostOptionsTests
             var targetRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
             var snapshotId = Guid.NewGuid();
             var worldGuid = Guid.NewGuid();
+            var callbackThreadId = 0;
+            void RecordOffscreenClear(scoped ref CommandRecorder recorder)
+            {
+                callbackThreadId = Environment.CurrentManagedThreadId;
+            }
 
             var graph = new RenderGraph(new RenderGraphOptions(
                 snapshotId,
@@ -695,7 +700,9 @@ internal sealed partial class EngineHostOptionsTests
                 targetExtent,
                 target));
             var outputVersion = graph.OffscreenColorTargetVersion;
-            var clearPass = graph.AddRasterPass(new RenderPassDescription("offscreen-clear", 0, [], false));
+            var clearPass = graph.AddRasterPass(
+                new RenderPassDescription("offscreen-clear", 0, [], hasExternalSideEffects: false),
+                RecordOffscreenClear);
             var finalVersion = graph.WriteColorAttachment(
                 clearPass,
                 outputVersion,
@@ -716,6 +723,21 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(compiledPlan.OffscreenColorTarget, Is.SameAs(target));
             Assert.That(compiledPlan.SurfaceEpoch, Is.Zero);
             Assert.That(compiledPlan.SwapchainEpoch, Is.Zero);
+            var recordedPasses = compiledPlan.RecordPassCallbacksAsync().GetAwaiter().GetResult();
+
+            try
+            {
+                Assert.That(recordedPasses.Length, Is.EqualTo(1));
+                Assert.That(callbackThreadId, Is.Not.EqualTo(Environment.CurrentManagedThreadId));
+                Assert.That(recordedPasses[0].Commands, Is.Empty);
+            }
+            finally
+            {
+                foreach (var recordedPass in recordedPasses)
+                {
+                    recordedPass.Dispose();
+                }
+            }
 
             var uninitializedGraph = new RenderGraph(new RenderGraphOptions(
                 Guid.NewGuid(),

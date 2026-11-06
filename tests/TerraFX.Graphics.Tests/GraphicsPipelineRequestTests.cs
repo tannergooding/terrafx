@@ -739,29 +739,326 @@ internal sealed class GraphicsPipelineRequestTests
                 CreateComputePipelineDescription(callerBytecodeLease, []))
                 .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             var handle = pipeline.Handle;
-            var (layout, useLease) = graphicsDevice.AcquirePipelineForRecording(handle);
+            var callerThreadId = Environment.CurrentManagedThreadId;
+            var callbackThreadId = 0;
+            void RecordCommands(scoped ref CommandRecorder recorder)
+            {
+                callbackThreadId = Environment.CurrentManagedThreadId;
+                recorder.SetPipeline(handle);
+                recorder.Dispatch(new DispatchSize(1, 1, 1));
+            }
 
-            try
+            using (var commandList = await graphicsDevice.RecordPassAsync(
+                new RenderPassId(1, 0),
+                CommandRecorderPassKind.Compute,
+                [],
+                [],
+                depthTargetFormat: null,
+                RecordCommands)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false))
             {
-                Assert.That(layout.IsCompute, Is.True);
-                Assert.That(layout.BindingLayoutVersion, Is.EqualTo(1));
-                Assert.That(layout.ShaderReflections[0].Stage, Is.EqualTo(ShaderStage.Compute));
+                Assert.That(callbackThreadId, Is.Not.EqualTo(callerThreadId));
+                Assert.That(commandList.Commands.Length, Is.EqualTo(2));
+                Assert.That(commandList.Commands[0].Kind, Is.EqualTo(GraphicsCommandKind.SetPipeline));
+                Assert.That(commandList.Commands[1].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
             }
-            finally
+
+            void DispatchBeyondLimit(scoped ref CommandRecorder recorder)
             {
-                useLease.Dispose();
+                recorder.SetPipeline(handle);
+                recorder.Dispatch(new DispatchSize(65536, 1, 1));
             }
+
+            _ = Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+                async () => await graphicsDevice.RecordPassAsync(
+                    new RenderPassId(1, 1),
+                    CommandRecorderPassKind.Compute,
+                    [],
+                    [],
+                    depthTargetFormat: null,
+                    DispatchBeyondLimit)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+
+            void DrawInComputePass(scoped ref CommandRecorder recorder)
+            {
+                recorder.SetPipeline(handle);
+                recorder.Draw(new DrawArguments(1, 1, 0, 0));
+            }
+
+            _ = Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await graphicsDevice.RecordPassAsync(
+                    new RenderPassId(1, 2),
+                    CommandRecorderPassKind.Compute,
+                    [],
+                    [],
+                    depthTargetFormat: null,
+                    DrawInComputePass)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
 
             pipeline.Dispose();
             pipeline = null;
-            _ = Assert.Throws<ObjectDisposedException>(
-                () => graphicsDevice.AcquirePipelineForRecording(handle));
+            void BindDisposedPipeline(scoped ref CommandRecorder recorder)
+            {
+                recorder.SetPipeline(handle);
+            }
+
+            _ = Assert.ThrowsAsync<ObjectDisposedException>(
+                async () => await graphicsDevice.RecordPassAsync(
+                    new RenderPassId(1, 1),
+                    CommandRecorderPassKind.Compute,
+                    [],
+                    [],
+                    depthTargetFormat: null,
+                    BindDisposedPipeline)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
         }
         finally
         {
             pipeline?.Dispose();
             callerBytecodeLease.Dispose();
             bufferOwner.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task PipelineRecorderBindsOnlyThePassDeclaredUniformRange()
+    {
+        using var continuePipelineCreation = new ManualResetEventSlim(initialState: true);
+        using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
+        var backendDevice = new FakeBackendDevice(
+            CreateCapabilities(),
+            pipelineCreationEntered,
+            continuePipelineCreation);
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var graphicsDevice = await GraphicsDevice.CreateAsync(
+            ownerId: 27,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        var bufferOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        var callerBytecodeLease = bufferOwner.AcquireRead(0, 4);
+        var resourceSignature = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.UniformBuffer,
+            arrayCount: 1);
+        GpuPipeline? pipeline = null;
+        GpuPipeline? storagePipeline = null;
+        RecordedPassCommandList? commandList = null;
+
+        try
+        {
+            pipeline = await graphicsDevice.CreatePipelineAsync(
+                CreateComputePipelineDescription(callerBytecodeLease, [resourceSignature]))
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+
+            var resources = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 10);
+            var writer = resources.AddPass(new RenderPassDescription("uniform-writer", 0, [], false));
+            var reader = resources.AddPass(new RenderPassDescription("uniform-reader", 1, [writer], false));
+            var range = new GraphBufferRange(0, 64);
+            var declaredRange = new GraphBufferRange(0, 32);
+            var version0 = resources.CreateTransientBuffer(new BufferDescription(
+                64,
+                BufferUsage.Storage | BufferUsage.Uniform,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: null,
+                debugName: "command-recorder-uniform"));
+            var version1 = resources.WriteBuffer(writer, version0, declaredRange, GraphBufferUsage.StorageWrite);
+            resources.ReadBuffer(reader, version1, declaredRange, GraphBufferUsage.UniformRead);
+            var readerAccesses = ImmutableArray.CreateBuilder<GraphResourceAccess>();
+
+            foreach (var access in resources.Accesses)
+            {
+                if (access.PassId == reader)
+                {
+                    readerAccesses.Add(access);
+                }
+            }
+
+            var bindingSet = new BindingSet(
+                [new BufferBinding(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, version1, declaredRange)],
+                [],
+                []);
+            var pipelineHandle = pipeline.Handle;
+
+            void RecordUniformDispatch(scoped ref CommandRecorder recorder)
+            {
+                recorder.SetPipeline(pipelineHandle);
+                recorder.SetBindings(bindingSet);
+                recorder.Dispatch(new DispatchSize(1, 1, 1));
+            }
+
+            commandList = await graphicsDevice.RecordPassAsync(
+                reader,
+                CommandRecorderPassKind.Compute,
+                readerAccesses.ToImmutable(),
+                [],
+                depthTargetFormat: null,
+                RecordUniformDispatch)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert.That(commandList.Commands.Length, Is.EqualTo(3));
+            Assert.That(commandList.Commands[1].Kind, Is.EqualTo(GraphicsCommandKind.SetBindings));
+            Assert.That(commandList.Commands[2].Kind, Is.EqualTo(GraphicsCommandKind.Dispatch));
+
+            var broadBindingSet = new BindingSet(
+                [new BufferBinding(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, version1, range)],
+                [],
+                []);
+            void BindBeyondDeclaredRange(scoped ref CommandRecorder recorder)
+            {
+                recorder.SetPipeline(pipelineHandle);
+                recorder.SetBindings(broadBindingSet);
+            }
+
+            _ = Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await graphicsDevice.RecordPassAsync(
+                    reader,
+                    CommandRecorderPassKind.Compute,
+                    readerAccesses.ToImmutable(),
+                    [],
+                    depthTargetFormat: null,
+                    BindBeyondDeclaredRange)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+
+            var storageSignature = new ShaderResourceSignature(
+                ShaderBindingGroup.Frame,
+                0,
+                ShaderResourceKind.StorageBuffer,
+                arrayCount: 1);
+            storagePipeline = await graphicsDevice.CreatePipelineAsync(
+                CreateComputePipelineDescription(callerBytecodeLease, [storageSignature]))
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            var storageBindingSet = new BindingSet(
+                [new BufferBinding(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, version1, declaredRange)],
+                [],
+                []);
+            var storagePipelineHandle = storagePipeline.Handle;
+
+            void BindStorageWithoutAccessIntent(scoped ref CommandRecorder recorder)
+            {
+                recorder.SetPipeline(storagePipelineHandle);
+                recorder.SetBindings(storageBindingSet);
+            }
+
+            _ = Assert.ThrowsAsync<NotSupportedException>(
+                async () => await graphicsDevice.RecordPassAsync(
+                    reader,
+                    CommandRecorderPassKind.Compute,
+                    readerAccesses.ToImmutable(),
+                    [],
+                    depthTargetFormat: null,
+                    BindStorageWithoutAccessIntent)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+        }
+        finally
+        {
+            commandList?.Dispose();
+            storagePipeline?.Dispose();
+            pipeline?.Dispose();
+            callerBytecodeLease.Dispose();
+            bufferOwner.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task PipelineRecorderCopiesOnlyDeclaredNonoverlappingRanges()
+    {
+        using var continuePipelineCreation = new ManualResetEventSlim(initialState: true);
+        using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
+        var backendDevice = new FakeBackendDevice(
+            CreateCapabilities(),
+            pipelineCreationEntered,
+            continuePipelineCreation);
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var graphicsDevice = await GraphicsDevice.CreateAsync(
+            ownerId: 28,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+
+        try
+        {
+            var resources = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 11);
+            var initializer = resources.AddPass(new RenderPassDescription("copy-source-init", 0, [], false));
+            var copyPass = resources.AddPass(new RenderPassDescription("copy-pass", 1, [initializer], false));
+            var fullRange = new GraphBufferRange(0, 64);
+            var overlappingRange = new GraphBufferRange(8, 16);
+            var description = new BufferDescription(
+                64,
+                BufferUsage.CopySource | BufferUsage.CopyDestination,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: null,
+                debugName: "command-recorder-copy");
+            var source0 = resources.CreateTransientBuffer(description);
+            var source1 = resources.WriteBuffer(initializer, source0, fullRange, GraphBufferUsage.CopyDestination);
+            var destination0 = resources.CreateTransientBuffer(description);
+            var destination1 = resources.WriteBuffer(copyPass, destination0, fullRange, GraphBufferUsage.CopyDestination);
+            resources.ReadBuffer(copyPass, source1, fullRange, GraphBufferUsage.CopySource);
+            var overlappingDestination = resources.WriteBuffer(
+                copyPass,
+                source1,
+                overlappingRange,
+                GraphBufferUsage.CopyDestination);
+            var copyAccesses = ImmutableArray.CreateBuilder<GraphResourceAccess>();
+
+            foreach (var access in resources.Accesses)
+            {
+                if (access.PassId == copyPass)
+                {
+                    copyAccesses.Add(access);
+                }
+            }
+
+            void RecordCopy(scoped ref CommandRecorder recorder)
+            {
+                recorder.CopyBuffer(source1, 0, destination1, 0, 64);
+            }
+
+            using (var commandList = await graphicsDevice.RecordPassAsync(
+                copyPass,
+                CommandRecorderPassKind.Copy,
+                copyAccesses.ToImmutable(),
+                [],
+                depthTargetFormat: null,
+                RecordCopy)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false))
+            {
+                Assert.That(commandList.Commands.Length, Is.EqualTo(1));
+                Assert.That(commandList.Commands[0].Kind, Is.EqualTo(GraphicsCommandKind.CopyBuffer));
+            }
+
+            void RecordOverlappingCopy(scoped ref CommandRecorder recorder)
+            {
+                recorder.CopyBuffer(source1, 0, overlappingDestination, 8, 16);
+            }
+
+            _ = Assert.ThrowsAsync<ArgumentException>(
+                async () => await graphicsDevice.RecordPassAsync(
+                    copyPass,
+                    CommandRecorderPassKind.Copy,
+                    copyAccesses.ToImmutable(),
+                    [],
+                    depthTargetFormat: null,
+                    RecordOverlappingCopy)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+        }
+        finally
+        {
             await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
     }

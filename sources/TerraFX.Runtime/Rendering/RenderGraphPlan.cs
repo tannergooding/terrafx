@@ -8,13 +8,14 @@ using TerraFX.Graphics;
 namespace TerraFX.Rendering;
 
 /// <summary>Contains one immutable graph compiled for an exact render snapshot.</summary>
-public sealed class RenderGraphPlan
+public sealed partial class RenderGraphPlan
 {
     internal RenderGraphPlan(
         RenderGraphOptions options,
         uint deviceEpoch,
         ImmutableArray<RenderPassId> orderedPasses,
         ImmutableArray<RenderGraphPassKind> orderedPassKinds,
+        ImmutableArray<RenderPassCallback?> orderedPassCallbacks,
         ImmutableArray<RenderGraphPassNode> passes,
         ImmutableArray<GraphResourceStateTransition> stateTransitions,
         ImmutableArray<GraphResourceAccess> accesses,
@@ -27,6 +28,7 @@ public sealed class RenderGraphPlan
 
         if (orderedPasses.IsDefault
             || orderedPassKinds.IsDefault
+            || orderedPassCallbacks.IsDefault
             || passes.IsDefault
             || stateTransitions.IsDefault
             || accesses.IsDefault
@@ -37,7 +39,9 @@ public sealed class RenderGraphPlan
             throw new ArgumentException("A compiled graph plan requires initialized immutable data.");
         }
 
-        if ((orderedPasses.Length != orderedPassKinds.Length) || (orderedPasses.Length != passes.Length))
+        if ((orderedPasses.Length != orderedPassKinds.Length)
+            || (orderedPasses.Length != orderedPassCallbacks.Length)
+            || (orderedPasses.Length != passes.Length))
         {
             throw new ArgumentException("A compiled graph plan must preserve pass identities, kinds, and descriptions.");
         }
@@ -50,6 +54,7 @@ public sealed class RenderGraphPlan
         FrameDimension = options.FrameDimension;
         FrameRevision = options.FrameRevision;
         OffscreenColorTarget = options.OffscreenColorTarget;
+        OrderedPassCallbacks = [.. orderedPassCallbacks];
         OrderedPassKinds = [.. orderedPassKinds];
         OrderedPasses = [.. orderedPasses];
         Passes = [.. passes];
@@ -105,6 +110,8 @@ public sealed class RenderGraphPlan
     internal ImmutableArray<RenderGraphAttachmentWrite> AttachmentWrites { get; }
 
     internal ImmutableArray<GraphBufferImportRecord> BufferImports { get; }
+
+    internal ImmutableArray<RenderPassCallback?> OrderedPassCallbacks { get; }
 
     internal ImmutableArray<RenderGraphPassKind> OrderedPassKinds { get; }
 

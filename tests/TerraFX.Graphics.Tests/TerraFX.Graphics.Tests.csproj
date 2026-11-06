@@ -3,6 +3,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />
     <ProjectReference Include="..\TerraFX.Graphics.D3D12.Consumer\TerraFX.Graphics.D3D12.Consumer.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\sources\TerraFX.Graphics\TerraFX.Graphics.csproj" />
   </ItemGroup>

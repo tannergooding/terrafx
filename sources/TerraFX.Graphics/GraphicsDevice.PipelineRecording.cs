@@ -19,6 +19,11 @@ public sealed partial class GraphicsDevice
             throw new ArgumentException("The pipeline handle does not identify this GraphicsDevice generation.", nameof(pipelineHandle));
         }
 
+        if (!IsOwnerThread)
+        {
+            throw new InvalidOperationException("Pipeline recording access is available only on the graphics owner thread.");
+        }
+
         if (Status != GraphicsDeviceStatus.Ready)
         {
             throw new InvalidOperationException("The GraphicsDevice is not accepting new recording work.");
