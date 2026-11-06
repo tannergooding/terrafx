@@ -67,8 +67,17 @@ internal static class GraphicsCapabilityAdmission
         AddMissingLimit(missing, nameof(GraphicsLimits.MaximumArrayLayers), limits.MaximumArrayLayers, 256);
         AddMissingLimit(missing, nameof(GraphicsLimits.MaximumColorAttachments), limits.MaximumColorAttachments, 4);
         AddMissingLimit(missing, nameof(GraphicsLimits.MaximumSampledImagesPerStage), limits.MaximumSampledImagesPerStage, 16);
+        AddMissingLimit(missing, nameof(GraphicsLimits.MaximumSampledImagesPerPipeline), limits.MaximumSampledImagesPerPipeline, 16);
         AddMissingLimit(missing, nameof(GraphicsLimits.MaximumSamplersPerStage), limits.MaximumSamplersPerStage, 8);
+        AddMissingLimit(missing, nameof(GraphicsLimits.MaximumSamplersPerPipeline), limits.MaximumSamplersPerPipeline, 8);
         AddMissingLimit(missing, nameof(GraphicsLimits.MaximumUniformBuffersPerStage), limits.MaximumUniformBuffersPerStage, 8);
+        AddMissingLimit(missing, nameof(GraphicsLimits.MaximumUniformBuffersPerPipeline), limits.MaximumUniformBuffersPerPipeline, 8);
+        AddMissingLimit(missing, nameof(GraphicsLimits.MaximumStorageBuffersPerStage), limits.MaximumStorageBuffersPerStage, 1);
+        AddMissingLimit(missing, nameof(GraphicsLimits.MaximumStorageImagesPerStage), limits.MaximumStorageImagesPerStage, 1);
+        AddMissingLimit(missing, nameof(GraphicsLimits.MaximumStorageBuffersPerPipeline), limits.MaximumStorageBuffersPerPipeline, 1);
+        AddMissingLimit(missing, nameof(GraphicsLimits.MaximumStorageImagesPerPipeline), limits.MaximumStorageImagesPerPipeline, 1);
+        AddMissingLimit(missing, nameof(GraphicsLimits.MaximumStorageResourcesPerPipeline), limits.MaximumStorageResourcesPerPipeline, 2);
+        AddMissingLimit(missing, nameof(GraphicsLimits.MaximumResourcesPerStage), limits.MaximumResourcesPerStage, 32);
         AddMissingLimit(missing, nameof(GraphicsLimits.MaximumUniformBufferRangeBytes), limits.MaximumUniformBufferRangeBytes, 16384);
 
         AddMissingFormat(missing, capabilities, TextureFormat.Rgba8Unorm, TextureUsage.Sampled | TextureUsage.ColorAttachment);

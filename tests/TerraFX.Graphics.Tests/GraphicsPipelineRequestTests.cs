@@ -97,17 +97,35 @@ internal sealed class GraphicsPipelineRequestTests
         int maximumComputeWorkGroupSizeZ = 64,
         int maximumComputeWorkGroupInvocations = 1024,
         int maximumSampledImagesPerStage = 128,
+        int maximumSampledImagesPerPipeline = 64,
         int maximumSamplersPerStage = 32,
-        int maximumUniformBuffersPerStage = 16)
+        int maximumSamplersPerPipeline = 32,
+        int maximumUniformBuffersPerStage = 16,
+        int maximumUniformBuffersPerPipeline = 16,
+        int maximumStorageBuffersPerStage = 32,
+        int maximumStorageImagesPerStage = 32,
+        int maximumStorageBuffersPerPipeline = 32,
+        int maximumStorageImagesPerPipeline = 32,
+        int maximumStorageResourcesPerPipeline = 32,
+        int maximumResourcesPerStage = 144)
         => new(
             maximumTextureDimension2D: 16384,
             maximumTextureDimension3D: 2048,
             maximumArrayLayers: 2048,
             maximumColorAttachments: 8,
             maximumSampledImagesPerStage: maximumSampledImagesPerStage,
+            maximumSampledImagesPerPipeline: maximumSampledImagesPerPipeline,
             maximumSamplersPerStage: maximumSamplersPerStage,
+            maximumSamplersPerPipeline: maximumSamplersPerPipeline,
             maximumSamplerAnisotropy: 1.0f,
             maximumUniformBuffersPerStage: maximumUniformBuffersPerStage,
+            maximumUniformBuffersPerPipeline: maximumUniformBuffersPerPipeline,
+            maximumStorageBuffersPerStage: maximumStorageBuffersPerStage,
+            maximumStorageImagesPerStage: maximumStorageImagesPerStage,
+            maximumStorageBuffersPerPipeline: maximumStorageBuffersPerPipeline,
+            maximumStorageImagesPerPipeline: maximumStorageImagesPerPipeline,
+            maximumStorageResourcesPerPipeline: maximumStorageResourcesPerPipeline,
+            maximumResourcesPerStage: maximumResourcesPerStage,
             maximumUniformBufferRangeBytes: 65536,
             uniformBufferOffsetAlignment: 256,
             storageBufferOffsetAlignment: 16,
@@ -189,7 +207,7 @@ internal sealed class GraphicsPipelineRequestTests
         var maximumBinding = kind switch {
             ShaderResourceKind.UniformBuffer => 3,
             ShaderResourceKind.SampledImage => 15,
-            ShaderResourceKind.Sampler => 7,
+            ShaderResourceKind.StorageBuffer or ShaderResourceKind.StorageImage or ShaderResourceKind.Sampler => 7,
             _ => throw new ArgumentOutOfRangeException(nameof(kind)),
         };
         var resources = ImmutableArray.CreateBuilder<ShaderResourceSignature>();
@@ -377,6 +395,12 @@ internal sealed class GraphicsPipelineRequestTests
     [TestCase(ShaderStage.Compute, ShaderResourceKind.SampledImage, 16)]
     [TestCase(ShaderStage.Compute, ShaderResourceKind.Sampler, 8)]
     [TestCase(ShaderStage.Compute, ShaderResourceKind.UniformBuffer, 8)]
+    [TestCase(ShaderStage.Vertex, ShaderResourceKind.StorageBuffer, 8)]
+    [TestCase(ShaderStage.Vertex, ShaderResourceKind.StorageImage, 8)]
+    [TestCase(ShaderStage.Pixel, ShaderResourceKind.StorageBuffer, 8)]
+    [TestCase(ShaderStage.Pixel, ShaderResourceKind.StorageImage, 8)]
+    [TestCase(ShaderStage.Compute, ShaderResourceKind.StorageBuffer, 8)]
+    [TestCase(ShaderStage.Compute, ShaderResourceKind.StorageImage, 8)]
     public async Task PipelineBindingsRequireSupportedDescriptorCountsAndRespectStageLimits(
         ShaderStage stage,
         ShaderResourceKind kind,
@@ -385,9 +409,23 @@ internal sealed class GraphicsPipelineRequestTests
         using var continuePipelineCreation = new ManualResetEventSlim(initialState: true);
         using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
         var limits = kind switch {
-            ShaderResourceKind.SampledImage => CreateLimits(maximumSampledImagesPerStage: maximumCount),
-            ShaderResourceKind.Sampler => CreateLimits(maximumSamplersPerStage: maximumCount),
-            ShaderResourceKind.UniformBuffer => CreateLimits(maximumUniformBuffersPerStage: maximumCount),
+            ShaderResourceKind.SampledImage => CreateLimits(
+                maximumSampledImagesPerStage: maximumCount,
+                maximumSampledImagesPerPipeline: maximumCount),
+            ShaderResourceKind.Sampler => CreateLimits(
+                maximumSamplersPerStage: maximumCount,
+                maximumSamplersPerPipeline: maximumCount),
+            ShaderResourceKind.UniformBuffer => CreateLimits(
+                maximumUniformBuffersPerStage: maximumCount,
+                maximumUniformBuffersPerPipeline: maximumCount),
+            ShaderResourceKind.StorageBuffer => CreateLimits(
+                maximumStorageBuffersPerStage: maximumCount,
+                maximumStorageBuffersPerPipeline: maximumCount,
+                maximumStorageResourcesPerPipeline: maximumCount),
+            ShaderResourceKind.StorageImage => CreateLimits(
+                maximumStorageImagesPerStage: maximumCount,
+                maximumStorageImagesPerPipeline: maximumCount,
+                maximumStorageResourcesPerPipeline: maximumCount),
             _ => throw new ArgumentOutOfRangeException(nameof(kind)),
         };
         var backendDevice = new FakeBackendDevice(
@@ -436,6 +474,173 @@ internal sealed class GraphicsPipelineRequestTests
                         callerBytecodeLease,
                         stage,
                         CreateResourceSignatures(kind, checked(maximumCount + 1))))
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+            Assert.That(backendDevice.PipelineCreationCount, Is.EqualTo(1));
+        }
+        finally
+        {
+            pipeline?.Dispose();
+            callerBytecodeLease.Dispose();
+            bufferOwner.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [TestCase(ShaderResourceKind.SampledImage, 16)]
+    [TestCase(ShaderResourceKind.Sampler, 8)]
+    [TestCase(ShaderResourceKind.UniformBuffer, 8)]
+    [TestCase(ShaderResourceKind.StorageBuffer, 1)]
+    [TestCase(ShaderResourceKind.StorageImage, 1)]
+    public async Task PipelineBindingsRespectPipelineLayoutLimits(ShaderResourceKind kind, int maximumCount)
+    {
+        using var continuePipelineCreation = new ManualResetEventSlim(initialState: true);
+        using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
+        var limits = kind switch {
+            ShaderResourceKind.SampledImage => CreateLimits(maximumSampledImagesPerPipeline: maximumCount),
+            ShaderResourceKind.Sampler => CreateLimits(maximumSamplersPerPipeline: maximumCount),
+            ShaderResourceKind.UniformBuffer => CreateLimits(maximumUniformBuffersPerPipeline: maximumCount),
+            ShaderResourceKind.StorageBuffer => CreateLimits(maximumStorageBuffersPerPipeline: maximumCount),
+            ShaderResourceKind.StorageImage => CreateLimits(maximumStorageImagesPerPipeline: maximumCount),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+        };
+        var backendDevice = new FakeBackendDevice(
+            CreateCapabilities(limits),
+            pipelineCreationEntered,
+            continuePipelineCreation);
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var graphicsDevice = await GraphicsDevice.CreateAsync(
+            ownerId: 23,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        var bufferOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        var callerBytecodeLease = bufferOwner.AcquireRead(0, 4);
+
+        try
+        {
+            var description = CreateComputePipelineDescription(
+                callerBytecodeLease,
+                CreateResourceSignatures(kind, checked(maximumCount + 1)));
+            _ = Assert.ThrowsAsync<NotSupportedException>(
+                async () => _ = await graphicsDevice.CreatePipelineAsync(description)
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+            Assert.That(backendDevice.PipelineCreationCount, Is.Zero);
+        }
+        finally
+        {
+            callerBytecodeLease.Dispose();
+            bufferOwner.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task PipelineBindingsRespectStageDescriptorTotals()
+    {
+        using var continuePipelineCreation = new ManualResetEventSlim(initialState: true);
+        using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
+        var backendDevice = new FakeBackendDevice(
+            CreateCapabilities(CreateLimits(maximumResourcesPerStage: 32)),
+            pipelineCreationEntered,
+            continuePipelineCreation);
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var graphicsDevice = await GraphicsDevice.CreateAsync(
+            ownerId: 24,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        var bufferOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        var callerBytecodeLease = bufferOwner.AcquireRead(0, 4);
+
+        try
+        {
+            ImmutableArray<ShaderResourceSignature> resources = [
+                .. CreateResourceSignatures(ShaderResourceKind.SampledImage, 16),
+                .. CreateResourceSignatures(ShaderResourceKind.Sampler, 8),
+                .. CreateResourceSignatures(ShaderResourceKind.UniformBuffer, 8),
+                .. CreateResourceSignatures(ShaderResourceKind.StorageBuffer, 1),
+            ];
+            var description = CreateComputePipelineDescription(callerBytecodeLease, resources);
+            _ = Assert.ThrowsAsync<NotSupportedException>(
+                async () => _ = await graphicsDevice.CreatePipelineAsync(description)
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+            Assert.That(backendDevice.PipelineCreationCount, Is.Zero);
+        }
+        finally
+        {
+            callerBytecodeLease.Dispose();
+            bufferOwner.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task PipelineBindingsStorageLimitsCountSharedAndDistinctStageBindingsCorrectly()
+    {
+        using var continuePipelineCreation = new ManualResetEventSlim(initialState: true);
+        using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
+        var limits = CreateLimits(
+            maximumStorageBuffersPerStage: 2,
+            maximumStorageImagesPerStage: 2,
+            maximumStorageBuffersPerPipeline: 2,
+            maximumStorageImagesPerPipeline: 2,
+            maximumStorageResourcesPerPipeline: 2);
+        var backendDevice = new FakeBackendDevice(
+            CreateCapabilities(limits),
+            pipelineCreationEntered,
+            continuePipelineCreation);
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var graphicsDevice = await GraphicsDevice.CreateAsync(
+            ownerId: 22,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        var bufferOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        var callerBytecodeLease = bufferOwner.AcquireRead(0, 4);
+        GpuPipeline? pipeline = null;
+        var sharedBuffer = new ShaderResourceSignature(
+            ShaderBindingGroup.Material,
+            binding: 0,
+            ShaderResourceKind.StorageBuffer,
+            arrayCount: 1);
+
+        try
+        {
+            pipeline = await graphicsDevice.CreatePipelineAsync(
+                CreatePipelineDescription(
+                    callerBytecodeLease,
+                    vertexResources: [sharedBuffer],
+                    pixelResources: [sharedBuffer]))
+                .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.That(pipeline.Handle.IsValid, Is.True);
+            Assert.That(backendDevice.PipelineCreationCount, Is.EqualTo(1));
+            pipeline.Dispose();
+            pipeline = null;
+
+            var description = CreateComputePipelineDescription(
+                callerBytecodeLease,
+                [
+                    new ShaderResourceSignature(
+                        ShaderBindingGroup.Material,
+                        binding: 0,
+                        ShaderResourceKind.StorageBuffer,
+                        arrayCount: 1),
+                    new ShaderResourceSignature(
+                        ShaderBindingGroup.Material,
+                        binding: 1,
+                        ShaderResourceKind.StorageImage,
+                        arrayCount: 1),
+                    new ShaderResourceSignature(
+                        ShaderBindingGroup.Material,
+                        binding: 2,
+                        ShaderResourceKind.StorageImage,
+                        arrayCount: 1),
+                ]);
+            _ = Assert.ThrowsAsync<NotSupportedException>(
+                async () => _ = await graphicsDevice.CreatePipelineAsync(description)
                     .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
             Assert.That(backendDevice.PipelineCreationCount, Is.EqualTo(1));
         }

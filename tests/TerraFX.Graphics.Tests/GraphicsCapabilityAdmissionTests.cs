@@ -70,9 +70,18 @@ internal sealed class GraphicsCapabilityAdmissionTests
         int maximumArrayLayers = 2048,
         int maximumColorAttachments = 8,
         int maximumSampledImagesPerStage = 128,
+        int maximumSampledImagesPerPipeline = 64,
         int maximumSamplersPerStage = 32,
+        int maximumSamplersPerPipeline = 32,
         float maximumSamplerAnisotropy = 1.0f,
         int maximumUniformBuffersPerStage = 16,
+        int maximumUniformBuffersPerPipeline = 16,
+        int maximumStorageBuffersPerStage = 32,
+        int maximumStorageImagesPerStage = 32,
+        int maximumStorageBuffersPerPipeline = 32,
+        int maximumStorageImagesPerPipeline = 32,
+        int maximumStorageResourcesPerPipeline = 32,
+        int maximumResourcesPerStage = 144,
         long maximumUniformBufferRangeBytes = 65536)
         => new(
             maximumTextureDimension2D,
@@ -80,10 +89,19 @@ internal sealed class GraphicsCapabilityAdmissionTests
             maximumArrayLayers,
             maximumColorAttachments,
             maximumSampledImagesPerStage,
+            maximumSampledImagesPerPipeline,
             maximumSamplersPerStage,
+            maximumSamplersPerPipeline,
             maximumSamplerAnisotropy,
             maximumUniformBuffersPerStage,
-            maximumUniformBufferRangeBytes,
+            maximumUniformBuffersPerPipeline,
+            maximumStorageBuffersPerStage,
+            maximumStorageImagesPerStage,
+            maximumStorageBuffersPerPipeline,
+            maximumStorageImagesPerPipeline,
+            maximumStorageResourcesPerPipeline,
+            maximumResourcesPerStage,
+            maximumUniformBufferRangeBytes: maximumUniformBufferRangeBytes,
             uniformBufferOffsetAlignment: 256,
             storageBufferOffsetAlignment: 16,
             bufferCopyOffsetAlignment: 16,
@@ -124,7 +142,12 @@ internal sealed class GraphicsCapabilityAdmissionTests
                 maximumColorAttachments: 2,
                 maximumSampledImagesPerStage: 8,
                 maximumSamplersPerStage: 4,
+                maximumSampledImagesPerPipeline: 8,
+                maximumSamplersPerPipeline: 4,
                 maximumUniformBuffersPerStage: 4,
+                maximumUniformBuffersPerPipeline: 4,
+                maximumStorageResourcesPerPipeline: 1,
+                maximumResourcesPerStage: 16,
                 maximumUniformBufferRangeBytes: 8192),
             formats: [
                 new GraphicsFormatCapabilities(TextureFormat.Rgba8Unorm, TextureUsage.Sampled, [2]),
@@ -137,6 +160,11 @@ internal sealed class GraphicsCapabilityAdmissionTests
         Assert.That(missing, Does.Contain("Implemented feature SwapchainMaintenance1"));
         Assert.That(missing, Does.Contain("MaximumTextureDimension2D >= 8192 (reported 4096)"));
         Assert.That(missing, Does.Contain("MaximumTextureDimension3D >= 256 (reported 128)"));
+        Assert.That(missing, Does.Contain("MaximumSampledImagesPerPipeline >= 16 (reported 8)"));
+        Assert.That(missing, Does.Contain("MaximumSamplersPerPipeline >= 8 (reported 4)"));
+        Assert.That(missing, Does.Contain("MaximumUniformBuffersPerPipeline >= 8 (reported 4)"));
+        Assert.That(missing, Does.Contain("MaximumStorageResourcesPerPipeline >= 2 (reported 1)"));
+        Assert.That(missing, Does.Contain("MaximumResourcesPerStage >= 32 (reported 16)"));
         Assert.That(missing, Does.Contain("MaximumUniformBufferRangeBytes >= 16384 (reported 8192)"));
         Assert.That(missing, Does.Contain("Texture format Rgba8Unorm usages ColorAttachment"));
         Assert.That(missing, Does.Contain("Texture format Rgba8Unorm sample count 1"));

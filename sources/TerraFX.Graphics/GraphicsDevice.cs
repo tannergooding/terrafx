@@ -1639,7 +1639,14 @@ public sealed class GraphicsDevice
             GraphicsBackend.Vulkan => ShaderBinaryFormat.SpirV,
             _ => throw new NotSupportedException($"The Graphics backend {Capabilities.Backend} cannot create pipelines."),
         };
+
         var shaderInputs = GetPipelineShaderInputs(description);
+        var sampledImageBindings = new HashSet<(ShaderBindingGroup Group, int Binding)>();
+        var samplerBindings = new HashSet<(ShaderBindingGroup Group, int Binding)>();
+        var uniformBufferBindings = new HashSet<(ShaderBindingGroup Group, int Binding)>();
+        var storageBufferBindings = new HashSet<(ShaderBindingGroup Group, int Binding)>();
+        var storageImageBindings = new HashSet<(ShaderBindingGroup Group, int Binding)>();
+        var storageResourceBindings = new HashSet<(ShaderBindingGroup Group, int Binding)>();
 
         for (var index = 0; index < shaderInputs.Length; index++)
         {
@@ -1657,12 +1664,56 @@ public sealed class GraphicsDevice
                     $"The {Capabilities.Backend} backend has no qualified mapping for shader capabilities {shader.Reflection.RequiredCapabilities}.");
             }
 
-            ValidatePipelineResourceLimits(shader.Reflection);
+            ValidatePipelineResourceLimits(
+                shader.Reflection,
+                sampledImageBindings,
+                samplerBindings,
+                uniformBufferBindings,
+                storageBufferBindings,
+                storageImageBindings,
+                storageResourceBindings);
+        }
+
+        var limits = Capabilities.Limits;
+
+        if (sampledImageBindings.Count > limits.MaximumSampledImagesPerPipeline)
+        {
+            throw new NotSupportedException(
+                $"The pipeline uses {sampledImageBindings.Count} sampled images, exceeding the device limit of {limits.MaximumSampledImagesPerPipeline}.");
+        }
+
+        if (samplerBindings.Count > limits.MaximumSamplersPerPipeline)
+        {
+            throw new NotSupportedException(
+                $"The pipeline uses {samplerBindings.Count} samplers, exceeding the device limit of {limits.MaximumSamplersPerPipeline}.");
+        }
+
+        if (uniformBufferBindings.Count > limits.MaximumUniformBuffersPerPipeline)
+        {
+            throw new NotSupportedException(
+                $"The pipeline uses {uniformBufferBindings.Count} uniform buffers, exceeding the device limit of {limits.MaximumUniformBuffersPerPipeline}.");
+        }
+
+        if (storageBufferBindings.Count > limits.MaximumStorageBuffersPerPipeline)
+        {
+            throw new NotSupportedException(
+                $"The pipeline uses {storageBufferBindings.Count} storage buffers, exceeding the device limit of {limits.MaximumStorageBuffersPerPipeline}.");
+        }
+
+        if (storageImageBindings.Count > limits.MaximumStorageImagesPerPipeline)
+        {
+            throw new NotSupportedException(
+                $"The pipeline uses {storageImageBindings.Count} storage images, exceeding the device limit of {limits.MaximumStorageImagesPerPipeline}.");
+        }
+
+        if (storageResourceBindings.Count > limits.MaximumStorageResourcesPerPipeline)
+        {
+            throw new NotSupportedException(
+                $"The pipeline uses {storageResourceBindings.Count} storage resources, exceeding the device limit of {limits.MaximumStorageResourcesPerPipeline}.");
         }
 
         if (description is ComputePipelineDescription computeDescription)
         {
-            var limits = Capabilities.Limits;
             var reflection = computeDescription.Shader.Reflection;
 
             if ((reflection.GroupSizeX > limits.MaximumComputeWorkGroupSizeX)
@@ -1701,12 +1752,22 @@ public sealed class GraphicsDevice
         }
     }
 
-    private void ValidatePipelineResourceLimits(ShaderReflection reflection)
+    private void ValidatePipelineResourceLimits(
+        ShaderReflection reflection,
+        HashSet<(ShaderBindingGroup Group, int Binding)> sampledImageBindings,
+        HashSet<(ShaderBindingGroup Group, int Binding)> samplerBindings,
+        HashSet<(ShaderBindingGroup Group, int Binding)> uniformBufferBindings,
+        HashSet<(ShaderBindingGroup Group, int Binding)> storageBufferBindings,
+        HashSet<(ShaderBindingGroup Group, int Binding)> storageImageBindings,
+        HashSet<(ShaderBindingGroup Group, int Binding)> storageResourceBindings)
     {
         var limits = Capabilities.Limits;
         var sampledImageCount = 0;
         var samplerCount = 0;
         var uniformBufferCount = 0;
+        var storageBufferCount = 0;
+        var storageImageCount = 0;
+        var resourceCount = 0;
 
         for (var index = 0; index < reflection.Resources.Length; index++)
         {
@@ -1717,29 +1778,46 @@ public sealed class GraphicsDevice
                 throw new NotSupportedException("Fixed shader descriptor arrays are not supported by the current binding-set path.");
             }
 
+            resourceCount = checked(resourceCount + resource.ArrayCount);
+
             switch (resource.Kind)
             {
                 case ShaderResourceKind.SampledImage:
                 {
                     sampledImageCount = checked(sampledImageCount + resource.ArrayCount);
+                    _ = sampledImageBindings.Add((resource.Group, resource.Binding));
                     break;
                 }
 
                 case ShaderResourceKind.Sampler:
                 {
                     samplerCount = checked(samplerCount + resource.ArrayCount);
+                    _ = samplerBindings.Add((resource.Group, resource.Binding));
                     break;
                 }
 
                 case ShaderResourceKind.UniformBuffer:
                 {
                     uniformBufferCount = checked(uniformBufferCount + resource.ArrayCount);
+                    _ = uniformBufferBindings.Add((resource.Group, resource.Binding));
                     break;
                 }
 
                 case ShaderResourceKind.StorageImage:
+                {
+                    storageImageCount = checked(storageImageCount + resource.ArrayCount);
+                    var binding = (resource.Group, resource.Binding);
+                    _ = storageImageBindings.Add(binding);
+                    _ = storageResourceBindings.Add(binding);
+                    break;
+                }
+
                 case ShaderResourceKind.StorageBuffer:
                 {
+                    storageBufferCount = checked(storageBufferCount + resource.ArrayCount);
+                    var binding = (resource.Group, resource.Binding);
+                    _ = storageBufferBindings.Add(binding);
+                    _ = storageResourceBindings.Add(binding);
                     break;
                 }
 
@@ -1766,6 +1844,24 @@ public sealed class GraphicsDevice
         {
             throw new NotSupportedException(
                 $"The {reflection.Stage} shader uses {uniformBufferCount} uniform buffers, exceeding the device limit of {limits.MaximumUniformBuffersPerStage}.");
+        }
+
+        if (storageBufferCount > limits.MaximumStorageBuffersPerStage)
+        {
+            throw new NotSupportedException(
+                $"The {reflection.Stage} shader uses {storageBufferCount} storage buffers, exceeding the device limit of {limits.MaximumStorageBuffersPerStage}.");
+        }
+
+        if (storageImageCount > limits.MaximumStorageImagesPerStage)
+        {
+            throw new NotSupportedException(
+                $"The {reflection.Stage} shader uses {storageImageCount} storage images, exceeding the device limit of {limits.MaximumStorageImagesPerStage}.");
+        }
+
+        if (resourceCount > limits.MaximumResourcesPerStage)
+        {
+            throw new NotSupportedException(
+                $"The {reflection.Stage} shader uses {resourceCount} descriptors, exceeding the device limit of {limits.MaximumResourcesPerStage}.");
         }
     }
 

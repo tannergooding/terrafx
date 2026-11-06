@@ -14,15 +14,66 @@ internal static class VulkanGraphicsCapabilityMapper
         ulong maximumBufferByteLength,
         bool samplerAnisotropySupported)
     {
+        var maximumSampledImagesPerPipeline = Math.Min(
+            64,
+            ConvertPositiveInt(
+                limits.maxDescriptorSetSampledImages,
+                nameof(limits.maxDescriptorSetSampledImages)));
+        var maximumSamplersPerPipeline = Math.Min(
+            32,
+            ConvertPositiveInt(
+                limits.maxDescriptorSetSamplers,
+                nameof(limits.maxDescriptorSetSamplers)));
+        var maximumUniformBuffersPerPipeline = Math.Min(
+            16,
+            ConvertPositiveInt(
+                limits.maxDescriptorSetUniformBuffers,
+                nameof(limits.maxDescriptorSetUniformBuffers)));
+        var maximumStorageBuffersPerStage = Math.Min(
+            32,
+            ConvertPositiveInt(
+                limits.maxPerStageDescriptorStorageBuffers,
+                nameof(limits.maxPerStageDescriptorStorageBuffers)));
+        var maximumStorageImagesPerStage = Math.Min(
+            32,
+            ConvertPositiveInt(
+                limits.maxPerStageDescriptorStorageImages,
+                nameof(limits.maxPerStageDescriptorStorageImages)));
+        var maximumStorageBuffersPerPipeline = Math.Min(
+            32,
+            ConvertPositiveInt(
+                limits.maxDescriptorSetStorageBuffers,
+                nameof(limits.maxDescriptorSetStorageBuffers)));
+        var maximumStorageImagesPerPipeline = Math.Min(
+            32,
+            ConvertPositiveInt(
+                limits.maxDescriptorSetStorageImages,
+                nameof(limits.maxDescriptorSetStorageImages)));
+        var maximumStorageResourcesPerPipeline = (int)Math.Min(
+            32L,
+            (long)maximumStorageBuffersPerPipeline + maximumStorageImagesPerPipeline);
+        var maximumResourcesPerStage = Math.Min(
+            144,
+            ConvertPositiveInt(limits.maxPerStageResources, nameof(limits.maxPerStageResources)));
+
         return new GraphicsLimits(
             ConvertPositiveInt(limits.maxImageDimension2D, nameof(limits.maxImageDimension2D)),
             ConvertPositiveInt(limits.maxImageDimension3D, nameof(limits.maxImageDimension3D)),
             ConvertPositiveInt(limits.maxImageArrayLayers, nameof(limits.maxImageArrayLayers)),
             ConvertPositiveInt(limits.maxColorAttachments, nameof(limits.maxColorAttachments)),
             ConvertPositiveInt(limits.maxPerStageDescriptorSampledImages, nameof(limits.maxPerStageDescriptorSampledImages)),
+            maximumSampledImagesPerPipeline,
             ConvertPositiveInt(limits.maxPerStageDescriptorSamplers, nameof(limits.maxPerStageDescriptorSamplers)),
+            maximumSamplersPerPipeline,
             samplerAnisotropySupported ? limits.maxSamplerAnisotropy : 1.0f,
             ConvertPositiveInt(limits.maxPerStageDescriptorUniformBuffers, nameof(limits.maxPerStageDescriptorUniformBuffers)),
+            maximumUniformBuffersPerPipeline,
+            maximumStorageBuffersPerStage,
+            maximumStorageImagesPerStage,
+            maximumStorageBuffersPerPipeline,
+            maximumStorageImagesPerPipeline,
+            maximumStorageResourcesPerPipeline,
+            maximumResourcesPerStage,
             limits.maxUniformBufferRange,
             ConvertPositiveLong(limits.minUniformBufferOffsetAlignment, nameof(limits.minUniformBufferOffsetAlignment)),
             ConvertPositiveLong(limits.minStorageBufferOffsetAlignment, nameof(limits.minStorageBufferOffsetAlignment)),

@@ -19,9 +19,17 @@ internal sealed class VulkanGraphicsCapabilityMapperTests
         limits.maxImageArrayLayers = 256;
         limits.maxColorAttachments = 4;
         limits.maxPerStageDescriptorSampledImages = 16;
+        limits.maxDescriptorSetSampledImages = 32;
         limits.maxPerStageDescriptorSamplers = 8;
+        limits.maxDescriptorSetSamplers = 16;
         limits.maxSamplerAnisotropy = 8.0f;
         limits.maxPerStageDescriptorUniformBuffers = 8;
+        limits.maxDescriptorSetUniformBuffers = 12;
+        limits.maxPerStageDescriptorStorageBuffers = 8;
+        limits.maxPerStageDescriptorStorageImages = 4;
+        limits.maxDescriptorSetStorageBuffers = 16;
+        limits.maxDescriptorSetStorageImages = 8;
+        limits.maxPerStageResources = 128;
         limits.maxUniformBufferRange = 16384;
         limits.minUniformBufferOffsetAlignment = 256;
         limits.minStorageBufferOffsetAlignment = 16;
@@ -41,6 +49,14 @@ internal sealed class VulkanGraphicsCapabilityMapperTests
     {
         var limits = CreateValidLimits();
         limits.maxPerStageDescriptorSampledImages = uint.MaxValue;
+        limits.maxDescriptorSetSampledImages = uint.MaxValue;
+        limits.maxDescriptorSetSamplers = uint.MaxValue;
+        limits.maxDescriptorSetUniformBuffers = uint.MaxValue;
+        limits.maxPerStageDescriptorStorageBuffers = uint.MaxValue;
+        limits.maxPerStageDescriptorStorageImages = uint.MaxValue;
+        limits.maxDescriptorSetStorageBuffers = uint.MaxValue;
+        limits.maxDescriptorSetStorageImages = uint.MaxValue;
+        limits.maxPerStageResources = uint.MaxValue;
 
         var mapped = VulkanGraphicsCapabilityMapper.CreateLimits(
             limits,
@@ -48,6 +64,15 @@ internal sealed class VulkanGraphicsCapabilityMapperTests
             samplerAnisotropySupported: false);
 
         Assert.That(mapped.MaximumSampledImagesPerStage, Is.EqualTo(int.MaxValue));
+        Assert.That(mapped.MaximumSampledImagesPerPipeline, Is.EqualTo(64));
+        Assert.That(mapped.MaximumSamplersPerPipeline, Is.EqualTo(32));
+        Assert.That(mapped.MaximumUniformBuffersPerPipeline, Is.EqualTo(16));
+        Assert.That(mapped.MaximumStorageBuffersPerStage, Is.EqualTo(32));
+        Assert.That(mapped.MaximumStorageImagesPerStage, Is.EqualTo(32));
+        Assert.That(mapped.MaximumStorageBuffersPerPipeline, Is.EqualTo(32));
+        Assert.That(mapped.MaximumStorageImagesPerPipeline, Is.EqualTo(32));
+        Assert.That(mapped.MaximumStorageResourcesPerPipeline, Is.EqualTo(32));
+        Assert.That(mapped.MaximumResourcesPerStage, Is.EqualTo(144));
     }
 
     [Test]
@@ -83,6 +108,15 @@ internal sealed class VulkanGraphicsCapabilityMapperTests
         Assert.That(mapped.MaximumTextureDimension3D, Is.EqualTo(256));
         Assert.That(mapped.MaximumArrayLayers, Is.EqualTo(256));
         Assert.That(mapped.MaximumColorAttachments, Is.EqualTo(4));
+        Assert.That(mapped.MaximumSampledImagesPerPipeline, Is.EqualTo(32));
+        Assert.That(mapped.MaximumSamplersPerPipeline, Is.EqualTo(16));
+        Assert.That(mapped.MaximumUniformBuffersPerPipeline, Is.EqualTo(12));
+        Assert.That(mapped.MaximumStorageBuffersPerStage, Is.EqualTo(8));
+        Assert.That(mapped.MaximumStorageImagesPerStage, Is.EqualTo(4));
+        Assert.That(mapped.MaximumStorageBuffersPerPipeline, Is.EqualTo(16));
+        Assert.That(mapped.MaximumStorageImagesPerPipeline, Is.EqualTo(8));
+        Assert.That(mapped.MaximumStorageResourcesPerPipeline, Is.EqualTo(24));
+        Assert.That(mapped.MaximumResourcesPerStage, Is.EqualTo(128));
         Assert.That(mapped.MaximumSamplerAnisotropy, Is.EqualTo(8.0f));
         Assert.That(mapped.UniformBufferOffsetAlignment, Is.EqualTo(256));
         Assert.That(mapped.StorageBufferOffsetAlignment, Is.EqualTo(16));

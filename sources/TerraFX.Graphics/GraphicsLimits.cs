@@ -4,7 +4,7 @@ using System;
 
 namespace TerraFX.Graphics;
 
-/// <summary>Contains copied numeric limits and alignments reported by a graphics device.</summary>
+/// <summary>Contains copied backend limits, fixed-profile admission caps, and alignments.</summary>
 public sealed class GraphicsLimits
 {
     internal GraphicsLimits(
@@ -13,9 +13,18 @@ public sealed class GraphicsLimits
         int maximumArrayLayers,
         int maximumColorAttachments,
         int maximumSampledImagesPerStage,
+        int maximumSampledImagesPerPipeline,
         int maximumSamplersPerStage,
+        int maximumSamplersPerPipeline,
         float maximumSamplerAnisotropy,
         int maximumUniformBuffersPerStage,
+        int maximumUniformBuffersPerPipeline,
+        int maximumStorageBuffersPerStage,
+        int maximumStorageImagesPerStage,
+        int maximumStorageBuffersPerPipeline,
+        int maximumStorageImagesPerPipeline,
+        int maximumStorageResourcesPerPipeline,
+        int maximumResourcesPerStage,
         long maximumUniformBufferRangeBytes,
         long uniformBufferOffsetAlignment,
         long storageBufferOffsetAlignment,
@@ -35,7 +44,9 @@ public sealed class GraphicsLimits
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumArrayLayers);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumColorAttachments);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSampledImagesPerStage);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSampledImagesPerPipeline);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSamplersPerStage);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSamplersPerPipeline);
 
         if (!float.IsFinite(maximumSamplerAnisotropy) || (maximumSamplerAnisotropy < 1.0f))
         {
@@ -43,6 +54,13 @@ public sealed class GraphicsLimits
         }
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumUniformBuffersPerStage);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumUniformBuffersPerPipeline);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumStorageBuffersPerStage);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumStorageImagesPerStage);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumStorageBuffersPerPipeline);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumStorageImagesPerPipeline);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumStorageResourcesPerPipeline);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumResourcesPerStage);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumUniformBufferRangeBytes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(uniformBufferOffsetAlignment);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(storageBufferOffsetAlignment);
@@ -62,9 +80,18 @@ public sealed class GraphicsLimits
         MaximumArrayLayers = maximumArrayLayers;
         MaximumColorAttachments = maximumColorAttachments;
         MaximumSampledImagesPerStage = maximumSampledImagesPerStage;
+        MaximumSampledImagesPerPipeline = maximumSampledImagesPerPipeline;
         MaximumSamplersPerStage = maximumSamplersPerStage;
+        MaximumSamplersPerPipeline = maximumSamplersPerPipeline;
         MaximumSamplerAnisotropy = maximumSamplerAnisotropy;
         MaximumUniformBuffersPerStage = maximumUniformBuffersPerStage;
+        MaximumUniformBuffersPerPipeline = maximumUniformBuffersPerPipeline;
+        MaximumStorageBuffersPerStage = maximumStorageBuffersPerStage;
+        MaximumStorageImagesPerStage = maximumStorageImagesPerStage;
+        MaximumStorageBuffersPerPipeline = maximumStorageBuffersPerPipeline;
+        MaximumStorageImagesPerPipeline = maximumStorageImagesPerPipeline;
+        MaximumStorageResourcesPerPipeline = maximumStorageResourcesPerPipeline;
+        MaximumResourcesPerStage = maximumResourcesPerStage;
         MaximumUniformBufferRangeBytes = maximumUniformBufferRangeBytes;
         UniformBufferOffsetAlignment = uniformBufferOffsetAlignment;
         StorageBufferOffsetAlignment = storageBufferOffsetAlignment;
@@ -104,14 +131,38 @@ public sealed class GraphicsLimits
     /// <summary>Gets the maximum compute work-group size in Z.</summary>
     public int MaximumComputeWorkGroupSizeZ { get; }
 
+    /// <summary>Gets the maximum total shader resource descriptor count per shader stage.</summary>
+    public int MaximumResourcesPerStage { get; }
+
+    /// <summary>Gets the maximum sampled-image descriptor count across one pipeline layout.</summary>
+    public int MaximumSampledImagesPerPipeline { get; }
+
     /// <summary>Gets the maximum sampled image count per shader stage.</summary>
     public int MaximumSampledImagesPerStage { get; }
 
     /// <summary>Gets the maximum anisotropy factor implemented by the selected backend; one means isotropic sampling only.</summary>
     public float MaximumSamplerAnisotropy { get; }
 
+    /// <summary>Gets the maximum sampler descriptor count across one pipeline layout.</summary>
+    public int MaximumSamplersPerPipeline { get; }
+
     /// <summary>Gets the maximum sampler count per shader stage.</summary>
     public int MaximumSamplersPerStage { get; }
+
+    /// <summary>Gets the maximum storage-buffer descriptor count across one pipeline layout.</summary>
+    public int MaximumStorageBuffersPerPipeline { get; }
+
+    /// <summary>Gets the maximum storage-buffer descriptor count per shader stage.</summary>
+    public int MaximumStorageBuffersPerStage { get; }
+
+    /// <summary>Gets the maximum storage-image descriptor count across one pipeline layout.</summary>
+    public int MaximumStorageImagesPerPipeline { get; }
+
+    /// <summary>Gets the maximum storage-image descriptor count per shader stage.</summary>
+    public int MaximumStorageImagesPerStage { get; }
+
+    /// <summary>Gets the maximum combined storage descriptor count across one pipeline layout.</summary>
+    public int MaximumStorageResourcesPerPipeline { get; }
 
     /// <summary>Gets the maximum 2D texture dimension.</summary>
     public int MaximumTextureDimension2D { get; }
@@ -121,6 +172,9 @@ public sealed class GraphicsLimits
 
     /// <summary>Gets the maximum uniform-buffer range in bytes.</summary>
     public long MaximumUniformBufferRangeBytes { get; }
+
+    /// <summary>Gets the maximum uniform-buffer descriptor count across one pipeline layout.</summary>
+    public int MaximumUniformBuffersPerPipeline { get; }
 
     /// <summary>Gets the maximum uniform-buffer count per shader stage.</summary>
     public int MaximumUniformBuffersPerStage { get; }

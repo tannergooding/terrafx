@@ -4310,9 +4310,18 @@ public sealed class GraphicsLimits
         int maximumArrayLayers,
         int maximumColorAttachments,
         int maximumSampledImagesPerStage,
+        int maximumSampledImagesPerPipeline,
         int maximumSamplersPerStage,
+        int maximumSamplersPerPipeline,
         float maximumSamplerAnisotropy,
         int maximumUniformBuffersPerStage,
+        int maximumUniformBuffersPerPipeline,
+        int maximumStorageBuffersPerStage,
+        int maximumStorageImagesPerStage,
+        int maximumStorageBuffersPerPipeline,
+        int maximumStorageImagesPerPipeline,
+        int maximumStorageResourcesPerPipeline,
+        int maximumResourcesPerStage,
         long maximumUniformBufferRangeBytes,
         long uniformBufferOffsetAlignment,
         long storageBufferOffsetAlignment,
@@ -4334,12 +4343,21 @@ public sealed class GraphicsLimits
     public int MaximumComputeWorkGroupSizeX { get; }
     public int MaximumComputeWorkGroupSizeY { get; }
     public int MaximumComputeWorkGroupSizeZ { get; }
+    public int MaximumResourcesPerStage { get; }
+    public int MaximumSampledImagesPerPipeline { get; }
     public int MaximumSampledImagesPerStage { get; }
     public float MaximumSamplerAnisotropy { get; }
+    public int MaximumSamplersPerPipeline { get; }
     public int MaximumSamplersPerStage { get; }
+    public int MaximumStorageBuffersPerPipeline { get; }
+    public int MaximumStorageBuffersPerStage { get; }
+    public int MaximumStorageImagesPerPipeline { get; }
+    public int MaximumStorageImagesPerStage { get; }
+    public int MaximumStorageResourcesPerPipeline { get; }
     public int MaximumTextureDimension2D { get; }
     public int MaximumTextureDimension3D { get; }
     public long MaximumUniformBufferRangeBytes { get; }
+    public int MaximumUniformBuffersPerPipeline { get; }
     public int MaximumUniformBuffersPerStage { get; }
     public int MaximumVertexInputAttributes { get; }
     public int MaximumVertexInputBindings { get; }
