@@ -314,10 +314,11 @@ public sealed class GraphicsPipelineDescription : PipelineDescription
             }
 
             if ((vertexResource.Kind != pixelResource.Kind)
-                || (vertexResource.ArrayCount != pixelResource.ArrayCount))
+                || (vertexResource.ArrayCount != pixelResource.ArrayCount)
+                || (vertexResource.Access != pixelResource.Access))
             {
                 throw new ArgumentException(
-                    "Vertex and pixel shaders must agree on the type and descriptor count of each shared resource binding.",
+                    "Vertex and pixel shaders must agree on the type, descriptor count, and access of each shared resource binding.",
                     nameof(pixelReflection));
             }
 

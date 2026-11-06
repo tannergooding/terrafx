@@ -65,7 +65,7 @@ internal static class M04ShaderReflectionReader
         }
 
         var (imageTypes, descriptorBindings) = SpirvImageTypeReader.Read(spirvBytecode);
-        var resources = ParseResources(root, imageTypes);
+        var resources = ParseResources(root, imageTypes, descriptorBindings);
         SpirvImageTypeReader.ValidateDescriptorBindings(resources, descriptorBindings);
         ValidateDxilResourceBindings(dxilReflection, resources);
         var inputs = ParseDxilSignatures(dxilReflection, "Input signature:", stage, isInput: true);
@@ -108,6 +108,7 @@ internal static class M04ShaderReflectionReader
         string collectionName,
         ShaderResourceKind kind,
         Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage, string Dimension, string? Format)> imageTypes,
+        Dictionary<(int DescriptorSet, int Binding), (ShaderResourceKind Kind, int ArrayCount, ShaderResourceAccess Access)> descriptorBindings,
         ImmutableArray<ReflectedResource>.Builder resources)
     {
         if (!root.TryGetProperty(collectionName, out var collection))
@@ -171,6 +172,12 @@ internal static class M04ShaderReflectionReader
                 throw new InvalidDataException($"SPIRV-Cross binding {nativeBinding} is invalid for resource class {kind}.");
             }
 
+            if (!descriptorBindings.TryGetValue((descriptorSet, nativeBinding), out var descriptorBinding)
+                || (descriptorBinding.Kind != kind))
+            {
+                throw new InvalidDataException("SPIRV-Cross resource metadata does not match the SPIR-V descriptor class.");
+            }
+
             if (kind == ShaderResourceKind.StorageImage)
             {
                 if (!spirvType.Contains("image", StringComparison.OrdinalIgnoreCase)
@@ -192,7 +199,7 @@ internal static class M04ShaderReflectionReader
 
             resources.Add(new ReflectedResource(
                 name,
-                new ShaderResourceSignature(group, binding, kind, GetArrayCount(resource)),
+                new ShaderResourceSignature(group, binding, kind, GetArrayCount(resource), descriptorBinding.Access),
                 spirvType,
                 format,
                 componentFormat));
@@ -613,15 +620,16 @@ internal static class M04ShaderReflectionReader
 
     private static ImmutableArray<ReflectedResource> ParseResources(
         JsonElement root,
-        Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage, string Dimension, string? Format)> imageTypes)
+        Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage, string Dimension, string? Format)> imageTypes,
+        Dictionary<(int DescriptorSet, int Binding), (ShaderResourceKind Kind, int ArrayCount, ShaderResourceAccess Access)> descriptorBindings)
     {
         CheckUnsupportedResourceCollections(root);
         var resources = ImmutableArray.CreateBuilder<ReflectedResource>();
-        AddResourceCollection(root, "ubos", ShaderResourceKind.UniformBuffer, imageTypes, resources);
-        AddResourceCollection(root, "separate_images", ShaderResourceKind.SampledImage, imageTypes, resources);
-        AddResourceCollection(root, "separate_samplers", ShaderResourceKind.Sampler, imageTypes, resources);
-        AddResourceCollection(root, "ssbos", ShaderResourceKind.StorageBuffer, imageTypes, resources);
-        AddResourceCollection(root, "images", ShaderResourceKind.StorageImage, imageTypes, resources);
+        AddResourceCollection(root, "ubos", ShaderResourceKind.UniformBuffer, imageTypes, descriptorBindings, resources);
+        AddResourceCollection(root, "separate_images", ShaderResourceKind.SampledImage, imageTypes, descriptorBindings, resources);
+        AddResourceCollection(root, "separate_samplers", ShaderResourceKind.Sampler, imageTypes, descriptorBindings, resources);
+        AddResourceCollection(root, "ssbos", ShaderResourceKind.StorageBuffer, imageTypes, descriptorBindings, resources);
+        AddResourceCollection(root, "images", ShaderResourceKind.StorageImage, imageTypes, descriptorBindings, resources);
         return resources.ToImmutable();
     }
 
@@ -830,6 +838,12 @@ internal static class M04ShaderReflectionReader
 
             var matchedResource = resources[matchedIndex];
             var expectedShape = GetDxilResourceShape(matchedResource);
+
+            if ((matchedResource.Signature.Kind is ShaderResourceKind.StorageBuffer or ShaderResourceKind.StorageImage)
+                && (matchedResource.Signature.Access != ShaderResourceAccess.ReadWrite))
+            {
+                throw new NotSupportedException("The selected DXIL storage descriptor profile admits only read-write UAV resources.");
+            }
 
             if ((matchedResource.Signature.Kind == ShaderResourceKind.StorageImage)
                 && !StringComparer.Ordinal.Equals(matchedResource.ComponentFormat, expectedShape.Format))
@@ -1302,12 +1316,15 @@ internal static class M04ShaderReflectionReader
         private const uint DecorationBlock = 2;
         private const uint DecorationBufferBlock = 3;
         private const uint DecorationDescriptorSet = 34;
+        private const uint DecorationNonReadable = 25;
+        private const uint DecorationNonWritable = 24;
         private const uint ImageFormatR32f = 3;
         private const uint ImageFormatR32i = 24;
         private const uint ImageFormatR32ui = 33;
         private const uint ImageFormatUnknown = 0;
         private const ushort OpConstant = 43;
         private const ushort OpDecorate = 71;
+        private const ushort OpMemberDecorate = 72;
         private const ushort OpTypeArray = 28;
         private const ushort OpTypeFloat = 22;
         private const ushort OpTypeImage = 25;
@@ -1341,7 +1358,7 @@ internal static class M04ShaderReflectionReader
 
         internal static (
             Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage, string Dimension, string? Format)> ImageTypes,
-            Dictionary<(int DescriptorSet, int Binding), (ShaderResourceKind Kind, int ArrayCount)> DescriptorBindings) Read(
+            Dictionary<(int DescriptorSet, int Binding), (ShaderResourceKind Kind, int ArrayCount, ShaderResourceAccess Access)> DescriptorBindings) Read(
             ReadOnlySpan<byte> bytecode)
         {
             var words = GetSpirvWords(bytecode);
@@ -1353,9 +1370,12 @@ internal static class M04ShaderReflectionReader
             var blockTypeIds = new HashSet<uint>();
             var bufferBlockTypeIds = new HashSet<uint>();
             var structTypeIds = new HashSet<uint>();
+            var structMemberCounts = new Dictionary<uint, int>();
             var arrayElementTypes = new Dictionary<uint, (uint ElementTypeId, uint LengthId, bool IsRuntime)>();
             var arrayLengths = new Dictionary<uint, uint>();
             var decorations = new Dictionary<uint, (int? DescriptorSet, int? Binding)>();
+            var accessDecorations = new Dictionary<uint, (bool NonWritable, bool NonReadable)>();
+            var memberAccessDecorations = new Dictionary<(uint StructureId, uint MemberIndex), (bool NonWritable, bool NonReadable)>();
             var variables = new List<(uint PointerType, uint Id, uint StorageClass)>();
 
             for (var cursor = 5; cursor < words.Length;)
@@ -1443,6 +1463,7 @@ internal static class M04ShaderReflectionReader
                             throw new InvalidDataException("SPIR-V OpTypeStruct has an invalid operand count or duplicate result ID.");
                         }
 
+                        structMemberCounts.Add(words[cursor + 1], wordCount - 2);
                         break;
                     }
 
@@ -1521,6 +1542,39 @@ internal static class M04ShaderReflectionReader
                             break;
                         }
 
+                        if (decoration is DecorationNonWritable or DecorationNonReadable)
+                        {
+                            if (wordCount != 3)
+                            {
+                                throw new InvalidDataException("SPIR-V access decorations cannot contain extra operands.");
+                            }
+
+                            var currentAccess = accessDecorations.GetValueOrDefault(targetId);
+                            var (nonWritable, nonReadable) = currentAccess;
+
+                            if (decoration == DecorationNonWritable)
+                            {
+                                if (nonWritable)
+                                {
+                                    throw new InvalidDataException("The reflected SPIR-V module has duplicate NonWritable decorations.");
+                                }
+
+                                nonWritable = true;
+                            }
+                            else
+                            {
+                                if (nonReadable)
+                                {
+                                    throw new InvalidDataException("The reflected SPIR-V module has duplicate NonReadable decorations.");
+                                }
+
+                                nonReadable = true;
+                            }
+
+                            accessDecorations[targetId] = (nonWritable, nonReadable);
+                            break;
+                        }
+
                         if (decoration is not (DecorationBinding or DecorationDescriptorSet))
                         {
                             break;
@@ -1564,6 +1618,50 @@ internal static class M04ShaderReflectionReader
                         break;
                     }
 
+                    case OpMemberDecorate:
+                    {
+                        if (wordCount < 4)
+                        {
+                            throw new InvalidDataException("SPIR-V OpMemberDecorate has an invalid operand count.");
+                        }
+
+                        var structureId = words[cursor + 1];
+                        var memberIndex = words[cursor + 2];
+                        var decoration = words[cursor + 3];
+
+                        if (decoration is not (DecorationNonWritable or DecorationNonReadable))
+                        {
+                            break;
+                        }
+
+                        if (wordCount != 4)
+                        {
+                            throw new InvalidDataException("SPIR-V storage access member decorations cannot contain extra operands.");
+                        }
+
+                        var key = (structureId, memberIndex);
+                        var memberAccess = memberAccessDecorations.GetValueOrDefault(key);
+                        var (nonWritable, nonReadable) = memberAccess;
+
+                        if ((decoration == DecorationNonWritable && nonWritable)
+                            || (decoration == DecorationNonReadable && nonReadable))
+                        {
+                            throw new InvalidDataException("The reflected SPIR-V module has duplicate storage access member decorations.");
+                        }
+
+                        if (decoration == DecorationNonWritable)
+                        {
+                            nonWritable = true;
+                        }
+                        else
+                        {
+                            nonReadable = true;
+                        }
+
+                        memberAccessDecorations[key] = (nonWritable, nonReadable);
+                        break;
+                    }
+
                     case OpVariable:
                     {
                         if (wordCount is not (4 or 5))
@@ -1579,8 +1677,18 @@ internal static class M04ShaderReflectionReader
                 cursor += wordCount;
             }
 
+            foreach (var (memberKey, _) in memberAccessDecorations)
+            {
+                if (!structMemberCounts.TryGetValue(memberKey.StructureId, out var memberCount)
+                    || (memberKey.MemberIndex >= memberCount))
+                {
+                    throw new InvalidDataException("A SPIR-V storage access decoration does not identify an existing structure member.");
+                }
+            }
+
             var imageFormats = new Dictionary<(int DescriptorSet, int Binding), (string ComponentFormat, bool IsStorage, string Dimension, string? Format)>();
-            var descriptorBindings = new Dictionary<(int DescriptorSet, int Binding), (ShaderResourceKind Kind, int ArrayCount)>();
+            var descriptorBindings =
+                new Dictionary<(int DescriptorSet, int Binding), (ShaderResourceKind Kind, int ArrayCount, ShaderResourceAccess Access)>();
 
             foreach (var (pointerType, variableId, storageClass) in variables)
             {
@@ -1640,8 +1748,18 @@ internal static class M04ShaderReflectionReader
                     structTypeIds,
                     blockTypeIds,
                     bufferBlockTypeIds);
+                var descriptorAccess = GetDescriptorAccess(
+                    variableId,
+                    storageClass,
+                    typeId,
+                    descriptorKind,
+                    accessDecorations,
+                    memberAccessDecorations,
+                    structMemberCounts);
 
-                if (!descriptorBindings.TryAdd((descriptorSet, binding), (descriptorKind, descriptorArrayCount)))
+                if (!descriptorBindings.TryAdd(
+                    (descriptorSet, binding),
+                    (descriptorKind, descriptorArrayCount, descriptorAccess)))
                 {
                     throw new InvalidDataException("The reflected SPIR-V module contains duplicate descriptor identities.");
                 }
@@ -1694,10 +1812,10 @@ internal static class M04ShaderReflectionReader
 
         internal static void ValidateDescriptorBindings(
             ImmutableArray<ReflectedResource> resources,
-            Dictionary<(int DescriptorSet, int Binding), (ShaderResourceKind Kind, int ArrayCount)> spirvBindings)
+            Dictionary<(int DescriptorSet, int Binding), (ShaderResourceKind Kind, int ArrayCount, ShaderResourceAccess Access)> spirvBindings)
         {
             var reflectedBindings =
-                new Dictionary<(int DescriptorSet, int Binding), (ShaderResourceKind Kind, int ArrayCount)>();
+                new Dictionary<(int DescriptorSet, int Binding), (ShaderResourceKind Kind, int ArrayCount, ShaderResourceAccess Access)>();
 
             foreach (var resource in resources)
             {
@@ -1707,7 +1825,7 @@ internal static class M04ShaderReflectionReader
 
                 if (!reflectedBindings.TryAdd(
                     descriptor,
-                    (resource.Signature.Kind, resource.Signature.ArrayCount)))
+                    (resource.Signature.Kind, resource.Signature.ArrayCount, resource.Signature.Access)))
                 {
                     throw new InvalidDataException("SPIRV-Cross contains duplicate descriptor identities.");
                 }
@@ -1723,9 +1841,69 @@ internal static class M04ShaderReflectionReader
                 if (!spirvBindings.TryGetValue(descriptor, out var spirvBinding)
                     || (reflectedBinding != spirvBinding))
                 {
-                    throw new InvalidDataException("SPIR-V and SPIRV-Cross report different resource classes or descriptor-array counts.");
+                    throw new InvalidDataException("SPIR-V and SPIRV-Cross report different resource classes, access modes, or descriptor-array counts.");
                 }
             }
+        }
+
+        private static ShaderResourceAccess GetDescriptorAccess(
+            uint variableId,
+            uint storageClass,
+            uint typeId,
+            ShaderResourceKind kind,
+            Dictionary<uint, (bool NonWritable, bool NonReadable)> accessDecorations,
+            Dictionary<(uint StructureId, uint MemberIndex), (bool NonWritable, bool NonReadable)> memberAccessDecorations,
+            Dictionary<uint, int> structMemberCounts)
+        {
+            if (kind is not (ShaderResourceKind.StorageBuffer or ShaderResourceKind.StorageImage))
+            {
+                return ShaderResourceAccess.Read;
+            }
+
+            var (variableNonWritable, variableNonReadable) = accessDecorations.GetValueOrDefault(variableId);
+            var (typeNonWritable, typeNonReadable) = accessDecorations.GetValueOrDefault(typeId);
+            var nonWritable = variableNonWritable || typeNonWritable;
+            var nonReadable = variableNonReadable || typeNonReadable;
+
+            if (nonWritable && nonReadable)
+            {
+                throw new InvalidDataException("A SPIR-V storage descriptor cannot be both NonWritable and NonReadable.");
+            }
+
+            var canRead = !nonReadable;
+            var canWrite = !nonWritable;
+
+            if ((kind == ShaderResourceKind.StorageBuffer)
+                && structMemberCounts.TryGetValue(typeId, out var memberCount)
+                && (memberCount > 0))
+            {
+                var memberCanRead = false;
+                var memberCanWrite = false;
+
+                for (var memberIndex = 0; memberIndex < memberCount; memberIndex++)
+                {
+                    var (memberNonWritable, memberNonReadable) =
+                        memberAccessDecorations.GetValueOrDefault((typeId, checked((uint)memberIndex)));
+
+                    if (memberNonWritable && memberNonReadable)
+                    {
+                        throw new InvalidDataException("A SPIR-V storage block member cannot be both NonWritable and NonReadable.");
+                    }
+
+                    memberCanRead |= !memberNonReadable;
+                    memberCanWrite |= !memberNonWritable;
+                }
+
+                canRead &= memberCanRead;
+                canWrite &= memberCanWrite;
+            }
+
+            return (canRead, canWrite) switch {
+                (true, false) => ShaderResourceAccess.Read,
+                (false, true) => ShaderResourceAccess.Write,
+                (true, true) => ShaderResourceAccess.ReadWrite,
+                _ => throw new InvalidDataException("A SPIR-V storage descriptor has contradictory access decorations."),
+            };
         }
 
         private static ShaderResourceKind GetDescriptorKind(

@@ -83,10 +83,21 @@ internal sealed class CommandRecorderState : IDisposable
         _passKind = passKind;
     }
 
-    private static HashSet<(ShaderBindingGroup Group, ShaderResourceKind Kind, int Binding)> GetExpectedBindings(
+    private static GraphBufferUsage GetBufferUsage(ShaderResourceKind kind, ShaderResourceAccess access)
+        => (kind, access) switch {
+            (ShaderResourceKind.UniformBuffer, ShaderResourceAccess.Read) => GraphBufferUsage.UniformRead,
+            (ShaderResourceKind.StorageBuffer, ShaderResourceAccess.Read) => GraphBufferUsage.StorageRead,
+            (ShaderResourceKind.StorageBuffer, ShaderResourceAccess.Write) => GraphBufferUsage.StorageWrite,
+            (ShaderResourceKind.StorageBuffer, ShaderResourceAccess.ReadWrite)
+                => throw new NotSupportedException("The graph has no explicit in-pass storage read-write declaration."),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+        };
+
+    private static Dictionary<(ShaderBindingGroup Group, ShaderResourceKind Kind, int Binding), ShaderResourceAccess> GetExpectedBindings(
         PipelineBindingLayout pipelineLayout)
     {
-        var expectedBindings = new HashSet<(ShaderBindingGroup Group, ShaderResourceKind Kind, int Binding)>();
+        var expectedBindings =
+            new Dictionary<(ShaderBindingGroup Group, ShaderResourceKind Kind, int Binding), ShaderResourceAccess>();
 
         foreach (var reflection in pipelineLayout.ShaderReflections)
         {
@@ -97,12 +108,19 @@ internal sealed class CommandRecorderState : IDisposable
                     throw new NotSupportedException("The command recorder supports only single-descriptor shader bindings.");
                 }
 
-                if (resource.Kind is ShaderResourceKind.StorageBuffer or ShaderResourceKind.StorageImage)
-                {
-                    throw new NotSupportedException("Shader reflection does not declare storage-resource access intent.");
-                }
+                var key = (resource.Group, resource.Kind, resource.Binding);
 
-                _ = expectedBindings.Add((resource.Group, resource.Kind, resource.Binding));
+                if (expectedBindings.TryGetValue(key, out var existingAccess))
+                {
+                    if (existingAccess != resource.Access)
+                    {
+                        throw new InvalidOperationException("Shader stages disagree on a shared resource access contract.");
+                    }
+                }
+                else
+                {
+                    expectedBindings.Add(key, resource.Access);
+                }
             }
         }
 
@@ -114,6 +132,16 @@ internal sealed class CommandRecorderState : IDisposable
             IndexFormat.UInt16 => sizeof(ushort),
             IndexFormat.UInt32 => sizeof(uint),
             _ => throw new ArgumentOutOfRangeException(nameof(format)),
+        };
+
+    private static GraphTextureUsage GetTextureUsage(ShaderResourceKind kind, ShaderResourceAccess access)
+        => (kind, access) switch {
+            (ShaderResourceKind.SampledImage, ShaderResourceAccess.Read) => GraphTextureUsage.SampledRead,
+            (ShaderResourceKind.StorageImage, ShaderResourceAccess.Read) => GraphTextureUsage.StorageRead,
+            (ShaderResourceKind.StorageImage, ShaderResourceAccess.Write) => GraphTextureUsage.StorageWrite,
+            (ShaderResourceKind.StorageImage, ShaderResourceAccess.ReadWrite)
+                => throw new NotSupportedException("The graph has no explicit in-pass storage read-write declaration."),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind)),
         };
 
     private static bool HasReflectedResources(PipelineBindingLayout pipelineLayout)
@@ -290,14 +318,16 @@ internal sealed class CommandRecorderState : IDisposable
         {
             var key = (binding.Group, binding.Kind, binding.Binding);
 
-            if (!expectedBindings.Contains(key) || !actualBindings.Add(key))
+            if (!expectedBindings.TryGetValue(key, out var access) || !actualBindings.Add(key))
             {
                 throw new ArgumentException("The binding set does not match the current pipeline reflection.", nameof(bindings));
             }
 
-            if (!HasBufferAccess(binding.Resource, binding.Range, GraphBufferUsage.UniformRead))
+            var usage = GetBufferUsage(binding.Kind, access);
+
+            if (!HasBufferAccess(binding.Resource, binding.Range, usage))
             {
-                throw new InvalidOperationException("A uniform-buffer binding must fit a UniformRead range declared by this pass.");
+                throw new InvalidOperationException($"A {binding.Kind} binding must fit a {usage} range declared by this pass.");
             }
         }
 
@@ -305,14 +335,16 @@ internal sealed class CommandRecorderState : IDisposable
         {
             var key = (binding.Group, binding.Kind, binding.Binding);
 
-            if (!expectedBindings.Contains(key) || !actualBindings.Add(key))
+            if (!expectedBindings.TryGetValue(key, out var access) || !actualBindings.Add(key))
             {
                 throw new ArgumentException("The binding set does not match the current pipeline reflection.", nameof(bindings));
             }
 
-            if (!HasTextureAccess(binding.Resource, binding.Range, GraphTextureUsage.SampledRead))
+            var usage = GetTextureUsage(binding.Kind, access);
+
+            if (!HasTextureAccess(binding.Resource, binding.Range, usage))
             {
-                throw new InvalidOperationException("A sampled-image binding must fit a SampledRead range declared by this pass.");
+                throw new InvalidOperationException($"A {binding.Kind} binding must fit a {usage} range declared by this pass.");
             }
         }
 
@@ -324,9 +356,14 @@ internal sealed class CommandRecorderState : IDisposable
             {
                 var key = (binding.Group, ShaderResourceKind.Sampler, binding.Binding);
 
-                if (!expectedBindings.Contains(key) || !actualBindings.Add(key))
+                if (!expectedBindings.TryGetValue(key, out var access) || !actualBindings.Add(key))
                 {
                     throw new ArgumentException("The binding set does not match the current pipeline reflection.", nameof(bindings));
+                }
+
+                if (access != ShaderResourceAccess.Read)
+                {
+                    throw new ArgumentException("Sampler bindings must be read-only.", nameof(bindings));
                 }
 
                 if (!ReferenceEquals(binding.Sampler.ResourceOwner.Device, _device)
@@ -338,7 +375,7 @@ internal sealed class CommandRecorderState : IDisposable
                 newUseLeases.Add(binding.Sampler.ResourceOwner.AcquireUse(nameof(bindings)));
             }
 
-            if (!expectedBindings.SetEquals(actualBindings))
+            if (expectedBindings.Count != actualBindings.Count)
             {
                 throw new ArgumentException("The binding set must provide every reflected resource exactly once.", nameof(bindings));
             }

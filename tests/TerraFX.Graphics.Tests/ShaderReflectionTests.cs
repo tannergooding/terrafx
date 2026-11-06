@@ -278,6 +278,50 @@ internal sealed class ShaderReflectionTests
     }
 
     [Test]
+    public void ShaderResourceSignatureDefaultsAccessByResourceKindAndValidatesOverrides()
+    {
+        var uniformBuffer = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.UniformBuffer,
+            1);
+        var storageBuffer = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.StorageBuffer,
+            1);
+        var readOnlyStorageBuffer = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.StorageBuffer,
+            1,
+            ShaderResourceAccess.Read);
+        var writeOnlyStorageImage = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.StorageImage,
+            1,
+            ShaderResourceAccess.Write);
+
+        Assert.That(uniformBuffer.Access, Is.EqualTo(ShaderResourceAccess.Read));
+        Assert.That(storageBuffer.Access, Is.EqualTo(ShaderResourceAccess.ReadWrite));
+        Assert.That(storageBuffer, Is.Not.EqualTo(readOnlyStorageBuffer));
+        Assert.That(writeOnlyStorageImage.Access, Is.EqualTo(ShaderResourceAccess.Write));
+        _ = Assert.Throws<ArgumentException>(() => new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.SampledImage,
+            1,
+            ShaderResourceAccess.Write));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.StorageImage,
+            1,
+            ShaderResourceAccess.None));
+    }
+
+    [Test]
     public void ShaderResourceSignatureEnforcesPortableBindingRanges()
     {
         Assert.That(new ShaderResourceSignature(

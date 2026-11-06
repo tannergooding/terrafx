@@ -1787,6 +1787,13 @@ public sealed partial class GraphicsDevice
                 throw new NotSupportedException("Fixed shader descriptor arrays are not supported by the current binding-set path.");
             }
 
+            if ((Capabilities.Backend == GraphicsBackend.D3D12)
+                && (resource.Kind is ShaderResourceKind.StorageBuffer or ShaderResourceKind.StorageImage)
+                && (resource.Access != ShaderResourceAccess.ReadWrite))
+            {
+                throw new NotSupportedException("The D3D12 UAV binding profile requires read-write shader-resource access.");
+            }
+
             resourceCount = checked(resourceCount + resource.ArrayCount);
 
             switch (resource.Kind)

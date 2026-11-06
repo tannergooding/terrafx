@@ -312,10 +312,18 @@ public sealed class ShaderReflection
                 || !Enum.IsDefined(resource.Group)
                 || (resource.Kind == ShaderResourceKind.None)
                 || !Enum.IsDefined(resource.Kind)
+                || (resource.Access == ShaderResourceAccess.None)
+                || !Enum.IsDefined(resource.Access)
                 || (resource.ArrayCount <= 0)
                 || (resource.Binding < 0))
             {
                 throw new ArgumentOutOfRangeException(nameof(resources));
+            }
+
+            if ((resource.Kind is ShaderResourceKind.UniformBuffer or ShaderResourceKind.SampledImage or ShaderResourceKind.Sampler)
+                && resource.Access != ShaderResourceAccess.Read)
+            {
+                throw new ArgumentException("Uniform, sampled-image, and sampler bindings must be read-only.", nameof(resources));
             }
 
             var maximumBinding = resource.Kind switch {

@@ -31,6 +31,8 @@ internal static class SpirvReflectionValidator
     private const uint DecorationLocation = 30;
     private const uint DecorationMatrixStride = 7;
     private const uint DecorationNoPerspective = 13;
+    private const uint DecorationNonReadable = 25;
+    private const uint DecorationNonWritable = 24;
     private const uint DecorationOffset = 35;
     private const uint DecorationRowMajor = 4;
     private const uint DecorationSample = 17;
@@ -103,7 +105,7 @@ internal static class SpirvReflectionValidator
     private static void AddDecoration(Module module, uint target, uint decoration, ReadOnlySpan<uint> operands)
     {
         var value = decoration switch {
-            DecorationBlock or DecorationBufferBlock => 1u,
+            DecorationBlock or DecorationBufferBlock or DecorationNonReadable or DecorationNonWritable => 1u,
             DecorationArrayStride or DecorationBinding or DecorationBuiltIn or DecorationDescriptorSet or DecorationLocation
                 => GetDecorationLiteral(operands, target, decoration),
             _ => 0u,
@@ -121,6 +123,28 @@ internal static class SpirvReflectionValidator
             case DecorationBufferBlock:
             {
                 targetDecorations.HasBufferBlock = true;
+                break;
+            }
+
+            case DecorationNonReadable:
+            {
+                if (!operands.IsEmpty)
+                {
+                    throw new ArgumentException($"SPIR-V access decoration {decoration} on id {target} must not have operands.");
+                }
+
+                targetDecorations.IsNonReadable = true;
+                break;
+            }
+
+            case DecorationNonWritable:
+            {
+                if (!operands.IsEmpty)
+                {
+                    throw new ArgumentException($"SPIR-V access decoration {decoration} on id {target} must not have operands.");
+                }
+
+                targetDecorations.IsNonWritable = true;
                 break;
             }
 
@@ -184,6 +208,8 @@ internal static class SpirvReflectionValidator
                 or DecorationColMajor
                 or DecorationBuiltIn
                 or DecorationLocation
+                or DecorationNonReadable
+                or DecorationNonWritable
                 or DecorationFlat
                 or DecorationNoPerspective
                 or DecorationCentroid
@@ -217,6 +243,22 @@ internal static class SpirvReflectionValidator
             }
 
             memberDecorations.SetStageIoDecoration(decoration);
+        }
+        else if (decoration is DecorationNonReadable or DecorationNonWritable)
+        {
+            if (!operands.IsEmpty)
+            {
+                throw new ArgumentException($"SPIR-V access decoration {decoration} on structure {structureId} must not have operands.");
+            }
+
+            if (decoration == DecorationNonReadable)
+            {
+                memberDecorations.IsNonReadable = true;
+            }
+            else
+            {
+                memberDecorations.IsNonWritable = true;
+            }
         }
         else
         {
@@ -435,6 +477,20 @@ internal static class SpirvReflectionValidator
         return checked((uint)length);
     }
 
+    private static ShaderResourceAccess? GetDeclaredResourceAccess(bool isNonWritable, bool isNonReadable)
+    {
+        if (isNonWritable && isNonReadable)
+        {
+            throw new ArgumentException("A SPIR-V resource cannot be both NonWritable and NonReadable.");
+        }
+
+        return isNonWritable
+            ? ShaderResourceAccess.Read
+            : isNonReadable
+                ? ShaderResourceAccess.Write
+                : null;
+    }
+
     private static uint GetDecorationLiteral(ReadOnlySpan<uint> operands, uint target, uint decoration)
     {
         if (operands.Length != 1)
@@ -626,11 +682,91 @@ internal static class SpirvReflectionValidator
         return GetScalarValueType(module, type.Operands[0]);
     }
 
+    private static ShaderResourceAccess GetResourceAccess(
+        Module module,
+        Variable variable,
+        uint resourceTypeId,
+        ShaderResourceKind resourceKind)
+    {
+        if (resourceKind is not (ShaderResourceKind.StorageBuffer or ShaderResourceKind.StorageImage))
+        {
+            return ShaderResourceAccess.Read;
+        }
+
+        var variableDecorations = GetDecorations(module, variable.ResultId);
+        var variableAccess = GetDeclaredResourceAccess(variableDecorations.IsNonWritable, variableDecorations.IsNonReadable);
+
+        if (variableAccess is ShaderResourceAccess access)
+        {
+            return access;
+        }
+
+        if (resourceKind == ShaderResourceKind.StorageImage)
+        {
+            return ShaderResourceAccess.ReadWrite;
+        }
+
+        var type = GetType(module, resourceTypeId);
+
+        while (type.Opcode == OpTypeArray)
+        {
+            type = GetType(module, type.Operands[1]);
+        }
+
+        if (type.Opcode != OpTypeStruct)
+        {
+            return ShaderResourceAccess.ReadWrite;
+        }
+
+        var typeDecorations = GetDecorations(module, type.Operands[0]);
+        var typeAccess = GetDeclaredResourceAccess(typeDecorations.IsNonWritable, typeDecorations.IsNonReadable);
+
+        if (typeAccess is ShaderResourceAccess declaredTypeAccess)
+        {
+            return declaredTypeAccess;
+        }
+
+        var canRead = false;
+        var canWrite = false;
+
+        for (var memberIndex = 0; memberIndex < type.Operands.Length - 1; memberIndex++)
+        {
+            var memberKey = new MemberKey(type.Operands[0], checked((uint)memberIndex));
+
+            if (!module.MemberDecorations.TryGetValue(memberKey, out var memberDecorations))
+            {
+                canRead = true;
+                canWrite = true;
+                continue;
+            }
+
+            var memberAccess = GetDeclaredResourceAccess(memberDecorations.IsNonWritable, memberDecorations.IsNonReadable);
+
+            if (memberAccess is not ShaderResourceAccess accessMode)
+            {
+                canRead = true;
+                canWrite = true;
+                continue;
+            }
+
+            canRead |= accessMode is ShaderResourceAccess.Read or ShaderResourceAccess.ReadWrite;
+            canWrite |= accessMode is ShaderResourceAccess.Write or ShaderResourceAccess.ReadWrite;
+        }
+
+        return (canRead, canWrite) switch {
+            (true, false) => ShaderResourceAccess.Read,
+            (false, true) => ShaderResourceAccess.Write,
+            (true, true) => ShaderResourceAccess.ReadWrite,
+            _ => throw new ArgumentException("SPIR-V storage blocks must contain at least one member."),
+        };
+    }
+
     private static ShaderResourceSignature GetResourceBinding(
         ShaderBindingGroup group,
         uint nativeBinding,
         ShaderResourceKind kind,
         int arrayCount,
+        ShaderResourceAccess access,
         int shaderIndex)
     {
         var (bindingClassStart, bindingClassEnd) = kind switch {
@@ -652,7 +788,8 @@ internal static class SpirvReflectionValidator
             group,
             checked((int)(nativeBinding - bindingClassStart)),
             kind,
-            arrayCount);
+            arrayCount,
+            access);
     }
 
     private static ShaderBindingGroup GetResourceGroup(uint setIndex, int shaderIndex)
@@ -1013,8 +1150,9 @@ internal static class SpirvReflectionValidator
             }
 
             var (resourceKind, arrayCount) = GetResourceType(module, pointerType.Operands[2], variable.StorageClass);
+            var resourceAccess = GetResourceAccess(module, variable, pointerType.Operands[2], resourceKind);
             var group = GetResourceGroup(setIndex, shaderIndex);
-            actualResources.Add(GetResourceBinding(group, binding, resourceKind, arrayCount, shaderIndex));
+            actualResources.Add(GetResourceBinding(group, binding, resourceKind, arrayCount, resourceAccess, shaderIndex));
         }
     }
 
@@ -1301,6 +1439,8 @@ internal static class SpirvReflectionValidator
         internal bool IsCentroid;
         internal bool IsFlat;
         internal bool IsNoPerspective;
+        internal bool IsNonReadable;
+        internal bool IsNonWritable;
         internal bool IsSample;
         internal uint? Location;
 
@@ -1357,6 +1497,8 @@ internal static class SpirvReflectionValidator
         internal bool IsCentroid;
         internal bool IsFlat;
         internal bool IsNoPerspective;
+        internal bool IsNonReadable;
+        internal bool IsNonWritable;
         internal bool IsSample;
         internal uint? Location;
         internal uint? MatrixMajor;

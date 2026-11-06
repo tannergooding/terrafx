@@ -944,7 +944,7 @@ internal sealed class GraphicsPipelineRequestTests
                 []);
             var storagePipelineHandle = storagePipeline.Handle;
 
-            void BindStorageWithoutAccessIntent(scoped ref CommandRecorder recorder)
+            void BindUnsupportedStorageReadWrite(scoped ref CommandRecorder recorder)
             {
                 recorder.SetPipeline(storagePipelineHandle);
                 recorder.SetBindings(storageBindingSet);
@@ -957,7 +957,7 @@ internal sealed class GraphicsPipelineRequestTests
                     readerAccesses.ToImmutable(),
                     [],
                     depthTargetFormat: null,
-                    BindStorageWithoutAccessIntent)
+                    BindUnsupportedStorageReadWrite)
                     .WaitAsync(TimeSpan.FromSeconds(5))
                     .ConfigureAwait(false));
         }
@@ -1312,6 +1312,49 @@ internal sealed class GraphicsPipelineRequestTests
                 bufferOwner.Dispose();
             }
 
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task PipelineStorageAccessRequiresReadWriteOnD3D12BeforeBackendCreation()
+    {
+        using var continuePipelineCreation = new ManualResetEventSlim(initialState: true);
+        using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
+        var backendDevice = new FakeBackendDevice(
+            CreateCapabilities(),
+            pipelineCreationEntered,
+            continuePipelineCreation);
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var graphicsDevice = await GraphicsDevice.CreateAsync(
+            ownerId: 30,
+            registration,
+            GraphicsDeviceProfile.OffscreenNative,
+            GraphicsPlatformKind.None,
+            CancellationToken.None).ConfigureAwait(false);
+        var bufferOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
+        var callerBytecodeLease = bufferOwner.AcquireRead(0, 4);
+
+        try
+        {
+            var resource = new ShaderResourceSignature(
+                ShaderBindingGroup.Frame,
+                0,
+                ShaderResourceKind.StorageBuffer,
+                1,
+                ShaderResourceAccess.Read);
+            var description = CreateComputePipelineDescription(callerBytecodeLease, [resource]);
+
+            _ = Assert.ThrowsAsync<NotSupportedException>(
+                async () => await graphicsDevice.CreatePipelineAsync(description)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+            Assert.That(backendDevice.PipelineCreationCount, Is.Zero);
+        }
+        finally
+        {
+            callerBytecodeLease.Dispose();
+            bufferOwner.Dispose();
             await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
     }
