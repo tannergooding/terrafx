@@ -1805,6 +1805,32 @@ public static unsafe class D3D12GraphicsBackend
                                         break;
                                     }
 
+                                    case GraphicsCommandKind.StorageBarrier:
+                                    {
+                                        ID3D12Resource* resource;
+
+                                        if (command.StorageBarrierBuffer is GraphBufferVersion barrierBuffer)
+                                        {
+                                            var buffer = submission.GetBuffer(barrierBuffer.ResourceId) as D3D12BackendBuffer
+                                                ?? throw new InvalidOperationException("The storage barrier lost its D3D12 buffer.");
+                                            resource = buffer.GetResource();
+                                        }
+                                        else if (command.StorageBarrierTexture is GraphTextureVersion barrierTexture)
+                                        {
+                                            var texture = submission.GetTexture(barrierTexture.ResourceId) as D3D12BackendTexture
+                                                ?? throw new InvalidOperationException("The storage barrier lost its D3D12 texture.");
+                                            resource = texture.GetResource();
+                                        }
+                                        else
+                                        {
+                                            throw new InvalidOperationException("The storage barrier has no D3D12 resource.");
+                                        }
+
+                                        var barrier = D3D12_RESOURCE_BARRIER.InitUAV(resource);
+                                        commandList->ResourceBarrier(1, &barrier);
+                                        break;
+                                    }
+
                                     case GraphicsCommandKind.Draw:
                                     {
                                         var draw = command.Draw;

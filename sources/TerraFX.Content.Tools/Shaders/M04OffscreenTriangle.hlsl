@@ -56,7 +56,12 @@ float4 PSSampledFrameMain(VertexOutput input) : SV_Target0
 
 float4 PSSampledFrameStorageMain(VertexOutput input) : SV_Target0
 {
-    FrameStorageBuffer[0] = asuint(color.x);
-    FrameStorageImage[uint2(0, 0)] = asuint(FrameTexture.Sample(FrameSampler, float2(0.5, 0.5)).x * color.x);
+    if (all(uint2(input.position.xy) == uint2(16, 16))
+        && (FrameTexture.Sample(FrameSampler, float2(0.5, 0.5)).x > 0.0))
+    {
+        FrameStorageBuffer[0] = FrameStorageBuffer[0] + 1;
+        FrameStorageImage[uint2(0, 0)] = FrameStorageImage[uint2(0, 0)] + 1;
+    }
+
     return color;
 }

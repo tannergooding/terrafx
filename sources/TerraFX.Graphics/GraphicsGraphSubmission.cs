@@ -635,6 +635,45 @@ internal sealed class GraphicsGraphSubmission
                         break;
                     }
 
+                    case GraphicsCommandKind.StorageBarrier:
+                    {
+                        if ((currentPipeline is null)
+                            || !currentPipelineBindingsSet
+                            || !command.StorageBarrierSourceWrites
+                            || (!command.StorageBarrierDestinationReads
+                                && !command.StorageBarrierDestinationWrites))
+                        {
+                            throw new InvalidOperationException("A storage barrier requires a bound storage pipeline and a prior write hazard.");
+                        }
+
+                        if (command.StorageBarrierBuffer is GraphBufferVersion barrierBuffer)
+                        {
+                            if ((storageBufferImport is null)
+                                || (barrierBuffer.ResourceId != storageBufferImport.Version.ResourceId)
+                                || (command.StorageBarrierBufferRange != storageBufferImport.Version.Range)
+                                || !storageBufferPasses.Contains(pass.PassId))
+                            {
+                                throw new NotSupportedException("A storage-buffer barrier must target the bound Frame storage buffer range.");
+                            }
+                        }
+                        else if (command.StorageBarrierTexture is GraphTextureVersion barrierTexture)
+                        {
+                            if ((storageTextureImport is null)
+                                || (barrierTexture.ResourceId != storageTextureImport.Version.ResourceId)
+                                || (command.StorageBarrierTextureRange != storageTextureImport.Version.Range)
+                                || !storageTexturePasses.Contains(pass.PassId))
+                            {
+                                throw new NotSupportedException("A storage-image barrier must target the bound Frame storage image range.");
+                            }
+                        }
+                        else
+                        {
+                            throw new InvalidOperationException("A storage barrier has no graph resource.");
+                        }
+
+                        break;
+                    }
+
                     case GraphicsCommandKind.Draw:
                     {
                         if (currentPipeline is null)

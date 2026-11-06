@@ -462,6 +462,11 @@ internal sealed partial class EngineHostOptionsTests
                     }
 
                     recorder.Draw(new DrawArguments(3, 1, 0, 0));
+
+                    if (useStorageResources)
+                    {
+                        recorder.Draw(new DrawArguments(3, 1, 0, 0));
+                    }
                 }
             }
 
@@ -750,7 +755,7 @@ internal sealed partial class EngineHostOptionsTests
 
                 Assert.That(
                     BitConverter.ToUInt32(storageBufferBytes, 0),
-                    Is.EqualTo(BitConverter.SingleToUInt32Bits(1.0f)));
+                    Is.EqualTo(2u));
 
                 var storageImageForReadback = storageImage
                     ?? throw new InvalidOperationException("The graph storage test has no storage image.");
@@ -767,8 +772,8 @@ internal sealed partial class EngineHostOptionsTests
                 }
 
                 Assert.That(
-                    BitConverter.UInt32BitsToSingle(BitConverter.ToUInt32(storageImageBytes, 0)),
-                    Is.EqualTo(32.0f / 255.0f).Within(1e-6f));
+                    BitConverter.ToUInt32(storageImageBytes, 0),
+                    Is.EqualTo(2u));
             }
 
             var finalReceipt = secondReceipt ?? receipt;

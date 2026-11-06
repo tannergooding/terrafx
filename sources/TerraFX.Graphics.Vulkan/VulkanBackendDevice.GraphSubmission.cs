@@ -461,6 +461,12 @@ internal sealed unsafe partial class VulkanBackendDevice
                             break;
                         }
 
+                        case GraphicsCommandKind.StorageBarrier:
+                        {
+                            RecordGraphStorageBarrier(pass, submission, command);
+                            break;
+                        }
+
                         case GraphicsCommandKind.Draw:
                         {
                             var draw = command.Draw;
@@ -735,5 +741,88 @@ internal sealed unsafe partial class VulkanBackendDevice
             currentStageMask = barrier.dstStageMask;
             currentAccessMask = barrier.dstAccessMask;
         }
+    }
+
+    private void RecordGraphStorageBarrier(
+        GraphicsGraphSubmissionPass pass,
+        GraphicsGraphSubmission submission,
+        RecordedGraphicsCommand command)
+    {
+        var sourceAccessMask = VkAccessFlags2.VK_ACCESS_2_NONE;
+
+        if (command.StorageBarrierSourceReads)
+        {
+            sourceAccessMask |= VkAccessFlags2.VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+        }
+
+        if (command.StorageBarrierSourceWrites)
+        {
+            sourceAccessMask |= VkAccessFlags2.VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        }
+
+        var destinationAccessMask = VkAccessFlags2.VK_ACCESS_2_NONE;
+
+        if (command.StorageBarrierDestinationReads)
+        {
+            destinationAccessMask |= VkAccessFlags2.VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+        }
+
+        if (command.StorageBarrierDestinationWrites)
+        {
+            destinationAccessMask |= VkAccessFlags2.VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        }
+
+        if (command.StorageBarrierBuffer is GraphBufferVersion bufferVersion)
+        {
+            var buffer = submission.GetBuffer(bufferVersion.ResourceId) as VulkanBackendBuffer
+                ?? throw new InvalidOperationException("The graph storage barrier lost its Vulkan buffer.");
+            var shaderStages = GetShaderStageMask(pass, bufferVersion.ResourceId);
+            var barrier = default(VkBufferMemoryBarrier2);
+            barrier.sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            barrier.srcStageMask = shaderStages;
+            barrier.srcAccessMask = sourceAccessMask;
+            barrier.dstStageMask = shaderStages;
+            barrier.dstAccessMask = destinationAccessMask;
+            barrier.srcQueueFamilyIndex = uint.MaxValue;
+            barrier.dstQueueFamilyIndex = uint.MaxValue;
+            barrier.buffer = buffer.Buffer;
+            barrier.offset = checked((ulong)command.StorageBarrierBufferRange.ByteOffset);
+            barrier.size = checked((ulong)command.StorageBarrierBufferRange.ByteLength);
+            var dependencyInfo = default(VkDependencyInfo);
+            dependencyInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dependencyInfo.dependencyFlags = VkDependencyFlags.VK_DEPENDENCY_BY_REGION_BIT;
+            dependencyInfo.bufferMemoryBarrierCount = 1;
+            dependencyInfo.pBufferMemoryBarriers = &barrier;
+            VulkanApi.vkCmdPipelineBarrier2(_commandBuffer, &dependencyInfo);
+            return;
+        }
+
+        var textureVersion = command.StorageBarrierTexture
+            ?? throw new InvalidOperationException("The graph storage barrier has no Vulkan texture.");
+        var texture = submission.GetTexture(textureVersion.ResourceId) as VulkanBackendTexture
+            ?? throw new InvalidOperationException("The graph storage barrier lost its Vulkan texture.");
+        var textureStages = GetShaderStageMask(pass, textureVersion.ResourceId);
+        var imageBarrier = default(VkImageMemoryBarrier2);
+        imageBarrier.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        imageBarrier.srcStageMask = textureStages;
+        imageBarrier.srcAccessMask = sourceAccessMask;
+        imageBarrier.dstStageMask = textureStages;
+        imageBarrier.dstAccessMask = destinationAccessMask;
+        imageBarrier.oldLayout = VkImageLayout.VK_IMAGE_LAYOUT_GENERAL;
+        imageBarrier.newLayout = VkImageLayout.VK_IMAGE_LAYOUT_GENERAL;
+        imageBarrier.srcQueueFamilyIndex = uint.MaxValue;
+        imageBarrier.dstQueueFamilyIndex = uint.MaxValue;
+        imageBarrier.image = texture.Image;
+        imageBarrier.subresourceRange.aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT;
+        imageBarrier.subresourceRange.baseMipLevel = checked((uint)command.StorageBarrierTextureRange.FirstMip);
+        imageBarrier.subresourceRange.levelCount = checked((uint)command.StorageBarrierTextureRange.MipCount);
+        imageBarrier.subresourceRange.baseArrayLayer = checked((uint)command.StorageBarrierTextureRange.FirstLayer);
+        imageBarrier.subresourceRange.layerCount = checked((uint)command.StorageBarrierTextureRange.LayerCount);
+        var imageDependencyInfo = default(VkDependencyInfo);
+        imageDependencyInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        imageDependencyInfo.dependencyFlags = VkDependencyFlags.VK_DEPENDENCY_BY_REGION_BIT;
+        imageDependencyInfo.imageMemoryBarrierCount = 1;
+        imageDependencyInfo.pImageMemoryBarriers = &imageBarrier;
+        VulkanApi.vkCmdPipelineBarrier2(_commandBuffer, &imageDependencyInfo);
     }
 }
