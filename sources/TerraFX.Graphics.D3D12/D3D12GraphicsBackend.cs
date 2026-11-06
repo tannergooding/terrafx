@@ -798,6 +798,7 @@ public static unsafe class D3D12GraphicsBackend
             private ID3D12DescriptorHeap* _samplerDescriptorHeap;
             private uint _samplerDescriptorIncrementSize;
             private D3D12BackendFactory.D3D12TransferQueue? _transferQueue;
+            private readonly List<nint> _uncertainGraphRenderTargetHeaps = [];
             private byte* _uploadStagingMapped;
             private ID3D12Resource* _uploadStagingResource;
             private readonly Func<nint, uint, uint>? _waitForSingleObject;
@@ -824,6 +825,9 @@ public static unsafe class D3D12GraphicsBackend
             public GraphicsCapabilities Capabilities { get; }
 
             internal bool HasUncertainTransferSubmission
+                => _transferQueue?.HasUncertainSubmission == true;
+
+            bool IGraphicsBackendDevice.HasUncertainSubmission
                 => _transferQueue?.HasUncertainSubmission == true;
 
             private static OwnedBuffer<byte> CopyMappedStorageToOwnedBuffer(byte* source, nint byteLength)
@@ -1185,6 +1189,13 @@ public static unsafe class D3D12GraphicsBackend
                 transferQueue?.Dispose();
                 _transferQueue = null;
 
+                foreach (var descriptorHeap in _uncertainGraphRenderTargetHeaps)
+                {
+                    _ = ((ID3D12DescriptorHeap*)descriptorHeap)->Release();
+                }
+
+                _uncertainGraphRenderTargetHeaps.Clear();
+
                 if (_uploadStagingResource is not null)
                 {
                     var writtenRange = new D3D12_RANGE {
@@ -1456,6 +1467,204 @@ public static unsafe class D3D12GraphicsBackend
                             isMapped: false,
                             writtenByteLength: 0,
                             transferQueue);
+                    }
+                }
+            }
+
+            [SuppressMessage(
+                "Usage",
+                "CA1031:Do not catch general exception types",
+                Justification = "A failed graph recording must close the unsubmitted command list before releasing its render-target view.")]
+            public long SubmitGraph(GraphicsGraphSubmission submission)
+            {
+                ArgumentNullException.ThrowIfNull(submission);
+                submission.ValidateOffscreenRasterSubmission();
+                EnsureOwnerThread();
+                var target = submission.OffscreenColorTarget.ResourceOwner.BackendResource as D3D12BackendTexture
+                    ?? throw new ArgumentException("The graph output target is not a D3D12 texture.", nameof(submission));
+                ObjectDisposedException.ThrowIf(target.IsDisposed, nameof(submission));
+
+                if (!ReferenceEquals(target.Owner, this)
+                    || (target.Description.Dimension != TextureDimension.Dimension2D)
+                    || ((target.Description.Usage & TextureUsage.ColorAttachment) == 0))
+                {
+                    throw new NotSupportedException("D3D12 graph submission requires a live 2D color-attachment texture owned by this device.");
+                }
+
+                var transferQueue = GetTransferQueue();
+                _ = _uncertainGraphRenderTargetHeaps.EnsureCapacity(
+                    checked(_uncertainGraphRenderTargetHeaps.Count + 1));
+                var heapDescription = new D3D12_DESCRIPTOR_HEAP_DESC {
+                    Type = D3D12_DESCRIPTOR_HEAP_TYPE.D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+                    NumDescriptors = 1,
+                    Flags = D3D12_DESCRIPTOR_HEAP_FLAGS.D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+                    NodeMask = 0,
+                };
+                var heapId = typeof(ID3D12DescriptorHeap).GUID;
+                ID3D12DescriptorHeap* renderTargetHeap = null;
+
+                try
+                {
+                    ThrowIfFailed(_device->CreateDescriptorHeap(&heapDescription, &heapId, (void**)&renderTargetHeap));
+
+                    if (renderTargetHeap is null)
+                    {
+                        throw new InvalidOperationException("D3D12 render-target descriptor heap creation returned no heap.");
+                    }
+
+                    var renderTargetView = renderTargetHeap->GetCPUDescriptorHandleForHeapStart();
+                    var renderTargetViewDescription = new D3D12_RENDER_TARGET_VIEW_DESC {
+                        Format = GetNativeFormat(target.Description.Format),
+                        ViewDimension = D3D12_RTV_DIMENSION.D3D12_RTV_DIMENSION_TEXTURE2D,
+                        Texture2D = new D3D12_TEX2D_RTV {
+                            MipSlice = 0,
+                            PlaneSlice = 0,
+                        },
+                    };
+                    _device->CreateRenderTargetView(target.GetResource(), &renderTargetViewDescription, renderTargetView);
+                    var commandList = transferQueue.BeginRecording();
+                    var clearColor = stackalloc float[4];
+                    var viewport = new D3D12_VIEWPORT {
+                        TopLeftX = 0.0f,
+                        TopLeftY = 0.0f,
+                        Width = target.Description.Width,
+                        Height = target.Description.Height,
+                        MinDepth = 0.0f,
+                        MaxDepth = 1.0f,
+                    };
+                    var scissor = new RECT {
+                        left = 0,
+                        top = 0,
+                        right = checked((int)target.Description.Width),
+                        bottom = checked((int)target.Description.Height),
+                    };
+
+                    foreach (var pass in submission.Passes)
+                    {
+                        foreach (var transition in submission.StateTransitions)
+                        {
+                            if ((transition.PassId != pass.PassId) || !transition.IsTexture)
+                            {
+                                continue;
+                            }
+
+                            var texture = submission.GetTexture(transition.ResourceId) as D3D12BackendTexture
+                                ?? throw new InvalidOperationException("The graph transition lost its D3D12 texture.");
+                            var beforeState = D3D12GraphResourceStateMapper.GetTextureState(
+                                transition.BeforeState,
+                                texture.Description);
+                            var afterState = D3D12GraphResourceStateMapper.GetTextureState(
+                                transition.AfterState,
+                                texture.Description);
+
+                            if (beforeState != afterState)
+                            {
+                                var subresource = checked(
+                                    (uint)(transition.TextureRange.FirstMip
+                                        + (transition.TextureRange.FirstLayer * texture.Description.MipLevels)));
+                                var barrier = D3D12_RESOURCE_BARRIER.InitTransition(
+                                    texture.GetResource(),
+                                    beforeState,
+                                    afterState,
+                                    subresource,
+                                    D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                                commandList->ResourceBarrier(1, &barrier);
+                            }
+                        }
+
+                        foreach (var attachment in pass.Attachments)
+                        {
+                            if (attachment.LoadAction != AttachmentLoadAction.Clear)
+                            {
+                                throw new NotSupportedException("Native D3D12 graph submission currently supports only clear color attachments.");
+                            }
+
+                            clearColor[0] = attachment.ClearColor.X;
+                            clearColor[1] = attachment.ClearColor.Y;
+                            clearColor[2] = attachment.ClearColor.Z;
+                            clearColor[3] = attachment.ClearColor.W;
+                            commandList->ClearRenderTargetView(renderTargetView, clearColor, 0, null);
+                        }
+
+                        if (pass.Kind == CommandRecorderPassKind.Raster)
+                        {
+                            commandList->OMSetRenderTargets(1, &renderTargetView, false, null);
+
+                            foreach (var command in pass.Commands)
+                            {
+                                switch (command.Kind)
+                                {
+                                    case GraphicsCommandKind.SetPipeline:
+                                    {
+                                        var pipeline = GraphicsGraphSubmission.GetPipeline(command) as ID3D12BackendPipelineDescriptorOwner
+                                            ?? throw new InvalidOperationException("The graph pipeline is not a D3D12 pipeline.");
+
+                                        if (!ReferenceEquals(pipeline.Owner, this) || pipeline.IsDisposed)
+                                        {
+                                            throw new InvalidOperationException("The graph D3D12 pipeline is not live on this device.");
+                                        }
+
+                                        commandList->SetPipelineState(pipeline.PipelineState);
+                                        commandList->SetGraphicsRootSignature(pipeline.RootSignature);
+                                        commandList->IASetPrimitiveTopology(
+                                            D3D_PRIMITIVE_TOPOLOGY.D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                                        commandList->RSSetViewports(1, &viewport);
+                                        commandList->RSSetScissorRects(1, &scissor);
+                                        break;
+                                    }
+
+                                    case GraphicsCommandKind.Draw:
+                                    {
+                                        var draw = command.Draw;
+                                        commandList->DrawInstanced(
+                                            checked((uint)draw.VertexCount),
+                                            checked((uint)draw.InstanceCount),
+                                            checked((uint)draw.FirstVertex),
+                                            checked((uint)draw.FirstInstance));
+                                        break;
+                                    }
+
+                                    default:
+                                    {
+                                        throw new NotSupportedException($"Native D3D12 graph submission does not support {command.Kind} commands.");
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    return transferQueue.SubmitAndWait();
+                }
+                catch (Exception exception)
+                {
+                    try
+                    {
+                        transferQueue.StopRecording();
+                    }
+                    catch (Exception stopException)
+                    {
+                        if (transferQueue.HasUncertainSubmission && (renderTargetHeap is not null))
+                        {
+                            _uncertainGraphRenderTargetHeaps.Add((nint)renderTargetHeap);
+                            renderTargetHeap = null;
+                        }
+
+                        throw new AggregateException(exception, stopException);
+                    }
+
+                    if (transferQueue.HasUncertainSubmission)
+                    {
+                        _uncertainGraphRenderTargetHeaps.Add((nint)renderTargetHeap);
+                        renderTargetHeap = null;
+                    }
+
+                    throw;
+                }
+                finally
+                {
+                    if (renderTargetHeap is not null)
+                    {
+                        _ = renderTargetHeap->Release();
                     }
                 }
             }
@@ -3752,6 +3961,10 @@ public static unsafe class D3D12GraphicsBackend
                 public D3D12BackendDevice Owner => _owner;
 
                 public ImmutableArray<ShaderResourceSignature> Resources => _resources;
+
+                ID3D12PipelineState* ID3D12BackendPipelineDescriptorOwner.PipelineState => _pipelineState;
+
+                ID3D12RootSignature* ID3D12BackendPipelineDescriptorOwner.RootSignature => _rootSignature;
 
                 public void Dispose()
                 {

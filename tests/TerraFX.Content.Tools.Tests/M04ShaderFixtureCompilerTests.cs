@@ -264,14 +264,16 @@ internal sealed class M04ShaderFixtureCompilerTests
             await M04ShaderFixtureCompiler.CompileAsync(outputDirectory, CancellationToken.None).ConfigureAwait(false);
 
             var files = Directory.GetFiles(outputDirectory);
-            Assert.That(files.Length, Is.EqualTo(20));
+            Assert.That(files.Length, Is.EqualTo(24));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.vertex.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel.dxil")).Length, Is.GreaterThan(0));
+            Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-graph.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-frame.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-frame-storage.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.vertex.spv")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel.spv")).Length, Is.GreaterThan(0));
+            Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-graph.spv")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled.spv")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-frame.spv")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-frame-storage.spv")).Length, Is.GreaterThan(0));
@@ -280,6 +282,8 @@ internal sealed class M04ShaderFixtureCompilerTests
                 await File.ReadAllTextAsync(Path.Combine(outputDirectory, "M04OffscreenTriangle.vertex.reflection.json")).ConfigureAwait(false));
             using var pixelReflection = JsonDocument.Parse(
                 await File.ReadAllTextAsync(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel.reflection.json")).ConfigureAwait(false));
+            using var graphPixelReflection = JsonDocument.Parse(
+                await File.ReadAllTextAsync(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-graph.reflection.json")).ConfigureAwait(false));
             using var sampledPixelReflection = JsonDocument.Parse(
                 await File.ReadAllTextAsync(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled.reflection.json")).ConfigureAwait(false));
             using var sampledFramePixelReflection = JsonDocument.Parse(
@@ -289,6 +293,10 @@ internal sealed class M04ShaderFixtureCompilerTests
             AssertReflectedEntryPoint(vertexReflection, "VSMain", "vert");
             AssertReflectedEntryPoint(pixelReflection, "PSMain", "frag");
             AssertReflectedFrameUniformBuffer(pixelReflection);
+            AssertReflectedEntryPoint(graphPixelReflection, "PSGraphMain", "frag");
+            Assert.That(graphPixelReflection.RootElement.TryGetProperty("ubos", out _), Is.False);
+            Assert.That(graphPixelReflection.RootElement.TryGetProperty("separate_images", out _), Is.False);
+            Assert.That(graphPixelReflection.RootElement.TryGetProperty("separate_samplers", out _), Is.False);
             AssertReflectedEntryPoint(sampledPixelReflection, "PSSampledMain", "frag");
             AssertReflectedSampledResources(sampledPixelReflection);
             AssertReflectedEntryPoint(sampledFramePixelReflection, "PSSampledFrameMain", "frag");
@@ -301,6 +309,7 @@ internal sealed class M04ShaderFixtureCompilerTests
 
             var typedVertexReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "vertex");
             var typedPixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "pixel");
+            var typedGraphPixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "pixel-graph");
             var typedSampledReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "pixel-sampled");
             var typedSampledFrameReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "pixel-sampled-frame");
             var typedStorageReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "pixel-sampled-frame-storage");
@@ -329,6 +338,11 @@ internal sealed class M04ShaderFixtureCompilerTests
             Assert.That(typedPixelReflection.Resources, Does.Contain(
                 new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1)));
             AssertFrameDataRecord(typedPixelReflection);
+
+            Assert.That(typedGraphPixelReflection.Stage, Is.EqualTo(ShaderStage.Pixel));
+            Assert.That(typedGraphPixelReflection.EntryPoint, Is.EqualTo("PSGraphMain"));
+            Assert.That(typedGraphPixelReflection.Resources, Is.Empty);
+            Assert.That(typedGraphPixelReflection.RecordLayouts, Is.Empty);
 
             Assert.That(typedSampledReflection.EntryPoint, Is.EqualTo("PSSampledMain"));
             Assert.That(typedSampledReflection.Resources, Does.Contain(
@@ -516,9 +530,10 @@ internal sealed class M04ShaderFixtureCompilerTests
             await M04ShaderFixtureCompiler.CompileDxilAsync(outputDirectory, CancellationToken.None).ConfigureAwait(false);
 
             var files = Directory.GetFiles(outputDirectory);
-            Assert.That(files.Length, Is.EqualTo(10));
+            Assert.That(files.Length, Is.EqualTo(12));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.vertex.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel.dxil")).Length, Is.GreaterThan(0));
+            Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-graph.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-frame.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-frame-storage.dxil")).Length, Is.GreaterThan(0));
@@ -527,6 +542,8 @@ internal sealed class M04ShaderFixtureCompilerTests
                 Path.Combine(outputDirectory, "M04OffscreenTriangle.vertex.dxil-reflection.txt")).ConfigureAwait(false);
             var pixelReflection = await File.ReadAllTextAsync(
                 Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel.dxil-reflection.txt")).ConfigureAwait(false);
+            var graphPixelReflection = await File.ReadAllTextAsync(
+                Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-graph.dxil-reflection.txt")).ConfigureAwait(false);
             var sampledPixelReflection = await File.ReadAllTextAsync(
                 Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled.dxil-reflection.txt")).ConfigureAwait(false);
             var sampledFramePixelReflection = await File.ReadAllTextAsync(
@@ -541,6 +558,11 @@ internal sealed class M04ShaderFixtureCompilerTests
             Assert.That(pixelReflection.Contains("cbuffer FrameData", StringComparison.Ordinal), Is.True);
             Assert.That(pixelReflection.Contains("float4 color", StringComparison.Ordinal), Is.True);
             Assert.That(pixelReflection.Contains("FrameData                         cbuffer", StringComparison.Ordinal), Is.True);
+            Assert.That(graphPixelReflection.Contains("EntryFunctionName: PSGraphMain", StringComparison.Ordinal), Is.True);
+            Assert.That(graphPixelReflection.Contains("SV_Target", StringComparison.Ordinal), Is.True);
+            Assert.That(graphPixelReflection.Contains("FrameData", StringComparison.Ordinal), Is.False);
+            Assert.That(graphPixelReflection.Contains("FrameTexture", StringComparison.Ordinal), Is.False);
+            Assert.That(graphPixelReflection.Contains("FrameSampler", StringComparison.Ordinal), Is.False);
             Assert.That(sampledPixelReflection.Contains("EntryFunctionName: PSSampledMain", StringComparison.Ordinal), Is.True);
             Assert.That(sampledPixelReflection.Contains("FrameTexture", StringComparison.Ordinal), Is.True);
             Assert.That(sampledPixelReflection.Contains("FrameSampler", StringComparison.Ordinal), Is.True);

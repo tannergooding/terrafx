@@ -9,7 +9,7 @@ public sealed partial class GraphicsDevice
 {
     private readonly ConcurrentDictionary<GpuPipelineHandle, GpuPipeline> _pipelinesByHandle = new();
 
-    internal (PipelineBindingLayout Layout, GraphicsResourceOwner.UseLease UseLease) AcquirePipelineForRecording(
+    internal (GpuPipeline Pipeline, PipelineBindingLayout Layout, GraphicsResourceOwner.UseLease UseLease) AcquirePipelineForRecording(
         GpuPipelineHandle pipelineHandle)
     {
         if (!pipelineHandle.IsValid
@@ -35,7 +35,7 @@ public sealed partial class GraphicsDevice
         }
 
         var useLease = pipeline.ResourceOwner.AcquireUse(nameof(pipelineHandle));
-        return (pipeline.BindingLayout, useLease);
+        return (pipeline, pipeline.BindingLayout, useLease);
     }
 
     internal void RevokePipeline(GpuPipeline pipeline)

@@ -8,6 +8,8 @@ namespace TerraFX.Graphics.Vulkan;
 
 internal sealed unsafe partial class VulkanBackendDevice
 {
+    bool IGraphicsBackendDevice.HasUncertainSubmission => _hasUncertainSubmission;
+
     IGraphicsBackendBuffer IGraphicsBackendDevice.CreateBuffer(BufferDescription description)
         => CreateBuffer(description);
 
@@ -64,6 +66,9 @@ internal sealed unsafe partial class VulkanBackendDevice
 
         return texture;
     }
+
+    long IGraphicsBackendDevice.SubmitGraph(GraphicsGraphSubmission submission)
+        => SubmitGraph(submission);
 
     long IGraphicsBackendDevice.UploadBuffer(
         IGraphicsBackendBuffer destination,

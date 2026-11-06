@@ -1,0 +1,326 @@
+// Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
+
+using System;
+using System.IO;
+using System.Security.Cryptography;
+using System.Threading;
+using System.Threading.Tasks;
+using NUnit.Framework;
+using TerraFX;
+using TerraFX.Assets;
+using TerraFX.Content.Tools;
+using TerraFX.Entities;
+using TerraFX.Graphics;
+using TerraFX.Graphics.D3D12;
+using TerraFX.Graphics.Vulkan;
+using TerraFX.Hosting;
+using TerraFX.Numerics;
+using TerraFX.Platform;
+using TerraFX.Rendering;
+using TerraFX.Runtime.Tests.Scenes;
+using TerraFX.Scenes;
+
+namespace TerraFX.Runtime.Tests.Hosting;
+
+internal sealed partial class EngineHostOptionsTests
+{
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public async Task SubmitsOffscreenClearGraphAndReadsBackAsync(GraphicsBackend backend)
+    {
+        if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            Assert.Ignore("The D3D12 offscreen graph path targets Windows 11.");
+            return;
+        }
+
+        var schemas = new CompiledContentSchemaRegistry([
+            .. CoreContentSchemaCatalogue.PrimitiveSchemas,
+            .. CoreContentSchemaCatalogue.FoundationSchemas,
+            .. NativeAssetSchemaCatalogue.Schemas,
+            .. SceneSchemaCatalogue.Schemas,
+            .. RenderingSchemaCatalogue.Schemas,
+        ]);
+        var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
+        var packagePath = SceneAssetStoreTests.Package.WritePackage(packageBytes);
+        var assetStoreRegistration = new AssetStoreRegistrationBuilder(schemas).Build();
+        var graphicsRegistration = backend switch {
+            GraphicsBackend.D3D12 => D3D12GraphicsBackend.CreateRegistration(),
+            GraphicsBackend.Vulkan => VulkanGraphicsBackend.CreateRegistration(),
+            _ => throw new ArgumentOutOfRangeException(nameof(backend)),
+        };
+        var options = new EngineHostOptions(
+            HostProfile.OffscreenNative,
+            PlatformBackend.Headless,
+            backend,
+            graphicsRegistration,
+            new AssetStoreOptions(packagePath, SHA256.HashData(packageBytes), assetStoreRegistration)) {
+            CpuWorkerCount = 0,
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
+        EngineHost? host = null;
+        GpuTexture? target = null;
+        GpuPipeline? pipeline = null;
+        RenderSnapshot? snapshot = null;
+
+        try
+        {
+            try
+            {
+                host = await EngineHost.StartAsync(options).ConfigureAwait(false);
+            }
+            catch (DllNotFoundException exception)
+            {
+                Assert.Ignore($"{backend} system library is unavailable: {exception.Message}");
+            }
+            catch (EntryPointNotFoundException exception)
+            {
+                Assert.Ignore($"{backend} system entry point is unavailable: {exception.Message}");
+            }
+            catch (NotSupportedException exception)
+            {
+                Assert.Ignore($"No available {backend} device satisfies OffscreenNative: {exception.Message}");
+            }
+
+            var engineHost = host
+                ?? throw new InvalidOperationException($"{backend} EngineHost startup returned no host.");
+            var graphicsDevice = engineHost.GraphicsDevice
+                ?? throw new InvalidOperationException($"{backend} OffscreenNative host returned no GraphicsDevice.");
+            var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
+            _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+            _ = worldRegistrationBuilder.RegisterCpuExtractionSupport(Renderer.CreateCpuExtractionSupportRegistration());
+            var worldRegistration = worldRegistrationBuilder.Build();
+            World? world = null;
+            var cameraId = Guid.Empty;
+            var targetExtent = new PixelSize(32, 32);
+
+            await engineHost.InvokeAsync(_ => {
+                world = _.CreateWorld(new WorldOptions(worldRegistration) {
+                    CpuWorkerCount = 0,
+                    InitialReplayLineageId = Guid.NewGuid(),
+                    WorldGuid = Guid.NewGuid(),
+                });
+                var camera = new SceneComponentDefinitions.CameraComponent(
+                    (byte)CameraProjectionKind.Perspective,
+                    float.Pi / 3.0f,
+                    10.0f,
+                    0.1f,
+                    (byte)CameraFarMode.Finite,
+                    new SceneComponentDefinitions.OptionalSingle(1000.0f),
+                    default,
+                    new Vector4(0.0f, 0.0f, 1.0f, 1.0f),
+                    (byte)(CameraClearFlags.Color | CameraClearFlags.Depth),
+                    new Vector4(0.0f, 0.0f, 0.0f, 1.0f),
+                    ulong.MaxValue,
+                    order: 0);
+                var transform = new SceneComponentDefinitions.LocalTransformComponent(
+                    Vector3.Zero,
+                    Quaternion.Identity,
+                    Vector3.One);
+                var rootPosition = new SceneComponentDefinitions.RootPositionComponent(default);
+                var cameraEntity = world.CreateEntity(new EntityDescription(components: [
+                    ComponentInitialization.Value(in camera),
+                    ComponentInitialization.Value(in transform),
+                    ComponentInitialization.Value(in rootPosition),
+                ]));
+                cameraId = world.GetEntityId(cameraEntity);
+                var publication = world.Step().Publication;
+                var extraction = engineHost.Renderer.Extract(
+                    world,
+                    new RenderExtractionOptions3D(publication.Frame3, targetExtent, [cameraId]));
+
+                if (extraction.Status != RenderExtractionStatus.Extracted)
+                {
+                    throw new InvalidOperationException(
+                        $"{backend} graph submission snapshot extraction failed: {string.Join("; ", extraction.Diagnostics)}");
+                }
+
+                snapshot = extraction.Snapshot
+                    ?? throw new InvalidOperationException("The successful extraction omitted its render snapshot.");
+            }).ConfigureAwait(false);
+
+            target = await graphicsDevice.CreateTextureAsync(
+                new TextureDescription(
+                    TextureDimension.Dimension2D,
+                    targetExtent.Width,
+                    targetExtent.Height,
+                    depth: 1,
+                    arrayLayers: 1,
+                    mipLevels: 1,
+                    TextureFormat.Rgba8Unorm,
+                    TextureUsage.ColorAttachment | TextureUsage.CopySource,
+                    $"m04-{backend}-offscreen-clear"))
+                .ConfigureAwait(false);
+            var renderer = engineHost.Renderer;
+            var renderSnapshot = snapshot
+                ?? throw new InvalidOperationException("The host renderer omitted its render snapshot.");
+
+            var shaderFixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
+
+            if (!string.IsNullOrWhiteSpace(shaderFixtureDirectory))
+            {
+                var shaderExtension = backend == GraphicsBackend.D3D12 ? "dxil" : "spv";
+                using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
+                    shaderFixtureDirectory,
+                    $"M04OffscreenTriangle.vertex.{shaderExtension}"));
+                using var pixelBytecodeStorage = CreateBytecodeStorage(Path.Combine(
+                    shaderFixtureDirectory,
+                    $"M04OffscreenTriangle.pixel-graph.{shaderExtension}"));
+                using var vertexBytecode = vertexBytecodeStorage.AcquireReadLease(0, vertexBytecodeStorage.Length);
+                using var pixelBytecode = pixelBytecodeStorage.AcquireReadLease(0, pixelBytecodeStorage.Length);
+                var vertexReflection = M04ShaderFixtureCompiler.ReadTypedReflection(shaderFixtureDirectory, "vertex");
+                var pixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(shaderFixtureDirectory, "pixel-graph");
+                var binaryFormat = backend == GraphicsBackend.D3D12
+                    ? ShaderBinaryFormat.Dxil
+                    : ShaderBinaryFormat.SpirV;
+                var pipelineDescription = new GraphicsPipelineDescription(
+                    [
+                        new ShaderBytecodeInput(ShaderStage.Vertex, binaryFormat, vertexBytecode, vertexReflection),
+                        new ShaderBytecodeInput(ShaderStage.Pixel, binaryFormat, pixelBytecode, pixelReflection),
+                    ],
+                    [],
+                    vertexStride: 0,
+                    [TextureFormat.Rgba8Unorm],
+                    depthTargetFormat: null,
+                    PrimitiveTopology.TriangleList,
+                    PipelineBlendMode.Opaque,
+                    PipelineDepthMode.Disabled,
+                    PipelineCullMode.None,
+                    frontFaceClockwise: false,
+                    bindingLayoutVersion: 1);
+                pipeline = await graphicsDevice.CreatePipelineAsync(pipelineDescription, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
+            var graph = renderer.BuildGraph(
+                renderSnapshot,
+                target);
+
+            void RecordClear(scoped ref CommandRecorder recorder)
+            {
+                if (pipeline is GpuPipeline selectedPipeline)
+                {
+                    recorder.SetPipeline(selectedPipeline.Handle);
+                    recorder.Draw(new DrawArguments(3, 1, 0, 0));
+                }
+            }
+
+            var pass = graph.AddRasterPass(
+                new RenderPassDescription("offscreen-clear", 0, [], hasExternalSideEffects: false),
+                RecordClear);
+            var outputVersion = graph.WriteColorAttachment(
+                pass,
+                graph.OffscreenColorTargetVersion,
+                new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
+                AttachmentLoadAction.Clear,
+                AttachmentStoreAction.Store,
+                new Vector4(0.25f, 0.5f, 0.75f, 1.0f));
+            graph.SetPresentationSource(outputVersion);
+            var compileResponse = graph.Compile();
+            Assert.That(compileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
+            Assert.That(compileResponse.Diagnostics, Is.Empty);
+            var plan = compileResponse.Plan
+                ?? throw new InvalidOperationException("The compiled graph response omitted its plan.");
+            var receipt = await renderer.SubmitAsync(renderSnapshot, plan).ConfigureAwait(false);
+
+            var secondGraph = renderer.BuildGraph(renderSnapshot, target);
+            var secondPass = secondGraph.AddRasterPass(
+                new RenderPassDescription("offscreen-clear-again", 0, [], hasExternalSideEffects: false),
+                RecordClear);
+            var secondOutputVersion = secondGraph.WriteColorAttachment(
+                secondPass,
+                secondGraph.OffscreenColorTargetVersion,
+                new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
+                AttachmentLoadAction.Clear,
+                AttachmentStoreAction.Store,
+                new Vector4(0.75f, 0.25f, 0.5f, 1.0f));
+            secondGraph.SetPresentationSource(secondOutputVersion);
+            var secondCompileResponse = secondGraph.Compile();
+            Assert.That(secondCompileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
+            var secondPlan = secondCompileResponse.Plan
+                ?? throw new InvalidOperationException("The second compiled graph response omitted its plan.");
+            var secondReceipt = await renderer.SubmitAsync(renderSnapshot, secondPlan).ConfigureAwait(false);
+
+            Assert.Multiple(() => {
+                Assert.That(receipt.SubmissionSequence, Is.GreaterThan(0));
+                Assert.That(receipt.CompletedFence, Is.GreaterThan(0));
+                Assert.That(receipt.PresentationSequence, Is.Null);
+                Assert.That(receipt.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
+                Assert.That(receipt.SurfaceEpoch, Is.Zero);
+                Assert.That(receipt.SwapchainEpoch, Is.Zero);
+                Assert.That(secondReceipt.SubmissionSequence, Is.EqualTo(receipt.SubmissionSequence + 1));
+                Assert.That(secondReceipt.CompletedFence, Is.GreaterThan(receipt.CompletedFence));
+            });
+
+            using var readback = await graphicsDevice.ReadbackTextureAsync(
+                target,
+                new TextureSubresource(0, 0, TextureAspect.Color))
+                .ConfigureAwait(false);
+            var padded = new byte[checked((int)readback.ByteLength)];
+
+            using (var readLease = readback.AcquireReadLease())
+            {
+                var copyAction = new ReadbackCopyAction(padded);
+                readLease.UseWindow(0, padded.Length, ref copyAction);
+            }
+
+            var centerPixelOffset = checked(
+                (int)((readback.RowPitch * (targetExtent.Height / 2)) + (targetExtent.Width / 2 * 4)));
+            var magentaPixelCount = 0;
+
+            for (var y = 0; y < readback.Height; y++)
+            {
+                for (var x = 0; x < readback.Width; x++)
+                {
+                    var pixelOffset = checked((int)((readback.RowPitch * y) + (x * 4)));
+
+                    if ((padded[pixelOffset] == 255)
+                        && (padded[pixelOffset + 1] == 0)
+                        && (padded[pixelOffset + 2] == 255)
+                        && (padded[pixelOffset + 3] == 255))
+                    {
+                        magentaPixelCount++;
+                    }
+                }
+            }
+
+            Assert.Multiple(() => {
+                Assert.That(padded[0], Is.InRange(190, 192));
+                Assert.That(padded[1], Is.InRange(63, 65));
+                Assert.That(padded[2], Is.InRange(127, 129));
+                Assert.That(padded[3], Is.EqualTo(255));
+
+                if (pipeline is not null)
+                {
+                    Assert.That(magentaPixelCount, Is.GreaterThan(0));
+                }
+                else
+                {
+                    Assert.That(padded[centerPixelOffset], Is.InRange(190, 192));
+                    Assert.That(padded[centerPixelOffset + 1], Is.InRange(63, 65));
+                    Assert.That(padded[centerPixelOffset + 2], Is.InRange(127, 129));
+                }
+            });
+            TestContext.WriteLine(
+                $"Backend={backend}; Adapter={graphicsDevice.Capabilities.AdapterName}; "
+                + $"Submissions={receipt.SubmissionSequence}/{secondReceipt.SubmissionSequence}; "
+                + $"Fence={secondReceipt.CompletedFence}; "
+                + $"Pixel={padded[centerPixelOffset]:X2}{padded[centerPixelOffset + 1]:X2}"
+                + $"{padded[centerPixelOffset + 2]:X2}{padded[centerPixelOffset + 3]:X2}; "
+                + $"MagentaPixels={magentaPixelCount}");
+        }
+        finally
+        {
+            snapshot?.Dispose();
+            pipeline?.Dispose();
+            target?.Dispose();
+
+            if (host is not null)
+            {
+                await host.DisposeAsync().ConfigureAwait(false);
+            }
+
+            File.Delete(packagePath);
+        }
+    }
+}

@@ -19,6 +19,8 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
     private readonly VkCommandBuffer _commandBuffer;
     private readonly VkCommandPool _commandPool;
     private readonly VkDevice _device;
+    private readonly ImmutableHashSet<string> _enabledSpirvExtensions;
+    private readonly bool _fragmentStoresAndAtomicsEnabled;
     private readonly VkInstance _instance;
     private bool _isDisposed;
     private readonly int _ownerThreadId = Environment.CurrentManagedThreadId;
@@ -40,11 +42,16 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         VkCommandBuffer commandBuffer,
         VkSemaphore timelineSemaphore,
         GraphicsCapabilities capabilities,
+        ImmutableHashSet<string> enabledSpirvExtensions,
+        bool fragmentStoresAndAtomicsEnabled,
         Func<VkResult, VkResult>? transferWaitResultOverride)
     {
+        ArgumentNullException.ThrowIfNull(enabledSpirvExtensions);
         _instance = instance;
         _physicalDevice = physicalDevice;
         _device = device;
+        _enabledSpirvExtensions = enabledSpirvExtensions;
+        _fragmentStoresAndAtomicsEnabled = fragmentStoresAndAtomicsEnabled;
         _queue = queue;
         _queueFamilyIndex = queueFamilyIndex;
         _physicalDeviceMemoryProperties = physicalDeviceMemoryProperties;
@@ -189,7 +196,11 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                     continue;
                 }
 
-                device = CreateLogicalDevice(physicalDevice, queueFamilyIndex, cancellationToken);
+                var (logicalDevice, enabledSpirvExtensions, fragmentStoresAndAtomicsEnabled) = CreateLogicalDevice(
+                    physicalDevice,
+                    queueFamilyIndex,
+                    cancellationToken);
+                device = logicalDevice;
                 hasDevice = true;
                 afterNativeObjectAcquired?.Invoke(VulkanBackendStartupStage.LogicalDeviceCreated);
                 cancellationToken.ThrowIfCancellationRequested();
@@ -223,6 +234,8 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                     commandBuffer,
                     timelineSemaphore,
                     capabilities,
+                    enabledSpirvExtensions,
+                    fragmentStoresAndAtomicsEnabled,
                     transferWaitResultOverride);
                 transferred = true;
                 hasInstance = false;
@@ -390,7 +403,10 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         return instance;
     }
 
-    private static VkDevice CreateLogicalDevice(
+    private static (
+        VkDevice Device,
+        ImmutableHashSet<string> EnabledSpirvExtensions,
+        bool FragmentStoresAndAtomicsEnabled) CreateLogicalDevice(
         VkPhysicalDevice physicalDevice,
         uint queueFamilyIndex,
         CancellationToken cancellationToken)
@@ -410,15 +426,49 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         features12.sType = VkStructureType.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
         features12.pNext = &features13;
         features12.timelineSemaphore = 1;
-        var createInfo = default(VkDeviceCreateInfo);
-        createInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-        createInfo.pNext = &features12;
-        createInfo.queueCreateInfoCount = 1;
-        createInfo.pQueueCreateInfos = &queueCreateInfo;
+        var supportedFeatures = default(VkPhysicalDeviceFeatures);
+        VulkanApi.vkGetPhysicalDeviceFeatures(physicalDevice, &supportedFeatures);
+        var enabledFeatures = default(VkPhysicalDeviceFeatures);
+        enabledFeatures.fragmentStoresAndAtomics = supportedFeatures.fragmentStoresAndAtomics;
+        var supportedExtensions = EnumerateDeviceExtensions(physicalDevice);
+        var enabledSpirvExtensions = ImmutableHashSet.CreateBuilder<string>(StringComparer.Ordinal);
+        var enabledExtensionNamePointers = stackalloc sbyte*[2];
+        var enabledExtensionCount = 0;
+        var hlslFunctionalityExtensionName = "VK_GOOGLE_hlsl_functionality1\0"u8;
+        var userTypeExtensionName = "VK_GOOGLE_user_type\0"u8;
         VkDevice device = default;
         cancellationToken.ThrowIfCancellationRequested();
-        ThrowIfFailed(VulkanApi.vkCreateDevice(physicalDevice, &createInfo, null, &device), "vkCreateDevice");
-        return device;
+
+        fixed (byte* hlslFunctionalityExtensionNamePointer = hlslFunctionalityExtensionName)
+        fixed (byte* userTypeExtensionNamePointer = userTypeExtensionName)
+        {
+            if (supportedExtensions.Contains("VK_GOOGLE_hlsl_functionality1"))
+            {
+                enabledExtensionNamePointers[enabledExtensionCount++] = (sbyte*)hlslFunctionalityExtensionNamePointer;
+                _ = enabledSpirvExtensions.Add("SPV_GOOGLE_hlsl_functionality1");
+            }
+
+            if (supportedExtensions.Contains("VK_GOOGLE_user_type"))
+            {
+                enabledExtensionNamePointers[enabledExtensionCount++] = (sbyte*)userTypeExtensionNamePointer;
+                _ = enabledSpirvExtensions.Add("SPV_GOOGLE_user_type");
+            }
+
+            var createInfo = default(VkDeviceCreateInfo);
+            createInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+            createInfo.pNext = &features12;
+            createInfo.pEnabledFeatures = &enabledFeatures;
+            createInfo.queueCreateInfoCount = 1;
+            createInfo.pQueueCreateInfos = &queueCreateInfo;
+            createInfo.enabledExtensionCount = checked((uint)enabledExtensionCount);
+            createInfo.ppEnabledExtensionNames = (enabledExtensionCount == 0) ? null : enabledExtensionNamePointers;
+            ThrowIfFailed(VulkanApi.vkCreateDevice(physicalDevice, &createInfo, null, &device), "vkCreateDevice");
+        }
+
+        return (
+            device,
+            enabledSpirvExtensions.ToImmutable(),
+            enabledFeatures.fragmentStoresAndAtomics != 0);
     }
 
     private static VkSemaphore CreateTimelineSemaphore(VkDevice device)
@@ -432,6 +482,55 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         VkSemaphore semaphore = default;
         ThrowIfFailed(VulkanApi.vkCreateSemaphore(device, &createInfo, null, &semaphore), "vkCreateSemaphore");
         return semaphore;
+    }
+
+    private static HashSet<string> EnumerateDeviceExtensions(VkPhysicalDevice physicalDevice)
+    {
+        uint count = 0;
+        ThrowIfFailed(
+            VulkanApi.vkEnumerateDeviceExtensionProperties(physicalDevice, null, &count, null),
+            "vkEnumerateDeviceExtensionProperties");
+
+        if (count == 0)
+        {
+            return [];
+        }
+
+        var properties = new VkExtensionProperties[checked((int)count)];
+        var extensionNames = new HashSet<string>();
+
+        fixed (VkExtensionProperties* propertiesPointer = properties)
+        {
+            ThrowIfFailed(
+                VulkanApi.vkEnumerateDeviceExtensionProperties(
+                    physicalDevice,
+                    null,
+                    &count,
+                    propertiesPointer),
+                "vkEnumerateDeviceExtensionProperties");
+
+            for (var index = 0; index < checked((int)count); index++)
+            {
+                var extensionNamePointer = (byte*)&propertiesPointer[index]
+                    + checked((int)Marshal.OffsetOf<VkExtensionProperties>("extensionName"));
+                var extensionNameBytes = new ReadOnlySpan<byte>(extensionNamePointer, 256);
+                var terminator = extensionNameBytes.IndexOf((byte)0);
+
+                if (terminator < 0)
+                {
+                    throw new InvalidOperationException("Vulkan returned a device-extension name without a null terminator.");
+                }
+
+                var extensionName = Encoding.UTF8.GetString(extensionNameBytes[..terminator]);
+
+                if (!extensionNames.Add(extensionName))
+                {
+                    throw new InvalidOperationException("Vulkan returned a duplicate device-extension name.");
+                }
+            }
+        }
+
+        return extensionNames;
     }
 
     private static VkPhysicalDevice[] EnumeratePhysicalDevices(VkInstance instance)
@@ -774,8 +873,8 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         VulkanApi.vkGetPhysicalDeviceMemoryProperties(physicalDevice, &physicalDeviceMemoryProperties);
         memoryProperties = physicalDeviceMemoryProperties;
         var adapterId = GetAdapterId(idProperties);
-        var hardwareFeatures = ImmutableArray.CreateBuilder<GraphicsFeature>(4);
-        var implementedFeatures = ImmutableArray.CreateBuilder<GraphicsFeature>(3);
+        var hardwareFeatures = ImmutableArray.CreateBuilder<GraphicsFeature>(5);
+        var implementedFeatures = ImmutableArray.CreateBuilder<GraphicsFeature>(4);
         hardwareFeatures.Add(GraphicsFeature.TimelineSemaphore);
         hardwareFeatures.Add(GraphicsFeature.Synchronization2);
         hardwareFeatures.Add(GraphicsFeature.DynamicRendering);
@@ -786,6 +885,12 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         if (features2.features.samplerAnisotropy != 0)
         {
             hardwareFeatures.Add(GraphicsFeature.SamplerAnisotropy);
+        }
+
+        if (features2.features.fragmentStoresAndAtomics != 0)
+        {
+            hardwareFeatures.Add(GraphicsFeature.FragmentStoresAndAtomics);
+            implementedFeatures.Add(GraphicsFeature.FragmentStoresAndAtomics);
         }
 
         var limits = VulkanGraphicsCapabilityMapper.CreateLimits(
@@ -802,8 +907,8 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
             ReadDriverString(driverProperties.driverName, 256),
             ReadDriverString(driverProperties.driverInfo, 256),
             apiVersion,
-            hardwareFeatures.MoveToImmutable(),
-            implementedFeatures.MoveToImmutable(),
+            hardwareFeatures.ToImmutable(),
+            implementedFeatures.ToImmutable(),
             limits,
             GetFormatCapabilities(physicalDevice),
             GetMemoryHeapCapabilities(memoryProperties));

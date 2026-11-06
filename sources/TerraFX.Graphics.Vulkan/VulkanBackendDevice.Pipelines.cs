@@ -57,7 +57,12 @@ internal sealed unsafe partial class VulkanBackendDevice
 
         for (var index = 0; index < shaderInputs.Length; index++)
         {
-            ValidateShaderInput(shaderInputs[index], bytecodeLeases[index], index);
+            ValidateShaderInput(
+                shaderInputs[index],
+                bytecodeLeases[index],
+                index,
+                _enabledSpirvExtensions,
+                _fragmentStoresAndAtomicsEnabled);
         }
 
         switch (description)

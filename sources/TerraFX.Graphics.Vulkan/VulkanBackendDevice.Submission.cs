@@ -17,6 +17,7 @@ internal sealed unsafe partial class VulkanBackendDevice
     private bool _hasUncertainSubmission;
     private ulong _timelineValue;
     private readonly List<VulkanBackendBuffer> _uncertainBufferOwners = [];
+    private readonly List<VkImageView> _uncertainGraphImageViews = [];
     private readonly List<VulkanBackendTexture> _uncertainTextureOwners = [];
 
     private static void CopyMappedStorageToOwnedBuffer(byte* source, nint byteLength, UnmanagedBuffer<byte> destination)

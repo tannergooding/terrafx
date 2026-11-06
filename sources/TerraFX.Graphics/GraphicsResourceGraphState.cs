@@ -107,6 +107,41 @@ internal sealed class GraphicsResourceGraphState
         }
     }
 
+    internal void RecordBufferGraphAccess(
+        GraphBufferRange range,
+        GraphResourceState state,
+        bool isWrite,
+        bool contentsValid)
+    {
+        lock (_gate)
+        {
+            var description = _bufferDescription
+                ?? throw new InvalidOperationException("The Graphics resource is not a buffer.");
+            var contents = _bufferContents
+                ?? throw new InvalidOperationException("The Graphics buffer has no content tracker.");
+            range = ValidateBufferRange(description, range);
+
+            if (!Enum.IsDefined(state))
+            {
+                throw new ArgumentOutOfRangeException(nameof(state));
+            }
+
+            _bufferState = state;
+
+            if (isWrite)
+            {
+                if (contentsValid)
+                {
+                    contents.Add(range);
+                }
+                else
+                {
+                    contents.Remove(range);
+                }
+            }
+        }
+    }
+
     internal void RecordBufferReadback()
     {
         lock (_gate)
@@ -134,6 +169,43 @@ internal sealed class GraphicsResourceGraphState
                 ?? throw new InvalidOperationException("The Graphics buffer has no content tracker.");
             contents.Add(ValidateBufferRange(description, range));
             _bufferState = GraphResourceState.General;
+        }
+    }
+
+    internal void RecordTextureGraphAccess(
+        GraphTextureRange range,
+        GraphResourceState state,
+        bool isWrite,
+        bool contentsValid)
+    {
+        lock (_gate)
+        {
+            var description = _textureDescription
+                ?? throw new InvalidOperationException("The Graphics resource is not a texture.");
+            var contents = _textureContents
+                ?? throw new InvalidOperationException("The Graphics texture has no content tracker.");
+            var states = _textureStates
+                ?? throw new InvalidOperationException("The Graphics texture has no state tracker.");
+            range = ValidateTextureRange(description, range);
+
+            if (!Enum.IsDefined(state))
+            {
+                throw new ArgumentOutOfRangeException(nameof(state));
+            }
+
+            states.Set(range, state);
+
+            if (isWrite)
+            {
+                if (contentsValid)
+                {
+                    contents.Add(range);
+                }
+                else
+                {
+                    contents.Remove(range);
+                }
+            }
         }
     }
 

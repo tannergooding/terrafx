@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using TerraFX.Buffers;
 using TerraFX.Graphics;
@@ -10,6 +11,34 @@ namespace TerraFX.Graphics.Vulkan;
 
 internal sealed unsafe partial class VulkanBackendDevice
 {
+    internal static void ValidateStorageStageFeatures(
+        ShaderReflection reflection,
+        bool fragmentStoresAndAtomicsEnabled)
+    {
+        ArgumentNullException.ThrowIfNull(reflection);
+
+        foreach (var resource in reflection.Resources)
+        {
+            if (resource.Kind is not (ShaderResourceKind.StorageBuffer or ShaderResourceKind.StorageImage)
+                || (resource.Access == ShaderResourceAccess.Read))
+            {
+                continue;
+            }
+
+            if (reflection.Stage == ShaderStage.Vertex)
+            {
+                throw new NotSupportedException(
+                    "The Vulkan pipeline baseline does not support vertex-stage storage writes without vertexPipelineStoresAndAtomics.");
+            }
+
+            if ((reflection.Stage == ShaderStage.Pixel) && !fragmentStoresAndAtomicsEnabled)
+            {
+                throw new NotSupportedException(
+                    "The Vulkan device does not support fragment shader storage writes for this pipeline.");
+            }
+        }
+    }
+
     private static VkPipelineColorBlendAttachmentState CreateColorBlendAttachment(
         PipelineBlendMode blendMode,
         TextureFormat format)
@@ -105,7 +134,12 @@ internal sealed unsafe partial class VulkanBackendDevice
             _ => throw new ArgumentOutOfRangeException(nameof(description)),
         };
 
-    private static void ValidateShaderInput(ShaderBytecodeInput shader, BufferReadLease<byte> bytecode, int index)
+    private static void ValidateShaderInput(
+        ShaderBytecodeInput shader,
+        BufferReadLease<byte> bytecode,
+        int index,
+        IReadOnlySet<string> enabledSpirvExtensions,
+        bool fragmentStoresAndAtomicsEnabled)
     {
         ArgumentNullException.ThrowIfNull(shader);
         ArgumentNullException.ThrowIfNull(bytecode);
@@ -135,6 +169,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             throw new ArgumentException("SPIR-V bytecode length must be a positive multiple of four.", nameof(bytecode));
         }
 
-        SpirvReflectionValidator.Validate(shader, bytecode, index);
+        SpirvReflectionValidator.Validate(shader, bytecode, index, enabledSpirvExtensions);
+        ValidateStorageStageFeatures(shader.Reflection, fragmentStoresAndAtomicsEnabled);
     }
 }

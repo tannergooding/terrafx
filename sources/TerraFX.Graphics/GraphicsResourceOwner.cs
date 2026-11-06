@@ -197,6 +197,29 @@ internal sealed class GraphicsResourceOwner : IDisposable
             ?? throw new InvalidOperationException("The Graphics resource is not a buffer."))
             .RecordBufferUpload(destinationOffset, byteLength);
 
+    internal void RecordGraphAccess(GraphResourceAccess access)
+    {
+        var graphState = _graphState
+            ?? throw new InvalidOperationException("The Graphics resource does not support graph access state.");
+
+        if (access.IsTexture)
+        {
+            graphState.RecordTextureGraphAccess(
+                access.TextureRange,
+                access.RequiredState,
+                access.IsWrite,
+                access.ContentsValid);
+        }
+        else
+        {
+            graphState.RecordBufferGraphAccess(
+                access.BufferRange,
+                access.RequiredState,
+                access.IsWrite,
+                access.ContentsValid);
+        }
+    }
+
     internal void RecordTextureReadback(TextureSubresource subresource)
         => (_graphState
             ?? throw new InvalidOperationException("The Graphics resource is not a texture."))

@@ -13,6 +13,7 @@ namespace TerraFX.Content.Tools;
 
 internal static class M04ShaderFixtureCompiler
 {
+    private const string ShaderEntryPointGraphPixel = "PSGraphMain";
     private const string ShaderEntryPointPixel = "PSMain";
     private const string ShaderEntryPointSampledFramePixel = "PSSampledFrameMain";
     private const string ShaderEntryPointSampledFrameStoragePixel = "PSSampledFrameStorageMain";
@@ -22,6 +23,7 @@ internal static class M04ShaderFixtureCompiler
     private static readonly string[] s_stageNames = [
         "vertex",
         "pixel",
+        "pixel-graph",
         "pixel-sampled",
         "pixel-sampled-frame",
         "pixel-sampled-frame-storage",
@@ -86,6 +88,17 @@ internal static class M04ShaderFixtureCompiler
                 ShaderEntryPointVertex,
                 "vs_6_0",
                 "vertex",
+                cancellationToken).ConfigureAwait(false);
+            await CompileStageAsync(
+                manifest,
+                dxcExecutable,
+                spirvCrossExecutable,
+                spirvValidationExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointGraphPixel,
+                "ps_6_0",
+                "pixel-graph",
                 cancellationToken).ConfigureAwait(false);
             await CompileStageAsync(
                 manifest,
@@ -203,6 +216,15 @@ internal static class M04ShaderFixtureCompiler
                 dxcExecutable,
                 shaderPath,
                 stagingDirectory,
+                ShaderEntryPointGraphPixel,
+                "ps_6_0",
+                "pixel-graph",
+                cancellationToken).ConfigureAwait(false);
+            await CompileDxilStageAsync(
+                manifest,
+                dxcExecutable,
+                shaderPath,
+                stagingDirectory,
                 ShaderEntryPointPixel,
                 "ps_6_0",
                 "pixel",
@@ -255,6 +277,7 @@ internal static class M04ShaderFixtureCompiler
         var entryPoint = stageName switch {
             "vertex" => ShaderEntryPointVertex,
             "pixel" => ShaderEntryPointPixel,
+            "pixel-graph" => ShaderEntryPointGraphPixel,
             "pixel-sampled" => ShaderEntryPointSampledPixel,
             "pixel-sampled-frame" => ShaderEntryPointSampledFramePixel,
             "pixel-sampled-frame-storage" => ShaderEntryPointSampledFrameStoragePixel,
@@ -451,7 +474,7 @@ internal static class M04ShaderFixtureCompiler
     {
         var expectedOutputSemantic = stageName switch {
             "vertex" => "SV_Position",
-            "pixel" or "pixel-sampled" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => "SV_Target",
+            "pixel" or "pixel-graph" or "pixel-sampled" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => "SV_Target",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
         };
 
@@ -482,6 +505,14 @@ internal static class M04ShaderFixtureCompiler
                 || !text.Contains("FrameStorageImage", StringComparison.Ordinal)))
         {
             throw new InvalidDataException("DXC reflection from the compiled storage pixel DXIL does not contain its storage resources.");
+        }
+
+        if ((stageName == "pixel-graph")
+            && (text.Contains("FrameData", StringComparison.Ordinal)
+                || text.Contains("FrameTexture", StringComparison.Ordinal)
+                || text.Contains("FrameSampler", StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException("The graph pixel shader must not declare reflected resources.");
         }
     }
 
@@ -589,7 +620,7 @@ internal static class M04ShaderFixtureCompiler
         var mode = modeElement.GetString();
         var expectedMode = stageName switch {
             "vertex" => mode is "vert" or "vertex",
-            "pixel" or "pixel-sampled" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => mode is "frag" or "fragment",
+            "pixel" or "pixel-graph" or "pixel-sampled" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => mode is "frag" or "fragment",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
         };
 

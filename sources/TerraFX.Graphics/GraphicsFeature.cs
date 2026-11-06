@@ -28,4 +28,7 @@ public enum GraphicsFeature
 
     /// <summary>Sampler anisotropy.</summary>
     SamplerAnisotropy = 7,
+
+    /// <summary>Vulkan fragment-stage storage writes and atomics.</summary>
+    FragmentStoresAndAtomics = 8,
 }

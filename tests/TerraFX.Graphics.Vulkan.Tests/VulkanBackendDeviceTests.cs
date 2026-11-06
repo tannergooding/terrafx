@@ -19,6 +19,10 @@ namespace TerraFX.Graphics.Vulkan.Tests;
 [TestFixture]
 internal sealed class VulkanBackendDeviceTests
 {
+    private static readonly ImmutableHashSet<string> s_enabledFixtureSpirvExtensions = ImmutableHashSet.Create(
+        StringComparer.Ordinal,
+        "SPV_GOOGLE_hlsl_functionality1",
+        "SPV_GOOGLE_user_type");
     private static readonly ConcurrentBag<VulkanBackendDevice> s_quarantinedDevices = [];
 
     private static void AppendSpirvInstruction(List<uint> words, ushort opcode, params uint[] operands)
@@ -292,6 +296,81 @@ internal sealed class VulkanBackendDeviceTests
     }
 
     [Test]
+    public void FragmentStorageWritesRequireTheEnabledVulkanFeature()
+    {
+        var compilerIdentity = CreateShaderCompilerIdentity();
+        var writablePixelReflection = new ShaderReflection(
+            ShaderStage.Pixel,
+            "PSMain",
+            compilerIdentity,
+            [],
+            [],
+            [new ShaderResourceSignature(
+                ShaderBindingGroup.Frame,
+                0,
+                ShaderResourceKind.StorageBuffer,
+                1,
+                ShaderResourceAccess.ReadWrite)],
+            [],
+            [],
+            bindingLayoutVersion: 1,
+            groupSizeX: 0,
+            groupSizeY: 0,
+            groupSizeZ: 0);
+        var readOnlyPixelReflection = new ShaderReflection(
+            ShaderStage.Pixel,
+            "PSMain",
+            compilerIdentity,
+            [],
+            [],
+            [new ShaderResourceSignature(
+                ShaderBindingGroup.Frame,
+                0,
+                ShaderResourceKind.StorageBuffer,
+                1,
+                ShaderResourceAccess.Read)],
+            [],
+            [],
+            bindingLayoutVersion: 1,
+            groupSizeX: 0,
+            groupSizeY: 0,
+            groupSizeZ: 0);
+        var writableVertexReflection = new ShaderReflection(
+            ShaderStage.Vertex,
+            "VSMain",
+            compilerIdentity,
+            [],
+            [],
+            [new ShaderResourceSignature(
+                ShaderBindingGroup.Frame,
+                0,
+                ShaderResourceKind.StorageBuffer,
+                1,
+                ShaderResourceAccess.ReadWrite)],
+            [],
+            [],
+            bindingLayoutVersion: 1,
+            groupSizeX: 0,
+            groupSizeY: 0,
+            groupSizeZ: 0);
+
+        Assert.DoesNotThrow(() => VulkanBackendDevice.ValidateStorageStageFeatures(
+            writablePixelReflection,
+            fragmentStoresAndAtomicsEnabled: true));
+        _ = Assert.Throws<NotSupportedException>(
+            () => VulkanBackendDevice.ValidateStorageStageFeatures(
+                writablePixelReflection,
+                fragmentStoresAndAtomicsEnabled: false));
+        Assert.DoesNotThrow(() => VulkanBackendDevice.ValidateStorageStageFeatures(
+            readOnlyPixelReflection,
+            fragmentStoresAndAtomicsEnabled: false));
+        _ = Assert.Throws<NotSupportedException>(
+            () => VulkanBackendDevice.ValidateStorageStageFeatures(
+                writableVertexReflection,
+                fragmentStoresAndAtomicsEnabled: true));
+    }
+
+    [Test]
     public void OffscreenNativeCreationReportsAndReleasesARealDevice()
     {
         try
@@ -314,6 +393,9 @@ internal sealed class VulkanBackendDeviceTests
                 Does.Contain(GraphicsFeature.TimelineSemaphore)
                     .And.Contain(GraphicsFeature.Synchronization2)
                     .And.Contain(GraphicsFeature.DynamicRendering));
+            Assert.That(
+                device.Capabilities.ImplementedFeatures.IndexOf(GraphicsFeature.FragmentStoresAndAtomics) >= 0,
+                Is.EqualTo(device.Capabilities.HardwareFeatures.IndexOf(GraphicsFeature.FragmentStoresAndAtomics) >= 0));
             TestContext.WriteLine(
                 $"Adapter={device.Capabilities.AdapterName}; Driver={device.Capabilities.DriverName} "
                 + $"{device.Capabilities.DriverVersion}; API={device.Capabilities.ApiVersion.Major}.{device.Capabilities.ApiVersion.Minor}; "
@@ -1452,7 +1534,11 @@ internal sealed class VulkanBackendDeviceTests
             groupSizeZ: 0);
         var shader = new ShaderBytecodeInput(ShaderStage.Pixel, ShaderBinaryFormat.SpirV, lease, reflection);
 
-        Assert.DoesNotThrow(() => SpirvReflectionValidator.Validate(shader, lease, index: 0));
+        Assert.DoesNotThrow(() => SpirvReflectionValidator.Validate(
+            shader,
+            lease,
+            index: 0,
+            enabledSpirvExtensions: s_enabledFixtureSpirvExtensions));
     }
 
     [Test]
@@ -1508,7 +1594,11 @@ internal sealed class VulkanBackendDeviceTests
             includesFrameUniformBuffer: false);
 
         Assert.That(
-            () => SpirvReflectionValidator.Validate(description.Shaders[1], pixelLease, index: 1),
+            () => SpirvReflectionValidator.Validate(
+                description.Shaders[1],
+                pixelLease,
+                index: 1,
+                enabledSpirvExtensions: s_enabledFixtureSpirvExtensions),
             Throws.ArgumentException);
     }
 
@@ -1587,7 +1677,11 @@ internal sealed class VulkanBackendDeviceTests
         var shader = new ShaderBytecodeInput(original.Stage, ShaderBinaryFormat.SpirV, lease, reflection);
 
         _ = Assert.Throws<ArgumentException>(
-            () => SpirvReflectionValidator.Validate(shader, lease, shaderIndex));
+            () => SpirvReflectionValidator.Validate(
+                shader,
+                lease,
+                shaderIndex,
+                s_enabledFixtureSpirvExtensions));
     }
 
     [Test]
@@ -1617,7 +1711,11 @@ internal sealed class VulkanBackendDeviceTests
             frameRecordByteLength: 32);
 
         Assert.That(
-            () => SpirvReflectionValidator.Validate(description.Shaders[1], pixelLease, index: 1),
+            () => SpirvReflectionValidator.Validate(
+                description.Shaders[1],
+                pixelLease,
+                index: 1,
+                enabledSpirvExtensions: s_enabledFixtureSpirvExtensions),
             Throws.ArgumentException);
     }
 
@@ -1655,7 +1753,11 @@ internal sealed class VulkanBackendDeviceTests
             groupSizeZ: 0);
         var shader = new ShaderBytecodeInput(ShaderStage.Pixel, ShaderBinaryFormat.SpirV, lease, reflection);
 
-        _ = Assert.Throws<NotSupportedException>(() => SpirvReflectionValidator.Validate(shader, lease, index: 0));
+        _ = Assert.Throws<NotSupportedException>(() => SpirvReflectionValidator.Validate(
+            shader,
+            lease,
+            index: 0,
+            enabledSpirvExtensions: s_enabledFixtureSpirvExtensions));
     }
 
     [Test]

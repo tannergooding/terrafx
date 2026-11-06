@@ -1932,6 +1932,9 @@ internal sealed class GraphicsBufferTransferTests
             }
         }
 
+        public long SubmitGraph(GraphicsGraphSubmission submission)
+            => throw new NotSupportedException();
+
         public long UploadBuffer(
             IGraphicsBackendBuffer destination,
             long destinationOffset,

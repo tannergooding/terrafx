@@ -49,6 +49,7 @@ internal static class SpirvReflectionValidator
     private const ushort OpDecorate = 71;
     private const ushort OpDecorationGroup = 73;
     private const ushort OpEntryPoint = 15;
+    private const ushort OpExtension = 10;
     private const ushort OpGroupDecorate = 74;
     private const ushort OpGroupMemberDecorate = 75;
     private const ushort OpMemberDecorate = 72;
@@ -72,10 +73,15 @@ internal static class SpirvReflectionValidator
     private const uint Version1_0 = 0x00010000;
     private static readonly UTF8Encoding s_utf8 = new(false, true);
 
-    internal static void Validate(ShaderBytecodeInput shader, BufferReadLease<byte> bytecode, int index)
+    internal static void Validate(
+        ShaderBytecodeInput shader,
+        BufferReadLease<byte> bytecode,
+        int index,
+        IReadOnlySet<string> enabledSpirvExtensions)
     {
         ArgumentNullException.ThrowIfNull(shader);
         ArgumentNullException.ThrowIfNull(bytecode);
+        ArgumentNullException.ThrowIfNull(enabledSpirvExtensions);
 
         var byteLength = bytecode.Length;
 
@@ -94,6 +100,15 @@ internal static class SpirvReflectionValidator
         bytecode.UseWindow(0, checked((int)byteLength), ref copyAction);
 
         var module = Parse(words);
+
+        foreach (var extension in module.Extensions)
+        {
+            if (!enabledSpirvExtensions.Contains(extension))
+            {
+                throw new NotSupportedException($"The Vulkan device has not enabled the SPIR-V extension '{extension}'.");
+            }
+        }
+
         var entryPoint = FindEntryPoint(module, shader, index);
         ValidateStageIo(module, entryPoint, shader, index);
         var resources = new List<ShaderResourceSignature>();
@@ -1032,6 +1047,24 @@ internal static class SpirvReflectionValidator
                 break;
             }
 
+            case OpExtension:
+            {
+                RequireOperandCount(operands, 1, "OpExtension");
+                var name = ReadLiteralString(operands, out var stringWordCount);
+
+                if (stringWordCount != operands.Length)
+                {
+                    throw new ArgumentException("SPIR-V OpExtension has trailing operands.");
+                }
+
+                if (!module.Extensions.Add(name))
+                {
+                    throw new ArgumentException($"SPIR-V declares the extension '{name}' more than once.");
+                }
+
+                break;
+            }
+
             case OpTypeInt:
             case OpTypeFloat:
             case OpTypeImage:
@@ -1552,6 +1585,8 @@ internal static class SpirvReflectionValidator
         internal Dictionary<uint, Decorations> Decorations { get; } = [];
 
         internal List<EntryPoint> EntryPoints { get; } = [];
+
+        internal HashSet<string> Extensions { get; } = [];
 
         internal uint IdBound { get; }
 

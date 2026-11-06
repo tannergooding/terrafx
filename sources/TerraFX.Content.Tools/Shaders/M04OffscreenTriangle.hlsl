@@ -39,6 +39,11 @@ float4 PSMain(VertexOutput input) : SV_Target0
     return color;
 }
 
+float4 PSGraphMain(VertexOutput input) : SV_Target0
+{
+    return float4(1.0, 0.0, 1.0, 1.0);
+}
+
 float4 PSSampledMain(VertexOutput input) : SV_Target0
 {
     return FrameTexture.Sample(FrameSampler, float2(0.5, 0.5));

@@ -4295,7 +4295,8 @@ public enum GraphicsFeature
     Synchronization2 = 4,
     DynamicRendering = 5,
     SwapchainMaintenance1 = 6,
-    SamplerAnisotropy = 7
+    SamplerAnisotropy = 7,
+    FragmentStoresAndAtomics = 8
 }
 
 public readonly struct GraphicsApiVersion : IEquatable<GraphicsApiVersion>

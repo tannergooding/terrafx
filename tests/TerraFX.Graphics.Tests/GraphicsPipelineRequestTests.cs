@@ -1599,6 +1599,9 @@ internal sealed class GraphicsPipelineRequestTests
         public TextureReadback ReadbackTexture(IGraphicsBackendTexture source, TextureSubresource subresource)
             => throw new NotSupportedException();
 
+        public long SubmitGraph(GraphicsGraphSubmission submission)
+            => throw new NotSupportedException();
+
         public long UploadBuffer(
             IGraphicsBackendBuffer destination,
             long destinationOffset,

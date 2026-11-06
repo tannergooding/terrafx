@@ -9,6 +9,7 @@ internal readonly struct RecordedGraphicsCommand
     internal RecordedGraphicsCommand(
         GraphicsCommandKind kind,
         GpuPipelineHandle pipeline = default,
+        GpuPipeline? pipelineOwner = null,
         BindingSet? bindings = null,
         VertexBufferBinding vertexBuffer = default,
         IndexBufferBinding indexBuffer = default,
@@ -29,6 +30,20 @@ internal readonly struct RecordedGraphicsCommand
         GraphTextureVersion? storageBarrierTexture = null,
         GraphTextureRange storageBarrierTextureRange = default)
     {
+        if (kind == GraphicsCommandKind.SetPipeline)
+        {
+            ArgumentNullException.ThrowIfNull(pipelineOwner);
+
+            if (!pipeline.IsValid || (pipelineOwner.Handle != pipeline))
+            {
+                throw new ArgumentException("A pipeline command must retain the matching live pipeline owner.", nameof(pipelineOwner));
+            }
+        }
+        else if (pipeline.IsValid || (pipelineOwner is not null))
+        {
+            throw new ArgumentException("Only a pipeline command can identify a pipeline.", nameof(pipelineOwner));
+        }
+
         var hasStorageBarrierBuffer = storageBarrierBuffer is not null;
         var hasStorageBarrierTexture = storageBarrierTexture is not null;
 
@@ -80,6 +95,7 @@ internal readonly struct RecordedGraphicsCommand
         IndexBuffer = indexBuffer;
         Kind = kind;
         Pipeline = pipeline;
+        PipelineOwner = pipelineOwner;
         SourceOffset = sourceOffset;
         StorageBarrierBuffer = storageBarrierBuffer;
         StorageBarrierBufferRange = storageBarrierBufferRange;
@@ -113,6 +129,8 @@ internal readonly struct RecordedGraphicsCommand
     internal GraphicsCommandKind Kind { get; }
 
     internal GpuPipelineHandle Pipeline { get; }
+
+    internal GpuPipeline? PipelineOwner { get; }
 
     internal long SourceOffset { get; }
 

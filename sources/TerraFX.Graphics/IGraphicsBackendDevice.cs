@@ -9,6 +9,8 @@ internal interface IGraphicsBackendDevice : IDisposable
 {
     GraphicsCapabilities Capabilities { get; }
 
+    bool HasUncertainSubmission => false;
+
     IGraphicsBackendBuffer CreateBuffer(BufferDescription description);
 
     IGraphicsBackendPipeline CreatePipeline(
@@ -26,6 +28,8 @@ internal interface IGraphicsBackendDevice : IDisposable
     OwnedBuffer<byte> ReadbackBuffer(IGraphicsBackendBuffer source, long sourceOffset, nint byteLength);
 
     TextureReadback ReadbackTexture(IGraphicsBackendTexture source, TextureSubresource subresource);
+
+    long SubmitGraph(GraphicsGraphSubmission submission);
 
     long UploadBuffer(
         IGraphicsBackendBuffer destination,

@@ -177,6 +177,8 @@ internal sealed class CommandRecorderState : IDisposable
         _isCompleted = true;
 
         var commandList = new RecordedPassCommandList(
+            _passId,
+            _passKind,
             [.. _commands],
             [.. _useLeases]);
         _useLeases.Clear();
@@ -458,7 +460,7 @@ internal sealed class CommandRecorderState : IDisposable
     {
         EnsureActive();
         EnsurePassCanBindPipeline();
-        var (layout, useLease) = _device.AcquirePipelineForRecording(pipeline);
+        var (pipelineOwner, layout, useLease) = _device.AcquirePipelineForRecording(pipeline);
 
         try
         {
@@ -480,7 +482,10 @@ internal sealed class CommandRecorderState : IDisposable
             _isShaderBindingsSet = false;
             _indexBuffer = null;
             _vertexBuffer = null;
-            _commands.Add(new RecordedGraphicsCommand(GraphicsCommandKind.SetPipeline, pipeline: pipeline));
+            _commands.Add(new RecordedGraphicsCommand(
+                GraphicsCommandKind.SetPipeline,
+                pipeline: pipeline,
+                pipelineOwner: pipelineOwner));
         }
         catch
         {

@@ -9,7 +9,7 @@ Backend is explicitly D3D12 or Vulkan. The selected backend enumerates its nativ
 | Capability | Portable core requirement |
 |---|---|
 | D3D12 | FL12_0, SM6.0; normal resource barriers/fences/root signatures, no enhanced-barrier dependency |
-| Vulkan | 1.3; feature booleans `timelineSemaphore`/synchronization2/`dynamicRendering` enabled, graphics + compute queue; WSI maintenance1 only for interactive profile |
+| Vulkan | 1.3; feature booleans `timelineSemaphore`/synchronization2/`dynamicRendering` enabled, graphics + compute queue; `fragmentStoresAndAtomics` enabled and reported when advertised, otherwise writable fragment-storage pipelines reject; vertex-stage storage writes reject until `vertexPipelineStoresAndAtomics` is enabled; WSI maintenance1 only for interactive profile |
 | Limits | max 2D texture dimension >= 8192; 3D >= 256; array layers >= 256; >= 4 color attachments; >= 16 sampled images/stage, >= 8 samplers/stage, >= 8 uniform buffers/stage; uniform range >= 16384 bytes |
 | Required formats | RGBA8 UNorm/sRGB sampled + attachment; RGBA16Float sampled + attachment + storage; R8UNorm sampled for glyph coverage; R32Float sampled + storage; R32UInt storage + color attachment for picking; D32Float depth + sampled. Required uploads/copies/readbacks additionally validate actual transfer usages/footprints. |
 | Required sampling | Sample count 1; 2D textures nearest/linear/mips; anisotropy optional and explicitly clamped/reported, not assumed; the selected backend's maximum is 1 when anisotropy is not implemented |

@@ -34,7 +34,11 @@ internal sealed class SpirvResourceAccessTests
             lease,
             CreateReflection(access));
 
-        Assert.DoesNotThrow(() => SpirvReflectionValidator.Validate(shader, lease, index: 0));
+        Assert.DoesNotThrow(() => SpirvReflectionValidator.Validate(
+            shader,
+            lease,
+            index: 0,
+            enabledSpirvExtensions: ImmutableHashSet<string>.Empty));
     }
 
     private static void AssertMismatch(ShaderResourceAccess access, uint? accessDecoration)
@@ -48,7 +52,11 @@ internal sealed class SpirvResourceAccessTests
             lease,
             CreateReflection(access));
 
-        _ = Assert.Throws<ArgumentException>(() => SpirvReflectionValidator.Validate(shader, lease, index: 0));
+        _ = Assert.Throws<ArgumentException>(() => SpirvReflectionValidator.Validate(
+            shader,
+            lease,
+            index: 0,
+            enabledSpirvExtensions: ImmutableHashSet<string>.Empty));
     }
 
     private static OwnedBuffer<byte> CreateBytecodeStorage(byte[] bytecode)
