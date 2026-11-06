@@ -11,7 +11,17 @@ internal interface IGraphicsBackendDevice : IDisposable
 
     bool HasUncertainSubmission => false;
 
+    IGraphicsBackendBuffer CreateBuffer(
+        BufferDescription description,
+        IGraphicsBackendBufferAllocation allocation)
+        => throw new NotSupportedException("The selected backend does not support placed transient buffers.");
+
     IGraphicsBackendBuffer CreateBuffer(BufferDescription description);
+
+    IGraphicsBackendBufferAllocation CreateBufferAllocation(
+        BufferDescription description,
+        GraphicsResourceAllocationInfo allocationInfo)
+        => throw new NotSupportedException("The selected backend does not support shared transient buffer allocations.");
 
     IGraphicsBackendPipeline CreatePipeline(
         PipelineDescription description,

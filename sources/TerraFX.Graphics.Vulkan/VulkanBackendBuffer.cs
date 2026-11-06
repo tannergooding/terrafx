@@ -20,6 +20,7 @@ internal sealed class VulkanBackendBuffer : IGraphicsBackendBuffer
     private VkMemoryPropertyFlags _memoryProperties;
     private uint _memoryTypeIndex;
     private readonly VulkanBackendDevice _owner;
+    private bool _ownsMemory;
 
     internal VulkanBackendBuffer(
         VulkanBackendDevice owner,
@@ -29,7 +30,8 @@ internal sealed class VulkanBackendBuffer : IGraphicsBackendBuffer
         VkMemoryPropertyFlags memoryProperties,
         uint memoryTypeIndex,
         long allocationSizeBytes,
-        bool isStaging)
+        bool isStaging,
+        bool ownsMemory = true)
     {
         ArgumentNullException.ThrowIfNull(owner);
         ArgumentNullException.ThrowIfNull(description);
@@ -41,6 +43,7 @@ internal sealed class VulkanBackendBuffer : IGraphicsBackendBuffer
         _memoryTypeIndex = memoryTypeIndex;
         _allocationSizeBytes = allocationSizeBytes;
         _isStaging = isStaging;
+        _ownsMemory = ownsMemory;
         _lastAccessMask = VkAccessFlags2.VK_ACCESS_2_NONE;
         _lastStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
     }
@@ -69,6 +72,8 @@ internal sealed class VulkanBackendBuffer : IGraphicsBackendBuffer
 
     internal VulkanBackendDevice Owner => _owner;
 
+    internal bool OwnsMemory => _ownsMemory;
+
     public void Dispose()
     {
         if (!_isDisposed)
@@ -84,6 +89,7 @@ internal sealed class VulkanBackendBuffer : IGraphicsBackendBuffer
         _description = null!;
         _isDisposed = true;
         _isStaging = false;
+        _ownsMemory = false;
         _lastAccessMask = VkAccessFlags2.VK_ACCESS_2_NONE;
         _lastStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
         _memory = default;

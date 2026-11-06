@@ -113,6 +113,7 @@ public sealed partial class RenderGraphPlan
             OrderedPasses,
             passes.ToImmutable(),
             StateTransitions,
+            TransientBufferAliasingBarriers,
             Accesses,
             bufferImports.MoveToImmutable(),
             TextureImports,

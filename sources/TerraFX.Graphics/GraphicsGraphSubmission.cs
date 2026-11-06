@@ -14,6 +14,7 @@ internal sealed class GraphicsGraphSubmission
         ImmutableArray<RenderPassId> orderedPasses,
         ImmutableArray<GraphicsGraphSubmissionPass> passes,
         ImmutableArray<GraphResourceStateTransition> stateTransitions,
+        ImmutableArray<GraphResourceAliasingBarrier> aliasingBarriers,
         ImmutableArray<GraphResourceAccess> accesses,
         ImmutableArray<GraphBufferImportRecord> bufferImports,
         ImmutableArray<GraphTextureImportRecord> textureImports,
@@ -25,6 +26,7 @@ internal sealed class GraphicsGraphSubmission
         if (orderedPasses.IsDefault
             || passes.IsDefault
             || stateTransitions.IsDefault
+            || aliasingBarriers.IsDefault
             || accesses.IsDefault
             || bufferImports.IsDefault
             || textureImports.IsDefault
@@ -43,6 +45,7 @@ internal sealed class GraphicsGraphSubmission
         OrderedPasses = [.. orderedPasses];
         Passes = [.. passes];
         StateTransitions = [.. stateTransitions];
+        AliasingBarriers = [.. aliasingBarriers];
         Accesses = [.. accesses];
         BufferImports = [.. bufferImports];
         TextureImports = [.. textureImports];
@@ -50,6 +53,8 @@ internal sealed class GraphicsGraphSubmission
     }
 
     internal ImmutableArray<GraphResourceAccess> Accesses { get; }
+
+    internal ImmutableArray<GraphResourceAliasingBarrier> AliasingBarriers { get; }
 
     internal ImmutableArray<GraphBufferImportRecord> BufferImports { get; }
 
@@ -205,7 +210,7 @@ internal sealed class GraphicsGraphSubmission
 
     internal void ValidateOffscreenRasterSubmission()
     {
-        if ((BufferImports.Length > 4)
+        if ((BufferImports.Length > 8)
             || (TextureImports.Length is < 1 or > 3)
             || !ReferenceEquals(TextureImports[0].Texture, OffscreenColorTarget))
         {
@@ -217,9 +222,21 @@ internal sealed class GraphicsGraphSubmission
         var storageBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
         var copySourceBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
         var copyDestinationBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
+        var bufferImportsByResourceId = new Dictionary<ulong, GraphBufferImportRecord>(BufferImports.Length);
+        var orderedPassIndices = new Dictionary<RenderPassId, int>(OrderedPasses.Length);
+
+        for (var index = 0; index < OrderedPasses.Length; index++)
+        {
+            orderedPassIndices.Add(OrderedPasses[index], index);
+        }
 
         foreach (var import in BufferImports)
         {
+            if (!bufferImportsByResourceId.TryAdd(import.Version.ResourceId, import))
+            {
+                throw new NotSupportedException("Native graph submission requires one import per graph buffer resource.");
+            }
+
             var usage = import.Version.Description.Usage;
             var hasUniformUsage = (usage & BufferUsage.Uniform) != 0;
             var hasStorageUsage = (usage & BufferUsage.Storage) != 0;
@@ -291,6 +308,48 @@ internal sealed class GraphicsGraphSubmission
                 && !hasCopyDestinationImportAccess)
             {
                 throw new NotSupportedException("Native graph submission requires each imported buffer to have a supported declared usage.");
+            }
+        }
+
+        var aliasedResources = new HashSet<ulong>();
+
+        foreach (var aliasingBarrier in AliasingBarriers)
+        {
+            if (!bufferImportsByResourceId.TryGetValue(aliasingBarrier.BeforeResourceId, out var beforeImport)
+                || !bufferImportsByResourceId.TryGetValue(aliasingBarrier.AfterResourceId, out var afterImport)
+                || !beforeImport.IsTransient
+                || !afterImport.IsTransient
+                || !orderedPassIndices.TryGetValue(aliasingBarrier.PassId, out var aliasPassIndex)
+                || !aliasedResources.Add(aliasingBarrier.AfterResourceId))
+            {
+                throw new InvalidOperationException("A transient aliasing barrier does not match distinct materialized graph buffers and a scheduled pass.");
+            }
+
+            var beforeLastPassIndex = -1;
+            var afterFirstPassIndex = int.MaxValue;
+
+            foreach (var access in Accesses)
+            {
+                if (access.IsTexture)
+                {
+                    continue;
+                }
+
+                if (access.ResourceId == aliasingBarrier.BeforeResourceId)
+                {
+                    beforeLastPassIndex = Math.Max(beforeLastPassIndex, orderedPassIndices[access.PassId]);
+                }
+
+                if (access.ResourceId == aliasingBarrier.AfterResourceId)
+                {
+                    afterFirstPassIndex = Math.Min(afterFirstPassIndex, orderedPassIndices[access.PassId]);
+                }
+            }
+
+            if ((beforeLastPassIndex >= afterFirstPassIndex)
+                || (afterFirstPassIndex != aliasPassIndex))
+            {
+                throw new InvalidOperationException("Transient alias lifetimes overlap or the alias barrier is not at the new resource's first pass.");
             }
         }
 

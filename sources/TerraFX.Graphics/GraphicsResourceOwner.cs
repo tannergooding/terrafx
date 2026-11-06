@@ -12,6 +12,7 @@ internal sealed class GraphicsResourceOwner : IDisposable
     private int _activeUseCount;
     private readonly SortedSet<long> _activeUseSequences = [];
     private readonly GraphicsResourceAllocationInfo? _allocationInfo;
+    private GraphicsResourceAllocationLease? _allocationLease;
     private readonly IGraphicsBackendResource _backendResource;
     private readonly GraphicsDevice _device;
     private readonly GraphicsResourceGraphState? _graphState;
@@ -28,7 +29,8 @@ internal sealed class GraphicsResourceOwner : IDisposable
         IGraphicsBackendResource backendResource,
         GraphicsOwnerRequestQueue.GraphicsRetirementReservation retirementReservation,
         BufferDescription? bufferDescription = null,
-        TextureDescription? textureDescription = null)
+        TextureDescription? textureDescription = null,
+        GraphicsResourceAllocationLease? allocationLease = null)
     {
         ArgumentNullException.ThrowIfNull(device);
         ArgumentNullException.ThrowIfNull(backendResource);
@@ -37,6 +39,11 @@ internal sealed class GraphicsResourceOwner : IDisposable
         if ((bufferDescription is not null) && (textureDescription is not null))
         {
             throw new ArgumentException("A Graphics resource cannot be both a buffer and a texture.");
+        }
+
+        if ((allocationInfo is not null) && (allocationLease is not null))
+        {
+            throw new ArgumentException("A Graphics resource cannot own both an independent and shared allocation.", nameof(allocationLease));
         }
 
         if (((bufferDescription is not null) && (backendResource is not IGraphicsBackendBuffer))
@@ -53,6 +60,8 @@ internal sealed class GraphicsResourceOwner : IDisposable
         _graphState = (bufferDescription is null) && (textureDescription is null)
             ? null
             : new GraphicsResourceGraphState(bufferDescription, textureDescription);
+        allocationLease?.AddReference();
+        _allocationLease = allocationLease;
         _retirementReservation = retirementReservation;
     }
 
@@ -227,6 +236,20 @@ internal sealed class GraphicsResourceOwner : IDisposable
         => (_graphState
             ?? throw new InvalidOperationException("The Graphics resource is not a texture."))
             .RecordTextureUpload(subresource);
+
+    internal GraphicsResourceAllocationInfo? ReleaseAllocationLease()
+    {
+        var allocationLease = Volatile.Read(ref _allocationLease);
+
+        if (allocationLease is null)
+        {
+            return null;
+        }
+
+        var allocationInfo = allocationLease.Release();
+        _ = Interlocked.CompareExchange(ref _allocationLease, null, allocationLease);
+        return (allocationInfo.SizeBytes == 0) ? null : allocationInfo;
+    }
 
     internal void RequestRetirementForShutdown()
         => _ = Interlocked.CompareExchange(ref _retirementState, 1, 0);

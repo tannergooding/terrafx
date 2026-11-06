@@ -62,23 +62,47 @@ public sealed partial class Renderer
         }
 
         var transientBuffers = new List<GpuBuffer>(graph.TransientBuffers.Length);
+        var transientBufferGroups = new List<GraphicsTransientBufferGroup>(graph.TransientBufferGroups.Length);
+        var transientBuffersByResourceId = new Dictionary<ulong, GpuBuffer>(graph.TransientBuffers.Length);
 
         try
         {
-            foreach (var transientVersion in graph.TransientBuffers)
+            foreach (var transientGroup in graph.TransientBufferGroups)
             {
-                transientBuffers.Add(await device.CreateBufferAsync(
-                    transientVersion.Description,
-                    cancellationToken).ConfigureAwait(false));
+                if (transientGroup.Length > 1)
+                {
+                    var materializedGroup = await device.CreateTransientBufferGroupAsync(
+                        transientGroup,
+                        cancellationToken).ConfigureAwait(false);
+                    transientBufferGroups.Add(materializedGroup);
+
+                    for (var index = 0; index < transientGroup.Length; index++)
+                    {
+                        transientBuffersByResourceId.Add(
+                            transientGroup[index].ResourceId,
+                            materializedGroup.Buffers[index]);
+                    }
+                }
+                else
+                {
+                    var transientVersion = transientGroup[0];
+                    var buffer = await device.CreateBufferAsync(
+                        transientVersion.Description,
+                        cancellationToken).ConfigureAwait(false);
+                    transientBuffers.Add(buffer);
+                    transientBuffersByResourceId.Add(transientVersion.ResourceId, buffer);
+                }
             }
 
-            var transientBufferImports = ImmutableArray.CreateBuilder<GraphBufferImportRecord>(transientBuffers.Count);
+            var transientBufferImports = ImmutableArray.CreateBuilder<GraphBufferImportRecord>(graph.TransientBuffers.Length);
 
-            for (var index = 0; index < transientBuffers.Count; index++)
+            for (var index = 0; index < graph.TransientBuffers.Length; index++)
             {
+                var transientVersion = graph.TransientBuffers[index];
+                var buffer = transientBuffersByResourceId[transientVersion.ResourceId];
                 transientBufferImports.Add(new GraphBufferImportRecord(
-                    transientBuffers[index],
-                    graph.TransientBuffers[index],
+                    buffer,
+                    transientVersion,
                     isTransient: true));
             }
 
@@ -110,6 +134,11 @@ public sealed partial class Renderer
         }
         finally
         {
+            foreach (var transientBufferGroup in transientBufferGroups)
+            {
+                transientBufferGroup.Dispose();
+            }
+
             foreach (var transientBuffer in transientBuffers)
             {
                 transientBuffer.Dispose();

@@ -1430,6 +1430,11 @@ public sealed partial class GraphicsDevice
         _ = _deferredRetirements.Remove(resource);
         resource.BackendResource.Dispose();
 
+        if (resource.ReleaseAllocationLease() is GraphicsResourceAllocationInfo sharedAllocationInfo)
+        {
+            ReleaseResourceAllocation(sharedAllocationInfo);
+        }
+
         if (!_resources.Remove(resource))
         {
             throw new InvalidOperationException("A retired Graphics resource was not registered with its owner.");

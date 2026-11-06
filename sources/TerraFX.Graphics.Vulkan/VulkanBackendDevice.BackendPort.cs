@@ -10,8 +10,27 @@ internal sealed unsafe partial class VulkanBackendDevice
 {
     bool IGraphicsBackendDevice.HasUncertainSubmission => _hasUncertainSubmission;
 
+    IGraphicsBackendBuffer IGraphicsBackendDevice.CreateBuffer(
+        BufferDescription description,
+        IGraphicsBackendBufferAllocation allocation)
+    {
+        ArgumentNullException.ThrowIfNull(allocation);
+
+        if (allocation is not VulkanBackendBufferAllocation selectedAllocation)
+        {
+            throw new ArgumentException("The transient buffer allocation belongs to a different Vulkan backend.", nameof(allocation));
+        }
+
+        return CreateBuffer(description, selectedAllocation);
+    }
+
     IGraphicsBackendBuffer IGraphicsBackendDevice.CreateBuffer(BufferDescription description)
         => CreateBuffer(description);
+
+    IGraphicsBackendBufferAllocation IGraphicsBackendDevice.CreateBufferAllocation(
+        BufferDescription description,
+        GraphicsResourceAllocationInfo allocationInfo)
+        => CreateBufferAllocation(description, allocationInfo);
 
     IGraphicsBackendPipeline IGraphicsBackendDevice.CreatePipeline(
         PipelineDescription description,

@@ -133,8 +133,118 @@ internal sealed unsafe partial class VulkanBackendDevice
         return nativeUsage;
     }
 
+    internal VulkanBackendBuffer CreateBuffer(
+        BufferDescription description,
+        VulkanBackendBufferAllocation allocation)
+    {
+        ArgumentNullException.ThrowIfNull(description);
+        ArgumentNullException.ThrowIfNull(allocation);
+        EnsureActive();
+
+        if (!ReferenceEquals(allocation.Owner, this))
+        {
+            throw new ArgumentException("The transient buffer allocation belongs to a different Vulkan device.", nameof(allocation));
+        }
+
+        var buffer = CreateNativeBuffer(_device, description);
+        var ownsBuffer = true;
+
+        try
+        {
+            var requirements = default(VkMemoryRequirements);
+            VulkanApi.vkGetBufferMemoryRequirements(_device, buffer, &requirements);
+
+            if ((requirements.size > checked((ulong)allocation.AllocationSizeBytes))
+                || ((requirements.memoryTypeBits & (1u << checked((int)allocation.MemoryTypeIndex))) == 0))
+            {
+                throw new NotSupportedException("The transient Vulkan buffer is incompatible with its shared memory allocation.");
+            }
+
+            ThrowIfFailed(VulkanApi.vkBindBufferMemory(_device, buffer, allocation.Memory, 0), "vkBindBufferMemory");
+            var result = new VulkanBackendBuffer(
+                this,
+                buffer,
+                description,
+                allocation.Memory,
+                allocation.MemoryProperties,
+                allocation.MemoryTypeIndex,
+                ConvertPositiveLong(requirements.size, nameof(requirements)),
+                isStaging: false,
+                ownsMemory: false);
+            _liveBufferCount = checked(_liveBufferCount + 1);
+            ownsBuffer = false;
+            return result;
+        }
+        finally
+        {
+            if (ownsBuffer)
+            {
+                VulkanApi.vkDestroyBuffer(_device, buffer, null);
+            }
+        }
+    }
+
     internal VulkanBackendBuffer CreateBuffer(BufferDescription description)
         => CreateBufferCore(description, isStaging: false);
+
+    internal VulkanBackendBufferAllocation CreateBufferAllocation(
+        BufferDescription description,
+        GraphicsResourceAllocationInfo allocationInfo)
+    {
+        ArgumentNullException.ThrowIfNull(description);
+        EnsureActive();
+
+        if (description.MemoryKind != GpuMemoryKind.DeviceLocal)
+        {
+            throw new NotSupportedException("Vulkan transient alias allocations currently support only device-local buffers.");
+        }
+
+        var buffer = CreateNativeBuffer(_device, description);
+
+        try
+        {
+            var requirements = default(VkMemoryRequirements);
+            VulkanApi.vkGetBufferMemoryRequirements(_device, buffer, &requirements);
+
+            if (requirements.size > checked((ulong)allocationInfo.SizeBytes))
+            {
+                throw new ArgumentException("The shared Vulkan allocation is smaller than the buffer requirements.", nameof(allocationInfo));
+            }
+
+            GetMemoryTypeIndex(
+                _physicalDeviceMemoryProperties,
+                requirements.memoryTypeBits,
+                description.MemoryKind,
+                out var memoryTypeIndex,
+                out var memoryProperties,
+                out _);
+            var allocateInfo = default(VkMemoryAllocateInfo);
+            allocateInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            allocateInfo.allocationSize = checked((ulong)allocationInfo.SizeBytes);
+            allocateInfo.memoryTypeIndex = memoryTypeIndex;
+            VkDeviceMemory memory = default;
+            ThrowIfFailed(VulkanApi.vkAllocateMemory(_device, &allocateInfo, null, &memory), "vkAllocateMemory");
+
+            try
+            {
+                return new VulkanBackendBufferAllocation(
+                    this,
+                    memory,
+                    memoryProperties,
+                    memoryTypeIndex,
+                    allocationInfo.SizeBytes);
+            }
+            catch
+            {
+                VulkanApi.vkFreeMemory(_device, memory, null);
+                throw;
+            }
+        }
+        finally
+        {
+            VulkanApi.vkDestroyBuffer(_device, buffer, null);
+        }
+    }
 
     internal void DestroyBuffer(VulkanBackendBuffer buffer)
     {
@@ -169,9 +279,39 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
 
         VulkanApi.vkDestroyBuffer(_device, buffer.Buffer, null);
-        VulkanApi.vkFreeMemory(_device, buffer.Memory, null);
+
+        if (buffer.OwnsMemory)
+        {
+            VulkanApi.vkFreeMemory(_device, buffer.Memory, null);
+        }
+
         buffer.MarkDisposed();
         _liveBufferCount = checked(_liveBufferCount - 1);
+    }
+
+    internal void DestroyBufferAllocation(VulkanBackendBufferAllocation allocation)
+    {
+        ArgumentNullException.ThrowIfNull(allocation);
+        EnsureOwnerThread();
+
+        if (!ReferenceEquals(allocation.Owner, this))
+        {
+            throw new ArgumentException("The transient buffer allocation belongs to a different Vulkan device.", nameof(allocation));
+        }
+
+        if (allocation.IsDisposed)
+        {
+            return;
+        }
+
+        if (_hasUncertainSubmission)
+        {
+            throw new InvalidOperationException("Vulkan transient allocation retirement cannot release memory while submission completion is uncertain.");
+        }
+
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+        VulkanApi.vkFreeMemory(_device, allocation.Memory, null);
+        allocation.MarkDisposed();
     }
 
     internal GraphicsResourceAllocationInfo GetBufferAllocationInfo(BufferDescription description)
