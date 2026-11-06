@@ -34,6 +34,9 @@ public sealed class GraphicsLimits
         int maximumComputeWorkGroupSizeX,
         int maximumComputeWorkGroupSizeY,
         int maximumComputeWorkGroupSizeZ,
+        int maximumComputeWorkGroupCountX,
+        int maximumComputeWorkGroupCountY,
+        int maximumComputeWorkGroupCountZ,
         int maximumComputeWorkGroupInvocations,
         int maximumVertexInputAttributes,
         int maximumVertexInputBindings,
@@ -70,6 +73,9 @@ public sealed class GraphicsLimits
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumComputeWorkGroupSizeX);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumComputeWorkGroupSizeY);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumComputeWorkGroupSizeZ);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumComputeWorkGroupCountX);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumComputeWorkGroupCountY);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumComputeWorkGroupCountZ);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumComputeWorkGroupInvocations);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumVertexInputAttributes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumVertexInputBindings);
@@ -101,6 +107,9 @@ public sealed class GraphicsLimits
         MaximumComputeWorkGroupSizeX = maximumComputeWorkGroupSizeX;
         MaximumComputeWorkGroupSizeY = maximumComputeWorkGroupSizeY;
         MaximumComputeWorkGroupSizeZ = maximumComputeWorkGroupSizeZ;
+        MaximumComputeWorkGroupCountX = maximumComputeWorkGroupCountX;
+        MaximumComputeWorkGroupCountY = maximumComputeWorkGroupCountY;
+        MaximumComputeWorkGroupCountZ = maximumComputeWorkGroupCountZ;
         MaximumComputeWorkGroupInvocations = maximumComputeWorkGroupInvocations;
         MaximumVertexInputAttributes = maximumVertexInputAttributes;
         MaximumVertexInputBindings = maximumVertexInputBindings;
@@ -118,6 +127,15 @@ public sealed class GraphicsLimits
 
     /// <summary>Gets the maximum color attachment count.</summary>
     public int MaximumColorAttachments { get; }
+
+    /// <summary>Gets the maximum compute dispatch group count in X.</summary>
+    public int MaximumComputeWorkGroupCountX { get; }
+
+    /// <summary>Gets the maximum compute dispatch group count in Y.</summary>
+    public int MaximumComputeWorkGroupCountY { get; }
+
+    /// <summary>Gets the maximum compute dispatch group count in Z.</summary>
+    public int MaximumComputeWorkGroupCountZ { get; }
 
     /// <summary>Gets the maximum compute work-group invocation count.</summary>
     public int MaximumComputeWorkGroupInvocations { get; }

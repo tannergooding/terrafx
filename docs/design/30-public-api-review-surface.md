@@ -4331,6 +4331,9 @@ public sealed class GraphicsLimits
         int maximumComputeWorkGroupSizeX,
         int maximumComputeWorkGroupSizeY,
         int maximumComputeWorkGroupSizeZ,
+        int maximumComputeWorkGroupCountX,
+        int maximumComputeWorkGroupCountY,
+        int maximumComputeWorkGroupCountZ,
         int maximumComputeWorkGroupInvocations,
         int maximumVertexInputAttributes,
         int maximumVertexInputBindings,
@@ -4339,6 +4342,9 @@ public sealed class GraphicsLimits
     public int MaximumArrayLayers { get; }
     public long MaximumBufferByteLength { get; }
     public int MaximumColorAttachments { get; }
+    public int MaximumComputeWorkGroupCountX { get; }
+    public int MaximumComputeWorkGroupCountY { get; }
+    public int MaximumComputeWorkGroupCountZ { get; }
     public int MaximumComputeWorkGroupInvocations { get; }
     public int MaximumComputeWorkGroupSizeX { get; }
     public int MaximumComputeWorkGroupSizeY { get; }

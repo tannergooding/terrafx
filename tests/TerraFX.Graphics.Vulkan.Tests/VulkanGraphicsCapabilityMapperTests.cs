@@ -38,6 +38,9 @@ internal sealed class VulkanGraphicsCapabilityMapperTests
         limits.maxComputeWorkGroupSize[0] = 1024;
         limits.maxComputeWorkGroupSize[1] = 1024;
         limits.maxComputeWorkGroupSize[2] = 64;
+        limits.maxComputeWorkGroupCount[0] = 128;
+        limits.maxComputeWorkGroupCount[1] = 256;
+        limits.maxComputeWorkGroupCount[2] = 512;
         limits.maxComputeWorkGroupInvocations = 1024;
         limits.maxVertexInputAttributes = 32;
         limits.maxVertexInputBindings = 32;
@@ -126,10 +129,28 @@ internal sealed class VulkanGraphicsCapabilityMapperTests
         Assert.That(mapped.MaximumComputeWorkGroupSizeX, Is.EqualTo(1024));
         Assert.That(mapped.MaximumComputeWorkGroupSizeY, Is.EqualTo(1024));
         Assert.That(mapped.MaximumComputeWorkGroupSizeZ, Is.EqualTo(64));
+        Assert.That(mapped.MaximumComputeWorkGroupCountX, Is.EqualTo(128));
+        Assert.That(mapped.MaximumComputeWorkGroupCountY, Is.EqualTo(256));
+        Assert.That(mapped.MaximumComputeWorkGroupCountZ, Is.EqualTo(512));
         Assert.That(mapped.MaximumComputeWorkGroupInvocations, Is.EqualTo(1024));
         Assert.That(mapped.MaximumVertexInputAttributes, Is.EqualTo(32));
         Assert.That(mapped.MaximumVertexInputBindings, Is.EqualTo(32));
         Assert.That(mapped.MaximumBufferByteLength, Is.EqualTo(1L << 30));
+    }
+
+    [TestCase(0)]
+    [TestCase(1)]
+    [TestCase(2)]
+    public void LimitsRejectNonpositiveNativeDispatchCounts(int axis)
+    {
+        var limits = CreateValidLimits();
+        limits.maxComputeWorkGroupCount[axis] = 0;
+
+        _ = Assert.Throws<ArgumentOutOfRangeException>(
+            () => VulkanGraphicsCapabilityMapper.CreateLimits(
+                limits,
+                maximumBufferByteLength: 1UL << 30,
+                samplerAnisotropySupported: false));
     }
 
     [Test]
