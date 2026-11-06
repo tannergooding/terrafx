@@ -73,7 +73,7 @@ public sealed partial class EngineHost : IAsyncDisposable
         _assets = assets;
         _graphicsDevice = graphicsDevice;
         _persistence = new WorldPersistence(assets, options.PersistenceMetadata);
-        _renderer = Renderer.CreateHeadless();
+        _renderer = Renderer.Create(graphicsDevice);
         _ownerThread = new Thread(RunOwnerLoop) {
             IsBackground = true,
             Name = "TerraFX.EngineHost",

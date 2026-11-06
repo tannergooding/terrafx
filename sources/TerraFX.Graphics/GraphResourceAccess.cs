@@ -12,6 +12,7 @@ internal readonly struct GraphResourceAccess
     private readonly GraphBufferRange _bufferRange;
     private readonly GraphBufferUsage? _bufferUsage;
     private readonly bool _contentsValid;
+    private readonly GraphResourceState? _requiredStateOverride;
     private readonly GraphTextureRange _textureRange;
     private readonly GraphTextureUsage? _textureUsage;
 
@@ -50,9 +51,51 @@ internal readonly struct GraphResourceAccess
         _attachmentStoreAction = null;
         _attachmentUsage = null;
         _contentsValid = contentsValid;
+        _requiredStateOverride = null;
         _bufferRange = range;
         _bufferUsage = usage;
         _textureRange = default;
+        _textureUsage = null;
+    }
+
+    internal GraphResourceAccess(
+        RenderPassId passId,
+        GraphTextureVersion version,
+        GraphTextureRange range,
+        GraphResourceState requiredState,
+        bool contentsValid)
+    {
+        if (!passId.IsValid)
+        {
+            throw new ArgumentException("The graph pass ID must be valid.", nameof(passId));
+        }
+
+        ArgumentNullException.ThrowIfNull(version);
+
+        if (!range.IsWithin(version.Range))
+        {
+            throw new ArgumentException("The presentation access range must fit its graph version.", nameof(range));
+        }
+
+        if (requiredState != GraphResourceState.Present)
+        {
+            throw new ArgumentOutOfRangeException(nameof(requiredState));
+        }
+
+        DeviceEpoch = version.DeviceEpoch;
+        IsTexture = true;
+        IsWrite = false;
+        PassId = passId;
+        ResourceId = version.ResourceId;
+        Version = version.Version;
+        _attachmentLoadAction = null;
+        _attachmentStoreAction = null;
+        _attachmentUsage = null;
+        _contentsValid = contentsValid;
+        _requiredStateOverride = requiredState;
+        _bufferRange = default;
+        _bufferUsage = null;
+        _textureRange = range;
         _textureUsage = null;
     }
 
@@ -91,6 +134,7 @@ internal readonly struct GraphResourceAccess
         _attachmentStoreAction = null;
         _attachmentUsage = null;
         _contentsValid = contentsValid;
+        _requiredStateOverride = null;
         _bufferRange = default;
         _bufferUsage = null;
         _textureRange = range;
@@ -150,6 +194,7 @@ internal readonly struct GraphResourceAccess
         _attachmentStoreAction = storeAction;
         _attachmentUsage = attachmentUsage;
         _contentsValid = contentsValid;
+        _requiredStateOverride = null;
         _bufferRange = default;
         _bufferUsage = null;
         _textureRange = range;
@@ -180,6 +225,11 @@ internal readonly struct GraphResourceAccess
     {
         get
         {
+            if (_requiredStateOverride is GraphResourceState requiredState)
+            {
+                return requiredState;
+            }
+
             if (_attachmentUsage is TextureUsage attachmentUsage)
             {
                 return attachmentUsage switch {

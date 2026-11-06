@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using TerraFX.Assets;
 using TerraFX.Entities;
+using TerraFX.Graphics;
 using TerraFX.Scenes;
 
 namespace TerraFX.Rendering;
@@ -12,8 +13,11 @@ namespace TerraFX.Rendering;
 /// <summary>Creates immutable CPU render snapshots from committed World state.</summary>
 public sealed partial class Renderer
 {
-    private Renderer()
+    private readonly GraphicsDevice? _graphicsDevice;
+
+    private Renderer(GraphicsDevice? graphicsDevice)
     {
+        _graphicsDevice = graphicsDevice;
     }
 
     /// <summary>Creates the opaque per-World CPU extraction registration.</summary>
@@ -23,7 +27,7 @@ public sealed partial class Renderer
 
     /// <summary>Creates a Renderer that performs CPU extraction without activating a graphics device.</summary>
     /// <returns>The headless Renderer service.</returns>
-    public static Renderer CreateHeadless() => new();
+    public static Renderer CreateHeadless() => new(graphicsDevice: null);
 
     /// <summary>Registers the built-in native Texture, Atlas, and Material asset codecs with an Assets builder.</summary>
     /// <param name="builder">The asset-store builder whose schema registry contains the Rendering schemas.</param>
@@ -37,6 +41,9 @@ public sealed partial class Renderer
         _ = builder.RegisterCodec(new RenderAtlasAssetCodec());
         return builder.RegisterCodec(new RenderMaterialAssetCodec());
     }
+
+    internal static Renderer Create(GraphicsDevice? graphicsDevice)
+        => new(graphicsDevice);
 
     private sealed class BuiltInCpuExtractionSupportRegistration : IWorldCpuExtractionSupportRegistration
     {

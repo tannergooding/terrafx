@@ -4931,6 +4931,7 @@ public sealed class RenderGraph
     public GraphTextureVersion WriteColorAttachment(RenderPassId pass, GraphTextureVersion previousVersion, GraphTextureRange range, AttachmentLoadAction loadAction, AttachmentStoreAction storeAction, TerraFX.Numerics.Vector4 clearColor);
     public GraphTextureVersion WriteDepthAttachment(RenderPassId pass, GraphTextureVersion previousVersion, GraphTextureRange range, AttachmentLoadAction loadAction, AttachmentStoreAction storeAction, float clearDepth);
     public GraphTextureVersion? PresentationSource { get; }
+    public GraphTextureVersion OffscreenColorTargetVersion { get; }
     public void SetPresentationSource(GraphTextureVersion version);
     public RenderGraphCompileResponse Compile();
 }

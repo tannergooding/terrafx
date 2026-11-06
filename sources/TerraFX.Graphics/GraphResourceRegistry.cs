@@ -172,6 +172,33 @@ internal sealed class GraphResourceRegistry
         return _passRegistry.AddPass(description);
     }
 
+    internal RenderPassId AddPresentationSourcePass(GraphTextureVersion version, GraphTextureRange range)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(version);
+        var resource = GetTextureResource(version);
+        var passes = _passRegistry.Passes;
+        var predecessors = ImmutableArray.CreateBuilder<RenderPassId>(passes.Length);
+
+        foreach (var pass in passes)
+        {
+            predecessors.Add(pass.Id);
+        }
+
+        var passId = _passRegistry.AddPass(new RenderPassDescription(
+            "TerraFX.Presentation",
+            int.MaxValue,
+            predecessors.MoveToImmutable(),
+            hasExternalSideEffects: true));
+        _accesses.Add(new GraphResourceAccess(
+            passId,
+            version,
+            range,
+            GraphResourceState.Present,
+            resource.IsInitialized(version, range)));
+        return passId;
+    }
+
     internal GraphBufferVersion CreateTransientBuffer(BufferDescription description)
     {
         EnsureOwnerThread();
@@ -305,6 +332,28 @@ internal sealed class GraphResourceRegistry
         return version;
     }
 
+    internal bool IsTextureCurrentVersion(GraphTextureVersion version)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(version);
+        return ReferenceEquals(GetTextureResource(version).CurrentVersion, version);
+    }
+
+    internal bool IsTextureImportedFrom(GraphTextureVersion version, GpuTexture texture)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(version);
+        ArgumentNullException.ThrowIfNull(texture);
+        return ReferenceEquals(GetTextureResource(version).ImportRecord?.Texture, texture);
+    }
+
+    internal bool IsTextureInitialized(GraphTextureVersion version, GraphTextureRange range)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(version);
+        return GetTextureResource(version).IsInitialized(version, range);
+    }
+
     internal void ReadBuffer(
         RenderPassId passId,
         GraphBufferVersion version,
@@ -358,6 +407,7 @@ internal sealed class GraphResourceRegistry
     internal GraphResourceValidationResult ValidateCompilation()
     {
         EnsureOwnerThread();
+        EnsureDeviceReady();
 
         var importsValid = !HasInvalidImports;
         var contentsValid = !HasUninitializedReads;

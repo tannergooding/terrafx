@@ -19,6 +19,7 @@ using TerraFX.Graphics.Vulkan;
 using TerraFX.Hosting;
 using TerraFX.Numerics;
 using TerraFX.Platform;
+using TerraFX.Rendering;
 
 namespace TerraFX.Runtime.Tests.Hosting;
 
@@ -664,6 +665,145 @@ internal sealed partial class EngineHostOptionsTests
             {
                 buffer?.Dispose();
             }
+
+            var targetExtent = new PixelSize(4, 4);
+            using var target = graphicsDevice.CreateTextureAsync(
+                new TextureDescription(
+                    TextureDimension.Dimension2D,
+                    targetExtent.Width,
+                    targetExtent.Height,
+                    depth: 1,
+                    arrayLayers: 1,
+                    mipLevels: 1,
+                    format: TextureFormat.Rgba8Unorm,
+                    usage: TextureUsage.ColorAttachment | TextureUsage.CopySource,
+                    debugName: "render-graph-offscreen-target"))
+                .GetAwaiter()
+                .GetResult();
+            var targetRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+            var snapshotId = Guid.NewGuid();
+            var worldGuid = Guid.NewGuid();
+
+            var graph = new RenderGraph(new RenderGraphOptions(
+                snapshotId,
+                worldGuid,
+                0,
+                RenderFrameDimension.TwoDimensional,
+                SpatialProfileId.Default,
+                1,
+                [Guid.NewGuid()],
+                targetExtent,
+                target));
+            var outputVersion = graph.OffscreenColorTargetVersion;
+            var clearPass = graph.AddRasterPass(new RenderPassDescription("offscreen-clear", 0, [], false));
+            var finalVersion = graph.WriteColorAttachment(
+                clearPass,
+                outputVersion,
+                targetRange,
+                AttachmentLoadAction.Clear,
+                AttachmentStoreAction.Store,
+                new Vector4(0.25f, 0.5f, 0.75f, 1.0f));
+            graph.SetPresentationSource(finalVersion);
+
+            var compiled = graph.Compile();
+            Assert.That(compiled.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
+            Assert.That(compiled.Diagnostics, Is.Empty);
+            var compiledPlan = compiled.Plan
+                ?? throw new InvalidOperationException("A compiled Vulkan render graph has no plan.");
+            Assert.That(compiledPlan.SnapshotId, Is.EqualTo(snapshotId));
+            Assert.That(compiledPlan.WorldGuid, Is.EqualTo(worldGuid));
+            Assert.That(compiledPlan.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
+            Assert.That(compiledPlan.OffscreenColorTarget, Is.SameAs(target));
+            Assert.That(compiledPlan.SurfaceEpoch, Is.Zero);
+            Assert.That(compiledPlan.SwapchainEpoch, Is.Zero);
+
+            var uninitializedGraph = new RenderGraph(new RenderGraphOptions(
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                0,
+                RenderFrameDimension.TwoDimensional,
+                SpatialProfileId.Default,
+                1,
+                [Guid.NewGuid()],
+                targetExtent,
+                target));
+            var uninitializedTarget = uninitializedGraph.OffscreenColorTargetVersion;
+            var targetClearPass = uninitializedGraph.AddRasterPass(new RenderPassDescription("target-clear", 0, [], false));
+            var initializedTarget = uninitializedGraph.WriteColorAttachment(
+                targetClearPass,
+                uninitializedTarget,
+                targetRange,
+                AttachmentLoadAction.Clear,
+                AttachmentStoreAction.Store,
+                new Vector4(0.0f, 0.0f, 0.0f, 1.0f));
+            var transientBuffer = uninitializedGraph.CreateTransientBuffer(
+                new BufferDescription(
+                    16,
+                    BufferUsage.Storage,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: 4,
+                    debugName: "uninitialized-read-buffer"));
+            var uninitializedReadPass = uninitializedGraph.AddComputePass(
+                new RenderPassDescription("uninitialized-read", 1, [], false));
+            uninitializedGraph.ReadBuffer(
+                uninitializedReadPass,
+                transientBuffer,
+                GraphBufferUsage.StorageRead,
+                new GraphBufferRange(0, 16));
+            uninitializedGraph.SetPresentationSource(initializedTarget);
+
+            var rejectedRead = uninitializedGraph.Compile();
+            Assert.That(rejectedRead.Status, Is.EqualTo(RenderGraphCompileStatus.Rejected));
+            Assert.That(rejectedRead.Plan, Is.Null);
+            Assert.That(rejectedRead.Diagnostics.Length, Is.EqualTo(1));
+            Assert.That(rejectedRead.Diagnostics[0].Code, Is.EqualTo("render-graph.uninitialized-read"));
+
+            var cycleGraph = new RenderGraph(new RenderGraphOptions(
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                0,
+                RenderFrameDimension.TwoDimensional,
+                SpatialProfileId.Default,
+                1,
+                [Guid.NewGuid()],
+                targetExtent,
+                target));
+            var cycleTarget = cycleGraph.OffscreenColorTargetVersion;
+            var cycleClearPass = cycleGraph.AddRasterPass(new RenderPassDescription("cycle-target-clear", 0, [], false));
+            var cycleOutput = cycleGraph.WriteColorAttachment(
+                cycleClearPass,
+                cycleTarget,
+                targetRange,
+                AttachmentLoadAction.Clear,
+                AttachmentStoreAction.Store,
+                new Vector4(0.0f, 0.0f, 0.0f, 1.0f));
+            var cycleReader = cycleGraph.AddComputePass(new RenderPassDescription("cycle-reader", 1, [], false));
+            var cycleWriter = cycleGraph.AddComputePass(
+                new RenderPassDescription("cycle-writer", 2, [cycleReader], false));
+            var cycleBuffer = cycleGraph.CreateTransientBuffer(
+                new BufferDescription(
+                    16,
+                    BufferUsage.Storage,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: 4,
+                    debugName: "cycle-buffer"));
+            var writtenCycleBuffer = cycleGraph.WriteBuffer(
+                cycleWriter,
+                cycleBuffer,
+                GraphBufferUsage.StorageWrite,
+                new GraphBufferRange(0, 16));
+            cycleGraph.ReadBuffer(
+                cycleReader,
+                writtenCycleBuffer,
+                GraphBufferUsage.StorageRead,
+                new GraphBufferRange(0, 16));
+            cycleGraph.SetPresentationSource(cycleOutput);
+
+            var rejectedCycle = cycleGraph.Compile();
+            Assert.That(rejectedCycle.Status, Is.EqualTo(RenderGraphCompileStatus.Rejected));
+            Assert.That(rejectedCycle.Plan, Is.Null);
+            Assert.That(rejectedCycle.Diagnostics.Length, Is.EqualTo(1));
+            Assert.That(rejectedCycle.Diagnostics[0].Code, Is.EqualTo("render-graph.dependency-cycle"));
         }
         finally
         {

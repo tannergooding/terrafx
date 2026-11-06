@@ -1,0 +1,506 @@
+// Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
+
+using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Diagnostics;
+using System.Threading;
+using TerraFX;
+using TerraFX.Graphics;
+using TerraFX.Numerics;
+
+namespace TerraFX.Rendering;
+
+/// <summary>Declares range-scoped GPU work for one immutable render snapshot.</summary>
+public sealed class RenderGraph
+{
+    private const string AccessInvalidCode = "render-graph.access-invalid";
+    private const string DependencyCycleCode = "render-graph.dependency-cycle";
+    private const string ImportInvalidCode = "render-graph.import-invalid";
+    private const string PresentationSourceInvalidCode = "render-graph.presentation-source-invalid";
+    private const string UninitializedReadCode = "render-graph.uninitialized-read";
+    private static long s_nextGraphOwnerId;
+    private readonly List<RenderGraphAttachmentWrite> _attachmentWrites = [];
+    private RenderGraphCompileResponse? _compiledResponse;
+    private readonly uint _graphOwnerId;
+    private bool _isSealed;
+    private readonly RenderGraphOptions _options;
+    private readonly Dictionary<RenderPassId, RenderGraphPassKind> _passKinds = [];
+    private RenderPassId? _presentationPassId;
+    private GraphTextureVersion? _presentationSource;
+    private readonly GraphResourceRegistry _resources;
+
+    /// <summary>Initializes a graph from immutable snapshot metadata and a real offscreen target.</summary>
+    /// <param name="options">The snapshot identity and output-target contract.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
+    /// <exception cref="InvalidOperationException">The selected GraphicsDevice is not ready.</exception>
+    public RenderGraph(RenderGraphOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        _options = options;
+        _graphOwnerId = AllocateGraphOwnerId();
+        var target = options.OffscreenColorTarget;
+        var device = target.ResourceOwner.Device;
+        _resources = new GraphResourceRegistry(device, _graphOwnerId);
+        var outputRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+        (var initialState, var contentsValid, _, _) = target.ResourceOwner.CaptureGraphImportState(outputRange);
+        OffscreenColorTargetVersion = _resources.ImportTexture(
+            target,
+            outputRange,
+            new GraphImportOptions(initialState, contentsValid, GraphImportCompletionPolicy.WaitForLastUse));
+    }
+
+    /// <summary>Gets the automatically imported mip-0/layer-0 color version of the offscreen target.</summary>
+    public GraphTextureVersion OffscreenColorTargetVersion { get; }
+
+    /// <summary>Gets the selected presentation source version.</summary>
+    public GraphTextureVersion? PresentationSource => _presentationSource;
+
+    private static uint AllocateGraphOwnerId()
+    {
+        var graphOwnerId = Interlocked.Increment(ref s_nextGraphOwnerId);
+
+        if (graphOwnerId is <= 0 or > uint.MaxValue)
+        {
+            throw new InvalidOperationException("The process exhausted its render-graph identity range.");
+        }
+
+        return (uint)graphOwnerId;
+    }
+
+    /// <summary>Adds one compute pass.</summary>
+    /// <param name="description">The immutable pass ordering and predecessor declaration.</param>
+    /// <returns>The graph-owned pass identity.</returns>
+    public RenderPassId AddComputePass(RenderPassDescription description)
+    {
+        EnsureCanMutate();
+        ArgumentNullException.ThrowIfNull(description);
+        var passId = _resources.AddPass(description);
+        _passKinds.Add(passId, RenderGraphPassKind.Compute);
+        return passId;
+    }
+
+    /// <summary>Adds one copy pass.</summary>
+    /// <param name="description">The immutable pass ordering and predecessor declaration.</param>
+    /// <returns>The graph-owned pass identity.</returns>
+    public RenderPassId AddCopyPass(RenderPassDescription description)
+    {
+        EnsureCanMutate();
+        ArgumentNullException.ThrowIfNull(description);
+        var passId = _resources.AddPass(description);
+        _passKinds.Add(passId, RenderGraphPassKind.Copy);
+        return passId;
+    }
+
+    /// <summary>Adds one raster pass.</summary>
+    /// <param name="description">The immutable pass ordering and predecessor declaration.</param>
+    /// <returns>The graph-owned pass identity.</returns>
+    public RenderPassId AddRasterPass(RenderPassDescription description)
+    {
+        EnsureCanMutate();
+        ArgumentNullException.ThrowIfNull(description);
+        var passId = _resources.AddPass(description);
+        _passKinds.Add(passId, RenderGraphPassKind.Raster);
+        return passId;
+    }
+
+    /// <summary>Compiles graph declarations into an immutable plan or exact rejection diagnostics.</summary>
+    /// <returns>A compiled plan with no diagnostics, or diagnostics with no plan.</returns>
+    public RenderGraphCompileResponse Compile()
+    {
+        if (_compiledResponse is not null)
+        {
+            return _compiledResponse;
+        }
+
+        var validation = _resources.ValidateCompilation();
+        var presentationSourceValid = IsValidPresentationSource();
+
+        if (!validation.IsValid || !presentationSourceValid)
+        {
+            return new RenderGraphCompileResponse(
+                RenderGraphCompileStatus.Rejected,
+                plan: null,
+                CreateDiagnostics(validation, presentationSourceValid));
+        }
+
+        if (!_presentationPassId.HasValue)
+        {
+            _presentationPassId = _resources.AddPresentationSourcePass(
+                _presentationSource
+                    ?? throw new InvalidOperationException("The graph has no selected presentation source."),
+                new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
+            _passKinds.Add(_presentationPassId.Value, RenderGraphPassKind.Presentation);
+            _isSealed = true;
+            validation = _resources.ValidateCompilation();
+        }
+
+        if (!validation.IsValid)
+        {
+            return new RenderGraphCompileResponse(
+                RenderGraphCompileStatus.Rejected,
+                plan: null,
+                CreateDiagnostics(validation, presentationSourceValid));
+        }
+
+        var plan = new RenderGraphPlan(
+            _options,
+            _resources.DeviceEpoch,
+            validation.OrderedPasses,
+            GetOrderedPassKinds(validation.OrderedPasses),
+            _resources.Passes,
+            validation.StateTransitions,
+            _resources.Accesses,
+            _resources.BufferImports,
+            _resources.TextureImports,
+            [.. _attachmentWrites]);
+        _compiledResponse = new RenderGraphCompileResponse(RenderGraphCompileStatus.Compiled, plan, []);
+        _isSealed = true;
+        return _compiledResponse;
+    }
+
+    /// <summary>Creates one transient buffer whose version 0 has invalid contents.</summary>
+    /// <param name="description">The admitted buffer description.</param>
+    /// <returns>The graph-owned version 0.</returns>
+    public GraphBufferVersion CreateTransientBuffer(BufferDescription description)
+    {
+        EnsureCanMutate();
+        return _resources.CreateTransientBuffer(description);
+    }
+
+    /// <summary>Creates one transient texture whose version 0 has invalid contents.</summary>
+    /// <param name="description">The admitted texture description.</param>
+    /// <returns>The graph-owned version 0.</returns>
+    public GraphTextureVersion CreateTransientTexture(TextureDescription description)
+    {
+        EnsureCanMutate();
+        return _resources.CreateTransientTexture(description);
+    }
+
+    /// <summary>Imports the exact selected buffer range and its actual owner state.</summary>
+    /// <param name="buffer">The same-device live buffer.</param>
+    /// <param name="range">The exact nonempty byte range.</param>
+    /// <param name="options">The caller's actual state/content declaration and completion policy.</param>
+    /// <returns>The graph-owned imported version 0.</returns>
+    public GraphBufferVersion ImportBuffer(GpuBuffer buffer, GraphBufferRange range, GraphImportOptions options)
+    {
+        EnsureCanMutate();
+        return _resources.ImportBuffer(buffer, range, options);
+    }
+
+    /// <summary>Imports the exact selected texture subresources and their actual owner state.</summary>
+    /// <param name="texture">The same-device live texture.</param>
+    /// <param name="range">The exact nonempty mip/layer/aspect range.</param>
+    /// <param name="options">The caller's actual state/content declaration and completion policy.</param>
+    /// <returns>The graph-owned imported version 0.</returns>
+    public GraphTextureVersion ImportTexture(GpuTexture texture, GraphTextureRange range, GraphImportOptions options)
+    {
+        EnsureCanMutate();
+        return _resources.ImportTexture(texture, range, options);
+    }
+
+    /// <summary>Declares a buffer read by one pass.</summary>
+    /// <param name="pass">The graph-owned pass identity.</param>
+    /// <param name="version">The graph-owned resource version.</param>
+    /// <param name="usage">The typed read usage.</param>
+    /// <param name="range">The exact accessed byte range.</param>
+    public void ReadBuffer(RenderPassId pass, GraphBufferVersion version, GraphBufferUsage usage, GraphBufferRange range)
+    {
+        EnsureCanMutate();
+        ValidateBufferUsage(pass, usage, isWrite: false);
+        _resources.ReadBuffer(pass, version, range, usage);
+    }
+
+    /// <summary>Declares a texture read by one pass.</summary>
+    /// <param name="pass">The graph-owned pass identity.</param>
+    /// <param name="version">The graph-owned resource version.</param>
+    /// <param name="usage">The typed read usage.</param>
+    /// <param name="range">The exact accessed mip/layer/aspect range.</param>
+    public void ReadTexture(RenderPassId pass, GraphTextureVersion version, GraphTextureUsage usage, GraphTextureRange range)
+    {
+        EnsureCanMutate();
+        ValidateTextureUsage(pass, usage, isWrite: false);
+        _resources.ReadTexture(pass, version, range, usage);
+    }
+
+    /// <summary>Selects the latest initialized mip-0/layer-0 color version of the offscreen target.</summary>
+    /// <param name="version">The graph-owned version of the selected output target.</param>
+    /// <exception cref="ArgumentException">The version is not a current, exact offscreen color-target version.</exception>
+    /// <exception cref="InvalidOperationException">A presentation source was already selected.</exception>
+    public void SetPresentationSource(GraphTextureVersion version)
+    {
+        EnsureCanMutate();
+        ArgumentNullException.ThrowIfNull(version);
+
+        var target = _options.OffscreenColorTarget;
+        var requiredRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+
+        if ((version.DeviceEpoch != _resources.DeviceEpoch)
+            || (version.Range != requiredRange)
+            || (version.Description.Dimension != TextureDimension.Dimension2D)
+            || (version.Description.Width != _options.TargetExtent.Width)
+            || (version.Description.Height != _options.TargetExtent.Height)
+            || ((version.Description.Usage & TextureUsage.ColorAttachment) == 0)
+            || !_resources.IsTextureImportedFrom(version, target)
+            || !_resources.IsTextureCurrentVersion(version))
+        {
+            throw new ArgumentException("The presentation source must be the current mip-0/layer-0 version of the selected offscreen target.", nameof(version));
+        }
+
+        _presentationSource = version;
+    }
+
+    /// <summary>Declares a storage or copy write and returns the next version.</summary>
+    /// <param name="pass">The graph-owned pass identity.</param>
+    /// <param name="previousVersion">The current graph-owned version.</param>
+    /// <param name="usage">The typed write usage.</param>
+    /// <param name="range">The exact written byte range.</param>
+    /// <returns>The next version with only the written range initialized.</returns>
+    public GraphBufferVersion WriteBuffer(
+        RenderPassId pass,
+        GraphBufferVersion previousVersion,
+        GraphBufferUsage usage,
+        GraphBufferRange range)
+    {
+        EnsureCanMutate();
+        ValidateBufferUsage(pass, usage, isWrite: true);
+        return _resources.WriteBuffer(pass, previousVersion, range, usage);
+    }
+
+    /// <summary>Declares a color-attachment write and returns the next version.</summary>
+    /// <param name="pass">The raster pass identity.</param>
+    /// <param name="previousVersion">The current graph-owned version.</param>
+    /// <param name="range">The exact written mip/layer/aspect range.</param>
+    /// <param name="loadAction">The attachment load action.</param>
+    /// <param name="storeAction">The attachment store action.</param>
+    /// <param name="clearColor">The finite linear clear color used by <see cref="AttachmentLoadAction.Clear"/>.</param>
+    /// <returns>The next version with stored contents valid only for the written range.</returns>
+    public GraphTextureVersion WriteColorAttachment(
+        RenderPassId pass,
+        GraphTextureVersion previousVersion,
+        GraphTextureRange range,
+        AttachmentLoadAction loadAction,
+        AttachmentStoreAction storeAction,
+        Vector4 clearColor)
+    {
+        EnsureCanMutate();
+        ValidateRasterPass(pass);
+        ArgumentNullException.ThrowIfNull(previousVersion);
+
+        if (previousVersion.Description.Format is TextureFormat.D32Float)
+        {
+            throw new ArgumentException("A color attachment cannot use a depth format.", nameof(previousVersion));
+        }
+
+        if ((loadAction == AttachmentLoadAction.Clear) && !clearColor.IsFinite().All())
+        {
+            throw new ArgumentOutOfRangeException(nameof(clearColor), "A color attachment clear value must be finite.");
+        }
+
+        var version = _resources.WriteAttachment(pass, previousVersion, range, loadAction, storeAction);
+        _attachmentWrites.Add(new RenderGraphAttachmentWrite(
+            pass,
+            version,
+            range,
+            loadAction,
+            storeAction,
+            clearColor,
+            ClearDepth: 0.0f,
+            IsDepth: false));
+        return version;
+    }
+
+    /// <summary>Declares a depth-attachment write and returns the next version.</summary>
+    /// <param name="pass">The raster pass identity.</param>
+    /// <param name="previousVersion">The current graph-owned version.</param>
+    /// <param name="range">The exact written mip/layer/aspect range.</param>
+    /// <param name="loadAction">The attachment load action.</param>
+    /// <param name="storeAction">The attachment store action.</param>
+    /// <param name="clearDepth">The finite reversed-Z depth clear value in [0, 1].</param>
+    /// <returns>The next version with stored contents valid only for the written range.</returns>
+    public GraphTextureVersion WriteDepthAttachment(
+        RenderPassId pass,
+        GraphTextureVersion previousVersion,
+        GraphTextureRange range,
+        AttachmentLoadAction loadAction,
+        AttachmentStoreAction storeAction,
+        float clearDepth)
+    {
+        EnsureCanMutate();
+        ValidateRasterPass(pass);
+        ArgumentNullException.ThrowIfNull(previousVersion);
+
+        if (previousVersion.Description.Format is not TextureFormat.D32Float)
+        {
+            throw new ArgumentException("A depth attachment requires the D32Float format.", nameof(previousVersion));
+        }
+
+        if ((loadAction == AttachmentLoadAction.Clear)
+            && (!float.IsFinite(clearDepth) || (clearDepth < 0.0f) || (clearDepth > 1.0f)))
+        {
+            throw new ArgumentOutOfRangeException(nameof(clearDepth), "A depth clear value must be finite and in [0, 1].");
+        }
+
+        var version = _resources.WriteAttachment(pass, previousVersion, range, loadAction, storeAction);
+        _attachmentWrites.Add(new RenderGraphAttachmentWrite(
+            pass,
+            version,
+            range,
+            loadAction,
+            storeAction,
+            default,
+            clearDepth,
+            IsDepth: true));
+        return version;
+    }
+
+    /// <summary>Declares a storage or copy write and returns the next version.</summary>
+    /// <param name="pass">The graph-owned pass identity.</param>
+    /// <param name="previousVersion">The current graph-owned version.</param>
+    /// <param name="usage">The typed write usage.</param>
+    /// <param name="range">The exact written mip/layer/aspect range.</param>
+    /// <returns>The next version with only the written range initialized.</returns>
+    public GraphTextureVersion WriteTexture(
+        RenderPassId pass,
+        GraphTextureVersion previousVersion,
+        GraphTextureUsage usage,
+        GraphTextureRange range)
+    {
+        EnsureCanMutate();
+        ValidateTextureUsage(pass, usage, isWrite: true);
+        return _resources.WriteTexture(pass, previousVersion, range, usage);
+    }
+
+    private Diagnostic CreateDiagnostic(string code, string message)
+        => new(
+            code,
+            DiagnosticSeverity.Error,
+            Stopwatch.GetTimestamp(),
+            hostId: null,
+            worldGuid: _options.WorldGuid,
+            deviceId: null,
+            surfaceId: null,
+            deviceEpoch: _resources.DeviceEpoch,
+            surfaceEpoch: null,
+            swapchainEpoch: null,
+            tick: _options.TickIndex,
+            systemId: null,
+            passId: null,
+            assetId: null,
+            commandIdentity: null,
+            operation: "RenderGraph.Compile",
+            nativeResult: null,
+            message: message,
+            context: []);
+
+    private ImmutableArray<Diagnostic> CreateDiagnostics(GraphResourceValidationResult validation, bool presentationSourceValid)
+    {
+        var diagnostics = ImmutableArray.CreateBuilder<Diagnostic>(5);
+
+        if (!validation.ImportsValid)
+        {
+            diagnostics.Add(CreateDiagnostic(ImportInvalidCode, "An imported range no longer matches its captured owner state, contents, completion policy, or nonoverlap requirement."));
+        }
+
+        if (!validation.AccessesValid)
+        {
+            diagnostics.Add(CreateDiagnostic(AccessInvalidCode, "The graph contains overlapping or incompatible accesses within one pass."));
+        }
+
+        if (!validation.ContentsValid)
+        {
+            diagnostics.Add(CreateDiagnostic(UninitializedReadCode, "A graph read observes contents that were not initialized for the exact resource range."));
+        }
+
+        if (!validation.DependenciesValid)
+        {
+            diagnostics.Add(CreateDiagnostic(DependencyCycleCode, "The declared and resource-derived pass dependencies contain a cycle."));
+        }
+
+        if (!presentationSourceValid)
+        {
+            diagnostics.Add(CreateDiagnostic(PresentationSourceInvalidCode, "The graph has no initialized final color version for the selected offscreen target."));
+        }
+
+        return diagnostics.ToImmutable();
+    }
+
+    private void EnsureCanMutate()
+    {
+        if (_isSealed)
+        {
+            throw new InvalidOperationException("A successfully compiled render graph is immutable.");
+        }
+    }
+
+    private ImmutableArray<RenderGraphPassKind> GetOrderedPassKinds(ImmutableArray<RenderPassId> orderedPasses)
+    {
+        var passKinds = ImmutableArray.CreateBuilder<RenderGraphPassKind>(orderedPasses.Length);
+
+        foreach (var pass in orderedPasses)
+        {
+            passKinds.Add(GetPassKind(pass));
+        }
+
+        return passKinds.MoveToImmutable();
+    }
+
+    private RenderGraphPassKind GetPassKind(RenderPassId pass)
+    {
+        if (_passKinds.TryGetValue(pass, out var passKind))
+        {
+            return passKind;
+        }
+
+        throw new ArgumentException("The pass ID is not registered in this graph.", nameof(pass));
+    }
+
+    private bool IsValidPresentationSource()
+        => (_presentationSource is GraphTextureVersion version)
+            && _resources.IsTextureImportedFrom(version, _options.OffscreenColorTarget)
+            && _resources.IsTextureCurrentVersion(version)
+            && _resources.IsTextureInitialized(version, version.Range);
+
+    private void ValidateBufferUsage(RenderPassId pass, GraphBufferUsage usage, bool isWrite)
+    {
+        var passKind = GetPassKind(pass);
+        var valid = passKind switch {
+            RenderGraphPassKind.Copy => isWrite
+                ? (usage == GraphBufferUsage.CopyDestination)
+                : (usage == GraphBufferUsage.CopySource),
+            RenderGraphPassKind.Raster => usage is not (GraphBufferUsage.CopySource or GraphBufferUsage.CopyDestination),
+            RenderGraphPassKind.Compute => usage is not (GraphBufferUsage.VertexRead or GraphBufferUsage.IndexRead or GraphBufferUsage.CopySource or GraphBufferUsage.CopyDestination),
+            _ => false,
+        };
+
+        if (!valid)
+        {
+            throw new ArgumentException("The buffer usage is not legal for the selected pass kind.", nameof(usage));
+        }
+    }
+
+    private void ValidateRasterPass(RenderPassId pass)
+    {
+        if (GetPassKind(pass) != RenderGraphPassKind.Raster)
+        {
+            throw new ArgumentException("Attachment writes require a raster pass.", nameof(pass));
+        }
+    }
+
+    private void ValidateTextureUsage(RenderPassId pass, GraphTextureUsage usage, bool isWrite)
+    {
+        var passKind = GetPassKind(pass);
+        var valid = passKind switch {
+            RenderGraphPassKind.Copy => isWrite
+                ? (usage == GraphTextureUsage.CopyDestination)
+                : (usage == GraphTextureUsage.CopySource),
+            RenderGraphPassKind.Raster or RenderGraphPassKind.Compute => usage is not (GraphTextureUsage.CopySource or GraphTextureUsage.CopyDestination),
+            _ => false,
+        };
+
+        if (!valid)
+        {
+            throw new ArgumentException("The texture usage is not legal for the selected pass kind.", nameof(usage));
+        }
+    }
+}
