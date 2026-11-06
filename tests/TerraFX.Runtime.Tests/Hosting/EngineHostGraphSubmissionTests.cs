@@ -121,6 +121,7 @@ internal sealed partial class EngineHostOptionsTests
         GpuPipeline? computePipeline = null;
         GpuSampler? frameSampler = null;
         RenderSnapshot? snapshot = null;
+        RenderSnapshot? secondSnapshot = null;
 
         try
         {
@@ -150,16 +151,13 @@ internal sealed partial class EngineHostOptionsTests
             _ = worldRegistrationBuilder.RegisterCpuExtractionSupport(Renderer.CreateCpuExtractionSupportRegistration());
             var worldRegistration = worldRegistrationBuilder.Build();
             World? world = null;
+            Entity cameraEntity = default;
             var cameraId = Guid.Empty;
             var targetExtent = new PixelSize(32, 32);
 
-            await engineHost.InvokeAsync(_ => {
-                world = _.CreateWorld(new WorldOptions(worldRegistration) {
-                    CpuWorkerCount = 0,
-                    InitialReplayLineageId = Guid.NewGuid(),
-                    WorldGuid = Guid.NewGuid(),
-                });
-                var camera = new SceneComponentDefinitions.CameraComponent(
+            static SceneComponentDefinitions.CameraComponent CreateCameraComponent(Vector4 clearColor)
+            {
+                return new(
                     (byte)CameraProjectionKind.Perspective,
                     float.Pi / 3.0f,
                     10.0f,
@@ -169,15 +167,24 @@ internal sealed partial class EngineHostOptionsTests
                     default,
                     new Vector4(0.0f, 0.0f, 1.0f, 1.0f),
                     (byte)(CameraClearFlags.Color | CameraClearFlags.Depth),
-                    new Vector4(0.5f, 0.5f, 0.5f, 1.0f),
+                    clearColor,
                     ulong.MaxValue,
                     order: 0);
+            }
+
+            await engineHost.InvokeAsync(_ => {
+                world = _.CreateWorld(new WorldOptions(worldRegistration) {
+                    CpuWorkerCount = 0,
+                    InitialReplayLineageId = Guid.NewGuid(),
+                    WorldGuid = Guid.NewGuid(),
+                });
+                var camera = CreateCameraComponent(new Vector4(0.5f, 0.5f, 0.5f, 1.0f));
                 var transform = new SceneComponentDefinitions.LocalTransformComponent(
                     Vector3.Zero,
                     Quaternion.Identity,
                     Vector3.One);
                 var rootPosition = new SceneComponentDefinitions.RootPositionComponent(default);
-                var cameraEntity = world.CreateEntity(new EntityDescription(components: [
+                cameraEntity = world.CreateEntity(new EntityDescription(components: [
                     ComponentInitialization.Value(in camera),
                     ComponentInitialization.Value(in transform),
                     ComponentInitialization.Value(in rootPosition),
@@ -1336,8 +1343,54 @@ internal sealed partial class EngineHostOptionsTests
             var receipt = await renderer.SubmitAsync(renderSnapshot, plan).ConfigureAwait(false);
             RenderSubmissionReceipt? secondReceipt = null;
 
+            using (var firstReadback = await graphicsDevice.ReadbackTextureAsync(
+                target,
+                new TextureSubresource(0, 0, TextureAspect.Color))
+                .ConfigureAwait(false))
             {
-                var secondGraph = renderer.BuildGraph(renderSnapshot, target);
+                var firstPixel = new byte[sizeof(uint)];
+
+                using (var readLease = firstReadback.AcquireReadLease())
+                {
+                    var copyAction = new ReadbackCopyAction(firstPixel);
+                    readLease.UseWindow(0, firstPixel.Length, ref copyAction);
+                }
+
+                Assert.Multiple(() => {
+                    Assert.That(firstPixel[0], Is.InRange(127, 129));
+                    Assert.That(firstPixel[1], Is.InRange(127, 129));
+                    Assert.That(firstPixel[2], Is.InRange(127, 129));
+                    Assert.That(firstPixel[3], Is.EqualTo(255));
+                    Assert.That(renderSnapshot.Cameras[0].ClearColor, Is.EqualTo(new Vector4(0.5f, 0.5f, 0.5f, 1.0f)));
+                });
+            }
+
+            var selectedWorld = world
+                ?? throw new InvalidOperationException("The graph camera mutation has no live World.");
+            await engineHost.InvokeAsync(_ => {
+                var updatedCamera = CreateCameraComponent(new Vector4(0.0f, 0.0f, 0.0f, 1.0f));
+                selectedWorld.Set(cameraEntity, in updatedCamera);
+                var publication = selectedWorld.Step().Publication;
+                var extraction = renderer.Extract(
+                    selectedWorld,
+                    new RenderExtractionOptions3D(publication.Frame3, targetExtent, [cameraId]));
+
+                if (extraction.Status != RenderExtractionStatus.Extracted)
+                {
+                    throw new InvalidOperationException(
+                        $"{backend} updated graph camera extraction failed: {string.Join("; ", extraction.Diagnostics)}");
+                }
+
+                secondSnapshot = extraction.Snapshot
+                    ?? throw new InvalidOperationException("The successful updated extraction omitted its snapshot.");
+            }).ConfigureAwait(false);
+            var updatedSnapshot = secondSnapshot
+                ?? throw new InvalidOperationException("The updated camera extraction omitted its render snapshot.");
+            Assert.That(renderSnapshot.Cameras[0].ClearColor, Is.EqualTo(new Vector4(0.5f, 0.5f, 0.5f, 1.0f)));
+            Assert.That(updatedSnapshot.Cameras[0].ClearColor, Is.EqualTo(new Vector4(0.0f, 0.0f, 0.0f, 1.0f)));
+
+            {
+                var secondGraph = renderer.BuildGraph(updatedSnapshot, target);
                 var secondBufferBindings = ImmutableArray.CreateBuilder<BufferBinding>(
                     (useUniformBuffer ? 1 : 0) + (useStorageResources ? 1 : 0));
                 var secondTextureBindings = ImmutableArray.CreateBuilder<TextureBinding>(
@@ -1473,13 +1526,13 @@ internal sealed partial class EngineHostOptionsTests
                     new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
                     AttachmentLoadAction.Clear,
                     AttachmentStoreAction.Store,
-                    renderSnapshot.Cameras[0].ClearColor);
+                    updatedSnapshot.Cameras[0].ClearColor);
                 secondGraph.SetPresentationSource(secondOutputVersion);
                 var secondCompileResponse = secondGraph.Compile();
                 Assert.That(secondCompileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
                 var secondPlan = secondCompileResponse.Plan
                     ?? throw new InvalidOperationException("The second compiled graph response omitted its plan.");
-                secondReceipt = await renderer.SubmitAsync(renderSnapshot, secondPlan).ConfigureAwait(false);
+                secondReceipt = await renderer.SubmitAsync(updatedSnapshot, secondPlan).ConfigureAwait(false);
             }
 
             Assert.Multiple(() => {
@@ -1525,9 +1578,9 @@ internal sealed partial class EngineHostOptionsTests
             var expectedBlue = useStorageResources
                 ? (byte)255
                 : (useSampledTexture ? (byte)224 : (useUniformBuffer ? (byte)0 : (byte)255));
-            var expectedBackgroundRed = 128;
-            var expectedBackgroundGreen = 128;
-            var expectedBackgroundBlue = 128;
+            var expectedBackgroundRed = 0;
+            var expectedBackgroundGreen = 0;
+            var expectedBackgroundBlue = 0;
 
             for (var y = 0; y < readback.Height; y++)
             {
@@ -1557,9 +1610,9 @@ internal sealed partial class EngineHostOptionsTests
                 }
                 else
                 {
-                    Assert.That(padded[centerPixelOffset], Is.InRange(190, 192));
-                    Assert.That(padded[centerPixelOffset + 1], Is.InRange(63, 65));
-                    Assert.That(padded[centerPixelOffset + 2], Is.InRange(127, 129));
+                    Assert.That(padded[centerPixelOffset], Is.EqualTo(expectedBackgroundRed));
+                    Assert.That(padded[centerPixelOffset + 1], Is.EqualTo(expectedBackgroundGreen));
+                    Assert.That(padded[centerPixelOffset + 2], Is.EqualTo(expectedBackgroundBlue));
                 }
             });
 
@@ -1737,7 +1790,7 @@ internal sealed partial class EngineHostOptionsTests
                 + $"MultipleComputeStorageBuffers={useMultipleComputeStorageBuffers}; "
                 + $"TransientBufferAliasing={useTransientBufferAliasing}; "
                 + $"OverlappingTransientLifetimes={overlapTransientBufferLifetimes}; "
-                + $"CameraClear={renderSnapshot.Cameras[0].ClearColor}; "
+                + $"CameraClear={renderSnapshot.Cameras[0].ClearColor}->{updatedSnapshot.Cameras[0].ClearColor}; "
                 + $"Pixel={padded[centerPixelOffset]:X2}{padded[centerPixelOffset + 1]:X2}"
                 + $"{padded[centerPixelOffset + 2]:X2}{padded[centerPixelOffset + 3]:X2}; "
                 + $"DrawPixels={drawPixelCount}");
@@ -1745,6 +1798,7 @@ internal sealed partial class EngineHostOptionsTests
         finally
         {
             snapshot?.Dispose();
+            secondSnapshot?.Dispose();
             pipeline?.Dispose();
             computePipeline?.Dispose();
             frameSampler?.Dispose();
