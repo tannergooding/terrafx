@@ -14,6 +14,8 @@ internal sealed class VulkanBackendBuffer : IGraphicsBackendBuffer
     private int _descriptorSetReferenceCount;
     private bool _isDisposed;
     private bool _isStaging;
+    private VkAccessFlags2 _lastAccessMask;
+    private VkPipelineStageFlags2 _lastStageMask;
     private VkDeviceMemory _memory;
     private VkMemoryPropertyFlags _memoryProperties;
     private uint _memoryTypeIndex;
@@ -39,6 +41,8 @@ internal sealed class VulkanBackendBuffer : IGraphicsBackendBuffer
         _memoryTypeIndex = memoryTypeIndex;
         _allocationSizeBytes = allocationSizeBytes;
         _isStaging = isStaging;
+        _lastAccessMask = VkAccessFlags2.VK_ACCESS_2_NONE;
+        _lastStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
     }
 
     internal long AllocationSizeBytes => _allocationSizeBytes;
@@ -52,6 +56,10 @@ internal sealed class VulkanBackendBuffer : IGraphicsBackendBuffer
     internal bool IsDisposed => _isDisposed;
 
     internal bool IsStaging => _isStaging;
+
+    internal VkAccessFlags2 LastAccessMask => _lastAccessMask;
+
+    internal VkPipelineStageFlags2 LastStageMask => _lastStageMask;
 
     internal VkDeviceMemory Memory => _memory;
 
@@ -76,6 +84,8 @@ internal sealed class VulkanBackendBuffer : IGraphicsBackendBuffer
         _description = null!;
         _isDisposed = true;
         _isStaging = false;
+        _lastAccessMask = VkAccessFlags2.VK_ACCESS_2_NONE;
+        _lastStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
         _memory = default;
         _memoryProperties = default;
         _memoryTypeIndex = 0;
@@ -93,4 +103,11 @@ internal sealed class VulkanBackendBuffer : IGraphicsBackendBuffer
 
     internal void RetainDescriptorSet()
         => _descriptorSetReferenceCount = checked(_descriptorSetReferenceCount + 1);
+
+    internal void SetLastAccessScope(VkPipelineStageFlags2 stageMask, VkAccessFlags2 accessMask)
+    {
+        // A buffer-wide scope union keeps range-specific barriers from omitting earlier accesses on other partitions.
+        _lastStageMask |= stageMask;
+        _lastAccessMask |= accessMask;
+    }
 }

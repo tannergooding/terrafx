@@ -1,6 +1,8 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using TerraFX.Graphics;
 using TerraFX.Interop.Vulkan;
 using VulkanApi = TerraFX.Interop.Vulkan.Vulkan;
@@ -26,6 +28,63 @@ internal sealed unsafe partial class VulkanBackendDevice
         return imageView;
     }
 
+    private static VkPipelineStageFlags2 GetShaderStageMask(GraphicsGraphSubmissionPass pass, ulong resourceId)
+    {
+        var stageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
+        GpuPipeline? pipeline = null;
+
+        foreach (var command in pass.Commands)
+        {
+            if (command.Kind == GraphicsCommandKind.SetPipeline)
+            {
+                pipeline = command.PipelineOwner
+                    ?? throw new InvalidOperationException("A recorded pipeline command lost its owner.");
+                continue;
+            }
+
+            if ((command.Kind != GraphicsCommandKind.SetBindings) || (command.Bindings is not BindingSet bindings))
+            {
+                continue;
+            }
+
+            var selectedPipeline = pipeline
+                ?? throw new InvalidOperationException("A recorded binding set has no preceding graphics pipeline.");
+
+            foreach (var binding in bindings.Buffers)
+            {
+                if (binding.Resource.ResourceId != resourceId)
+                {
+                    continue;
+                }
+
+                foreach (var reflection in selectedPipeline.BindingLayout.ShaderReflections)
+                {
+                    foreach (var resource in reflection.Resources)
+                    {
+                        if ((resource.Group == binding.Group)
+                            && (resource.Binding == binding.Binding)
+                            && (resource.Kind == binding.Kind))
+                        {
+                            stageMask |= reflection.Stage switch {
+                                ShaderStage.Vertex => VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                                ShaderStage.Pixel => VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                ShaderStage.Compute => VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                _ => throw new NotSupportedException(
+                                    $"Vulkan graph submission does not support {reflection.Stage} resource stages."),
+                            };
+                        }
+                    }
+                }
+            }
+        }
+
+        return stageMask;
+    }
+
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "A failed graph recording must reset the unsubmitted command buffer before releasing its retained owners.")]
     internal long SubmitGraph(GraphicsGraphSubmission submission)
     {
         ArgumentNullException.ThrowIfNull(submission);
@@ -42,6 +101,43 @@ internal sealed unsafe partial class VulkanBackendDevice
             || (target.Description.Usage & TextureUsage.ColorAttachment) == 0)
         {
             throw new NotSupportedException("Vulkan graph submission requires a 2D color-attachment texture.");
+        }
+
+        var descriptorSetCapacity = 0;
+
+        foreach (var pass in submission.Passes)
+        {
+            foreach (var command in pass.Commands)
+            {
+                if (command.Kind == GraphicsCommandKind.SetBindings)
+                {
+                    descriptorSetCapacity = checked(descriptorSetCapacity + 1);
+                }
+            }
+        }
+
+        var descriptorSets = new List<VulkanBackendDescriptorSet>(descriptorSetCapacity);
+        _ = _uncertainGraphDescriptorSets.EnsureCapacity(
+            checked(_uncertainGraphDescriptorSets.Count + descriptorSetCapacity));
+        VulkanBackendBuffer? graphBuffer = null;
+        var graphBufferStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
+        var graphBufferAccessMask = VkAccessFlags2.VK_ACCESS_2_NONE;
+
+        foreach (var pass in submission.Passes)
+        {
+            foreach (var access in submission.Accesses)
+            {
+                if (access.IsTexture || (access.PassId != pass.PassId))
+                {
+                    continue;
+                }
+
+                graphBuffer = submission.GetBuffer(access.ResourceId) as VulkanBackendBuffer
+                    ?? throw new InvalidOperationException("The graph uniform buffer is not a Vulkan buffer.");
+                var shaderStages = GetShaderStageMask(pass, access.ResourceId);
+                graphBufferStageMask |= VulkanGraphResourceStateMapper.GetStageMask(access.RequiredState, shaderStages);
+                graphBufferAccessMask |= VulkanGraphResourceStateMapper.GetAccessMask(access.RequiredState);
+            }
         }
 
         var imageView = CreateGraphColorImageView(_device, target);
@@ -61,17 +157,26 @@ internal sealed unsafe partial class VulkanBackendDevice
             {
                 foreach (var transition in submission.StateTransitions)
                 {
-                    if ((transition.PassId != pass.PassId) || !transition.IsTexture)
+                    if (transition.PassId != pass.PassId)
                     {
                         continue;
                     }
 
-                    RecordGraphImageBarrier(
-                        target,
-                        transition,
-                        ref currentLayout,
-                        ref currentStageMask,
-                        ref currentAccessMask);
+                    if (transition.IsTexture)
+                    {
+                        RecordGraphImageBarrier(
+                            target,
+                            transition,
+                            ref currentLayout,
+                            ref currentStageMask,
+                            ref currentAccessMask);
+                    }
+                    else
+                    {
+                        var buffer = submission.GetBuffer(transition.ResourceId) as VulkanBackendBuffer
+                            ?? throw new InvalidOperationException("The graph transition lost its Vulkan buffer.");
+                        RecordGraphBufferBarrier(pass, buffer, transition);
+                    }
                 }
 
                 if (pass.Kind != CommandRecorderPassKind.Raster)
@@ -113,6 +218,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                 VulkanApi.vkCmdSetViewport(_commandBuffer, 0, 1, &viewport);
                 VulkanApi.vkCmdSetScissor(_commandBuffer, 0, 1, &scissor);
 
+                VulkanBackendPipeline? currentPipeline = null;
+
                 foreach (var command in pass.Commands)
                 {
                     switch (command.Kind)
@@ -125,6 +232,40 @@ internal sealed unsafe partial class VulkanBackendDevice
                                 _commandBuffer,
                                 VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 pipeline.Pipeline);
+                            currentPipeline = pipeline;
+                            break;
+                        }
+
+                        case GraphicsCommandKind.SetBindings:
+                        {
+                            var pipeline = currentPipeline
+                                ?? throw new InvalidOperationException("A recorded binding set has no preceding Vulkan pipeline.");
+                            var bindings = command.Bindings
+                                ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
+                            var binding = bindings.Buffers[0];
+                            var buffer = submission.GetBuffer(binding.Resource.ResourceId) as VulkanBackendBuffer
+                                ?? throw new InvalidOperationException("The Frame uniform binding is not a Vulkan buffer.");
+                            var descriptorSet = CreateUniformBufferDescriptorSet(
+                                pipeline,
+                                [
+                                    new VulkanBackendUniformBufferBinding(
+                                        binding.Group,
+                                        binding.Binding,
+                                        buffer,
+                                        binding.Range.ByteOffset,
+                                        binding.Range.ByteLength),
+                                ]);
+                            descriptorSets.Add(descriptorSet);
+                            var nativeDescriptorSet = descriptorSet.DescriptorSet;
+                            VulkanApi.vkCmdBindDescriptorSets(
+                                _commandBuffer,
+                                VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipeline.PipelineLayout,
+                                GetNativeDescriptorSetIndex(ShaderBindingGroup.Frame),
+                                1,
+                                &nativeDescriptorSet,
+                                0,
+                                null);
                             break;
                         }
 
@@ -159,22 +300,97 @@ internal sealed unsafe partial class VulkanBackendDevice
             target.SetLayout(subresource, currentLayout);
             target.SetLastAccessScope(subresource, currentStageMask, currentAccessMask);
             target.MarkInitialized(subresource);
+            graphBuffer?.SetLastAccessScope(graphBufferStageMask, graphBufferAccessMask);
             return completedFence;
         }
-        finally
+        catch (Exception exception)
         {
             if (_hasUncertainSubmission)
             {
-                RetainUncertainTexture(target);
-                _uncertainGraphImageViews.Add(imageView);
-                ownsImageView = false;
+                throw;
             }
 
-            if (ownsImageView)
+            try
             {
-                VulkanApi.vkDestroyImageView(_device, imageView, null);
+                StopRecording();
+            }
+            catch (Exception stopException)
+            {
+                throw new AggregateException(exception, stopException);
+            }
+
+            throw;
+        }
+        finally
+        {
+            try
+            {
+                if (_hasUncertainSubmission)
+                {
+                    RetainUncertainTexture(target);
+                    _uncertainGraphImageViews.Add(imageView);
+                    ownsImageView = false;
+
+                    foreach (var descriptorSet in descriptorSets)
+                    {
+                        _uncertainGraphDescriptorSets.Add(descriptorSet);
+                    }
+                }
+                else
+                {
+                    for (var index = descriptorSets.Count - 1; index >= 0; index--)
+                    {
+                        descriptorSets[index].Dispose();
+                    }
+                }
+            }
+            finally
+            {
+                if (ownsImageView)
+                {
+                    VulkanApi.vkDestroyImageView(_device, imageView, null);
+                }
             }
         }
+    }
+
+    private void RecordGraphBufferBarrier(
+        GraphicsGraphSubmissionPass pass,
+        VulkanBackendBuffer buffer,
+        GraphResourceStateTransition transition)
+    {
+        if (transition.AfterState != GraphResourceState.UniformRead)
+        {
+            throw new NotSupportedException($"Vulkan graph submission does not support a transition to {transition.AfterState} for buffers.");
+        }
+
+        VkPipelineStageFlags2 sourceStage;
+        VkAccessFlags2 sourceAccess;
+
+        if (transition.BeforeState == GraphResourceState.Undefined)
+        {
+            sourceStage = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
+            sourceAccess = VkAccessFlags2.VK_ACCESS_2_NONE;
+        }
+        else if (transition.BeforeState is GraphResourceState.General or GraphResourceState.UniformRead)
+        {
+            sourceStage = buffer.LastStageMask;
+            sourceAccess = buffer.LastAccessMask;
+        }
+        else
+        {
+            throw new NotSupportedException($"Vulkan graph submission does not support a transition from {transition.BeforeState} for buffers.");
+        }
+
+        var shaderStages = GetShaderStageMask(pass, transition.ResourceId);
+        RecordBufferBarrier(
+            buffer,
+            transition.BufferRange.ByteOffset,
+            checked((nint)transition.BufferRange.ByteLength),
+            sourceStage,
+            sourceAccess,
+            VulkanGraphResourceStateMapper.GetStageMask(transition.AfterState, shaderStages),
+            VulkanGraphResourceStateMapper.GetAccessMask(transition.AfterState));
     }
 
     private void RecordGraphImageBarrier(

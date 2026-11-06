@@ -17,6 +17,7 @@ internal sealed unsafe partial class VulkanBackendDevice
     private bool _hasUncertainSubmission;
     private ulong _timelineValue;
     private readonly List<VulkanBackendBuffer> _uncertainBufferOwners = [];
+    private readonly List<VulkanBackendDescriptorSet> _uncertainGraphDescriptorSets = [];
     private readonly List<VkImageView> _uncertainGraphImageViews = [];
     private readonly List<VulkanBackendTexture> _uncertainTextureOwners = [];
 
@@ -91,8 +92,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                 source,
                 sourceOffset,
                 byteLength,
-                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                VkAccessFlags2.VK_ACCESS_2_MEMORY_READ_BIT | VkAccessFlags2.VK_ACCESS_2_MEMORY_WRITE_BIT,
+                source.LastStageMask,
+                source.LastAccessMask,
                 VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
                 VkAccessFlags2.VK_ACCESS_2_TRANSFER_READ_BIT);
             var copy = new VkBufferCopy {
@@ -102,14 +103,6 @@ internal sealed unsafe partial class VulkanBackendDevice
             };
             VulkanApi.vkCmdCopyBuffer(_commandBuffer, source.Buffer, staging.Buffer, 1, &copy);
             RecordBufferBarrier(
-                source,
-                sourceOffset,
-                byteLength,
-                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
-                VkAccessFlags2.VK_ACCESS_2_TRANSFER_READ_BIT,
-                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                VkAccessFlags2.VK_ACCESS_2_MEMORY_READ_BIT | VkAccessFlags2.VK_ACCESS_2_MEMORY_WRITE_BIT);
-            RecordBufferBarrier(
                 staging,
                 0,
                 byteLength,
@@ -118,6 +111,9 @@ internal sealed unsafe partial class VulkanBackendDevice
                 VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_HOST_BIT,
                 VkAccessFlags2.VK_ACCESS_2_HOST_READ_BIT);
             _ = SubmitAndWait(source);
+            source.SetLastAccessScope(
+                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
+                VkAccessFlags2.VK_ACCESS_2_TRANSFER_READ_BIT);
             return ReadMappedBuffer(staging, byteLength);
         }
         finally
@@ -180,8 +176,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                 destination,
                 destinationOffset,
                 byteLength,
-                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                VkAccessFlags2.VK_ACCESS_2_MEMORY_READ_BIT | VkAccessFlags2.VK_ACCESS_2_MEMORY_WRITE_BIT,
+                destination.LastStageMask,
+                destination.LastAccessMask,
                 VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
                 VkAccessFlags2.VK_ACCESS_2_TRANSFER_WRITE_BIT);
             var copy = new VkBufferCopy {
@@ -190,15 +186,11 @@ internal sealed unsafe partial class VulkanBackendDevice
                 size = checked((ulong)byteLength),
             };
             VulkanApi.vkCmdCopyBuffer(_commandBuffer, staging.Buffer, destination.Buffer, 1, &copy);
-            RecordBufferBarrier(
-                destination,
-                destinationOffset,
-                byteLength,
+            var completedFence = SubmitAndWait(destination);
+            destination.SetLastAccessScope(
                 VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
-                VkAccessFlags2.VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                VkAccessFlags2.VK_ACCESS_2_MEMORY_READ_BIT | VkAccessFlags2.VK_ACCESS_2_MEMORY_WRITE_BIT);
-            return SubmitAndWait(destination);
+                VkAccessFlags2.VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            return completedFence;
         }
         finally
         {
@@ -255,8 +247,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                 destination,
                 destinationOffset,
                 source.Length,
-                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                VkAccessFlags2.VK_ACCESS_2_MEMORY_READ_BIT | VkAccessFlags2.VK_ACCESS_2_MEMORY_WRITE_BIT,
+                destination.LastStageMask,
+                destination.LastAccessMask,
                 VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
                 VkAccessFlags2.VK_ACCESS_2_TRANSFER_WRITE_BIT);
             var copy = new VkBufferCopy {
@@ -265,15 +257,11 @@ internal sealed unsafe partial class VulkanBackendDevice
                 size = checked((ulong)source.Length),
             };
             VulkanApi.vkCmdCopyBuffer(_commandBuffer, staging.Buffer, destination.Buffer, 1, &copy);
-            RecordBufferBarrier(
-                destination,
-                destinationOffset,
-                source.Length,
+            var completedFence = SubmitAndWait(destination);
+            destination.SetLastAccessScope(
                 VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
-                VkAccessFlags2.VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                VkAccessFlags2.VK_ACCESS_2_MEMORY_READ_BIT | VkAccessFlags2.VK_ACCESS_2_MEMORY_WRITE_BIT);
-            return SubmitAndWait(destination);
+                VkAccessFlags2.VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            return completedFence;
         }
         finally
         {
@@ -420,6 +408,9 @@ internal sealed unsafe partial class VulkanBackendDevice
 
     private void RetainUncertainTexture(VulkanBackendTexture texture)
         => _uncertainTextureOwners.Add(texture);
+
+    private void StopRecording()
+        => ThrowIfFailed(VulkanApi.vkResetCommandBuffer(_commandBuffer, default), "vkResetCommandBuffer");
 
     private long SubmitAndWait(VulkanBackendBuffer retainedBuffer)
         => SubmitAndWaitCore(retainedBuffer, retainedTexture: null);

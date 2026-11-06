@@ -25,13 +25,23 @@ namespace TerraFX.Runtime.Tests.Hosting;
 
 internal sealed partial class EngineHostOptionsTests
 {
-    [TestCase(GraphicsBackend.D3D12)]
-    [TestCase(GraphicsBackend.Vulkan)]
-    public async Task SubmitsOffscreenClearGraphAndReadsBackAsync(GraphicsBackend backend)
+    [TestCase(GraphicsBackend.D3D12, false)]
+    [TestCase(GraphicsBackend.Vulkan, false)]
+    [TestCase(GraphicsBackend.D3D12, true)]
+    [TestCase(GraphicsBackend.Vulkan, true)]
+    public async Task SubmitsOffscreenClearGraphAndReadsBackAsync(GraphicsBackend backend, bool useUniformBuffer)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
             Assert.Ignore("The D3D12 offscreen graph path targets Windows 11.");
+            return;
+        }
+
+        var shaderFixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
+
+        if (useUniformBuffer && string.IsNullOrWhiteSpace(shaderFixtureDirectory))
+        {
+            Assert.Ignore("The M04 shader fixture is required for the Frame uniform-buffer graph case.");
             return;
         }
 
@@ -61,6 +71,7 @@ internal sealed partial class EngineHostOptionsTests
         };
         EngineHost? host = null;
         GpuTexture? target = null;
+        GpuBuffer? frameUniformBuffer = null;
         GpuPipeline? pipeline = null;
         RenderSnapshot? snapshot = null;
 
@@ -185,21 +196,20 @@ internal sealed partial class EngineHostOptionsTests
             var renderSnapshot = snapshot
                 ?? throw new InvalidOperationException("The host renderer omitted its render snapshot.");
 
-            var shaderFixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
-
             if (!string.IsNullOrWhiteSpace(shaderFixtureDirectory))
             {
                 var shaderExtension = backend == GraphicsBackend.D3D12 ? "dxil" : "spv";
+                var pixelStage = useUniformBuffer ? "pixel" : "pixel-graph";
                 using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
                     shaderFixtureDirectory,
                     $"M04OffscreenTriangle.vertex.{shaderExtension}"));
                 using var pixelBytecodeStorage = CreateBytecodeStorage(Path.Combine(
                     shaderFixtureDirectory,
-                    $"M04OffscreenTriangle.pixel-graph.{shaderExtension}"));
+                    $"M04OffscreenTriangle.{pixelStage}.{shaderExtension}"));
                 using var vertexBytecode = vertexBytecodeStorage.AcquireReadLease(0, vertexBytecodeStorage.Length);
                 using var pixelBytecode = pixelBytecodeStorage.AcquireReadLease(0, pixelBytecodeStorage.Length);
                 var vertexReflection = M04ShaderFixtureCompiler.ReadTypedReflection(shaderFixtureDirectory, "vertex");
-                var pixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(shaderFixtureDirectory, "pixel-graph");
+                var pixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(shaderFixtureDirectory, pixelStage);
                 var binaryFormat = backend == GraphicsBackend.D3D12
                     ? ShaderBinaryFormat.Dxil
                     : ShaderBinaryFormat.SpirV;
@@ -222,15 +232,87 @@ internal sealed partial class EngineHostOptionsTests
                     .ConfigureAwait(false);
             }
 
+            if (useUniformBuffer)
+            {
+                var frameUniformBytes = new byte[256];
+                _ = BitConverter.TryWriteBytes(frameUniformBytes.AsSpan(0, sizeof(float)), 0.0f);
+                _ = BitConverter.TryWriteBytes(frameUniformBytes.AsSpan(sizeof(float), sizeof(float)), 1.0f);
+                _ = BitConverter.TryWriteBytes(frameUniformBytes.AsSpan(sizeof(float) * 2, sizeof(float)), 0.0f);
+                _ = BitConverter.TryWriteBytes(frameUniformBytes.AsSpan(sizeof(float) * 3, sizeof(float)), 1.0f);
+                frameUniformBuffer = await graphicsDevice.CreateBufferAsync(
+                    new BufferDescription(
+                        frameUniformBytes.Length,
+                        BufferUsage.Uniform | BufferUsage.CopyDestination,
+                        GpuMemoryKind.DeviceLocal,
+                        structuredStride: null,
+                        debugName: $"m04-{backend}-frame-uniform"))
+                    .ConfigureAwait(false);
+                var uploadReceipt = await graphicsDevice.UploadBufferAsync(
+                    frameUniformBuffer,
+                    0,
+                    frameUniformBytes.AsSpan())
+                    .ConfigureAwait(false);
+                Assert.That(uploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+            }
+
             var graph = renderer.BuildGraph(
                 renderSnapshot,
                 target);
+            GraphBufferVersion? frameUniformVersion = null;
+            BindingSet? frameBindingSet = null;
+
+            if (frameUniformBuffer is GpuBuffer selectedBuffer)
+            {
+                var range = new GraphBufferRange(0, selectedBuffer.ByteLength);
+                frameUniformVersion = graph.ImportBuffer(
+                    selectedBuffer,
+                    range,
+                    new GraphImportOptions(
+                        GraphResourceState.General,
+                        contentsValid: true,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                frameBindingSet = new BindingSet(
+                    [
+                        new BufferBinding(
+                            ShaderBindingGroup.Frame,
+                            0,
+                            ShaderResourceKind.UniformBuffer,
+                            frameUniformVersion,
+                            range),
+                    ],
+                    [],
+                    []);
+            }
+
+            GraphBufferVersion? secondFrameUniformVersion = null;
+            BindingSet? secondFrameBindingSet = null;
 
             void RecordClear(scoped ref CommandRecorder recorder)
             {
                 if (pipeline is GpuPipeline selectedPipeline)
                 {
                     recorder.SetPipeline(selectedPipeline.Handle);
+
+                    if (frameBindingSet is BindingSet selectedBindings)
+                    {
+                        recorder.SetBindings(selectedBindings);
+                    }
+
+                    recorder.Draw(new DrawArguments(3, 1, 0, 0));
+                }
+            }
+
+            void RecordSecondClear(scoped ref CommandRecorder recorder)
+            {
+                if (pipeline is GpuPipeline selectedPipeline)
+                {
+                    recorder.SetPipeline(selectedPipeline.Handle);
+
+                    if (secondFrameBindingSet is BindingSet selectedBindings)
+                    {
+                        recorder.SetBindings(selectedBindings);
+                    }
+
                     recorder.Draw(new DrawArguments(3, 1, 0, 0));
                 }
             }
@@ -238,6 +320,16 @@ internal sealed partial class EngineHostOptionsTests
             var pass = graph.AddRasterPass(
                 new RenderPassDescription("offscreen-clear", 0, [], hasExternalSideEffects: false),
                 RecordClear);
+
+            if (frameUniformVersion is not null)
+            {
+                graph.ReadBuffer(
+                    pass,
+                    frameUniformVersion,
+                    GraphBufferUsage.UniformRead,
+                    frameUniformVersion.Range);
+            }
+
             var outputVersion = graph.WriteColorAttachment(
                 pass,
                 graph.OffscreenColorTargetVersion,
@@ -254,9 +346,43 @@ internal sealed partial class EngineHostOptionsTests
             var receipt = await renderer.SubmitAsync(renderSnapshot, plan).ConfigureAwait(false);
 
             var secondGraph = renderer.BuildGraph(renderSnapshot, target);
+
+            if (frameUniformBuffer is GpuBuffer secondSelectedBuffer)
+            {
+                var range = new GraphBufferRange(0, secondSelectedBuffer.ByteLength);
+                secondFrameUniformVersion = secondGraph.ImportBuffer(
+                    secondSelectedBuffer,
+                    range,
+                    new GraphImportOptions(
+                        GraphResourceState.UniformRead,
+                        contentsValid: true,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                secondFrameBindingSet = new BindingSet(
+                    [
+                        new BufferBinding(
+                            ShaderBindingGroup.Frame,
+                            0,
+                            ShaderResourceKind.UniformBuffer,
+                            secondFrameUniformVersion,
+                            range),
+                    ],
+                    [],
+                    []);
+            }
+
             var secondPass = secondGraph.AddRasterPass(
                 new RenderPassDescription("offscreen-clear-again", 0, [], hasExternalSideEffects: false),
-                RecordClear);
+                RecordSecondClear);
+
+            if (secondFrameUniformVersion is not null)
+            {
+                secondGraph.ReadBuffer(
+                    secondPass,
+                    secondFrameUniformVersion,
+                    GraphBufferUsage.UniformRead,
+                    secondFrameUniformVersion.Range);
+            }
+
             var secondOutputVersion = secondGraph.WriteColorAttachment(
                 secondPass,
                 secondGraph.OffscreenColorTargetVersion,
@@ -296,7 +422,10 @@ internal sealed partial class EngineHostOptionsTests
 
             var centerPixelOffset = checked(
                 (int)((readback.RowPitch * (targetExtent.Height / 2)) + (targetExtent.Width / 2 * 4)));
-            var magentaPixelCount = 0;
+            var drawPixelCount = 0;
+            var expectedRed = useUniformBuffer ? (byte)0 : (byte)255;
+            var expectedGreen = useUniformBuffer ? (byte)255 : (byte)0;
+            var expectedBlue = useUniformBuffer ? (byte)0 : (byte)255;
 
             for (var y = 0; y < readback.Height; y++)
             {
@@ -304,12 +433,12 @@ internal sealed partial class EngineHostOptionsTests
                 {
                     var pixelOffset = checked((int)((readback.RowPitch * y) + (x * 4)));
 
-                    if ((padded[pixelOffset] == 255)
-                        && (padded[pixelOffset + 1] == 0)
-                        && (padded[pixelOffset + 2] == 255)
+                    if ((padded[pixelOffset] == expectedRed)
+                        && (padded[pixelOffset + 1] == expectedGreen)
+                        && (padded[pixelOffset + 2] == expectedBlue)
                         && (padded[pixelOffset + 3] == 255))
                     {
-                        magentaPixelCount++;
+                        drawPixelCount++;
                     }
                 }
             }
@@ -322,7 +451,7 @@ internal sealed partial class EngineHostOptionsTests
 
                 if (pipeline is not null)
                 {
-                    Assert.That(magentaPixelCount, Is.GreaterThan(0));
+                    Assert.That(drawPixelCount, Is.GreaterThan(0));
                 }
                 else
                 {
@@ -335,14 +464,16 @@ internal sealed partial class EngineHostOptionsTests
                 $"Backend={backend}; Adapter={graphicsDevice.Capabilities.AdapterName}; "
                 + $"Submissions={receipt.SubmissionSequence}/{secondReceipt.SubmissionSequence}; "
                 + $"Fence={secondReceipt.CompletedFence}; "
+                + $"UniformBuffer={useUniformBuffer}; "
                 + $"Pixel={padded[centerPixelOffset]:X2}{padded[centerPixelOffset + 1]:X2}"
                 + $"{padded[centerPixelOffset + 2]:X2}{padded[centerPixelOffset + 3]:X2}; "
-                + $"MagentaPixels={magentaPixelCount}");
+                + $"DrawPixels={drawPixelCount}");
         }
         finally
         {
             snapshot?.Dispose();
             pipeline?.Dispose();
+            frameUniformBuffer?.Dispose();
             target?.Dispose();
 
             if (host is not null)

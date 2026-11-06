@@ -798,6 +798,7 @@ public static unsafe class D3D12GraphicsBackend
             private ID3D12DescriptorHeap* _samplerDescriptorHeap;
             private uint _samplerDescriptorIncrementSize;
             private D3D12BackendFactory.D3D12TransferQueue? _transferQueue;
+            private readonly List<D3D12BackendDescriptorSet> _uncertainGraphDescriptorSets = [];
             private readonly List<nint> _uncertainGraphRenderTargetHeaps = [];
             private byte* _uploadStagingMapped;
             private ID3D12Resource* _uploadStagingResource;
@@ -1492,6 +1493,22 @@ public static unsafe class D3D12GraphicsBackend
                 }
 
                 var transferQueue = GetTransferQueue();
+                var descriptorSetCapacity = 0;
+
+                foreach (var pass in submission.Passes)
+                {
+                    foreach (var command in pass.Commands)
+                    {
+                        if (command.Kind == GraphicsCommandKind.SetBindings)
+                        {
+                            descriptorSetCapacity = checked(descriptorSetCapacity + 1);
+                        }
+                    }
+                }
+
+                var descriptorSets = new List<D3D12BackendDescriptorSet>(descriptorSetCapacity);
+                _ = _uncertainGraphDescriptorSets.EnsureCapacity(
+                    checked(_uncertainGraphDescriptorSets.Count + descriptorSetCapacity));
                 _ = _uncertainGraphRenderTargetHeaps.EnsureCapacity(
                     checked(_uncertainGraphRenderTargetHeaps.Count + 1));
                 var heapDescription = new D3D12_DESCRIPTOR_HEAP_DESC {
@@ -1543,32 +1560,57 @@ public static unsafe class D3D12GraphicsBackend
                     {
                         foreach (var transition in submission.StateTransitions)
                         {
-                            if ((transition.PassId != pass.PassId) || !transition.IsTexture)
+                            if (transition.PassId != pass.PassId)
                             {
                                 continue;
                             }
 
-                            var texture = submission.GetTexture(transition.ResourceId) as D3D12BackendTexture
-                                ?? throw new InvalidOperationException("The graph transition lost its D3D12 texture.");
-                            var beforeState = D3D12GraphResourceStateMapper.GetTextureState(
-                                transition.BeforeState,
-                                texture.Description);
-                            var afterState = D3D12GraphResourceStateMapper.GetTextureState(
-                                transition.AfterState,
-                                texture.Description);
-
-                            if (beforeState != afterState)
+                            if (transition.IsTexture)
                             {
-                                var subresource = checked(
-                                    (uint)(transition.TextureRange.FirstMip
-                                        + (transition.TextureRange.FirstLayer * texture.Description.MipLevels)));
-                                var barrier = D3D12_RESOURCE_BARRIER.InitTransition(
-                                    texture.GetResource(),
-                                    beforeState,
-                                    afterState,
-                                    subresource,
-                                    D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
-                                commandList->ResourceBarrier(1, &barrier);
+                                var texture = submission.GetTexture(transition.ResourceId) as D3D12BackendTexture
+                                    ?? throw new InvalidOperationException("The graph transition lost its D3D12 texture.");
+                                var beforeState = D3D12GraphResourceStateMapper.GetTextureState(
+                                    transition.BeforeState,
+                                    texture.Description);
+                                var afterState = D3D12GraphResourceStateMapper.GetTextureState(
+                                    transition.AfterState,
+                                    texture.Description);
+
+                                if (beforeState != afterState)
+                                {
+                                    var subresource = checked(
+                                        (uint)(transition.TextureRange.FirstMip
+                                            + (transition.TextureRange.FirstLayer * texture.Description.MipLevels)));
+                                    var barrier = D3D12_RESOURCE_BARRIER.InitTransition(
+                                        texture.GetResource(),
+                                        beforeState,
+                                        afterState,
+                                        subresource,
+                                        D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                                    commandList->ResourceBarrier(1, &barrier);
+                                }
+                            }
+                            else
+                            {
+                                var buffer = submission.GetBuffer(transition.ResourceId) as D3D12BackendBuffer
+                                    ?? throw new InvalidOperationException("The graph transition lost its D3D12 buffer.");
+                                var beforeState = D3D12GraphResourceStateMapper.GetBufferState(
+                                    transition.BeforeState,
+                                    buffer.Description);
+                                var afterState = D3D12GraphResourceStateMapper.GetBufferState(
+                                    transition.AfterState,
+                                    buffer.Description);
+
+                                if (beforeState != afterState)
+                                {
+                                    var barrier = D3D12_RESOURCE_BARRIER.InitTransition(
+                                        buffer.GetResource(),
+                                        beforeState,
+                                        afterState,
+                                        0,
+                                        D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+                                    commandList->ResourceBarrier(1, &barrier);
+                                }
                             }
                         }
 
@@ -1589,6 +1631,7 @@ public static unsafe class D3D12GraphicsBackend
                         if (pass.Kind == CommandRecorderPassKind.Raster)
                         {
                             commandList->OMSetRenderTargets(1, &renderTargetView, false, null);
+                            ID3D12BackendPipelineDescriptorOwner? currentPipeline = null;
 
                             foreach (var command in pass.Commands)
                             {
@@ -1606,10 +1649,54 @@ public static unsafe class D3D12GraphicsBackend
 
                                         commandList->SetPipelineState(pipeline.PipelineState);
                                         commandList->SetGraphicsRootSignature(pipeline.RootSignature);
+                                        currentPipeline = pipeline;
                                         commandList->IASetPrimitiveTopology(
                                             D3D_PRIMITIVE_TOPOLOGY.D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                                         commandList->RSSetViewports(1, &viewport);
                                         commandList->RSSetScissorRects(1, &scissor);
+                                        break;
+                                    }
+
+                                    case GraphicsCommandKind.SetBindings:
+                                    {
+                                        var pipeline = currentPipeline
+                                            ?? throw new InvalidOperationException("A recorded binding set has no preceding D3D12 pipeline.");
+                                        var bindings = command.Bindings
+                                            ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
+                                        var binding = bindings.Buffers[0];
+                                        var descriptorSet = CreateDescriptorSet(
+                                            pipeline,
+                                            [
+                                                new D3D12BackendUniformBufferBinding(
+                                                    binding.Group,
+                                                    binding.Binding,
+                                                    submission.GetBuffer(binding.Resource.ResourceId),
+                                                    binding.Range.ByteOffset,
+                                                    binding.Range.ByteLength),
+                                            ],
+                                            [],
+                                            [],
+                                            [],
+                                            []);
+                                        descriptorSets.Add(descriptorSet);
+
+                                        if ((descriptorSet.DescriptorTableCount != 1)
+                                            || !descriptorSet.AreDescriptorTableHandlesValid)
+                                        {
+                                            throw new InvalidOperationException("The Frame uniform-buffer descriptor set has an invalid root table.");
+                                        }
+
+                                        var descriptorHeap = _resourceDescriptorHeap;
+
+                                        if (descriptorHeap is null)
+                                        {
+                                            throw new InvalidOperationException("The D3D12 resource descriptor heap is unavailable.");
+                                        }
+
+                                        commandList->SetDescriptorHeaps(1, &descriptorHeap);
+                                        commandList->SetGraphicsRootDescriptorTable(
+                                            0,
+                                            descriptorSet._descriptorTableHandles[0]);
                                         break;
                                     }
 
@@ -1662,9 +1749,29 @@ public static unsafe class D3D12GraphicsBackend
                 }
                 finally
                 {
-                    if (renderTargetHeap is not null)
+                    try
                     {
-                        _ = renderTargetHeap->Release();
+                        if (transferQueue.HasUncertainSubmission)
+                        {
+                            foreach (var descriptorSet in descriptorSets)
+                            {
+                                _uncertainGraphDescriptorSets.Add(descriptorSet);
+                            }
+                        }
+                        else
+                        {
+                            for (var index = descriptorSets.Count - 1; index >= 0; index--)
+                            {
+                                descriptorSets[index].Dispose();
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        if (renderTargetHeap is not null)
+                        {
+                            _ = renderTargetHeap->Release();
+                        }
                     }
                 }
             }
