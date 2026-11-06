@@ -473,6 +473,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                                     ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
                                 var storageBufferBindings =
                                     ImmutableArray.CreateBuilder<VulkanBackendStorageBufferBinding>(bindings.Buffers.Length);
+                                var storageImageBindings =
+                                    ImmutableArray.CreateBuilder<VulkanBackendStorageImageBinding>(bindings.Textures.Length);
 
                                 foreach (var binding in bindings.Buffers)
                                 {
@@ -491,12 +493,28 @@ internal sealed unsafe partial class VulkanBackendDevice
                                         binding.Range.ByteLength));
                                 }
 
+                                foreach (var binding in bindings.Textures)
+                                {
+                                    if (binding.Kind != ShaderResourceKind.StorageImage)
+                                    {
+                                        throw new NotSupportedException("Native Vulkan compute graphs currently support storage-image bindings only.");
+                                    }
+
+                                    var texture = submission.GetTexture(binding.Resource.ResourceId) as VulkanBackendTexture
+                                        ?? throw new InvalidOperationException("A compute storage-image binding is not a Vulkan texture.");
+                                    storageImageBindings.Add(new VulkanBackendStorageImageBinding(
+                                        binding.Group,
+                                        binding.Binding,
+                                        texture,
+                                        VkImageLayout.VK_IMAGE_LAYOUT_GENERAL));
+                                }
+
                                 var descriptorSet = CreateFrameDescriptorSet(
                                     pipeline,
                                     [],
                                     storageBufferBindings.ToImmutable(),
                                     [],
-                                    [],
+                                    storageImageBindings.ToImmutable(),
                                     []);
                                 descriptorSets.Add(descriptorSet);
                                 var nativeDescriptorSet = descriptorSet.DescriptorSet;

@@ -1755,6 +1755,8 @@ public static unsafe class D3D12GraphicsBackend
                                             ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
                                         var storageBufferBindings =
                                             ImmutableArray.CreateBuilder<D3D12BackendStorageBufferBinding>(bindings.Buffers.Length);
+                                        var storageImageBindings =
+                                            ImmutableArray.CreateBuilder<D3D12BackendStorageImageBinding>(bindings.Textures.Length);
 
                                         foreach (var binding in bindings.Buffers)
                                         {
@@ -1771,12 +1773,25 @@ public static unsafe class D3D12GraphicsBackend
                                                 binding.Range.ByteLength));
                                         }
 
+                                        foreach (var binding in bindings.Textures)
+                                        {
+                                            if (binding.Kind != ShaderResourceKind.StorageImage)
+                                            {
+                                                throw new NotSupportedException("Native D3D12 compute graphs currently support storage-image bindings only.");
+                                            }
+
+                                            storageImageBindings.Add(new D3D12BackendStorageImageBinding(
+                                                binding.Group,
+                                                binding.Binding,
+                                                submission.GetTexture(binding.Resource.ResourceId)));
+                                        }
+
                                         var descriptorSet = CreateDescriptorSet(
                                             pipeline,
                                             [],
                                             [],
                                             storageBufferBindings.ToImmutable(),
-                                            [],
+                                            storageImageBindings.ToImmutable(),
                                             []);
                                         descriptorSets.Add(descriptorSet);
 
@@ -1810,11 +1825,26 @@ public static unsafe class D3D12GraphicsBackend
 
                                     case GraphicsCommandKind.StorageBarrier:
                                     {
-                                        var barrierBuffer = command.StorageBarrierBuffer
-                                            ?? throw new NotSupportedException("Native D3D12 compute graphs support storage-buffer barriers only.");
-                                        var buffer = submission.GetBuffer(barrierBuffer.ResourceId) as D3D12BackendBuffer
-                                            ?? throw new InvalidOperationException("The compute storage barrier lost its D3D12 buffer.");
-                                        var barrier = D3D12_RESOURCE_BARRIER.InitUAV(buffer.GetResource());
+                                        ID3D12Resource* resource;
+
+                                        if (command.StorageBarrierBuffer is GraphBufferVersion barrierBuffer)
+                                        {
+                                            var buffer = submission.GetBuffer(barrierBuffer.ResourceId) as D3D12BackendBuffer
+                                                ?? throw new InvalidOperationException("The compute storage barrier lost its D3D12 buffer.");
+                                            resource = buffer.GetResource();
+                                        }
+                                        else if (command.StorageBarrierTexture is GraphTextureVersion barrierTexture)
+                                        {
+                                            var texture = submission.GetTexture(barrierTexture.ResourceId) as D3D12BackendTexture
+                                                ?? throw new InvalidOperationException("The compute storage barrier lost its D3D12 texture.");
+                                            resource = texture.GetResource();
+                                        }
+                                        else
+                                        {
+                                            throw new InvalidOperationException("The compute storage barrier has no D3D12 resource.");
+                                        }
+
+                                        var barrier = D3D12_RESOURCE_BARRIER.InitUAV(resource);
                                         commandList->ResourceBarrier(1, &barrier);
                                         break;
                                     }

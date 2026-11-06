@@ -346,8 +346,10 @@ internal sealed class M04ShaderFixtureCompilerTests
             Assert.That(typedComputeReflection.GroupSizeX, Is.EqualTo(1));
             Assert.That(typedComputeReflection.GroupSizeY, Is.EqualTo(1));
             Assert.That(typedComputeReflection.GroupSizeZ, Is.EqualTo(1));
-            Assert.That(typedComputeReflection.Resources, Is.EqualTo(ImmutableArray.Create(
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, 1, ShaderResourceAccess.ReadWrite))));
+            Assert.That(typedComputeReflection.Resources, Does.Contain(
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, 1, ShaderResourceAccess.ReadWrite)));
+            Assert.That(typedComputeReflection.Resources, Does.Contain(
+                new ShaderResourceSignature(ShaderBindingGroup.Frame, 1, ShaderResourceKind.StorageImage, 1, ShaderResourceAccess.ReadWrite)));
 
             Assert.That(typedPixelReflection.Stage, Is.EqualTo(ShaderStage.Pixel));
             Assert.That(typedPixelReflection.EntryPoint, Is.EqualTo("PSMain"));

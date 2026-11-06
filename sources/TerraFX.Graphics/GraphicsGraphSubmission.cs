@@ -549,7 +549,7 @@ internal sealed class GraphicsGraphSubmission
                             foreach (var resource in reflection.Resources)
                             {
                                 var supportedKind = isComputePass
-                                    ? resource.Kind == ShaderResourceKind.StorageBuffer
+                                    ? resource.Kind is ShaderResourceKind.StorageBuffer or ShaderResourceKind.StorageImage
                                     : resource.Kind is ShaderResourceKind.UniformBuffer
                                         or ShaderResourceKind.SampledImage
                                         or ShaderResourceKind.Sampler
@@ -569,7 +569,7 @@ internal sealed class GraphicsGraphSubmission
                                     || !supportedStage)
                                 {
                                     throw new NotSupportedException(
-                                        "Native graph submission supports Frame graphics resources and compute-stage storage-buffer bindings.");
+                                        "Native graph submission supports Frame graphics resources and compute-stage storage bindings.");
                                 }
 
                                 _ = reflectedResources.Add(resource);

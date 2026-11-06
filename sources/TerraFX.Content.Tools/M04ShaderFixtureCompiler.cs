@@ -499,9 +499,10 @@ internal static class M04ShaderFixtureCompiler
         {
             if (!text.Contains($"EntryFunctionName: {entryPoint}", StringComparison.Ordinal)
                 || !text.Contains("NumThreads=(1,1,1)", StringComparison.Ordinal)
-                || !text.Contains("FrameStorageBuffer", StringComparison.Ordinal))
+                || !text.Contains("FrameStorageBuffer", StringComparison.Ordinal)
+                || !text.Contains("FrameStorageImage", StringComparison.Ordinal))
             {
-                throw new InvalidDataException("DXC reflection from the compiled compute DXIL does not contain its entry point, one-thread group size, and storage buffer.");
+                throw new InvalidDataException("DXC reflection from the compiled compute DXIL does not contain its entry point, one-thread group size, and storage resources.");
             }
 
             return;
@@ -682,7 +683,7 @@ internal static class M04ShaderFixtureCompiler
 
         if (stageName == "compute-storage")
         {
-            ValidateSampledResource(root, "ssbos", "FrameStorageBuffer", 32);
+            ValidatePixelStorageResourceReflection(root);
         }
     }
 

@@ -365,7 +365,7 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(storageBufferUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
             }
 
-            if (useStorageResources)
+            if (useStorageResources || useCompute)
             {
                 storageImage = await graphicsDevice.CreateTextureAsync(
                     new TextureDescription(
@@ -466,6 +466,7 @@ internal sealed partial class EngineHostOptionsTests
             GraphTextureVersion? sampledTextureVersion = null;
             GraphTextureVersion? storageImageInitialVersion = null;
             GraphTextureVersion? storageImageWriteVersion = null;
+            GraphTextureVersion? computeStorageImageWriteVersion = null;
             BindingSet? frameBindingSet = null;
             BindingSet? computeBindingSet = null;
             var bufferBindings = ImmutableArray.CreateBuilder<BufferBinding>(useUniformBuffer ? 1 : 0);
@@ -646,6 +647,12 @@ internal sealed partial class EngineHostOptionsTests
                     initialStorageBuffer,
                     initialStorageBuffer.Range);
                 copySourceVersion = computeStorageWriteVersion;
+                var initialStorageImage = storageImageInitialVersion
+                    ?? throw new InvalidOperationException("The graph compute test has no imported storage image.");
+                computeStorageImageWriteVersion = graph.ReadWriteTexture(
+                    computePass,
+                    initialStorageImage,
+                    sampleRange);
                 computeBindingSet = new BindingSet(
                     [
                         new BufferBinding(
@@ -655,7 +662,14 @@ internal sealed partial class EngineHostOptionsTests
                             computeStorageWriteVersion,
                             initialStorageBuffer.Range),
                     ],
-                    [],
+                    [
+                        new TextureBinding(
+                            ShaderBindingGroup.Frame,
+                            1,
+                            ShaderResourceKind.StorageImage,
+                            computeStorageImageWriteVersion,
+                            sampleRange),
+                    ],
                     []);
             }
 
@@ -744,7 +758,7 @@ internal sealed partial class EngineHostOptionsTests
                     range));
             }
 
-            if (storageImageInitialVersion is not null)
+            if (useStorageResources && (storageImageInitialVersion is not null))
             {
                 storageImageWriteVersion = graph.ReadWriteTexture(
                     pass,
@@ -939,7 +953,7 @@ internal sealed partial class EngineHostOptionsTests
                             completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
                 }
 
-                if (storageImage is GpuTexture secondStorageImage)
+                if (useStorageResources && (storageImage is GpuTexture secondStorageImage))
                 {
                     secondStorageImageInitialVersion = secondGraph.ImportTexture(
                         secondStorageImage,
@@ -1162,6 +1176,22 @@ internal sealed partial class EngineHostOptionsTests
                 }
 
                 Assert.That(BitConverter.ToUInt32(computeStorageBytes, 0), Is.EqualTo(2u));
+
+                var computeStorageImage = storageImage
+                    ?? throw new InvalidOperationException("The graph compute test has no storage image.");
+                using var computeImageReadback = await graphicsDevice.ReadbackTextureAsync(
+                    computeStorageImage,
+                    new TextureSubresource(0, 0, TextureAspect.Color))
+                    .ConfigureAwait(false);
+                var computeStorageImageBytes = new byte[checked((int)computeImageReadback.ByteLength)];
+
+                using (var computeImageReadLease = computeImageReadback.AcquireReadLease())
+                {
+                    var copyAction = new ReadbackCopyAction(computeStorageImageBytes);
+                    computeImageReadLease.UseWindow(0, computeStorageImageBytes.Length, ref copyAction);
+                }
+
+                Assert.That(BitConverter.ToUInt32(computeStorageImageBytes, 0), Is.EqualTo(2u));
             }
 
             if (useBufferCopy || useCompute)
