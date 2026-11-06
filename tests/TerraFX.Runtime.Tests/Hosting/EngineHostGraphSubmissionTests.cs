@@ -120,6 +120,24 @@ internal sealed partial class EngineHostOptionsTests
             holdGraphCompletion: false,
             useTextureCopy: true);
 
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsTransientTextureCopyGraphAndReadsBackAsync(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useTextureCopy: true,
+            useTransientTextureCopy: true);
+
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
@@ -137,7 +155,8 @@ internal sealed partial class EngineHostOptionsTests
         bool overlapTransientBufferLifetimes,
         bool holdGraphCompletion,
         bool usePackageResidencyTexture = false,
-        bool useTextureCopy = false)
+        bool useTextureCopy = false,
+        bool useTransientTextureCopy = false)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -258,6 +277,7 @@ internal sealed partial class EngineHostOptionsTests
         GpuTexture? target = null;
         GpuTexture? copySourceTexture = null;
         GpuTexture? copyDestinationTexture = null;
+        TextureDescription? textureCopyDescription = null;
         byte[]? expectedTextureCopyBytes = null;
         GpuTexture? sampledTexture = null;
         GpuResidencyLease? sampledTextureResidencyLease = null;
@@ -411,14 +431,15 @@ internal sealed partial class EngineHostOptionsTests
                 var copyTextureUsage = TextureUsage.CopySource | TextureUsage.CopyDestination;
                 var copyTextureDescription = new TextureDescription(
                     TextureDimension.Dimension2D,
-                    width: 4,
-                    height: 4,
+                    width: useTransientTextureCopy ? 2 : 4,
+                    height: useTransientTextureCopy ? 2 : 4,
                     depth: 1,
-                    arrayLayers: 2,
-                    mipLevels: 2,
+                    arrayLayers: useTransientTextureCopy ? 1 : 2,
+                    mipLevels: useTransientTextureCopy ? 1 : 2,
                     TextureFormat.Rgba8Unorm,
                     copyTextureUsage,
                     $"m04-{backend}-graph-copy-texture");
+                textureCopyDescription = copyTextureDescription;
                 copySourceTexture = await graphicsDevice.CreateTextureAsync(copyTextureDescription).ConfigureAwait(false);
                 copyDestinationTexture = await graphicsDevice.CreateTextureAsync(copyTextureDescription).ConfigureAwait(false);
                 var sourceStorage = UnmanagedBuffer<byte>.Allocate(
@@ -434,7 +455,9 @@ internal sealed partial class EngineHostOptionsTests
                 {
                     sourceUploadReceipt = await graphicsDevice.UploadTextureAsync(
                         copySourceTexture,
-                        new TextureSubresource(1, 1, TextureAspect.Color),
+                        useTransientTextureCopy
+                            ? new TextureSubresource(0, 0, TextureAspect.Color)
+                            : new TextureSubresource(1, 1, TextureAspect.Color),
                         sourceLease,
                         0,
                         new TextureDataLayout(rowPitch: 2 * 4, slicePitch: expectedTextureCopyBytes.Length))
@@ -782,6 +805,9 @@ internal sealed partial class EngineHostOptionsTests
                 renderSnapshot,
                 target);
             var sampleRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+            var copyTextureRange = useTransientTextureCopy
+                ? new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)
+                : new GraphTextureRange(1, 1, 1, 1, TextureAspect.Color);
             GraphBufferVersion? frameUniformVersion = null;
             GraphBufferVersion? storageBufferInitialVersion = null;
             GraphBufferVersion? secondStorageBufferInitialVersion = null;
@@ -802,6 +828,8 @@ internal sealed partial class EngineHostOptionsTests
             GraphTextureVersion? copySourceTextureVersion = null;
             GraphTextureVersion? copyDestinationTextureInitialVersion = null;
             GraphTextureVersion? copyDestinationTextureWriteVersion = null;
+            GraphTextureVersion? transientTextureInitialVersion = null;
+            GraphTextureVersion? transientTextureWriteVersion = null;
             GraphTextureVersion? storageImageInitialVersion = null;
             GraphTextureVersion? storageImageWriteVersion = null;
             GraphTextureVersion? computeStorageImageWriteVersion = null;
@@ -929,10 +957,9 @@ internal sealed partial class EngineHostOptionsTests
 
             if (copySourceTexture is GpuTexture selectedCopySourceTexture)
             {
-                var copyRange = new GraphTextureRange(1, 1, 1, 1, TextureAspect.Color);
                 copySourceTextureVersion = graph.ImportTexture(
                     selectedCopySourceTexture,
-                    copyRange,
+                    copyTextureRange,
                     new GraphImportOptions(
                         GraphResourceState.General,
                         contentsValid: true,
@@ -941,10 +968,9 @@ internal sealed partial class EngineHostOptionsTests
 
             if (copyDestinationTexture is GpuTexture selectedCopyDestinationTexture)
             {
-                var copyRange = new GraphTextureRange(1, 1, 1, 1, TextureAspect.Color);
                 copyDestinationTextureInitialVersion = graph.ImportTexture(
                     selectedCopyDestinationTexture,
-                    copyRange,
+                    copyTextureRange,
                     new GraphImportOptions(
                         GraphResourceState.Undefined,
                         contentsValid: false,
@@ -965,6 +991,13 @@ internal sealed partial class EngineHostOptionsTests
             GraphBufferVersion? secondFrameUniformVersion = null;
             GraphTextureVersion? secondSampledTextureVersion = null;
             BindingSet? secondFrameBindingSet = null;
+
+            if (useTransientTextureCopy)
+            {
+                transientTextureInitialVersion = graph.CreateTransientTexture(
+                    textureCopyDescription
+                        ?? throw new InvalidOperationException("The graph transient texture-copy test has no texture description."));
+            }
 
             void RecordClear(scoped ref CommandRecorder recorder)
             {
@@ -1031,10 +1064,25 @@ internal sealed partial class EngineHostOptionsTests
                         selectedSecondSource.Range.ByteLength);
                 }
 
-                if ((copySourceTextureVersion is GraphTextureVersion selectedTextureSource)
+                if (useTransientTextureCopy
+                    && (copySourceTextureVersion is GraphTextureVersion selectedTextureSource)
+                    && (transientTextureWriteVersion is GraphTextureVersion selectedTransientTexture))
+                {
+                    recorder.CopyTexture(selectedTextureSource, selectedTransientTexture);
+                }
+                else if ((copySourceTextureVersion is GraphTextureVersion directTextureSource)
+                    && (copyDestinationTextureWriteVersion is GraphTextureVersion directTextureDestination))
+                {
+                    recorder.CopyTexture(directTextureSource, directTextureDestination);
+                }
+            }
+
+            void RecordTransientTextureCopy(scoped ref CommandRecorder recorder)
+            {
+                if ((transientTextureWriteVersion is GraphTextureVersion selectedTransientTexture)
                     && (copyDestinationTextureWriteVersion is GraphTextureVersion selectedTextureDestination))
                 {
-                    recorder.CopyTexture(selectedTextureSource, selectedTextureDestination);
+                    recorder.CopyTexture(selectedTransientTexture, selectedTextureDestination);
                 }
             }
 
@@ -1341,6 +1389,49 @@ internal sealed partial class EngineHostOptionsTests
                     GraphBufferUsage.CopyDestination,
                     secondCopyDestination.Range);
                 copyPassId = copySecondPass;
+            }
+            else if (useTransientTextureCopy)
+            {
+                var selectedCopySource = copySourceTextureVersion
+                    ?? throw new InvalidOperationException("The graph transient texture-copy test has no imported source.");
+                var transientTexture = transientTextureInitialVersion
+                    ?? throw new InvalidOperationException("The graph transient texture-copy test has no transient texture.");
+                var copyTextureInPass = graph.AddCopyPass(
+                    new RenderPassDescription("offscreen-transient-texture-copy-in", 0, [], hasExternalSideEffects: false),
+                    RecordCopy);
+                graph.ReadTexture(
+                    copyTextureInPass,
+                    selectedCopySource,
+                    GraphTextureUsage.CopySource,
+                    copyTextureRange);
+                transientTextureWriteVersion = graph.WriteTexture(
+                    copyTextureInPass,
+                    transientTexture,
+                    GraphTextureUsage.CopyDestination,
+                    copyTextureRange);
+
+                var copyTextureOutPass = graph.AddCopyPass(
+                    new RenderPassDescription(
+                        "offscreen-transient-texture-copy-out",
+                        1,
+                        [copyTextureInPass],
+                        hasExternalSideEffects: false),
+                    RecordTransientTextureCopy);
+                var selectedTransientTexture = transientTextureWriteVersion
+                    ?? throw new InvalidOperationException("The graph transient texture-copy test has no written transient version.");
+                graph.ReadTexture(
+                    copyTextureOutPass,
+                    selectedTransientTexture,
+                    GraphTextureUsage.CopySource,
+                    copyTextureRange);
+                var selectedCopyDestination = copyDestinationTextureInitialVersion
+                    ?? throw new InvalidOperationException("The graph transient texture-copy test has no imported destination.");
+                copyDestinationTextureWriteVersion = graph.WriteTexture(
+                    copyTextureOutPass,
+                    selectedCopyDestination,
+                    GraphTextureUsage.CopyDestination,
+                    copyTextureRange);
+                copyPassId = copyTextureOutPass;
             }
             else if (useBufferCopy
                 || useCompute
@@ -1679,7 +1770,9 @@ internal sealed partial class EngineHostOptionsTests
                     ?? throw new InvalidOperationException("The graph texture-copy test has no expected bytes.");
                 using var copyTextureReadback = await graphicsDevice.ReadbackTextureAsync(
                     copiedTexture,
-                    new TextureSubresource(1, 1, TextureAspect.Color))
+                    useTransientTextureCopy
+                        ? new TextureSubresource(0, 0, TextureAspect.Color)
+                        : new TextureSubresource(1, 1, TextureAspect.Color))
                     .ConfigureAwait(false);
                 var paddedBytes = new byte[checked((int)copyTextureReadback.ByteLength)];
 
@@ -2123,6 +2216,7 @@ internal sealed partial class EngineHostOptionsTests
                 + $"StorageResources={useStorageResources}; "
                 + $"BufferCopy={useBufferCopy || useCompute || useMultipleComputeStorageBuffers || useTransientBufferAliasing}; "
                 + $"TextureCopy={useTextureCopy}; "
+                + $"TransientTextureCopy={useTransientTextureCopy}; "
                 + $"Compute={useCompute}; "
                 + $"MultipleComputeStorageBuffers={useMultipleComputeStorageBuffers}; "
                 + $"TransientBufferAliasing={useTransientBufferAliasing}; "

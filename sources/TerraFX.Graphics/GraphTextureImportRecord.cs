@@ -12,13 +12,18 @@ internal sealed class GraphTextureImportRecord
     private readonly GraphResourceState _initialState;
     private readonly GraphImportOptions _options;
 
-    internal GraphTextureImportRecord(GpuTexture texture, GraphTextureVersion version, GraphImportOptions options)
+    internal GraphTextureImportRecord(
+        GpuTexture texture,
+        GraphTextureVersion version,
+        GraphImportOptions options,
+        bool isTransient = false)
     {
         ArgumentNullException.ThrowIfNull(texture);
         ArgumentNullException.ThrowIfNull(version);
         ArgumentNullException.ThrowIfNull(options);
         Texture = texture;
         Version = version;
+        IsTransient = isTransient;
         _options = options;
         (_initialState, _initialContentsValid, _initialLastUseSequence, _initialIsIdle) =
             texture.ResourceOwner.CaptureGraphImportState(version.Range);
@@ -33,6 +38,8 @@ internal sealed class GraphTextureImportRecord
     internal long InitialLastUseSequence => _initialLastUseSequence;
 
     internal GraphResourceState InitialState => _initialState;
+
+    internal bool IsTransient { get; }
 
     internal GpuTexture Texture { get; }
 

@@ -48,10 +48,16 @@ public sealed partial class RenderGraphPlan
         }
 
         var importedBufferResourceIds = new HashSet<ulong>();
+        var importedTextureResourceIds = new HashSet<ulong>();
 
         foreach (var import in bufferImports)
         {
             _ = importedBufferResourceIds.Add(import.Version.ResourceId);
+        }
+
+        foreach (var import in textureImports)
+        {
+            _ = importedTextureResourceIds.Add(import.Version.ResourceId);
         }
 
         var orderedPassIndices = new Dictionary<RenderPassId, int>(orderedPasses.Length);
@@ -63,6 +69,7 @@ public sealed partial class RenderGraphPlan
 
         var transientBuffers = new SortedDictionary<ulong, GraphBufferVersion>();
         var transientLifetimes = new Dictionary<ulong, (GraphBufferVersion Version, int FirstPassIndex, int LastPassIndex)>();
+        var transientTextures = new SortedDictionary<ulong, GraphTextureVersion>();
 
         foreach (var access in accesses)
         {
@@ -83,6 +90,12 @@ public sealed partial class RenderGraphPlan
                 {
                     transientLifetimes.Add(version.ResourceId, (version, passIndex, passIndex));
                 }
+            }
+            else if (access.IsTexture
+                && (access.TextureVersion is GraphTextureVersion textureVersion)
+                && !importedTextureResourceIds.Contains(textureVersion.ResourceId))
+            {
+                _ = transientTextures.TryAdd(textureVersion.ResourceId, textureVersion);
             }
         }
 
@@ -181,6 +194,7 @@ public sealed partial class RenderGraphPlan
         TextureImports = [.. textureImports];
         TickIndex = options.TickIndex;
         TransientBuffers = [.. transientBuffers.Values];
+        TransientTextures = [.. transientTextures.Values];
         WorldGuid = options.WorldGuid;
     }
 
@@ -243,6 +257,8 @@ public sealed partial class RenderGraphPlan
     internal ImmutableArray<ImmutableArray<GraphBufferVersion>> TransientBufferGroups { get; }
 
     internal ImmutableArray<GraphBufferVersion> TransientBuffers { get; }
+
+    internal ImmutableArray<GraphTextureVersion> TransientTextures { get; }
 
     private static bool AreTransientBufferDescriptionsCompatible(
         BufferDescription left,

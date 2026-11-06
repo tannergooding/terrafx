@@ -211,10 +211,10 @@ internal sealed class GraphicsGraphSubmission
     internal void ValidateOffscreenRasterSubmission()
     {
         if ((BufferImports.Length > 8)
-            || (TextureImports.Length is < 1 or > 3)
+            || (TextureImports.Length is < 1 or > 4)
             || !ReferenceEquals(TextureImports[0].Texture, OffscreenColorTarget))
         {
-            throw new NotSupportedException("Native graph submission supports one offscreen color target, Frame uniform/storage buffers, and sampled/storage images.");
+            throw new NotSupportedException("Native graph submission supports one offscreen color target and up to three imported or transient Frame resource textures.");
         }
 
         var targetResourceId = TextureImports[0].Version.ResourceId;
@@ -438,44 +438,53 @@ internal sealed class GraphicsGraphSubmission
             }
             else
             {
-                if (hasCopySourceImportAccess == hasCopyDestinationImportAccess)
+                if ((!hasCopySourceImportAccess && !hasCopyDestinationImportAccess)
+                    || (hasCopySourceImportAccess && hasCopyDestinationImportAccess && !import.IsTransient))
                 {
-                    throw new NotSupportedException("A native graph copy texture must have exactly one declared copy-source or copy-destination use.");
+                    throw new NotSupportedException("Native graph copy textures require declared copy-source or copy-destination uses; a texture may fill both roles only when transient.");
                 }
 
                 if (hasCopySourceImportAccess)
                 {
                     if (((usage & TextureUsage.CopySource) == 0)
-                        || !import.InitialContentsValid
-                        || (import.InitialState is not (
-                            GraphResourceState.General
-                            or GraphResourceState.CopySource
-                            or GraphResourceState.CopyDestination
-                            or GraphResourceState.ColorAttachment
-                            or GraphResourceState.ShaderSampledRead
-                            or GraphResourceState.StorageRead
-                            or GraphResourceState.StorageWrite
-                            or GraphResourceState.StorageReadWrite))
+                        || (import.IsTransient
+                            ? (import.InitialContentsValid || (import.InitialState != GraphResourceState.Undefined))
+                            : (!import.InitialContentsValid
+                                || (import.InitialState is not (
+                                    GraphResourceState.General
+                                    or GraphResourceState.CopySource
+                                    or GraphResourceState.CopyDestination
+                                    or GraphResourceState.ColorAttachment
+                                    or GraphResourceState.ShaderSampledRead
+                                    or GraphResourceState.StorageRead
+                                    or GraphResourceState.StorageWrite
+                                    or GraphResourceState.StorageReadWrite))))
                         || !copySourceTextureImports.TryAdd(import.Version.ResourceId, import))
                     {
-                        throw new NotSupportedException("Native graph texture copy sources require initialized imported CopySource resources.");
+                        throw new NotSupportedException("Native graph texture copy sources require initialized imports or transient textures written earlier in the graph.");
                     }
                 }
-                else if (((usage & TextureUsage.CopyDestination) == 0)
-                    || (import.InitialContentsValid && (import.InitialState == GraphResourceState.Undefined))
-                    || (import.InitialState is not (
-                        GraphResourceState.Undefined
-                        or GraphResourceState.General
-                        or GraphResourceState.CopySource
-                        or GraphResourceState.CopyDestination
-                        or GraphResourceState.ColorAttachment
-                        or GraphResourceState.ShaderSampledRead
-                        or GraphResourceState.StorageRead
-                        or GraphResourceState.StorageWrite
-                        or GraphResourceState.StorageReadWrite))
-                    || !copyDestinationTextureImports.TryAdd(import.Version.ResourceId, import))
+
+                if (hasCopyDestinationImportAccess)
                 {
-                    throw new NotSupportedException("Native graph texture copy destinations require CopyDestination resources in supported initial states.");
+                    if (((usage & TextureUsage.CopyDestination) == 0)
+                        || (import.IsTransient
+                            ? (import.InitialContentsValid || (import.InitialState != GraphResourceState.Undefined))
+                            : ((import.InitialContentsValid && (import.InitialState == GraphResourceState.Undefined))
+                                || (import.InitialState is not (
+                                    GraphResourceState.Undefined
+                                    or GraphResourceState.General
+                                    or GraphResourceState.CopySource
+                                    or GraphResourceState.CopyDestination
+                                    or GraphResourceState.ColorAttachment
+                                    or GraphResourceState.ShaderSampledRead
+                                    or GraphResourceState.StorageRead
+                                    or GraphResourceState.StorageWrite
+                                    or GraphResourceState.StorageReadWrite))))
+                        || !copyDestinationTextureImports.TryAdd(import.Version.ResourceId, import))
+                    {
+                        throw new NotSupportedException("Native graph texture copy destinations require CopyDestination resources in supported initial states.");
+                    }
                 }
             }
         }

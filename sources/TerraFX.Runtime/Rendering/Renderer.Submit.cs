@@ -64,6 +64,7 @@ public sealed partial class Renderer
         var transientBuffers = new List<GpuBuffer>(graph.TransientBuffers.Length);
         var transientBufferGroups = new List<GraphicsTransientBufferGroup>(graph.TransientBufferGroups.Length);
         var transientBuffersByResourceId = new Dictionary<ulong, GpuBuffer>(graph.TransientBuffers.Length);
+        var transientTextures = new List<GpuTexture>(graph.TransientTextures.Length);
 
         try
         {
@@ -106,12 +107,33 @@ public sealed partial class Renderer
                     isTransient: true));
             }
 
+            var transientTextureImports = ImmutableArray.CreateBuilder<GraphTextureImportRecord>(graph.TransientTextures.Length);
+
+            foreach (var transientVersion in graph.TransientTextures)
+            {
+                var texture = await device.CreateTextureAsync(
+                    transientVersion.Description,
+                    cancellationToken).ConfigureAwait(false);
+                transientTextures.Add(texture);
+                transientTextureImports.Add(new GraphTextureImportRecord(
+                    texture,
+                    transientVersion,
+                    new GraphImportOptions(
+                        GraphResourceState.Undefined,
+                        contentsValid: false,
+                        GraphImportCompletionPolicy.WaitForLastUse),
+                    isTransient: true));
+            }
+
             var commandLists = await graph.RecordPassCallbacksAsync().ConfigureAwait(false);
             GraphicsGraphSubmission submission;
 
             try
             {
-                submission = graph.CreateGraphicsSubmission(commandLists, transientBufferImports.MoveToImmutable());
+                submission = graph.CreateGraphicsSubmission(
+                    commandLists,
+                    transientBufferImports.MoveToImmutable(),
+                    transientTextureImports.MoveToImmutable());
             }
             catch
             {
@@ -142,6 +164,11 @@ public sealed partial class Renderer
             foreach (var transientBuffer in transientBuffers)
             {
                 transientBuffer.Dispose();
+            }
+
+            foreach (var transientTexture in transientTextures)
+            {
+                transientTexture.Dispose();
             }
         }
     }

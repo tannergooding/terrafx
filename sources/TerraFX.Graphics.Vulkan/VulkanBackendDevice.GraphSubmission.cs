@@ -172,7 +172,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             VkImageLayout Layout,
             VkPipelineStageFlags2 StageMask,
             VkAccessFlags2 AccessMask,
-            bool IsDestination)>(2);
+            bool IsDestination)>(submission.TextureImports.Length - 1);
 
         foreach (var import in submission.BufferImports)
         {
@@ -940,15 +940,13 @@ internal sealed unsafe partial class VulkanBackendDevice
                 copyTextureLayout,
                 _,
                 _,
-                copyTextureIsDestination) in copyTextureScopes.Values)
+                _) in copyTextureScopes.Values)
             {
-                var finalState = copyTextureIsDestination
-                    ? GraphResourceState.CopyDestination
-                    : GraphResourceState.CopySource;
-
-                if (copyTextureLayout != VulkanGraphResourceStateMapper.GetImageLayout(finalState))
+                if (copyTextureLayout is not (
+                    VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+                    or VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
                 {
-                    throw new InvalidOperationException("The compiled graph did not transition each copy texture to its transfer layout.");
+                    throw new InvalidOperationException("The compiled graph did not leave each copy texture in a transfer layout.");
                 }
             }
 

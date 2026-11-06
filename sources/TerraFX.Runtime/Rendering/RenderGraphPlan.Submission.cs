@@ -11,7 +11,8 @@ public sealed partial class RenderGraphPlan
 {
     internal GraphicsGraphSubmission CreateGraphicsSubmission(
         ImmutableArray<RecordedPassCommandList> recordedPassCommandLists,
-        ImmutableArray<GraphBufferImportRecord> transientBufferImports)
+        ImmutableArray<GraphBufferImportRecord> transientBufferImports,
+        ImmutableArray<GraphTextureImportRecord> transientTextureImports)
     {
         if (recordedPassCommandLists.IsDefault)
         {
@@ -21,6 +22,11 @@ public sealed partial class RenderGraphPlan
         if (transientBufferImports.IsDefault || (transientBufferImports.Length != TransientBuffers.Length))
         {
             throw new ArgumentException("The graph submission requires one materialized buffer per transient graph buffer.", nameof(transientBufferImports));
+        }
+
+        if (transientTextureImports.IsDefault || (transientTextureImports.Length != TransientTextures.Length))
+        {
+            throw new ArgumentException("The graph submission requires one materialized texture per transient graph texture.", nameof(transientTextureImports));
         }
 
         var bufferImports = ImmutableArray.CreateBuilder<GraphBufferImportRecord>(
@@ -37,6 +43,22 @@ public sealed partial class RenderGraphPlan
             }
 
             bufferImports.Add(import);
+        }
+
+        var textureImports = ImmutableArray.CreateBuilder<GraphTextureImportRecord>(
+            checked(TextureImports.Length + transientTextureImports.Length));
+        textureImports.AddRange(TextureImports);
+
+        for (var index = 0; index < transientTextureImports.Length; index++)
+        {
+            var import = transientTextureImports[index];
+
+            if (!import.IsTransient || !ReferenceEquals(import.Version, TransientTextures[index]))
+            {
+                throw new ArgumentException("The materialized transient texture order does not match the compiled graph.", nameof(transientTextureImports));
+            }
+
+            textureImports.Add(import);
         }
 
         var commandListsByPass = new Dictionary<RenderPassId, RecordedPassCommandList>();
@@ -116,7 +138,7 @@ public sealed partial class RenderGraphPlan
             TransientBufferAliasingBarriers,
             Accesses,
             bufferImports.MoveToImmutable(),
-            TextureImports,
+            textureImports.MoveToImmutable(),
             recordedPassCommandLists);
     }
 }
