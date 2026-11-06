@@ -96,6 +96,14 @@ internal sealed class RenderAtlasPageSet : IDisposable
         }
     }
 
+    internal AssetLease<RenderTextureAsset> RetainPageLease(int pageIndex)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfNegative(pageIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(pageIndex, _pageLeases.Length);
+        return _pageLeases[pageIndex].Retain();
+    }
+
     private void ThrowIfDisposed()
         => ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
 }
