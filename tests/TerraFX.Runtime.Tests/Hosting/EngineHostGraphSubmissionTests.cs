@@ -169,7 +169,7 @@ internal sealed partial class EngineHostOptionsTests
                     default,
                     new Vector4(0.0f, 0.0f, 1.0f, 1.0f),
                     (byte)(CameraClearFlags.Color | CameraClearFlags.Depth),
-                    new Vector4(0.0f, 0.0f, 0.0f, 1.0f),
+                    new Vector4(0.5f, 0.5f, 0.5f, 1.0f),
                     ulong.MaxValue,
                     order: 0);
                 var transform = new SceneComponentDefinitions.LocalTransformComponent(
@@ -1216,7 +1216,7 @@ internal sealed partial class EngineHostOptionsTests
                 new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
                 AttachmentLoadAction.Clear,
                 AttachmentStoreAction.Store,
-                new Vector4(0.25f, 0.5f, 0.75f, 1.0f));
+                renderSnapshot.Cameras[0].ClearColor);
 
             if (useStorageResources)
             {
@@ -1302,7 +1302,7 @@ internal sealed partial class EngineHostOptionsTests
                     new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
                     AttachmentLoadAction.Clear,
                     AttachmentStoreAction.Store,
-                    new Vector4(0.25f, 0.5f, 0.75f, 1.0f));
+                    renderSnapshot.Cameras[0].ClearColor);
                 graph.SetPresentationSource(secondOutputVersion);
             }
             else
@@ -1473,7 +1473,7 @@ internal sealed partial class EngineHostOptionsTests
                     new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
                     AttachmentLoadAction.Clear,
                     AttachmentStoreAction.Store,
-                    new Vector4(0.75f, 0.25f, 0.5f, 1.0f));
+                    renderSnapshot.Cameras[0].ClearColor);
                 secondGraph.SetPresentationSource(secondOutputVersion);
                 var secondCompileResponse = secondGraph.Compile();
                 Assert.That(secondCompileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
@@ -1525,8 +1525,8 @@ internal sealed partial class EngineHostOptionsTests
             var expectedBlue = useStorageResources
                 ? (byte)255
                 : (useSampledTexture ? (byte)224 : (useUniformBuffer ? (byte)0 : (byte)255));
-            var expectedBackgroundRed = 191;
-            var expectedBackgroundGreen = 64;
+            var expectedBackgroundRed = 128;
+            var expectedBackgroundGreen = 128;
             var expectedBackgroundBlue = 128;
 
             for (var y = 0; y < readback.Height; y++)
@@ -1737,6 +1737,7 @@ internal sealed partial class EngineHostOptionsTests
                 + $"MultipleComputeStorageBuffers={useMultipleComputeStorageBuffers}; "
                 + $"TransientBufferAliasing={useTransientBufferAliasing}; "
                 + $"OverlappingTransientLifetimes={overlapTransientBufferLifetimes}; "
+                + $"CameraClear={renderSnapshot.Cameras[0].ClearColor}; "
                 + $"Pixel={padded[centerPixelOffset]:X2}{padded[centerPixelOffset + 1]:X2}"
                 + $"{padded[centerPixelOffset + 2]:X2}{padded[centerPixelOffset + 3]:X2}; "
                 + $"DrawPixels={drawPixelCount}");
