@@ -70,6 +70,7 @@ public sealed partial class RenderGraphPlan
         var transientBuffers = new SortedDictionary<ulong, GraphBufferVersion>();
         var transientLifetimes = new Dictionary<ulong, (GraphBufferVersion Version, int FirstPassIndex, int LastPassIndex)>();
         var transientTextures = new SortedDictionary<ulong, GraphTextureVersion>();
+        var transientTextureLifetimes = new Dictionary<ulong, (GraphTextureVersion Version, int FirstPassIndex, int LastPassIndex)>();
 
         foreach (var access in accesses)
         {
@@ -95,6 +96,20 @@ public sealed partial class RenderGraphPlan
                 && (access.TextureVersion is GraphTextureVersion textureVersion)
                 && !importedTextureResourceIds.Contains(textureVersion.ResourceId))
             {
+                var passIndex = orderedPassIndices[access.PassId];
+
+                if (transientTextureLifetimes.TryGetValue(textureVersion.ResourceId, out var lifetime))
+                {
+                    transientTextureLifetimes[textureVersion.ResourceId] = (
+                        lifetime.Version,
+                        Math.Min(lifetime.FirstPassIndex, passIndex),
+                        Math.Max(lifetime.LastPassIndex, passIndex));
+                }
+                else
+                {
+                    transientTextureLifetimes.Add(textureVersion.ResourceId, (textureVersion, passIndex, passIndex));
+                }
+
                 _ = transientTextures.TryAdd(textureVersion.ResourceId, textureVersion);
             }
         }
@@ -171,6 +186,76 @@ public sealed partial class RenderGraphPlan
             }
         }
 
+        var orderedTransientTextureLifetimes = new List<(
+            GraphTextureVersion Version,
+            int FirstPassIndex,
+            int LastPassIndex)>(transientTextureLifetimes.Values);
+        orderedTransientTextureLifetimes.Sort(static (left, right) => {
+            var firstPassComparison = left.FirstPassIndex.CompareTo(right.FirstPassIndex);
+            return (firstPassComparison != 0)
+                ? firstPassComparison
+                : left.Version.ResourceId.CompareTo(right.Version.ResourceId);
+        });
+
+        var textureAliasGroups = new List<(
+            TextureDescription Description,
+            int LastPassIndex,
+            ImmutableArray<GraphTextureVersion>.Builder Versions)>();
+
+        foreach (var (version, firstPassIndex, lastPassIndex) in orderedTransientTextureLifetimes)
+        {
+            var aliasGroupIndex = -1;
+
+            for (var index = 0; index < textureAliasGroups.Count; index++)
+            {
+                var (aliasGroupDescription, aliasGroupLastPassIndex, _) = textureAliasGroups[index];
+
+                if ((aliasGroupLastPassIndex < firstPassIndex)
+                    && GraphTextureAliasingBarrier.AreCompatible(aliasGroupDescription, version.Description))
+                {
+                    aliasGroupIndex = index;
+                    break;
+                }
+            }
+
+            if (aliasGroupIndex < 0)
+            {
+                var versions = ImmutableArray.CreateBuilder<GraphTextureVersion>();
+                versions.Add(version);
+                textureAliasGroups.Add((version.Description, lastPassIndex, versions));
+            }
+            else
+            {
+                var (aliasGroupDescription, _, aliasGroupVersions) = textureAliasGroups[aliasGroupIndex];
+                aliasGroupVersions.Add(version);
+                textureAliasGroups[aliasGroupIndex] = (
+                    aliasGroupDescription,
+                    lastPassIndex,
+                    aliasGroupVersions);
+            }
+        }
+
+        var transientTextureGroups = ImmutableArray.CreateBuilder<ImmutableArray<GraphTextureVersion>>(
+            textureAliasGroups.Count);
+        var textureAliasingBarriers = ImmutableArray.CreateBuilder<GraphTextureAliasingBarrier>();
+
+        foreach (var (_, _, aliasGroupVersions) in textureAliasGroups)
+        {
+            var versions = aliasGroupVersions.ToImmutable();
+            transientTextureGroups.Add(versions);
+
+            for (var index = 1; index < versions.Length; index++)
+            {
+                var previousVersion = versions[index - 1];
+                var nextVersion = versions[index];
+                var firstPassIndex = transientTextureLifetimes[nextVersion.ResourceId].FirstPassIndex;
+                textureAliasingBarriers.Add(new GraphTextureAliasingBarrier(
+                    orderedPasses[firstPassIndex],
+                    previousVersion,
+                    nextVersion));
+            }
+        }
+
         Accesses = [.. accesses];
         AttachmentWrites = [.. attachmentWrites];
         BufferImports = [.. bufferImports];
@@ -188,6 +273,8 @@ public sealed partial class RenderGraphPlan
         StateTransitions = [.. stateTransitions];
         TransientBufferAliasingBarriers = aliasingBarriers.ToImmutable();
         TransientBufferGroups = transientBufferGroups.ToImmutable();
+        TransientTextureAliasingBarriers = textureAliasingBarriers.ToImmutable();
+        TransientTextureGroups = transientTextureGroups.ToImmutable();
         SwapchainEpoch = 0;
         SurfaceEpoch = 0;
         TargetExtent = options.TargetExtent;
@@ -258,6 +345,10 @@ public sealed partial class RenderGraphPlan
 
     internal ImmutableArray<GraphBufferVersion> TransientBuffers { get; }
 
+    internal ImmutableArray<GraphTextureAliasingBarrier> TransientTextureAliasingBarriers { get; }
+
+    internal ImmutableArray<ImmutableArray<GraphTextureVersion>> TransientTextureGroups { get; }
+
     internal ImmutableArray<GraphTextureVersion> TransientTextures { get; }
 
     private static bool AreTransientBufferDescriptionsCompatible(
@@ -267,4 +358,5 @@ public sealed partial class RenderGraphPlan
             && (left.MemoryKind == right.MemoryKind)
             && (left.StructuredStride == right.StructuredStride)
             && (left.Usage == right.Usage);
+
 }

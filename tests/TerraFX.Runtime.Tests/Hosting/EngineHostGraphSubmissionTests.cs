@@ -41,6 +41,43 @@ internal sealed partial class EngineHostOptionsTests
             overlapTransientBufferLifetimes: false,
             holdGraphCompletion: true);
 
+    [Test]
+    public Task PlansOverlappingTransientTextureLifetimesSeparatelyOnVulkan()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.Vulkan,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useTextureCopy: true,
+            useTransientTextureCopy: true,
+            useTransientTextureAliasing: true,
+            overlapTransientTextureLifetimes: true);
+
+    [Test]
+    public Task PlansSequentialTransientTextureAliasGroupsAndSubmitsOnVulkan()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.Vulkan,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useTextureCopy: true,
+            useTransientTextureCopy: true,
+            useTransientTextureAliasing: true);
+
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
     public Task SubmitsCombinedBufferAndTextureCopyGraphAndReadsBackAsync(GraphicsBackend backend)
@@ -210,8 +247,10 @@ internal sealed partial class EngineHostOptionsTests
         bool usePackageResidencyTexture = false,
         bool useTextureCopy = false,
         bool useTransientTextureCopy = false,
+        bool useTransientTextureAliasing = false,
         bool useMultipleTextureCopies = false,
-        bool usePartialTextureCopy = false)
+        bool usePartialTextureCopy = false,
+        bool overlapTransientTextureLifetimes = false)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -510,11 +549,11 @@ internal sealed partial class EngineHostOptionsTests
                 var copyTextureUsage = TextureUsage.CopySource | TextureUsage.CopyDestination;
                 var copyTextureDescription = new TextureDescription(
                     TextureDimension.Dimension2D,
-                    width: useTransientTextureCopy ? 2 : 4,
-                    height: useTransientTextureCopy ? 2 : 4,
+                    width: (useTransientTextureCopy || useTransientTextureAliasing) ? 2 : 4,
+                    height: (useTransientTextureCopy || useTransientTextureAliasing) ? 2 : 4,
                     depth: 1,
-                    arrayLayers: (useTransientTextureCopy || usePartialTextureCopy) ? 1 : 2,
-                    mipLevels: (useTransientTextureCopy || usePartialTextureCopy) ? 1 : 2,
+                    arrayLayers: (useTransientTextureCopy || useTransientTextureAliasing || usePartialTextureCopy) ? 1 : 2,
+                    mipLevels: (useTransientTextureCopy || useTransientTextureAliasing || usePartialTextureCopy) ? 1 : 2,
                     TextureFormat.Rgba8Unorm,
                     copyTextureUsage,
                     $"m04-{backend}-graph-copy-texture");
@@ -544,7 +583,7 @@ internal sealed partial class EngineHostOptionsTests
 
                 try
                 {
-                    var sourceSubresource = (useTransientTextureCopy || usePartialTextureCopy)
+                    var sourceSubresource = (useTransientTextureCopy || useTransientTextureAliasing || usePartialTextureCopy)
                         ? new TextureSubresource(0, 0, TextureAspect.Color)
                         : new TextureSubresource(1, 1, TextureAspect.Color);
                     sourceUploadReceipt = await graphicsDevice.UploadTextureAsync(
@@ -941,7 +980,7 @@ internal sealed partial class EngineHostOptionsTests
                 renderSnapshot,
                 target);
             var sampleRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
-            var copyTextureRange = (useTransientTextureCopy || usePartialTextureCopy)
+            var copyTextureRange = (useTransientTextureCopy || useTransientTextureAliasing || usePartialTextureCopy)
                 ? new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)
                 : new GraphTextureRange(1, 1, 1, 1, TextureAspect.Color);
             GraphBufferVersion? frameUniformVersion = null;
@@ -969,6 +1008,9 @@ internal sealed partial class EngineHostOptionsTests
             GraphTextureVersion? secondCopyDestinationTextureWriteVersion = null;
             GraphTextureVersion? transientTextureInitialVersion = null;
             GraphTextureVersion? transientTextureWriteVersion = null;
+            GraphTextureVersion? secondTransientTextureInitialVersion = null;
+            GraphTextureVersion? secondTransientTextureWriteVersion = null;
+            GraphTextureVersion? firstTransientTextureDestinationVersion = null;
             GraphTextureVersion? storageImageInitialVersion = null;
             GraphTextureVersion? storageImageWriteVersion = null;
             GraphTextureVersion? computeStorageImageWriteVersion = null;
@@ -1153,11 +1195,18 @@ internal sealed partial class EngineHostOptionsTests
             GraphTextureVersion? secondSampledTextureVersion = null;
             BindingSet? secondFrameBindingSet = null;
 
-            if (useTransientTextureCopy)
+            if (useTransientTextureCopy || useTransientTextureAliasing)
             {
                 transientTextureInitialVersion = graph.CreateTransientTexture(
                     textureCopyDescription
                         ?? throw new InvalidOperationException("The graph transient texture-copy test has no texture description."));
+
+                if (useTransientTextureAliasing)
+                {
+                    secondTransientTextureInitialVersion = graph.CreateTransientTexture(
+                        textureCopyDescription
+                            ?? throw new InvalidOperationException("The graph transient texture-alias test has no texture description."));
+                }
             }
 
             void RecordClear(scoped ref CommandRecorder recorder)
@@ -1225,7 +1274,7 @@ internal sealed partial class EngineHostOptionsTests
                         selectedSecondSource.Range.ByteLength);
                 }
 
-                if (useTransientTextureCopy
+                if ((useTransientTextureCopy || useTransientTextureAliasing)
                     && (copySourceTextureVersion is GraphTextureVersion selectedTextureSource)
                     && (transientTextureWriteVersion is GraphTextureVersion selectedTransientTexture))
                 {
@@ -1262,6 +1311,24 @@ internal sealed partial class EngineHostOptionsTests
             void RecordTransientTextureCopy(scoped ref CommandRecorder recorder)
             {
                 if ((transientTextureWriteVersion is GraphTextureVersion selectedTransientTexture)
+                    && (firstTransientTextureDestinationVersion is GraphTextureVersion selectedTextureDestination))
+                {
+                    recorder.CopyTexture(selectedTransientTexture, selectedTextureDestination);
+                }
+            }
+
+            void RecordSecondTransientTextureInitialize(scoped ref CommandRecorder recorder)
+            {
+                if ((copySourceTextureVersion is GraphTextureVersion selectedSource)
+                    && (secondTransientTextureWriteVersion is GraphTextureVersion selectedDestination))
+                {
+                    recorder.CopyTexture(selectedSource, selectedDestination);
+                }
+            }
+
+            void RecordSecondTransientTextureCopy(scoped ref CommandRecorder recorder)
+            {
+                if ((secondTransientTextureWriteVersion is GraphTextureVersion selectedTransientTexture)
                     && (copyDestinationTextureWriteVersion is GraphTextureVersion selectedTextureDestination))
                 {
                     recorder.CopyTexture(selectedTransientTexture, selectedTextureDestination);
@@ -1572,6 +1639,115 @@ internal sealed partial class EngineHostOptionsTests
                     secondCopyDestination.Range);
                 copyPassId = copySecondPass;
             }
+            else if (useTransientTextureAliasing)
+            {
+                var selectedCopySource = copySourceTextureVersion
+                    ?? throw new InvalidOperationException("The graph transient texture-alias test has no imported source.");
+                var firstTransientTexture = transientTextureInitialVersion
+                    ?? throw new InvalidOperationException("The graph transient texture-alias test has no first transient texture.");
+                var secondTransientTexture = secondTransientTextureInitialVersion
+                    ?? throw new InvalidOperationException("The graph transient texture-alias test has no second transient texture.");
+
+                var copyFirstTextureInPass = graph.AddCopyPass(
+                    new RenderPassDescription("offscreen-transient-texture-alias-a-in", 0, [], hasExternalSideEffects: false),
+                    RecordCopy);
+                graph.ReadTexture(
+                    copyFirstTextureInPass,
+                    selectedCopySource,
+                    GraphTextureUsage.CopySource,
+                    copyTextureRange);
+                transientTextureWriteVersion = graph.WriteTexture(
+                    copyFirstTextureInPass,
+                    firstTransientTexture,
+                    GraphTextureUsage.CopyDestination,
+                    copyTextureRange);
+
+                RenderPassId AddSecondTextureInputPass(RenderPassId predecessor, int order)
+                {
+                    var pass = graph.AddCopyPass(
+                        new RenderPassDescription(
+                            "offscreen-transient-texture-alias-b-in",
+                            order,
+                            [predecessor],
+                            hasExternalSideEffects: false),
+                        RecordSecondTransientTextureInitialize);
+                    graph.ReadTexture(
+                        pass,
+                        selectedCopySource,
+                        GraphTextureUsage.CopySource,
+                        copyTextureRange);
+                    secondTransientTextureWriteVersion = graph.WriteTexture(
+                        pass,
+                        secondTransientTexture,
+                        GraphTextureUsage.CopyDestination,
+                        copyTextureRange);
+                    return pass;
+                }
+
+                RenderPassId AddFirstTextureOutputPass(RenderPassId predecessor, int order)
+                {
+                    var pass = graph.AddCopyPass(
+                        new RenderPassDescription(
+                            "offscreen-transient-texture-alias-a-out",
+                            order,
+                            [predecessor],
+                            hasExternalSideEffects: false),
+                        RecordTransientTextureCopy);
+                    var firstTransientTextureSource = transientTextureWriteVersion
+                        ?? throw new InvalidOperationException("The graph transient texture-alias test has no first write.");
+                    graph.ReadTexture(
+                        pass,
+                        firstTransientTextureSource,
+                        GraphTextureUsage.CopySource,
+                        copyTextureRange);
+                    var firstCopyDestination = copyDestinationTextureInitialVersion
+                        ?? throw new InvalidOperationException("The graph transient texture-alias test has no destination.");
+                    firstTransientTextureDestinationVersion = graph.WriteTexture(
+                        pass,
+                        firstCopyDestination,
+                        GraphTextureUsage.CopyDestination,
+                        copyTextureRange);
+                    copyDestinationTextureWriteVersion = firstTransientTextureDestinationVersion;
+                    return pass;
+                }
+
+                RenderPassId copyFirstTextureOutPass;
+                RenderPassId copySecondTextureInPass;
+
+                if (overlapTransientTextureLifetimes)
+                {
+                    copySecondTextureInPass = AddSecondTextureInputPass(copyFirstTextureInPass, 1);
+                    copyFirstTextureOutPass = AddFirstTextureOutputPass(copySecondTextureInPass, 2);
+                }
+                else
+                {
+                    copyFirstTextureOutPass = AddFirstTextureOutputPass(copyFirstTextureInPass, 1);
+                    copySecondTextureInPass = AddSecondTextureInputPass(copyFirstTextureOutPass, 2);
+                }
+
+                var copySecondTextureOutPass = graph.AddCopyPass(
+                    new RenderPassDescription(
+                        "offscreen-transient-texture-alias-b-out",
+                        3,
+                        [copyFirstTextureOutPass, copySecondTextureInPass],
+                        hasExternalSideEffects: false),
+                    RecordSecondTransientTextureCopy);
+                var secondTransientTextureSource = secondTransientTextureWriteVersion
+                    ?? throw new InvalidOperationException("The graph transient texture-alias test has no second write.");
+                graph.ReadTexture(
+                    copySecondTextureOutPass,
+                    secondTransientTextureSource,
+                    GraphTextureUsage.CopySource,
+                    copyTextureRange);
+                var secondCopyDestination = copyDestinationTextureWriteVersion
+                    ?? throw new InvalidOperationException("The graph transient texture-alias test has no first destination write.");
+                copyDestinationTextureWriteVersion = graph.WriteTexture(
+                    copySecondTextureOutPass,
+                    secondCopyDestination,
+                    GraphTextureUsage.CopyDestination,
+                    copyTextureRange);
+                copyPassId = copySecondTextureOutPass;
+            }
             else if (useTransientTextureCopy)
             {
                 var selectedCopySource = copySourceTextureVersion
@@ -1613,6 +1789,7 @@ internal sealed partial class EngineHostOptionsTests
                     selectedCopyDestination,
                     GraphTextureUsage.CopyDestination,
                     copyTextureRange);
+                firstTransientTextureDestinationVersion = copyDestinationTextureWriteVersion;
                 copyPassId = copyTextureOutPass;
             }
             else if (useBufferCopy
@@ -1900,6 +2077,26 @@ internal sealed partial class EngineHostOptionsTests
                 }
             }
 
+            if (useTransientTextureAliasing)
+            {
+                if (overlapTransientTextureLifetimes)
+                {
+                    Assert.That(plan.TransientTextureGroups.Length, Is.EqualTo(2));
+                    Assert.That(plan.TransientTextureGroups[0], Has.Length.EqualTo(1));
+                    Assert.That(plan.TransientTextureGroups[1], Has.Length.EqualTo(1));
+                    Assert.That(plan.TransientTextureAliasingBarriers, Is.Empty);
+                }
+                else
+                {
+                    Assert.That(plan.TransientTextureGroups.Length, Is.EqualTo(1));
+                    Assert.That(plan.TransientTextureGroups[0].Length, Is.EqualTo(2));
+                    Assert.That(plan.TransientTextureAliasingBarriers.Length, Is.EqualTo(1));
+                    Assert.That(
+                        plan.TransientTextureAliasingBarriers[0].PassId,
+                        Is.EqualTo(plan.OrderedPasses[2]));
+                }
+            }
+
             RenderSubmissionReceipt receipt;
 
             if (holdGraphCompletion)
@@ -1969,7 +2166,7 @@ internal sealed partial class EngineHostOptionsTests
 
                 using var copyTextureReadback = await graphicsDevice.ReadbackTextureAsync(
                     copiedTexture,
-                    (useTransientTextureCopy || usePartialTextureCopy)
+                    (useTransientTextureCopy || useTransientTextureAliasing || usePartialTextureCopy)
                         ? new TextureSubresource(0, 0, TextureAspect.Color)
                         : new TextureSubresource(1, 1, TextureAspect.Color))
                     .ConfigureAwait(false);
@@ -2446,6 +2643,7 @@ internal sealed partial class EngineHostOptionsTests
                 + $"BufferCopy={useBufferCopy || useCompute || useMultipleComputeStorageBuffers || useTransientBufferAliasing}; "
                 + $"TextureCopy={useTextureCopy}; "
                 + $"TransientTextureCopy={useTransientTextureCopy}; "
+                + $"TransientTextureAliasing={useTransientTextureAliasing}; "
                 + $"MultipleTextureCopies={useMultipleTextureCopies}; "
                 + $"Compute={useCompute}; "
                 + $"MultipleComputeStorageBuffers={useMultipleComputeStorageBuffers}; "
