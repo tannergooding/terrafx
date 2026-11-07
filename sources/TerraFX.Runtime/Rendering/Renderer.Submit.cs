@@ -62,12 +62,28 @@ public sealed partial class Renderer
             throw new ArgumentException("The graph output target belongs to another device or epoch.", nameof(graph));
         }
 
+        var graphResourceOwners = new HashSet<GraphicsResourceOwner> {
+            outputTarget.ResourceOwner,
+        };
+
+        foreach (var import in graph.BufferImports)
+        {
+            _ = graphResourceOwners.Add(import.Buffer.ResourceOwner);
+        }
+
+        foreach (var import in graph.TextureImports)
+        {
+            _ = graphResourceOwners.Add(import.Texture.ResourceOwner);
+        }
+
         var transientBuffers = new List<GpuBuffer>(graph.TransientBuffers.Length);
         var transientBufferGroups = new List<GraphicsTransientBufferGroup>(graph.TransientBufferGroups.Length);
         var transientBuffersByResourceId = new Dictionary<ulong, GpuBuffer>(graph.TransientBuffers.Length);
         var transientTextures = new List<GpuTexture>(graph.TransientTextures.Length);
         var transientTextureGroups = new List<GraphicsTransientTextureGroup>(graph.TransientTextureGroups.Length);
         var transientTexturesByResourceId = new Dictionary<ulong, GpuTexture>(graph.TransientTextures.Length);
+        var graphResourceUseLeases = device.AcquireGraphResourceUseLeases(graphResourceOwners);
+        var graphResourceUseLeasesTransferred = false;
 
         try
         {
@@ -172,7 +188,12 @@ public sealed partial class Renderer
                 throw;
             }
 
-            var result = await device.SubmitGraphAsync(submission, cancellationToken).ConfigureAwait(false);
+            var submissionTask = device.SubmitGraphAsync(
+                submission,
+                graphResourceUseLeases,
+                cancellationToken);
+            graphResourceUseLeasesTransferred = true;
+            var result = await submissionTask.ConfigureAwait(false);
             return new RenderSubmissionReceipt(
                 result.SubmissionSequence,
                 result.CompletedFence,
@@ -183,6 +204,11 @@ public sealed partial class Renderer
         }
         finally
         {
+            if (!graphResourceUseLeasesTransferred)
+            {
+                graphResourceUseLeases.Dispose();
+            }
+
             foreach (var transientBufferGroup in transientBufferGroups)
             {
                 transientBufferGroup.Dispose();

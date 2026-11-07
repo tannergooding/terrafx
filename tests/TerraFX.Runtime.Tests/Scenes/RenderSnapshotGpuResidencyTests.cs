@@ -35,7 +35,7 @@ internal sealed partial class SceneAssetStoreTests
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
-        Justification = "This test disposes the snapshot after submission admission to verify the independent asset-pin lease survives until GPU completion.")]
+        Justification = "SubmitAsync retains snapshot and imported-resource pins before its first asynchronous wait; this verifies they survive disposal until GPU completion.")]
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Usage",
         "CA1031:Do not catch general exception types",
@@ -381,6 +381,10 @@ internal sealed partial class SceneAssetStoreTests
                 var submissionTask = engineHost.Renderer.SubmitAsync(spriteSnapshot, plan);
                 spriteSnapshot.Dispose();
                 Assert.That(spriteSnapshot.AssetPins, Is.Null);
+                vertexBuffer.Dispose();
+                vertexBuffer = null;
+                indexBuffer.Dispose();
+                indexBuffer = null;
                 var submission = await submissionTask.ConfigureAwait(false);
                 Assert.That(submission.CompletedFence, Is.GreaterThan(0));
 

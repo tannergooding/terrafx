@@ -14,6 +14,24 @@ public sealed partial class GraphicsDevice
     private static readonly ConcurrentBag<GraphicsResourceOwner.UseLease[]> s_quarantinedGraphUseLeases = [];
     private long _nextGraphSubmissionSequence;
 
+    private static void AddResourceUseLease(
+        Dictionary<GraphicsResourceOwner, GraphicsResourceOwner.UseLease> useLeases,
+        GraphicsResourceOwner resourceOwner,
+        string parameterName)
+    {
+        var useLease = resourceOwner.AcquireUse(parameterName);
+
+        try
+        {
+            useLeases.Add(resourceOwner, useLease);
+        }
+        catch
+        {
+            useLease.Dispose();
+            throw;
+        }
+    }
+
     private static void ReleaseUseLeases(List<GraphicsResourceOwner.UseLease> useLeases)
     {
         for (var index = useLeases.Count - 1; index >= 0; index--)
@@ -24,52 +42,76 @@ public sealed partial class GraphicsDevice
         useLeases.Clear();
     }
 
-    internal async Task<GraphicsGraphSubmissionResult> SubmitGraphAsync(
-        GraphicsGraphSubmission submission,
-        CancellationToken cancellationToken)
+    internal GraphResourceUseLeaseSet AcquireGraphResourceUseLeases(
+        IEnumerable<GraphicsResourceOwner> resourceOwners)
     {
-        ArgumentNullException.ThrowIfNull(submission);
-        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(resourceOwners);
 
         if (Status != GraphicsDeviceStatus.Ready)
         {
             throw new InvalidOperationException("The GraphicsDevice is not accepting graph submissions.");
         }
 
-        if (submission.DeviceEpoch != DeviceEpoch)
-        {
-            throw new InvalidOperationException("The graph submission belongs to a stale GraphicsDevice epoch.");
-        }
-
-        submission.ValidateOffscreenRasterSubmission();
-        var resourceOwners = new HashSet<GraphicsResourceOwner>();
-        _ = resourceOwners.Add(submission.OffscreenColorTarget.ResourceOwner);
-
-        foreach (var import in submission.BufferImports)
-        {
-            _ = resourceOwners.Add(import.Buffer.ResourceOwner);
-        }
-
-        foreach (var import in submission.TextureImports)
-        {
-            _ = resourceOwners.Add(import.Texture.ResourceOwner);
-        }
-
-        var useLeases = new List<GraphicsResourceOwner.UseLease>(resourceOwners.Count);
-        var ownershipTransferred = false;
+        var useLeases = new Dictionary<GraphicsResourceOwner, GraphicsResourceOwner.UseLease>();
 
         try
         {
             foreach (var resourceOwner in resourceOwners)
             {
+                ArgumentNullException.ThrowIfNull(resourceOwner);
+
                 if (!ReferenceEquals(resourceOwner.Device, this)
                     || (resourceOwner.DeviceEpoch != DeviceEpoch))
                 {
-                    throw new ArgumentException("Every graph resource must belong to this GraphicsDevice generation.", nameof(submission));
+                    throw new ArgumentException("Every graph resource must belong to this GraphicsDevice generation.", nameof(resourceOwners));
                 }
 
-                useLeases.Add(resourceOwner.AcquireUse(nameof(submission)));
+                if (!useLeases.ContainsKey(resourceOwner))
+                {
+                    AddResourceUseLease(useLeases, resourceOwner, nameof(resourceOwners));
+                }
             }
+
+            return new GraphResourceUseLeaseSet(this, useLeases);
+        }
+        catch
+        {
+            foreach (var useLease in useLeases.Values)
+            {
+                useLease.Dispose();
+            }
+
+            throw;
+        }
+    }
+
+    internal async Task<GraphicsGraphSubmissionResult> SubmitGraphAsync(
+        GraphicsGraphSubmission submission,
+        GraphResourceUseLeaseSet resourceUseLeases,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(submission);
+        ArgumentNullException.ThrowIfNull(resourceUseLeases);
+
+        List<GraphicsResourceOwner.UseLease>? useLeases = null;
+        var ownershipTransferred = false;
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (Status != GraphicsDeviceStatus.Ready)
+            {
+                throw new InvalidOperationException("The GraphicsDevice is not accepting graph submissions.");
+            }
+
+            if (submission.DeviceEpoch != DeviceEpoch)
+            {
+                throw new InvalidOperationException("The graph submission belongs to a stale GraphicsDevice epoch.");
+            }
+
+            useLeases = resourceUseLeases.TransferToSubmission(submission);
+            submission.ValidateOffscreenRasterSubmission();
 
             var request = new SubmitGraphRequest(this, submission, useLeases);
             ownershipTransferred = true;
@@ -88,9 +130,15 @@ public sealed partial class GraphicsDevice
         }
         finally
         {
+            resourceUseLeases.Dispose();
+
             if (!ownershipTransferred)
             {
-                ReleaseUseLeases(useLeases);
+                if (useLeases is not null)
+                {
+                    ReleaseUseLeases(useLeases);
+                }
+
                 submission.DisposeRecordedPassCommandLists();
             }
         }
@@ -127,6 +175,84 @@ public sealed partial class GraphicsDevice
 
         QuarantineResource(submission.OffscreenColorTarget.ResourceOwner, exception);
         MarkDeviceLost();
+    }
+
+    internal sealed class GraphResourceUseLeaseSet : IDisposable
+    {
+        private readonly GraphicsDevice _device;
+        private Dictionary<GraphicsResourceOwner, GraphicsResourceOwner.UseLease>? _useLeases;
+
+        internal GraphResourceUseLeaseSet(
+            GraphicsDevice device,
+            Dictionary<GraphicsResourceOwner, GraphicsResourceOwner.UseLease> useLeases)
+        {
+            ArgumentNullException.ThrowIfNull(device);
+            ArgumentNullException.ThrowIfNull(useLeases);
+            _device = device;
+            _useLeases = useLeases;
+        }
+
+        public void Dispose()
+        {
+            var useLeases = _useLeases;
+            _useLeases = null;
+
+            if (useLeases is not null)
+            {
+                foreach (var useLease in useLeases.Values)
+                {
+                    useLease.Dispose();
+                }
+
+                useLeases.Clear();
+            }
+        }
+
+        internal List<GraphicsResourceOwner.UseLease> TransferToSubmission(GraphicsGraphSubmission submission)
+        {
+            ArgumentNullException.ThrowIfNull(submission);
+            var useLeases = _useLeases
+                ?? throw new ObjectDisposedException(nameof(GraphResourceUseLeaseSet));
+            var resourceOwners = new HashSet<GraphicsResourceOwner>();
+            _ = resourceOwners.Add(submission.OffscreenColorTarget.ResourceOwner);
+
+            foreach (var import in submission.BufferImports)
+            {
+                _ = resourceOwners.Add(import.Buffer.ResourceOwner);
+            }
+
+            foreach (var import in submission.TextureImports)
+            {
+                _ = resourceOwners.Add(import.Texture.ResourceOwner);
+            }
+
+            foreach (var resourceOwner in resourceOwners)
+            {
+                if (!ReferenceEquals(resourceOwner.Device, _device)
+                    || (resourceOwner.DeviceEpoch != submission.DeviceEpoch))
+                {
+                    throw new ArgumentException(
+                        "Every graph resource must belong to this GraphicsDevice generation.",
+                        nameof(submission));
+                }
+
+                if (!useLeases.ContainsKey(resourceOwner))
+                {
+                    AddResourceUseLease(useLeases, resourceOwner, nameof(submission));
+                }
+            }
+
+            if (useLeases.Count != resourceOwners.Count)
+            {
+                throw new ArgumentException(
+                    "The retained graph resources do not match the submission.",
+                    nameof(submission));
+            }
+
+            var transferredUseLeases = new List<GraphicsResourceOwner.UseLease>(useLeases.Values);
+            _useLeases = null;
+            return transferredUseLeases;
+        }
     }
 
     private sealed class SubmitGraphRequest : IGraphicsDeviceWork
