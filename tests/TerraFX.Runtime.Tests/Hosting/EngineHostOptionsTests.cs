@@ -923,6 +923,32 @@ internal sealed partial class EngineHostOptionsTests
                 }
             }
 
+            {
+                var aliasVersions = compiledAliasChainPlan.TransientBufferGroups[0];
+                using var firstLiveAliasGroup = graphicsDevice.CreateTransientBufferGroupAsync(
+                    aliasVersions,
+                    CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                using var secondLiveAliasGroup = graphicsDevice.CreateTransientBufferGroupAsync(
+                    aliasVersions,
+                    CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                var firstAllocationLease = firstLiveAliasGroup.Buffers[0].ResourceOwner.AllocationLease
+                    ?? throw new InvalidOperationException("The first live alias group lost its shared allocation lease.");
+                var secondAllocationLease = secondLiveAliasGroup.Buffers[0].ResourceOwner.AllocationLease
+                    ?? throw new InvalidOperationException("The second live alias group lost its shared allocation lease.");
+
+                Assert.That(firstAllocationLease, Is.Not.SameAs(secondAllocationLease));
+
+                for (var index = 0; index < transientAliasCount; index++)
+                {
+                    Assert.That(firstLiveAliasGroup.Buffers[index].ResourceOwner.AllocationLease, Is.SameAs(firstAllocationLease));
+                    Assert.That(secondLiveAliasGroup.Buffers[index].ResourceOwner.AllocationLease, Is.SameAs(secondAllocationLease));
+                }
+            }
+
             var cycleGraph = new RenderGraph(new RenderGraphOptions(
                 Guid.NewGuid(),
                 Guid.NewGuid(),

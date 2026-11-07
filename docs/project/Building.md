@@ -299,7 +299,7 @@ export TERRAFX_M04_SHADER_FIXTURE_DIRECTORY=
 
 ### Vulkan GraphicsDevice startup through the host issuer
 
-This focused Runtime test supplies a real `PlatformHostOwner`-issued identity to `GraphicsDevice.CreateAsync`, starts an OffscreenNative device through `VulkanGraphicsBackend.CreateRegistration`, records the reported adapter/driver/API and validation-layer environment in the TRX output, then uses `CreateBufferAsync`, `UploadBufferAsync`, and `ReadbackBufferAsync` to verify an exact 32-byte round trip before shutting down the device and platform owner. It also compiles eight sequential transient buffers into one compatible allocation group with seven alias handoffs, then allocates and retires that eight-buffer group eight times:
+This focused Runtime test supplies a real `PlatformHostOwner`-issued identity to `GraphicsDevice.CreateAsync`, starts an OffscreenNative device through `VulkanGraphicsBackend.CreateRegistration`, records the reported adapter/driver/API and validation-layer environment in the TRX output, then uses `CreateBufferAsync`, `UploadBufferAsync`, and `ReadbackBufferAsync` to verify an exact 32-byte round trip before shutting down the device and platform owner. It also compiles eight sequential transient buffers into one compatible allocation group with seven alias handoffs, allocates and retires that group eight times, and holds two groups live concurrently to verify each group has its own shared-allocation lease:
 
 ```powershell
 $env:VULKAN_SDK = 'C:\VulkanSDK\1.4.328.1'

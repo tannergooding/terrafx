@@ -67,6 +67,8 @@ internal sealed class GraphicsResourceOwner : IDisposable
 
     internal GraphicsResourceAllocationInfo? AllocationInfo => _allocationInfo;
 
+    internal GraphicsResourceAllocationLease? AllocationLease => Volatile.Read(ref _allocationLease);
+
     internal IGraphicsBackendResource BackendResource => _backendResource;
 
     internal GraphicsDevice Device => _device;
