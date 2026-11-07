@@ -74,6 +74,32 @@ internal sealed class LinuxEvdevGamepadCapture : IDisposable
 
     internal PlatformServiceStatus GamepadStatus { get; private set; }
 
+    internal static InputEventAction ClassifyInputEvent(
+        in LinuxEvdevInputEvent inputEvent,
+        ref bool isResynchronizing)
+    {
+        if (isResynchronizing)
+        {
+            if ((inputEvent.Type == SynchronizationEventType)
+                && (inputEvent.Code == SynchronizationReportCode))
+            {
+                isResynchronizing = false;
+                return InputEventAction.Reconcile;
+            }
+
+            return InputEventAction.Ignore;
+        }
+
+        if ((inputEvent.Type == SynchronizationEventType)
+            && (inputEvent.Code == SynchronizationDroppedCode))
+        {
+            isResynchronizing = true;
+            return InputEventAction.Ignore;
+        }
+
+        return InputEventAction.Process;
+    }
+
     private static GamepadCapture CreateCapture(
         LinuxEvdevGamepadDevice device,
         nint nativeIdentity)
@@ -303,29 +329,18 @@ internal sealed class LinuxEvdevGamepadCapture : IDisposable
     {
         foreach (var inputEvent in capture.Reader.ReadAvailable())
         {
-            if (capture.IsResynchronizing)
+            var action = ClassifyInputEvent(inputEvent, ref capture.IsResynchronizing);
+
+            if (action is InputEventAction.Ignore)
             {
-                if ((inputEvent.Type == SynchronizationEventType)
-                    && (inputEvent.Code == SynchronizationReportCode))
-                {
-                    capture.State = capture.Reader.ReadGamepadState();
-                    capture.IsResynchronizing = false;
-                    capture.NeedsReconciliation = true;
-                }
-
-                if (capture.NeedsReconciliation)
-                {
-                    break;
-                }
-
                 continue;
             }
 
-            if ((inputEvent.Type == SynchronizationEventType)
-                && (inputEvent.Code == SynchronizationDroppedCode))
+            if (action is InputEventAction.Reconcile)
             {
-                capture.IsResynchronizing = true;
-                continue;
+                capture.State = capture.Reader.ReadGamepadState();
+                capture.NeedsReconciliation = true;
+                break;
             }
 
             var samples = LinuxEvdevGamepadEventDecoder.Decode(
@@ -452,6 +467,13 @@ internal sealed class LinuxEvdevGamepadCapture : IDisposable
 
     private void ThrowIfDisposed()
         => ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+    internal enum InputEventAction
+    {
+        Ignore,
+        Process,
+        Reconcile,
+    }
 
     private sealed class GamepadCapture(
         LinuxEvdevInputEventReader reader,

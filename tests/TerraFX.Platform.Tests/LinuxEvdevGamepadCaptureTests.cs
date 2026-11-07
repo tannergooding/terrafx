@@ -39,4 +39,29 @@ internal sealed class LinuxEvdevGamepadCaptureTests
         TestContext.WriteLine(
             $"Evdev gamepad status: {capture.GamepadStatus}; captured samples: {batch.Samples.Length}.");
     }
+
+    [Test]
+    public void ReconcilesAfterSynchronizationLossWithoutProcessingDroppedEvents()
+    {
+        var isResynchronizing = false;
+        var synchronizationDropped = new LinuxEvdevInputEvent(0, 0, 0x0000, 0x0003, 0);
+        var droppedButton = new LinuxEvdevInputEvent(0, 0, 0x0001, 0x0130, 1);
+        var synchronizationReport = new LinuxEvdevInputEvent(0, 0, 0x0000, 0x0000, 0);
+        var nextButton = new LinuxEvdevInputEvent(0, 0, 0x0001, 0x0130, 1);
+
+        Assert.That(
+            LinuxEvdevGamepadCapture.ClassifyInputEvent(synchronizationDropped, ref isResynchronizing),
+            Is.EqualTo(LinuxEvdevGamepadCapture.InputEventAction.Ignore));
+        Assert.That(isResynchronizing, Is.True);
+        Assert.That(
+            LinuxEvdevGamepadCapture.ClassifyInputEvent(droppedButton, ref isResynchronizing),
+            Is.EqualTo(LinuxEvdevGamepadCapture.InputEventAction.Ignore));
+        Assert.That(
+            LinuxEvdevGamepadCapture.ClassifyInputEvent(synchronizationReport, ref isResynchronizing),
+            Is.EqualTo(LinuxEvdevGamepadCapture.InputEventAction.Reconcile));
+        Assert.That(isResynchronizing, Is.False);
+        Assert.That(
+            LinuxEvdevGamepadCapture.ClassifyInputEvent(nextButton, ref isResynchronizing),
+            Is.EqualTo(LinuxEvdevGamepadCapture.InputEventAction.Process));
+    }
 }
