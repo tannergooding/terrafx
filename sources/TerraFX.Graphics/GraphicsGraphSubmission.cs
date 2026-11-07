@@ -224,6 +224,7 @@ internal sealed class GraphicsGraphSubmission
 
         var targetResourceId = TextureImports[0].Version.ResourceId;
         GraphBufferImportRecord? uniformBufferImport = null;
+        var vertexBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
         var storageBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
         var copySourceBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
         var copyDestinationBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
@@ -248,6 +249,7 @@ internal sealed class GraphicsGraphSubmission
             var usage = import.Version.Description.Usage;
             var hasUniformUsage = (usage & BufferUsage.Uniform) != 0;
             var hasStorageUsage = (usage & BufferUsage.Storage) != 0;
+            var hasVertexReadImportAccess = false;
             var hasCopySourceImportAccess = false;
             var hasCopyDestinationImportAccess = false;
 
@@ -260,6 +262,16 @@ internal sealed class GraphicsGraphSubmission
 
                 hasCopySourceImportAccess |= (access.RequiredState == GraphResourceState.CopySource) && !access.IsWrite;
                 hasCopyDestinationImportAccess |= (access.RequiredState == GraphResourceState.CopyDestination) && access.IsWrite;
+                hasVertexReadImportAccess |= (access.RequiredState == GraphResourceState.VertexRead) && !access.IsWrite;
+            }
+
+            if (hasVertexReadImportAccess)
+            {
+                if (((usage & BufferUsage.Vertex) == 0)
+                    || !vertexBufferImports.TryAdd(import.Version.ResourceId, import))
+                {
+                    throw new NotSupportedException("Native graph vertex reads require each imported vertex resource to have vertex usage and one import.");
+                }
             }
 
             if (hasUniformUsage || hasStorageUsage)
@@ -312,6 +324,7 @@ internal sealed class GraphicsGraphSubmission
 
             if (!hasUniformUsage
                 && !hasStorageUsage
+                && !hasVertexReadImportAccess
                 && !hasCopySourceImportAccess
                 && !hasCopyDestinationImportAccess)
             {
@@ -562,6 +575,21 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
+        foreach (var import in vertexBufferImports.Values)
+        {
+            if (import.IsTransient
+                || (import.Version.Range != new GraphBufferRange(0, import.Buffer.ByteLength))
+                || !import.InitialContentsValid
+                || (import.InitialState is not (
+                    GraphResourceState.General
+                    or GraphResourceState.CopySource
+                    or GraphResourceState.CopyDestination
+                    or GraphResourceState.VertexRead)))
+            {
+                throw new NotSupportedException("Native graph submission requires full-range imported vertex buffers with valid contents and a supported initial state.");
+            }
+        }
+
         foreach (var import in copySourceBufferImports.Values)
         {
             if ((import.Version.Range != new GraphBufferRange(0, import.Buffer.ByteLength))
@@ -598,6 +626,8 @@ internal sealed class GraphicsGraphSubmission
         }
 
         var hasColorClear = false;
+        var hasVertexBufferPipeline = false;
+        var hasVertexBufferBinding = false;
         var hasUniformBufferPipeline = false;
         var hasUniformBufferBinding = false;
         var hasUniformBufferAccess = false;
@@ -614,6 +644,8 @@ internal sealed class GraphicsGraphSubmission
         var hasStorageImageAccess = false;
         var copySourceResourcesUsed = new HashSet<ulong>();
         var copyDestinationResourcesUsed = new HashSet<ulong>();
+        var vertexBufferBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
+        var vertexBufferResourcesUsed = new HashSet<ulong>();
         var uniformBufferPasses = new HashSet<RenderPassId>();
         var sampledTexturePasses = new HashSet<RenderPassId>();
         var storageBufferBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
@@ -673,6 +705,8 @@ internal sealed class GraphicsGraphSubmission
             }
 
             GpuPipeline? currentPipeline = null;
+            GraphBufferImportRecord? currentVertexBufferImport = null;
+            var currentPipelineRequiresVertexBuffer = false;
             var currentPipelineRequiresUniformBuffer = false;
             var currentPipelineRequiresSampledImage = false;
             var currentPipelineRequiresSampler = false;
@@ -705,8 +739,7 @@ internal sealed class GraphicsGraphSubmission
                         if ((pipeline.DeviceEpoch != DeviceEpoch)
                             || !ReferenceEquals(pipeline.ResourceOwner.Device, OffscreenColorTarget.ResourceOwner.Device)
                             || (layout.IsCompute != isComputePass)
-                            || (layout.VertexStride != 0)
-                            || !layout.VertexElements.IsEmpty)
+                            || (isComputePass && ((layout.VertexStride != 0) || !layout.VertexElements.IsEmpty)))
                         {
                             throw new NotSupportedException("Native graph submission requires a same-device pipeline matching the pass kind.");
                         }
@@ -718,10 +751,12 @@ internal sealed class GraphicsGraphSubmission
                                 || (layout.ColorTargetFormats.Length != 1)
                                 || (layout.ColorTargetFormats[0] != TextureImports[0].Version.Description.Format)))
                         {
-                            throw new NotSupportedException("Native graph submission requires compute pipelines without attachments and vertex-ID graphics pipelines for its offscreen color format.");
+                            throw new NotSupportedException("Native graph submission requires compute pipelines without attachments and triangle-list graphics pipelines for its offscreen color format.");
                         }
 
                         var reflectedResources = new HashSet<ShaderResourceSignature>();
+                        currentPipelineRequiresVertexBuffer = !isComputePass && (layout.VertexStride != 0);
+                        currentVertexBufferImport = null;
                         currentPipelineStorageBufferBindingCount = 0;
                         currentPipelineStorageBufferWriteOnlyBindings.Clear();
 
@@ -820,11 +855,61 @@ internal sealed class GraphicsGraphSubmission
 
                         currentPipeline = pipeline;
                         currentPipelineBindingsSet = false;
+                        hasVertexBufferPipeline |= currentPipelineRequiresVertexBuffer;
                         hasUniformBufferPipeline |= currentPipelineRequiresUniformBuffer;
                         hasSampledImagePipeline |= currentPipelineRequiresSampledImage;
                         hasSamplerPipeline |= currentPipelineRequiresSampler;
                         hasStorageBufferPipeline |= currentPipelineRequiresStorageBuffer;
                         hasStorageImagePipeline |= currentPipelineRequiresStorageImage;
+                        break;
+                    }
+
+                    case GraphicsCommandKind.SetVertexBuffer:
+                    {
+                        if ((pass.Kind != CommandRecorderPassKind.Raster)
+                            || (currentPipeline is null)
+                            || !currentPipelineRequiresVertexBuffer)
+                        {
+                            throw new NotSupportedException("Native graph vertex buffers require a vertex-input raster pipeline.");
+                        }
+
+                        var binding = command.VertexBuffer;
+
+                        if ((binding.Slot != 0)
+                            || (binding.Stride != currentPipeline.BindingLayout.VertexStride)
+                            || !vertexBufferImports.TryGetValue(binding.Buffer.ResourceId, out var vertexBufferImport)
+                            || !ReferenceEquals(binding.Buffer, vertexBufferImport.Version)
+                            || !binding.Range.IsWithin(vertexBufferImport.Version.Range))
+                        {
+                            throw new NotSupportedException("A native graph vertex-buffer binding must match an imported vertex resource and pipeline stride.");
+                        }
+
+                        var accessDeclared = false;
+
+                        foreach (var access in Accesses)
+                        {
+                            if (!access.IsTexture
+                                && (access.PassId == pass.PassId)
+                                && (access.ResourceId == binding.Buffer.ResourceId)
+                                && (access.RequiredState == GraphResourceState.VertexRead)
+                                && !access.IsWrite
+                                && access.ContentsValid
+                                && ReferenceEquals(access.BufferVersion, binding.Buffer)
+                                && binding.Range.IsWithin(access.BufferRange))
+                            {
+                                accessDeclared = true;
+                                break;
+                            }
+                        }
+
+                        if (!accessDeclared)
+                        {
+                            throw new InvalidOperationException("The graph vertex-buffer binding has no matching declared VertexRead range.");
+                        }
+
+                        currentVertexBufferImport = vertexBufferImport;
+                        _ = vertexBufferBindingPairs.Add((pass.PassId, binding.Buffer.ResourceId));
+                        hasVertexBufferBinding = true;
                         break;
                     }
 
@@ -1151,6 +1236,16 @@ internal sealed class GraphicsGraphSubmission
                             throw new InvalidOperationException("A resource-bearing graph draw has no recorded binding set.");
                         }
 
+                        if (currentPipelineRequiresVertexBuffer != (currentVertexBufferImport is not null))
+                        {
+                            throw new InvalidOperationException("A graph draw must bind a vertex buffer exactly when its pipeline has vertex inputs.");
+                        }
+
+                        if (currentVertexBufferImport is not null)
+                        {
+                            _ = vertexBufferResourcesUsed.Add(currentVertexBufferImport.Version.ResourceId);
+                        }
+
                         hasDraw |= (command.Draw.VertexCount > 0) && (command.Draw.InstanceCount > 0);
                         break;
                     }
@@ -1371,6 +1466,19 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!access.IsTexture
+                && vertexBufferImports.ContainsKey(access.ResourceId)
+                && (access.RequiredState == GraphResourceState.VertexRead)
+                && !access.IsWrite)
+            {
+                if (!vertexBufferBindingPairs.Contains((access.PassId, access.ResourceId)))
+                {
+                    throw new InvalidOperationException("The imported vertex buffer is declared by a pass without a matching vertex-buffer binding.");
+                }
+
+                continue;
+            }
+
+            if (!access.IsTexture
                 && (uniformBufferImport is not null)
                 && (access.ResourceId == uniformBufferImport.Version.ResourceId)
                 && (access.RequiredState == GraphResourceState.UniformRead)
@@ -1499,6 +1607,19 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!transition.IsTexture
+                && vertexBufferImports.ContainsKey(transition.ResourceId)
+                && (transition.AfterState == GraphResourceState.VertexRead)
+                && (transition.BeforeState is
+                    GraphResourceState.General
+                    or GraphResourceState.CopySource
+                    or GraphResourceState.CopyDestination
+                    or GraphResourceState.VertexRead)
+                && vertexBufferBindingPairs.Contains((transition.PassId, transition.ResourceId)))
+            {
+                continue;
+            }
+
+            if (!transition.IsTexture
                 && copySourceBufferImports.ContainsKey(transition.ResourceId)
                 && (transition.AfterState == GraphResourceState.CopySource)
                 && (transition.BeforeState is
@@ -1605,6 +1726,7 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if ((uniformBufferImport is null || transition.ResourceId != uniformBufferImport.Version.ResourceId)
+                && !vertexBufferImports.ContainsKey(transition.ResourceId)
                 && !storageBufferImports.ContainsKey(transition.ResourceId)
                 && !copySourceTextureImports.ContainsKey(transition.ResourceId)
                 && !copyDestinationTextureImports.ContainsKey(transition.ResourceId)
@@ -1621,6 +1743,14 @@ internal sealed class GraphicsGraphSubmission
             && (!hasUniformBufferPipeline || !hasUniformBufferBinding || !hasUniformBufferAccess))
         {
             throw new NotSupportedException("An imported Frame uniform buffer must be reflected, bound, and declared by a graph pass.");
+        }
+
+        if ((vertexBufferImports.Count != 0)
+            && (!hasVertexBufferPipeline
+                || !hasVertexBufferBinding
+                || (vertexBufferResourcesUsed.Count != vertexBufferImports.Count)))
+        {
+            throw new NotSupportedException("Every imported vertex buffer must be bound by a vertex-input graphics pipeline and used by a draw.");
         }
 
         if (copySourceResourcesUsed.Count != copySourceBufferImports.Count)

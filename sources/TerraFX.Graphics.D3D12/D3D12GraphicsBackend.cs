@@ -2324,6 +2324,21 @@ public static unsafe class D3D12GraphicsBackend
                                         break;
                                     }
 
+                                    case GraphicsCommandKind.SetVertexBuffer:
+                                    {
+                                        var binding = command.VertexBuffer;
+                                        var buffer = submission.GetBuffer(binding.Buffer.ResourceId) as D3D12BackendBuffer
+                                            ?? throw new InvalidOperationException("The graph vertex binding lost its D3D12 buffer.");
+                                        var resource = buffer.GetResource();
+                                        var view = new D3D12_VERTEX_BUFFER_VIEW {
+                                            BufferLocation = checked(resource->GetGPUVirtualAddress() + checked((ulong)binding.Range.ByteOffset)),
+                                            SizeInBytes = checked((uint)binding.Range.ByteLength),
+                                            StrideInBytes = checked((uint)binding.Stride),
+                                        };
+                                        commandList->IASetVertexBuffers(checked((uint)binding.Slot), 1, &view);
+                                        break;
+                                    }
+
                                     case GraphicsCommandKind.Draw:
                                     {
                                         var draw = command.Draw;

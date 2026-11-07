@@ -920,6 +920,22 @@ internal sealed unsafe partial class VulkanBackendDevice
                             break;
                         }
 
+                        case GraphicsCommandKind.SetVertexBuffer:
+                        {
+                            var binding = command.VertexBuffer;
+                            var buffer = submission.GetBuffer(binding.Buffer.ResourceId) as VulkanBackendBuffer
+                                ?? throw new InvalidOperationException("The graph vertex binding lost its Vulkan buffer.");
+                            var nativeBuffer = buffer.Buffer;
+                            var offset = checked((ulong)binding.Range.ByteOffset);
+                            VulkanApi.vkCmdBindVertexBuffers(
+                                _commandBuffer,
+                                checked((uint)binding.Slot),
+                                1,
+                                &nativeBuffer,
+                                &offset);
+                            break;
+                        }
+
                         case GraphicsCommandKind.Draw:
                         {
                             var draw = command.Draw;
@@ -1087,7 +1103,9 @@ internal sealed unsafe partial class VulkanBackendDevice
         VkAccessFlags2 currentAccessMask)
     {
         if (transition.AfterState is not (
-            GraphResourceState.UniformRead
+            GraphResourceState.VertexRead
+            or GraphResourceState.IndexRead
+            or GraphResourceState.UniformRead
             or GraphResourceState.CopySource
             or GraphResourceState.CopyDestination
             or GraphResourceState.StorageWrite
@@ -1106,6 +1124,8 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
         else if (transition.BeforeState is
             GraphResourceState.General
+            or GraphResourceState.VertexRead
+            or GraphResourceState.IndexRead
             or GraphResourceState.UniformRead
             or GraphResourceState.CopySource
             or GraphResourceState.CopyDestination

@@ -3,6 +3,18 @@ struct VertexOutput
     float4 position : SV_Position;
 };
 
+struct SpriteVertexInput
+{
+    float3 position : POSITION0;
+    float2 textureCoordinate : TEXCOORD0;
+};
+
+struct SpriteVertexOutput
+{
+    float4 position : SV_Position;
+    float2 textureCoordinate : TEXCOORD0;
+};
+
 [[vk::binding(0, 0)]]
 cbuffer FrameData : register(b0, space0)
 {
@@ -37,6 +49,14 @@ VertexOutput VSMain(uint vertexId : SV_VertexID)
     return output;
 }
 
+SpriteVertexOutput VSSpriteMain(SpriteVertexInput input)
+{
+    SpriteVertexOutput output;
+    output.position = float4(input.position, 1.0);
+    output.textureCoordinate = input.textureCoordinate;
+    return output;
+}
+
 float4 PSMain(VertexOutput input) : SV_Target0
 {
     return color;
@@ -50,6 +70,11 @@ float4 PSGraphMain(VertexOutput input) : SV_Target0
 float4 PSSampledMain(VertexOutput input) : SV_Target0
 {
     return FrameTexture.Sample(FrameSampler, float2(0.5, 0.5));
+}
+
+float4 PSSpriteMain(SpriteVertexOutput input) : SV_Target0
+{
+    return FrameTexture.Sample(FrameSampler, input.textureCoordinate);
 }
 
 float4 PSSampledFrameMain(VertexOutput input) : SV_Target0

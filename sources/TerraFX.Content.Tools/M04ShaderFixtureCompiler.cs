@@ -20,15 +20,19 @@ internal static class M04ShaderFixtureCompiler
     private const string ShaderEntryPointSampledFramePixel = "PSSampledFrameMain";
     private const string ShaderEntryPointSampledFrameStoragePixel = "PSSampledFrameStorageMain";
     private const string ShaderEntryPointSampledPixel = "PSSampledMain";
+    private const string ShaderEntryPointSpritePixel = "PSSpriteMain";
+    private const string ShaderEntryPointSpriteVertex = "VSSpriteMain";
     private const string ShaderEntryPointVertex = "VSMain";
     private const string ShaderFileName = "M04OffscreenTriangle.hlsl";
     private static readonly string[] s_stageNames = [
         "compute-storage",
         "compute-storage-buffers",
         "vertex",
+        "vertex-sprite",
         "pixel",
         "pixel-graph",
         "pixel-sampled",
+        "pixel-sprite",
         "pixel-sampled-frame",
         "pixel-sampled-frame-storage",
     ];
@@ -122,6 +126,17 @@ internal static class M04ShaderFixtureCompiler
                 spirvValidationExecutable,
                 shaderPath,
                 stagingDirectory,
+                ShaderEntryPointSpriteVertex,
+                "vs_6_0",
+                "vertex-sprite",
+                cancellationToken).ConfigureAwait(false);
+            await CompileStageAsync(
+                manifest,
+                dxcExecutable,
+                spirvCrossExecutable,
+                spirvValidationExecutable,
+                shaderPath,
+                stagingDirectory,
                 ShaderEntryPointGraphPixel,
                 "ps_6_0",
                 "pixel-graph",
@@ -147,6 +162,17 @@ internal static class M04ShaderFixtureCompiler
                 ShaderEntryPointSampledPixel,
                 "ps_6_0",
                 "pixel-sampled",
+                cancellationToken).ConfigureAwait(false);
+            await CompileStageAsync(
+                manifest,
+                dxcExecutable,
+                spirvCrossExecutable,
+                spirvValidationExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointSpritePixel,
+                "ps_6_0",
+                "pixel-sprite",
                 cancellationToken).ConfigureAwait(false);
             await CompileStageAsync(
                 manifest,
@@ -260,6 +286,15 @@ internal static class M04ShaderFixtureCompiler
                 dxcExecutable,
                 shaderPath,
                 stagingDirectory,
+                ShaderEntryPointSpriteVertex,
+                "vs_6_0",
+                "vertex-sprite",
+                cancellationToken).ConfigureAwait(false);
+            await CompileDxilStageAsync(
+                manifest,
+                dxcExecutable,
+                shaderPath,
+                stagingDirectory,
                 ShaderEntryPointGraphPixel,
                 "ps_6_0",
                 "pixel-graph",
@@ -281,6 +316,15 @@ internal static class M04ShaderFixtureCompiler
                 ShaderEntryPointSampledPixel,
                 "ps_6_0",
                 "pixel-sampled",
+                cancellationToken).ConfigureAwait(false);
+            await CompileDxilStageAsync(
+                manifest,
+                dxcExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointSpritePixel,
+                "ps_6_0",
+                "pixel-sprite",
                 cancellationToken).ConfigureAwait(false);
             await CompileDxilStageAsync(
                 manifest,
@@ -320,11 +364,13 @@ internal static class M04ShaderFixtureCompiler
 
         var entryPoint = stageName switch {
             "vertex" => ShaderEntryPointVertex,
+            "vertex-sprite" => ShaderEntryPointSpriteVertex,
             "compute-storage" => ShaderEntryPointComputeStorage,
             "compute-storage-buffers" => ShaderEntryPointComputeStorageBuffers,
             "pixel" => ShaderEntryPointPixel,
             "pixel-graph" => ShaderEntryPointGraphPixel,
             "pixel-sampled" => ShaderEntryPointSampledPixel,
+            "pixel-sprite" => ShaderEntryPointSpritePixel,
             "pixel-sampled-frame" => ShaderEntryPointSampledFramePixel,
             "pixel-sampled-frame-storage" => ShaderEntryPointSampledFrameStoragePixel,
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
@@ -548,8 +594,8 @@ internal static class M04ShaderFixtureCompiler
         }
 
         var expectedOutputSemantic = stageName switch {
-            "vertex" => "SV_Position",
-            "pixel" or "pixel-graph" or "pixel-sampled" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => "SV_Target",
+            "vertex" or "vertex-sprite" => "SV_Position",
+            "pixel" or "pixel-graph" or "pixel-sampled" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => "SV_Target",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
         };
 
@@ -560,6 +606,13 @@ internal static class M04ShaderFixtureCompiler
             throw new InvalidDataException($"DXC reflection from the compiled DXIL does not contain the expected {stageName} entry-point output.");
         }
 
+        if ((stageName == "vertex-sprite")
+            && (!text.Contains("POSITION", StringComparison.Ordinal)
+                || !text.Contains("TEXCOORD", StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException("DXC reflection from the Sprite vertex DXIL omitted position or texture-coordinate inputs.");
+        }
+
         if ((stageName is "pixel" or "pixel-sampled-frame" or "pixel-sampled-frame-storage")
             && (!text.Contains("cbuffer FrameData", StringComparison.Ordinal)
                 || !text.Contains("float4 color", StringComparison.Ordinal)
@@ -568,7 +621,7 @@ internal static class M04ShaderFixtureCompiler
             throw new InvalidDataException("DXC reflection from the compiled pixel DXIL does not contain the FrameData uniform buffer.");
         }
 
-        if ((stageName is "pixel-sampled" or "pixel-sampled-frame" or "pixel-sampled-frame-storage")
+        if ((stageName is "pixel-sampled" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage")
             && (!text.Contains("FrameTexture", StringComparison.Ordinal)
                 || !text.Contains("FrameSampler", StringComparison.Ordinal)))
         {
@@ -695,8 +748,8 @@ internal static class M04ShaderFixtureCompiler
         var mode = modeElement.GetString();
         var expectedMode = stageName switch {
             "compute-storage" or "compute-storage-buffers" => mode is "comp" or "compute",
-            "vertex" => mode is "vert" or "vertex",
-            "pixel" or "pixel-graph" or "pixel-sampled" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => mode is "frag" or "fragment",
+            "vertex" or "vertex-sprite" => mode is "vert" or "vertex",
+            "pixel" or "pixel-graph" or "pixel-sampled" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => mode is "frag" or "fragment",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
         };
 
@@ -710,7 +763,7 @@ internal static class M04ShaderFixtureCompiler
             ValidatePixelUniformBufferReflection(root);
         }
 
-        if (stageName is "pixel-sampled" or "pixel-sampled-frame" or "pixel-sampled-frame-storage")
+        if (stageName is "pixel-sampled" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage")
         {
             ValidatePixelSampledResourceReflection(root);
         }

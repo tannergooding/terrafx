@@ -52,7 +52,7 @@ internal static class Program
                 if (StringComparer.Ordinal.Equals(arguments[0], CompileShaderCommand))
                 {
                     await M04ShaderFixtureCompiler.CompileAsync(arguments[1], cancellationSource.Token).ConfigureAwait(false);
-                    await Console.Out.WriteLineAsync($"Compiled and validated the M04 offscreen triangle shader fixture to '{Path.GetFullPath(arguments[1])}'.").ConfigureAwait(false);
+                    await Console.Out.WriteLineAsync($"Compiled and validated the M04 offscreen graphics shader fixture to '{Path.GetFullPath(arguments[1])}'.").ConfigureAwait(false);
                 }
                 else if (StringComparer.Ordinal.Equals(arguments[0], CompileDxilCommand))
                 {

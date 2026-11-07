@@ -2,6 +2,7 @@
 
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -34,6 +35,10 @@ internal sealed partial class SceneAssetStoreTests
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
         Justification = "This test disposes the snapshot after submission admission to verify the independent asset-pin lease survives until GPU completion.")]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "The original graph failure is logged before owner cleanup so a secondary shutdown timeout cannot obscure its cause.")]
     private async Task RunSnapshotAtlasPageResidencyAsync(bool renderThroughNativeGraph)
     {
         static OwnedBuffer<byte> CreateBytecodeStorage(string path)
@@ -105,6 +110,7 @@ internal sealed partial class SceneAssetStoreTests
         RenderSnapshot3D? snapshot = null;
         GpuResidencyLease? residencyLease = null;
         GpuTexture? targetTexture = null;
+        GpuBuffer? vertexBuffer = null;
         GpuSampler? sampler = null;
         GpuPipeline? pipeline = null;
 
@@ -207,18 +213,18 @@ internal sealed partial class SceneAssetStoreTests
                     ?? throw new InvalidOperationException("The package-backed Sprite graph has no shader fixture directory.");
                 using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
                     fixtureDirectory,
-                    "M04OffscreenTriangle.vertex.spv"));
+                    "M04OffscreenTriangle.vertex-sprite.spv"));
                 using var pixelBytecodeStorage = CreateBytecodeStorage(Path.Combine(
                     fixtureDirectory,
-                    "M04OffscreenTriangle.pixel-sampled.spv"));
+                    "M04OffscreenTriangle.pixel-sprite.spv"));
                 using var vertexBytecode = vertexBytecodeStorage.AcquireReadLease(
                     0,
                     vertexBytecodeStorage.Length);
                 using var pixelBytecode = pixelBytecodeStorage.AcquireReadLease(
                     0,
                     pixelBytecodeStorage.Length);
-                var vertexReflection = M04ShaderFixtureCompiler.ReadTypedReflection(fixtureDirectory, "vertex");
-                var pixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(fixtureDirectory, "pixel-sampled");
+                var vertexReflection = M04ShaderFixtureCompiler.ReadTypedReflection(fixtureDirectory, "vertex-sprite");
+                var pixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(fixtureDirectory, "pixel-sprite");
                 var pipelineDescription = new GraphicsPipelineDescription(
                     [
                         new ShaderBytecodeInput(
@@ -232,8 +238,11 @@ internal sealed partial class SceneAssetStoreTests
                             pixelBytecode,
                             pixelReflection),
                     ],
-                    [],
-                    vertexStride: 0,
+                    [
+                        new VertexElementDescription(0, VertexElementFormat.Float3, 0),
+                        new VertexElementDescription(1, VertexElementFormat.Float2, 3 * sizeof(float)),
+                    ],
+                    vertexStride: 5 * sizeof(float),
                     [TextureFormat.Rgba8Unorm],
                     depthTargetFormat: null,
                     PrimitiveTopology.TriangleList,
@@ -252,6 +261,25 @@ internal sealed partial class SceneAssetStoreTests
                         SamplerAddressMode.Clamp,
                         SamplerAddressMode.Clamp,
                         maximumAnisotropy: 1.0f)).ConfigureAwait(false);
+                var quad = spriteSnapshot.SpriteDraws[0].Quad;
+                var spriteVertices = new[] {
+                    quad.Vertex0,
+                    quad.Vertex1,
+                    quad.Vertex2,
+                    quad.Vertex0,
+                    quad.Vertex2,
+                    quad.Vertex3,
+                };
+                var vertexBytes = MemoryMarshal.AsBytes(spriteVertices.AsSpan()).ToArray();
+                vertexBuffer = await graphicsDevice.CreateBufferAsync(
+                    new BufferDescription(
+                        vertexBytes.Length,
+                        BufferUsage.Vertex | BufferUsage.CopyDestination,
+                        GpuMemoryKind.DeviceLocal,
+                        structuredStride: null,
+                        "snapshot-atlas-sprite-vertices")).ConfigureAwait(false);
+                var vertexUpload = await graphicsDevice.UploadBufferAsync(vertexBuffer, 0, vertexBytes).ConfigureAwait(false);
+                Assert.That(vertexUpload.Status, Is.EqualTo(UploadStatus.Ready));
                 targetTexture = await graphicsDevice.CreateTextureAsync(
                     new TextureDescription(
                         TextureDimension.Dimension2D,
@@ -290,19 +318,30 @@ internal sealed partial class SceneAssetStoreTests
                             sampler
                                 ?? throw new InvalidOperationException("The snapshot-atlas graph has no sampler.")),
                     ]);
+                var vertexRange = new GraphBufferRange(0, vertexBuffer.ByteLength);
+                var vertexVersion = graph.ImportBuffer(
+                    vertexBuffer,
+                    vertexRange,
+                    new GraphImportOptions(
+                        GraphResourceState.General,
+                        contentsValid: true,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                var vertexBinding = new VertexBufferBinding(0, vertexVersion, vertexRange, 5 * sizeof(float));
                 var selectedPipeline = pipeline
                     ?? throw new InvalidOperationException("The snapshot-atlas graph has no graphics pipeline.");
 
                 void RecordPackageSample(scoped ref CommandRecorder recorder)
                 {
                     recorder.SetPipeline(selectedPipeline.Handle);
+                    recorder.SetVertexBuffer(vertexBinding);
                     recorder.SetBindings(graphBindingSet);
-                    recorder.Draw(new DrawArguments(3, 1, 0, 0));
+                    recorder.Draw(new DrawArguments(spriteVertices.Length, 1, 0, 0));
                 }
 
                 var rasterPass = graph.AddRasterPass(
                     new RenderPassDescription("snapshot-atlas-page-sample", 0, [], hasExternalSideEffects: false),
                     RecordPackageSample);
+                graph.ReadBuffer(rasterPass, vertexVersion, GraphBufferUsage.VertexRead, vertexRange);
                 graph.ReadTexture(rasterPass, sampledPage, GraphTextureUsage.SampledRead, sampleRange);
                 var targetRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
                 var output = graph.WriteColorAttachment(
@@ -341,6 +380,7 @@ internal sealed partial class SceneAssetStoreTests
                     Assert.That(graphReadbackBytes[centerPixelOffset + 1], Is.EqualTo(17));
                     Assert.That(graphReadbackBytes[centerPixelOffset + 2], Is.EqualTo(17));
                     Assert.That(graphReadbackBytes[centerPixelOffset + 3], Is.EqualTo(17));
+                    Assert.That(graphReadbackBytes[0], Is.Not.EqualTo(17));
                 });
             }
 
@@ -387,10 +427,17 @@ internal sealed partial class SceneAssetStoreTests
             residencyLease = null;
             await engineHost.StopAsync().ConfigureAwait(false);
         }
+        catch (Exception exception)
+        {
+            await TestContext.Progress.WriteLineAsync($"Sprite residency operation failed before cleanup: {exception}")
+                .ConfigureAwait(false);
+            throw;
+        }
         finally
         {
             pipeline?.Dispose();
             sampler?.Dispose();
+            vertexBuffer?.Dispose();
             targetTexture?.Dispose();
             snapshot?.Dispose();
             residencyLease?.Dispose();

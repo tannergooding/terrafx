@@ -523,12 +523,13 @@ internal static class M04ShaderReflectionReader
         var signatureRows = ParseTableRows(dxilReflection, heading, occurrence: 0, required: true);
         var interpolationRows = ParseTableRows(dxilReflection, heading, occurrence: 1, required: false);
         var signatures = ImmutableArray.CreateBuilder<ShaderIoSignature>(signatureRows.Count);
+        var nextUserLocation = 0;
 
         foreach (var row in signatureRows)
         {
             if (row.Length < 6
                 || !int.TryParse(row[1], NumberStyles.None, CultureInfo.InvariantCulture, out var semanticIndex)
-                || !int.TryParse(row[3], NumberStyles.None, CultureInfo.InvariantCulture, out var register))
+                || !int.TryParse(row[3], NumberStyles.None, CultureInfo.InvariantCulture, out _))
             {
                 throw new InvalidDataException("A DXIL signature row has an invalid index or register.");
             }
@@ -540,7 +541,8 @@ internal static class M04ShaderReflectionReader
 
             var semanticName = row[0];
             var valueType = ParseDxilValueType(row[5], row[2]);
-            int? location = semanticName.StartsWith("SV_", StringComparison.OrdinalIgnoreCase) ? null : register;
+            // DXIL registers include system values such as SV_Position; Vulkan user locations do not.
+            int? location = semanticName.StartsWith("SV_", StringComparison.OrdinalIgnoreCase) ? null : nextUserLocation++;
             var interpolation = GetInterpolation(interpolationRows, semanticName, semanticIndex, isInput);
             signatures.Add(new ShaderIoSignature(semanticName, semanticIndex, location, valueType, interpolation));
         }
