@@ -107,6 +107,7 @@ internal sealed unsafe partial class VulkanBackendDevice
         submission.ValidateOffscreenRasterSubmission();
         EnsureOwnerThread();
         EnsureActive();
+        _graphSubmissionObserver?.Invoke(submission);
 
         var target = submission.GetTexture(submission.TextureImports[0].Version.ResourceId) as VulkanBackendTexture
             ?? throw new ArgumentException("The graph output target is not a Vulkan texture.", nameof(submission));

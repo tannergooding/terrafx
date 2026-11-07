@@ -18,11 +18,14 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
 
     private VkCommandBuffer _commandBuffer;
     private readonly VkCommandPool _commandPool;
+    private readonly Func<long, long>? _completedGraphFenceValueOverride;
     private readonly VkDevice _device;
     private readonly ImmutableHashSet<string> _enabledSpirvExtensions;
     private readonly bool _fragmentStoresAndAtomicsEnabled;
+    private readonly Action<long>? _graphFenceWaitObserver;
     private readonly int _graphFrameSlotCount;
     private readonly VulkanGraphFrameSlot[] _graphFrameSlots;
+    private readonly Action<GraphicsGraphSubmission>? _graphSubmissionObserver;
     private readonly VkInstance _instance;
     private bool _isDisposed;
     private readonly int _ownerThreadId = Environment.CurrentManagedThreadId;
@@ -48,7 +51,10 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         ImmutableHashSet<string> enabledSpirvExtensions,
         bool fragmentStoresAndAtomicsEnabled,
         Func<VkResult, VkResult>? transferWaitResultOverride,
-        int graphFrameSlotCount)
+        int graphFrameSlotCount,
+        Action<long>? graphFenceWaitObserver,
+        Func<long, long>? completedGraphFenceValueOverride,
+        Action<GraphicsGraphSubmission>? graphSubmissionObserver)
     {
         ArgumentNullException.ThrowIfNull(enabledSpirvExtensions);
         ArgumentNullException.ThrowIfNull(commandBuffers);
@@ -71,6 +77,9 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         _transferCommandBuffer = commandBuffers[0];
         _timelineSemaphore = timelineSemaphore;
         _transferWaitResultOverride = transferWaitResultOverride;
+        _graphFenceWaitObserver = graphFenceWaitObserver;
+        _completedGraphFenceValueOverride = completedGraphFenceValueOverride;
+        _graphSubmissionObserver = graphSubmissionObserver;
         _graphFrameSlotCount = graphFrameSlotCount;
         _graphFrameSlots = new VulkanGraphFrameSlot[graphFrameSlotCount];
 
@@ -159,7 +168,10 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         Action<VulkanBackendStartupStage>? afterNativeObjectAcquired,
         Func<VulkanBackendStartupStage, VkResult, VkResult>? startupNativeResultOverride,
         CancellationToken cancellationToken,
-        int graphFrameSlotCount = 3)
+        int graphFrameSlotCount = 3,
+        Action<long>? graphFenceWaitObserver = null,
+        Func<long, long>? completedGraphFenceValueOverride = null,
+        Action<GraphicsGraphSubmission>? graphSubmissionObserver = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(graphFrameSlotCount, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(graphFrameSlotCount, 4);
@@ -261,7 +273,10 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                     enabledSpirvExtensions,
                     fragmentStoresAndAtomicsEnabled,
                     transferWaitResultOverride,
-                    graphFrameSlotCount);
+                    graphFrameSlotCount,
+                    graphFenceWaitObserver,
+                    completedGraphFenceValueOverride,
+                    graphSubmissionObserver);
                 transferred = true;
                 hasInstance = false;
                 hasDevice = false;

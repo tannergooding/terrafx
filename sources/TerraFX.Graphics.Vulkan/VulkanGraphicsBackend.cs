@@ -13,8 +13,31 @@ public static class VulkanGraphicsBackend
     public static GraphicsBackendRegistration CreateRegistration()
         => new(new VulkanBackendFactory());
 
-    private sealed class VulkanBackendFactory : IGraphicsBackendFactory
+    internal static GraphicsBackendRegistration CreateRegistrationForTesting(
+        Action<long>? graphFenceWaitObserver,
+        Func<long, long>? completedGraphFenceValueOverride,
+        Action<GraphicsGraphSubmission>? graphSubmissionObserver)
+        => new(new VulkanBackendFactory(
+            graphFenceWaitObserver,
+            completedGraphFenceValueOverride,
+            graphSubmissionObserver));
+
+    internal sealed class VulkanBackendFactory : IGraphicsBackendFactory
     {
+        private readonly Func<long, long>? _completedGraphFenceValueOverride;
+        private readonly Action<long>? _graphFenceWaitObserver;
+        private readonly Action<GraphicsGraphSubmission>? _graphSubmissionObserver;
+
+        internal VulkanBackendFactory(
+            Action<long>? graphFenceWaitObserver = null,
+            Func<long, long>? completedGraphFenceValueOverride = null,
+            Action<GraphicsGraphSubmission>? graphSubmissionObserver = null)
+        {
+            _graphFenceWaitObserver = graphFenceWaitObserver;
+            _completedGraphFenceValueOverride = completedGraphFenceValueOverride;
+            _graphSubmissionObserver = graphSubmissionObserver;
+        }
+
         public GraphicsBackend Backend => GraphicsBackend.Vulkan;
 
         public IGraphicsBackendDevice Create(
@@ -33,7 +56,10 @@ public static class VulkanGraphicsBackend
                 afterNativeObjectAcquired: null,
                 startupNativeResultOverride: null,
                 cancellationToken: cancellationToken,
-                graphFrameSlotCount: frameSlotCount);
+                graphFrameSlotCount: frameSlotCount,
+                graphFenceWaitObserver: _graphFenceWaitObserver,
+                completedGraphFenceValueOverride: _completedGraphFenceValueOverride,
+                graphSubmissionObserver: _graphSubmissionObserver);
         }
     }
 }

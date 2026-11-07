@@ -77,8 +77,12 @@ internal sealed unsafe partial class VulkanBackendDevice
         ThrowIfFailed(
             VulkanApi.vkGetSemaphoreCounterValue(_device, _timelineSemaphore, &completedValue),
             "vkGetSemaphoreCounterValue");
-        RetireCompletedGraphFrameSlots(completedValue);
-        return checked((long)completedValue);
+        var completedFence = checked((long)completedValue);
+        var reportedFence = _completedGraphFenceValueOverride?.Invoke(completedFence) ?? completedFence;
+        ArgumentOutOfRangeException.ThrowIfNegative(reportedFence);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(reportedFence, completedFence);
+        RetireCompletedGraphFrameSlots(checked((ulong)reportedFence));
+        return reportedFence;
     }
 
     [SuppressMessage(
@@ -329,6 +333,7 @@ internal sealed unsafe partial class VulkanBackendDevice
     internal void WaitForGraphFence(long fenceValue)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(fenceValue);
+        _graphFenceWaitObserver?.Invoke(fenceValue);
         var semaphore = _timelineSemaphore;
         var value = checked((ulong)fenceValue);
         var waitInfo = default(VkSemaphoreWaitInfo);

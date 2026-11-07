@@ -28,6 +28,168 @@ namespace TerraFX.Runtime.Tests.Hosting;
 internal sealed partial class EngineHostOptionsTests
 {
     [Test]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "The synchronous GraphicsDevice requests complete before their native owners are retired.")]
+    public void D3D12GraphAllocatesTransientBufferAliasGroupsAcrossReservedSlots()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            Assert.Ignore("The D3D12 transient allocation witness requires Windows 11.");
+            return;
+        }
+
+        var registration = D3D12GraphicsBackend.CreateRegistration();
+        var options = new EngineHostOptions(
+            HostProfile.OffscreenNative,
+            PlatformBackend.Headless,
+            GraphicsBackend.D3D12,
+            registration,
+            CreateAssetStoreOptions()) {
+            CpuWorkerCount = 0,
+            GraphicsFrameSlotCount = 2,
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
+        var platformOwner = PlatformHostOwner.Create(options);
+        GraphicsDevice? graphicsDevice = null;
+
+        try
+        {
+            try
+            {
+                graphicsDevice = GraphicsDevice.CreateAsync(
+                    platformOwner.OwnerId,
+                    registration,
+                    GraphicsDeviceProfile.OffscreenNative,
+                    options.GraphicsFrameSlotCount,
+                    GraphicsPlatformKind.None,
+                    CancellationToken.None).GetAwaiter().GetResult();
+            }
+            catch (NotSupportedException exception)
+            {
+                Assert.Ignore($"No D3D12 device satisfies OffscreenNative: {exception.Message}");
+                return;
+            }
+
+            var targetExtent = new PixelSize(4, 4);
+            using var target = graphicsDevice.CreateTextureAsync(
+                new TextureDescription(
+                    TextureDimension.Dimension2D,
+                    targetExtent.Width,
+                    targetExtent.Height,
+                    depth: 1,
+                    arrayLayers: 1,
+                    mipLevels: 1,
+                    format: TextureFormat.Rgba8Unorm,
+                    usage: TextureUsage.ColorAttachment,
+                    debugName: "d3d12-transient-buffer-slot-target"))
+                .GetAwaiter()
+                .GetResult();
+            var graph = new RenderGraph(new RenderGraphOptions(
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                0,
+                RenderFrameDimension.TwoDimensional,
+                SpatialProfileId.Default,
+                1,
+                [Guid.NewGuid()],
+                targetExtent,
+                target));
+            var range = new GraphBufferRange(0, 16);
+            RenderPassId? previousReadPass = null;
+
+            for (var index = 0; index < 2; index++)
+            {
+                var transientBuffer = graph.CreateTransientBuffer(new BufferDescription(
+                    16,
+                    BufferUsage.Storage,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: sizeof(uint),
+                    debugName: $"d3d12-transient-buffer-slot-{index}"));
+                var writeOrder = checked(index * 2);
+                var writePass = graph.AddComputePass(
+                    new RenderPassDescription(
+                        $"d3d12-transient-buffer-write-{index}",
+                        writeOrder,
+                        previousReadPass is RenderPassId predecessor ? [predecessor] : [],
+                        hasExternalSideEffects: false));
+                var writtenVersion = graph.WriteBuffer(
+                    writePass,
+                    transientBuffer,
+                    GraphBufferUsage.StorageWrite,
+                    range);
+                var readPass = graph.AddComputePass(
+                    new RenderPassDescription(
+                        $"d3d12-transient-buffer-read-{index}",
+                        writeOrder + 1,
+                        [writePass],
+                        hasExternalSideEffects: false));
+                graph.ReadBuffer(readPass, writtenVersion, GraphBufferUsage.StorageRead, range);
+                previousReadPass = readPass;
+            }
+
+            var outputPass = graph.AddRasterPass(new RenderPassDescription(
+                "d3d12-transient-buffer-slot-output",
+                4,
+                [previousReadPass ?? throw new InvalidOperationException("The graph has no transient buffer reader.")],
+                hasExternalSideEffects: false));
+            var output = graph.WriteColorAttachment(
+                outputPass,
+                graph.OffscreenColorTargetVersion,
+                new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
+                AttachmentLoadAction.Clear,
+                AttachmentStoreAction.Store,
+                new Vector4(0.0f, 0.0f, 0.0f, 1.0f));
+            graph.SetPresentationSource(output);
+
+            var compileResponse = graph.Compile();
+            Assert.That(compileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
+            var plan = compileResponse.Plan
+                ?? throw new InvalidOperationException("The D3D12 transient-buffer graph has no plan.");
+            Assert.That(plan.TransientBufferGroups, Has.Length.EqualTo(1));
+            Assert.That(plan.TransientBufferGroups[0], Has.Length.EqualTo(2));
+            Assert.That(plan.TransientBufferAliasingBarriers, Has.Length.EqualTo(1));
+
+            using var firstSlot = graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            using var secondSlot = graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            using var firstGroup = graphicsDevice.CreateTransientBufferGroupAsync(
+                plan.TransientBufferGroups[0],
+                CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            using var secondGroup = graphicsDevice.CreateTransientBufferGroupAsync(
+                plan.TransientBufferGroups[0],
+                CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            var firstLease = firstGroup.Buffers[0].ResourceOwner.AllocationLease
+                ?? throw new InvalidOperationException("The first D3D12 buffer group lost its allocation lease.");
+            var secondLease = secondGroup.Buffers[0].ResourceOwner.AllocationLease
+                ?? throw new InvalidOperationException("The second D3D12 buffer group lost its allocation lease.");
+
+            Assert.That(firstLease, Is.Not.SameAs(secondLease));
+            Assert.That(firstGroup.Buffers[1].ResourceOwner.AllocationLease, Is.SameAs(firstLease));
+            Assert.That(secondGroup.Buffers[1].ResourceOwner.AllocationLease, Is.SameAs(secondLease));
+        }
+        finally
+        {
+            try
+            {
+                graphicsDevice?.ShutdownAsync().GetAwaiter().GetResult();
+            }
+            finally
+            {
+                platformOwner.DisposeFromOwner();
+            }
+        }
+    }
+
+    [Test]
     public Task D3D12GraphSubmissionRetainsTargetUntilFenceCompletion()
         => RunOffscreenGraphAsync(
             GraphicsBackend.D3D12,
@@ -232,6 +394,22 @@ internal sealed partial class EngineHostOptionsTests
             useTextureCopy: true);
 
     [Test]
+    public Task SubmitsTransientBufferAliasGroupsAcrossLiveSlotsOnVulkan()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.Vulkan,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: true,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: true,
+            graphicsFrameSlotCount: 2);
+
+    [Test]
     public Task SubmitsTransientCopyAliasGroupsOnVulkan()
         => RunOffscreenGraphAsync(
             GraphicsBackend.Vulkan,
@@ -368,9 +546,11 @@ internal sealed partial class EngineHostOptionsTests
         using var twoFenceWaitsEntered = new ManualResetEventSlim(initialState: false);
         using var continueFenceWait = new ManualResetEventSlim(initialState: false);
         var holdFenceWaitCount = 0;
+        var holdCompletedGraphFenceValue = 0;
         var enteredFenceWaitCount = 0;
         var completedGraphFenceWaitCount = 0;
         var transientGraphAllocationLeases = new ConcurrentQueue<ImmutableArray<GraphicsResourceAllocationLease>>();
+        var transientBufferGraphAllocationLeases = new ConcurrentQueue<ImmutableArray<GraphicsResourceAllocationLease>>();
 
         uint WaitForGraphFence(nint fenceEvent, uint timeout)
         {
@@ -404,7 +584,27 @@ internal sealed partial class EngineHostOptionsTests
 
         long OverrideCompletedFence(long completedFence)
         {
-            return continueFenceWait.IsSet ? completedFence : 0;
+            return (Volatile.Read(ref holdCompletedGraphFenceValue) == 0) || continueFenceWait.IsSet
+                ? completedFence
+                : 0;
+        }
+
+        void WaitForVulkanGraphFence(long fenceValue)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(fenceValue);
+
+            if (Interlocked.Decrement(ref holdFenceWaitCount) >= 0)
+            {
+                if (Interlocked.Increment(ref enteredFenceWaitCount) == 2)
+                {
+                    twoFenceWaitsEntered.Set();
+                }
+
+                if (!continueFenceWait.Wait(TimeSpan.FromSeconds(10), CancellationToken.None))
+                {
+                    throw new TimeoutException("Timed out while holding Vulkan graph-fence observation.");
+                }
+            }
         }
 
         void ObserveGraphSubmission(GraphicsGraphSubmission submission)
@@ -427,6 +627,25 @@ internal sealed partial class EngineHostOptionsTests
             {
                 transientGraphAllocationLeases.Enqueue(allocationLeases.ToImmutable());
             }
+
+            var bufferAllocationLeases = ImmutableArray.CreateBuilder<GraphicsResourceAllocationLease>();
+
+            foreach (var bufferImport in submission.BufferImports)
+            {
+                if (!bufferImport.IsTransient)
+                {
+                    continue;
+                }
+
+                var allocationLease = bufferImport.Buffer.ResourceOwner.AllocationLease
+                    ?? throw new InvalidOperationException("A transient graph buffer lost its allocation lease before native submission.");
+                bufferAllocationLeases.Add(allocationLease);
+            }
+
+            if (bufferAllocationLeases.Count > 0)
+            {
+                transientBufferGraphAllocationLeases.Enqueue(bufferAllocationLeases.ToImmutable());
+            }
         }
 
         var graphicsRegistration = backend switch {
@@ -435,6 +654,10 @@ internal sealed partial class EngineHostOptionsTests
                     graphWaitForSingleObject: WaitForGraphFence,
                     completedFenceValueOverride: OverrideCompletedFence,
                     graphSubmissionObserver: useTransientCopyAliasing ? ObserveGraphSubmission : null)),
+            GraphicsBackend.Vulkan when holdGraphCompletion => VulkanGraphicsBackend.CreateRegistrationForTesting(
+                WaitForVulkanGraphFence,
+                OverrideCompletedFence,
+                (useTransientBufferAliasing || useTransientCopyAliasing) ? ObserveGraphSubmission : null),
             GraphicsBackend.D3D12 => D3D12GraphicsBackend.CreateRegistration(),
             GraphicsBackend.Vulkan => VulkanGraphicsBackend.CreateRegistration(),
             _ => throw new ArgumentOutOfRangeException(nameof(backend)),
@@ -2351,6 +2574,7 @@ internal sealed partial class EngineHostOptionsTests
             if (holdGraphCompletion)
             {
                 _ = Interlocked.Exchange(ref holdFenceWaitCount, 2);
+                _ = Interlocked.Exchange(ref holdCompletedGraphFenceValue, 1);
                 var submissionTask = renderer.SubmitAsync(renderSnapshot, plan);
                 var secondSubmissionTask = renderer.SubmitAsync(renderSnapshot, plan);
 
@@ -2359,6 +2583,7 @@ internal sealed partial class EngineHostOptionsTests
                     twoGraphWaitsStarted,
                     Is.True,
                     $"Graph waiters={Volatile.Read(ref enteredFenceWaitCount)}; first={submissionTask.Status}; "
+                    + $"first exception={submissionTask.Exception}; "
                     + $"second={secondSubmissionTask.Status}; second exception={secondSubmissionTask.Exception}");
                 var observedTransientAllocationGroups = transientGraphAllocationLeases.ToArray();
 
@@ -2376,6 +2601,24 @@ internal sealed partial class EngineHostOptionsTests
                     Assert.That(
                         observedTransientAllocationGroups[0][0],
                         Is.Not.SameAs(observedTransientAllocationGroups[1][0]));
+                }
+
+                var observedTransientBufferAllocationGroups = transientBufferGraphAllocationLeases.ToArray();
+
+                if (useTransientBufferAliasing)
+                {
+                    Assert.That(observedTransientBufferAllocationGroups, Has.Length.EqualTo(2));
+
+                    foreach (var allocationGroup in observedTransientBufferAllocationGroups)
+                    {
+                        Assert.That(allocationGroup, Has.Length.EqualTo(2));
+                        Assert.That(allocationGroup[1], Is.SameAs(allocationGroup[0]));
+                        Assert.That(allocationGroup[0].IsReleased, Is.False);
+                    }
+
+                    Assert.That(
+                        observedTransientBufferAllocationGroups[0][0],
+                        Is.Not.SameAs(observedTransientBufferAllocationGroups[1][0]));
                 }
 
                 Assert.That(submissionTask.IsCompleted, Is.False);
@@ -2406,7 +2649,12 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(receipt.CompletedFence, Is.GreaterThan(0));
                 Assert.That(queuedReceipt.CompletedFence, Is.GreaterThan(0));
                 Assert.That(queuedReceipt.CompletedFence, Is.Not.EqualTo(receipt.CompletedFence));
-                Assert.That(Volatile.Read(ref completedGraphFenceWaitCount), Is.EqualTo(2));
+
+                if (backend == GraphicsBackend.D3D12)
+                {
+                    Assert.That(Volatile.Read(ref completedGraphFenceWaitCount), Is.EqualTo(2));
+                }
+
                 Assert.That(submittedTargetOwner.HasActiveUses, Is.False);
                 Assert.That(
                     submittedTargetOwner.LastSubmittedQueueFence,
@@ -2417,6 +2665,26 @@ internal sealed partial class EngineHostOptionsTests
                     Assert.That(
                         SpinWait.SpinUntil(() => {
                             foreach (var allocationGroup in observedTransientAllocationGroups)
+                            {
+                                foreach (var allocationLease in allocationGroup)
+                                {
+                                    if (!allocationLease.IsReleased)
+                                    {
+                                        return false;
+                                    }
+                                }
+                            }
+
+                            return true;
+                        }, TimeSpan.FromSeconds(5)),
+                        Is.True);
+                }
+
+                if (useTransientBufferAliasing)
+                {
+                    Assert.That(
+                        SpinWait.SpinUntil(() => {
+                            foreach (var allocationGroup in observedTransientBufferAllocationGroups)
                             {
                                 foreach (var allocationLease in allocationGroup)
                                 {
