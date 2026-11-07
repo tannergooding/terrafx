@@ -119,7 +119,7 @@ dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --confi
 dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Release
 ```
 
-In the WSLg shell configured below, the same project runs the explicit X11 owner witnesses when `DISPLAY` is available. They verify an invisible native window's pixel metrics and private X11 binding, and exercise RandR 1.5 monitor enumeration/selection when the X server exposes it:
+In the WSLg shell configured below, the same project runs the explicit X11 owner witnesses when `DISPLAY` is available. They verify an invisible native window's pixel metrics and private X11 binding, send duplicate synthetic `WM_DELETE_WINDOW` messages to check close-request deduplication, and exercise RandR 1.5 monitor enumeration/selection when the X server exposes it. The synthetic message does not qualify behavior from a real window manager:
 
 ```bash
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Debug "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"

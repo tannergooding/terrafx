@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
@@ -8,7 +9,7 @@ using TerraFX;
 namespace TerraFX.Platform.Tests;
 
 [TestFixture]
-internal sealed class HeadlessPlatformBackendTests
+internal sealed partial class HeadlessPlatformBackendTests
 {
     private static IPlatformBackend CreateX11Backend() =>
         PlatformBackendFactory.Create(
@@ -148,6 +149,14 @@ internal sealed class HeadlessPlatformBackendTests
                 Assert.That(binding.NativeDisplayOrInstance, Is.Not.Zero);
                 Assert.That(binding.NativeWindowOrSurface, Is.Not.Zero);
                 Assert.That(backend.DrainInputSamples().Samples, Is.Empty);
+                X11TestNative.SendDeleteWindow(binding.NativeDisplayOrInstance, binding.NativeWindowOrSurface);
+                X11TestNative.SendDeleteWindow(binding.NativeDisplayOrInstance, binding.NativeWindowOrSurface);
+                backend.Pump();
+                var closeRequests = backend.DrainWindowCloseRequests();
+                Assert.That(closeRequests, Has.Length.EqualTo(1));
+                Assert.That(closeRequests[0], Is.EqualTo(window));
+                backend.Pump();
+                Assert.That(backend.DrainWindowCloseRequests(), Is.Empty);
             }
             finally
             {
@@ -224,6 +233,75 @@ internal sealed class HeadlessPlatformBackendTests
         finally
         {
             backend?.Dispose();
+        }
+    }
+
+    private static unsafe partial class X11TestNative
+    {
+        private const int ClientMessageEventType = 33;
+
+        internal static void SendDeleteWindow(nint display, nint nativeWindow)
+        {
+            var protocolsAtom = XInternAtom(display, "WM_PROTOCOLS", onlyIfExists: 0);
+            var deleteWindowAtom = XInternAtom(display, "WM_DELETE_WINDOW", onlyIfExists: 0);
+            var nativeEvent = default(NativeEvent);
+            nativeEvent.ClientMessage.Type = ClientMessageEventType;
+            nativeEvent.ClientMessage.Display = display;
+            nativeEvent.ClientMessage.Window = checked((nuint)nativeWindow);
+            nativeEvent.ClientMessage.MessageType = protocolsAtom;
+            nativeEvent.ClientMessage.Format = 32;
+            nativeEvent.ClientMessage.Data.Long0 = checked((nint)deleteWindowAtom);
+
+            if ((protocolsAtom == 0)
+                || (deleteWindowAtom == 0)
+                || (XSendEvent(display, nativeEvent.ClientMessage.Window, propagate: 0, eventMask: 0, &nativeEvent) == 0))
+            {
+                throw new InvalidOperationException("The X11 test could not send a WM_DELETE_WINDOW client message.");
+            }
+
+            _ = XSync(display, discard: 0);
+        }
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
+        [LibraryImport("libX11.so.6", EntryPoint = "XInternAtom", StringMarshalling = StringMarshalling.Utf8)]
+        private static partial nuint XInternAtom(nint display, string name, int onlyIfExists);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
+        [LibraryImport("libX11.so.6", EntryPoint = "XSendEvent")]
+        private static partial int XSendEvent(nint display, nuint window, int propagate, nint eventMask, NativeEvent* nativeEvent);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
+        [LibraryImport("libX11.so.6", EntryPoint = "XSync")]
+        private static partial int XSync(nint display, int discard);
+
+        [StructLayout(LayoutKind.Explicit, Size = 40)]
+        private struct ClientMessageData
+        {
+            [FieldOffset(0)]
+            internal nint Long0;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ClientMessageEvent
+        {
+            internal int Type;
+            internal nuint Serial;
+            internal int SendEvent;
+            internal nint Display;
+            internal nuint Window;
+            internal nuint MessageType;
+            internal int Format;
+            internal ClientMessageData Data;
+        }
+
+        [StructLayout(LayoutKind.Explicit, Size = 192)]
+        private struct NativeEvent
+        {
+            [FieldOffset(0)]
+            internal int Type;
+
+            [FieldOffset(0)]
+            internal ClientMessageEvent ClientMessage;
         }
     }
 }
