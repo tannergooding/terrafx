@@ -15,6 +15,7 @@ internal static class M04ShaderFixtureCompiler
 {
     private const string ShaderEntryPointComputeStorage = "CSStorageMain";
     private const string ShaderEntryPointComputeStorageBuffers = "CSStorageBuffersMain";
+    private const string ShaderEntryPointComputeStorageWrite = "CSStorageWriteMain";
     private const string ShaderEntryPointGraphPixel = "PSGraphMain";
     private const string ShaderEntryPointPixel = "PSMain";
     private const string ShaderEntryPointSampledFramePixel = "PSSampledFrameMain";
@@ -27,6 +28,7 @@ internal static class M04ShaderFixtureCompiler
     private static readonly string[] s_stageNames = [
         "compute-storage",
         "compute-storage-buffers",
+        "compute-storage-write",
         "vertex",
         "vertex-sprite",
         "pixel",
@@ -107,6 +109,17 @@ internal static class M04ShaderFixtureCompiler
                 ShaderEntryPointComputeStorageBuffers,
                 "cs_6_0",
                 "compute-storage-buffers",
+                cancellationToken).ConfigureAwait(false);
+            await CompileStageAsync(
+                manifest,
+                dxcExecutable,
+                spirvCrossExecutable,
+                spirvValidationExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointComputeStorageWrite,
+                "cs_6_0",
+                "compute-storage-write",
                 cancellationToken).ConfigureAwait(false);
             await CompileStageAsync(
                 manifest,
@@ -277,6 +290,15 @@ internal static class M04ShaderFixtureCompiler
                 dxcExecutable,
                 shaderPath,
                 stagingDirectory,
+                ShaderEntryPointComputeStorageWrite,
+                "cs_6_0",
+                "compute-storage-write",
+                cancellationToken).ConfigureAwait(false);
+            await CompileDxilStageAsync(
+                manifest,
+                dxcExecutable,
+                shaderPath,
+                stagingDirectory,
                 ShaderEntryPointVertex,
                 "vs_6_0",
                 "vertex",
@@ -367,6 +389,7 @@ internal static class M04ShaderFixtureCompiler
             "vertex-sprite" => ShaderEntryPointSpriteVertex,
             "compute-storage" => ShaderEntryPointComputeStorage,
             "compute-storage-buffers" => ShaderEntryPointComputeStorageBuffers,
+            "compute-storage-write" => ShaderEntryPointComputeStorageWrite,
             "pixel" => ShaderEntryPointPixel,
             "pixel-graph" => ShaderEntryPointGraphPixel,
             "pixel-sampled" => ShaderEntryPointSampledPixel,
@@ -575,9 +598,21 @@ internal static class M04ShaderFixtureCompiler
         ValidateResourceDescriptor(storageBuffers[1], "FrameSecondStorageBuffer", 34);
     }
 
+    private static void ValidateComputeStorageWriteBufferResourcesReflection(JsonElement root)
+    {
+        if (!root.TryGetProperty("ssbos", out var storageBuffers)
+            || (storageBuffers.ValueKind != JsonValueKind.Array)
+            || (storageBuffers.GetArrayLength() != 1))
+        {
+            throw new InvalidDataException("SPIRV-Cross reflection must report the compute storage-write buffer.");
+        }
+
+        ValidateResourceDescriptor(storageBuffers[0], "FrameStorageBuffer", 32);
+    }
+
     private static void ValidateDxilReflection(string text, string entryPoint, string stageName)
     {
-        if (stageName is "compute-storage" or "compute-storage-buffers")
+        if (stageName is "compute-storage" or "compute-storage-buffers" or "compute-storage-write")
         {
             if (!text.Contains($"EntryFunctionName: {entryPoint}", StringComparison.Ordinal)
                 || !text.Contains("NumThreads=(1,1,1)", StringComparison.Ordinal)
@@ -747,7 +782,7 @@ internal static class M04ShaderFixtureCompiler
 
         var mode = modeElement.GetString();
         var expectedMode = stageName switch {
-            "compute-storage" or "compute-storage-buffers" => mode is "comp" or "compute",
+            "compute-storage" or "compute-storage-buffers" or "compute-storage-write" => mode is "comp" or "compute",
             "vertex" or "vertex-sprite" => mode is "vert" or "vertex",
             "pixel" or "pixel-graph" or "pixel-sampled" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => mode is "frag" or "fragment",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
@@ -781,6 +816,11 @@ internal static class M04ShaderFixtureCompiler
         if (stageName == "compute-storage-buffers")
         {
             ValidateComputeStorageBufferResourcesReflection(root);
+        }
+
+        if (stageName == "compute-storage-write")
+        {
+            ValidateComputeStorageWriteBufferResourcesReflection(root);
         }
     }
 

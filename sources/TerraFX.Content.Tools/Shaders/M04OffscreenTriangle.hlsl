@@ -107,6 +107,17 @@ void CSStorageMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 }
 
 [numthreads(1, 1, 1)]
+void CSStorageWriteMain(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    if (any(dispatchThreadId != uint3(0, 0, 0)))
+    {
+        return;
+    }
+
+    FrameStorageBuffer[0] = 0x10203040;
+}
+
+[numthreads(1, 1, 1)]
 void CSStorageBuffersMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     if (any(dispatchThreadId != uint3(0, 0, 0)))
