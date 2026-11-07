@@ -2,6 +2,7 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -11,6 +12,11 @@ namespace TerraFX.Platform;
 
 internal sealed unsafe partial class LinuxEvdevInputEventReader : IDisposable
 {
+    private const ushort AbsHat0X = 0x0010;
+    private const ushort AbsHat0Y = 0x0011;
+    private const int AbsInfoRequestBase = 0x40;
+    private const ushort AbsoluteAxisEventType = 0x0003;
+    private const int AbsoluteInfoByteLength = 24;
     private const int ClockMonotonic = 1;
     private const int EAgain = 11;
     private const int EInterrupted = 4;
@@ -20,8 +26,13 @@ internal sealed unsafe partial class LinuxEvdevInputEventReader : IDisposable
     private const int FcntlSetFileFlags = 4;
     private const int InputEventByteLength = 24;
     private const int IoNonBlocking = 0x0800;
+    private const int IoctlReadDirection = 2;
     private const uint IoctlType = (uint)'E';
     private const int IoctlWriteDirection = 1;
+    private const int KeyBitArrayByteLength = 96;
+    private const ushort KeyEventType = 0x0001;
+    private const ushort KeyMaximumCode = 0x02FF;
+    private const int KeyStateRequestNumber = 0x18;
     private const int MaximumEventCount = 64;
     private const int SetClockRequestNumber = 0xA0;
 
@@ -37,6 +48,28 @@ internal sealed unsafe partial class LinuxEvdevInputEventReader : IDisposable
     }
 
     internal bool UsesMonotonicClock { get; }
+
+    internal static nuint BuildReadRequest(int requestNumber, int size)
+        => checked((nuint)(((uint)IoctlReadDirection << 30)
+            | (checked((uint)size) << 16)
+            | (IoctlType << 8)
+            | checked((uint)requestNumber)));
+
+    internal static (LinuxEvdevAxisInfo Info, int Value) DecodeAbsoluteInfo(ReadOnlySpan<byte> buffer)
+    {
+        if (buffer.Length != AbsoluteInfoByteLength)
+        {
+            throw new InvalidDataException("The evdev input_absinfo buffer has an invalid size.");
+        }
+
+        return (
+            new LinuxEvdevAxisInfo(
+                BinaryPrimitives.ReadInt32LittleEndian(buffer[4..]),
+                BinaryPrimitives.ReadInt32LittleEndian(buffer[8..]),
+                BinaryPrimitives.ReadInt32LittleEndian(buffer[12..]),
+                BinaryPrimitives.ReadInt32LittleEndian(buffer[16..])),
+            BinaryPrimitives.ReadInt32LittleEndian(buffer));
+    }
 
     internal static ImmutableArray<LinuxEvdevInputEvent> DecodeBuffer(ReadOnlySpan<byte> buffer)
     {
@@ -148,6 +181,39 @@ internal sealed unsafe partial class LinuxEvdevInputEventReader : IDisposable
         }
     }
 
+    private static bool TryReadAbsoluteInfo(
+        int fileDescriptor,
+        ushort code,
+        out LinuxEvdevAxisInfo info,
+        out int value)
+    {
+        Span<byte> buffer = stackalloc byte[AbsoluteInfoByteLength];
+        buffer.Clear();
+
+        fixed (byte* pointer = buffer)
+        {
+            if (Native.Ioctl(
+                    fileDescriptor,
+                    BuildReadRequest(AbsInfoRequestBase + code, AbsoluteInfoByteLength),
+                    pointer) < 0)
+            {
+                var error = Marshal.GetLastPInvokeError();
+
+                if (error == EInvalid)
+                {
+                    info = default;
+                    value = default;
+                    return false;
+                }
+
+                throw CreateNativeIOException("read evdev absolute-axis state", error);
+            }
+        }
+
+        (info, value) = DecodeAbsoluteInfo(buffer);
+        return true;
+    }
+
     private static bool TrySetMonotonicClock(int fileDescriptor)
     {
         var clockId = ClockMonotonic;
@@ -210,6 +276,55 @@ internal sealed unsafe partial class LinuxEvdevInputEventReader : IDisposable
         }
     }
 
+    internal LinuxEvdevGamepadState ReadGamepadState()
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        var fileDescriptor = GetFileDescriptor(_handle);
+        var axes = new List<(ushort Code, LinuxEvdevAxisInfo Info, int InitialValue)>(6);
+
+        for (ushort code = 0; code < 6; code++)
+        {
+            if (TryReadAbsoluteInfo(fileDescriptor, code, out var info, out var value))
+            {
+                axes.Add((code, info, value));
+            }
+        }
+
+        var state = new LinuxEvdevGamepadState(axes.ToArray());
+        Span<byte> keyState = stackalloc byte[KeyBitArrayByteLength];
+        keyState.Clear();
+
+        fixed (byte* pointer = keyState)
+        {
+            if (Native.Ioctl(
+                    fileDescriptor,
+                    BuildReadRequest(KeyStateRequestNumber, KeyBitArrayByteLength),
+                    pointer) < 0)
+            {
+                throw CreateNativeIOException("read evdev key state", Marshal.GetLastPInvokeError());
+            }
+        }
+
+        for (var code = 0; code <= KeyMaximumCode; code++)
+        {
+            if ((keyState[code >> 3] & (1 << (code & 7))) != 0)
+            {
+                _ = state.TryProcessEvent(KeyEventType, checked((ushort)code), 1, out _);
+            }
+        }
+
+        for (var code = AbsHat0X; code <= AbsHat0Y; code++)
+        {
+            if (TryReadAbsoluteInfo(fileDescriptor, code, out _, out var value))
+            {
+                _ = state.TryProcessEvent(AbsoluteAxisEventType, code, value, out _);
+            }
+        }
+
+        return state;
+    }
+
     private void EnsureOwnerThread()
     {
         if (_ownerThreadId != Environment.CurrentManagedThreadId)
@@ -227,7 +342,7 @@ internal sealed unsafe partial class LinuxEvdevInputEventReader : IDisposable
         internal static partial int Fcntl(int fileDescriptor, int command, int argument);
 
         [LibraryImport("libc", EntryPoint = "ioctl", SetLastError = true)]
-        internal static partial int Ioctl(int fileDescriptor, nuint request, int* argument);
+        internal static partial int Ioctl(int fileDescriptor, nuint request, void* argument);
 
         [LibraryImport("libc", EntryPoint = "read", SetLastError = true)]
         internal static partial nint Read(int fileDescriptor, byte* buffer, nuint byteCount);

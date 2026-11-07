@@ -10,6 +10,23 @@ namespace TerraFX.Platform.Tests;
 [TestFixture]
 internal sealed class LinuxEvdevInputEventReaderTests
 {
+    private static void WriteAbsoluteInfo(
+        Span<byte> destination,
+        int value,
+        int minimum,
+        int maximum,
+        int fuzz,
+        int flat,
+        int resolution)
+    {
+        BinaryPrimitives.WriteInt32LittleEndian(destination, value);
+        BinaryPrimitives.WriteInt32LittleEndian(destination[4..], minimum);
+        BinaryPrimitives.WriteInt32LittleEndian(destination[8..], maximum);
+        BinaryPrimitives.WriteInt32LittleEndian(destination[12..], fuzz);
+        BinaryPrimitives.WriteInt32LittleEndian(destination[16..], flat);
+        BinaryPrimitives.WriteInt32LittleEndian(destination[20..], resolution);
+    }
+
     private static void WriteEvent(
         Span<byte> destination,
         long seconds,
@@ -23,6 +40,29 @@ internal sealed class LinuxEvdevInputEventReaderTests
         BinaryPrimitives.WriteUInt16LittleEndian(destination[16..], type);
         BinaryPrimitives.WriteUInt16LittleEndian(destination[18..], code);
         BinaryPrimitives.WriteInt32LittleEndian(destination[20..], value);
+    }
+
+    [Test]
+    public void BuildsReadRequestsWithLinuxIoctlEncoding()
+    {
+        Assert.That(
+            LinuxEvdevInputEventReader.BuildReadRequest(0x18, 96),
+            Is.EqualTo(checked((nuint)0x80604518u)));
+        Assert.That(
+            LinuxEvdevInputEventReader.BuildReadRequest(0x40, 24),
+            Is.EqualTo(checked((nuint)0x80184540u)));
+    }
+
+    [Test]
+    public void DecodesNativeAbsoluteAxisInfo()
+    {
+        var buffer = new byte[24];
+        WriteAbsoluteInfo(buffer, value: 17, minimum: -1000, maximum: 2000, fuzz: 5, flat: 100, resolution: 2);
+
+        var (info, value) = LinuxEvdevInputEventReader.DecodeAbsoluteInfo(buffer);
+
+        Assert.That(value, Is.EqualTo(17));
+        Assert.That(info, Is.EqualTo(new LinuxEvdevAxisInfo(-1000, 2000, 5, 100)));
     }
 
     [Test]
@@ -50,6 +90,13 @@ internal sealed class LinuxEvdevInputEventReaderTests
     public void RecognizesOnlyNamedEventNodePaths(string path, bool expected)
     {
         Assert.That(LinuxEvdevInputEventReader.IsEventNodePath(path), Is.EqualTo(expected));
+    }
+
+    [Test]
+    public void RejectsInvalidAbsoluteInfoBufferSize()
+    {
+        _ = Assert.Throws<InvalidDataException>(
+            () => LinuxEvdevInputEventReader.DecodeAbsoluteInfo(new byte[23]));
     }
 
     [Test]

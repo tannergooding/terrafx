@@ -244,6 +244,20 @@ In the WSLg shell, run the same hardware-independent selection:
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release --filter "FullyQualifiedName~LinuxEvdevInputEventReaderTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
+`LinuxEvdevGamepadCaptureTests` constructs and pumps the owner-thread capture service through discovery and lifecycle initialization. WSLg currently exposes no `/dev/input/event*` nodes, so it does not observe a real device add/remove or qualify live controller reads and permission handling:
+
+```powershell
+dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Debug --filter "FullyQualifiedName~LinuxEvdevGamepadCaptureTests"
+dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Release --filter "FullyQualifiedName~LinuxEvdevGamepadCaptureTests"
+```
+
+In the WSLg shell, run the same selection:
+
+```bash
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~LinuxEvdevGamepadCaptureTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release --filter "FullyQualifiedName~LinuxEvdevGamepadCaptureTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
 On Windows 11 x64, run the hidden-HWND owner witness for live client metrics, PMv2 scale/provenance, native resize refresh and snapshot replacement, pre-surface zero epochs, and stale-handle rejection:
 
 ```powershell

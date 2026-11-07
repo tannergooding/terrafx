@@ -26,6 +26,15 @@ internal sealed class PlatformInputSampleQueue
         _samples = new PlatformInputSample[capacity];
     }
 
+    internal bool HasCapacity
+    {
+        get
+        {
+            EnsureOwnerThread();
+            return _count < _samples.Length;
+        }
+    }
+
     internal PlatformInputSampleBatch Drain()
     {
         EnsureOwnerThread();

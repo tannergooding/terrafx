@@ -50,6 +50,8 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     private readonly ClipboardServiceStatus _clipboardStatus;
     private readonly nint _display;
     private float? _effectiveDpi;
+    private readonly LinuxEvdevGamepadCapture? _gamepadCapture;
+    private readonly PlatformServiceStatus _gamepadStatus;
     private readonly PlatformInputSampleQueue _inputSamples;
     private readonly X11KeyboardKeymap? _keyboardKeymap;
     private readonly uint _ownerId;
@@ -192,7 +194,32 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         _clipboardStatus = (clipboardPolicy is ClipboardServicePolicy.Optional)
             ? ClipboardServiceStatus.Unsupported
             : ClipboardServiceStatus.NotRequested;
-        RefreshDpiSettings();
+
+        try
+        {
+            try
+            {
+                _gamepadCapture = new LinuxEvdevGamepadCapture(_inputSamples, TimeProvider.System);
+                _gamepadStatus = _gamepadCapture.GamepadStatus;
+            }
+            catch (DllNotFoundException)
+            {
+                _gamepadStatus = PlatformServiceStatus.Unsupported;
+            }
+            catch (EntryPointNotFoundException)
+            {
+                _gamepadStatus = PlatformServiceStatus.Unsupported;
+            }
+
+            RefreshDpiSettings();
+        }
+        catch
+        {
+            _gamepadCapture?.Dispose();
+            _keyboardKeymap?.Dispose();
+            _ = X11Native.XCloseDisplay(_display);
+            throw;
+        }
     }
 
     public PlatformServiceStatus AudioStatus
@@ -236,7 +263,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         get
         {
             EnsureOwnerThread();
-            return PlatformServiceStatus.Unsupported;
+            return _gamepadCapture?.GamepadStatus ?? _gamepadStatus;
         }
     }
 
@@ -572,6 +599,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         _windowsByHandle.Clear();
         _closeRequests.Clear();
         _ = X11Native.XSync(_display, discard: 0);
+        _gamepadCapture?.Dispose();
         _keyboardKeymap?.Dispose();
         _ = X11Native.XCloseDisplay(_display);
         _isDisposed = true;
@@ -738,6 +766,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
                     throw new InvalidOperationException("XKB could not refresh the core keyboard keymap.");
                 }
             }
+
             else if ((nativeEvent.Type == PropertyNotifyEvent)
                 && (nativeEvent.Property.Window == _rootWindow)
                 && (nativeEvent.Property.Atom == _resourceManagerAtom))
@@ -852,6 +881,8 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
                 CaptureXInput2Event(&nativeEvent.Cookie);
             }
         }
+
+        _gamepadCapture?.Pump();
     }
 
     public ClipboardReadResponse ReadClipboardText(ClipboardReadRequest request)
@@ -873,7 +904,13 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     {
         EnsureActiveOwnerThread();
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero((long)nativeDeviceIdentity);
-        throw new NotSupportedException("The X11 backend does not capture physical gamepads yet.");
+
+        if (_gamepadCapture is not LinuxEvdevGamepadCapture capture)
+        {
+            throw new NotSupportedException("The X11 backend does not provide Linux evdev gamepad capture.");
+        }
+
+        capture.RequestDeviceReconciliation(nativeDeviceIdentity);
     }
 
     public void RequestInputStateReconciliation(WindowHandle? window)

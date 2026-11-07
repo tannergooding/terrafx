@@ -131,7 +131,12 @@ internal sealed partial class HeadlessPlatformBackendTests
             Assert.That(backend.Backend, Is.EqualTo(PlatformBackend.X11Only));
             Assert.That(backend.DisplayStatus, Is.EqualTo(PlatformServiceStatus.Available));
             Assert.That(backend.PhysicalInputStatus, Is.EqualTo(PlatformServiceStatus.Available));
-            Assert.That(backend.GamepadStatus, Is.EqualTo(PlatformServiceStatus.Unsupported));
+            Assert.That(
+                backend.GamepadStatus,
+                Is.AnyOf(
+                    PlatformServiceStatus.Available,
+                    PlatformServiceStatus.PermissionDenied,
+                    PlatformServiceStatus.Unsupported));
             Assert.That(backend.ClipboardStatus, Is.EqualTo(ClipboardServiceStatus.NotRequested));
             var x11Backend = backend as X11PlatformBackend
                 ?? throw new InvalidOperationException("The selected X11 backend has an unexpected implementation.");
