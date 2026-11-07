@@ -15,6 +15,7 @@ internal sealed class GraphicsResourceOwner : IDisposable
     private GraphicsResourceAllocationLease? _allocationLease;
     private readonly IGraphicsBackendResource _backendResource;
     private readonly GraphicsDevice _device;
+    private bool _exclusiveUseInProgress;
     private readonly GraphicsResourceGraphState? _graphState;
     private long _lastSubmittedQueueFence;
     private long _nextUseSequence;
@@ -105,6 +106,43 @@ internal sealed class GraphicsResourceOwner : IDisposable
         }
     }
 
+    internal UseLease AcquireExclusiveUse(string parameterName)
+    {
+        while (true)
+        {
+            if (!IsLiveForNewWork)
+            {
+                throw new ObjectDisposedException(parameterName, "The Graphics resource no longer accepts new work.");
+            }
+
+            lock (_useGate)
+            {
+                if (!IsLiveForNewWork)
+                {
+                    continue;
+                }
+
+                if (_activeUseSequences.Count != 0)
+                {
+                    throw new InvalidOperationException("A host write requires an idle Graphics resource.");
+                }
+
+                var sequence = checked(_nextUseSequence + 1);
+                var lease = new UseLease(this, sequence, isExclusive: true);
+
+                if (!_activeUseSequences.Add(sequence))
+                {
+                    throw new InvalidOperationException("The Graphics resource use sequence was reused.");
+                }
+
+                _nextUseSequence = sequence;
+                _exclusiveUseInProgress = true;
+                _ = Interlocked.Increment(ref _activeUseCount);
+                return lease;
+            }
+        }
+    }
+
     internal UseLease AcquireUse(string parameterName)
     {
         while (true)
@@ -119,6 +157,11 @@ internal sealed class GraphicsResourceOwner : IDisposable
                 if (!IsLiveForNewWork)
                 {
                     continue;
+                }
+
+                if (_exclusiveUseInProgress)
+                {
+                    throw new InvalidOperationException("The Graphics resource is being written by the host.");
                 }
 
                 var sequence = checked(_nextUseSequence + 1);
@@ -340,7 +383,7 @@ internal sealed class GraphicsResourceOwner : IDisposable
     private bool HasActiveUseAtOrBefore(long sequence)
         => (_activeUseSequences.Count != 0) && (_activeUseSequences.Min <= sequence);
 
-    private void ReleaseUse(long sequence)
+    private void ReleaseUse(long sequence, bool isExclusive)
     {
         int activeUseCount;
 
@@ -349,6 +392,16 @@ internal sealed class GraphicsResourceOwner : IDisposable
             if (!_activeUseSequences.Remove(sequence))
             {
                 throw new InvalidOperationException("A Graphics resource use credit was released more than once.");
+            }
+
+            if (isExclusive)
+            {
+                if (!_exclusiveUseInProgress)
+                {
+                    throw new InvalidOperationException("The Graphics resource exclusive use was released more than once.");
+                }
+
+                _exclusiveUseInProgress = false;
             }
 
             activeUseCount = Interlocked.Decrement(ref _activeUseCount);
@@ -378,14 +431,16 @@ internal sealed class GraphicsResourceOwner : IDisposable
 
     internal sealed class UseLease : IDisposable
     {
+        private readonly bool _isExclusive;
         private GraphicsResourceOwner? _owner;
         private readonly long _sequence;
 
-        internal UseLease(GraphicsResourceOwner owner, long sequence)
+        internal UseLease(GraphicsResourceOwner owner, long sequence, bool isExclusive = false)
         {
             ArgumentNullException.ThrowIfNull(owner);
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sequence);
             _owner = owner;
+            _isExclusive = isExclusive;
             _sequence = sequence;
         }
 
@@ -394,7 +449,7 @@ internal sealed class GraphicsResourceOwner : IDisposable
         public void Dispose()
         {
             var owner = Interlocked.Exchange(ref _owner, null);
-            owner?.ReleaseUse(_sequence);
+            owner?.ReleaseUse(_sequence, _isExclusive);
         }
 
         internal bool IsOwnedBy(GraphicsResourceOwner owner)

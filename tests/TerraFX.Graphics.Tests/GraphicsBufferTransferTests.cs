@@ -25,7 +25,7 @@ internal sealed class GraphicsBufferTransferTests
             structuredStride: null,
             debugName: "Buffer transfer test");
 
-    private static GraphicsCapabilities CreateCapabilities(bool includeShaderModel6 = true)
+    private static GraphicsCapabilities CreateCapabilities(bool includeShaderModel6 = true, bool includeUploadHeap = false)
     {
         ImmutableArray<GraphicsFeature> features = includeShaderModel6
             ? [GraphicsFeature.Direct3DFeatureLevel12, GraphicsFeature.ShaderModel6]
@@ -74,6 +74,22 @@ internal sealed class GraphicsBufferTransferTests
             maximumVertexInputBindings: 32,
             maximumBufferByteLength: 1L << 40);
 
+        var heaps = ImmutableArray.CreateBuilder<GraphicsMemoryHeapCapabilities>(includeUploadHeap ? 2 : 1);
+        heaps.Add(new GraphicsMemoryHeapCapabilities(
+            0,
+            GraphicsMemoryHeapProperties.DeviceLocal,
+            4L * 1024 * 1024 * 1024,
+            3L * 1024 * 1024 * 1024));
+
+        if (includeUploadHeap)
+        {
+            heaps.Add(new GraphicsMemoryHeapCapabilities(
+                1,
+                GraphicsMemoryHeapProperties.HostVisible | GraphicsMemoryHeapProperties.HostCoherent,
+                4L * 1024 * 1024 * 1024,
+                3L * 1024 * 1024 * 1024));
+        }
+
         return new GraphicsCapabilities(
             GraphicsBackend.D3D12,
             GraphicsDeviceProfile.OffscreenNative,
@@ -88,11 +104,7 @@ internal sealed class GraphicsBufferTransferTests
             features,
             limits,
             formats,
-            [new GraphicsMemoryHeapCapabilities(
-                0,
-                GraphicsMemoryHeapProperties.DeviceLocal,
-                4L * 1024 * 1024 * 1024,
-                3L * 1024 * 1024 * 1024)]);
+            heaps.MoveToImmutable());
     }
 
     private static async Task<GraphicsDevice> CreateGraphicsDeviceAsync(FakeBackendDevice backendDevice)
@@ -2069,6 +2081,62 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "The upload write is awaited before disposal; its exclusive resource lease also protects a timed-out request.")]
+    public async Task UploadBufferHostWriteMarksContentsAndRejectsAnActiveGpuUse()
+    {
+        var backendDevice = new FakeBackendDevice(capabilities: CreateCapabilities(includeUploadHeap: true));
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        GpuBuffer? buffer = null;
+
+        try
+        {
+            buffer = await graphicsDevice.CreateBufferAsync(
+                new BufferDescription(
+                    16,
+                    BufferUsage.CopySource,
+                    GpuMemoryKind.Upload,
+                    structuredStride: null,
+                    debugName: "Host-written upload buffer"))
+                .ConfigureAwait(false);
+            var payload = new byte[] { 0x13, 0x29, 0x4F, 0x97 };
+            var expected = payload.AsSpan().ToArray();
+            var writeTask = graphicsDevice.WriteUploadBufferAsync(buffer, 4, payload);
+            payload.AsSpan().Clear();
+            await writeTask
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+
+            var (state, contentsValid, _, isIdle) = buffer.ResourceOwner.CaptureGraphImportState(
+                new GraphBufferRange(4, payload.Length));
+            Assert.That(state, Is.EqualTo(GraphResourceState.General));
+            Assert.That(contentsValid, Is.True);
+            Assert.That(isIdle, Is.True);
+            Assert.That(buffer.ResourceOwner.LastSubmittedQueueFence, Is.Zero);
+
+            using var readback = await graphicsDevice.ReadbackBufferAsync(buffer, 4, payload.Length)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            using var readLease = readback.AcquireReadLease(0, payload.Length);
+            var actual = new byte[payload.Length];
+            var copyAction = new ReadbackCopyAction(actual);
+            readLease.UseWindow(0, actual.Length, ref copyAction);
+            Assert.That(actual, Is.EqualTo(expected));
+
+            using var activeUse = buffer.ResourceOwner.AcquireUse(nameof(buffer));
+            _ = Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await graphicsDevice.WriteUploadBufferAsync(buffer, 0, payload).ConfigureAwait(false));
+        }
+        finally
+        {
+            buffer?.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task VolumeTextureTransferHonorsDepthSlicePitchAndZeroesPadding()
     {
         var backendDevice = new FakeBackendDevice();
@@ -2408,7 +2476,11 @@ internal sealed class GraphicsBufferTransferTests
         }
 
         public GraphicsResourceAllocationInfo GetBufferAllocationInfo(BufferDescription description)
-            => new(_bufferAllocationSizeBytes ?? description.ByteLength, alignment: 1, heapIndex: 0, budgetBytes: _bufferBudgetBytes);
+            => new(
+                _bufferAllocationSizeBytes ?? description.ByteLength,
+                alignment: 1,
+                heapIndex: description.MemoryKind == GpuMemoryKind.Upload ? 1 : 0,
+                budgetBytes: _bufferBudgetBytes);
 
         public GraphicsResourceAllocationInfo GetTextureAllocationInfo(TextureDescription description)
         {
@@ -2585,6 +2657,14 @@ internal sealed class GraphicsBufferTransferTests
             }
 
             return Interlocked.Increment(ref _completedFence);
+        }
+
+        public void WriteUploadBuffer(
+            IGraphicsBackendBuffer destination,
+            long destinationOffset,
+            ReadOnlySpan<byte> source)
+        {
+            source.CopyTo(GetBuffer(destination).Bytes.AsSpan(checked((int)destinationOffset), source.Length));
         }
 
         internal void BufferAllocationDisposed()

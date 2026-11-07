@@ -476,6 +476,50 @@ public sealed partial class GraphicsDevice
         }
     }
 
+    private static async Task WriteUploadBufferAsyncCore(
+        GraphicsDevice device,
+        GpuBuffer destination,
+        long destinationOffset,
+        byte[] sourceBytes,
+        CancellationToken cancellationToken)
+    {
+        GraphicsResourceOwner.UseLease? destinationUse = null;
+
+        try
+        {
+            if (device.Status != GraphicsDeviceStatus.Ready)
+            {
+                throw new InvalidOperationException("The GraphicsDevice is not accepting host buffer writes.");
+            }
+
+            destinationUse = destination.ResourceOwner.AcquireExclusiveUse(nameof(destination));
+            var request = new WriteUploadBufferRequest(
+                device,
+                destination,
+                destinationUse,
+                destinationOffset,
+                sourceBytes,
+                cancellationToken);
+            destinationUse = null;
+
+            try
+            {
+                await device._ownerQueue.WriteRequestAsync(request, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                request.AdmissionFailed();
+                throw;
+            }
+
+            await request.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            destinationUse?.Dispose();
+        }
+    }
+
     /// <summary>Creates one owned GPU buffer on the dedicated graphics owner.</summary>
     /// <param name="description">The validated buffer size, usage, memory kind, and optional stride.</param>
     /// <param name="cancellationToken">A token that cancels admission or observation before completion.</param>
@@ -886,6 +930,46 @@ public sealed partial class GraphicsDevice
             sourceOffset,
             sourceLayout,
             cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Writes bytes into a host-visible upload buffer on the graphics owner.</summary>
+    /// <param name="destination">The same-device upload buffer.</param>
+    /// <param name="destinationOffset">The nonnegative destination byte offset.</param>
+    /// <param name="source">The caller's bytes, copied synchronously before this method returns.</param>
+    /// <param name="cancellationToken">A token that cancels admission or observation before the write begins.</param>
+    /// <returns>A task that completes after the host write and required visibility operation.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="destination"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">The destination belongs to another device or is not a host-visible upload buffer.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The destination range is invalid or the source is empty.</exception>
+    /// <exception cref="InvalidOperationException">The device is not accepting requests or the buffer has an active GPU use.</exception>
+    public Task WriteUploadBufferAsync(
+        GpuBuffer destination,
+        long destinationOffset,
+        ReadOnlySpan<byte> source,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!ReferenceEquals(destination.ResourceOwner.Device, this)
+            || (destination.DeviceEpoch != DeviceEpoch))
+        {
+            throw new ArgumentException("The destination belongs to another graphics device.", nameof(destination));
+        }
+
+        if (destination.Description.MemoryKind != GpuMemoryKind.Upload)
+        {
+            throw new ArgumentException("The destination must use host-visible upload memory.", nameof(destination));
+        }
+
+        ValidateBufferTransferRange(
+            destination.ByteLength,
+            destinationOffset,
+            source.Length,
+            nameof(destinationOffset),
+            nameof(source));
+        var sourceBytes = source.ToArray();
+        return WriteUploadBufferAsyncCore(this, destination, destinationOffset, sourceBytes, cancellationToken);
     }
 
     internal void EnqueueResourceRetirement(GraphicsResourceOwner resource)
@@ -2217,6 +2301,37 @@ public sealed partial class GraphicsDevice
         throw new NotSupportedException($"The selected device does not support single-sample texture format {description.Format}.");
     }
 
+    private void WriteUploadBufferOnOwner(
+        GpuBuffer destination,
+        GraphicsResourceOwner.UseLease destinationUse,
+        long destinationOffset,
+        ReadOnlySpan<byte> source)
+    {
+        var backendDevice = _backendDevice
+            ?? throw new InvalidOperationException("The GraphicsDevice has no live backend owner.");
+
+        if (Status != GraphicsDeviceStatus.Ready)
+        {
+            throw new InvalidOperationException("The GraphicsDevice stopped before the host buffer write was executed.");
+        }
+
+        if (destination.Description.MemoryKind != GpuMemoryKind.Upload)
+        {
+            throw new ArgumentException("The destination must use host-visible upload memory.", nameof(destination));
+        }
+
+        if (destination.ResourceOwner.BackendResource is not IGraphicsBackendBuffer backendBuffer)
+        {
+            throw new InvalidOperationException("The destination buffer has no backend buffer owner.");
+        }
+
+        _ = destination.ResourceOwner.CaptureGraphImportState(
+            new GraphBufferRange(destinationOffset, source.Length),
+            destinationUse);
+        backendDevice.WriteUploadBuffer(backendBuffer, destinationOffset, source);
+        destination.ResourceOwner.RecordBufferUpload(destinationOffset, source.Length);
+    }
+
     private sealed class CreateBufferRequest : IGraphicsDeviceWork
     {
         private readonly CancellationTokenRegistration _cancellationRegistration;
@@ -3385,6 +3500,130 @@ public sealed partial class GraphicsDevice
         {
             var sourceLease = Interlocked.Exchange(ref _sourceLease, null);
             sourceLease?.Dispose();
+        }
+    }
+
+    private sealed class WriteUploadBufferRequest : IGraphicsDeviceWork
+    {
+        private readonly CancellationTokenRegistration _cancellationRegistration;
+        private readonly CancellationToken _cancellationToken;
+        private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly GpuBuffer _destination;
+        private readonly long _destinationOffset;
+        private GraphicsResourceOwner.UseLease? _destinationUse;
+        private readonly GraphicsDevice _device;
+        private readonly byte[] _sourceBytes;
+        private int _state;
+        private int _writeStarted;
+
+        internal WriteUploadBufferRequest(
+            GraphicsDevice device,
+            GpuBuffer destination,
+            GraphicsResourceOwner.UseLease destinationUse,
+            long destinationOffset,
+            byte[] sourceBytes,
+            CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(destinationUse);
+            ArgumentNullException.ThrowIfNull(sourceBytes);
+            _cancellationToken = cancellationToken;
+            _destination = destination;
+            _destinationOffset = destinationOffset;
+            _device = device;
+            _destinationUse = destinationUse;
+            _sourceBytes = sourceBytes;
+            _cancellationRegistration = cancellationToken.Register(
+                static state => ((WriteUploadBufferRequest)state!).Cancel(),
+                this);
+        }
+
+        internal Task Task => _completion.Task;
+
+        public void Execute(GraphicsDevice device)
+        {
+            if (Interlocked.CompareExchange(ref _state, 3, 0) != 0)
+            {
+                ReleaseDestinationUse();
+                CompleteCanceled();
+                _cancellationRegistration.Dispose();
+                return;
+            }
+
+            var writeCompleted = false;
+
+            try
+            {
+                Volatile.Write(ref _writeStarted, 1);
+                device.WriteUploadBufferOnOwner(
+                    _destination,
+                    _destinationUse
+                        ?? throw new InvalidOperationException("The host buffer write has no exclusive destination use."),
+                    _destinationOffset,
+                    _sourceBytes);
+                _ = Interlocked.Exchange(ref _state, 2);
+                writeCompleted = true;
+            }
+            finally
+            {
+                ReleaseDestinationUse();
+                _cancellationRegistration.Dispose();
+            }
+
+            if (writeCompleted)
+            {
+                _ = _completion.TrySetResult();
+            }
+        }
+
+        public void Fail(Exception exception)
+        {
+            if (exception is GraphicsDeviceLostException)
+            {
+                _device.MarkDeviceLost();
+            }
+
+            var previousState = Interlocked.Exchange(ref _state, 2);
+            ReleaseDestinationUse();
+
+            if ((previousState == 1) && (Volatile.Read(ref _writeStarted) == 0))
+            {
+                _ = _completion.TrySetCanceled(_cancellationToken);
+            }
+            else
+            {
+                _ = _completion.TrySetException(exception);
+            }
+
+            _cancellationRegistration.Dispose();
+        }
+
+        internal void AdmissionFailed()
+        {
+            _ = Interlocked.Exchange(ref _state, 2);
+            ReleaseDestinationUse();
+            _cancellationRegistration.Dispose();
+        }
+
+        private void Cancel()
+        {
+            if (Volatile.Read(ref _writeStarted) == 0)
+            {
+                _ = Interlocked.CompareExchange(ref _state, 1, 0);
+            }
+        }
+
+        private void CompleteCanceled()
+        {
+            if (Interlocked.CompareExchange(ref _state, 2, 1) == 1)
+            {
+                _ = _completion.TrySetCanceled(_cancellationToken);
+            }
+        }
+
+        private void ReleaseDestinationUse()
+        {
+            var destinationUse = Interlocked.Exchange(ref _destinationUse, null);
+            destinationUse?.Dispose();
         }
     }
 }

@@ -346,6 +346,42 @@ internal sealed unsafe partial class VulkanBackendDevice
             "vkWaitSemaphores");
     }
 
+    internal void WriteUploadBuffer(
+        VulkanBackendBuffer destination,
+        long destinationOffset,
+        ReadOnlySpan<byte> source)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        EnsureOwnerThread();
+        ValidateTransferBuffer(destination, BufferUsage.CopySource, nameof(destination));
+
+        if (destination.Description.MemoryKind != GpuMemoryKind.Upload)
+        {
+            throw new ArgumentException("The buffer does not use host-visible upload memory.", nameof(destination));
+        }
+
+        ValidateTransferRange(
+            destination.Description.ByteLength,
+            destinationOffset,
+            checked((nint)source.Length),
+            nameof(destinationOffset),
+            nameof(source));
+        var mapped = MapHostVisibleMemory(destination);
+
+        try
+        {
+            source.CopyTo(new Span<byte>(mapped + checked((nint)destinationOffset), source.Length));
+            FlushMappedMemory(destination);
+            destination.SetLastAccessScope(
+                VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_HOST_BIT,
+                VkAccessFlags2.VK_ACCESS_2_HOST_WRITE_BIT);
+        }
+        finally
+        {
+            VulkanApi.vkUnmapMemory(_device, destination.Memory);
+        }
+    }
+
     private void BeginOneTimeCommands()
     {
         EnsureActive();

@@ -4267,6 +4267,7 @@ public sealed class GraphicsDevice
     public Task<GpuPipeline> CreatePipelineAsync(PipelineDescription description, CancellationToken cancellationToken = default);
     public Task<UploadReceipt> UploadBufferAsync(GpuBuffer destination, long destinationOffset, ReadOnlySpan<byte> source, CancellationToken cancellationToken = default);
     public Task<UploadReceipt> UploadBufferAsync(GpuBuffer destination, long destinationOffset, BufferReadLease<byte> source, nint sourceOffset, nint byteLength, CancellationToken cancellationToken = default);
+    public Task WriteUploadBufferAsync(GpuBuffer destination, long destinationOffset, ReadOnlySpan<byte> source, CancellationToken cancellationToken = default);
     public Task<UploadReceipt> UploadTextureAsync(GpuTexture destination, TextureSubresource subresource, BufferReadLease<byte> source, nint sourceOffset, TextureDataLayout sourceLayout, CancellationToken cancellationToken = default);
     public Task<OwnedBuffer<byte>> ReadbackBufferAsync(GpuBuffer source, long sourceOffset, nint byteLength, CancellationToken cancellationToken = default);
     public Task<TextureReadback> ReadbackTextureAsync(GpuTexture source, TextureSubresource subresource, CancellationToken cancellationToken = default);

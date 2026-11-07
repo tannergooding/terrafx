@@ -2852,6 +2852,55 @@ public static unsafe class D3D12GraphicsBackend
                 transferQueue.WaitForFence(fenceValue);
             }
 
+            public void WriteUploadBuffer(
+                IGraphicsBackendBuffer destination,
+                long destinationOffset,
+                ReadOnlySpan<byte> source)
+            {
+                EnsureOwnerThread();
+                ArgumentNullException.ThrowIfNull(destination);
+
+                if (destination is not D3D12BackendBuffer buffer || !ReferenceEquals(buffer.Owner, this))
+                {
+                    throw new ArgumentException("The buffer belongs to a different D3D12 device.", nameof(destination));
+                }
+
+                if (buffer.Description.MemoryKind != GpuMemoryKind.Upload)
+                {
+                    throw new ArgumentException("The buffer does not use host-visible upload memory.", nameof(destination));
+                }
+
+                ValidateTransferRange(
+                    buffer.Description.ByteLength,
+                    destinationOffset,
+                    checked((nint)source.Length),
+                    nameof(destinationOffset),
+                    nameof(source));
+                var resource = buffer.GetResource();
+                var readRange = default(D3D12_RANGE);
+                void* mapped = null;
+                ThrowIfFailed(resource->Map(0, &readRange, &mapped));
+
+                if (mapped is null)
+                {
+                    resource->Unmap(0, &readRange);
+                    throw new InvalidOperationException("D3D12 upload buffer mapping returned no address.");
+                }
+
+                try
+                {
+                    source.CopyTo(new Span<byte>((byte*)mapped + checked((nint)destinationOffset), source.Length));
+                }
+                finally
+                {
+                    var writtenRange = new D3D12_RANGE {
+                        Begin = checked((nuint)destinationOffset),
+                        End = checked((nuint)(destinationOffset + source.Length)),
+                    };
+                    resource->Unmap(0, &writtenRange);
+                }
+            }
+
             internal D3D12BackendDescriptorSet CreateDescriptorSet(
                 IGraphicsBackendPipeline pipeline,
                 ImmutableArray<D3D12BackendUniformBufferBinding> uniformBufferBindings,

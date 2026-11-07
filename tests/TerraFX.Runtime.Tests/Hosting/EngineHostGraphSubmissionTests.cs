@@ -223,6 +223,23 @@ internal sealed partial class EngineHostOptionsTests
             useTransientCopyAliasing: true);
 
     [Test]
+    public Task D3D12SubmitsTransientBufferAliasGroupsAcrossLiveSlots()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.D3D12,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: true,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: true,
+            graphicsFrameSlotCount: 2,
+            useUploadHeapGraphSources: true);
+
+    [Test]
     public Task PlansOverlappingTransientTextureLifetimesSeparatelyOnVulkan()
         => RunOffscreenGraphAsync(
             GraphicsBackend.Vulkan,
@@ -394,6 +411,22 @@ internal sealed partial class EngineHostOptionsTests
             useTextureCopy: true);
 
     [Test]
+    public Task SubmitsTransientBufferAliasGraphFromUploadBufferOnVulkan()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.Vulkan,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: true,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useUploadHeapGraphSources: true);
+
+    [Test]
     public Task SubmitsTransientBufferAliasGroupsAcrossLiveSlotsOnVulkan()
         => RunOffscreenGraphAsync(
             GraphicsBackend.Vulkan,
@@ -407,7 +440,8 @@ internal sealed partial class EngineHostOptionsTests
             useTransientBufferAliasing: true,
             overlapTransientBufferLifetimes: false,
             holdGraphCompletion: true,
-            graphicsFrameSlotCount: 2);
+            graphicsFrameSlotCount: 2,
+            useUploadHeapGraphSources: true);
 
     [Test]
     public Task SubmitsTransientCopyAliasGroupsOnVulkan()
@@ -487,7 +521,8 @@ internal sealed partial class EngineHostOptionsTests
         bool overlapTransientTextureLifetimes = false,
         int graphicsFrameSlotCount = 3,
         bool useTransientCopyAliasing = false,
-        bool useDelayedTransientTextureAliasing = false)
+        bool useDelayedTransientTextureAliasing = false,
+        bool useUploadHeapGraphSources = false)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -672,7 +707,7 @@ internal sealed partial class EngineHostOptionsTests
                 new D3D12GraphicsBackend.D3D12BackendFactory(
                     graphWaitForSingleObject: WaitForGraphFence,
                     completedFenceValueOverride: OverrideCompletedFence,
-                    graphSubmissionObserver: useTransientCopyAliasing ? ObserveGraphSubmission : null)),
+                    graphSubmissionObserver: (useTransientCopyAliasing || useTransientBufferAliasing) ? ObserveGraphSubmission : null)),
             GraphicsBackend.Vulkan when holdGraphCompletion => VulkanGraphicsBackend.CreateRegistrationForTesting(
                 WaitForVulkanGraphFence,
                 OverrideCompletedFence,
@@ -1282,14 +1317,27 @@ internal sealed partial class EngineHostOptionsTests
 
                 if (useBufferCopy || useTransientStorage || useTransientBufferAliasing)
                 {
-                    copySourceBuffer = await graphicsDevice.CreateBufferAsync(
-                        new BufferDescription(
-                            expectedCopiedBytes.Length,
-                            BufferUsage.CopySource | BufferUsage.CopyDestination,
-                            GpuMemoryKind.DeviceLocal,
-                            structuredStride: null,
-                            debugName: $"m04-{backend}-copy-source"))
-                        .ConfigureAwait(false);
+                    try
+                    {
+                        copySourceBuffer = await graphicsDevice.CreateBufferAsync(
+                            new BufferDescription(
+                                expectedCopiedBytes.Length,
+                                useUploadHeapGraphSources
+                                    ? BufferUsage.CopySource
+                                    : BufferUsage.CopySource | BufferUsage.CopyDestination,
+                                useUploadHeapGraphSources ? GpuMemoryKind.Upload : GpuMemoryKind.DeviceLocal,
+                                structuredStride: null,
+                                debugName: $"m04-{backend}-copy-source"))
+                            .ConfigureAwait(false);
+                    }
+                    catch (OutOfMemoryException exception) when (
+                        (backend == GraphicsBackend.D3D12)
+                        && useUploadHeapGraphSources
+                        && exception.Message.Contains("budget", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Assert.Ignore($"D3D12 host-written graph sources require available upload-heap budget: {exception.Message}");
+                        throw;
+                    }
                 }
 
                 copyDestinationBuffer = await graphicsDevice.CreateBufferAsync(
@@ -1318,20 +1366,45 @@ internal sealed partial class EngineHostOptionsTests
                 {
                     var secondSourceBytes = expectedSecondCopiedBytes
                         ?? throw new InvalidOperationException("The graph transient alias test has no second source data.");
-                    secondCopySourceBuffer = await graphicsDevice.CreateBufferAsync(
-                        new BufferDescription(
-                            secondSourceBytes.Length,
-                            BufferUsage.CopySource | BufferUsage.CopyDestination,
-                            GpuMemoryKind.DeviceLocal,
-                            structuredStride: null,
-                            debugName: $"m04-{backend}-second-copy-source"))
-                        .ConfigureAwait(false);
-                    var secondSourceUploadReceipt = await graphicsDevice.UploadBufferAsync(
-                        secondCopySourceBuffer,
-                        0,
-                        secondSourceBytes.AsSpan())
-                        .ConfigureAwait(false);
-                    Assert.That(secondSourceUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+
+                    try
+                    {
+                        secondCopySourceBuffer = await graphicsDevice.CreateBufferAsync(
+                            new BufferDescription(
+                                secondSourceBytes.Length,
+                                useUploadHeapGraphSources
+                                    ? BufferUsage.CopySource
+                                    : BufferUsage.CopySource | BufferUsage.CopyDestination,
+                                useUploadHeapGraphSources ? GpuMemoryKind.Upload : GpuMemoryKind.DeviceLocal,
+                                structuredStride: null,
+                                debugName: $"m04-{backend}-second-copy-source"))
+                            .ConfigureAwait(false);
+                    }
+                    catch (OutOfMemoryException exception) when (
+                        (backend == GraphicsBackend.D3D12)
+                        && useUploadHeapGraphSources
+                        && exception.Message.Contains("budget", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Assert.Ignore($"D3D12 host-written graph sources require available upload-heap budget: {exception.Message}");
+                        throw;
+                    }
+
+                    if (useUploadHeapGraphSources)
+                    {
+                        await graphicsDevice.WriteUploadBufferAsync(
+                            secondCopySourceBuffer,
+                            0,
+                            secondSourceBytes.AsSpan()).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        var secondSourceUploadReceipt = await graphicsDevice.UploadBufferAsync(
+                            secondCopySourceBuffer,
+                            0,
+                            secondSourceBytes.AsSpan())
+                            .ConfigureAwait(false);
+                        Assert.That(secondSourceUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+                    }
                 }
 
                 if (copySourceBuffer is GpuBuffer copyUploadSourceBuffer)
@@ -1339,12 +1412,23 @@ internal sealed partial class EngineHostOptionsTests
                     var sourceBytes = useTransientStorage
                         ? new byte[expectedCopiedBytes.Length]
                         : expectedCopiedBytes;
-                    var copyUploadReceipt = await graphicsDevice.UploadBufferAsync(
-                        copyUploadSourceBuffer,
-                        0,
-                        sourceBytes.AsSpan())
-                        .ConfigureAwait(false);
-                    Assert.That(copyUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+
+                    if (useUploadHeapGraphSources)
+                    {
+                        await graphicsDevice.WriteUploadBufferAsync(
+                            copyUploadSourceBuffer,
+                            0,
+                            sourceBytes.AsSpan()).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        var copyUploadReceipt = await graphicsDevice.UploadBufferAsync(
+                            copyUploadSourceBuffer,
+                            0,
+                            sourceBytes.AsSpan())
+                            .ConfigureAwait(false);
+                        Assert.That(copyUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+                    }
                 }
             }
 

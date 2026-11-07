@@ -168,4 +168,10 @@ internal sealed unsafe partial class VulkanBackendDevice
 
     void IGraphicsBackendDevice.WaitForGraphFence(long fenceValue)
         => WaitForGraphFence(fenceValue);
+
+    void IGraphicsBackendDevice.WriteUploadBuffer(
+        IGraphicsBackendBuffer destination,
+        long destinationOffset,
+        ReadOnlySpan<byte> source)
+        => WriteUploadBuffer(RequireBuffer(destination, nameof(destination)), destinationOffset, source);
 }

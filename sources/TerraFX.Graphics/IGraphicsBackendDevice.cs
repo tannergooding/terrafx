@@ -88,4 +88,10 @@ internal interface IGraphicsBackendDevice : IDisposable
     void WaitForGraphFence(long fenceValue)
     {
     }
+
+    void WriteUploadBuffer(
+        IGraphicsBackendBuffer destination,
+        long destinationOffset,
+        ReadOnlySpan<byte> source)
+        => throw new NotSupportedException("The selected backend does not support host-written upload buffers.");
 }
