@@ -930,6 +930,12 @@ internal sealed partial class EngineHostOptionsTests
 
             {
                 var aliasVersions = compiledAliasChainPlan.TransientBufferGroups[0];
+                using var firstFrameSlotReservation = graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                using var secondFrameSlotReservation = graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
                 using var firstLiveAliasGroup = graphicsDevice.CreateTransientBufferGroupAsync(
                     aliasVersions,
                     CancellationToken.None)
@@ -1055,6 +1061,12 @@ internal sealed partial class EngineHostOptionsTests
 
             {
                 var aliasVersions = compiledTextureAliasChainPlan.TransientTextureGroups[0];
+                using var firstFrameSlotReservation = graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                using var secondFrameSlotReservation = graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
                 using var firstLiveAliasGroup = graphicsDevice.CreateTransientTextureGroupAsync(
                     aliasVersions,
                     CancellationToken.None)
