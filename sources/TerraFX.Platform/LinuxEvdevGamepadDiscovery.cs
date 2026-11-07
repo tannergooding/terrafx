@@ -101,8 +101,7 @@ internal static partial class LinuxEvdevGamepadDiscovery
         var deviceNodeText = Marshal.PtrToStringUTF8(deviceNode)
             ?? throw new InvalidDataException("systemd returned an invalid gamepad device node.");
 
-        if (!Path.IsPathRooted(deviceNodeText)
-            || !deviceNodeText.StartsWith("/dev/input/event", StringComparison.Ordinal))
+        if (!LinuxEvdevInputEventReader.IsEventNodePath(deviceNodeText))
         {
             return false;
         }
