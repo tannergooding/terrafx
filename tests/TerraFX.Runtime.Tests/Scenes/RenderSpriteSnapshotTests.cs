@@ -276,6 +276,8 @@ internal sealed partial class SceneAssetStoreTests
                 assetPins.GetSceneAssets(retainedSceneInstanceId).GetAtlasPageSet(2).GetPage(0).Mips[0].Pixels[0],
                 Is.EqualTo(17));
             Assert.That(assetPins.GetSceneAssets(retainedSceneInstanceId).GetMaterial(3).IsSprite, Is.True);
+            using var retainedAssetPins = assetPins.Retain();
+            using var secondRetainedAssetPins = assetPins.Retain();
 
             foreach (var sceneInstance in sceneInstances)
             {
@@ -290,6 +292,14 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(assetPins.GetSceneAssets(retainedSceneInstanceId).GetMaterial(3).IsSprite, Is.True);
             snapshot.Dispose();
             Assert.That(snapshot.AssetPins, Is.Null);
+            _ = Assert.Throws<ObjectDisposedException>(() => assetPins.Retain());
+            Assert.That(
+                retainedAssetPins.GetSceneAssets(retainedSceneInstanceId).GetAtlasPageSet(2).GetPage(0).Mips[0].Pixels[0],
+                Is.EqualTo(17));
+            Assert.That(retainedAssetPins.GetSceneAssets(retainedSceneInstanceId).GetMaterial(3).IsSprite, Is.True);
+            Assert.That(
+                secondRetainedAssetPins.GetSceneAssets(retainedSceneInstanceId).GetAtlasPageSet(2).GetPage(0).Mips[0].Pixels[0],
+                Is.EqualTo(17));
         }
         finally
         {

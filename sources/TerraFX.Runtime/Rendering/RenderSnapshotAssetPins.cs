@@ -11,7 +11,7 @@ namespace TerraFX.Rendering;
 internal sealed class RenderSnapshotAssetPins : IDisposable
 {
     private int _isDisposed;
-    private readonly ImmutableArray<SceneAssetPins> _scenePins;
+    private readonly SharedState _sharedState;
 
     internal RenderSnapshotAssetPins(ImmutableArray<SceneAssetPins> scenePins)
     {
@@ -32,49 +32,42 @@ internal sealed class RenderSnapshotAssetPins : IDisposable
             }
         }
 
-        _scenePins = scenePins;
+        _sharedState = new SharedState(scenePins);
+    }
+
+    private RenderSnapshotAssetPins(SharedState sharedState)
+    {
+        _sharedState = sharedState;
     }
 
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
+        if (Interlocked.Exchange(ref _isDisposed, 1) == 0)
         {
-            return;
-        }
-
-        foreach (var scenePin in _scenePins)
-        {
-            scenePin.Dispose();
+            _sharedState.Release();
         }
     }
 
     internal SceneAssetPins GetSceneAssets(Guid sceneInstanceId)
     {
         ThrowIfDisposed();
-        var low = 0;
-        var high = _scenePins.Length - 1;
+        return _sharedState.GetSceneAssets(sceneInstanceId);
+    }
 
-        while (low <= high)
+    internal RenderSnapshotAssetPins Retain()
+    {
+        ThrowIfDisposed();
+        _sharedState.Retain();
+
+        try
         {
-            var middle = low + ((high - low) / 2);
-            var comparison = FoundationCatalogue.CompareRfc(_scenePins[middle].SceneInstanceId, sceneInstanceId);
-
-            if (comparison == 0)
-            {
-                return _scenePins[middle];
-            }
-
-            if (comparison < 0)
-            {
-                low = middle + 1;
-            }
-            else
-            {
-                high = middle - 1;
-            }
+            return new RenderSnapshotAssetPins(_sharedState);
         }
-
-        throw new ArgumentException("The Scene instance is not retained by this render snapshot.", nameof(sceneInstanceId));
+        catch
+        {
+            _sharedState.Release();
+            throw;
+        }
     }
 
     private void ThrowIfDisposed()
@@ -187,5 +180,93 @@ internal sealed class RenderSnapshotAssetPins : IDisposable
         internal readonly record struct AtlasPin(int AssetId, RenderAtlasPageSet PageSet);
 
         internal readonly record struct MaterialPin(int AssetId, AssetLease<RenderMaterialAsset> Lease);
+    }
+
+    private sealed class SharedState
+    {
+        private bool _isDisposed;
+        private int _referenceCount;
+        private readonly ImmutableArray<SceneAssetPins> _scenePins;
+        private readonly Lock _sync;
+
+        internal SharedState(ImmutableArray<SceneAssetPins> scenePins)
+        {
+            _scenePins = scenePins;
+            _referenceCount = 1;
+            _sync = new();
+        }
+
+        internal SceneAssetPins GetSceneAssets(Guid sceneInstanceId)
+        {
+            lock (_sync)
+            {
+                ThrowIfDisposed();
+                var low = 0;
+                var high = _scenePins.Length - 1;
+
+                while (low <= high)
+                {
+                    var middle = low + ((high - low) / 2);
+                    var comparison = FoundationCatalogue.CompareRfc(_scenePins[middle].SceneInstanceId, sceneInstanceId);
+
+                    if (comparison == 0)
+                    {
+                        return _scenePins[middle];
+                    }
+
+                    if (comparison < 0)
+                    {
+                        low = middle + 1;
+                    }
+                    else
+                    {
+                        high = middle - 1;
+                    }
+                }
+
+                throw new ArgumentException("The Scene instance is not retained by this render snapshot.", nameof(sceneInstanceId));
+            }
+        }
+
+        internal void Release()
+        {
+            ImmutableArray<SceneAssetPins> scenePins = default;
+
+            lock (_sync)
+            {
+                if (_referenceCount <= 0)
+                {
+                    throw new InvalidOperationException("Snapshot asset-pin ownership was released more than once.");
+                }
+
+                _referenceCount--;
+
+                if (_referenceCount == 0)
+                {
+                    _isDisposed = true;
+                    scenePins = _scenePins;
+                }
+            }
+
+            if (!scenePins.IsDefault)
+            {
+                foreach (var scenePin in scenePins)
+                {
+                    scenePin.Dispose();
+                }
+            }
+        }
+
+        internal void Retain()
+        {
+            lock (_sync)
+            {
+                ThrowIfDisposed();
+                _referenceCount = checked(_referenceCount + 1);
+            }
+        }
+
+        private void ThrowIfDisposed()
+            => ObjectDisposedException.ThrowIf(_isDisposed, this);
     }
 }

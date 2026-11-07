@@ -30,6 +30,10 @@ internal sealed partial class SceneAssetStoreTests
     public Task SnapshotPinnedAtlasPageSamplesThroughNativeGraphAsync()
         => RunSnapshotAtlasPageResidencyAsync(renderThroughNativeGraph: true);
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "This test disposes the snapshot after submission admission to verify the independent asset-pin lease survives until GPU completion.")]
     private async Task RunSnapshotAtlasPageResidencyAsync(bool renderThroughNativeGraph)
     {
         static OwnedBuffer<byte> CreateBytecodeStorage(string path)
@@ -314,7 +318,10 @@ internal sealed partial class SceneAssetStoreTests
                 Assert.That(compileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
                 var plan = compileResponse.Plan
                     ?? throw new InvalidOperationException("The snapshot-atlas graph compile omitted its plan.");
-                var submission = await engineHost.Renderer.SubmitAsync(spriteSnapshot, plan).ConfigureAwait(false);
+                var submissionTask = engineHost.Renderer.SubmitAsync(spriteSnapshot, plan);
+                spriteSnapshot.Dispose();
+                Assert.That(spriteSnapshot.AssetPins, Is.Null);
+                var submission = await submissionTask.ConfigureAwait(false);
                 Assert.That(submission.CompletedFence, Is.GreaterThan(0));
 
                 using var graphReadback = await graphicsDevice.ReadbackTextureAsync(

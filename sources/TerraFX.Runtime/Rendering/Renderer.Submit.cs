@@ -32,6 +32,7 @@ public sealed partial class Renderer
         var device = _graphicsDevice
             ?? throw new NotSupportedException("Headless rendering does not submit native render graphs.");
         ObjectDisposedException.ThrowIf(snapshot.IsDisposed, snapshot);
+        using var snapshotAssetPins = snapshot.RetainAssetPins();
 
         if ((graph.SnapshotId != snapshot.SnapshotId)
             || (graph.WorldGuid != snapshot.WorldGuid)

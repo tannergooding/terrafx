@@ -317,6 +317,12 @@ public abstract class RenderSnapshot : IDisposable
         GC.SuppressFinalize(this);
     }
 
+    internal RenderSnapshotAssetPins? RetainAssetPins()
+    {
+        ObjectDisposedException.ThrowIf(IsDisposed, this);
+        return Volatile.Read(ref _assetPins)?.Retain();
+    }
+
     /// <summary>Releases managed snapshot ownership.</summary>
     /// <param name="disposing">Whether managed ownership should be released.</param>
     protected virtual void Dispose(bool disposing)

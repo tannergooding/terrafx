@@ -330,6 +330,8 @@ Run the public offscreen submission witness after compiling the fixture. It cove
 
 `RenderSpriteGeometryTests` verifies the documented pivoted local-quad positions, fixed clockwise indices, normalized Atlas-frame UVs, and horizontal/vertical UV flips. `SpriteSnapshotsOrderDrawsAndRetainAssetsAfterSceneUnload` verifies extraction stores geometry composed from the exact pinned Atlas frame and copied Sprite component values.
 
+`Renderer.SubmitAsync` retains an independent shared asset-pin reference through GPU completion; the Sprite snapshot test disposes its snapshot and verifies the retained Atlas page and Material remain available.
+
 `SnapshotPinnedAtlasPageSamplesThroughNativeGraphAsync` uses a committed Scene/Sprite snapshot, resolves its exact Atlas frame page through `Renderer.EnsureSpritePageResidencyAsync`, samples that page in a custom graph, then unloads the Scene and disposes the snapshot before verifying the retained texture readback. The snapshot now carries geometry/UV composition, but the native graph still uses a custom pass rather than a built-in Sprite draw pipeline.
 
 Run the hardware-independent Sprite quad and snapshot-copy cases without the shader fixture:
