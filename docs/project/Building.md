@@ -128,6 +128,20 @@ In the WSLg shell configured below, the same project runs the explicit X11 owner
 
 This does not qualify Linux input, a live DPI-setting change, clipboard, Wayland, WSI, or Interactive hosting.
 
+`LinuxEvdevAxisNormalizerTests` exercises literal evdev min/max/flat/fuzz metadata without opening `/dev/input`; this validates normalization only, not device discovery, permissions, or live capture:
+
+```powershell
+dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Debug --filter "FullyQualifiedName~LinuxEvdevAxisNormalizerTests"
+dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Release --filter "FullyQualifiedName~LinuxEvdevAxisNormalizerTests"
+```
+
+In the WSLg shell configured below, run the same hardware-independent selection:
+
+```bash
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~LinuxEvdevAxisNormalizerTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release --filter "FullyQualifiedName~LinuxEvdevAxisNormalizerTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
 On Windows 11 x64, run the hidden-HWND owner witness for live client metrics, PMv2 scale/provenance, native resize refresh and snapshot replacement, pre-surface zero epochs, and stale-handle rejection:
 
 ```powershell
