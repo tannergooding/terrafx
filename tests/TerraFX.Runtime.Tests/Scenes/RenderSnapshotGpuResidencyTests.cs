@@ -5,6 +5,7 @@ using System.Collections.Immutable;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
@@ -24,6 +25,10 @@ namespace TerraFX.Runtime.Tests.Scenes;
 
 internal sealed partial class SceneAssetStoreTests
 {
+    [Test]
+    public Task SnapshotGraphCancellationReleasesImportedResourcePinsAsync()
+        => RunSnapshotAtlasPageResidencyAsync(renderThroughNativeGraph: true, cancelGraphAdmission: true);
+
     [Test]
     public Task SnapshotGraphRecordingFailureReleasesImportedResourcePinsAsync()
         => RunSnapshotAtlasPageResidencyAsync(renderThroughNativeGraph: true, failGraphRecording: true);
@@ -46,8 +51,11 @@ internal sealed partial class SceneAssetStoreTests
         Justification = "The original graph failure is logged before owner cleanup so a secondary shutdown timeout cannot obscure its cause.")]
     private async Task RunSnapshotAtlasPageResidencyAsync(
         bool renderThroughNativeGraph,
-        bool failGraphRecording = false)
+        bool failGraphRecording = false,
+        bool cancelGraphAdmission = false)
     {
+        using var submissionCancellation = new CancellationTokenSource();
+
         static OwnedBuffer<byte> CreateBytecodeStorage(string path)
         {
             var bytecode = File.ReadAllBytes(path);
@@ -354,9 +362,27 @@ internal sealed partial class SceneAssetStoreTests
                 var indexBinding = new IndexBufferBinding(indexVersion, indexRange, IndexFormat.UInt16);
                 var selectedPipeline = pipeline
                     ?? throw new InvalidOperationException("The snapshot-atlas graph has no graphics pipeline.");
+                var vertexResourceOwner = vertexBuffer.ResourceOwner;
+                var indexResourceOwner = indexBuffer.ResourceOwner;
+                var targetResourceOwner = targetTexture.ResourceOwner;
+                var pageResourceOwner = residencyLease.Texture.ResourceOwner;
+                var resourcePinsObservedDuringRecording = false;
 
                 void RecordPackageSample(scoped ref CommandRecorder recorder)
                 {
+                    if (failGraphRecording || cancelGraphAdmission)
+                    {
+                        resourcePinsObservedDuringRecording = vertexResourceOwner.HasActiveUses
+                            && indexResourceOwner.HasActiveUses
+                            && targetResourceOwner.HasActiveUses
+                            && pageResourceOwner.HasActiveUses;
+                    }
+
+                    if (cancelGraphAdmission)
+                    {
+                        submissionCancellation.Cancel();
+                    }
+
                     if (failGraphRecording)
                     {
                         throw new InvalidOperationException("Injected Sprite graph recording failure.");
@@ -389,11 +415,10 @@ internal sealed partial class SceneAssetStoreTests
                 Assert.That(compileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
                 var plan = compileResponse.Plan
                     ?? throw new InvalidOperationException("The snapshot-atlas graph compile omitted its plan.");
-                var vertexResourceOwner = vertexBuffer.ResourceOwner;
-                var indexResourceOwner = indexBuffer.ResourceOwner;
-                var targetResourceOwner = targetTexture.ResourceOwner;
-                var pageResourceOwner = residencyLease.Texture.ResourceOwner;
-                var submissionTask = engineHost.Renderer.SubmitAsync(spriteSnapshot, plan);
+                var submissionTask = engineHost.Renderer.SubmitAsync(
+                    spriteSnapshot,
+                    plan,
+                    submissionCancellation.Token);
                 spriteSnapshot.Dispose();
                 Assert.That(spriteSnapshot.AssetPins, Is.Null);
                 vertexBuffer.Dispose();
@@ -406,6 +431,19 @@ internal sealed partial class SceneAssetStoreTests
                     _ = Assert.ThrowsAsync<InvalidOperationException>(async () =>
                         await submissionTask.ConfigureAwait(false));
                     Assert.Multiple(() => {
+                        Assert.That(resourcePinsObservedDuringRecording, Is.True);
+                        Assert.That(vertexResourceOwner.HasActiveUses, Is.False);
+                        Assert.That(indexResourceOwner.HasActiveUses, Is.False);
+                        Assert.That(targetResourceOwner.HasActiveUses, Is.False);
+                        Assert.That(pageResourceOwner.HasActiveUses, Is.False);
+                    });
+                }
+                else if (cancelGraphAdmission)
+                {
+                    _ = Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                        await submissionTask.ConfigureAwait(false));
+                    Assert.Multiple(() => {
+                        Assert.That(resourcePinsObservedDuringRecording, Is.True);
                         Assert.That(vertexResourceOwner.HasActiveUses, Is.False);
                         Assert.That(indexResourceOwner.HasActiveUses, Is.False);
                         Assert.That(targetResourceOwner.HasActiveUses, Is.False);
