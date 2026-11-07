@@ -72,6 +72,13 @@ internal sealed class HeadlessPlatformBackendTests
             () => PlatformBackendFactory.Create(PlatformBackend.WaylandOnly, 1, ClipboardServicePolicy.NotRequested));
         _ = Assert.Throws<PlatformNotSupportedException>(
             () => PlatformBackendFactory.Create(PlatformBackend.WaylandThenX11, 1, ClipboardServicePolicy.NotRequested));
+
+        if (!OperatingSystem.IsLinux())
+        {
+            _ = Assert.Throws<PlatformNotSupportedException>(
+                () => PlatformBackendFactory.Create(PlatformBackend.X11Only, 1, ClipboardServicePolicy.NotRequested));
+        }
+
         _ = Assert.Throws<ArgumentOutOfRangeException>(
             () => PlatformBackendFactory.Create(PlatformBackend.None, 1, ClipboardServicePolicy.NotRequested));
     }
@@ -111,8 +118,25 @@ internal sealed class HeadlessPlatformBackendTests
             Assert.That(backend.GamepadStatus, Is.EqualTo(PlatformServiceStatus.Unsupported));
             Assert.That(backend.ClipboardStatus, Is.EqualTo(ClipboardServiceStatus.NotRequested));
 
+            var nativeMonitors = backend.GetMonitorInfo();
+            MonitorHandle? monitorHandle = null;
+            nint nativeMonitorHandle = 0;
+
+            if (!nativeMonitors.IsEmpty)
+            {
+                monitorHandle = new MonitorHandle(ownerId: 7, index: 0, generation: 1);
+                backend.SetMonitorHandles([monitorHandle.Value]);
+                nativeMonitorHandle = nativeMonitors[0].NativeHandle;
+            }
+
             var window = new WindowHandle(ownerId: 7, index: 0, generation: 1);
-            backend.CreateWindow(window, new WindowOptions("TerraFX X11 test") { Visible = false }, nativeMonitorHandle: 0);
+            backend.CreateWindow(
+                window,
+                new WindowOptions("TerraFX X11 test") {
+                    Visible = false,
+                    Monitor = monitorHandle,
+                },
+                nativeMonitorHandle);
 
             try
             {
@@ -131,6 +155,71 @@ internal sealed class HeadlessPlatformBackendTests
             }
 
             Assert.That(backend.TryGetNativeWindowBinding(window, out _), Is.False);
+        }
+        finally
+        {
+            backend?.Dispose();
+        }
+    }
+
+    [Test]
+    public void X11OnlyReportsRandrMonitorSelectionWhenAvailable()
+    {
+        if (!OperatingSystem.IsLinux()
+            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
+        {
+            Assert.Ignore("The X11 monitor witness requires a Linux X11 display.");
+            return;
+        }
+
+        IPlatformBackend? backend = null;
+
+        try
+        {
+            try
+            {
+                backend = CreateX11Backend();
+            }
+            catch (DllNotFoundException exception)
+            {
+                Assert.Ignore($"The X11 client library is unavailable: {exception.Message}");
+                return;
+            }
+            catch (PlatformNotSupportedException exception)
+            {
+                Assert.Ignore($"The X11 display is unavailable: {exception.Message}");
+                return;
+            }
+
+            var nativeMonitors = backend.GetMonitorInfo();
+
+            if (nativeMonitors.IsEmpty)
+            {
+                Assert.Ignore("The X11 server does not expose active RandR monitor records.");
+                return;
+            }
+
+            var monitorHandle = new MonitorHandle(ownerId: 7, index: 0, generation: 1);
+            backend.SetMonitorHandles([monitorHandle]);
+
+            var window = new WindowHandle(ownerId: 7, index: 0, generation: 1);
+            backend.CreateWindow(
+                window,
+                new WindowOptions("TerraFX X11 monitor test") {
+                    Visible = false,
+                    Monitor = monitorHandle,
+                },
+                nativeMonitors[0].NativeHandle);
+
+            try
+            {
+                Assert.That(backend.GetNativeWindowMetrics(window).ClientPixelSize.Width, Is.EqualTo(1280));
+                Assert.That(backend.GetNativeWindowMetrics(window).ClientPixelSize.Height, Is.EqualTo(720));
+            }
+            finally
+            {
+                backend.CloseWindow(window);
+            }
         }
         finally
         {

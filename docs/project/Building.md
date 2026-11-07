@@ -119,14 +119,14 @@ dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --confi
 dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Release
 ```
 
-In the WSLg shell configured below, the same project runs the explicit X11 window-owner witness when `DISPLAY` is available. It verifies an invisible native window's pixel metrics and private X11 binding, then closes it and checks stale-binding rejection:
+In the WSLg shell configured below, the same project runs the explicit X11 owner witnesses when `DISPLAY` is available. They verify an invisible native window's pixel metrics and private X11 binding, and exercise RandR 1.5 monitor enumeration/selection when the X server exposes it:
 
 ```bash
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Debug "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
-This is a window-lifecycle slice only; it does not qualify Linux input, monitor enumeration, clipboard, Wayland, WSI, or Interactive hosting.
+This does not qualify Linux input, X11 settings-based scale, clipboard, Wayland, WSI, or Interactive hosting.
 
 On Windows 11 x64, run the hidden-HWND owner witness for live client metrics, PMv2 scale/provenance, native resize refresh and snapshot replacement, pre-surface zero epochs, and stale-handle rejection:
 

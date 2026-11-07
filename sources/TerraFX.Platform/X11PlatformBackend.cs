@@ -13,6 +13,8 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 {
     private const int ClientMessageEvent = 33;
     private const int DestroyNotifyEvent = 17;
+    private const int RandrNotifyEventOffset = 1;
+    private const int RandrScreenChangeEventOffset = 0;
     private const long StructureNotifyMask = 1L << 17;
     private const int WindowedDpi = 96;
 
@@ -23,12 +25,14 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     private readonly nint _display;
     private readonly uint _ownerId;
     private readonly int _ownerThreadId;
+    private readonly int _randrEventBase;
+    private readonly bool _randrMonitorInfoAvailable;
     private readonly nuint _rootWindow;
-    private readonly int _screen;
     private readonly nuint _wmDeleteWindowAtom;
     private readonly nuint _wmProtocolsAtom;
     private ImmutableArray<MonitorHandle> _monitorHandles = [];
     private bool _isDisposed;
+    private bool _monitorTopologyChanged;
 
     internal X11PlatformBackend(uint ownerId, ClipboardServicePolicy clipboardPolicy)
     {
@@ -54,6 +58,12 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             var rootWindow = X11Native.XRootWindow(display, screen);
             var wmProtocolsAtom = X11Native.XInternAtom(display, "WM_PROTOCOLS", onlyIfExists: 0);
             var wmDeleteWindowAtom = X11Native.XInternAtom(display, "WM_DELETE_WINDOW", onlyIfExists: 0);
+            var randrEventBase = -1;
+            var randrErrorBase = 0;
+            var randrMajorVersion = 1;
+            var randrMinorVersion = 2;
+            var randrEventsAvailable = false;
+            var randrMonitorInfoAvailable = false;
 
             if ((rootWindow == 0)
                 || (wmProtocolsAtom == 0)
@@ -62,9 +72,36 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
                 throw new InvalidOperationException("X11 did not provide the required default-screen or window-manager atoms.");
             }
 
+            if ((X11Native.XRRQueryExtension(display, &randrEventBase, &randrErrorBase) != 0)
+                && (X11Native.XRRQueryVersion(display, &randrMajorVersion, &randrMinorVersion) != 0))
+            {
+                var randrEventMask = X11Native.RandrCrtcChangeNotifyMask
+                    | X11Native.RandrOutputChangeNotifyMask
+                    | X11Native.RandrOutputPropertyNotifyMask
+                    | X11Native.RandrScreenChangeNotifyMask;
+
+                if ((randrMajorVersion > 1) || ((randrMajorVersion == 1) && (randrMinorVersion >= 4)))
+                {
+                    randrEventMask |= X11Native.RandrProviderChangeNotifyMask
+                        | X11Native.RandrProviderPropertyNotifyMask
+                        | X11Native.RandrResourceChangeNotifyMask;
+                }
+
+                if ((randrMajorVersion > 1) || ((randrMajorVersion == 1) && (randrMinorVersion >= 6)))
+                {
+                    randrEventMask |= X11Native.RandrLeaseNotifyMask;
+                }
+
+                X11Native.XRRSelectInput(display, rootWindow, randrEventMask);
+                randrEventsAvailable = true;
+                randrMonitorInfoAvailable = (randrMajorVersion > 1)
+                    || ((randrMajorVersion == 1) && (randrMinorVersion >= 5));
+            }
+
             _display = display;
-            _screen = screen;
             _rootWindow = rootWindow;
+            _randrEventBase = randrEventsAvailable ? randrEventBase : -1;
+            _randrMonitorInfoAvailable = randrMonitorInfoAvailable;
             _wmProtocolsAtom = wmProtocolsAtom;
             _wmDeleteWindowAtom = wmDeleteWindowAtom;
         }
@@ -209,19 +246,32 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             throw new NotSupportedException("The X11 backend currently admits only windowed windows.");
         }
 
-        if ((options.Monitor is not null) != (nativeMonitorHandle != 0)
-            || ((nativeMonitorHandle != 0) && (unchecked((nuint)nativeMonitorHandle) != _rootWindow)))
+        if ((options.Monitor is not null) != (nativeMonitorHandle != 0))
         {
-            throw new NotSupportedException("The X11 backend only supports default-screen window placement.");
+            throw new ArgumentException("The native monitor binding does not match the requested monitor option.", nameof(nativeMonitorHandle));
         }
 
         var width = GetWindowExtent(options.ClientSize.X, nameof(options.ClientSize));
         var height = GetWindowExtent(options.ClientSize.Y, nameof(options.ClientSize));
+        var x = 0;
+        var y = 0;
+
+        if (nativeMonitorHandle != 0)
+        {
+            if (!TryGetRandrMonitor(nativeMonitorHandle, out var monitor))
+            {
+                throw new InvalidOperationException("The requested X11 monitor is no longer available.");
+            }
+
+            x = checked(monitor.X + ((monitor.Width - width) / 2));
+            y = checked(monitor.Y + ((monitor.Height - height) / 2));
+        }
+
         var nativeWindow = X11Native.XCreateSimpleWindow(
             _display,
             _rootWindow,
-            0,
-            0,
+            x,
+            y,
             checked((uint)width),
             checked((uint)height),
             borderWidth: 0,
@@ -319,7 +369,77 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     public ImmutableArray<PlatformMonitorInfo> GetMonitorInfo()
     {
         EnsureActiveOwnerThread();
-        return [new PlatformMonitorInfo($"X11.Screen.{_screen}", checked((nint)_rootWindow))];
+
+        if (!_randrMonitorInfoAvailable)
+        {
+            return [];
+        }
+
+        var monitorCount = 0;
+        var nativeMonitors = X11Native.XRRGetMonitors(_display, _rootWindow, getActive: 1, &monitorCount);
+
+        if (monitorCount < 0)
+        {
+            if (nativeMonitors != 0)
+            {
+                X11Native.XRRFreeMonitors(nativeMonitors);
+            }
+
+            throw new InvalidOperationException("X11 RandR returned a negative monitor count.");
+        }
+
+        if (nativeMonitors == 0)
+        {
+            if (monitorCount != 0)
+            {
+                throw new InvalidOperationException("X11 RandR returned a monitor count without monitor data.");
+            }
+
+            return [];
+        }
+
+        try
+        {
+            var monitorInfos = ImmutableArray.CreateBuilder<PlatformMonitorInfo>(monitorCount);
+            var monitors = (X11Native.RandrMonitorInfo*)nativeMonitors;
+
+            for (var index = 0; index < monitorCount; index++)
+            {
+                var monitor = monitors[index];
+
+                if ((monitor.Name == 0) || (monitor.Width <= 0) || (monitor.Height <= 0))
+                {
+                    throw new InvalidOperationException("X11 RandR returned an invalid active-monitor record.");
+                }
+
+                var atomName = X11Native.XGetAtomName(_display, monitor.Name);
+
+                if (atomName == 0)
+                {
+                    throw new InvalidOperationException("X11 could not resolve an active monitor's RandR name.");
+                }
+
+                string deviceName;
+
+                try
+                {
+                    deviceName = Marshal.PtrToStringUTF8(atomName)
+                        ?? throw new InvalidOperationException("X11 returned a null RandR monitor name.");
+                }
+                finally
+                {
+                    _ = X11Native.XFree(atomName);
+                }
+
+                monitorInfos.Add(new PlatformMonitorInfo(deviceName, checked((nint)monitor.Name)));
+            }
+
+            return monitorInfos.MoveToImmutable();
+        }
+        finally
+        {
+            X11Native.XRRFreeMonitors(nativeMonitors);
+        }
     }
 
     public PlatformNativeWindowMetrics GetNativeWindowMetrics(WindowHandle window)
@@ -372,7 +492,19 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
                 throw new InvalidOperationException("X11 failed while draining its owner event queue.");
             }
 
-            if (nativeEvent.Type == ClientMessageEvent)
+            if ((_randrEventBase >= 0)
+                && ((nativeEvent.Type == (_randrEventBase + RandrScreenChangeEventOffset))
+                    || (nativeEvent.Type == (_randrEventBase + RandrNotifyEventOffset))))
+            {
+                if (nativeEvent.Type == (_randrEventBase + RandrScreenChangeEventOffset)
+                    && (X11Native.XRRUpdateConfiguration(&nativeEvent) == 0))
+                {
+                    throw new InvalidOperationException("X11 RandR could not apply a screen-configuration event.");
+                }
+
+                _monitorTopologyChanged = true;
+            }
+            else if (nativeEvent.Type == ClientMessageEvent)
             {
                 var clientMessage = nativeEvent.ClientMessage;
 
@@ -429,9 +561,9 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     {
         EnsureActiveOwnerThread();
 
-        if (monitorHandles.IsDefault || (monitorHandles.Length > 1))
+        if (monitorHandles.IsDefault)
         {
-            throw new ArgumentException("The X11 backend exposes at most one default-screen monitor handle.", nameof(monitorHandles));
+            throw new ArgumentException("The monitor handle array must be initialized.", nameof(monitorHandles));
         }
 
         _monitorHandles = [.. monitorHandles];
@@ -440,7 +572,9 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     public bool TakeMonitorTopologyChanged()
     {
         EnsureActiveOwnerThread();
-        return false;
+        var monitorTopologyChanged = _monitorTopologyChanged;
+        _monitorTopologyChanged = false;
+        return monitorTopologyChanged;
     }
 
     public bool TryGetNativeWindowBinding(WindowHandle window, out PlatformNativeWindowBinding binding)
@@ -531,10 +665,79 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             classHints: 0);
     }
 
+    private bool TryGetRandrMonitor(nint nativeMonitorHandle, out X11Native.RandrMonitorInfo monitor)
+    {
+        monitor = default;
+
+        if (!_randrMonitorInfoAvailable || (nativeMonitorHandle <= 0))
+        {
+            return false;
+        }
+
+        var monitorCount = 0;
+        var nativeMonitors = X11Native.XRRGetMonitors(_display, _rootWindow, getActive: 1, &monitorCount);
+
+        if (monitorCount < 0)
+        {
+            if (nativeMonitors != 0)
+            {
+                X11Native.XRRFreeMonitors(nativeMonitors);
+            }
+
+            throw new InvalidOperationException("X11 RandR returned a negative monitor count.");
+        }
+
+        if (nativeMonitors == 0)
+        {
+            if (monitorCount != 0)
+            {
+                throw new InvalidOperationException("X11 RandR returned a monitor count without monitor data.");
+            }
+
+            return false;
+        }
+
+        try
+        {
+            var monitors = (X11Native.RandrMonitorInfo*)nativeMonitors;
+            var requestedName = checked((nuint)nativeMonitorHandle);
+
+            for (var index = 0; index < monitorCount; index++)
+            {
+                var candidate = monitors[index];
+
+                if (candidate.Name == requestedName)
+                {
+                    if ((candidate.Width <= 0) || (candidate.Height <= 0))
+                    {
+                        throw new InvalidOperationException("X11 RandR returned an invalid active-monitor extent.");
+                    }
+
+                    monitor = candidate;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        finally
+        {
+            X11Native.XRRFreeMonitors(nativeMonitors);
+        }
+    }
+
     private static unsafe partial class X11Native
     {
         internal const nint PMaxSize = 0x0020;
         internal const nint PMinSize = 0x0010;
+        internal const int RandrCrtcChangeNotifyMask = 1 << 1;
+        internal const int RandrLeaseNotifyMask = 1 << 7;
+        internal const int RandrOutputChangeNotifyMask = 1 << 2;
+        internal const int RandrOutputPropertyNotifyMask = 1 << 3;
+        internal const int RandrProviderChangeNotifyMask = 1 << 4;
+        internal const int RandrProviderPropertyNotifyMask = 1 << 5;
+        internal const int RandrResourceChangeNotifyMask = 1 << 6;
+        internal const int RandrScreenChangeNotifyMask = 1 << 0;
 
         [LibraryImport("libX11.so.6", EntryPoint = "XCloseDisplay")]
         internal static partial int XCloseDisplay(nint display);
@@ -559,6 +762,12 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 
         [LibraryImport("libX11.so.6", EntryPoint = "XFlush")]
         internal static partial int XFlush(nint display);
+
+        [LibraryImport("libX11.so.6", EntryPoint = "XFree")]
+        internal static partial int XFree(nint data);
+
+        [LibraryImport("libX11.so.6", EntryPoint = "XGetAtomName")]
+        internal static partial nint XGetAtomName(nint display, nuint atom);
 
         [LibraryImport("libX11.so.6", EntryPoint = "XGetGeometry")]
         internal static partial int XGetGeometry(
@@ -586,6 +795,24 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 
         [LibraryImport("libX11.so.6", EntryPoint = "XPending")]
         internal static partial int XPending(nint display);
+
+        [LibraryImport("libXrandr.so.2", EntryPoint = "XRRFreeMonitors")]
+        internal static partial void XRRFreeMonitors(nint monitors);
+
+        [LibraryImport("libXrandr.so.2", EntryPoint = "XRRGetMonitors")]
+        internal static partial nint XRRGetMonitors(nint display, nuint window, int getActive, int* monitorCount);
+
+        [LibraryImport("libXrandr.so.2", EntryPoint = "XRRQueryExtension")]
+        internal static partial int XRRQueryExtension(nint display, int* eventBase, int* errorBase);
+
+        [LibraryImport("libXrandr.so.2", EntryPoint = "XRRQueryVersion")]
+        internal static partial int XRRQueryVersion(nint display, int* majorVersion, int* minorVersion);
+
+        [LibraryImport("libXrandr.so.2", EntryPoint = "XRRSelectInput")]
+        internal static partial void XRRSelectInput(nint display, nuint window, int mask);
+
+        [LibraryImport("libXrandr.so.2", EntryPoint = "XRRUpdateConfiguration")]
+        internal static partial int XRRUpdateConfiguration(NativeEvent* nativeEvent);
 
         [LibraryImport("libX11.so.6", EntryPoint = "XRootWindow")]
         internal static partial nuint XRootWindow(nint display, int screen);
@@ -659,6 +886,22 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 
             [FieldOffset(0)]
             internal DestroyWindowEvent Destroy;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct RandrMonitorInfo
+        {
+            internal nuint Name;
+            internal int Primary;
+            internal int Automatic;
+            internal int OutputCount;
+            internal int X;
+            internal int Y;
+            internal int Width;
+            internal int Height;
+            internal int WidthMillimeters;
+            internal int HeightMillimeters;
+            internal nint Outputs;
         }
 
         [StructLayout(LayoutKind.Sequential)]
