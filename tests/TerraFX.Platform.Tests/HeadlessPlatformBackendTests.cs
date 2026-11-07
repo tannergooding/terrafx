@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -85,6 +86,19 @@ internal sealed partial class HeadlessPlatformBackendTests
     }
 
     [Test]
+    public void X11DpiSettingsParserUsesOnlyFinitePositiveXftDpiValues()
+    {
+        Assert.That(X11PlatformBackend.ParseXftDpiSettings("Xft.dpi: 144\n"), Is.EqualTo(144.0f));
+        Assert.That(X11PlatformBackend.ParseXftDpiSettings("Xft.dpi: 144\n\0\0"), Is.EqualTo(144.0f));
+        Assert.That(
+            X11PlatformBackend.ParseXftDpiSettings("Xft.dpi: 120\nXft.dpi=168\n"),
+            Is.EqualTo(168.0f));
+        Assert.That(X11PlatformBackend.ParseXftDpiSettings("Xft.antialias: 1\n"), Is.Null);
+        _ = Assert.Throws<InvalidOperationException>(
+            () => X11PlatformBackend.ParseXftDpiSettings("Xft.dpi: NaN\n"));
+    }
+
+    [Test]
     public void X11OnlyCreatesAndRetiresAnInvisibleNativeWindowWhenDisplayIsAvailable()
     {
         if (!OperatingSystem.IsLinux()
@@ -144,6 +158,30 @@ internal sealed partial class HeadlessPlatformBackendTests
                 var metrics = backend.GetNativeWindowMetrics(window);
                 Assert.That(metrics.ClientPixelSize.Width, Is.EqualTo(1280));
                 Assert.That(metrics.ClientPixelSize.Height, Is.EqualTo(720));
+                var dpiLabel = metrics.EffectiveDpi?.ToString(CultureInfo.InvariantCulture) ?? "none";
+                TestContext.WriteLine($"X11 DPI source={metrics.DpiSource}; effective DPI={dpiLabel}.");
+
+                if (metrics.EffectiveDpi is float effectiveDpi)
+                {
+                    Assert.That(metrics.DpiSource, Is.EqualTo(DpiSource.X11Settings));
+                    Assert.That(metrics.DpiConfidence, Is.EqualTo(DpiConfidence.Reported));
+                    Assert.That(metrics.ContentScale.X, Is.EqualTo(effectiveDpi / 96.0f).Within(0.0001f));
+                    Assert.That(metrics.ContentScale.Y, Is.EqualTo(effectiveDpi / 96.0f).Within(0.0001f));
+                }
+                else
+                {
+                    Assert.That(metrics.DpiSource, Is.EqualTo(DpiSource.Unknown));
+                    Assert.That(metrics.DpiConfidence, Is.EqualTo(DpiConfidence.Assumed96Dpi));
+                    Assert.That(metrics.ContentScale.X, Is.EqualTo(1.0f));
+                    Assert.That(metrics.ContentScale.Y, Is.EqualTo(1.0f));
+                }
+
+                Assert.That(
+                    metrics.LogicalClientSize.X * metrics.ContentScale.X,
+                    Is.EqualTo(metrics.ClientPixelSize.Width).Within(0.01f));
+                Assert.That(
+                    metrics.LogicalClientSize.Y * metrics.ContentScale.Y,
+                    Is.EqualTo(metrics.ClientPixelSize.Height).Within(0.01f));
                 Assert.That(backend.TryGetNativeWindowBinding(window, out var binding), Is.True);
                 Assert.That(binding.Kind, Is.EqualTo(PlatformNativeSurfaceKind.X11));
                 Assert.That(binding.NativeDisplayOrInstance, Is.Not.Zero);

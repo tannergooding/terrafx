@@ -119,14 +119,14 @@ dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --confi
 dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Release
 ```
 
-In the WSLg shell configured below, the same project runs the explicit X11 owner witnesses when `DISPLAY` is available. They verify an invisible native window's pixel metrics and private X11 binding, send duplicate synthetic `WM_DELETE_WINDOW` messages to check close-request deduplication, and exercise RandR 1.5 monitor enumeration/selection when the X server exposes it. The synthetic message does not qualify behavior from a real window manager:
+In the WSLg shell configured below, the same project runs the explicit X11 owner witnesses when `DISPLAY` is available. They verify an invisible native window's pixel metrics/private binding, validate reported `Xft.dpi` conversion or the documented assumed-96-DPI fallback, send duplicate synthetic `WM_DELETE_WINDOW` messages to check close-request deduplication, and exercise RandR 1.5 monitor enumeration/selection when the X server exposes it. The current WSLg lane has no `Xft.dpi` resource, so it observes the fallback; the synthetic message does not qualify behavior from a real window manager:
 
 ```bash
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Debug "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
-This does not qualify Linux input, X11 settings-based scale, clipboard, Wayland, WSI, or Interactive hosting.
+This does not qualify Linux input, a live DPI-setting change, clipboard, Wayland, WSI, or Interactive hosting.
 
 On Windows 11 x64, run the hidden-HWND owner witness for live client metrics, PMv2 scale/provenance, native resize refresh and snapshot replacement, pre-surface zero epochs, and stale-handle rejection:
 

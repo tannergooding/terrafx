@@ -3,7 +3,9 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Text;
 using TerraFX;
 using ClipboardTextResult = TerraFX.Platform.ClipboardStatus;
 
@@ -13,6 +15,10 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 {
     private const int ClientMessageEvent = 33;
     private const int DestroyNotifyEvent = 17;
+    // Bound the root-window resource property before parsing it on the Platform owner.
+    private const int MaximumResourceManagerBytes = 64 * 1024;
+    private const long PropertyChangeMask = 1L << 22;
+    private const int PropertyNotifyEvent = 28;
     private const int RandrNotifyEventOffset = 1;
     private const int RandrScreenChangeEventOffset = 0;
     private const long StructureNotifyMask = 1L << 17;
@@ -23,10 +29,12 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     private readonly List<WindowHandle> _closeRequests = [];
     private readonly ClipboardServiceStatus _clipboardStatus;
     private readonly nint _display;
+    private float? _effectiveDpi;
     private readonly uint _ownerId;
     private readonly int _ownerThreadId;
     private readonly int _randrEventBase;
     private readonly bool _randrMonitorInfoAvailable;
+    private readonly nuint _resourceManagerAtom;
     private readonly nuint _rootWindow;
     private readonly nuint _wmDeleteWindowAtom;
     private readonly nuint _wmProtocolsAtom;
@@ -58,6 +66,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             var rootWindow = X11Native.XRootWindow(display, screen);
             var wmProtocolsAtom = X11Native.XInternAtom(display, "WM_PROTOCOLS", onlyIfExists: 0);
             var wmDeleteWindowAtom = X11Native.XInternAtom(display, "WM_DELETE_WINDOW", onlyIfExists: 0);
+            var resourceManagerAtom = X11Native.XInternAtom(display, "RESOURCE_MANAGER", onlyIfExists: 0);
             var randrEventBase = -1;
             var randrErrorBase = 0;
             var randrMajorVersion = 1;
@@ -67,9 +76,15 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 
             if ((rootWindow == 0)
                 || (wmProtocolsAtom == 0)
-                || (wmDeleteWindowAtom == 0))
+                || (wmDeleteWindowAtom == 0)
+                || (resourceManagerAtom == 0))
             {
-                throw new InvalidOperationException("X11 did not provide the required default-screen or window-manager atoms.");
+                throw new InvalidOperationException("X11 did not provide the required default-screen, window-manager, or resource-manager atoms.");
+            }
+
+            if (X11Native.XSelectInput(display, rootWindow, checked((nint)PropertyChangeMask)) == 0)
+            {
+                throw new InvalidOperationException("X11 rejected resource-manager property notifications on its root window.");
             }
 
             if ((X11Native.XRRQueryExtension(display, &randrEventBase, &randrErrorBase) != 0)
@@ -102,6 +117,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             _rootWindow = rootWindow;
             _randrEventBase = randrEventsAvailable ? randrEventBase : -1;
             _randrMonitorInfoAvailable = randrMonitorInfoAvailable;
+            _resourceManagerAtom = resourceManagerAtom;
             _wmProtocolsAtom = wmProtocolsAtom;
             _wmDeleteWindowAtom = wmDeleteWindowAtom;
         }
@@ -116,6 +132,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         _clipboardStatus = (clipboardPolicy is ClipboardServicePolicy.Optional)
             ? ClipboardServiceStatus.Unsupported
             : ClipboardServiceStatus.NotRequested;
+        RefreshDpiSettings();
     }
 
     public PlatformServiceStatus AudioStatus
@@ -174,6 +191,51 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         }
     }
 
+    internal static float? ParseXftDpiSettings(string resourceManager)
+    {
+        ArgumentNullException.ThrowIfNull(resourceManager);
+        resourceManager = resourceManager.TrimEnd('\0');
+        float? effectiveDpi = null;
+
+        foreach (var line in resourceManager.Split('\n'))
+        {
+            var entry = line.AsSpan().Trim();
+
+            if (entry.IsEmpty || (entry[0] == '!'))
+            {
+                continue;
+            }
+
+            var separatorIndex = entry.IndexOfAny(':', '=');
+
+            if ((separatorIndex < 0)
+                || !entry[..separatorIndex].Trim().Equals("Xft.dpi".AsSpan(), StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var value = entry[(separatorIndex + 1)..].Trim();
+
+            if (!float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var dpi)
+                || !float.IsFinite(dpi)
+                || (dpi <= 0.0f))
+            {
+                throw new InvalidOperationException("The X11 Xft.dpi resource is not a finite positive DPI value.");
+            }
+
+            var scale = dpi / WindowedDpi;
+
+            if (!float.IsFinite(scale) || (scale <= 0.0f))
+            {
+                throw new InvalidOperationException("The X11 Xft.dpi resource produces an invalid content scale.");
+            }
+
+            effectiveDpi = dpi;
+        }
+
+        return effectiveDpi;
+    }
+
     private static int GetWindowExtent(float logicalExtent, string parameterName)
     {
         var extent = Math.Round(logicalExtent, MidpointRounding.ToEven);
@@ -184,6 +246,66 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         }
 
         return checked((int)extent);
+    }
+
+    private static float? ReadXftDpiSettings(nint display, nuint rootWindow, nuint resourceManagerAtom)
+    {
+        var actualType = (nuint)0;
+        var actualFormat = 0;
+        var itemCount = (nuint)0;
+        var bytesAfter = (nuint)0;
+        nint propertyValue = 0;
+        var status = X11Native.XGetWindowProperty(
+            display,
+            rootWindow,
+            resourceManagerAtom,
+            longOffset: 0,
+            longLength: checked((nint)(MaximumResourceManagerBytes / sizeof(int))),
+            delete: 0,
+            requestedType: 0,
+            &actualType,
+            &actualFormat,
+            &itemCount,
+            &bytesAfter,
+            &propertyValue);
+
+        try
+        {
+            if (status != 0)
+            {
+                throw new InvalidOperationException("X11 could not read the root resource-manager property.");
+            }
+
+            if ((actualType == 0) && (itemCount == 0) && (bytesAfter == 0) && (propertyValue == 0))
+            {
+                return null;
+            }
+
+            if ((actualType == 0)
+                || (actualFormat != 8)
+                || (bytesAfter != 0)
+                || (itemCount > checked((nuint)MaximumResourceManagerBytes))
+                || ((itemCount != 0) && (propertyValue == 0)))
+            {
+                throw new InvalidOperationException("The X11 resource-manager property has an unsupported or unbounded representation.");
+            }
+
+            if (itemCount == 0)
+            {
+                return null;
+            }
+
+            var resourceBytes = new ReadOnlySpan<byte>((void*)propertyValue, checked((int)itemCount));
+            var resourceManager = Encoding.ASCII.GetString(resourceBytes);
+            return ParseXftDpiSettings(resourceManager);
+        }
+        finally
+        {
+            if (propertyValue != 0)
+            {
+                _ = X11Native.XFree(propertyValue);
+            }
+        }
     }
 
     private static void SetWindowSizeHints(nint display, nuint window, WindowOptions options, int width, int height)
@@ -469,14 +591,17 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         }
 
         var pixelSize = new PixelSize(checked((int)width), checked((int)height));
-        var logicalSize = new TerraFX.Numerics.Vector2(width, height);
+        var effectiveDpi = _effectiveDpi;
+        var scale = (effectiveDpi is float dpi) ? dpi / WindowedDpi : 1.0f;
+        var contentScale = new TerraFX.Numerics.Vector2(scale, scale);
+        var logicalSize = new TerraFX.Numerics.Vector2(width / scale, height / scale);
         return new PlatformNativeWindowMetrics(
             logicalSize,
             pixelSize,
-            new TerraFX.Numerics.Vector2(1.0f, 1.0f),
-            WindowedDpi,
-            DpiSource.Unknown,
-            DpiConfidence.Assumed96Dpi);
+            contentScale,
+            effectiveDpi,
+            effectiveDpi.HasValue ? DpiSource.X11Settings : DpiSource.Unknown,
+            effectiveDpi.HasValue ? DpiConfidence.Reported : DpiConfidence.Assumed96Dpi);
     }
 
     public void Pump()
@@ -492,7 +617,13 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
                 throw new InvalidOperationException("X11 failed while draining its owner event queue.");
             }
 
-            if ((_randrEventBase >= 0)
+            if ((nativeEvent.Type == PropertyNotifyEvent)
+                && (nativeEvent.Property.Window == _rootWindow)
+                && (nativeEvent.Property.Atom == _resourceManagerAtom))
+            {
+                RefreshDpiSettings();
+            }
+            else if ((_randrEventBase >= 0)
                 && ((nativeEvent.Type == (_randrEventBase + RandrScreenChangeEventOffset))
                     || (nativeEvent.Type == (_randrEventBase + RandrNotifyEventOffset))))
             {
@@ -650,6 +781,12 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         }
     }
 
+    private void RefreshDpiSettings()
+    {
+        EnsureActiveOwnerThread();
+        _effectiveDpi = ReadXftDpiSettings(_display, _rootWindow, _resourceManagerAtom);
+    }
+
     private void SetWindowTitle(nuint window, string title)
     {
         _ = X11Native.XStoreName(_display, window, title);
@@ -781,6 +918,21 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             uint* borderWidth,
             uint* depth);
 
+        [LibraryImport("libX11.so.6", EntryPoint = "XGetWindowProperty")]
+        internal static partial int XGetWindowProperty(
+            nint display,
+            nuint window,
+            nuint property,
+            nint longOffset,
+            nint longLength,
+            int delete,
+            nuint requestedType,
+            nuint* actualType,
+            int* actualFormat,
+            nuint* itemCount,
+            nuint* bytesAfter,
+            nint* propertyValue);
+
         [LibraryImport("libX11.so.6", EntryPoint = "XInternAtom", StringMarshalling = StringMarshalling.Utf8)]
         internal static partial nuint XInternAtom(nint display, string name, int onlyIfExists);
 
@@ -886,6 +1038,22 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 
             [FieldOffset(0)]
             internal DestroyWindowEvent Destroy;
+
+            [FieldOffset(0)]
+            internal PropertyEvent Property;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct PropertyEvent
+        {
+            internal int Type;
+            internal nuint Serial;
+            internal int SendEvent;
+            internal nint Display;
+            internal nuint Window;
+            internal nuint Atom;
+            internal nuint Time;
+            internal int State;
         }
 
         [StructLayout(LayoutKind.Sequential)]
