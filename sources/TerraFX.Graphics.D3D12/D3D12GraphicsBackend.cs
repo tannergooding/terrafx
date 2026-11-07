@@ -34,17 +34,20 @@ public static unsafe class D3D12GraphicsBackend
         private const int DxgiErrorNotFound = unchecked((int)0x887A0002);
         private const uint MaximumD3D12MultisampleCount = 32;
         private readonly Func<long, long>? _completedFenceValueOverride;
+        private readonly Action<GraphicsGraphSubmission>? _graphSubmissionObserver;
         private readonly Func<nint, uint, uint>? _graphWaitForSingleObject;
         private readonly Func<nint, uint, uint>? _waitForSingleObject;
 
         internal D3D12BackendFactory(
             Func<nint, uint, uint>? waitForSingleObject = null,
             Func<nint, uint, uint>? graphWaitForSingleObject = null,
-            Func<long, long>? completedFenceValueOverride = null)
+            Func<long, long>? completedFenceValueOverride = null,
+            Action<GraphicsGraphSubmission>? graphSubmissionObserver = null)
         {
             _waitForSingleObject = waitForSingleObject;
             _graphWaitForSingleObject = graphWaitForSingleObject;
             _completedFenceValueOverride = completedFenceValueOverride;
+            _graphSubmissionObserver = graphSubmissionObserver;
         }
 
         public GraphicsBackend Backend => GraphicsBackend.D3D12;
@@ -749,7 +752,8 @@ public static unsafe class D3D12GraphicsBackend
                                 frameSlotCount,
                                 _waitForSingleObject,
                                 _graphWaitForSingleObject,
-                                _completedFenceValueOverride);
+                                _completedFenceValueOverride,
+                                _graphSubmissionObserver);
                             device = null;
                             adapter3 = null;
                             return backendDevice;
@@ -805,6 +809,7 @@ public static unsafe class D3D12GraphicsBackend
             private readonly long[] _graphFrameFenceValues;
             private readonly nint[] _graphFrameRenderTargetHeaps;
             private readonly int _graphFrameSlotCount;
+            private readonly Action<GraphicsGraphSubmission>? _graphSubmissionObserver;
             private readonly Func<nint, uint, uint>? _graphWaitForSingleObject;
             private int _liveDescriptorSetCount;
             private readonly int _ownerThreadId = Environment.CurrentManagedThreadId;
@@ -830,7 +835,8 @@ public static unsafe class D3D12GraphicsBackend
                 int frameSlotCount,
                 Func<nint, uint, uint>? waitForSingleObject,
                 Func<nint, uint, uint>? graphWaitForSingleObject,
-                Func<long, long>? completedFenceValueOverride)
+                Func<long, long>? completedFenceValueOverride,
+                Action<GraphicsGraphSubmission>? graphSubmissionObserver)
             {
                 ArgumentNullException.ThrowIfNull(capabilities);
 
@@ -847,6 +853,7 @@ public static unsafe class D3D12GraphicsBackend
                 _graphFrameFenceValues = new long[frameSlotCount];
                 _graphFrameRenderTargetHeaps = new nint[frameSlotCount];
                 _completedFenceValueOverride = completedFenceValueOverride;
+                _graphSubmissionObserver = graphSubmissionObserver;
                 _graphWaitForSingleObject = graphWaitForSingleObject;
                 _waitForSingleObject = waitForSingleObject;
             }
@@ -1753,6 +1760,7 @@ public static unsafe class D3D12GraphicsBackend
                 ArgumentNullException.ThrowIfNull(submission);
                 submission.ValidateOffscreenRasterSubmission();
                 EnsureOwnerThread();
+                _graphSubmissionObserver?.Invoke(submission);
                 var target = submission.OffscreenColorTarget.ResourceOwner.BackendResource as D3D12BackendTexture
                     ?? throw new ArgumentException("The graph output target is not a D3D12 texture.", nameof(submission));
                 ObjectDisposedException.ThrowIf(target.IsDisposed, nameof(submission));

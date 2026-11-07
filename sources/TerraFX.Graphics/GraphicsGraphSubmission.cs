@@ -361,6 +361,35 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
+        var offscreenTargetCopySourceAccess = false;
+
+        foreach (var access in Accesses)
+        {
+            if (access.IsTexture
+                && (access.ResourceId == targetResourceId)
+                && (access.RequiredState == GraphResourceState.CopySource)
+                && !access.IsWrite)
+            {
+                if (!access.ContentsValid)
+                {
+                    throw new NotSupportedException("The offscreen color target must have initialized contents before serving as a graph copy source.");
+                }
+
+                offscreenTargetCopySourceAccess = true;
+            }
+        }
+
+        if (offscreenTargetCopySourceAccess)
+        {
+            var offscreenTargetImport = TextureImports[0];
+
+            if (((offscreenTargetImport.Version.Description.Usage & TextureUsage.CopySource) == 0)
+                || !copySourceTextureImports.TryAdd(targetResourceId, offscreenTargetImport))
+            {
+                throw new NotSupportedException("The offscreen color target requires copy-source usage before it can be copied.");
+            }
+        }
+
         var aliasedResources = new HashSet<ulong>();
 
         foreach (var aliasingBarrier in AliasingBarriers)
@@ -1568,7 +1597,9 @@ internal sealed class GraphicsGraphSubmission
 
         foreach (var access in Accesses)
         {
-            if (access.IsTexture && (access.ResourceId == targetResourceId))
+            if (access.IsTexture
+                && (access.ResourceId == targetResourceId)
+                && (access.RequiredState != GraphResourceState.CopySource))
             {
                 continue;
             }
@@ -1936,7 +1967,8 @@ internal sealed class GraphicsGraphSubmission
 
         if (copySourceTextureResourcesUsed.Count != copySourceTextureImports.Count)
         {
-            throw new NotSupportedException("Every imported copy-source texture must be read by a graph copy command.");
+            throw new NotSupportedException(
+                $"Every imported copy-source texture must be read by a graph copy command ({copySourceTextureResourcesUsed.Count} of {copySourceTextureImports.Count} were used).");
         }
 
         if (copyDestinationTextureResourcesUsed.Count != copyDestinationTextureImports.Count)

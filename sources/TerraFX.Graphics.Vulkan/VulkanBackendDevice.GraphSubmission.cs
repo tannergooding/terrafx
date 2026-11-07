@@ -521,6 +521,17 @@ internal sealed unsafe partial class VulkanBackendDevice
                                 ref currentLayout,
                                 ref currentStageMask,
                                 ref currentAccessMask);
+
+                            if (copyTextureScopes.TryGetValue(targetResourceId, out var targetCopyTextureScope))
+                            {
+                                copyTextureScopes[targetResourceId] = (
+                                    targetCopyTextureScope.Texture,
+                                    targetCopyTextureScope.Subresource,
+                                    currentLayout,
+                                    currentStageMask,
+                                    currentAccessMask,
+                                    targetCopyTextureScope.IsDestination);
+                            }
                         }
                         else if ((sampledTexture is not null)
                             && (transition.ResourceId == sampledTextureResourceId))
@@ -620,6 +631,20 @@ internal sealed unsafe partial class VulkanBackendDevice
                             var destinationSubresource = copyTextureScopes[destinationVersion.ResourceId].Subresource;
                             RecordGraphCopyImageBarrier(sourceVersion.ResourceId, isDestination: false);
                             RecordGraphCopyImageBarrier(destinationVersion.ResourceId, isDestination: true);
+
+                            if (sourceVersion.ResourceId == targetResourceId)
+                            {
+                                var (
+                                    _,
+                                    _,
+                                    targetCopyTextureLayout,
+                                    targetCopyTextureStageMask,
+                                    targetCopyTextureAccessMask,
+                                    _) = copyTextureScopes[targetResourceId];
+                                currentLayout = targetCopyTextureLayout;
+                                currentStageMask = targetCopyTextureStageMask;
+                                currentAccessMask = targetCopyTextureAccessMask;
+                            }
 
                             var depth = GraphicsDevice.GetTextureSubresourceExtent(
                                 sourceVersion.Description,
@@ -1022,14 +1047,15 @@ internal sealed unsafe partial class VulkanBackendDevice
                 throw new InvalidOperationException("The compiled graph did not transition its Frame storage image to GENERAL.");
             }
 
-            foreach (var (
-                _,
-                _,
-                copyTextureLayout,
-                _,
-                _,
-                _) in copyTextureScopes.Values)
+            foreach (var (resourceId, copyTextureScope) in copyTextureScopes)
             {
+                if (resourceId == targetResourceId)
+                {
+                    continue;
+                }
+
+                var copyTextureLayout = copyTextureScope.Layout;
+
                 if (copyTextureLayout is not (
                     VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
                     or VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))

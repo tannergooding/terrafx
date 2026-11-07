@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.IO;
 using System.Security.Cryptography;
@@ -41,6 +42,23 @@ internal sealed partial class EngineHostOptionsTests
             overlapTransientBufferLifetimes: false,
             holdGraphCompletion: true,
             graphicsFrameSlotCount: 2);
+
+    [Test]
+    public Task D3D12GraphSubmissionRetainsTransientAliasGroupsPerSlot()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.D3D12,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: true,
+            graphicsFrameSlotCount: 2,
+            useTransientCopyAliasing: true);
 
     [Test]
     public Task PlansOverlappingTransientTextureLifetimesSeparatelyOnVulkan()
@@ -213,6 +231,23 @@ internal sealed partial class EngineHostOptionsTests
             holdGraphCompletion: false,
             useTextureCopy: true);
 
+    [Test]
+    public Task SubmitsTransientCopyAliasGroupsOnVulkan()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.Vulkan,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            graphicsFrameSlotCount: 2,
+            useTransientCopyAliasing: true);
+
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
     public Task SubmitsTransientTextureCopyGraphAndReadsBackAsync(GraphicsBackend backend)
@@ -254,7 +289,8 @@ internal sealed partial class EngineHostOptionsTests
         bool useMultipleTextureCopies = false,
         bool usePartialTextureCopy = false,
         bool overlapTransientTextureLifetimes = false,
-        int graphicsFrameSlotCount = 3)
+        int graphicsFrameSlotCount = 3,
+        bool useTransientCopyAliasing = false)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -334,6 +370,7 @@ internal sealed partial class EngineHostOptionsTests
         var holdFenceWaitCount = 0;
         var enteredFenceWaitCount = 0;
         var completedGraphFenceWaitCount = 0;
+        var transientGraphAllocationLeases = new ConcurrentQueue<ImmutableArray<GraphicsResourceAllocationLease>>();
 
         uint WaitForGraphFence(nint fenceEvent, uint timeout)
         {
@@ -370,11 +407,34 @@ internal sealed partial class EngineHostOptionsTests
             return continueFenceWait.IsSet ? completedFence : 0;
         }
 
+        void ObserveGraphSubmission(GraphicsGraphSubmission submission)
+        {
+            var allocationLeases = ImmutableArray.CreateBuilder<GraphicsResourceAllocationLease>();
+
+            foreach (var textureImport in submission.TextureImports)
+            {
+                if (!textureImport.IsTransient)
+                {
+                    continue;
+                }
+
+                var allocationLease = textureImport.Texture.ResourceOwner.AllocationLease
+                    ?? throw new InvalidOperationException("A transient graph texture lost its allocation lease before native submission.");
+                allocationLeases.Add(allocationLease);
+            }
+
+            if (allocationLeases.Count > 0)
+            {
+                transientGraphAllocationLeases.Enqueue(allocationLeases.ToImmutable());
+            }
+        }
+
         var graphicsRegistration = backend switch {
             GraphicsBackend.D3D12 when holdGraphCompletion => new GraphicsBackendRegistration(
                 new D3D12GraphicsBackend.D3D12BackendFactory(
                     graphWaitForSingleObject: WaitForGraphFence,
-                    completedFenceValueOverride: OverrideCompletedFence)),
+                    completedFenceValueOverride: OverrideCompletedFence,
+                    graphSubmissionObserver: useTransientCopyAliasing ? ObserveGraphSubmission : null)),
             GraphicsBackend.D3D12 => D3D12GraphicsBackend.CreateRegistration(),
             GraphicsBackend.Vulkan => VulkanGraphicsBackend.CreateRegistration(),
             _ => throw new ArgumentOutOfRangeException(nameof(backend)),
@@ -538,6 +598,22 @@ internal sealed partial class EngineHostOptionsTests
                     new TextureDataLayout(targetExtent.Width * 4, initialTargetBytes.Length))
                     .ConfigureAwait(false);
                 Assert.That(uploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+            }
+
+            if (useTransientCopyAliasing)
+            {
+                copyDestinationTexture = await graphicsDevice.CreateTextureAsync(
+                    new TextureDescription(
+                        TextureDimension.Dimension2D,
+                        targetExtent.Width,
+                        targetExtent.Height,
+                        depth: 1,
+                        arrayLayers: 1,
+                        mipLevels: 1,
+                        TextureFormat.Rgba8Unorm,
+                        TextureUsage.CopySource | TextureUsage.CopyDestination,
+                        $"m04-{backend}-slot-transient-copy-destination"))
+                    .ConfigureAwait(false);
             }
 
             if (useTextureCopy)
@@ -1002,7 +1078,11 @@ internal sealed partial class EngineHostOptionsTests
                 renderSnapshot,
                 target);
             var sampleRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
-            var copyTextureRange = (useTransientTextureCopy || useTransientTextureAliasing || usePartialTextureCopy)
+            var copyTextureRange = (
+                useTransientTextureCopy
+                || useTransientTextureAliasing
+                || usePartialTextureCopy
+                || useTransientCopyAliasing)
                 ? new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)
                 : new GraphTextureRange(1, 1, 1, 1, TextureAspect.Color);
             GraphBufferVersion? frameUniformVersion = null;
@@ -1032,6 +1112,11 @@ internal sealed partial class EngineHostOptionsTests
             GraphTextureVersion? transientTextureWriteVersion = null;
             GraphTextureVersion? secondTransientTextureInitialVersion = null;
             GraphTextureVersion? secondTransientTextureWriteVersion = null;
+            GraphTextureVersion? transientSlotSourceVersion = null;
+            GraphTextureVersion? transientSlotA = null;
+            GraphTextureVersion? transientSlotB = null;
+            GraphTextureVersion? transientSlotDestinationA = null;
+            GraphTextureVersion? transientSlotDestinationB = null;
             GraphTextureVersion? firstTransientTextureDestinationVersion = null;
             GraphTextureVersion? storageImageInitialVersion = null;
             GraphTextureVersion? storageImageWriteVersion = null;
@@ -1354,6 +1439,42 @@ internal sealed partial class EngineHostOptionsTests
                     && (copyDestinationTextureWriteVersion is GraphTextureVersion selectedTextureDestination))
                 {
                     recorder.CopyTexture(selectedTransientTexture, selectedTextureDestination);
+                }
+            }
+
+            void RecordTransientSlotInitializeA(scoped ref CommandRecorder recorder)
+            {
+                if ((transientSlotSourceVersion is GraphTextureVersion selectedSource)
+                    && (transientSlotA is GraphTextureVersion selectedDestination))
+                {
+                    recorder.CopyTexture(selectedSource, selectedDestination);
+                }
+            }
+
+            void RecordTransientSlotCopyA(scoped ref CommandRecorder recorder)
+            {
+                if ((transientSlotA is GraphTextureVersion selectedSource)
+                    && (transientSlotDestinationA is GraphTextureVersion selectedDestination))
+                {
+                    recorder.CopyTexture(selectedSource, selectedDestination);
+                }
+            }
+
+            void RecordTransientSlotInitializeB(scoped ref CommandRecorder recorder)
+            {
+                if ((transientSlotSourceVersion is GraphTextureVersion selectedSource)
+                    && (transientSlotB is GraphTextureVersion selectedDestination))
+                {
+                    recorder.CopyTexture(selectedSource, selectedDestination);
+                }
+            }
+
+            void RecordTransientSlotCopyB(scoped ref CommandRecorder recorder)
+            {
+                if ((transientSlotB is GraphTextureVersion selectedSource)
+                    && (transientSlotDestinationB is GraphTextureVersion selectedDestination))
+                {
+                    recorder.CopyTexture(selectedSource, selectedDestination);
                 }
             }
 
@@ -1984,6 +2105,99 @@ internal sealed partial class EngineHostOptionsTests
                 AttachmentStoreAction.Store,
                 renderSnapshot.Cameras[0].ClearColor);
 
+            if (useTransientCopyAliasing)
+            {
+                var transientDescription = new TextureDescription(
+                    TextureDimension.Dimension2D,
+                    targetExtent.Width,
+                    targetExtent.Height,
+                    depth: 1,
+                    arrayLayers: 1,
+                    mipLevels: 1,
+                    TextureFormat.Rgba8Unorm,
+                    TextureUsage.CopySource | TextureUsage.CopyDestination,
+                    debugName: $"m04-{backend}-slot-transient-copy");
+                var transientRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+                transientSlotSourceVersion = outputVersion;
+                var firstTransientTexture = graph.CreateTransientTexture(transientDescription);
+                var firstCopyInputPass = graph.AddCopyPass(
+                    new RenderPassDescription(
+                        "offscreen-slot-transient-copy-a-in",
+                        checked(rasterPredecessors.Length + 1),
+                        [pass],
+                        hasExternalSideEffects: true),
+                    RecordTransientSlotInitializeA);
+                graph.ReadTexture(
+                    firstCopyInputPass,
+                    outputVersion,
+                    GraphTextureUsage.CopySource,
+                    transientRange);
+                transientSlotA = graph.WriteTexture(
+                    firstCopyInputPass,
+                    firstTransientTexture,
+                    GraphTextureUsage.CopyDestination,
+                    transientRange);
+
+                var firstCopyOutputPass = graph.AddCopyPass(
+                    new RenderPassDescription(
+                        "offscreen-slot-transient-copy-a-out",
+                        checked(rasterPredecessors.Length + 2),
+                        [firstCopyInputPass],
+                        hasExternalSideEffects: true),
+                    RecordTransientSlotCopyA);
+                graph.ReadTexture(
+                    firstCopyOutputPass,
+                    transientSlotA
+                        ?? throw new InvalidOperationException("The first transient copy pass omitted its destination."),
+                    GraphTextureUsage.CopySource,
+                    transientRange);
+                transientSlotDestinationA = graph.WriteTexture(
+                    firstCopyOutputPass,
+                    copyDestinationTextureInitialVersion
+                        ?? throw new InvalidOperationException("The slot-transient copy test has no imported copy destination."),
+                    GraphTextureUsage.CopyDestination,
+                    transientRange);
+
+                var secondTransientTexture = graph.CreateTransientTexture(transientDescription);
+                var secondCopyInputPass = graph.AddCopyPass(
+                    new RenderPassDescription(
+                        "offscreen-slot-transient-copy-b-in",
+                        checked(rasterPredecessors.Length + 3),
+                        [firstCopyOutputPass],
+                        hasExternalSideEffects: true),
+                    RecordTransientSlotInitializeB);
+                graph.ReadTexture(
+                    secondCopyInputPass,
+                    outputVersion,
+                    GraphTextureUsage.CopySource,
+                    transientRange);
+                transientSlotB = graph.WriteTexture(
+                    secondCopyInputPass,
+                    secondTransientTexture,
+                    GraphTextureUsage.CopyDestination,
+                    transientRange);
+
+                var secondCopyOutputPass = graph.AddCopyPass(
+                    new RenderPassDescription(
+                        "offscreen-slot-transient-copy-b-out",
+                        checked(rasterPredecessors.Length + 4),
+                        [secondCopyInputPass],
+                        hasExternalSideEffects: true),
+                    RecordTransientSlotCopyB);
+                graph.ReadTexture(
+                    secondCopyOutputPass,
+                    transientSlotB
+                        ?? throw new InvalidOperationException("The second transient copy pass omitted its destination."),
+                    GraphTextureUsage.CopySource,
+                    transientRange);
+                transientSlotDestinationB = graph.WriteTexture(
+                    secondCopyOutputPass,
+                    transientSlotDestinationA
+                        ?? throw new InvalidOperationException("The first transient copy output omitted its destination."),
+                    GraphTextureUsage.CopyDestination,
+                    transientRange);
+            }
+
             if (useStorageResources)
             {
                 var secondPass = graph.AddRasterPass(
@@ -2082,6 +2296,13 @@ internal sealed partial class EngineHostOptionsTests
             var plan = compileResponse.Plan
                 ?? throw new InvalidOperationException("The compiled graph response omitted its plan.");
 
+            if (useTransientCopyAliasing)
+            {
+                Assert.That(plan.TransientTextureGroups, Has.Length.EqualTo(1));
+                Assert.That(plan.TransientTextureGroups[0], Has.Length.EqualTo(2));
+                Assert.That(plan.TransientTextureAliasingBarriers, Has.Length.EqualTo(1));
+            }
+
             if (useTransientBufferAliasing)
             {
                 if (overlapTransientBufferLifetimes)
@@ -2139,6 +2360,24 @@ internal sealed partial class EngineHostOptionsTests
                     Is.True,
                     $"Graph waiters={Volatile.Read(ref enteredFenceWaitCount)}; first={submissionTask.Status}; "
                     + $"second={secondSubmissionTask.Status}; second exception={secondSubmissionTask.Exception}");
+                var observedTransientAllocationGroups = transientGraphAllocationLeases.ToArray();
+
+                if (useTransientCopyAliasing)
+                {
+                    Assert.That(observedTransientAllocationGroups, Has.Length.EqualTo(2));
+
+                    foreach (var allocationGroup in observedTransientAllocationGroups)
+                    {
+                        Assert.That(allocationGroup, Has.Length.EqualTo(2));
+                        Assert.That(allocationGroup[1], Is.SameAs(allocationGroup[0]));
+                        Assert.That(allocationGroup[0].IsReleased, Is.False);
+                    }
+
+                    Assert.That(
+                        observedTransientAllocationGroups[0][0],
+                        Is.Not.SameAs(observedTransientAllocationGroups[1][0]));
+                }
+
                 Assert.That(submissionTask.IsCompleted, Is.False);
                 Assert.That(secondSubmissionTask.IsCompleted, Is.False);
                 using var slotWaitCancellation = new CancellationTokenSource();
@@ -2172,6 +2411,26 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(
                     submittedTargetOwner.LastSubmittedQueueFence,
                     Is.EqualTo(Math.Max(receipt.CompletedFence, queuedReceipt.CompletedFence)));
+
+                if (useTransientCopyAliasing)
+                {
+                    Assert.That(
+                        SpinWait.SpinUntil(() => {
+                            foreach (var allocationGroup in observedTransientAllocationGroups)
+                            {
+                                foreach (var allocationLease in allocationGroup)
+                                {
+                                    if (!allocationLease.IsReleased)
+                                    {
+                                        return false;
+                                    }
+                                }
+                            }
+
+                            return true;
+                        }, TimeSpan.FromSeconds(5)),
+                        Is.True);
+                }
             }
             else
             {
@@ -2240,6 +2499,38 @@ internal sealed partial class EngineHostOptionsTests
                         checked((int)(copyTextureReadback.Width * 4 * y)),
                         checked((int)(copyTextureReadback.Width * 4)));
                     Assert.That(actualRow.ToArray(), Is.EqualTo(expectedRow.ToArray()));
+                }
+
+                if (useTransientCopyAliasing)
+                {
+                    var slotCopyDestinationTexture = copyDestinationTexture
+                        ?? throw new InvalidOperationException("The slot-transient copy test has no imported destination texture.");
+                    using var slotCopyReadback = await graphicsDevice.ReadbackTextureAsync(
+                        slotCopyDestinationTexture,
+                        new TextureSubresource(0, 0, TextureAspect.Color)).ConfigureAwait(false);
+                    var slotPaddedBytes = new byte[checked((int)slotCopyReadback.ByteLength)];
+
+                    using (var slotReadLease = slotCopyReadback.AcquireReadLease())
+                    {
+                        var slotCopyAction = new ReadbackCopyAction(slotPaddedBytes);
+                        slotReadLease.UseWindow(0, slotPaddedBytes.Length, ref slotCopyAction);
+                    }
+
+                    var slotCenterRowOffset = checked((int)(slotCopyReadback.RowPitch * (slotCopyReadback.Height / 2)));
+                    var slotCenterColumnOffset = checked(slotCopyReadback.Width / 2 * sizeof(uint));
+                    var slotCenterPixelOffset = checked(slotCenterRowOffset + slotCenterColumnOffset);
+                    var slotLastPixelOffset = checked((int)(slotCopyReadback.RowPitch * (slotCopyReadback.Height - 1))
+                        + ((slotCopyReadback.Width - 1) * sizeof(uint)));
+
+                    foreach (var pixelOffset in new[] { 0, slotCenterPixelOffset, slotLastPixelOffset })
+                    {
+                        for (var channel = 0; channel < 3; channel++)
+                        {
+                            Assert.That(slotPaddedBytes[pixelOffset + channel], Is.InRange(127, 129));
+                        }
+
+                        Assert.That(slotPaddedBytes[pixelOffset + 3], Is.EqualTo(255));
+                    }
                 }
 
                 if (useMultipleTextureCopies)
