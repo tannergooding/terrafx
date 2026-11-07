@@ -2159,6 +2159,7 @@ internal sealed partial class EngineHostOptionsTests
                 target = null;
                 Assert.That(submittedTargetOwner.HasActiveUses, Is.True);
                 Assert.That(submittedTargetOwner.IsRetirementRequested, Is.True);
+                Assert.That(submittedTargetOwner.LastSubmittedQueueFence, Is.GreaterThan(0));
 
                 continueFenceWait.Set();
                 receipt = await submissionTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -2168,6 +2169,9 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(queuedReceipt.CompletedFence, Is.Not.EqualTo(receipt.CompletedFence));
                 Assert.That(Volatile.Read(ref completedGraphFenceWaitCount), Is.EqualTo(2));
                 Assert.That(submittedTargetOwner.HasActiveUses, Is.False);
+                Assert.That(
+                    submittedTargetOwner.LastSubmittedQueueFence,
+                    Is.EqualTo(Math.Max(receipt.CompletedFence, queuedReceipt.CompletedFence)));
             }
             else
             {

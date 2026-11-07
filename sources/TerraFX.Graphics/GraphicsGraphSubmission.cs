@@ -213,6 +213,14 @@ internal sealed class GraphicsGraphSubmission
         }
     }
 
+    internal void RecordSubmittedQueueFence(long fenceValue)
+    {
+        foreach (var commandList in RecordedPassCommandLists)
+        {
+            commandList.RecordSubmittedQueueFence(fenceValue);
+        }
+    }
+
     internal void ValidateOffscreenRasterSubmission()
     {
         if ((BufferImports.Length > 8)

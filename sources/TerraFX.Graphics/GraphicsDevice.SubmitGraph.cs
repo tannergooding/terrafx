@@ -400,6 +400,13 @@ public sealed partial class GraphicsDevice
             var submittedFence = backendDevice.SubmitGraph(_submission);
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(submittedFence);
             Volatile.Write(ref _submittedFence, submittedFence);
+
+            foreach (var useLease in _useLeases)
+            {
+                useLease.RecordSubmittedQueueFence(submittedFence);
+            }
+
+            _submission.RecordSubmittedQueueFence(submittedFence);
             _submission.RecordSubmittedOwnerStates();
             device.AddPendingGraphSubmission(this, backendDevice);
         }

@@ -1484,6 +1484,7 @@ internal sealed class GraphicsBufferTransferTests
             Assert.That(receipt.Status, Is.EqualTo(UploadStatus.Ready));
             Assert.That(receipt.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
             Assert.That(receipt.CompletedFence, Is.EqualTo(1));
+            Assert.That(buffer.ResourceOwner.LastSubmittedQueueFence, Is.EqualTo(receipt.CompletedFence));
 
             (var uploadedState, var uploadedContentsValid, var lastUseSequence, var isIdle) =
                 buffer.ResourceOwner.CaptureGraphImportState(new GraphBufferRange(2, 4));
@@ -1747,6 +1748,7 @@ internal sealed class GraphicsBufferTransferTests
 
             Assert.That(receipt.Status, Is.EqualTo(UploadStatus.Ready));
             Assert.That(receipt.CompletedFence, Is.EqualTo(1));
+            Assert.That(texture.ResourceOwner.LastSubmittedQueueFence, Is.EqualTo(receipt.CompletedFence));
             (var uploadedState, var uploadedContentsValid, var lastUseSequence, var isIdle) =
                 texture.ResourceOwner.CaptureGraphImportState(graphRange);
             Assert.That(uploadedState, Is.EqualTo(GraphResourceState.General));

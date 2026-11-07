@@ -52,4 +52,12 @@ internal sealed class RecordedPassCommandList : IDisposable
             useLease.Dispose();
         }
     }
+
+    internal void RecordSubmittedQueueFence(long fenceValue)
+    {
+        foreach (var useLease in _useLeases)
+        {
+            useLease.RecordSubmittedQueueFence(fenceValue);
+        }
+    }
 }

@@ -16,6 +16,7 @@ internal sealed class GraphicsResourceOwner : IDisposable
     private readonly IGraphicsBackendResource _backendResource;
     private readonly GraphicsDevice _device;
     private readonly GraphicsResourceGraphState? _graphState;
+    private long _lastSubmittedQueueFence;
     private long _nextUseSequence;
     private readonly GraphicsOwnerRequestQueue.GraphicsRetirementReservation _retirementReservation;
     // 0 is live, 1 is retirement requested, 2 is retiring, and 3 is retired or quarantined.
@@ -89,6 +90,8 @@ internal sealed class GraphicsResourceOwner : IDisposable
     internal bool IsLiveForNewWork => Volatile.Read(ref _retirementState) == 0;
 
     internal bool IsRetirementRequested => Volatile.Read(ref _retirementState) == 1;
+
+    internal long LastSubmittedQueueFence => Volatile.Read(ref _lastSubmittedQueueFence);
 
     internal uint OwnerId => _device.OwnerId;
 
@@ -238,6 +241,23 @@ internal sealed class GraphicsResourceOwner : IDisposable
         }
     }
 
+    internal void RecordSubmittedQueueFence(long fenceValue)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(fenceValue);
+
+        lock (_useGate)
+        {
+            var lastSubmittedFence = _lastSubmittedQueueFence;
+
+            if (fenceValue < lastSubmittedFence)
+            {
+                throw new InvalidOperationException("A Graphics resource received an out-of-order queue fence.");
+            }
+
+            Volatile.Write(ref _lastSubmittedQueueFence, fenceValue);
+        }
+    }
+
     internal void RecordTextureReadback(TextureSubresource subresource)
         => (_graphState
             ?? throw new InvalidOperationException("The Graphics resource is not a texture."))
@@ -265,11 +285,13 @@ internal sealed class GraphicsResourceOwner : IDisposable
     internal void RequestRetirementForShutdown()
         => _ = Interlocked.CompareExchange(ref _retirementState, 1, 0);
 
-    internal bool TryBeginRetirement()
+    internal bool TryBeginRetirement(long completedQueueFence)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(completedQueueFence);
+
         lock (_useGate)
         {
-            if (HasActiveUses)
+            if (HasActiveUses || (LastSubmittedQueueFence > completedQueueFence))
             {
                 return false;
             }
@@ -377,6 +399,13 @@ internal sealed class GraphicsResourceOwner : IDisposable
 
         internal bool IsOwnedBy(GraphicsResourceOwner owner)
             => ReferenceEquals(Volatile.Read(ref _owner), owner);
+
+        internal void RecordSubmittedQueueFence(long fenceValue)
+        {
+            var owner = Volatile.Read(ref _owner)
+                ?? throw new ObjectDisposedException(nameof(UseLease));
+            owner.RecordSubmittedQueueFence(fenceValue);
+        }
     }
 
     private sealed class UseCompletionWaiter

@@ -34,6 +34,7 @@ public sealed partial class GraphicsDevice
     private long _allocatedResourceBytes;
     private IGraphicsBackendDevice? _backendDevice;
     private readonly GraphicsCapabilities _capabilities;
+    private long _completedQueueFence;
     private readonly HashSet<GraphicsResourceOwner> _deferredRetirements = [];
     private readonly SemaphoreSlim _graphFrameSlots;
     private bool _hasQuarantinedResources;
@@ -1231,6 +1232,35 @@ public sealed partial class GraphicsDevice
         }
     }
 
+    private void ObserveCompletedQueueFence(long completedFence)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(completedFence);
+        var previouslyCompletedFence = Volatile.Read(ref _completedQueueFence);
+
+        if (completedFence < previouslyCompletedFence)
+        {
+            throw new InvalidOperationException("A Graphics backend reported a queue timeline that moved backwards.");
+        }
+
+        Volatile.Write(ref _completedQueueFence, completedFence);
+    }
+
+    private void ObserveCompletedQueueFenceAfterSynchronousSubmission(
+        IGraphicsBackendDevice backendDevice,
+        long submittedFence)
+    {
+        ArgumentNullException.ThrowIfNull(backendDevice);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(submittedFence);
+        var completedFence = backendDevice.GetCompletedGraphFence();
+
+        if ((completedFence != long.MaxValue) && (completedFence < submittedFence))
+        {
+            throw new InvalidOperationException("A synchronous Graphics submission returned before its queue fence completed.");
+        }
+
+        ObserveCompletedQueueFence(completedFence);
+    }
+
     private void QuarantineBackendResource(IGraphicsBackendResource backendResource, Exception exception)
     {
         s_quarantinedBackendResources.Add(backendResource);
@@ -1340,6 +1370,14 @@ public sealed partial class GraphicsDevice
         var sourceRange = new GraphBufferRange(sourceOffset, checked((long)byteLength));
         var (sourceState, _, _, _) = source.ResourceOwner.CaptureGraphImportState(sourceRange, sourceUse);
         var result = backendDevice.ReadbackBuffer(backendBuffer, sourceState, sourceOffset, byteLength);
+        var completedFence = backendDevice.GetCompletedGraphFence();
+
+        if (completedFence != long.MaxValue)
+        {
+            source.ResourceOwner.RecordSubmittedQueueFence(completedFence);
+        }
+
+        ObserveCompletedQueueFence(completedFence);
         source.ResourceOwner.RecordBufferReadback();
         return result;
     }
@@ -1373,6 +1411,14 @@ public sealed partial class GraphicsDevice
             subresource.Aspect);
         var (sourceState, _, _, _) = source.ResourceOwner.CaptureGraphImportState(sourceRange, sourceUse);
         var result = backendDevice.ReadbackTexture(backendTexture, sourceState, subresource);
+        var completedFence = backendDevice.GetCompletedGraphFence();
+
+        if (completedFence != long.MaxValue)
+        {
+            source.ResourceOwner.RecordSubmittedQueueFence(completedFence);
+        }
+
+        ObserveCompletedQueueFence(completedFence);
         source.ResourceOwner.RecordTextureReadback(subresource);
         return result;
     }
@@ -1479,7 +1525,7 @@ public sealed partial class GraphicsDevice
         var backendDevice = _backendDevice
             ?? throw new InvalidOperationException("The GraphicsDevice has no live backend owner.");
         var completedFence = backendDevice.GetCompletedGraphFence();
-        ArgumentOutOfRangeException.ThrowIfNegative(completedFence);
+        ObserveCompletedQueueFence(completedFence);
         var didWork = false;
 
         for (var index = _pendingGraphSubmissions.Count - 1; index >= 0; index--)
@@ -1517,10 +1563,11 @@ public sealed partial class GraphicsDevice
 
         var deferredResources = new GraphicsResourceOwner[_deferredRetirements.Count];
         _deferredRetirements.CopyTo(deferredResources);
+        var completedQueueFence = Volatile.Read(ref _completedQueueFence);
 
         foreach (var resource in deferredResources)
         {
-            if (!resource.HasActiveUses)
+            if (!resource.HasActiveUses && (resource.LastSubmittedQueueFence <= completedQueueFence))
             {
                 try
                 {
@@ -1536,9 +1583,12 @@ public sealed partial class GraphicsDevice
 
     private void RetireResourceOnOwner(GraphicsResourceOwner resource)
     {
-        if (!resource.TryBeginRetirement())
+        var completedQueueFence = Volatile.Read(ref _completedQueueFence);
+
+        if (!resource.TryBeginRetirement(completedQueueFence))
         {
-            if (resource.HasActiveUses && resource.IsRetirementRequested)
+            if (resource.IsRetirementRequested
+                && (resource.HasActiveUses || (resource.LastSubmittedQueueFence > completedQueueFence)))
             {
                 _ = _deferredRetirements.Add(resource);
             }
@@ -1746,6 +1796,8 @@ public sealed partial class GraphicsDevice
             source,
             sourceOffset,
             byteLength);
+        destination.ResourceOwner.RecordSubmittedQueueFence(completedFence);
+        ObserveCompletedQueueFenceAfterSynchronousSubmission(backendDevice, completedFence);
         destination.ResourceOwner.RecordBufferUpload(destinationOffset, byteLength);
         return completedFence;
     }
@@ -1783,6 +1835,8 @@ public sealed partial class GraphicsDevice
             destinationState,
             destinationOffset,
             source);
+        destination.ResourceOwner.RecordSubmittedQueueFence(completedFence);
+        ObserveCompletedQueueFenceAfterSynchronousSubmission(backendDevice, completedFence);
         destination.ResourceOwner.RecordBufferUpload(destinationOffset, source.Length);
         return completedFence;
     }
@@ -1833,6 +1887,8 @@ public sealed partial class GraphicsDevice
             source,
             sourceOffset,
             sourceLayout);
+        destination.ResourceOwner.RecordSubmittedQueueFence(completedFence);
+        ObserveCompletedQueueFenceAfterSynchronousSubmission(backendDevice, completedFence);
         destination.ResourceOwner.RecordTextureUpload(subresource);
         return completedFence;
     }
