@@ -23,7 +23,8 @@ public sealed partial class Renderer
         var residencyService = _gpuResidencyService
             ?? throw new NotSupportedException("Headless rendering does not upload Sprite assets.");
         var sprite = snapshot.SpriteDraws[spriteDrawIndex];
-        var sceneAssets = snapshot.AssetPins?.GetSceneAssets(sprite.SceneInstanceId)
+        using var snapshotAssetPins = snapshot.RetainAssetPins();
+        var sceneAssets = snapshotAssetPins?.GetSceneAssets(sprite.SceneInstanceId)
             ?? throw new InvalidOperationException("The Sprite snapshot has no retained Scene assets.");
         var pageSet = sceneAssets.GetAtlasPageSet(sprite.AtlasAssetId);
         var frame = pageSet.GetFrame(sprite.FrameId);

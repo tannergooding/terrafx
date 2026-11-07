@@ -13,6 +13,7 @@ namespace TerraFX.Rendering;
 public abstract class RenderSnapshot : IDisposable
 {
     private RenderSnapshotAssetPins? _assetPins;
+    private readonly Lock _assetPinGate = new();
     private readonly ImmutableArray<Guid> _cameraIds;
     private readonly ImmutableArray<CameraSnapshot> _cameras;
     private readonly ImmutableArray<Guid> _directionalLightIds;
@@ -319,8 +320,11 @@ public abstract class RenderSnapshot : IDisposable
 
     internal RenderSnapshotAssetPins? RetainAssetPins()
     {
-        ObjectDisposedException.ThrowIf(IsDisposed, this);
-        return Volatile.Read(ref _assetPins)?.Retain();
+        lock (_assetPinGate)
+        {
+            ObjectDisposedException.ThrowIf(IsDisposed, this);
+            return Volatile.Read(ref _assetPins)?.Retain();
+        }
     }
 
     /// <summary>Releases managed snapshot ownership.</summary>
@@ -329,10 +333,19 @@ public abstract class RenderSnapshot : IDisposable
     {
         if (disposing)
         {
-            if (Interlocked.Exchange(ref _isDisposed, 1) == 0)
+            RenderSnapshotAssetPins? assetPins;
+
+            lock (_assetPinGate)
             {
-                Interlocked.Exchange(ref _assetPins, null)?.Dispose();
+                if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
+                {
+                    return;
+                }
+
+                assetPins = Interlocked.Exchange(ref _assetPins, null);
             }
+
+            assetPins?.Dispose();
         }
     }
 }
