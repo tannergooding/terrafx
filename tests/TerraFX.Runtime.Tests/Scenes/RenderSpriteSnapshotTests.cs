@@ -156,6 +156,15 @@ internal sealed partial class SceneAssetStoreTests
             var cameraOrder = snapshot.SpriteCameraOrders[0];
             Assert.That(cameraOrder.CameraId, Is.EqualTo(cameraId));
             Assert.That(cameraOrder.DrawIndices, Has.Length.EqualTo(expectedEntityIds.Length));
+            var firstSpriteQuad = spriteDraws[cameraOrder.DrawIndices[0]].Quad;
+            Assert.That(firstSpriteQuad.Vertex0.Position, Is.EqualTo(new Vector3(-0.5f, -2.25f, 0.0f)));
+            Assert.That(firstSpriteQuad.Vertex1.Position, Is.EqualTo(new Vector3(-0.5f, 0.75f, 0.0f)));
+            Assert.That(firstSpriteQuad.Vertex2.Position, Is.EqualTo(new Vector3(1.5f, 0.75f, 0.0f)));
+            Assert.That(firstSpriteQuad.Vertex3.Position, Is.EqualTo(new Vector3(1.5f, -2.25f, 0.0f)));
+            Assert.That(firstSpriteQuad.Vertex0.TextureCoordinate, Is.EqualTo(new Vector2(0.25f, 0.5f)));
+            Assert.That(firstSpriteQuad.Vertex1.TextureCoordinate, Is.EqualTo(new Vector2(0.25f, 0.25f)));
+            Assert.That(firstSpriteQuad.Vertex2.TextureCoordinate, Is.EqualTo(new Vector2(0.5f, 0.25f)));
+            Assert.That(firstSpriteQuad.Vertex3.TextureCoordinate, Is.EqualTo(new Vector2(0.5f, 0.5f)));
 
             for (var index = 0; index < expectedEntityIds.Length; index++)
             {

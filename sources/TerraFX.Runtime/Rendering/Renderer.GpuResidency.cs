@@ -26,23 +26,8 @@ public sealed partial class Renderer
         var sceneAssets = snapshot.AssetPins?.GetSceneAssets(sprite.SceneInstanceId)
             ?? throw new InvalidOperationException("The Sprite snapshot has no retained Scene assets.");
         var pageSet = sceneAssets.GetAtlasPageSet(sprite.AtlasAssetId);
-        var pageIndex = -1;
-
-        foreach (var frame in pageSet.Atlas.Frames)
-        {
-            if (frame.FrameId == sprite.FrameId)
-            {
-                pageIndex = frame.Page;
-                break;
-            }
-        }
-
-        if (pageIndex < 0)
-        {
-            throw new InvalidOperationException("The Sprite snapshot frame is absent from its retained Atlas.");
-        }
-
-        using var pageLease = pageSet.RetainPageLease(pageIndex);
+        var frame = pageSet.GetFrame(sprite.FrameId);
+        using var pageLease = pageSet.RetainPageLease(frame.Page);
         return await residencyService.EnsureGpuResidencyAsync(
             pageLease,
             options,

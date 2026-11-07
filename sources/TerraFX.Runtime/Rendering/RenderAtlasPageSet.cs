@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Immutable;
 using System.Threading;
+using TerraFX;
 using TerraFX.Assets;
 
 namespace TerraFX.Rendering;
@@ -59,6 +60,37 @@ internal sealed class RenderAtlasPageSet : IDisposable
         }
 
         _atlasLease.Dispose();
+    }
+
+    internal RenderAtlasFrame GetFrame(Guid frameId)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfEqual(frameId, Guid.Empty);
+        var frames = _atlasLease.Value.Frames;
+        var low = 0;
+        var high = frames.Length - 1;
+
+        while (low <= high)
+        {
+            var middle = low + ((high - low) / 2);
+            var comparison = FoundationCatalogue.CompareRfc(frames[middle].FrameId, frameId);
+
+            if (comparison == 0)
+            {
+                return frames[middle];
+            }
+
+            if (comparison < 0)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle - 1;
+            }
+        }
+
+        throw new ArgumentException("The Atlas does not contain the requested Sprite frame.", nameof(frameId));
     }
 
     internal RenderTextureAsset GetPage(int pageIndex)

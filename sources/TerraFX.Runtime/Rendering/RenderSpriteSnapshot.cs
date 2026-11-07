@@ -25,4 +25,5 @@ internal readonly record struct RenderSpriteSnapshot(
     int SortingOrder,
     bool PixelSnap,
     int? MaterialAssetId,
+    RenderSpriteQuad Quad,
     bool HasPreviousTransform);

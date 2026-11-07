@@ -311,6 +311,16 @@ public sealed partial class Renderer
                 component.AtlasAssetId,
                 component.FrameId,
                 materialAssetId);
+            var atlasPageSet = sceneAssets.GetAtlasPageSet(component.AtlasAssetId);
+            var atlasFrame = atlasPageSet.GetFrame(component.FrameId);
+            var atlasPage = atlasPageSet.GetPage(atlasFrame.Page);
+            var quad = RenderSpriteGeometry.Create(
+                component.Pivot,
+                component.Size,
+                component.FlipMask,
+                atlasFrame,
+                atlasPage.Width,
+                atlasPage.Height);
 
             var (position, linearTransform, _) = world.ResolveSceneEntityTransform(in frameReadLease, entity);
             var entityId = world.GetEntityId(entity);
@@ -333,6 +343,7 @@ public sealed partial class Renderer
                 component.SortingOrder,
                 component.PixelSnap,
                 materialAssetId,
+                quad,
                 HasPreviousTransform: false);
         }
 
