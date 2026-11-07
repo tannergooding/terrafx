@@ -18,9 +18,12 @@ internal static class PlatformBackendFactory
                 => new WindowsPlatformBackend(ownerId, clipboardPolicy, timeProvider),
             PlatformBackend.WindowsNative
                 => throw new PlatformNotSupportedException("The Windows Platform backend requires Windows 11."),
+            PlatformBackend.X11Only when OperatingSystem.IsLinux()
+                => new X11PlatformBackend(ownerId, clipboardPolicy),
+            PlatformBackend.X11Only
+                => throw new PlatformNotSupportedException("The X11 Platform backend requires Linux."),
             PlatformBackend.WaylandOnly
                 or PlatformBackend.WaylandThenX11
-                or PlatformBackend.X11Only
                 => throw new PlatformNotSupportedException($"The platform backend {backend} has no implementation."),
             _ => throw new ArgumentOutOfRangeException(nameof(backend)),
         };

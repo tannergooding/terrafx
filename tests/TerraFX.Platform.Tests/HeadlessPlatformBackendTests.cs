@@ -3,12 +3,19 @@
 using System;
 using System.Threading.Tasks;
 using NUnit.Framework;
+using TerraFX;
 
 namespace TerraFX.Platform.Tests;
 
 [TestFixture]
 internal sealed class HeadlessPlatformBackendTests
 {
+    private static IPlatformBackend CreateX11Backend() =>
+        PlatformBackendFactory.Create(
+            PlatformBackend.X11Only,
+            ownerId: 7,
+            ClipboardServicePolicy.NotRequested);
+
     [Test]
     public void HeadlessBackendMarksNativeServicesNotRequestedAndOptionalClipboardUnsupported()
     {
@@ -64,8 +71,70 @@ internal sealed class HeadlessPlatformBackendTests
         _ = Assert.Throws<PlatformNotSupportedException>(
             () => PlatformBackendFactory.Create(PlatformBackend.WaylandOnly, 1, ClipboardServicePolicy.NotRequested));
         _ = Assert.Throws<PlatformNotSupportedException>(
-            () => PlatformBackendFactory.Create(PlatformBackend.X11Only, 1, ClipboardServicePolicy.NotRequested));
+            () => PlatformBackendFactory.Create(PlatformBackend.WaylandThenX11, 1, ClipboardServicePolicy.NotRequested));
         _ = Assert.Throws<ArgumentOutOfRangeException>(
             () => PlatformBackendFactory.Create(PlatformBackend.None, 1, ClipboardServicePolicy.NotRequested));
+    }
+
+    [Test]
+    public void X11OnlyCreatesAndRetiresAnInvisibleNativeWindowWhenDisplayIsAvailable()
+    {
+        if (!OperatingSystem.IsLinux()
+            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
+        {
+            Assert.Ignore("The X11 native window witness requires a Linux X11 display.");
+            return;
+        }
+
+        IPlatformBackend? backend = null;
+
+        try
+        {
+            try
+            {
+                backend = CreateX11Backend();
+            }
+            catch (DllNotFoundException exception)
+            {
+                Assert.Ignore($"The X11 client library is unavailable: {exception.Message}");
+                return;
+            }
+            catch (PlatformNotSupportedException exception)
+            {
+                Assert.Ignore($"The X11 display is unavailable: {exception.Message}");
+                return;
+            }
+
+            Assert.That(backend.Backend, Is.EqualTo(PlatformBackend.X11Only));
+            Assert.That(backend.DisplayStatus, Is.EqualTo(PlatformServiceStatus.Available));
+            Assert.That(backend.PhysicalInputStatus, Is.EqualTo(PlatformServiceStatus.Unsupported));
+            Assert.That(backend.GamepadStatus, Is.EqualTo(PlatformServiceStatus.Unsupported));
+            Assert.That(backend.ClipboardStatus, Is.EqualTo(ClipboardServiceStatus.NotRequested));
+
+            var window = new WindowHandle(ownerId: 7, index: 0, generation: 1);
+            backend.CreateWindow(window, new WindowOptions("TerraFX X11 test") { Visible = false }, nativeMonitorHandle: 0);
+
+            try
+            {
+                var metrics = backend.GetNativeWindowMetrics(window);
+                Assert.That(metrics.ClientPixelSize.Width, Is.EqualTo(1280));
+                Assert.That(metrics.ClientPixelSize.Height, Is.EqualTo(720));
+                Assert.That(backend.TryGetNativeWindowBinding(window, out var binding), Is.True);
+                Assert.That(binding.Kind, Is.EqualTo(PlatformNativeSurfaceKind.X11));
+                Assert.That(binding.NativeDisplayOrInstance, Is.Not.Zero);
+                Assert.That(binding.NativeWindowOrSurface, Is.Not.Zero);
+                Assert.That(backend.DrainInputSamples().Samples, Is.Empty);
+            }
+            finally
+            {
+                backend.CloseWindow(window);
+            }
+
+            Assert.That(backend.TryGetNativeWindowBinding(window, out _), Is.False);
+        }
+        finally
+        {
+            backend?.Dispose();
+        }
     }
 }
