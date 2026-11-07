@@ -76,6 +76,43 @@ internal sealed class PlatformInputBrokerTests
     }
 
     [Test]
+    public void IssuesSeparateHandlesForAggregateKeyboardAndPointerSources()
+    {
+        var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());
+        var window = new WindowHandle(17, 0, 1);
+        var samples = ImmutableArray.Create(
+            new PlatformInputSample(
+                PhysicalInputEventKind.KeyDown,
+                window,
+                (nint)(-1),
+                PlatformInputDeviceKind.Keyboard,
+                NativeUsagePage: 0x0007,
+                NativeUsage: 0x0004,
+                IsDown: true,
+                MonotonicTimestamp: 1),
+            new PlatformInputSample(
+                PhysicalInputEventKind.PointerButtonDown,
+                window,
+                (nint)(-2),
+                PlatformInputDeviceKind.Pointer,
+                MouseButton: MouseButtonValue.Primary,
+                IsDown: true,
+                MonotonicTimestamp: 2));
+
+        var captured = broker.Capture(new PlatformInputSampleBatch(samples, DiscardedSampleCount: 0), static _ => true);
+
+        Assert.That(captured.Events, Has.Length.EqualTo(4));
+        Assert.That(captured.Events[0].Kind, Is.EqualTo(PhysicalInputEventKind.DeviceAdded));
+        Assert.That(captured.Events[1].Kind, Is.EqualTo(PhysicalInputEventKind.KeyDown));
+        Assert.That(captured.Events[2].Kind, Is.EqualTo(PhysicalInputEventKind.DeviceAdded));
+        Assert.That(captured.Events[3].Kind, Is.EqualTo(PhysicalInputEventKind.PointerButtonDown));
+        Assert.That(captured.Events[0].Device, Is.EqualTo(captured.Events[1].Device));
+        Assert.That(captured.Events[2].Device, Is.EqualTo(captured.Events[3].Device));
+        Assert.That(captured.Events[0].Device, Is.Not.EqualTo(captured.Events[2].Device));
+        broker.Retire();
+    }
+
+    [Test]
     public void PreservesNormalizedGamepadValuesWithoutWindowOrPlayerAssignment()
     {
         var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());

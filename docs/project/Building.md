@@ -119,14 +119,14 @@ dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --confi
 dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Release
 ```
 
-In the WSLg shell configured below, the same project runs the explicit X11 owner witnesses when `DISPLAY` is available. They verify an invisible native window's pixel metrics/private binding, validate reported `Xft.dpi` conversion or the documented assumed-96-DPI fallback, send duplicate synthetic `WM_DELETE_WINDOW` messages to check close-request deduplication, and exercise RandR 1.5 monitor enumeration/selection when the X server exposes it. The current WSLg lane has no `Xft.dpi` resource, so it observes the fallback; the synthetic message does not qualify behavior from a real window manager:
+In the WSLg shell configured below, the same project runs the explicit X11 owner witnesses when `DISPLAY` is available. They verify an invisible native window's pixel metrics/private binding, validate reported `Xft.dpi` conversion or the documented assumed-96-DPI fallback, send duplicate synthetic `WM_DELETE_WINDOW` messages to check close-request deduplication, exercise RandR 1.5 monitor enumeration/selection when the X server exposes it, and inject synthetic core key/button/motion events through the owner pump, including the legacy release/press auto-repeat pair. The input witness also requests a fresh keyboard/pointer reconciliation snapshot. Core Xlib events omit source-device IDs, so the current implementation uses aggregate broker identities and maps WSLg's XKB keycodes through its evdev `+8` range; the synthetic `XSendEvent` path does not qualify physical input. The current WSLg lane has no `Xft.dpi` resource, so it observes the assumed-96-DPI fallback; the synthetic close message does not qualify behavior from a real window manager:
 
 ```bash
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Debug "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
-This does not qualify Linux input, a live DPI-setting change, clipboard, Wayland, WSI, or Interactive hosting.
+Physical keyboard/pointer devices, XInput2 device identity, general XKB keymap/compose behavior, a live DPI-setting change, clipboard, Wayland, WSI, and Interactive hosting remain unqualified or unimplemented.
 
 `LinuxEvdevAxisNormalizerTests` exercises literal evdev min/max/flat/fuzz metadata without opening `/dev/input`; this validates normalization only, not device discovery, permissions, or live capture:
 

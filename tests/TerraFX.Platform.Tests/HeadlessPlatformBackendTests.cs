@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
+using TerraFX.Input;
 
 namespace TerraFX.Platform.Tests;
 
@@ -129,7 +130,7 @@ internal sealed partial class HeadlessPlatformBackendTests
 
             Assert.That(backend.Backend, Is.EqualTo(PlatformBackend.X11Only));
             Assert.That(backend.DisplayStatus, Is.EqualTo(PlatformServiceStatus.Available));
-            Assert.That(backend.PhysicalInputStatus, Is.EqualTo(PlatformServiceStatus.Unsupported));
+            Assert.That(backend.PhysicalInputStatus, Is.EqualTo(PlatformServiceStatus.Available));
             Assert.That(backend.GamepadStatus, Is.EqualTo(PlatformServiceStatus.Unsupported));
             Assert.That(backend.ClipboardStatus, Is.EqualTo(ClipboardServiceStatus.NotRequested));
 
@@ -187,6 +188,39 @@ internal sealed partial class HeadlessPlatformBackendTests
                 Assert.That(binding.NativeDisplayOrInstance, Is.Not.Zero);
                 Assert.That(binding.NativeWindowOrSurface, Is.Not.Zero);
                 Assert.That(backend.DrainInputSamples().Samples, Is.Empty);
+                backend.RequestInputStateReconciliation(window);
+                var reconciliation = backend.DrainInputSamples().Samples;
+                Assert.That(reconciliation, Has.Length.EqualTo(1));
+                Assert.That(reconciliation[0].Kind, Is.EqualTo(PhysicalInputEventKind.StateReconciliation));
+                Assert.That(reconciliation[0].ReconciliationState.IsDefault, Is.False);
+
+                X11TestNative.SendKeyEvent(binding.NativeDisplayOrInstance, binding.NativeWindowOrSurface, 38, isDown: true, time: 100);
+                X11TestNative.SendKeyEvent(binding.NativeDisplayOrInstance, binding.NativeWindowOrSurface, 38, isDown: false, time: 100);
+                X11TestNative.SendKeyEvent(binding.NativeDisplayOrInstance, binding.NativeWindowOrSurface, 38, isDown: true, time: 100);
+                X11TestNative.SendKeyEvent(binding.NativeDisplayOrInstance, binding.NativeWindowOrSurface, 38, isDown: false, time: 101);
+                X11TestNative.SendButtonEvent(binding.NativeDisplayOrInstance, binding.NativeWindowOrSurface, 1, isDown: true);
+                X11TestNative.SendButtonEvent(binding.NativeDisplayOrInstance, binding.NativeWindowOrSurface, 1, isDown: false);
+                X11TestNative.SendMotionEvent(binding.NativeDisplayOrInstance, binding.NativeWindowOrSurface, x: 17, y: 29);
+                backend.Pump();
+                var inputSamples = backend.DrainInputSamples();
+                Assert.That(inputSamples.DiscardedSampleCount, Is.Zero);
+                Assert.That(inputSamples.Samples, Has.Length.EqualTo(6));
+                Assert.That(inputSamples.Samples[0].Kind, Is.EqualTo(PhysicalInputEventKind.KeyDown));
+                Assert.That(inputSamples.Samples[0].DeviceKind, Is.EqualTo(PlatformInputDeviceKind.Keyboard));
+                Assert.That(inputSamples.Samples[0].NativeDeviceIdentity, Is.EqualTo((nint)(-1)));
+                Assert.That(inputSamples.Samples[0].NativeUsagePage, Is.EqualTo((ushort)0x0007));
+                Assert.That(inputSamples.Samples[0].NativeUsage, Is.EqualTo((ushort)0x0004));
+                Assert.That(inputSamples.Samples[0].NativeScanCode, Is.EqualTo(30u));
+                Assert.That(inputSamples.Samples[1].Kind, Is.EqualTo(PhysicalInputEventKind.KeyRepeat));
+                Assert.That(inputSamples.Samples[2].Kind, Is.EqualTo(PhysicalInputEventKind.KeyUp));
+                Assert.That(inputSamples.Samples[3].Kind, Is.EqualTo(PhysicalInputEventKind.PointerButtonDown));
+                Assert.That(inputSamples.Samples[3].NativeDeviceIdentity, Is.EqualTo((nint)(-2)));
+                Assert.That(inputSamples.Samples[3].MouseButton, Is.EqualTo(MouseButtonValue.Primary));
+                Assert.That(inputSamples.Samples[4].Kind, Is.EqualTo(PhysicalInputEventKind.PointerButtonUp));
+                Assert.That(inputSamples.Samples[5].Kind, Is.EqualTo(PhysicalInputEventKind.PointerAbsoluteMotion));
+                Assert.That(inputSamples.Samples[5].PointerPosition?.X, Is.EqualTo(17.0f));
+                Assert.That(inputSamples.Samples[5].PointerPosition?.Y, Is.EqualTo(29.0f));
+
                 X11TestNative.SendDeleteWindow(binding.NativeDisplayOrInstance, binding.NativeWindowOrSurface);
                 X11TestNative.SendDeleteWindow(binding.NativeDisplayOrInstance, binding.NativeWindowOrSurface);
                 backend.Pump();
@@ -276,7 +310,32 @@ internal sealed partial class HeadlessPlatformBackendTests
 
     private static unsafe partial class X11TestNative
     {
+        private const int ButtonPressEventType = 4;
+        private const nint ButtonPressMask = 4;
+        private const int ButtonReleaseEventType = 5;
+        private const nint ButtonReleaseMask = 8;
         private const int ClientMessageEventType = 33;
+        private const int KeyPressEventType = 2;
+        private const nint KeyPressMask = 1;
+        private const int KeyReleaseEventType = 3;
+        private const nint KeyReleaseMask = 2;
+        private const int MotionNotifyEventType = 6;
+        private const nint PointerMotionMask = 64;
+
+        internal static void SendButtonEvent(nint display, nint nativeWindow, uint button, bool isDown)
+        {
+            var nativeEvent = default(NativeEvent);
+            nativeEvent.Button.Type = isDown ? ButtonPressEventType : ButtonReleaseEventType;
+            nativeEvent.Button.Display = display;
+            nativeEvent.Button.Window = checked((nuint)nativeWindow);
+            nativeEvent.Button.Time = 101;
+            nativeEvent.Button.X = 11;
+            nativeEvent.Button.Y = 13;
+            nativeEvent.Button.Button = button;
+            nativeEvent.Button.SameScreen = 1;
+            var eventMask = isDown ? ButtonPressMask : ButtonReleaseMask;
+            SendInputEvent(display, nativeWindow, eventMask, &nativeEvent);
+        }
 
         internal static void SendDeleteWindow(nint display, nint nativeWindow)
         {
@@ -300,6 +359,42 @@ internal sealed partial class HeadlessPlatformBackendTests
             _ = XSync(display, discard: 0);
         }
 
+        internal static void SendKeyEvent(nint display, nint nativeWindow, uint keycode, bool isDown, nuint time)
+        {
+            var nativeEvent = default(NativeEvent);
+            nativeEvent.Key.Type = isDown ? KeyPressEventType : KeyReleaseEventType;
+            nativeEvent.Key.Display = display;
+            nativeEvent.Key.Window = checked((nuint)nativeWindow);
+            nativeEvent.Key.Time = time;
+            nativeEvent.Key.Keycode = keycode;
+            nativeEvent.Key.SameScreen = 1;
+            var eventMask = isDown ? KeyPressMask : KeyReleaseMask;
+            SendInputEvent(display, nativeWindow, eventMask, &nativeEvent);
+        }
+
+        internal static void SendMotionEvent(nint display, nint nativeWindow, int x, int y)
+        {
+            var nativeEvent = default(NativeEvent);
+            nativeEvent.Motion.Type = MotionNotifyEventType;
+            nativeEvent.Motion.Display = display;
+            nativeEvent.Motion.Window = checked((nuint)nativeWindow);
+            nativeEvent.Motion.Time = 102;
+            nativeEvent.Motion.X = x;
+            nativeEvent.Motion.Y = y;
+            nativeEvent.Motion.SameScreen = 1;
+            SendInputEvent(display, nativeWindow, PointerMotionMask, &nativeEvent);
+        }
+
+        private static void SendInputEvent(nint display, nint nativeWindow, nint eventMask, NativeEvent* nativeEvent)
+        {
+            if (XSendEvent(display, checked((nuint)nativeWindow), propagate: 0, eventMask, nativeEvent) == 0)
+            {
+                throw new InvalidOperationException("The X11 test could not send a synthetic input event.");
+            }
+
+            _ = XSync(display, discard: 0);
+        }
+
         [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
         [LibraryImport("libX11.so.6", EntryPoint = "XInternAtom", StringMarshalling = StringMarshalling.Utf8)]
         private static partial nuint XInternAtom(nint display, string name, int onlyIfExists);
@@ -311,6 +406,26 @@ internal sealed partial class HeadlessPlatformBackendTests
         [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
         [LibraryImport("libX11.so.6", EntryPoint = "XSync")]
         private static partial int XSync(nint display, int discard);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ButtonEvent
+        {
+            internal int Type;
+            internal nuint Serial;
+            internal int SendEvent;
+            internal nint Display;
+            internal nuint Window;
+            internal nuint Root;
+            internal nuint Subwindow;
+            internal nuint Time;
+            internal int X;
+            internal int Y;
+            internal int XRoot;
+            internal int YRoot;
+            internal uint State;
+            internal uint Button;
+            internal int SameScreen;
+        }
 
         [StructLayout(LayoutKind.Explicit, Size = 40)]
         private struct ClientMessageData
@@ -332,11 +447,60 @@ internal sealed partial class HeadlessPlatformBackendTests
             internal ClientMessageData Data;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct KeyEvent
+        {
+            internal int Type;
+            internal nuint Serial;
+            internal int SendEvent;
+            internal nint Display;
+            internal nuint Window;
+            internal nuint Root;
+            internal nuint Subwindow;
+            internal nuint Time;
+            internal int X;
+            internal int Y;
+            internal int XRoot;
+            internal int YRoot;
+            internal uint State;
+            internal uint Keycode;
+            internal int SameScreen;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MotionEvent
+        {
+            internal int Type;
+            internal nuint Serial;
+            internal int SendEvent;
+            internal nint Display;
+            internal nuint Window;
+            internal nuint Root;
+            internal nuint Subwindow;
+            internal nuint Time;
+            internal int X;
+            internal int Y;
+            internal int XRoot;
+            internal int YRoot;
+            internal uint State;
+            internal byte IsHint;
+            internal int SameScreen;
+        }
+
         [StructLayout(LayoutKind.Explicit, Size = 192)]
         private struct NativeEvent
         {
             [FieldOffset(0)]
             internal int Type;
+
+            [FieldOffset(0)]
+            internal KeyEvent Key;
+
+            [FieldOffset(0)]
+            internal ButtonEvent Button;
+
+            [FieldOffset(0)]
+            internal MotionEvent Motion;
 
             [FieldOffset(0)]
             internal ClientMessageEvent ClientMessage;

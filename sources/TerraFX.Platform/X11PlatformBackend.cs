@@ -7,16 +7,34 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using TerraFX;
+using TerraFX.Input;
+using TerraFX.Numerics;
 using ClipboardTextResult = TerraFX.Platform.ClipboardStatus;
 
 namespace TerraFX.Platform;
 
 internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 {
+    private const int ButtonPressEvent = 4;
+    private const long ButtonPressMask = 1L << 2;
+    private const int ButtonReleaseEvent = 5;
+    private const long ButtonReleaseMask = 1L << 3;
     private const int ClientMessageEvent = 33;
     private const int DestroyNotifyEvent = 17;
+    private const long FocusChangeMask = 1L << 21;
+    private const int FocusInEvent = 9;
+    private const int FocusOutEvent = 10;
+    private const int KeyPressEvent = 2;
+    private const long KeyPressMask = 1L << 0;
+    private const int KeyReleaseEvent = 3;
+    private const long KeyReleaseMask = 1L << 1;
+    // Core Xlib events omit source-device IDs, so negative identities isolate their aggregate routes.
+    private const nint KeyboardAggregateIdentity = -1;
     // Bound the root-window resource property before parsing it on the Platform owner.
     private const int MaximumResourceManagerBytes = 64 * 1024;
+    private const int MotionNotifyEvent = 6;
+    private const nint PointerAggregateIdentity = -2;
+    private const long PointerMotionMask = 1L << 6;
     private const long PropertyChangeMask = 1L << 22;
     private const int PropertyNotifyEvent = 28;
     private const int RandrNotifyEventOffset = 1;
@@ -30,6 +48,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     private readonly ClipboardServiceStatus _clipboardStatus;
     private readonly nint _display;
     private float? _effectiveDpi;
+    private readonly PlatformInputSampleQueue _inputSamples;
     private readonly uint _ownerId;
     private readonly int _ownerThreadId;
     private readonly int _randrEventBase;
@@ -129,6 +148,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 
         _ownerId = ownerId;
         _ownerThreadId = Environment.CurrentManagedThreadId;
+        _inputSamples = new PlatformInputSampleQueue(_ownerThreadId);
         _clipboardStatus = (clipboardPolicy is ClipboardServicePolicy.Optional)
             ? ClipboardServiceStatus.Unsupported
             : ClipboardServiceStatus.NotRequested;
@@ -187,7 +207,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         get
         {
             EnsureOwnerThread();
-            return PlatformServiceStatus.Unsupported;
+            return PlatformServiceStatus.Available;
         }
     }
 
@@ -234,6 +254,34 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         }
 
         return effectiveDpi;
+    }
+
+    private static (
+        PhysicalInputEventKind Kind,
+        ushort? NativeUsagePage,
+        ushort? NativeUsage,
+        uint EvdevKeycode) CaptureKeyState(WindowState state, uint xKeycode, bool isDown)
+    {
+        var isKnownKeyDown = state.KeysDown.Contains(xKeycode);
+        var kind = isDown
+            ? (isKnownKeyDown ? PhysicalInputEventKind.KeyRepeat : PhysicalInputEventKind.KeyDown)
+            : PhysicalInputEventKind.KeyUp;
+
+        if (isDown)
+        {
+            _ = state.KeysDown.Add(xKeycode);
+        }
+        else
+        {
+            _ = state.KeysDown.Remove(xKeycode);
+        }
+
+        var mapped = X11KeyboardKeyMapper.TryMap(xKeycode, out var evdevKeycode, out var hidUsage);
+        return (
+            kind,
+            mapped ? (ushort)0x0007 : null,
+            mapped ? hidUsage : null,
+            evdevKeycode);
     }
 
     private static int GetWindowExtent(float logicalExtent, string parameterName)
@@ -328,6 +376,22 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         X11Native.XSetWMNormalHints(display, window, &hints);
     }
 
+    private static bool TryMapMouseButton(uint button, out MouseButtonValue mouseButton)
+    {
+        mouseButton = button switch {
+            1 => MouseButtonValue.Primary,
+            2 => MouseButtonValue.Middle,
+            3 => MouseButtonValue.Secondary,
+            8 => MouseButtonValue.Auxiliary1,
+            9 => MouseButtonValue.Auxiliary2,
+            10 => MouseButtonValue.Auxiliary3,
+            11 => MouseButtonValue.Auxiliary4,
+            12 => MouseButtonValue.Auxiliary5,
+            _ => default,
+        };
+        return button is (>= 1 and <= 3) or (>= 8 and <= 12);
+    }
+
     public void CloseWindow(WindowHandle window)
     {
         EnsureActiveOwnerThread();
@@ -409,9 +473,17 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 
         try
         {
-            if (X11Native.XSelectInput(_display, nativeWindow, checked((nint)StructureNotifyMask)) == 0)
+            var eventMask = StructureNotifyMask
+                | KeyPressMask
+                | KeyReleaseMask
+                | ButtonPressMask
+                | ButtonReleaseMask
+                | PointerMotionMask
+                | FocusChangeMask;
+
+            if (X11Native.XSelectInput(_display, nativeWindow, checked((nint)eventMask)) == 0)
             {
-                throw new InvalidOperationException("X11 rejected structure notifications for the new window.");
+                throw new InvalidOperationException("X11 rejected structure or physical-input notifications for the new window.");
             }
 
             SetWindowTitle(nativeWindow, options.Title);
@@ -471,7 +543,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     public PlatformInputSampleBatch DrainInputSamples()
     {
         EnsureActiveOwnerThread();
-        return new PlatformInputSampleBatch([], 0);
+        return _inputSamples.Drain();
     }
 
     public ImmutableArray<WindowHandle> DrainWindowCloseRequests()
@@ -652,6 +724,44 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
                 destroyedState.NativeDestroyed = true;
                 QueueCloseRequest(destroyedState);
             }
+            else if ((nativeEvent.Type == KeyPressEvent)
+                && _windowsByNativeId.TryGetValue(nativeEvent.Key.Window, out var keyDownState))
+            {
+                CaptureKey(keyDownState, nativeEvent.Key, isDown: true);
+            }
+            else if ((nativeEvent.Type == KeyReleaseEvent)
+                && _windowsByNativeId.TryGetValue(nativeEvent.Key.Window, out var keyUpState))
+            {
+                if (!IsAutoRepeatRelease(nativeEvent.Key))
+                {
+                    CaptureKey(keyUpState, nativeEvent.Key, isDown: false);
+                }
+            }
+            else if ((nativeEvent.Type == ButtonPressEvent)
+                && _windowsByNativeId.TryGetValue(nativeEvent.Button.Window, out var buttonDownState))
+            {
+                CaptureButton(buttonDownState, nativeEvent.Button, isDown: true);
+            }
+            else if ((nativeEvent.Type == ButtonReleaseEvent)
+                && _windowsByNativeId.TryGetValue(nativeEvent.Button.Window, out var buttonUpState))
+            {
+                CaptureButton(buttonUpState, nativeEvent.Button, isDown: false);
+            }
+            else if ((nativeEvent.Type == MotionNotifyEvent)
+                && _windowsByNativeId.TryGetValue(nativeEvent.Motion.Window, out var motionState))
+            {
+                CaptureMotion(motionState, nativeEvent.Motion);
+            }
+            else if ((nativeEvent.Type == FocusInEvent)
+                && _windowsByNativeId.TryGetValue(nativeEvent.Focus.Window, out var focusInState))
+            {
+                CaptureFocus(focusInState, PhysicalInputEventKind.FocusGained);
+            }
+            else if ((nativeEvent.Type == FocusOutEvent)
+                && _windowsByNativeId.TryGetValue(nativeEvent.Focus.Window, out var focusOutState))
+            {
+                CaptureFocus(focusOutState, PhysicalInputEventKind.FocusLost);
+            }
         }
     }
 
@@ -683,8 +793,8 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 
         if (window is { } windowHandle)
         {
-            _ = GetWindowState(windowHandle);
-            throw new NotSupportedException("The X11 backend does not capture physical keyboard or pointer input yet.");
+            var state = GetWindowState(windowHandle);
+            QueueInputStateReconciliation(state);
         }
     }
 
@@ -743,6 +853,153 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
                 "The X11 backend does not provide clipboard transfers yet."));
     }
 
+    private void CaptureButton(WindowState state, X11Native.ButtonEvent buttonEvent, bool isDown)
+    {
+        var position = new Vector2(buttonEvent.X, buttonEvent.Y);
+        var contentScale = GetPointerContentScale();
+        var timestamp = TimeProvider.System.GetTimestamp();
+
+        switch (buttonEvent.Button)
+        {
+            case 4 when isDown:
+            {
+                _ = _inputSamples.TryEnqueue(new PlatformInputSample(
+                    PhysicalInputEventKind.VerticalScroll,
+                    state.Window,
+                    NativeDeviceIdentity: PointerAggregateIdentity,
+                    PlatformInputDeviceKind.Pointer,
+                    PointerPosition: position,
+                    PointerContentScale: contentScale,
+                    ScrollValue: 1.0f,
+                    ScrollUnit: PointerScrollUnit.Detents,
+                    NativeTimestamp: checked((long)buttonEvent.Time),
+                    NativeClockDomain: "X11ServerTime32Milliseconds",
+                    MonotonicTimestamp: timestamp));
+                return;
+            }
+
+            case 5 when isDown:
+            {
+                _ = _inputSamples.TryEnqueue(new PlatformInputSample(
+                    PhysicalInputEventKind.VerticalScroll,
+                    state.Window,
+                    NativeDeviceIdentity: PointerAggregateIdentity,
+                    PlatformInputDeviceKind.Pointer,
+                    PointerPosition: position,
+                    PointerContentScale: contentScale,
+                    ScrollValue: -1.0f,
+                    ScrollUnit: PointerScrollUnit.Detents,
+                    NativeTimestamp: checked((long)buttonEvent.Time),
+                    NativeClockDomain: "X11ServerTime32Milliseconds",
+                    MonotonicTimestamp: timestamp));
+                return;
+            }
+
+            case 6 when isDown:
+            {
+                _ = _inputSamples.TryEnqueue(new PlatformInputSample(
+                    PhysicalInputEventKind.HorizontalScroll,
+                    state.Window,
+                    NativeDeviceIdentity: PointerAggregateIdentity,
+                    PlatformInputDeviceKind.Pointer,
+                    PointerPosition: position,
+                    PointerContentScale: contentScale,
+                    ScrollValue: -1.0f,
+                    ScrollUnit: PointerScrollUnit.Detents,
+                    NativeTimestamp: checked((long)buttonEvent.Time),
+                    NativeClockDomain: "X11ServerTime32Milliseconds",
+                    MonotonicTimestamp: timestamp));
+                return;
+            }
+
+            case 7 when isDown:
+            {
+                _ = _inputSamples.TryEnqueue(new PlatformInputSample(
+                    PhysicalInputEventKind.HorizontalScroll,
+                    state.Window,
+                    NativeDeviceIdentity: PointerAggregateIdentity,
+                    PlatformInputDeviceKind.Pointer,
+                    PointerPosition: position,
+                    PointerContentScale: contentScale,
+                    ScrollValue: 1.0f,
+                    ScrollUnit: PointerScrollUnit.Detents,
+                    NativeTimestamp: checked((long)buttonEvent.Time),
+                    NativeClockDomain: "X11ServerTime32Milliseconds",
+                    MonotonicTimestamp: timestamp));
+                return;
+            }
+        }
+
+        if (!TryMapMouseButton(buttonEvent.Button, out var mouseButton))
+        {
+            return;
+        }
+
+        _ = _inputSamples.TryEnqueue(new PlatformInputSample(
+            isDown ? PhysicalInputEventKind.PointerButtonDown : PhysicalInputEventKind.PointerButtonUp,
+            state.Window,
+            NativeDeviceIdentity: PointerAggregateIdentity,
+            PlatformInputDeviceKind.Pointer,
+            MouseButton: mouseButton,
+            IsDown: isDown,
+            PointerPosition: position,
+            PointerContentScale: contentScale,
+            NativeTimestamp: checked((long)buttonEvent.Time),
+            NativeClockDomain: "X11ServerTime32Milliseconds",
+            MonotonicTimestamp: timestamp));
+    }
+
+    private void CaptureFocus(WindowState state, PhysicalInputEventKind kind)
+    {
+        state.IsFocused = kind == PhysicalInputEventKind.FocusGained;
+
+        if (!state.IsFocused)
+        {
+            state.KeysDown.Clear();
+        }
+
+        _ = _inputSamples.TryEnqueue(new PlatformInputSample(
+            kind,
+            state.Window,
+            NativeDeviceIdentity: 0,
+            PlatformInputDeviceKind.Unknown,
+            MonotonicTimestamp: TimeProvider.System.GetTimestamp()));
+
+        if (state.IsFocused)
+        {
+            QueueInputStateReconciliation(state);
+        }
+    }
+
+    private void CaptureKey(WindowState state, X11Native.KeyEvent keyEvent, bool isDown)
+    {
+        var (kind, nativeUsagePage, nativeUsage, evdevKeycode) = CaptureKeyState(state, keyEvent.Keycode, isDown);
+        _ = _inputSamples.TryEnqueue(new PlatformInputSample(
+            kind,
+            state.Window,
+            NativeDeviceIdentity: KeyboardAggregateIdentity,
+            PlatformInputDeviceKind.Keyboard,
+            NativeUsagePage: nativeUsagePage,
+            NativeUsage: nativeUsage,
+            NativeScanCode: evdevKeycode,
+            IsDown: isDown,
+            NativeTimestamp: checked((long)keyEvent.Time),
+            NativeClockDomain: "X11ServerTime32Milliseconds",
+            MonotonicTimestamp: TimeProvider.System.GetTimestamp()));
+    }
+
+    private void CaptureMotion(WindowState state, X11Native.MotionEvent motionEvent)
+        => _ = _inputSamples.TryEnqueue(new PlatformInputSample(
+            PhysicalInputEventKind.PointerAbsoluteMotion,
+            state.Window,
+            NativeDeviceIdentity: PointerAggregateIdentity,
+            PlatformInputDeviceKind.Pointer,
+            PointerPosition: new Vector2(motionEvent.X, motionEvent.Y),
+            PointerContentScale: GetPointerContentScale(),
+            NativeTimestamp: checked((long)motionEvent.Time),
+            NativeClockDomain: "X11ServerTime32Milliseconds",
+            MonotonicTimestamp: TimeProvider.System.GetTimestamp()));
+
     private void EnsureActiveOwnerThread()
     {
         EnsureOwnerThread();
@@ -755,6 +1012,12 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         {
             throw new InvalidOperationException("The X11 platform owner is restricted to its issuing thread.");
         }
+    }
+
+    private Vector2 GetPointerContentScale()
+    {
+        var scale = (_effectiveDpi is float dpi) ? dpi / WindowedDpi : 1.0f;
+        return new Vector2(scale, scale);
     }
 
     private WindowState GetWindowState(WindowHandle window)
@@ -772,6 +1035,26 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         return state;
     }
 
+    private bool IsAutoRepeatRelease(X11Native.KeyEvent keyEvent)
+    {
+        if (X11Native.XPending(_display) == 0)
+        {
+            return false;
+        }
+
+        var nextEvent = default(X11Native.NativeEvent);
+
+        if (X11Native.XPeekEvent(_display, &nextEvent) == 0)
+        {
+            throw new InvalidOperationException("X11 failed while inspecting the next keyboard event.");
+        }
+
+        return (nextEvent.Type == KeyPressEvent)
+            && (nextEvent.Key.Window == keyEvent.Window)
+            && (nextEvent.Key.Keycode == keyEvent.Keycode)
+            && (nextEvent.Key.Time == keyEvent.Time);
+    }
+
     private void QueueCloseRequest(WindowState state)
     {
         if (!state.CloseRequested)
@@ -779,6 +1062,73 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             state.CloseRequested = true;
             _closeRequests.Add(state.Window);
         }
+    }
+
+    private void QueueInputStateReconciliation(WindowState state)
+    {
+        var reconciliationState = ImmutableArray.CreateBuilder<PlatformInputStateValue>();
+        var keymap = stackalloc byte[32];
+
+        if (X11Native.XQueryKeymap(_display, keymap) == 0)
+        {
+            throw new InvalidOperationException("X11 failed to query the current keyboard state.");
+        }
+
+        for (uint keycode = 0; keycode < 256; keycode++)
+        {
+            if ((keymap[keycode >> 3] & (1 << checked((int)(keycode & 7)))) == 0
+                || !X11KeyboardKeyMapper.TryMap(keycode, out _, out var usage))
+            {
+                continue;
+            }
+
+            reconciliationState.Add(new PlatformInputStateValue(
+                PlatformInputStateValueKind.Digital,
+                IsDown: true,
+                DigitalControl: new DigitalControl(new KeyboardControl(0x0007, usage))));
+        }
+
+        nuint root = 0;
+        nuint child = 0;
+        var rootX = 0;
+        var rootY = 0;
+        var windowX = 0;
+        var windowY = 0;
+        uint pointerMask = 0;
+
+        if (X11Native.XQueryPointer(
+                _display,
+                _rootWindow,
+                &root,
+                &child,
+                &rootX,
+                &rootY,
+                &windowX,
+                &windowY,
+                &pointerMask) == 0)
+        {
+            throw new InvalidOperationException("X11 failed to query the current pointer state.");
+        }
+
+        for (uint button = 1; button <= 5; button++)
+        {
+            if (((pointerMask & (1u << checked((int)(button + 7)))) != 0)
+                && TryMapMouseButton(button, out var mouseButton))
+            {
+                reconciliationState.Add(new PlatformInputStateValue(
+                    PlatformInputStateValueKind.Digital,
+                    IsDown: true,
+                    DigitalControl: new DigitalControl(mouseButton)));
+            }
+        }
+
+        _ = _inputSamples.TryEnqueue(new PlatformInputSample(
+            PhysicalInputEventKind.StateReconciliation,
+            state.Window,
+            NativeDeviceIdentity: 0,
+            PlatformInputDeviceKind.Unknown,
+            MonotonicTimestamp: TimeProvider.System.GetTimestamp(),
+            ReconciliationState: reconciliationState.ToImmutable()));
     }
 
     private void RefreshDpiSettings()
@@ -945,8 +1295,26 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         [LibraryImport("libX11.so.6", EntryPoint = "XOpenDisplay", StringMarshalling = StringMarshalling.Utf8)]
         internal static partial nint XOpenDisplay(string? displayName);
 
+        [LibraryImport("libX11.so.6", EntryPoint = "XPeekEvent")]
+        internal static partial int XPeekEvent(nint display, NativeEvent* nativeEvent);
+
         [LibraryImport("libX11.so.6", EntryPoint = "XPending")]
         internal static partial int XPending(nint display);
+
+        [LibraryImport("libX11.so.6", EntryPoint = "XQueryKeymap")]
+        internal static partial int XQueryKeymap(nint display, byte* keysReturn);
+
+        [LibraryImport("libX11.so.6", EntryPoint = "XQueryPointer")]
+        internal static partial int XQueryPointer(
+            nint display,
+            nuint window,
+            nuint* rootReturn,
+            nuint* childReturn,
+            int* rootXReturn,
+            int* rootYReturn,
+            int* windowXReturn,
+            int* windowYReturn,
+            uint* maskReturn);
 
         [LibraryImport("libXrandr.so.2", EntryPoint = "XRRFreeMonitors")]
         internal static partial void XRRFreeMonitors(nint monitors);
@@ -996,6 +1364,26 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             nint wmHints,
             nint classHints);
 
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct ButtonEvent
+        {
+            internal int Type;
+            internal nuint Serial;
+            internal int SendEvent;
+            internal nint Display;
+            internal nuint Window;
+            internal nuint Root;
+            internal nuint Subwindow;
+            internal nuint Time;
+            internal int X;
+            internal int Y;
+            internal int XRoot;
+            internal int YRoot;
+            internal uint State;
+            internal uint Button;
+            internal int SameScreen;
+        }
+
         [StructLayout(LayoutKind.Explicit, Size = 40)]
         internal struct ClientMessageData
         {
@@ -1027,11 +1415,75 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             internal nuint Window;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct FocusChangeEvent
+        {
+            internal int Type;
+            internal nuint Serial;
+            internal int SendEvent;
+            internal nint Display;
+            internal nuint Window;
+            internal int Mode;
+            internal int Detail;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct KeyEvent
+        {
+            internal int Type;
+            internal nuint Serial;
+            internal int SendEvent;
+            internal nint Display;
+            internal nuint Window;
+            internal nuint Root;
+            internal nuint Subwindow;
+            internal nuint Time;
+            internal int X;
+            internal int Y;
+            internal int XRoot;
+            internal int YRoot;
+            internal uint State;
+            internal uint Keycode;
+            internal int SameScreen;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct MotionEvent
+        {
+            internal int Type;
+            internal nuint Serial;
+            internal int SendEvent;
+            internal nint Display;
+            internal nuint Window;
+            internal nuint Root;
+            internal nuint Subwindow;
+            internal nuint Time;
+            internal int X;
+            internal int Y;
+            internal int XRoot;
+            internal int YRoot;
+            internal uint State;
+            internal byte IsHint;
+            internal int SameScreen;
+        }
+
         [StructLayout(LayoutKind.Explicit, Size = 192)]
         internal struct NativeEvent
         {
             [FieldOffset(0)]
             internal int Type;
+
+            [FieldOffset(0)]
+            internal KeyEvent Key;
+
+            [FieldOffset(0)]
+            internal ButtonEvent Button;
+
+            [FieldOffset(0)]
+            internal MotionEvent Motion;
+
+            [FieldOffset(0)]
+            internal FocusChangeEvent Focus;
 
             [FieldOffset(0)]
             internal ClientMessageEvent ClientMessage;
@@ -1099,6 +1551,8 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     private sealed class WindowState
     {
         internal bool CloseRequested;
+        internal bool IsFocused;
+        internal readonly HashSet<uint> KeysDown = [];
         internal bool NativeDestroyed;
 
         internal WindowState(WindowHandle window, nuint nativeWindow)
