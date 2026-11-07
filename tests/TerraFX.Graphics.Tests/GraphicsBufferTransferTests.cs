@@ -1642,15 +1642,20 @@ internal sealed class GraphicsBufferTransferTests
         }
     }
 
-    [Test]
-    public async Task TransientBufferGroupRollbackReleasesSharedAllocationAndBudget()
+    [TestCase(1, 0)]
+    [TestCase(0, 1)]
+    [TestCase(0, 2)]
+    public async Task TransientBufferGroupRollbackReleasesSharedAllocationAndBudget(
+        int bufferAllocationCreationFailureCount,
+        int bufferCreationFailureAt)
     {
         const long bufferLengthBytes = 16;
         const long exactBudgetBytes = 256L * 1024 * 1024;
         var backendDevice = new FakeBackendDevice(
             bufferAllocationSizeBytes: exactBudgetBytes,
             bufferBudgetBytes: exactBudgetBytes,
-            bufferCreationFailureAt: 2);
+            bufferAllocationCreationFailureCount: bufferAllocationCreationFailureCount,
+            bufferCreationFailureAt: bufferCreationFailureAt);
         var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
         var registry = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 7);
         var description = new BufferDescription(
@@ -1674,8 +1679,10 @@ internal sealed class GraphicsBufferTransferTests
                     .ConfigureAwait(false));
 
             Assert.That(backendDevice.BufferAllocationCreationCount, Is.EqualTo(1));
-            Assert.That(backendDevice.BufferAllocationDisposalCount, Is.EqualTo(1));
-            Assert.That(backendDevice.BufferDisposalCount, Is.EqualTo(1));
+            Assert.That(
+                backendDevice.BufferAllocationDisposalCount,
+                Is.EqualTo(bufferAllocationCreationFailureCount == 0 ? 1 : 0));
+            Assert.That(backendDevice.BufferDisposalCount, Is.EqualTo(Math.Max(bufferCreationFailureAt - 1, 0)));
 
             group = await graphicsDevice.CreateTransientBufferGroupAsync(
                     versions,
@@ -1690,9 +1697,13 @@ internal sealed class GraphicsBufferTransferTests
             await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
             Assert.That(backendDevice.BufferAllocationCreationCount, Is.EqualTo(2));
-            Assert.That(backendDevice.BufferAllocationDisposalCount, Is.EqualTo(2));
-            Assert.That(backendDevice.BufferCreationCount, Is.EqualTo(4));
-            Assert.That(backendDevice.BufferDisposalCount, Is.EqualTo(3));
+            Assert.That(
+                backendDevice.BufferAllocationDisposalCount,
+                Is.EqualTo(2 - bufferAllocationCreationFailureCount));
+            Assert.That(backendDevice.BufferCreationCount, Is.EqualTo(bufferCreationFailureAt + 2));
+            Assert.That(
+                backendDevice.BufferDisposalCount,
+                Is.EqualTo(Math.Max(bufferCreationFailureAt - 1, 0) + 2));
         }
         finally
         {
@@ -1840,6 +1851,7 @@ internal sealed class GraphicsBufferTransferTests
         private int _deviceDisposalCount;
         private int _effectiveSamplerAnisotropyBits;
         private byte[]? _lastBufferBytes;
+        private int _remainingBufferAllocationCreationFailures;
         private int _remainingBufferCreationFailures;
         private int _remainingTextureCreationFailures;
         private int _samplerCreationCount;
@@ -1856,6 +1868,7 @@ internal sealed class GraphicsBufferTransferTests
             int textureCreationFailureCount = 0,
             long? bufferAllocationSizeBytes = null,
             long bufferBudgetBytes = 3L * 1024 * 1024 * 1024,
+            int bufferAllocationCreationFailureCount = 0,
             int bufferCreationFailureCount = 0,
             int bufferCreationFailureAt = 0,
             GraphicsCapabilities? capabilities = null,
@@ -1864,6 +1877,7 @@ internal sealed class GraphicsBufferTransferTests
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(textureBudgetBytes);
             ArgumentOutOfRangeException.ThrowIfNegative(textureCreationFailureCount);
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bufferBudgetBytes);
+            ArgumentOutOfRangeException.ThrowIfNegative(bufferAllocationCreationFailureCount);
             ArgumentOutOfRangeException.ThrowIfNegative(bufferCreationFailureCount);
             ArgumentOutOfRangeException.ThrowIfNegative(bufferCreationFailureAt);
 
@@ -1882,6 +1896,7 @@ internal sealed class GraphicsBufferTransferTests
             _remainingTextureCreationFailures = textureCreationFailureCount;
             _bufferAllocationSizeBytes = bufferAllocationSizeBytes;
             _bufferBudgetBytes = bufferBudgetBytes;
+            _remainingBufferAllocationCreationFailures = bufferAllocationCreationFailureCount;
             _remainingBufferCreationFailures = bufferCreationFailureCount;
             _bufferCreationFailureAt = bufferCreationFailureAt;
             _capabilities = capabilities ?? CreateCapabilities();
@@ -1952,6 +1967,12 @@ internal sealed class GraphicsBufferTransferTests
             GraphicsResourceAllocationInfo allocationInfo)
         {
             _ = Interlocked.Increment(ref _bufferAllocationCreationCount);
+
+            if (Interlocked.Decrement(ref _remainingBufferAllocationCreationFailures) >= 0)
+            {
+                throw new InvalidOperationException("The fake backend rejected a transient buffer allocation attempt.");
+            }
+
             return new FakeBackendBufferAllocation(this);
         }
 
