@@ -328,6 +328,20 @@ internal sealed unsafe partial class VulkanBackendDevice
             }
         }
 
+        _ = GetCompletedGraphFence();
+        VulkanGraphFrameSlot? availableGraphFrameSlot = null;
+
+        foreach (var graphFrameSlot in _graphFrameSlots)
+        {
+            if (graphFrameSlot.FenceValue == 0)
+            {
+                availableGraphFrameSlot = graphFrameSlot;
+                break;
+            }
+        }
+
+        var selectedGraphFrameSlot = availableGraphFrameSlot
+            ?? throw new InvalidOperationException("Vulkan graph command frame slots are exhausted before graphics admission.");
         var imageView = CreateGraphColorImageView(_device, target);
         var subresource = new TextureSubresource(0, 0, TextureAspect.Color);
         var currentLayout = target.GetLayout(subresource);
@@ -346,6 +360,8 @@ internal sealed unsafe partial class VulkanBackendDevice
         var storageCurrentAccessMask = storageTexture?.GetLastAccessMask(storageSubresource)
             ?? VkAccessFlags2.VK_ACCESS_2_NONE;
         var ownsImageView = true;
+        var graphSubmissionAccepted = false;
+        _commandBuffer = selectedGraphFrameSlot.CommandBuffer;
 
         try
         {
@@ -1022,7 +1038,12 @@ internal sealed unsafe partial class VulkanBackendDevice
                 }
             }
 
-            var completedFence = SubmitAndWaitCore(retainedBuffer: null, retainedTexture: null);
+            var submittedFence = SubmitGraphWithoutWait();
+            selectedGraphFrameSlot.FenceValue = checked((ulong)submittedFence);
+            selectedGraphFrameSlot.ImageView = imageView;
+            selectedGraphFrameSlot.DescriptorSets = descriptorSets;
+            ownsImageView = false;
+            graphSubmissionAccepted = true;
             target.SetLayout(subresource, currentLayout);
             target.SetLastAccessScope(subresource, currentStageMask, currentAccessMask);
             target.MarkInitialized(subresource);
@@ -1073,11 +1094,11 @@ internal sealed unsafe partial class VulkanBackendDevice
                     graphBufferScope.AccessMask);
             }
 
-            return completedFence;
+            return submittedFence;
         }
         catch (Exception exception)
         {
-            if (_hasUncertainSubmission)
+            if (_hasUncertainSubmission || graphSubmissionAccepted)
             {
                 throw;
             }
@@ -1108,7 +1129,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                         _uncertainGraphDescriptorSets.Add(descriptorSet);
                     }
                 }
-                else
+                else if (!graphSubmissionAccepted)
                 {
                     for (var index = descriptorSets.Count - 1; index >= 0; index--)
                     {
@@ -1122,6 +1143,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                 {
                     VulkanApi.vkDestroyImageView(_device, imageView, null);
                 }
+
+                _commandBuffer = _transferCommandBuffer;
             }
         }
     }
@@ -1387,5 +1410,31 @@ internal sealed unsafe partial class VulkanBackendDevice
         imageDependencyInfo.imageMemoryBarrierCount = 1;
         imageDependencyInfo.pImageMemoryBarriers = &imageBarrier;
         VulkanApi.vkCmdPipelineBarrier2(_commandBuffer, &imageDependencyInfo);
+    }
+
+    private void RetireCompletedGraphFrameSlots(ulong completedValue)
+    {
+        foreach (var graphFrameSlot in _graphFrameSlots)
+        {
+            if ((graphFrameSlot.FenceValue == 0) || (graphFrameSlot.FenceValue > completedValue))
+            {
+                continue;
+            }
+
+            if (graphFrameSlot.DescriptorSets is List<VulkanBackendDescriptorSet> descriptorSets)
+            {
+                for (var index = descriptorSets.Count - 1; index >= 0; index--)
+                {
+                    descriptorSets[index].Dispose();
+                }
+
+                descriptorSets.Clear();
+                graphFrameSlot.DescriptorSets = null;
+            }
+
+            VulkanApi.vkDestroyImageView(_device, graphFrameSlot.ImageView, null);
+            graphFrameSlot.ImageView = default;
+            graphFrameSlot.FenceValue = 0;
+        }
     }
 }

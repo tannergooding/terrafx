@@ -33,11 +33,18 @@ public static unsafe class D3D12GraphicsBackend
         private const int DxgiErrorDriverInternalError = unchecked((int)0x887A0020);
         private const int DxgiErrorNotFound = unchecked((int)0x887A0002);
         private const uint MaximumD3D12MultisampleCount = 32;
+        private readonly Func<long, long>? _completedFenceValueOverride;
+        private readonly Func<nint, uint, uint>? _graphWaitForSingleObject;
         private readonly Func<nint, uint, uint>? _waitForSingleObject;
 
-        internal D3D12BackendFactory(Func<nint, uint, uint>? waitForSingleObject = null)
+        internal D3D12BackendFactory(
+            Func<nint, uint, uint>? waitForSingleObject = null,
+            Func<nint, uint, uint>? graphWaitForSingleObject = null,
+            Func<long, long>? completedFenceValueOverride = null)
         {
             _waitForSingleObject = waitForSingleObject;
+            _graphWaitForSingleObject = graphWaitForSingleObject;
+            _completedFenceValueOverride = completedFenceValueOverride;
         }
 
         public GraphicsBackend Backend => GraphicsBackend.D3D12;
@@ -658,9 +665,12 @@ public static unsafe class D3D12GraphicsBackend
             uint ownerId,
             GraphicsDeviceProfile profile,
             GraphicsPlatformKind platformKind,
+            int frameSlotCount,
             CancellationToken cancellationToken)
         {
             ArgumentOutOfRangeException.ThrowIfZero(ownerId);
+            ArgumentOutOfRangeException.ThrowIfLessThan(frameSlotCount, 1);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(frameSlotCount, 4);
             cancellationToken.ThrowIfCancellationRequested();
 
             IDXGIFactory4* factory = null;
@@ -736,7 +746,10 @@ public static unsafe class D3D12GraphicsBackend
                                 device,
                                 adapter3,
                                 capabilities,
-                                _waitForSingleObject);
+                                frameSlotCount,
+                                _waitForSingleObject,
+                                _graphWaitForSingleObject,
+                                _completedFenceValueOverride);
                             device = null;
                             adapter3 = null;
                             return backendDevice;
@@ -786,7 +799,13 @@ public static unsafe class D3D12GraphicsBackend
             private const long StagingRingCapacityBytes = 64L * 1024 * 1024;
 
             private IDXGIAdapter3* _adapter;
+            private readonly Func<long, long>? _completedFenceValueOverride;
             private ID3D12Device* _device;
+            private readonly List<D3D12BackendDescriptorSet>?[] _graphFrameDescriptorSets;
+            private readonly long[] _graphFrameFenceValues;
+            private readonly nint[] _graphFrameRenderTargetHeaps;
+            private readonly int _graphFrameSlotCount;
+            private readonly Func<nint, uint, uint>? _graphWaitForSingleObject;
             private int _liveDescriptorSetCount;
             private readonly int _ownerThreadId = Environment.CurrentManagedThreadId;
             private ID3D12Resource* _quarantinedStagingResource;
@@ -808,7 +827,10 @@ public static unsafe class D3D12GraphicsBackend
                 ID3D12Device* device,
                 IDXGIAdapter3* adapter,
                 GraphicsCapabilities capabilities,
-                Func<nint, uint, uint>? waitForSingleObject = null)
+                int frameSlotCount,
+                Func<nint, uint, uint>? waitForSingleObject,
+                Func<nint, uint, uint>? graphWaitForSingleObject,
+                Func<long, long>? completedFenceValueOverride)
             {
                 ArgumentNullException.ThrowIfNull(capabilities);
 
@@ -820,6 +842,12 @@ public static unsafe class D3D12GraphicsBackend
                 _adapter = adapter;
                 _device = device;
                 Capabilities = capabilities;
+                _graphFrameSlotCount = frameSlotCount;
+                _graphFrameDescriptorSets = new List<D3D12BackendDescriptorSet>?[frameSlotCount];
+                _graphFrameFenceValues = new long[frameSlotCount];
+                _graphFrameRenderTargetHeaps = new nint[frameSlotCount];
+                _completedFenceValueOverride = completedFenceValueOverride;
+                _graphWaitForSingleObject = graphWaitForSingleObject;
                 _waitForSingleObject = waitForSingleObject;
             }
 
@@ -1379,6 +1407,7 @@ public static unsafe class D3D12GraphicsBackend
                     throw new InvalidOperationException("The D3D12 backend still has live resource descriptor ranges.");
                 }
 
+                _ = GetCompletedGraphFence();
                 transferQueue?.Dispose();
                 _transferQueue = null;
 
@@ -1448,6 +1477,40 @@ public static unsafe class D3D12GraphicsBackend
                     &nativeDescription,
                     _adapter,
                     GetBufferHeapIndex(description.MemoryKind));
+            }
+
+            public long GetCompletedGraphFence()
+            {
+                var completedFence = _transferQueue?.GetCompletedFence() ?? 0;
+
+                for (var index = 0; index < _graphFrameFenceValues.Length; index++)
+                {
+                    if ((_graphFrameFenceValues[index] == 0) || (_graphFrameFenceValues[index] > completedFence))
+                    {
+                        continue;
+                    }
+
+                    if (_graphFrameDescriptorSets[index] is List<D3D12BackendDescriptorSet> descriptorSets)
+                    {
+                        for (var descriptorIndex = descriptorSets.Count - 1; descriptorIndex >= 0; descriptorIndex--)
+                        {
+                            descriptorSets[descriptorIndex].Dispose();
+                        }
+
+                        descriptorSets.Clear();
+                        _graphFrameDescriptorSets[index] = null;
+                    }
+
+                    if (_graphFrameRenderTargetHeaps[index] != 0)
+                    {
+                        _ = ((ID3D12DescriptorHeap*)_graphFrameRenderTargetHeaps[index])->Release();
+                        _graphFrameRenderTargetHeaps[index] = 0;
+                    }
+
+                    _graphFrameFenceValues[index] = 0;
+                }
+
+                return completedFence;
             }
 
             public GraphicsResourceAllocationInfo GetTextureAllocationInfo(TextureDescription description)
@@ -1702,6 +1765,7 @@ public static unsafe class D3D12GraphicsBackend
                 }
 
                 var transferQueue = GetTransferQueue();
+                _ = GetCompletedGraphFence();
                 var descriptorSetCapacity = 0;
 
                 foreach (var pass in submission.Passes)
@@ -1728,6 +1792,8 @@ public static unsafe class D3D12GraphicsBackend
                 };
                 var heapId = typeof(ID3D12DescriptorHeap).GUID;
                 ID3D12DescriptorHeap* renderTargetHeap = null;
+                var graphSubmissionAccepted = false;
+                var graphFrameSlotIndex = -1;
 
                 try
                 {
@@ -1748,7 +1814,8 @@ public static unsafe class D3D12GraphicsBackend
                         },
                     };
                     _device->CreateRenderTargetView(target.GetResource(), &renderTargetViewDescription, renderTargetView);
-                    var commandList = transferQueue.BeginRecording();
+                    var commandList = transferQueue.BeginGraphRecording();
+                    graphFrameSlotIndex = transferQueue.ActiveGraphFrameSlotIndex;
                     var clearColor = stackalloc float[4];
                     var viewport = new D3D12_VIEWPORT {
                         TopLeftX = 0.0f,
@@ -2390,10 +2457,21 @@ public static unsafe class D3D12GraphicsBackend
                         }
                     }
 
-                    return transferQueue.SubmitAndWait();
+                    var submittedFence = transferQueue.SubmitGraphAndSignal();
+                    _graphFrameFenceValues[graphFrameSlotIndex] = submittedFence;
+                    _graphFrameDescriptorSets[graphFrameSlotIndex] = descriptorSets;
+                    _graphFrameRenderTargetHeaps[graphFrameSlotIndex] = (nint)renderTargetHeap;
+                    renderTargetHeap = null;
+                    graphSubmissionAccepted = true;
+                    return submittedFence;
                 }
                 catch (Exception exception)
                 {
+                    if (graphSubmissionAccepted)
+                    {
+                        throw;
+                    }
+
                     try
                     {
                         transferQueue.StopRecording();
@@ -2428,7 +2506,7 @@ public static unsafe class D3D12GraphicsBackend
                                 _uncertainGraphDescriptorSets.Add(descriptorSet);
                             }
                         }
-                        else
+                        else if (!graphSubmissionAccepted)
                         {
                             for (var index = descriptorSets.Count - 1; index >= 0; index--)
                             {
@@ -2756,6 +2834,14 @@ public static unsafe class D3D12GraphicsBackend
                             transferQueue);
                     }
                 }
+            }
+
+            public void WaitForGraphFence(long fenceValue)
+            {
+                ArgumentOutOfRangeException.ThrowIfNegativeOrZero(fenceValue);
+                var transferQueue = _transferQueue
+                    ?? throw new InvalidOperationException("The D3D12 graph fence has no submitted transfer queue.");
+                transferQueue.WaitForFence(fenceValue);
             }
 
             internal D3D12BackendDescriptorSet CreateDescriptorSet(
@@ -3823,7 +3909,12 @@ public static unsafe class D3D12GraphicsBackend
 
             private D3D12BackendFactory.D3D12TransferQueue GetTransferQueue()
             {
-                _transferQueue ??= new D3D12BackendFactory.D3D12TransferQueue(_device, _waitForSingleObject);
+                _transferQueue ??= new D3D12BackendFactory.D3D12TransferQueue(
+                    _device,
+                    _graphFrameSlotCount,
+                    _waitForSingleObject,
+                    _graphWaitForSingleObject,
+                    _completedFenceValueOverride);
 
                 return _transferQueue;
             }
@@ -4878,12 +4969,18 @@ public static unsafe class D3D12GraphicsBackend
         {
             private const uint TransferFenceTimeoutMilliseconds = 30_000;
 
+            private ID3D12GraphicsCommandList* _activeCommandList;
+            private int _activeGraphFrameSlotIndex = -1;
             private ID3D12CommandAllocator* _commandAllocator;
             private ID3D12GraphicsCommandList* _commandList;
             private ID3D12CommandQueue* _commandQueue;
+            private readonly Func<long, long>? _completedFenceValueOverride;
             private ID3D12Device* _device;
             private ID3D12Fence* _fence;
             private HANDLE _fenceEvent;
+            private readonly int _graphFrameSlotCount;
+            private readonly GraphFrameSlot[] _graphFrameSlots;
+            private readonly Func<nint, uint, uint>? _graphWaitForSingleObject;
             private bool _hasUncertainSubmission;
             private bool _isDisposed;
             private bool _isRecording;
@@ -4893,7 +4990,10 @@ public static unsafe class D3D12GraphicsBackend
 
             internal D3D12TransferQueue(
                 ID3D12Device* device,
-                Func<nint, uint, uint>? waitForSingleObject = null)
+                int graphFrameSlotCount,
+                Func<nint, uint, uint>? waitForSingleObject,
+                Func<nint, uint, uint>? graphWaitForSingleObject,
+                Func<long, long>? completedFenceValueOverride)
             {
                 if (device is null)
                 {
@@ -4901,6 +5001,9 @@ public static unsafe class D3D12GraphicsBackend
                 }
 
                 _waitForSingleObject = waitForSingleObject;
+                _graphWaitForSingleObject = graphWaitForSingleObject;
+                _completedFenceValueOverride = completedFenceValueOverride;
+                _graphFrameSlotCount = graphFrameSlotCount;
                 var queueDescription = new D3D12_COMMAND_QUEUE_DESC {
                     Type = D3D12_COMMAND_LIST_TYPE.D3D12_COMMAND_LIST_TYPE_DIRECT,
                     Priority = (int)D3D12_COMMAND_QUEUE_PRIORITY.D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
@@ -4911,6 +5014,10 @@ public static unsafe class D3D12GraphicsBackend
                 var allocatorId = typeof(ID3D12CommandAllocator).GUID;
                 var commandListId = typeof(ID3D12GraphicsCommandList).GUID;
                 var fenceId = typeof(ID3D12Fence).GUID;
+                var graphFrameSlots = new GraphFrameSlot[graphFrameSlotCount];
+                var createdGraphFrameSlotCount = 0;
+                var graphFrameSlotsTransferred = false;
+                HANDLE fenceEvent = default;
                 ID3D12CommandQueue* commandQueue = null;
                 ID3D12CommandAllocator* commandAllocator = null;
                 ID3D12GraphicsCommandList* commandList = null;
@@ -4941,7 +5048,51 @@ public static unsafe class D3D12GraphicsBackend
                         throw new InvalidOperationException("D3D12 transfer fence creation returned no fence.");
                     }
 
-                    var fenceEvent = Windows.CreateEventW(null, false, false, null);
+                    for (var index = 0; index < graphFrameSlotCount; index++)
+                    {
+                        ID3D12CommandAllocator* graphAllocator = null;
+                        ID3D12GraphicsCommandList* graphCommandList = null;
+
+                        try
+                        {
+                            ThrowIfFailed(device->CreateCommandAllocator(
+                                queueDescription.Type,
+                                &allocatorId,
+                                (void**)&graphAllocator));
+                            ThrowIfFailed(device->CreateCommandList(
+                                0,
+                                queueDescription.Type,
+                                graphAllocator,
+                                null,
+                                &commandListId,
+                                (void**)&graphCommandList));
+
+                            if ((graphAllocator is null) || (graphCommandList is null))
+                            {
+                                throw new InvalidOperationException("D3D12 graph frame-slot creation returned incomplete command storage.");
+                            }
+
+                            ThrowIfFailed(graphCommandList->Close());
+                            graphFrameSlots[index] = new GraphFrameSlot(graphAllocator, graphCommandList);
+                            graphAllocator = null;
+                            graphCommandList = null;
+                            createdGraphFrameSlotCount++;
+                        }
+                        finally
+                        {
+                            if (graphCommandList is not null)
+                            {
+                                _ = graphCommandList->Release();
+                            }
+
+                            if (graphAllocator is not null)
+                            {
+                                _ = graphAllocator->Release();
+                            }
+                        }
+                    }
+
+                    fenceEvent = Windows.CreateEventW(null, false, false, null);
 
                     if (fenceEvent.Value is null)
                     {
@@ -4951,16 +5102,32 @@ public static unsafe class D3D12GraphicsBackend
                     _commandQueue = commandQueue;
                     _commandAllocator = commandAllocator;
                     _commandList = commandList;
+                    _graphFrameSlots = graphFrameSlots;
+                    graphFrameSlotsTransferred = true;
                     _fence = fence;
                     _fenceEvent = fenceEvent;
                     _device = device;
                     commandQueue = null;
                     commandAllocator = null;
                     commandList = null;
+                    fenceEvent = default;
                     fence = null;
                 }
                 catch
                 {
+                    if ((fenceEvent.Value is not null) && !Windows.CloseHandle(fenceEvent))
+                    {
+                        ThrowLastWin32Error("Closing the failed D3D12 transfer fence event failed.");
+                    }
+
+                    if (!graphFrameSlotsTransferred)
+                    {
+                        for (var index = createdGraphFrameSlotCount - 1; index >= 0; index--)
+                        {
+                            graphFrameSlots[index].Dispose();
+                        }
+                    }
+
                     if (fence is not null)
                     {
                         _ = fence->Release();
@@ -4985,6 +5152,7 @@ public static unsafe class D3D12GraphicsBackend
                 }
             }
 
+            internal int ActiveGraphFrameSlotIndex => _activeGraphFrameSlotIndex;
             internal bool HasUncertainSubmission => _hasUncertainSubmission;
 
             private static void ThrowLastWin32Error(string message)
@@ -5012,6 +5180,15 @@ public static unsafe class D3D12GraphicsBackend
                 }
 
                 EnsureOwnerThread();
+                var completedFence = checked((ulong)GetCompletedFence());
+
+                foreach (var graphFrameSlot in _graphFrameSlots)
+                {
+                    if (graphFrameSlot.FenceValue > completedFence)
+                    {
+                        throw new InvalidOperationException("The D3D12 graph frame slot still has pending GPU work.");
+                    }
+                }
 
                 if ((_fenceEvent.Value is not null) && !Windows.CloseHandle(_fenceEvent))
                 {
@@ -5024,6 +5201,12 @@ public static unsafe class D3D12GraphicsBackend
                 var commandList = _commandList;
                 var commandAllocator = _commandAllocator;
                 var commandQueue = _commandQueue;
+
+                for (var index = _graphFrameSlots.Length - 1; index >= 0; index--)
+                {
+                    _graphFrameSlots[index].Dispose();
+                }
+
                 _fence = null;
                 _commandList = null;
                 _commandAllocator = null;
@@ -5052,6 +5235,43 @@ public static unsafe class D3D12GraphicsBackend
                 }
             }
 
+            internal ID3D12GraphicsCommandList* BeginGraphRecording()
+            {
+                EnsureOwnerThread();
+
+                if (_hasUncertainSubmission)
+                {
+                    throw new InvalidOperationException("The D3D12 transfer queue is quarantined after an uncertain submission.");
+                }
+
+                if (_isRecording)
+                {
+                    throw new InvalidOperationException("A D3D12 command list is already recording.");
+                }
+
+                var completedFence = checked((ulong)GetCompletedFence());
+
+                for (var index = 0; index < _graphFrameSlots.Length; index++)
+                {
+                    var graphFrameSlot = _graphFrameSlots[index];
+
+                    if (graphFrameSlot.FenceValue > completedFence)
+                    {
+                        continue;
+                    }
+
+                    ThrowIfFailed(graphFrameSlot.CommandAllocator->Reset());
+                    ThrowIfFailed(graphFrameSlot.CommandList->Reset(graphFrameSlot.CommandAllocator, null));
+                    graphFrameSlot.FenceValue = 0;
+                    _activeCommandList = graphFrameSlot.CommandList;
+                    _activeGraphFrameSlotIndex = index;
+                    _isRecording = true;
+                    return _activeCommandList;
+                }
+
+                throw new InvalidOperationException("The configured D3D12 graph frame slots are all in flight.");
+            }
+
             internal ID3D12GraphicsCommandList* BeginRecording()
             {
                 EnsureOwnerThread();
@@ -5068,8 +5288,41 @@ public static unsafe class D3D12GraphicsBackend
 
                 ThrowIfFailed(_commandAllocator->Reset());
                 ThrowIfFailed(_commandList->Reset(_commandAllocator, null));
+                _activeCommandList = _commandList;
+                _activeGraphFrameSlotIndex = -1;
                 _isRecording = true;
-                return _commandList;
+                return _activeCommandList;
+            }
+
+            internal long GetCompletedFence()
+            {
+                EnsureOwnerThread();
+                var completedFenceValue = _fence->GetCompletedValue();
+
+                if (completedFenceValue == ulong.MaxValue)
+                {
+                    var deviceRemovedReason = _device->GetDeviceRemovedReason();
+                    throw new GraphicsDeviceLostException(
+                        deviceRemovedReason.FAILED
+                            ? deviceRemovedReason.Value
+                            : DxgiErrorDeviceRemoved);
+                }
+
+                var completedFence = checked((long)completedFenceValue);
+
+                if (_completedFenceValueOverride is Func<long, long> completedFenceValueOverride)
+                {
+                    var overriddenCompletedFence = completedFenceValueOverride(completedFence);
+
+                    if ((overriddenCompletedFence < 0) || (overriddenCompletedFence > completedFence))
+                    {
+                        throw new InvalidOperationException("The D3D12 graph-fence test override reported an invalid value.");
+                    }
+
+                    return overriddenCompletedFence;
+                }
+
+                return completedFence;
             }
 
             internal void StopRecording()
@@ -5079,7 +5332,9 @@ public static unsafe class D3D12GraphicsBackend
                 if (_isRecording)
                 {
                     _isRecording = false;
-                    ThrowIfFailed(_commandList->Close());
+                    ThrowIfFailed(_activeCommandList->Close());
+                    _activeCommandList = null;
+                    _activeGraphFrameSlotIndex = -1;
                 }
             }
 
@@ -5092,8 +5347,11 @@ public static unsafe class D3D12GraphicsBackend
                     throw new InvalidOperationException("The D3D12 transfer command list is not recording.");
                 }
 
-                ThrowIfFailed(_commandList->Close());
+                var commandList = _activeCommandList;
+                ThrowIfFailed(commandList->Close());
                 _isRecording = false;
+                _activeCommandList = null;
+                _activeGraphFrameSlotIndex = -1;
 
                 if (_nextFenceValue >= long.MaxValue)
                 {
@@ -5103,7 +5361,7 @@ public static unsafe class D3D12GraphicsBackend
                 var fenceValue = ++_nextFenceValue;
                 _hasUncertainSubmission = true;
                 var commandLists = stackalloc ID3D12CommandList*[1];
-                commandLists[0] = (ID3D12CommandList*)_commandList;
+                commandLists[0] = (ID3D12CommandList*)commandList;
                 _commandQueue->ExecuteCommandLists(1, commandLists);
                 var signalResult = _commandQueue->Signal(_fence, fenceValue);
 
@@ -5159,6 +5417,121 @@ public static unsafe class D3D12GraphicsBackend
                 return checked((long)fenceValue);
             }
 
+            internal long SubmitGraphAndSignal()
+            {
+                EnsureOwnerThread();
+
+                if (!_isRecording || (_activeGraphFrameSlotIndex < 0))
+                {
+                    throw new InvalidOperationException("A D3D12 graph frame slot is not recording.");
+                }
+
+                var graphFrameSlot = _graphFrameSlots[_activeGraphFrameSlotIndex];
+                var commandList = _activeCommandList;
+                ThrowIfFailed(commandList->Close());
+                _isRecording = false;
+                _activeCommandList = null;
+                _activeGraphFrameSlotIndex = -1;
+
+                if (_nextFenceValue >= long.MaxValue)
+                {
+                    throw new InvalidOperationException("The D3D12 transfer fence value space is exhausted.");
+                }
+
+                var fenceValue = ++_nextFenceValue;
+                _hasUncertainSubmission = true;
+                var commandLists = stackalloc ID3D12CommandList*[1];
+                commandLists[0] = (ID3D12CommandList*)commandList;
+                _commandQueue->ExecuteCommandLists(1, commandLists);
+                var signalResult = _commandQueue->Signal(_fence, fenceValue);
+
+                if (signalResult.FAILED)
+                {
+                    throw new GraphicsDeviceLostException(signalResult.Value);
+                }
+
+                graphFrameSlot.FenceValue = fenceValue;
+                _hasUncertainSubmission = false;
+                return checked((long)fenceValue);
+            }
+
+            internal void WaitForFence(long fenceValue)
+            {
+                ArgumentOutOfRangeException.ThrowIfNegativeOrZero(fenceValue);
+                ObjectDisposedException.ThrowIf(_isDisposed, this);
+                var nativeFenceValue = checked((ulong)fenceValue);
+                var completedFenceValue = _fence->GetCompletedValue();
+
+                if (completedFenceValue == ulong.MaxValue)
+                {
+                    var deviceRemovedReason = _device->GetDeviceRemovedReason();
+                    throw new GraphicsDeviceLostException(
+                        deviceRemovedReason.FAILED
+                            ? deviceRemovedReason.Value
+                            : DxgiErrorDeviceRemoved);
+                }
+
+                if ((completedFenceValue >= nativeFenceValue) && (_graphWaitForSingleObject is null))
+                {
+                    return;
+                }
+
+                var fenceEvent = Windows.CreateEventW(null, false, false, null);
+
+                if (fenceEvent.Value is null)
+                {
+                    ThrowLastWin32Error("Creating the D3D12 graph-fence wait event failed.");
+                }
+
+                try
+                {
+                    var eventResult = _fence->SetEventOnCompletion(nativeFenceValue, fenceEvent);
+
+                    if (eventResult.FAILED)
+                    {
+                        throw new GraphicsDeviceLostException(eventResult.Value);
+                    }
+
+                    var waitResult = _graphWaitForSingleObject is Func<nint, uint, uint> waitForSingleObject
+                        ? waitForSingleObject(fenceEvent, TransferFenceTimeoutMilliseconds)
+                        : Windows.WaitForSingleObject(fenceEvent, TransferFenceTimeoutMilliseconds);
+
+                    if (waitResult == 0xFFFFFFFF)
+                    {
+                        var error = Marshal.GetHRForLastWin32Error();
+                        throw new GraphicsDeviceLostException(error != 0 ? error : unchecked((int)0x80004005));
+                    }
+
+                    if (waitResult == 0x00000102)
+                    {
+                        throw new GraphicsDeviceLostException(unchecked((int)0x800705B4));
+                    }
+
+                    if (waitResult != 0)
+                    {
+                        throw new GraphicsDeviceLostException(unchecked((int)0x80004005));
+                    }
+
+                    completedFenceValue = _fence->GetCompletedValue();
+
+                    if ((completedFenceValue == ulong.MaxValue) || (completedFenceValue < nativeFenceValue))
+                    {
+                        var deviceRemovedReason = _device->GetDeviceRemovedReason();
+                        throw new GraphicsDeviceLostException(
+                            deviceRemovedReason.FAILED
+                                ? deviceRemovedReason.Value
+                                : unchecked((int)0x80004005));
+                    }
+                }
+                finally
+                {
+                    if (!Windows.CloseHandle(fenceEvent))
+                    {
+                        ThrowLastWin32Error("Closing the D3D12 graph-fence wait event failed.");
+                    }
+                }
+            }
+
             private void EnsureOwnerThread()
             {
                 ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -5166,6 +5539,39 @@ public static unsafe class D3D12GraphicsBackend
                 if (Environment.CurrentManagedThreadId != _ownerThreadId)
                 {
                     throw new InvalidOperationException("D3D12 transfer commands must execute on their owning thread.");
+                }
+            }
+
+            private sealed unsafe class GraphFrameSlot
+            {
+                internal ID3D12CommandAllocator* CommandAllocator;
+                internal ID3D12GraphicsCommandList* CommandList;
+                internal ulong FenceValue;
+
+                internal GraphFrameSlot(
+                    ID3D12CommandAllocator* commandAllocator,
+                    ID3D12GraphicsCommandList* commandList)
+                {
+                    CommandAllocator = commandAllocator;
+                    CommandList = commandList;
+                }
+
+                internal void Dispose()
+                {
+                    var commandList = CommandList;
+                    var commandAllocator = CommandAllocator;
+                    CommandList = null;
+                    CommandAllocator = null;
+
+                    if (commandList is not null)
+                    {
+                        _ = commandList->Release();
+                    }
+
+                    if (commandAllocator is not null)
+                    {
+                        _ = commandAllocator->Release();
+                    }
                 }
             }
         }

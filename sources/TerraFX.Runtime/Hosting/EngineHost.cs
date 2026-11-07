@@ -156,6 +156,7 @@ public sealed partial class EngineHost : IAsyncDisposable
                     ownerId,
                     registration,
                     GraphicsDeviceProfile.OffscreenNative,
+                    options.GraphicsFrameSlotCount,
                     GraphicsPlatformKind.None,
                     cancellationToken).ConfigureAwait(false);
             }

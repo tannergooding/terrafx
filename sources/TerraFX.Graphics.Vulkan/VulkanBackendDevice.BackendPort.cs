@@ -67,6 +67,9 @@ internal sealed unsafe partial class VulkanBackendDevice
     GraphicsResourceAllocationInfo IGraphicsBackendDevice.GetBufferAllocationInfo(BufferDescription description)
         => GetBufferAllocationInfo(description);
 
+    long IGraphicsBackendDevice.GetCompletedGraphFence()
+        => GetCompletedGraphFence();
+
     GraphicsResourceAllocationInfo IGraphicsBackendDevice.GetTextureAllocationInfo(TextureDescription description)
         => GetTextureAllocationInfo(description);
 
@@ -162,4 +165,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             sourceOffset,
             sourceLayout);
     }
+
+    void IGraphicsBackendDevice.WaitForGraphFence(long fenceValue)
+        => WaitForGraphFence(fenceValue);
 }

@@ -46,7 +46,7 @@ Resource last-use updated by every submitted command containing a read/write/vie
 
 Lifetimes use first/last scheduled access, including side-effect/readback exports and graphics processing unit (GPU) completion, not lexical declaration order. Two resources may reuse a compatible block only if lifetimes don't overlap in submitted execution, native requirements/alignment/heap class compatible, and a discard/new-content initialization plus native alias transition is emitted. Never alias immutable snapshot data or exported/readback resources before their protection ends.
 
-The default frame-slot count is 3; configurable integer counts lie in `[1, 4]`. A different slot's transient allocation remains protected by its own last-use timeline, so graph lifetime intervals alone cannot alias across live slots. Deterministic allocator first-fit aligned block order; reject budget overflow before submit, retain previous completed frame with an explicit failed-frame event.
+The host-configured graphics frame-slot count defaults to 3; `EngineHostOptions.GraphicsFrameSlotCount` accepts integer counts in `[1, 4]`. Headless creates no graphics slots. Each accepted graph owns one slot through its actual queue fence; an incomplete slot cannot be reset or reused. A different slot's transient allocation remains protected by its own last-use timeline, so graph lifetime intervals alone cannot alias across live slots. Deterministic allocator first-fit aligned block order; reject budget overflow before submit, retain previous completed frame with an explicit failed-frame event.
 
 ## 4. D3D12 presentation
 

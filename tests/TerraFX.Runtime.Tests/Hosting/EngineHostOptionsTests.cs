@@ -87,6 +87,7 @@ internal sealed partial class EngineHostOptionsTests
     private static EngineHostOptions CreateHeadlessOptions(
         AssetStoreOptions assetStoreOptions,
         int? cpuWorkerCount = null,
+        int? graphicsFrameSlotCount = null,
         SimulationOverrunPolicy? overrunPolicy = null,
         GraphicsFailurePolicy? graphicsFailurePolicy = null,
         ClipboardServicePolicy? clipboardServicePolicy = null,
@@ -98,6 +99,7 @@ internal sealed partial class EngineHostOptionsTests
             graphicsBackendRegistration: null,
             assetStoreOptions: assetStoreOptions) {
             CpuWorkerCount = cpuWorkerCount ?? Math.Min(64, Math.Max(1, Environment.ProcessorCount - 2)),
+            GraphicsFrameSlotCount = graphicsFrameSlotCount ?? 3,
             OverrunPolicy = overrunPolicy ?? SimulationOverrunPolicy.Pause,
             GraphicsFailurePolicy = graphicsFailurePolicy ?? GraphicsFailurePolicy.StopHost,
             ClipboardServicePolicy = clipboardServicePolicy ?? ClipboardServicePolicy.NotRequested,
@@ -268,6 +270,7 @@ internal sealed partial class EngineHostOptionsTests
                     platformOwner.OwnerId,
                     registration,
                     GraphicsDeviceProfile.OffscreenNative,
+                    3,
                     GraphicsPlatformKind.None,
                     CancellationToken.None).GetAwaiter().GetResult();
             }
@@ -573,6 +576,7 @@ internal sealed partial class EngineHostOptionsTests
             GraphicsBackend.Vulkan,
             registration,
             CreateAssetStoreOptions()) {
+            GraphicsFrameSlotCount = 4,
             PersistenceMetadata = CreatePersistenceMetadata(),
         };
         var platformOwner = PlatformHostOwner.Create(options);
@@ -586,6 +590,7 @@ internal sealed partial class EngineHostOptionsTests
                     platformOwner.OwnerId,
                     registration,
                     GraphicsDeviceProfile.OffscreenNative,
+                    options.GraphicsFrameSlotCount,
                     GraphicsPlatformKind.None,
                     CancellationToken.None).GetAwaiter().GetResult();
             }
@@ -1178,6 +1183,7 @@ internal sealed partial class EngineHostOptionsTests
                         platformOwner.OwnerId,
                         GraphicsDeviceProfile.OffscreenNative,
                         GraphicsPlatformKind.None,
+                        3,
                         CancellationToken.None);
             }
             catch (DllNotFoundException exception)
@@ -1627,6 +1633,7 @@ internal sealed partial class EngineHostOptionsTests
                     platformOwner.OwnerId,
                     registration,
                     GraphicsDeviceProfile.OffscreenNative,
+                    3,
                     GraphicsPlatformKind.None,
                     CancellationToken.None)
                     .WaitAsync(TimeSpan.FromSeconds(30))
@@ -1765,6 +1772,7 @@ internal sealed partial class EngineHostOptionsTests
                     platformOwner.OwnerId,
                     registration,
                     GraphicsDeviceProfile.OffscreenNative,
+                    3,
                     GraphicsPlatformKind.None,
                     CancellationToken.None)
                     .WaitAsync(TimeSpan.FromSeconds(30))
@@ -1870,6 +1878,7 @@ internal sealed partial class EngineHostOptionsTests
         Assert.That(options.CpuWorkerCount, Is.EqualTo(Math.Min(64, Math.Max(1, Environment.ProcessorCount - 2))));
         Assert.That(options.OverrunPolicy, Is.EqualTo(SimulationOverrunPolicy.Pause));
         Assert.That(options.GraphicsFailurePolicy, Is.EqualTo(GraphicsFailurePolicy.StopHost));
+        Assert.That(options.GraphicsFrameSlotCount, Is.EqualTo(3));
         Assert.That(options.ClipboardServicePolicy, Is.EqualTo(ClipboardServicePolicy.NotRequested));
         Assert.That(options.ShutdownTimeout, Is.EqualTo(TimeSpan.FromSeconds(5)));
         Assert.That((int)HostProfile.None, Is.EqualTo(0));
@@ -1880,6 +1889,8 @@ internal sealed partial class EngineHostOptionsTests
         Assert.That((int)SimulationOverrunPolicy.DropDebt, Is.EqualTo(1));
         Assert.That((int)GraphicsFailurePolicy.StopHost, Is.EqualTo(0));
         Assert.That(CreateHeadlessOptions(assetStoreOptions, cpuWorkerCount: 0).CpuWorkerCount, Is.Zero);
+        Assert.That(CreateHeadlessOptions(assetStoreOptions, graphicsFrameSlotCount: 1).GraphicsFrameSlotCount, Is.EqualTo(1));
+        Assert.That(CreateHeadlessOptions(assetStoreOptions, graphicsFrameSlotCount: 4).GraphicsFrameSlotCount, Is.EqualTo(4));
     }
 
     [Test]
@@ -1891,6 +1902,10 @@ internal sealed partial class EngineHostOptionsTests
             () => _ = CreateHeadlessOptions(assetStoreOptions, cpuWorkerCount: -1));
         _ = Assert.Throws<ArgumentOutOfRangeException>(
             () => _ = CreateHeadlessOptions(assetStoreOptions, cpuWorkerCount: 65));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(
+            () => _ = CreateHeadlessOptions(assetStoreOptions, graphicsFrameSlotCount: 0));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(
+            () => _ = CreateHeadlessOptions(assetStoreOptions, graphicsFrameSlotCount: 5));
         _ = Assert.Throws<ArgumentOutOfRangeException>(
             () => _ = CreateHeadlessOptions(assetStoreOptions, overrunPolicy: (SimulationOverrunPolicy)2));
         _ = Assert.Throws<ArgumentOutOfRangeException>(

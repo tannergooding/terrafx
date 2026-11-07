@@ -19,6 +19,8 @@ namespace TerraFX.Graphics;
 public sealed partial class GraphicsDevice
 {
     private const long DefaultOwnedAllocationBudgetBytes = 512L * 1024 * 1024;
+    private const int MaximumGraphFrameSlotCount = 4;
+    private const int MinimumGraphFrameSlotCount = 1;
 
     // Keep an owner rooted if native disposal cannot confirm that its resources were released.
     private static readonly ConcurrentBag<IGraphicsBackendDevice> s_quarantinedBackendDevices = [];
@@ -26,11 +28,13 @@ public sealed partial class GraphicsDevice
     private static readonly ConcurrentBag<GraphicsDevice> s_quarantinedGraphicsDevices = [];
     private static readonly ConcurrentBag<GraphicsResourceOwner> s_quarantinedResources = [];
 
+    private long _activeGraphSubmissionCount;
     private readonly Dictionary<int, long> _allocatedBytesByHeap = [];
     private long _allocatedResourceBytes;
     private IGraphicsBackendDevice? _backendDevice;
     private readonly GraphicsCapabilities _capabilities;
     private readonly HashSet<GraphicsResourceOwner> _deferredRetirements = [];
+    private readonly SemaphoreSlim _graphFrameSlots;
     private bool _hasQuarantinedResources;
     private ulong _nextBufferIndex;
     private ulong _nextPipelineIndex;
@@ -39,18 +43,21 @@ public sealed partial class GraphicsDevice
     private readonly uint _ownerId;
     private readonly GraphicsOwnerRequestQueue _ownerQueue = new();
     private readonly Thread _ownerThread;
+    private readonly List<SubmitGraphRequest> _pendingGraphSubmissions = [];
     private readonly HashSet<GraphicsResourceOwner> _resources = [];
     private Exception? _retirementFailure;
     private readonly TaskCompletionSource _shutdownCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _shutdownTask;
     private int _status;
 
-    private GraphicsDevice(uint ownerId, IGraphicsBackendDevice backendDevice)
+    private GraphicsDevice(uint ownerId, IGraphicsBackendDevice backendDevice, int frameSlotCount)
     {
         _ownerId = ownerId;
         _backendDevice = backendDevice;
         _capabilities = backendDevice.Capabilities;
         _ownerThread = Thread.CurrentThread;
+        _ = _pendingGraphSubmissions.EnsureCapacity(frameSlotCount);
+        _graphFrameSlots = new SemaphoreSlim(frameSlotCount, frameSlotCount);
         DeviceEpoch = 1;
         _status = (int)GraphicsDeviceStatus.Ready;
         _shutdownTask = WaitForShutdownAndOwnerExitAsync(_shutdownCompletion.Task, _ownerThread);
@@ -75,11 +82,14 @@ public sealed partial class GraphicsDevice
         uint ownerId,
         GraphicsBackendRegistration registration,
         GraphicsDeviceProfile profile,
+        int frameSlotCount,
         GraphicsPlatformKind platformKind,
         CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfZero(ownerId);
         ArgumentNullException.ThrowIfNull(registration);
+        ArgumentOutOfRangeException.ThrowIfLessThan(frameSlotCount, MinimumGraphFrameSlotCount);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(frameSlotCount, MaximumGraphFrameSlotCount);
         ValidateStartupProfile(registration.Backend, profile, platformKind);
 
         if (cancellationToken.IsCancellationRequested)
@@ -91,6 +101,7 @@ public sealed partial class GraphicsDevice
             ownerId,
             registration,
             profile,
+            frameSlotCount,
             platformKind,
             cancellationToken).Start();
     }
@@ -896,6 +907,36 @@ public sealed partial class GraphicsDevice
         }
     }
 
+    private void AddPendingGraphSubmission(
+        SubmitGraphRequest submission,
+        IGraphicsBackendDevice backendDevice)
+    {
+        ArgumentNullException.ThrowIfNull(submission);
+        ArgumentNullException.ThrowIfNull(backendDevice);
+
+        if (!IsOwnerThread)
+        {
+            throw new InvalidOperationException("Graph submissions must be tracked on the graphics owner thread.");
+        }
+
+        if (_pendingGraphSubmissions.Count >= _pendingGraphSubmissions.Capacity)
+        {
+            throw new InvalidOperationException("The bounded Graphics graph frame slots are exhausted.");
+        }
+
+        _pendingGraphSubmissions.Add(submission);
+
+        try
+        {
+            submission.StartFenceWait(backendDevice);
+        }
+        catch
+        {
+            _pendingGraphSubmissions.RemoveAt(_pendingGraphSubmissions.Count - 1);
+            throw;
+        }
+    }
+
     private GpuBuffer CreateBufferOnOwner(
         BufferDescription description,
         GraphicsOwnerRequestQueue.GraphicsRetirementReservation retirementReservation)
@@ -1192,6 +1233,20 @@ public sealed partial class GraphicsDevice
         _ownerQueue.CompleteRequests();
         _ownerQueue.CompleteRetirements();
 
+        for (var index = _pendingGraphSubmissions.Count - 1; index >= 0; index--)
+        {
+            try
+            {
+                _pendingGraphSubmissions[index].Fail(exception);
+            }
+            catch (Exception failureException)
+            {
+                exception = new AggregateException(exception, failureException);
+            }
+
+            _pendingGraphSubmissions.RemoveAt(index);
+        }
+
         while (_ownerQueue.TryReadRequest(out var request))
         {
             try
@@ -1381,6 +1436,59 @@ public sealed partial class GraphicsDevice
         _allocatedResourceBytes = totalBytes;
     }
 
+    private bool RetireCompletedGraphSubmissionsOnOwner()
+    {
+        if (_pendingGraphSubmissions.Count == 0)
+        {
+            return false;
+        }
+
+        var completedWaitFound = false;
+
+        foreach (var submission in _pendingGraphSubmissions)
+        {
+            if (!submission.IsFenceWaitCompleted)
+            {
+                continue;
+            }
+
+            submission.ObserveFenceWait();
+            completedWaitFound = true;
+        }
+
+        if (!completedWaitFound)
+        {
+            return false;
+        }
+
+        var backendDevice = _backendDevice
+            ?? throw new InvalidOperationException("The GraphicsDevice has no live backend owner.");
+        var completedFence = backendDevice.GetCompletedGraphFence();
+        ArgumentOutOfRangeException.ThrowIfNegative(completedFence);
+        var didWork = false;
+
+        for (var index = _pendingGraphSubmissions.Count - 1; index >= 0; index--)
+        {
+            var submission = _pendingGraphSubmissions[index];
+
+            if (!submission.IsFenceWaitCompleted)
+            {
+                continue;
+            }
+
+            if (submission.SubmittedFence > completedFence)
+            {
+                throw new InvalidOperationException("A Graphics backend reported graph-fence completion before the timeline reached that fence.");
+            }
+
+            _pendingGraphSubmissions.RemoveAt(index);
+            submission.Complete();
+            didWork = true;
+        }
+
+        return didWork;
+    }
+
     [SuppressMessage(
         "Usage",
         "CA1031:Do not catch general exception types",
@@ -1507,10 +1615,22 @@ public sealed partial class GraphicsDevice
                     didWork = true;
                 }
 
+                didWork |= RetireCompletedGraphSubmissionsOnOwner();
                 RetireDeferredResourcesOnOwner();
 
                 if (_ownerQueue.RequestsCompleted && Status == GraphicsDeviceStatus.Stopping)
                 {
+                    if ((_pendingGraphSubmissions.Count > 0)
+                        || (Volatile.Read(ref _activeGraphSubmissionCount) > 0))
+                    {
+                        if (!didWork)
+                        {
+                            _ownerQueue.WaitForWork();
+                        }
+
+                        continue;
+                    }
+
                     _ownerQueue.CompleteRetirements();
 
                     while (_ownerQueue.TryReadRetirement(out retirement))
@@ -1559,11 +1679,18 @@ public sealed partial class GraphicsDevice
             }
 
             Volatile.Write(ref _status, (int)GraphicsDeviceStatus.Stopping);
+
+            while (Volatile.Read(ref _activeGraphSubmissionCount) > 0)
+            {
+                Thread.Sleep(1);
+            }
+
             _ = _shutdownCompletion.TrySetException(exception);
         }
         finally
         {
             _ownerQueue.Dispose();
+            _graphFrameSlots.Dispose();
         }
     }
 
@@ -2492,6 +2619,7 @@ public sealed partial class GraphicsDevice
     {
         private readonly CancellationToken _cancellationToken;
         private readonly TaskCompletionSource<GraphicsDevice> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly int _frameSlotCount;
         private readonly uint _ownerId;
         private readonly GraphicsPlatformKind _platformKind;
         private readonly GraphicsDeviceProfile _profile;
@@ -2501,10 +2629,12 @@ public sealed partial class GraphicsDevice
             uint ownerId,
             GraphicsBackendRegistration registration,
             GraphicsDeviceProfile profile,
+            int frameSlotCount,
             GraphicsPlatformKind platformKind,
             CancellationToken cancellationToken)
         {
             _ownerId = ownerId;
+            _frameSlotCount = frameSlotCount;
             _registration = registration;
             _profile = profile;
             _platformKind = platformKind;
@@ -2536,6 +2666,7 @@ public sealed partial class GraphicsDevice
                     _ownerId,
                     _profile,
                     _platformKind,
+                    _frameSlotCount,
                     _cancellationToken);
                 ArgumentNullException.ThrowIfNull(backendDevice);
                 _cancellationToken.ThrowIfCancellationRequested();
@@ -2557,7 +2688,7 @@ public sealed partial class GraphicsDevice
 
                 _cancellationToken.ThrowIfCancellationRequested();
 
-                var device = new GraphicsDevice(_ownerId, backendDevice);
+                var device = new GraphicsDevice(_ownerId, backendDevice, _frameSlotCount);
                 backendDevice = null;
                 _completion.SetResult(device);
                 device.RunOwnerLoop();

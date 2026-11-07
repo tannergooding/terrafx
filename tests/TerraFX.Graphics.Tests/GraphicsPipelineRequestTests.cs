@@ -1795,6 +1795,7 @@ internal sealed class GraphicsPipelineRequestTests
             uint ownerId,
             GraphicsDeviceProfile profile,
             GraphicsPlatformKind platformKind,
+            int frameSlotCount,
             CancellationToken cancellationToken)
         {
             ArgumentOutOfRangeException.ThrowIfZero(ownerId);

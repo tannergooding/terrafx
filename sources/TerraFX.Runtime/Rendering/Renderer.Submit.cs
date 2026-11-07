@@ -83,10 +83,13 @@ public sealed partial class Renderer
         var transientTextureGroups = new List<GraphicsTransientTextureGroup>(graph.TransientTextureGroups.Length);
         var transientTexturesByResourceId = new Dictionary<ulong, GpuTexture>(graph.TransientTextures.Length);
         var graphResourceUseLeases = device.AcquireGraphResourceUseLeases(graphResourceOwners);
+        GraphicsDevice.GraphFrameSlotReservation? graphFrameSlotReservation = null;
         var graphResourceUseLeasesTransferred = false;
 
         try
         {
+            graphFrameSlotReservation = await device.AcquireGraphFrameSlotAsync(cancellationToken).ConfigureAwait(false);
+
             foreach (var transientGroup in graph.TransientBufferGroups)
             {
                 if (transientGroup.Length > 1)
@@ -191,8 +194,10 @@ public sealed partial class Renderer
             var submissionTask = device.SubmitGraphAsync(
                 submission,
                 graphResourceUseLeases,
+                graphFrameSlotReservation,
                 cancellationToken);
             graphResourceUseLeasesTransferred = true;
+            graphFrameSlotReservation = null;
             var result = await submissionTask.ConfigureAwait(false);
             return new RenderSubmissionReceipt(
                 result.SubmissionSequence,
@@ -208,6 +213,8 @@ public sealed partial class Renderer
             {
                 graphResourceUseLeases.Dispose();
             }
+
+            graphFrameSlotReservation?.Dispose();
 
             foreach (var transientBufferGroup in transientBufferGroups)
             {

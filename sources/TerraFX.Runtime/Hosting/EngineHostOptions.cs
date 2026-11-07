@@ -14,10 +14,14 @@ namespace TerraFX.Hosting;
 /// <summary>Contains immutable service selection and bounded host scheduling options.</summary>
 public sealed class EngineHostOptions
 {
+    private const int DefaultGraphicsFrameSlotCount = 3;
     private const int MaximumCpuWorkerCount = 64;
+    private const int MaximumGraphicsFrameSlotCount = 4;
+    private const int MinimumGraphicsFrameSlotCount = 1;
     private ClipboardServicePolicy _clipboardServicePolicy = ClipboardServicePolicyKind.NotRequested;
     private int _cpuWorkerCount = Math.Min(MaximumCpuWorkerCount, Math.Max(1, Environment.ProcessorCount - 2));
     private GraphicsFailurePolicy _graphicsFailurePolicy = GraphicsFailurePolicyKind.StopHost;
+    private int _graphicsFrameSlotCount = DefaultGraphicsFrameSlotCount;
     private SimulationOverrunPolicy _overrunPolicy = SimulationOverrunPolicyKind.Pause;
     private TimeSpan _shutdownTimeout = TimeSpan.FromSeconds(5);
 
@@ -107,6 +111,22 @@ public sealed class EngineHostOptions
             }
 
             _graphicsFailurePolicy = value;
+        }
+    }
+
+    /// <summary>Gets or initializes the native graphics frame-slot count in [1, 4]; defaults to three.</summary>
+    public int GraphicsFrameSlotCount
+    {
+        get
+        {
+            return _graphicsFrameSlotCount;
+        }
+        init
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(value, MinimumGraphicsFrameSlotCount);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(value, MaximumGraphicsFrameSlotCount);
+
+            _graphicsFrameSlotCount = value;
         }
     }
 

@@ -21,11 +21,19 @@ public static class VulkanGraphicsBackend
             uint ownerId,
             GraphicsDeviceProfile profile,
             GraphicsPlatformKind platformKind,
+            int frameSlotCount,
             CancellationToken cancellationToken)
         {
             ArgumentOutOfRangeException.ThrowIfZero(ownerId);
             cancellationToken.ThrowIfCancellationRequested();
-            return VulkanBackendDevice.Create(profile, platformKind, cancellationToken);
+            return VulkanBackendDevice.Create(
+                profile,
+                platformKind,
+                transferWaitResultOverride: null,
+                afterNativeObjectAcquired: null,
+                startupNativeResultOverride: null,
+                cancellationToken: cancellationToken,
+                graphFrameSlotCount: frameSlotCount);
         }
     }
 }

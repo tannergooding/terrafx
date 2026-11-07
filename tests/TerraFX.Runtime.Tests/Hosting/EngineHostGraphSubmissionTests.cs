@@ -39,7 +39,8 @@ internal sealed partial class EngineHostOptionsTests
             useMultipleComputeStorageBuffers: false,
             useTransientBufferAliasing: false,
             overlapTransientBufferLifetimes: false,
-            holdGraphCompletion: true);
+            holdGraphCompletion: true,
+            graphicsFrameSlotCount: 2);
 
     [Test]
     public Task PlansOverlappingTransientTextureLifetimesSeparatelyOnVulkan()
@@ -174,7 +175,8 @@ internal sealed partial class EngineHostOptionsTests
             useTransientBufferAliasing: false,
             overlapTransientBufferLifetimes: false,
             holdGraphCompletion: false,
-            usePackageResidencyTexture: true);
+            usePackageResidencyTexture: true,
+            graphicsFrameSlotCount: 4);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
@@ -251,7 +253,8 @@ internal sealed partial class EngineHostOptionsTests
         bool useTransientTextureAliasing = false,
         bool useMultipleTextureCopies = false,
         bool usePartialTextureCopy = false,
-        bool overlapTransientTextureLifetimes = false)
+        bool overlapTransientTextureLifetimes = false,
+        int graphicsFrameSlotCount = 3)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -326,35 +329,52 @@ internal sealed partial class EngineHostOptionsTests
         }
 
         var assetStoreRegistration = assetStoreRegistrationBuilder.Build();
-        using var fenceWaitEntered = new ManualResetEventSlim(initialState: false);
+        using var twoFenceWaitsEntered = new ManualResetEventSlim(initialState: false);
         using var continueFenceWait = new ManualResetEventSlim(initialState: false);
-        var holdNextFenceWait = 0;
-        var nativeFenceWaitResult = -1;
+        var holdFenceWaitCount = 0;
+        var enteredFenceWaitCount = 0;
+        var completedGraphFenceWaitCount = 0;
 
-        uint WaitForFence(nint fenceEvent, uint timeout)
+        uint WaitForGraphFence(nint fenceEvent, uint timeout)
         {
             if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
             {
                 throw new PlatformNotSupportedException("The graph fence-wait witness requires Windows 11.");
             }
 
+            if (Interlocked.Decrement(ref holdFenceWaitCount) >= 0)
+            {
+                if (Interlocked.Increment(ref enteredFenceWaitCount) == 2)
+                {
+                    twoFenceWaitsEntered.Set();
+                }
+
+                if (!continueFenceWait.Wait(TimeSpan.FromSeconds(10), CancellationToken.None))
+                {
+                    return 0xFFFFFFFF;
+                }
+            }
+
             var result = WindowsTestNativeMethods.WaitForSingleObject(fenceEvent, timeout);
 
-            if (Interlocked.Exchange(ref holdNextFenceWait, 0) != 0)
+            if (result == 0)
             {
-                Volatile.Write(ref nativeFenceWaitResult, unchecked((int)result));
-                fenceWaitEntered.Set();
-                return continueFenceWait.Wait(TimeSpan.FromSeconds(10), CancellationToken.None)
-                    ? result
-                    : 0xFFFFFFFF;
+                _ = Interlocked.Increment(ref completedGraphFenceWaitCount);
             }
 
             return result;
         }
 
+        long OverrideCompletedFence(long completedFence)
+        {
+            return continueFenceWait.IsSet ? completedFence : 0;
+        }
+
         var graphicsRegistration = backend switch {
             GraphicsBackend.D3D12 when holdGraphCompletion => new GraphicsBackendRegistration(
-                new D3D12GraphicsBackend.D3D12BackendFactory(WaitForFence)),
+                new D3D12GraphicsBackend.D3D12BackendFactory(
+                    graphWaitForSingleObject: WaitForGraphFence,
+                    completedFenceValueOverride: OverrideCompletedFence)),
             GraphicsBackend.D3D12 => D3D12GraphicsBackend.CreateRegistration(),
             GraphicsBackend.Vulkan => VulkanGraphicsBackend.CreateRegistration(),
             _ => throw new ArgumentOutOfRangeException(nameof(backend)),
@@ -367,6 +387,7 @@ internal sealed partial class EngineHostOptionsTests
             new AssetStoreOptions(packagePath, SHA256.HashData(packageBytes), assetStoreRegistration)) {
             CpuWorkerCount = 0,
             PersistenceMetadata = CreatePersistenceMetadata(),
+            GraphicsFrameSlotCount = graphicsFrameSlotCount,
         };
         EngineHost? host = null;
         GpuTexture? target = null;
@@ -2108,12 +2129,28 @@ internal sealed partial class EngineHostOptionsTests
 
             if (holdGraphCompletion)
             {
-                _ = Interlocked.Exchange(ref holdNextFenceWait, 1);
+                _ = Interlocked.Exchange(ref holdFenceWaitCount, 2);
                 var submissionTask = renderer.SubmitAsync(renderSnapshot, plan);
+                var secondSubmissionTask = renderer.SubmitAsync(renderSnapshot, plan);
 
-                Assert.That(fenceWaitEntered.Wait(TimeSpan.FromSeconds(5)), Is.True);
-                Assert.That(Volatile.Read(ref nativeFenceWaitResult), Is.EqualTo(0));
+                var twoGraphWaitsStarted = twoFenceWaitsEntered.Wait(TimeSpan.FromSeconds(5));
+                Assert.That(
+                    twoGraphWaitsStarted,
+                    Is.True,
+                    $"Graph waiters={Volatile.Read(ref enteredFenceWaitCount)}; first={submissionTask.Status}; "
+                    + $"second={secondSubmissionTask.Status}; second exception={secondSubmissionTask.Exception}");
                 Assert.That(submissionTask.IsCompleted, Is.False);
+                Assert.That(secondSubmissionTask.IsCompleted, Is.False);
+                using var slotWaitCancellation = new CancellationTokenSource();
+                var cancelledSubmissionTask = renderer.SubmitAsync(
+                    renderSnapshot,
+                    plan,
+                    slotWaitCancellation.Token);
+                await Task.Delay(TimeSpan.FromMilliseconds(50)).ConfigureAwait(false);
+                Assert.That(cancelledSubmissionTask.IsCompleted, Is.False);
+                await slotWaitCancellation.CancelAsync().ConfigureAwait(false);
+                _ = Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                    await cancelledSubmissionTask.ConfigureAwait(false));
 
                 var submittedTarget = target
                     ?? throw new InvalidOperationException("The delayed graph test has no imported color target.");
@@ -2125,6 +2162,11 @@ internal sealed partial class EngineHostOptionsTests
 
                 continueFenceWait.Set();
                 receipt = await submissionTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                var queuedReceipt = await secondSubmissionTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.That(receipt.CompletedFence, Is.GreaterThan(0));
+                Assert.That(queuedReceipt.CompletedFence, Is.GreaterThan(0));
+                Assert.That(queuedReceipt.CompletedFence, Is.Not.EqualTo(receipt.CompletedFence));
+                Assert.That(Volatile.Read(ref completedGraphFenceWaitCount), Is.EqualTo(2));
                 Assert.That(submittedTargetOwner.HasActiveUses, Is.False);
             }
             else

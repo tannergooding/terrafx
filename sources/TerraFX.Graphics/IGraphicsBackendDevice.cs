@@ -43,6 +43,8 @@ internal interface IGraphicsBackendDevice : IDisposable
 
     GraphicsResourceAllocationInfo GetBufferAllocationInfo(BufferDescription description);
 
+    long GetCompletedGraphFence() => long.MaxValue;
+
     GraphicsResourceAllocationInfo GetTextureAllocationInfo(TextureDescription description);
 
     GraphicsResourceAllocationInfo GetTransientTextureAllocationInfo(TextureDescription description)
@@ -82,4 +84,8 @@ internal interface IGraphicsBackendDevice : IDisposable
         BufferReadLease<byte> source,
         nint sourceOffset,
         TextureDataLayout sourceLayout);
+
+    void WaitForGraphFence(long fenceValue)
+    {
+    }
 }

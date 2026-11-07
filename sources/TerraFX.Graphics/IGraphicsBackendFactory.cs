@@ -12,5 +12,6 @@ internal interface IGraphicsBackendFactory
         uint ownerId,
         GraphicsDeviceProfile profile,
         GraphicsPlatformKind platformKind,
+        int frameSlotCount,
         CancellationToken cancellationToken);
 }

@@ -16,11 +16,13 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
 {
     private const uint RequestedApiVersion = (1u << 22) | (3u << 12);
 
-    private readonly VkCommandBuffer _commandBuffer;
+    private VkCommandBuffer _commandBuffer;
     private readonly VkCommandPool _commandPool;
     private readonly VkDevice _device;
     private readonly ImmutableHashSet<string> _enabledSpirvExtensions;
     private readonly bool _fragmentStoresAndAtomicsEnabled;
+    private readonly int _graphFrameSlotCount;
+    private readonly VulkanGraphFrameSlot[] _graphFrameSlots;
     private readonly VkInstance _instance;
     private bool _isDisposed;
     private readonly int _ownerThreadId = Environment.CurrentManagedThreadId;
@@ -29,6 +31,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
     private readonly VkQueue _queue;
     private readonly uint _queueFamilyIndex;
     private readonly VkSemaphore _timelineSemaphore;
+    private readonly VkCommandBuffer _transferCommandBuffer;
     private readonly Func<VkResult, VkResult>? _transferWaitResultOverride;
 
     private VulkanBackendDevice(
@@ -39,14 +42,22 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         uint queueFamilyIndex,
         VkPhysicalDeviceMemoryProperties physicalDeviceMemoryProperties,
         VkCommandPool commandPool,
-        VkCommandBuffer commandBuffer,
+        VkCommandBuffer[] commandBuffers,
         VkSemaphore timelineSemaphore,
         GraphicsCapabilities capabilities,
         ImmutableHashSet<string> enabledSpirvExtensions,
         bool fragmentStoresAndAtomicsEnabled,
-        Func<VkResult, VkResult>? transferWaitResultOverride)
+        Func<VkResult, VkResult>? transferWaitResultOverride,
+        int graphFrameSlotCount)
     {
         ArgumentNullException.ThrowIfNull(enabledSpirvExtensions);
+        ArgumentNullException.ThrowIfNull(commandBuffers);
+
+        if (commandBuffers.Length != checked(graphFrameSlotCount + 1))
+        {
+            throw new ArgumentException("Vulkan command-buffer storage does not match the configured graph frame-slot count.", nameof(commandBuffers));
+        }
+
         _instance = instance;
         _physicalDevice = physicalDevice;
         _device = device;
@@ -56,9 +67,18 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         _queueFamilyIndex = queueFamilyIndex;
         _physicalDeviceMemoryProperties = physicalDeviceMemoryProperties;
         _commandPool = commandPool;
-        _commandBuffer = commandBuffer;
+        _commandBuffer = commandBuffers[0];
+        _transferCommandBuffer = commandBuffers[0];
         _timelineSemaphore = timelineSemaphore;
         _transferWaitResultOverride = transferWaitResultOverride;
+        _graphFrameSlotCount = graphFrameSlotCount;
+        _graphFrameSlots = new VulkanGraphFrameSlot[graphFrameSlotCount];
+
+        for (var index = 0; index < _graphFrameSlots.Length; index++)
+        {
+            _graphFrameSlots[index] = new VulkanGraphFrameSlot(commandBuffers[index + 1]);
+        }
+
         Capabilities = capabilities;
     }
 
@@ -138,8 +158,11 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         Func<VkResult, VkResult>? transferWaitResultOverride,
         Action<VulkanBackendStartupStage>? afterNativeObjectAcquired,
         Func<VulkanBackendStartupStage, VkResult, VkResult>? startupNativeResultOverride,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int graphFrameSlotCount = 3)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(graphFrameSlotCount, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(graphFrameSlotCount, 4);
         GraphicsDevice.ValidateStartupProfile(GraphicsBackend.Vulkan, profile, platformKind);
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -207,9 +230,10 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
 
                 var queue = default(VkQueue);
                 VulkanApi.vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
-                var commandBuffer = CreateCommandBuffer(
+                var commandBuffers = CreateCommandBuffers(
                     device,
                     queueFamilyIndex,
+                    graphFrameSlotCount,
                     afterNativeObjectAcquired,
                     startupNativeResultOverride,
                     cancellationToken,
@@ -231,12 +255,13 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                     queueFamilyIndex,
                     memoryProperties,
                     commandPool,
-                    commandBuffer,
+                    commandBuffers,
                     timelineSemaphore,
                     capabilities,
                     enabledSpirvExtensions,
                     fragmentStoresAndAtomicsEnabled,
-                    transferWaitResultOverride);
+                    transferWaitResultOverride,
+                    graphFrameSlotCount);
                 transferred = true;
                 hasInstance = false;
                 hasDevice = false;
@@ -298,9 +323,10 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         return converted;
     }
 
-    private static VkCommandBuffer CreateCommandBuffer(
+    private static VkCommandBuffer[] CreateCommandBuffers(
         VkDevice device,
         uint queueFamilyIndex,
+        int graphFrameSlotCount,
         Action<VulkanBackendStartupStage>? afterNativeObjectAcquired,
         Func<VulkanBackendStartupStage, VkResult, VkResult>? startupNativeResultOverride,
         CancellationToken cancellationToken,
@@ -343,9 +369,14 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
             allocateInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
             allocateInfo.commandPool = commandPool;
             allocateInfo.level = VkCommandBufferLevel.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-            allocateInfo.commandBufferCount = 1;
-            VkCommandBuffer commandBuffer = default;
-            var allocationResult = VulkanApi.vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer);
+            var commandBuffers = new VkCommandBuffer[checked(graphFrameSlotCount + 1)];
+            allocateInfo.commandBufferCount = checked((uint)commandBuffers.Length);
+            VkResult allocationResult;
+
+            fixed (VkCommandBuffer* commandBuffersPointer = commandBuffers)
+            {
+                allocationResult = VulkanApi.vkAllocateCommandBuffers(device, &allocateInfo, commandBuffersPointer);
+            }
 
             if ((allocationResult == VkResult.VK_SUCCESS) && (startupNativeResultOverride is not null))
             {
@@ -357,7 +388,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
             ThrowIfFailed(allocationResult, "vkAllocateCommandBuffers");
             afterNativeObjectAcquired?.Invoke(VulkanBackendStartupStage.CommandBufferAllocated);
             cancellationToken.ThrowIfCancellationRequested();
-            return commandBuffer;
+            return commandBuffers;
         }
         catch
         {
@@ -1021,6 +1052,19 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         if (Environment.CurrentManagedThreadId != _ownerThreadId)
         {
             throw new InvalidOperationException("Vulkan device operations must run on the creating owner thread.");
+        }
+    }
+
+    private sealed class VulkanGraphFrameSlot
+    {
+        internal readonly VkCommandBuffer CommandBuffer;
+        internal List<VulkanBackendDescriptorSet>? DescriptorSets;
+        internal ulong FenceValue;
+        internal VkImageView ImageView;
+
+        internal VulkanGraphFrameSlot(VkCommandBuffer commandBuffer)
+        {
+            CommandBuffer = commandBuffer;
         }
     }
 }

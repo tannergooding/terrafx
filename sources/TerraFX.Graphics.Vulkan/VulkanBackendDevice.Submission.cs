@@ -70,6 +70,17 @@ internal sealed unsafe partial class VulkanBackendDevice
         ArgumentOutOfRangeException.ThrowIfGreaterThan(checkedByteLength, bufferByteLength - offset, byteLengthName);
     }
 
+    internal long GetCompletedGraphFence()
+    {
+        EnsureOwnerThread();
+        ulong completedValue = 0;
+        ThrowIfFailed(
+            VulkanApi.vkGetSemaphoreCounterValue(_device, _timelineSemaphore, &completedValue),
+            "vkGetSemaphoreCounterValue");
+        RetireCompletedGraphFrameSlots(completedValue);
+        return checked((long)completedValue);
+    }
+
     [SuppressMessage(
         "Reliability",
         "CA2000:Dispose objects before losing scope",
@@ -127,6 +138,45 @@ internal sealed unsafe partial class VulkanBackendDevice
                 staging.Dispose();
             }
         }
+    }
+
+    internal long SubmitGraphWithoutWait()
+    {
+        EnsureActive();
+
+        var endResult = VulkanApi.vkEndCommandBuffer(_commandBuffer);
+
+        if (endResult != VkResult.VK_SUCCESS)
+        {
+            _hasUncertainSubmission = true;
+            ThrowIfFailed(endResult, "vkEndCommandBuffer");
+        }
+
+        if (_timelineValue >= long.MaxValue)
+        {
+            throw new InvalidOperationException("The Vulkan graph timeline value space is exhausted.");
+        }
+
+        var signalValue = _timelineValue + 1;
+        var commandBufferInfo = default(VkCommandBufferSubmitInfo);
+        commandBufferInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+        commandBufferInfo.commandBuffer = _commandBuffer;
+        var signalInfo = default(VkSemaphoreSubmitInfo);
+        signalInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+        signalInfo.semaphore = _timelineSemaphore;
+        signalInfo.value = signalValue;
+        signalInfo.stageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        var submitInfo = default(VkSubmitInfo2);
+        submitInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+        submitInfo.commandBufferInfoCount = 1;
+        submitInfo.pCommandBufferInfos = &commandBufferInfo;
+        submitInfo.signalSemaphoreInfoCount = 1;
+        submitInfo.pSignalSemaphoreInfos = &signalInfo;
+        _hasUncertainSubmission = true;
+        ThrowIfFailed(VulkanApi.vkQueueSubmit2(_queue, 1, &submitInfo, default), "vkQueueSubmit2");
+        _timelineValue = signalValue;
+        _hasUncertainSubmission = false;
+        return checked((long)signalValue);
     }
 
     [SuppressMessage(
@@ -274,6 +324,21 @@ internal sealed unsafe partial class VulkanBackendDevice
                 staging.Dispose();
             }
         }
+    }
+
+    internal void WaitForGraphFence(long fenceValue)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(fenceValue);
+        var semaphore = _timelineSemaphore;
+        var value = checked((ulong)fenceValue);
+        var waitInfo = default(VkSemaphoreWaitInfo);
+        waitInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+        waitInfo.semaphoreCount = 1;
+        waitInfo.pSemaphores = &semaphore;
+        waitInfo.pValues = &value;
+        ThrowIfFailed(
+            VulkanApi.vkWaitSemaphores(_device, &waitInfo, TransferWaitTimeoutNanoseconds),
+            "vkWaitSemaphores");
     }
 
     private void BeginOneTimeCommands()

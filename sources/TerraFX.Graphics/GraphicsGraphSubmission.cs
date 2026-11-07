@@ -187,7 +187,7 @@ internal sealed class GraphicsGraphSubmission
         throw new ArgumentException("The pass is not part of this ordered graph.", nameof(passId));
     }
 
-    internal void RecordCompletedOwnerStates()
+    internal void RecordSubmittedOwnerStates()
     {
         foreach (var passId in OrderedPasses)
         {
