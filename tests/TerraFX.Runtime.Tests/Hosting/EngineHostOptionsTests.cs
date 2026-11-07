@@ -949,6 +949,131 @@ internal sealed partial class EngineHostOptionsTests
                 }
             }
 
+            const int transientTextureAliasCount = 8;
+            var textureAliasGraph = new RenderGraph(new RenderGraphOptions(
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                0,
+                RenderFrameDimension.TwoDimensional,
+                SpatialProfileId.Default,
+                1,
+                [Guid.NewGuid()],
+                targetExtent,
+                target));
+            var textureAliasRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+            RenderPassId? previousTextureAliasReadPass = null;
+
+            for (var index = 0; index < transientTextureAliasCount; index++)
+            {
+                var aliasTexture = textureAliasGraph.CreateTransientTexture(
+                    new TextureDescription(
+                        TextureDimension.Dimension2D,
+                        width: 2,
+                        height: 2,
+                        depth: 1,
+                        arrayLayers: 1,
+                        mipLevels: 1,
+                        format: TextureFormat.Rgba8Unorm,
+                        usage: TextureUsage.CopySource | TextureUsage.CopyDestination,
+                        debugName: $"transient-texture-alias-chain-{index}"));
+                ImmutableArray<RenderPassId> writeDependencies = previousTextureAliasReadPass is RenderPassId previousReadPass
+                    ? [previousReadPass]
+                    : [];
+                var writePass = textureAliasGraph.AddCopyPass(
+                    new RenderPassDescription(
+                        $"transient-texture-alias-write-{index}",
+                        index == 0 ? 0 : 1,
+                        writeDependencies,
+                        hasExternalSideEffects: false));
+                var writtenTexture = textureAliasGraph.WriteTexture(
+                    writePass,
+                    aliasTexture,
+                    GraphTextureUsage.CopyDestination,
+                    textureAliasRange);
+                var readPass = textureAliasGraph.AddCopyPass(
+                    new RenderPassDescription(
+                        $"transient-texture-alias-read-{index}",
+                        1,
+                        [writePass],
+                        hasExternalSideEffects: false));
+                textureAliasGraph.ReadTexture(
+                    readPass,
+                    writtenTexture,
+                    GraphTextureUsage.CopySource,
+                    textureAliasRange);
+                previousTextureAliasReadPass = readPass;
+            }
+
+            var textureAliasOutputPass = textureAliasGraph.AddRasterPass(
+                new RenderPassDescription(
+                    "transient-texture-alias-chain-output",
+                    1,
+                    [previousTextureAliasReadPass
+                        ?? throw new InvalidOperationException("The transient texture alias chain has no read pass.")],
+                    hasExternalSideEffects: false));
+            var textureAliasOutput = textureAliasGraph.WriteColorAttachment(
+                textureAliasOutputPass,
+                textureAliasGraph.OffscreenColorTargetVersion,
+                targetRange,
+                AttachmentLoadAction.Clear,
+                AttachmentStoreAction.Store,
+                new Vector4(0.0f, 0.0f, 0.0f, 1.0f));
+            textureAliasGraph.SetPresentationSource(textureAliasOutput);
+            var compiledTextureAliasChain = textureAliasGraph.Compile();
+            Assert.That(compiledTextureAliasChain.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
+            Assert.That(compiledTextureAliasChain.Diagnostics, Is.Empty);
+            var compiledTextureAliasChainPlan = compiledTextureAliasChain.Plan
+                ?? throw new InvalidOperationException("The compiled transient texture alias chain has no plan.");
+            Assert.That(compiledTextureAliasChainPlan.TransientTextureGroups.Length, Is.EqualTo(1));
+            Assert.That(compiledTextureAliasChainPlan.TransientTextureGroups[0].Length, Is.EqualTo(transientTextureAliasCount));
+            Assert.That(
+                compiledTextureAliasChainPlan.TransientTextureAliasingBarriers.Length,
+                Is.EqualTo(transientTextureAliasCount - 1));
+
+            for (var iteration = 0; iteration < transientTextureAliasCount; iteration++)
+            {
+                using var materializedAliasGroup = graphicsDevice.CreateTransientTextureGroupAsync(
+                    compiledTextureAliasChainPlan.TransientTextureGroups[0],
+                    CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                Assert.That(materializedAliasGroup.Textures.Length, Is.EqualTo(transientTextureAliasCount));
+
+                for (var index = 0; index < materializedAliasGroup.Textures.Length; index++)
+                {
+                    var aliasTexture = materializedAliasGroup.Textures[index];
+                    Assert.That(aliasTexture.Handle.IsValid, Is.True);
+                    Assert.That(aliasTexture.Handle.OwnerId, Is.EqualTo(platformOwner.OwnerId));
+                    Assert.That(aliasTexture.Handle.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
+                }
+            }
+
+            {
+                var aliasVersions = compiledTextureAliasChainPlan.TransientTextureGroups[0];
+                using var firstLiveAliasGroup = graphicsDevice.CreateTransientTextureGroupAsync(
+                    aliasVersions,
+                    CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                using var secondLiveAliasGroup = graphicsDevice.CreateTransientTextureGroupAsync(
+                    aliasVersions,
+                    CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                var firstAllocationLease = firstLiveAliasGroup.Textures[0].ResourceOwner.AllocationLease
+                    ?? throw new InvalidOperationException("The first live texture alias group lost its shared allocation lease.");
+                var secondAllocationLease = secondLiveAliasGroup.Textures[0].ResourceOwner.AllocationLease
+                    ?? throw new InvalidOperationException("The second live texture alias group lost its shared allocation lease.");
+
+                Assert.That(firstAllocationLease, Is.Not.SameAs(secondAllocationLease));
+
+                for (var index = 0; index < transientTextureAliasCount; index++)
+                {
+                    Assert.That(firstLiveAliasGroup.Textures[index].ResourceOwner.AllocationLease, Is.SameAs(firstAllocationLease));
+                    Assert.That(secondLiveAliasGroup.Textures[index].ResourceOwner.AllocationLease, Is.SameAs(secondAllocationLease));
+                }
+            }
+
             var cycleGraph = new RenderGraph(new RenderGraphOptions(
                 Guid.NewGuid(),
                 Guid.NewGuid(),
