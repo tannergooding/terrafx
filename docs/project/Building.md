@@ -216,6 +216,20 @@ In the WSLg shell, run the same hardware-independent selection:
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release --filter "FullyQualifiedName~LinuxEvdevGamepadDiscoveryTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
+`LinuxEvdevGamepadEventDecoderTests` verifies typed button/axis/stick/trigger samples, host-observation timestamps, monotonic-clock labels, and uncertainty handling for invalid/default native timestamps without opening a device:
+
+```powershell
+dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Debug --filter "FullyQualifiedName~LinuxEvdevGamepadEventDecoderTests"
+dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Release --filter "FullyQualifiedName~LinuxEvdevGamepadEventDecoderTests"
+```
+
+In the WSLg shell, run the same hardware-independent selection:
+
+```bash
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~LinuxEvdevGamepadEventDecoderTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release --filter "FullyQualifiedName~LinuxEvdevGamepadEventDecoderTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
 On Windows 11 x64, run the hidden-HWND owner witness for live client metrics, PMv2 scale/provenance, native resize refresh and snapshot replacement, pre-surface zero epochs, and stale-handle rejection:
 
 ```powershell
