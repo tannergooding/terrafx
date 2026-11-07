@@ -1585,6 +1585,64 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task TransientBufferGroupDefersAllocationReleaseUntilActiveUseCompletes()
+    {
+        const long exactBudgetBytes = 16;
+        var backendDevice = new FakeBackendDevice(
+            bufferAllocationSizeBytes: exactBudgetBytes,
+            bufferBudgetBytes: exactBudgetBytes);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var registry = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 7);
+        var description = new BufferDescription(
+            byteLength: exactBudgetBytes,
+            BufferUsage.Storage,
+            GpuMemoryKind.DeviceLocal,
+            structuredStride: null,
+            debugName: "Transient group active-use test");
+        var versions = ImmutableArray.Create(
+            registry.CreateTransientBuffer(description),
+            registry.CreateTransientBuffer(description));
+        GraphicsTransientBufferGroup? group = null;
+        GraphicsResourceOwner.UseLease? use = null;
+
+        try
+        {
+            group = await graphicsDevice.CreateTransientBufferGroupAsync(
+                    versions,
+                    CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            var resourceOwner = group.Buffers[0].ResourceOwner;
+            use = resourceOwner.AcquireUse(nameof(group));
+            group.Dispose();
+            group = null;
+
+            var shutdownTask = graphicsDevice.ShutdownAsync();
+
+            Assert.That(
+                SpinWait.SpinUntil(() => backendDevice.BufferDisposalCount == 1, TimeSpan.FromSeconds(5)),
+                Is.True);
+            Assert.That(resourceOwner.IsRetirementRequested, Is.True);
+            Assert.That(resourceOwner.HasActiveUses, Is.True);
+            Assert.That(backendDevice.BufferAllocationDisposalCount, Is.Zero);
+            Assert.That(shutdownTask.IsCompleted, Is.False);
+
+            use.Dispose();
+            use = null;
+            await shutdownTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            Assert.That(backendDevice.BufferAllocationDisposalCount, Is.EqualTo(1));
+            Assert.That(backendDevice.BufferDisposalCount, Is.EqualTo(2));
+        }
+        finally
+        {
+            use?.Dispose();
+            group?.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task TransientBufferGroupRollbackReleasesSharedAllocationAndBudget()
     {
         const long bufferLengthBytes = 16;
