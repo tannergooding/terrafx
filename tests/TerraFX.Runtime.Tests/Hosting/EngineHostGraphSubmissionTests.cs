@@ -60,10 +60,11 @@ internal sealed partial class EngineHostOptionsTests
             useTransientTextureAliasing: true,
             overlapTransientTextureLifetimes: true);
 
-    [Test]
-    public Task PlansSequentialTransientTextureAliasGroupsAndSubmitsOnVulkan()
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task PlansSequentialTransientTextureAliasGroupsAndSubmitsAsync(GraphicsBackend backend)
         => RunOffscreenGraphAsync(
-            GraphicsBackend.Vulkan,
+            backend,
             useUniformBuffer: false,
             useSampledTexture: false,
             useStorageResources: false,
@@ -2094,6 +2095,12 @@ internal sealed partial class EngineHostOptionsTests
                     Assert.That(
                         plan.TransientTextureAliasingBarriers[0].PassId,
                         Is.EqualTo(plan.OrderedPasses[2]));
+
+                    using var materializedGroup = await graphicsDevice.CreateTransientTextureGroupAsync(
+                            plan.TransientTextureGroups[0],
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+                    Assert.That(materializedGroup.Textures.Length, Is.EqualTo(2));
                 }
             }
 

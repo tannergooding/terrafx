@@ -46,6 +46,15 @@ internal sealed class GraphicsResourceOwner : IDisposable
             throw new ArgumentException("A Graphics resource cannot own both an independent and shared allocation.", nameof(allocationLease));
         }
 
+        if ((allocationLease is not null)
+            && (((bufferDescription is not null)
+                    && (allocationLease.BackendAllocation is not IGraphicsBackendBufferAllocation))
+                || ((textureDescription is not null)
+                    && (allocationLease.BackendAllocation is not IGraphicsBackendTextureAllocation))))
+        {
+            throw new ArgumentException("The shared allocation type must match the Graphics resource.", nameof(allocationLease));
+        }
+
         if (((bufferDescription is not null) && (backendResource is not IGraphicsBackendBuffer))
             || ((textureDescription is not null) && (backendResource is not IGraphicsBackendTexture))
             || ((backendResource is IGraphicsBackendBuffer) && (bufferDescription is null))

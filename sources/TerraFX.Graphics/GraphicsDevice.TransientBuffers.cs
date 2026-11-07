@@ -107,7 +107,9 @@ public sealed partial class GraphicsDevice
 
         try
         {
-            backendBuffer = backendDevice.CreateBuffer(description, allocationLease.BackendAllocation);
+            var allocation = allocationLease.BackendAllocation as IGraphicsBackendBufferAllocation
+                ?? throw new InvalidOperationException("The shared Graphics allocation is not a buffer allocation.");
+            backendBuffer = backendDevice.CreateBuffer(description, allocation);
             var handle = new GpuBufferHandle(_ownerId, DeviceEpoch, GetNextBufferIndex(), generation: 1);
             resourceOwner = new GraphicsResourceOwner(
                 this,

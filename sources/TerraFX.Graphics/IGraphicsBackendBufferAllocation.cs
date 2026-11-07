@@ -2,6 +2,6 @@
 
 namespace TerraFX.Graphics;
 
-internal interface IGraphicsBackendBufferAllocation : IGraphicsBackendResource
+internal interface IGraphicsBackendBufferAllocation : IGraphicsBackendAllocation
 {
 }

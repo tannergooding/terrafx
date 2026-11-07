@@ -1085,7 +1085,7 @@ public static unsafe class D3D12GraphicsBackend
                 ArgumentNullException.ThrowIfNull(description);
                 ArgumentNullException.ThrowIfNull(allocation);
 
-                if (allocation is not D3D12BackendBufferAllocation selectedAllocation)
+                if (allocation is not D3D12BackendResourceAllocation selectedAllocation)
                 {
                     throw new ArgumentException("The transient buffer allocation belongs to a different graphics backend.", nameof(allocation));
                 }
@@ -1183,7 +1183,7 @@ public static unsafe class D3D12GraphicsBackend
                         throw new InvalidOperationException("D3D12 transient heap creation returned no heap.");
                     }
 
-                    return new D3D12BackendBufferAllocation(this, heap);
+                    return new D3D12BackendResourceAllocation(this, heap);
                 }
                 catch
                 {
@@ -1233,6 +1233,62 @@ public static unsafe class D3D12GraphicsBackend
                 }
             }
 
+            public IGraphicsBackendTexture CreateTexture(
+                TextureDescription description,
+                IGraphicsBackendTextureAllocation allocation)
+            {
+                ArgumentNullException.ThrowIfNull(description);
+                ArgumentNullException.ThrowIfNull(allocation);
+                ValidateTextureDescriptionSupport(_device, description);
+
+                if (allocation is not D3D12BackendResourceAllocation selectedAllocation)
+                {
+                    throw new ArgumentException("The transient texture allocation belongs to a different graphics backend.", nameof(allocation));
+                }
+
+                var resourceDescription = CreateNativeTextureDescription(description);
+                var resourceId = typeof(ID3D12Resource).GUID;
+                ID3D12Resource* resource = null;
+
+                try
+                {
+                    ThrowIfFailed(_device->CreatePlacedResource(
+                        selectedAllocation.GetHeap(this),
+                        0,
+                        &resourceDescription,
+                        D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COMMON,
+                        null,
+                        &resourceId,
+                        (void**)&resource));
+
+                    if (resource is null)
+                    {
+                        throw new InvalidOperationException("D3D12 placed texture creation returned no resource.");
+                    }
+
+                    if (description.DebugName.Length > 0)
+                    {
+                        fixed (char* name = description.DebugName)
+                        {
+                            ThrowIfFailed(resource->SetName(name));
+                        }
+                    }
+
+                    var result = new D3D12BackendTexture(this, resource, description);
+                    resource = null;
+                    return result;
+                }
+                catch
+                {
+                    if (resource is not null)
+                    {
+                        _ = resource->Release();
+                    }
+
+                    throw;
+                }
+            }
+
             public IGraphicsBackendTexture CreateTexture(TextureDescription description)
             {
                 ArgumentNullException.ThrowIfNull(description);
@@ -1250,6 +1306,44 @@ public static unsafe class D3D12GraphicsBackend
                 catch
                 {
                     _ = resource->Release();
+                    throw;
+                }
+            }
+
+            public IGraphicsBackendTextureAllocation CreateTextureAllocation(
+                TextureDescription description,
+                GraphicsResourceAllocationInfo allocationInfo)
+            {
+                ArgumentNullException.ThrowIfNull(description);
+                EnsureOwnerThread();
+                ValidateTextureDescriptionSupport(_device, description);
+                var heapDescription = new D3D12_HEAP_DESC {
+                    SizeInBytes = checked((ulong)allocationInfo.SizeBytes),
+                    Alignment = checked((ulong)allocationInfo.Alignment),
+                    Properties = GetHeapProperties(GpuMemoryKind.DeviceLocal),
+                    Flags = D3D12_HEAP_FLAGS.D3D12_HEAP_FLAG_NONE,
+                };
+                var heapId = typeof(ID3D12Heap).GUID;
+                ID3D12Heap* heap = null;
+
+                try
+                {
+                    ThrowIfFailed(_device->CreateHeap(&heapDescription, &heapId, (void**)&heap));
+
+                    if (heap is null)
+                    {
+                        throw new InvalidOperationException("D3D12 transient texture heap creation returned no heap.");
+                    }
+
+                    return new D3D12BackendResourceAllocation(this, heap);
+                }
+                catch
+                {
+                    if (heap is not null)
+                    {
+                        _ = heap->Release();
+                    }
+
                     throw;
                 }
             }
@@ -1687,6 +1781,23 @@ public static unsafe class D3D12GraphicsBackend
                             var barrier = D3D12_RESOURCE_BARRIER.InitAliasing(
                                 beforeBuffer.GetResource(),
                                 afterBuffer.GetResource());
+                            commandList->ResourceBarrier(1, &barrier);
+                        }
+
+                        foreach (var aliasingBarrier in submission.TextureAliasingBarriers)
+                        {
+                            if (aliasingBarrier.PassId != pass.PassId)
+                            {
+                                continue;
+                            }
+
+                            var beforeTexture = submission.GetTexture(aliasingBarrier.BeforeResourceId) as D3D12BackendTexture
+                                ?? throw new InvalidOperationException("The graph alias barrier lost its prior D3D12 texture.");
+                            var afterTexture = submission.GetTexture(aliasingBarrier.AfterResourceId) as D3D12BackendTexture
+                                ?? throw new InvalidOperationException("The graph alias barrier lost its next D3D12 texture.");
+                            var barrier = D3D12_RESOURCE_BARRIER.InitAliasing(
+                                beforeTexture.GetResource(),
+                                afterTexture.GetResource());
                             commandList->ResourceBarrier(1, &barrier);
                         }
 
@@ -3888,51 +3999,6 @@ public static unsafe class D3D12GraphicsBackend
                 internal BufferDescription Description { get; }
             }
 
-            private sealed unsafe class D3D12BackendBufferAllocation : IGraphicsBackendBufferAllocation
-            {
-                private ID3D12Heap* _heap;
-                private readonly D3D12BackendDevice _owner;
-
-                internal D3D12BackendBufferAllocation(D3D12BackendDevice owner, ID3D12Heap* heap)
-                {
-                    ArgumentNullException.ThrowIfNull(owner);
-
-                    if (heap is null)
-                    {
-                        throw new ArgumentNullException(nameof(heap));
-                    }
-
-                    _owner = owner;
-                    _heap = heap;
-                }
-
-                public void Dispose()
-                {
-                    _owner.EnsureOwnerThread();
-                    var heap = _heap;
-                    _heap = null;
-
-                    if (heap is not null)
-                    {
-                        _ = heap->Release();
-                    }
-                }
-
-                internal ID3D12Heap* GetHeap(D3D12BackendDevice owner)
-                {
-                    ArgumentNullException.ThrowIfNull(owner);
-                    owner.EnsureOwnerThread();
-
-                    if (!ReferenceEquals(owner, _owner))
-                    {
-                        throw new ArgumentException("The transient buffer allocation belongs to a different D3D12 device.", nameof(owner));
-                    }
-
-                    ObjectDisposedException.ThrowIf(_heap is null, this);
-                    return _heap;
-                }
-            }
-
             private abstract unsafe class D3D12BackendResource : IGraphicsBackendResource
             {
                 private int _descriptorSetReferenceCount;
@@ -3997,6 +4063,53 @@ public static unsafe class D3D12GraphicsBackend
                 {
                     ObjectDisposedException.ThrowIf(_resource is null, this);
                     _descriptorSetReferenceCount = checked(_descriptorSetReferenceCount + 1);
+                }
+            }
+
+            private sealed unsafe class D3D12BackendResourceAllocation :
+                IGraphicsBackendBufferAllocation,
+                IGraphicsBackendTextureAllocation
+            {
+                private ID3D12Heap* _heap;
+                private readonly D3D12BackendDevice _owner;
+
+                internal D3D12BackendResourceAllocation(D3D12BackendDevice owner, ID3D12Heap* heap)
+                {
+                    ArgumentNullException.ThrowIfNull(owner);
+
+                    if (heap is null)
+                    {
+                        throw new ArgumentNullException(nameof(heap));
+                    }
+
+                    _owner = owner;
+                    _heap = heap;
+                }
+
+                public void Dispose()
+                {
+                    _owner.EnsureOwnerThread();
+                    var heap = _heap;
+                    _heap = null;
+
+                    if (heap is not null)
+                    {
+                        _ = heap->Release();
+                    }
+                }
+
+                internal ID3D12Heap* GetHeap(D3D12BackendDevice owner)
+                {
+                    ArgumentNullException.ThrowIfNull(owner);
+                    owner.EnsureOwnerThread();
+
+                    if (!ReferenceEquals(owner, _owner))
+                    {
+                        throw new ArgumentException("The transient resource allocation belongs to a different D3D12 device.", nameof(owner));
+                    }
+
+                    ObjectDisposedException.ThrowIf(_heap is null, this);
+                    return _heap;
                 }
             }
 

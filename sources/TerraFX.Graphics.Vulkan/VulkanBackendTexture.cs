@@ -19,13 +19,15 @@ internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
     private VkDeviceMemory _memory;
     private uint _memoryTypeIndex;
     private readonly VulkanBackendDevice _owner;
+    private bool _ownsMemory;
 
     internal VulkanBackendTexture(
         VulkanBackendDevice owner,
         VkImage image,
         TextureDescription description,
         VkDeviceMemory memory,
-        uint memoryTypeIndex)
+        uint memoryTypeIndex,
+        bool ownsMemory)
     {
         ArgumentNullException.ThrowIfNull(owner);
         ArgumentNullException.ThrowIfNull(description);
@@ -35,6 +37,7 @@ internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
         _initialized = new bool[checked(description.MipLevels * description.ArrayLayers)];
         _memory = memory;
         _memoryTypeIndex = memoryTypeIndex;
+        _ownsMemory = ownsMemory;
         _lastAccessMasks = new VkAccessFlags2[_initialized.Length];
         Array.Fill(_lastAccessMasks, VkAccessFlags2.VK_ACCESS_2_NONE);
         _lastStageMasks = new VkPipelineStageFlags2[_initialized.Length];
@@ -56,6 +59,8 @@ internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
     internal uint MemoryTypeIndex => _memoryTypeIndex;
 
     internal VulkanBackendDevice Owner => _owner;
+
+    internal bool OwnsMemory => _ownsMemory;
 
     public void Dispose()
     {
@@ -89,6 +94,7 @@ internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
         _layouts = [];
         _memory = default;
         _memoryTypeIndex = 0;
+        _ownsMemory = false;
     }
 
     internal void MarkInitialized(TextureSubresource subresource)

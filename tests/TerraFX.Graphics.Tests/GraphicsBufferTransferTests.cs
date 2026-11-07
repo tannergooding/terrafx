@@ -1713,6 +1713,138 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task TransientTextureGroupRetainsSharedAllocationUntilActiveUseCompletes()
+    {
+        const long exactBudgetBytes = 16;
+        var backendDevice = new FakeBackendDevice(textureBudgetBytes: exactBudgetBytes);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var registry = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 7);
+        var description = new TextureDescription(
+            TextureDimension.Dimension2D,
+            width: 2,
+            height: 2,
+            depth: 1,
+            arrayLayers: 1,
+            mipLevels: 1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.Sampled | TextureUsage.CopySource | TextureUsage.CopyDestination,
+            debugName: "Transient texture group active-use test");
+        var versions = ImmutableArray.Create(
+            registry.CreateTransientTexture(description),
+            registry.CreateTransientTexture(description));
+        GraphicsTransientTextureGroup? group = null;
+        GraphicsResourceOwner.UseLease? use = null;
+
+        try
+        {
+            group = await graphicsDevice.CreateTransientTextureGroupAsync(
+                    versions,
+                    CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            var resourceOwner = group.Textures[0].ResourceOwner;
+            use = resourceOwner.AcquireUse(nameof(group));
+            group.Dispose();
+            group = null;
+
+            var shutdownTask = graphicsDevice.ShutdownAsync();
+
+            Assert.That(
+                SpinWait.SpinUntil(() => backendDevice.TextureDisposalCount == 1, TimeSpan.FromSeconds(5)),
+                Is.True);
+            Assert.That(resourceOwner.IsRetirementRequested, Is.True);
+            Assert.That(resourceOwner.HasActiveUses, Is.True);
+            Assert.That(backendDevice.TextureAllocationDisposalCount, Is.Zero);
+            Assert.That(shutdownTask.IsCompleted, Is.False);
+
+            use.Dispose();
+            use = null;
+            await shutdownTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            Assert.That(backendDevice.TextureAllocationCreationCount, Is.EqualTo(1));
+            Assert.That(backendDevice.TextureAllocationDisposalCount, Is.EqualTo(1));
+            Assert.That(backendDevice.TextureDisposalCount, Is.EqualTo(2));
+        }
+        finally
+        {
+            use?.Dispose();
+            group?.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [TestCase(1, 0)]
+    [TestCase(0, 1)]
+    [TestCase(0, 2)]
+    public async Task TransientTextureGroupRollbackReleasesSharedAllocationAndBudget(
+        int textureAllocationCreationFailureCount,
+        int textureCreationFailureAt)
+    {
+        const long exactBudgetBytes = 16;
+        var backendDevice = new FakeBackendDevice(
+            textureBudgetBytes: exactBudgetBytes,
+            textureAllocationSizeBytes: exactBudgetBytes,
+            textureAllocationCreationFailureCount: textureAllocationCreationFailureCount,
+            textureCreationFailureAt: textureCreationFailureAt);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var registry = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 7);
+        var description = new TextureDescription(
+            TextureDimension.Dimension2D,
+            width: 2,
+            height: 2,
+            depth: 1,
+            arrayLayers: 1,
+            mipLevels: 1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.Sampled | TextureUsage.CopySource | TextureUsage.CopyDestination,
+            debugName: "Transient texture group rollback test");
+        var versions = ImmutableArray.Create(
+            registry.CreateTransientTexture(description),
+            registry.CreateTransientTexture(description));
+        GraphicsTransientTextureGroup? group = null;
+
+        try
+        {
+            _ = Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await graphicsDevice.CreateTransientTextureGroupAsync(
+                        versions,
+                        CancellationToken.None)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+
+            Assert.That(backendDevice.TextureAllocationCreationCount, Is.EqualTo(1));
+            Assert.That(
+                backendDevice.TextureAllocationDisposalCount,
+                Is.EqualTo(textureAllocationCreationFailureCount == 0 ? 1 : 0));
+            Assert.That(backendDevice.TextureDisposalCount, Is.EqualTo(Math.Max(textureCreationFailureAt - 1, 0)));
+
+            group = await graphicsDevice.CreateTransientTextureGroupAsync(
+                    versions,
+                    CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert.That(group.Textures, Has.Length.EqualTo(2));
+            group.Dispose();
+            group = null;
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            Assert.That(backendDevice.TextureAllocationCreationCount, Is.EqualTo(2));
+            Assert.That(
+                backendDevice.TextureAllocationDisposalCount,
+                Is.EqualTo(2 - textureAllocationCreationFailureCount));
+            Assert.That(backendDevice.TextureCreationCount, Is.EqualTo(textureCreationFailureAt + 2));
+            Assert.That(
+                backendDevice.TextureDisposalCount,
+                Is.EqualTo(Math.Max(textureCreationFailureAt - 1, 0) + 2));
+        }
+        finally
+        {
+            group?.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task VolumeTextureTransferHonorsDepthSlicePitchAndZeroesPadding()
     {
         var backendDevice = new FakeBackendDevice();
@@ -1853,12 +1985,16 @@ internal sealed class GraphicsBufferTransferTests
         private byte[]? _lastBufferBytes;
         private int _remainingBufferAllocationCreationFailures;
         private int _remainingBufferCreationFailures;
+        private int _remainingTextureAllocationCreationFailures;
         private int _remainingTextureCreationFailures;
         private int _samplerCreationCount;
         private int _samplerDisposalCount;
+        private int _textureAllocationCreationCount;
+        private int _textureAllocationDisposalCount;
         private readonly long? _textureAllocationSizeBytes;
         private readonly long _textureBudgetBytes;
         private int _textureCreationCount;
+        private readonly int _textureCreationFailureAt;
         private int _textureDisposalCount;
         private readonly bool _throwOnDispose;
 
@@ -1866,6 +2002,8 @@ internal sealed class GraphicsBufferTransferTests
             long textureBudgetBytes = 3L * 1024 * 1024 * 1024,
             long? textureAllocationSizeBytes = null,
             int textureCreationFailureCount = 0,
+            int textureAllocationCreationFailureCount = 0,
+            int textureCreationFailureAt = 0,
             long? bufferAllocationSizeBytes = null,
             long bufferBudgetBytes = 3L * 1024 * 1024 * 1024,
             int bufferAllocationCreationFailureCount = 0,
@@ -1876,6 +2014,8 @@ internal sealed class GraphicsBufferTransferTests
         {
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(textureBudgetBytes);
             ArgumentOutOfRangeException.ThrowIfNegative(textureCreationFailureCount);
+            ArgumentOutOfRangeException.ThrowIfNegative(textureAllocationCreationFailureCount);
+            ArgumentOutOfRangeException.ThrowIfNegative(textureCreationFailureAt);
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bufferBudgetBytes);
             ArgumentOutOfRangeException.ThrowIfNegative(bufferAllocationCreationFailureCount);
             ArgumentOutOfRangeException.ThrowIfNegative(bufferCreationFailureCount);
@@ -1893,7 +2033,9 @@ internal sealed class GraphicsBufferTransferTests
 
             _textureBudgetBytes = textureBudgetBytes;
             _textureAllocationSizeBytes = textureAllocationSizeBytes;
+            _remainingTextureAllocationCreationFailures = textureAllocationCreationFailureCount;
             _remainingTextureCreationFailures = textureCreationFailureCount;
+            _textureCreationFailureAt = textureCreationFailureAt;
             _bufferAllocationSizeBytes = bufferAllocationSizeBytes;
             _bufferBudgetBytes = bufferBudgetBytes;
             _remainingBufferAllocationCreationFailures = bufferAllocationCreationFailureCount;
@@ -1932,6 +2074,10 @@ internal sealed class GraphicsBufferTransferTests
         internal int SamplerCreationCount => Volatile.Read(ref _samplerCreationCount);
 
         internal int SamplerDisposalCount => Volatile.Read(ref _samplerDisposalCount);
+
+        internal int TextureAllocationCreationCount => Volatile.Read(ref _textureAllocationCreationCount);
+
+        internal int TextureAllocationDisposalCount => Volatile.Read(ref _textureAllocationDisposalCount);
 
         internal int TextureCreationCount => Volatile.Read(ref _textureCreationCount);
 
@@ -1996,16 +2142,35 @@ internal sealed class GraphicsBufferTransferTests
             return new FakeBackendSampler(this);
         }
 
-        public IGraphicsBackendTexture CreateTexture(TextureDescription description)
+        public IGraphicsBackendTexture CreateTexture(
+            TextureDescription description,
+            IGraphicsBackendTextureAllocation allocation)
         {
-            _ = Interlocked.Increment(ref _textureCreationCount);
+            ArgumentNullException.ThrowIfNull(allocation);
 
-            if (Interlocked.Decrement(ref _remainingTextureCreationFailures) >= 0)
+            if (allocation is not FakeBackendTextureAllocation)
             {
-                throw new InvalidOperationException("The fake texture backend rejected a texture creation attempt.");
+                throw new ArgumentException("The allocation belongs to a different fake backend.", nameof(allocation));
             }
 
-            return new FakeBackendTexture(this, description);
+            return CreateTextureCore(description);
+        }
+
+        public IGraphicsBackendTexture CreateTexture(TextureDescription description)
+            => CreateTextureCore(description);
+
+        public IGraphicsBackendTextureAllocation CreateTextureAllocation(
+            TextureDescription description,
+            GraphicsResourceAllocationInfo allocationInfo)
+        {
+            _ = Interlocked.Increment(ref _textureAllocationCreationCount);
+
+            if (Interlocked.Decrement(ref _remainingTextureAllocationCreationFailures) >= 0)
+            {
+                throw new InvalidOperationException("The fake backend rejected a transient texture allocation attempt.");
+            }
+
+            return new FakeBackendTextureAllocation(this);
         }
 
         public void Dispose()
@@ -2227,6 +2392,9 @@ internal sealed class GraphicsBufferTransferTests
             _samplerDisposed?.Set();
         }
 
+        internal void TextureAllocationDisposed()
+            => _ = Interlocked.Increment(ref _textureAllocationDisposalCount);
+
         internal void TextureDisposed(FakeBackendTexture texture)
             => _ = Interlocked.Increment(ref _textureDisposalCount);
 
@@ -2244,6 +2412,19 @@ internal sealed class GraphicsBufferTransferTests
             _buffers.Add(buffer.Bytes);
             _lastBufferBytes = buffer.Bytes;
             return buffer;
+        }
+
+        private FakeBackendTexture CreateTextureCore(TextureDescription description)
+        {
+            var creationIndex = Interlocked.Increment(ref _textureCreationCount);
+
+            if ((creationIndex == _textureCreationFailureAt)
+                || (Interlocked.Decrement(ref _remainingTextureCreationFailures) >= 0))
+            {
+                throw new InvalidOperationException("The fake texture backend rejected a texture creation attempt.");
+            }
+
+            return new FakeBackendTexture(this, description);
         }
 
         private void WaitForUpload()
@@ -2382,6 +2563,25 @@ internal sealed class GraphicsBufferTransferTests
 
         internal byte[] GetSubresource(TextureSubresource subresource)
             => _subresources[(subresource.ArrayLayer * Description.MipLevels) + subresource.MipLevel];
+    }
+
+    private sealed class FakeBackendTextureAllocation : IGraphicsBackendTextureAllocation
+    {
+        private readonly FakeBackendDevice _device;
+        private int _isDisposed;
+
+        internal FakeBackendTextureAllocation(FakeBackendDevice device)
+        {
+            _device = device;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _isDisposed, 1) == 0)
+            {
+                _device.TextureAllocationDisposed();
+            }
+        }
     }
 
     private readonly struct ReadbackCopyAction : IAction<ReadOnlySpan<byte>>

@@ -377,6 +377,28 @@ internal sealed unsafe partial class VulkanBackendDevice
                     VulkanApi.vkCmdPipelineBarrier2(_commandBuffer, &dependencyInfo);
                 }
 
+                foreach (var aliasingBarrier in submission.TextureAliasingBarriers)
+                {
+                    if (aliasingBarrier.PassId != pass.PassId)
+                    {
+                        continue;
+                    }
+
+                    var barrier = default(VkMemoryBarrier2);
+                    barrier.sType = VkStructureType.VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+                    barrier.srcStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                    barrier.srcAccessMask = VkAccessFlags2.VK_ACCESS_2_MEMORY_READ_BIT
+                        | VkAccessFlags2.VK_ACCESS_2_MEMORY_WRITE_BIT;
+                    barrier.dstStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                    barrier.dstAccessMask = VkAccessFlags2.VK_ACCESS_2_MEMORY_READ_BIT
+                        | VkAccessFlags2.VK_ACCESS_2_MEMORY_WRITE_BIT;
+                    var dependencyInfo = default(VkDependencyInfo);
+                    dependencyInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                    dependencyInfo.memoryBarrierCount = 1;
+                    dependencyInfo.pMemoryBarriers = &barrier;
+                    VulkanApi.vkCmdPipelineBarrier2(_commandBuffer, &dependencyInfo);
+                }
+
                 foreach (var import in submission.BufferImports)
                 {
                     if ((import.Version.Description.Usage & BufferUsage.Storage) == 0)

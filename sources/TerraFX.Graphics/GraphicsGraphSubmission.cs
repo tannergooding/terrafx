@@ -15,6 +15,7 @@ internal sealed class GraphicsGraphSubmission
         ImmutableArray<GraphicsGraphSubmissionPass> passes,
         ImmutableArray<GraphResourceStateTransition> stateTransitions,
         ImmutableArray<GraphResourceAliasingBarrier> aliasingBarriers,
+        ImmutableArray<GraphTextureAliasingBarrier> textureAliasingBarriers,
         ImmutableArray<GraphResourceAccess> accesses,
         ImmutableArray<GraphBufferImportRecord> bufferImports,
         ImmutableArray<GraphTextureImportRecord> textureImports,
@@ -27,6 +28,7 @@ internal sealed class GraphicsGraphSubmission
             || passes.IsDefault
             || stateTransitions.IsDefault
             || aliasingBarriers.IsDefault
+            || textureAliasingBarriers.IsDefault
             || accesses.IsDefault
             || bufferImports.IsDefault
             || textureImports.IsDefault
@@ -46,6 +48,7 @@ internal sealed class GraphicsGraphSubmission
         Passes = [.. passes];
         StateTransitions = [.. stateTransitions];
         AliasingBarriers = [.. aliasingBarriers];
+        TextureAliasingBarriers = [.. textureAliasingBarriers];
         Accesses = [.. accesses];
         BufferImports = [.. bufferImports];
         TextureImports = [.. textureImports];
@@ -69,6 +72,8 @@ internal sealed class GraphicsGraphSubmission
     internal ImmutableArray<RecordedPassCommandList> RecordedPassCommandLists { get; }
 
     internal ImmutableArray<GraphResourceStateTransition> StateTransitions { get; }
+
+    internal ImmutableArray<GraphTextureAliasingBarrier> TextureAliasingBarriers { get; }
 
     internal ImmutableArray<GraphTextureImportRecord> TextureImports { get; }
 
@@ -225,6 +230,7 @@ internal sealed class GraphicsGraphSubmission
         var copySourceTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
         var copyDestinationTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
         var bufferImportsByResourceId = new Dictionary<ulong, GraphBufferImportRecord>(BufferImports.Length);
+        var textureImportsByResourceId = new Dictionary<ulong, GraphTextureImportRecord>(TextureImports.Length);
         var orderedPassIndices = new Dictionary<RenderPassId, int>(OrderedPasses.Length);
 
         for (var index = 0; index < OrderedPasses.Length; index++)
@@ -310,6 +316,14 @@ internal sealed class GraphicsGraphSubmission
                 && !hasCopyDestinationImportAccess)
             {
                 throw new NotSupportedException("Native graph submission requires each imported buffer to have a supported declared usage.");
+            }
+        }
+
+        foreach (var import in TextureImports)
+        {
+            if (import.IsTransient && !textureImportsByResourceId.TryAdd(import.Version.ResourceId, import))
+            {
+                throw new NotSupportedException("Native graph submission requires one transient import per graph texture resource.");
             }
         }
 
@@ -486,6 +500,49 @@ internal sealed class GraphicsGraphSubmission
                         throw new NotSupportedException("Native graph texture copy destinations require CopyDestination resources in supported initial states.");
                     }
                 }
+            }
+        }
+
+        var aliasedTextureResources = new HashSet<ulong>();
+
+        foreach (var aliasingBarrier in TextureAliasingBarriers)
+        {
+            if (!textureImportsByResourceId.TryGetValue(aliasingBarrier.BeforeResourceId, out var beforeImport)
+                || !textureImportsByResourceId.TryGetValue(aliasingBarrier.AfterResourceId, out var afterImport)
+                || !beforeImport.IsTransient
+                || !afterImport.IsTransient
+                || (aliasingBarrier.DeviceEpoch != DeviceEpoch)
+                || !orderedPassIndices.TryGetValue(aliasingBarrier.PassId, out var aliasPassIndex)
+                || !aliasedTextureResources.Add(aliasingBarrier.AfterResourceId))
+            {
+                throw new InvalidOperationException("A transient texture aliasing barrier does not match distinct materialized graph textures and a scheduled pass.");
+            }
+
+            var beforeLastPassIndex = -1;
+            var afterFirstPassIndex = int.MaxValue;
+
+            foreach (var access in Accesses)
+            {
+                if (!access.IsTexture)
+                {
+                    continue;
+                }
+
+                if (access.ResourceId == aliasingBarrier.BeforeResourceId)
+                {
+                    beforeLastPassIndex = Math.Max(beforeLastPassIndex, orderedPassIndices[access.PassId]);
+                }
+
+                if (access.ResourceId == aliasingBarrier.AfterResourceId)
+                {
+                    afterFirstPassIndex = Math.Min(afterFirstPassIndex, orderedPassIndices[access.PassId]);
+                }
+            }
+
+            if ((beforeLastPassIndex >= afterFirstPassIndex)
+                || (afterFirstPassIndex != aliasPassIndex))
+            {
+                throw new InvalidOperationException("Transient texture alias lifetimes overlap or the alias barrier is not at the new resource's first pass.");
             }
         }
 

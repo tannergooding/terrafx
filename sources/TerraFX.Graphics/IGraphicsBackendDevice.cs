@@ -29,11 +29,24 @@ internal interface IGraphicsBackendDevice : IDisposable
 
     IGraphicsBackendSampler CreateSampler(SamplerDescription description, float effectiveMaximumAnisotropy);
 
+    IGraphicsBackendTexture CreateTexture(
+        TextureDescription description,
+        IGraphicsBackendTextureAllocation allocation)
+        => throw new NotSupportedException("The selected backend does not support placed transient textures.");
+
     IGraphicsBackendTexture CreateTexture(TextureDescription description);
+
+    IGraphicsBackendTextureAllocation CreateTextureAllocation(
+        TextureDescription description,
+        GraphicsResourceAllocationInfo allocationInfo)
+        => throw new NotSupportedException("The selected backend does not support shared transient texture allocations.");
 
     GraphicsResourceAllocationInfo GetBufferAllocationInfo(BufferDescription description);
 
     GraphicsResourceAllocationInfo GetTextureAllocationInfo(TextureDescription description);
+
+    GraphicsResourceAllocationInfo GetTransientTextureAllocationInfo(TextureDescription description)
+        => GetTextureAllocationInfo(description);
 
     OwnedBuffer<byte> ReadbackBuffer(
         IGraphicsBackendBuffer source,

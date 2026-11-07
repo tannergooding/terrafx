@@ -65,6 +65,8 @@ public sealed partial class Renderer
         var transientBufferGroups = new List<GraphicsTransientBufferGroup>(graph.TransientBufferGroups.Length);
         var transientBuffersByResourceId = new Dictionary<ulong, GpuBuffer>(graph.TransientBuffers.Length);
         var transientTextures = new List<GpuTexture>(graph.TransientTextures.Length);
+        var transientTextureGroups = new List<GraphicsTransientTextureGroup>(graph.TransientTextureGroups.Length);
+        var transientTexturesByResourceId = new Dictionary<ulong, GpuTexture>(graph.TransientTextures.Length);
 
         try
         {
@@ -107,14 +109,38 @@ public sealed partial class Renderer
                     isTransient: true));
             }
 
+            foreach (var transientGroup in graph.TransientTextureGroups)
+            {
+                if (transientGroup.Length > 1)
+                {
+                    var materializedGroup = await device.CreateTransientTextureGroupAsync(
+                        transientGroup,
+                        cancellationToken).ConfigureAwait(false);
+                    transientTextureGroups.Add(materializedGroup);
+
+                    for (var index = 0; index < transientGroup.Length; index++)
+                    {
+                        transientTexturesByResourceId.Add(
+                            transientGroup[index].ResourceId,
+                            materializedGroup.Textures[index]);
+                    }
+                }
+                else
+                {
+                    var transientVersion = transientGroup[0];
+                    var texture = await device.CreateTextureAsync(
+                        transientVersion.Description,
+                        cancellationToken).ConfigureAwait(false);
+                    transientTextures.Add(texture);
+                    transientTexturesByResourceId.Add(transientVersion.ResourceId, texture);
+                }
+            }
+
             var transientTextureImports = ImmutableArray.CreateBuilder<GraphTextureImportRecord>(graph.TransientTextures.Length);
 
             foreach (var transientVersion in graph.TransientTextures)
             {
-                var texture = await device.CreateTextureAsync(
-                    transientVersion.Description,
-                    cancellationToken).ConfigureAwait(false);
-                transientTextures.Add(texture);
+                var texture = transientTexturesByResourceId[transientVersion.ResourceId];
                 transientTextureImports.Add(new GraphTextureImportRecord(
                     texture,
                     transientVersion,
@@ -169,6 +195,11 @@ public sealed partial class Renderer
             foreach (var transientTexture in transientTextures)
             {
                 transientTexture.Dispose();
+            }
+
+            foreach (var transientTextureGroup in transientTextureGroups)
+            {
+                transientTextureGroup.Dispose();
             }
         }
     }

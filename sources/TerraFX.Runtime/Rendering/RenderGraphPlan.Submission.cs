@@ -136,6 +136,7 @@ public sealed partial class RenderGraphPlan
             passes.ToImmutable(),
             StateTransitions,
             TransientBufferAliasingBarriers,
+            TransientTextureAliasingBarriers,
             Accesses,
             bufferImports.MoveToImmutable(),
             textureImports.MoveToImmutable(),

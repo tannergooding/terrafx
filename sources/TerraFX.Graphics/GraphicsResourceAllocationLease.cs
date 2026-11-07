@@ -7,11 +7,11 @@ namespace TerraFX.Graphics;
 internal sealed class GraphicsResourceAllocationLease
 {
     private readonly GraphicsResourceAllocationInfo _allocationInfo;
-    private IGraphicsBackendBufferAllocation? _backendAllocation;
+    private IGraphicsBackendAllocation? _backendAllocation;
     private int _referenceCount;
 
     internal GraphicsResourceAllocationLease(
-        IGraphicsBackendBufferAllocation backendAllocation,
+        IGraphicsBackendAllocation backendAllocation,
         GraphicsResourceAllocationInfo allocationInfo)
     {
         ArgumentNullException.ThrowIfNull(backendAllocation);
@@ -19,7 +19,7 @@ internal sealed class GraphicsResourceAllocationLease
         _allocationInfo = allocationInfo;
     }
 
-    internal IGraphicsBackendBufferAllocation BackendAllocation
+    internal IGraphicsBackendAllocation BackendAllocation
         => _backendAllocation
             ?? throw new ObjectDisposedException(nameof(GraphicsResourceAllocationLease));
 

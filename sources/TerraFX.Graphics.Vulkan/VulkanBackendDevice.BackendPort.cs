@@ -42,14 +42,36 @@ internal sealed unsafe partial class VulkanBackendDevice
         float effectiveMaximumAnisotropy)
         => CreateSampler(description, effectiveMaximumAnisotropy);
 
+    IGraphicsBackendTexture IGraphicsBackendDevice.CreateTexture(
+        TextureDescription description,
+        IGraphicsBackendTextureAllocation allocation)
+    {
+        ArgumentNullException.ThrowIfNull(allocation);
+
+        if (allocation is not VulkanBackendTextureAllocation selectedAllocation)
+        {
+            throw new ArgumentException("The transient texture allocation belongs to a different Vulkan backend.", nameof(allocation));
+        }
+
+        return CreateTexture(description, selectedAllocation);
+    }
+
     IGraphicsBackendTexture IGraphicsBackendDevice.CreateTexture(TextureDescription description)
         => CreateTexture(description);
+
+    IGraphicsBackendTextureAllocation IGraphicsBackendDevice.CreateTextureAllocation(
+        TextureDescription description,
+        GraphicsResourceAllocationInfo allocationInfo)
+        => CreateTextureAllocation(description, allocationInfo);
 
     GraphicsResourceAllocationInfo IGraphicsBackendDevice.GetBufferAllocationInfo(BufferDescription description)
         => GetBufferAllocationInfo(description);
 
     GraphicsResourceAllocationInfo IGraphicsBackendDevice.GetTextureAllocationInfo(TextureDescription description)
         => GetTextureAllocationInfo(description);
+
+    GraphicsResourceAllocationInfo IGraphicsBackendDevice.GetTransientTextureAllocationInfo(TextureDescription description)
+        => GetTransientTextureAllocationInfo(description);
 
     OwnedBuffer<byte> IGraphicsBackendDevice.ReadbackBuffer(
         IGraphicsBackendBuffer source,

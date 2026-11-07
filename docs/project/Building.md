@@ -72,6 +72,15 @@ dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --confi
 dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Release
 ```
 
+The fake-backend transient-texture group test verifies shared allocation ownership through retirement and active-use completion; it does not qualify Vulkan or D3D12 native alias allocation:
+
+```powershell
+dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Debug --filter "FullyQualifiedName~TransientTextureGroupRetainsSharedAllocationUntilActiveUseCompletes"
+dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Release --filter "FullyQualifiedName~TransientTextureGroupRetainsSharedAllocationUntilActiveUseCompletes"
+dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Debug --filter "FullyQualifiedName~TransientTextureGroupRollbackReleasesSharedAllocationAndBudget"
+dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Release --filter "FullyQualifiedName~TransientTextureGroupRollbackReleasesSharedAllocationAndBudget"
+```
+
 Run the D3D12 descriptor-range allocation and graph resource-state mapping tests (43/43 in Debug and Release):
 
 ```powershell
@@ -244,6 +253,8 @@ Run the public offscreen submission witness after compiling the fixture. It cove
 
 `SnapshotPinnedAtlasPageSamplesThroughNativeGraphAsync` uses a committed Scene/Sprite snapshot, resolves its exact Atlas frame page through `Renderer.EnsureSpritePageResidencyAsync`, samples that page in a custom graph, then unloads the Scene and disposes the snapshot before verifying the retained texture readback. This is a package-backed custom-pass witness, not built-in Sprite geometry/UV rendering.
 
+The transient-texture alias witness chains two exact-description textures through disjoint copy-pass lifetimes. `Renderer.SubmitAsync` materializes the pair from one shared allocation and records the alias handoff; D3D12 uses placed textures and an aliasing barrier, while Vulkan binds alias-capable images to shared memory and records a synchronization2 memory barrier. Windows D3D12/Vulkan Debug/Release pass the focused texture-copy/alias selections; WSLg Vulkan passes with Khronos validation and skips the expected D3D12 cases. The overlapping-lifetime test verifies separate groups and no alias barrier. Cross-frame alias reuse and bounded frame-slot retirement remain open.
+
 ```powershell
 $env:TERRAFX_M04_SHADER_FIXTURE_DIRECTORY = (Resolve-Path .\artifacts\shader-fixtures\m04-offscreen-triangle).Path
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SubmitsOffscreenClearGraphAndReadsBackAsync"
@@ -267,8 +278,8 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SubmitsPartialTextureCopyGraphAndReadsBackAsync"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SubmitsTransientTextureCopyGraphAndReadsBackAsync"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SubmitsTransientTextureCopyGraphAndReadsBackAsync"
-dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~PlansOverlappingTransientTextureLifetimesSeparatelyOnVulkan|FullyQualifiedName~PlansSequentialTransientTextureAliasGroupsAndSubmitsOnVulkan"
-dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~PlansOverlappingTransientTextureLifetimesSeparatelyOnVulkan|FullyQualifiedName~PlansSequentialTransientTextureAliasGroupsAndSubmitsOnVulkan"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~PlansOverlappingTransientTextureLifetimesSeparatelyOnVulkan|FullyQualifiedName~PlansSequentialTransientTextureAliasGroupsAndSubmitsAsync"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~PlansOverlappingTransientTextureLifetimesSeparatelyOnVulkan|FullyQualifiedName~PlansSequentialTransientTextureAliasGroupsAndSubmitsAsync"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SubmitsMultipleTextureCopyGraphAndReadsBackAsync"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SubmitsMultipleTextureCopyGraphAndReadsBackAsync"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SubmitsCombinedBufferAndTextureCopyGraphAndReadsBackAsync"
@@ -293,8 +304,8 @@ export TERRAFX_M04_SHADER_FIXTURE_DIRECTORY=
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SubmitsPartialTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~SubmitsTransientTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SubmitsTransientTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
-"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~PlansOverlappingTransientTextureLifetimesSeparatelyOnVulkan|FullyQualifiedName~PlansSequentialTransientTextureAliasGroupsAndSubmitsOnVulkan" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
-"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~PlansOverlappingTransientTextureLifetimesSeparatelyOnVulkan|FullyQualifiedName~PlansSequentialTransientTextureAliasGroupsAndSubmitsOnVulkan" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~PlansOverlappingTransientTextureLifetimesSeparatelyOnVulkan|FullyQualifiedName~PlansSequentialTransientTextureAliasGroupsAndSubmitsAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~PlansOverlappingTransientTextureLifetimesSeparatelyOnVulkan|FullyQualifiedName~PlansSequentialTransientTextureAliasGroupsAndSubmitsAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~SubmitsMultipleTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SubmitsMultipleTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~SubmitsCombinedBufferAndTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
