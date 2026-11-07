@@ -111,6 +111,46 @@ internal sealed class InputRouterUiDispositionTests
     }
 
     [Test]
+    public void UiDispositionResetIsAdmittedWhileTimelineIsPaused()
+    {
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.SimulationTimeline,
+            75,
+            Environment.CurrentManagedThreadId,
+            sequenceLease);
+        var segment = new SimulationClockSegment(
+            1,
+            0,
+            sequenceLease.Allocate(),
+            0,
+            0.0,
+            60,
+            0,
+            1.0f,
+            isPaused: false);
+        router.SetSimulationClockSegment(in segment);
+
+        var pause = router.CancelInputState(
+            InputCancellationReason.Paused,
+            InputClass.Keyboard | InputClass.Pointing | InputClass.Gamepad,
+            playerSlot: null,
+            hostTimestamp: 0,
+            hostSequence: sequenceLease.Allocate(),
+            discardedInputCount: out _);
+        Assert.That(pause.Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.ServiceInputControlBoundary(), Is.Empty);
+        Assert.That(router.IsPaused, Is.True);
+
+        var reset = router.EnqueueUiDispositionReset(0, sequenceLease.Allocate());
+        Assert.That(reset.Status, Is.EqualTo(InputRoutingStatus.Applied));
+        Assert.That(router.ServiceInputControlBoundary(), Is.Empty);
+        Assert.That(router.IsPaused, Is.True);
+
+        router.Dispose();
+    }
+
+    [Test]
     public void UiDispositionResetKeepsHeldControlsDisarmedUntilNeutral()
     {
         var sequenceLease = new HostEventSequenceLease();

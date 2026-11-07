@@ -64,6 +64,18 @@ public sealed class EngineContext
         return GetHost().CreateWorldFromContext(options);
     }
 
+    /// <summary>Disposes one same-host input recipient and returns its terminal cancellation transitions.</summary>
+    /// <param name="router">The live input router created by this host.</param>
+    /// <returns>The recipient-local transitions produced by disposal.</returns>
+    /// <exception cref="ArgumentException"><paramref name="router"/> is not a live recipient owned by this host.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="router"/> is null.</exception>
+    /// <exception cref="InvalidOperationException">The host is stopping or this is not the owner thread.</exception>
+    public ImmutableArray<InputActionTransition> DisposeInputRouter(InputRouter router)
+    {
+        ArgumentNullException.ThrowIfNull(router);
+        return GetHost().DisposeInputRouterFromContext(router);
+    }
+
     /// <summary>Injects one normalized event to an explicit set of bound Headless timelines.</summary>
     /// <param name="recipients">The nonempty, distinct same-host bound timeline recipients.</param>
     /// <param name="input">The normalized input value copied to each recipient.</param>

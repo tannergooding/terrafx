@@ -1390,12 +1390,13 @@ public sealed class EngineContext
     internal EngineContext();
     public World CreateWorld(WorldOptions options);
     public InputRouter CreateInputRouter(InputRecipientKind recipientKind, WindowHandle? window = null);
+    public ImmutableArray<InputActionTransition> DisposeInputRouter(InputRouter router);
     public InputBindingReceipt BindGameplayInput(WindowHandle window, World world);
     public InputBindingReceipt BindHeadlessGameplayInput(InputRouter router, World world);
     public ImmutableArray<InputRoutingReceipt> InjectHeadlessInput(ImmutableArray<InputRouter> recipients, InputInjection input);
 }
 
-`CreateInputRouter` requires `window` for `HostLiveUI` and rejects it for `SimulationTimeline`. The host validates that a supplied handle is a current window owned by this host. A timeline begins without a physical window; `BindGameplayInput` attaches it to one window and its exact World. Each router is permanently associated with at most one window route.
+`CreateInputRouter` requires `window` for `HostLiveUI` and rejects it for `SimulationTimeline`. The host validates that a supplied handle is a current window owned by this host. A timeline begins without a physical window; `BindGameplayInput` attaches it to one window and its exact World without implicitly creating a `HostLiveUI` recipient. A window with no attached UI recipient supplies the default unconsumed disposition. Each router is permanently associated with at most one window route. `DisposeInputRouter` is owner-thread-only through the live `EngineContext`, accepts only a same-host live router, unregisters that recipient and returns its terminal cancellation transitions. It removes only that timeline's gamepad assignments; disposing `HostLiveUI` first sends a sequenced UI-disposition reset to its attached gameplay recipient, including when paused, and the reset is serviced at a host-control boundary without advancing the simulation tick. Sibling routes and unread recipient copies remain independent.
 
 public enum InputBindingStatus
 {

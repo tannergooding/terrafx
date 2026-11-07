@@ -194,6 +194,225 @@ internal sealed class PlatformInputRoutingOwnerTests
     }
 
     [Test]
+    public void BindGameplayInputDoesNotCreateHiddenHostLiveUiRecipient()
+    {
+        var ownerThreadId = Environment.CurrentManagedThreadId;
+        var ownerId = OwnerIdAllocator.Allocate();
+        var sequenceLease = new HostEventSequenceLease();
+        var platformOwner = new TestPlatformInputRoutingHost(ownerId) {
+            SequenceLease = sequenceLease,
+        };
+        var window = new WindowHandle(ownerId, 0, 1);
+        var inputRouters = new HashSet<InputRouter>();
+        var timelineRouters = new Dictionary<InputRouter, WorldInputTimelineAdapter>();
+        var world = CreateWorld();
+        var routingOwner = new PlatformInputRoutingOwner(
+            HostProfile.Interactive,
+            platformOwner,
+            sequenceLease,
+            new DiagnosticsService(),
+            ownerThreadId,
+            inputRouters,
+            timelineRouters,
+            recipientId => timelineRouters.Keys.FirstOrDefault(router => router.RecipientId == recipientId));
+
+        try
+        {
+            var binding = routingOwner.BindGameplayInput(window, world, worldIsHosted: true);
+            Assert.That(binding.Status, Is.EqualTo(InputBindingStatus.Bound));
+            var boundRouter = binding.Router
+                ?? throw new InvalidOperationException("The successful input binding omitted its recipient.");
+            Assert.That(inputRouters, Has.Count.EqualTo(1));
+            Assert.That(timelineRouters.ContainsKey(boundRouter), Is.True);
+
+            var hostLiveUiRouter = routingOwner.CreateInputRouter(InputRecipientKind.HostLiveUI, window);
+            Assert.Multiple(() => {
+                Assert.That(hostLiveUiRouter.RecipientKind, Is.EqualTo(InputRecipientKind.HostLiveUI));
+                Assert.That(inputRouters, Has.Count.EqualTo(2));
+            });
+        }
+        finally
+        {
+            routingOwner.ClearRoutes();
+
+            foreach (var adapter in timelineRouters.Values)
+            {
+                _ = adapter.DisposeAndGetTransitions();
+            }
+
+            foreach (var router in inputRouters)
+            {
+                _ = router.DisposeAndGetTransitions();
+            }
+
+            world.Dispose();
+        }
+    }
+
+    [Test]
+    public void DisposesHostLiveUiRecipientWithoutDetachingGameplayTimeline()
+    {
+        var ownerThreadId = Environment.CurrentManagedThreadId;
+        var ownerId = OwnerIdAllocator.Allocate();
+        var sequenceLease = new HostEventSequenceLease();
+        var platformOwner = new TestPlatformInputRoutingHost(ownerId) {
+            HostTimestamp = 0,
+            SequenceLease = sequenceLease,
+        };
+        var window = new WindowHandle(ownerId, 0, 1);
+        var device = new InputDeviceHandle(ownerId, 3, 1);
+        var key = new KeyboardControl(7, 4);
+        HashSet<InputRouter> inputRouters = [];
+        InputRouter? simulationRouter = null;
+        var routingOwner = new PlatformInputRoutingOwner(
+            HostProfile.Interactive,
+            platformOwner,
+            sequenceLease,
+            new DiagnosticsService(),
+            ownerThreadId,
+            inputRouters,
+            [],
+            recipientId => (simulationRouter?.RecipientId == recipientId) ? simulationRouter : null);
+        var hostRouter = routingOwner.CreateInputRouter(InputRecipientKind.HostLiveUI, window);
+        simulationRouter = routingOwner.CreateInputRouter(InputRecipientKind.SimulationTimeline, window: null);
+        _ = simulationRouter.RegisterMap(CreateKeyboardMap(key));
+        var segment = new SimulationClockSegment(
+            1,
+            0,
+            sequenceLease.Allocate(),
+            0,
+            0.0,
+            60,
+            0,
+            1.0f,
+            isPaused: false);
+        simulationRouter.SetSimulationClockSegment(in segment);
+        routingOwner.AttachSimulationTimelineToWindow(window, simulationRouter);
+
+        try
+        {
+            var disposedTransitions = routingOwner.DisposeInputRouter(hostRouter);
+            Assert.That(simulationRouter.ServiceInputControlBoundary(), Is.Empty);
+
+            var keyUp = CreateKeyboardEvent(
+                PhysicalInputEventKind.KeyUp,
+                166_666,
+                sequenceLease.Allocate(),
+                device,
+                window,
+                key,
+                isDown: false);
+            routingOwner.RouteCapturedInput(new PlatformInputCaptureBatch([keyUp], 0, []));
+            var neutralSnapshot = simulationRouter.PublishSimulationActionSnapshot(0);
+
+            var keyDown = CreateKeyboardEvent(
+                PhysicalInputEventKind.KeyDown,
+                333_332,
+                sequenceLease.Allocate(),
+                device,
+                window,
+                key,
+                isDown: true);
+            routingOwner.RouteCapturedInput(new PlatformInputCaptureBatch([keyDown], 0, []));
+            var resumedSnapshot = simulationRouter.PublishSimulationActionSnapshot(1);
+
+            Assert.Multiple(() => {
+                Assert.That(disposedTransitions, Is.Empty);
+                Assert.That(neutralSnapshot.Actions[0].IsDownAtEnd, Is.False);
+                Assert.That(neutralSnapshot.Actions[0].Transitions, Is.Empty);
+                Assert.That(resumedSnapshot.Actions[0].IsDownAtEnd, Is.True);
+                Assert.That(resumedSnapshot.Actions[0].Transitions, Has.Length.EqualTo(1));
+                Assert.That(resumedSnapshot.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Pressed));
+                Assert.That(() => hostRouter.GetHostActionSnapshot(), Throws.TypeOf<ObjectDisposedException>());
+            });
+        }
+        finally
+        {
+            routingOwner.ClearRoutes();
+
+            foreach (var router in inputRouters)
+            {
+                _ = router.DisposeAndGetTransitions();
+            }
+        }
+    }
+
+    [Test]
+    public void DisposesSimulationTimelineWithTerminalCancellationOnlyForThatRecipient()
+    {
+        var ownerThreadId = Environment.CurrentManagedThreadId;
+        var ownerId = OwnerIdAllocator.Allocate();
+        var sequenceLease = new HostEventSequenceLease();
+        var platformOwner = new TestPlatformInputRoutingHost(ownerId) {
+            HostTimestamp = 0,
+            SequenceLease = sequenceLease,
+        };
+        var window = new WindowHandle(ownerId, 0, 1);
+        var device = new InputDeviceHandle(ownerId, 3, 1);
+        var key = new KeyboardControl(7, 4);
+        HashSet<InputRouter> inputRouters = [];
+        InputRouter? simulationRouter = null;
+        var routingOwner = new PlatformInputRoutingOwner(
+            HostProfile.Interactive,
+            platformOwner,
+            sequenceLease,
+            new DiagnosticsService(),
+            ownerThreadId,
+            inputRouters,
+            [],
+            recipientId => (simulationRouter?.RecipientId == recipientId) ? simulationRouter : null);
+        var hostRouter = routingOwner.CreateInputRouter(InputRecipientKind.HostLiveUI, window);
+        simulationRouter = routingOwner.CreateInputRouter(InputRecipientKind.SimulationTimeline, window: null);
+        Assert.That(simulationRouter.RegisterMap(CreateKeyboardMap(key)).Status, Is.EqualTo(InputMapStatus.Registered));
+        var segment = new SimulationClockSegment(
+            1,
+            0,
+            sequenceLease.Allocate(),
+            0,
+            0.0,
+            60,
+            0,
+            1.0f,
+            isPaused: false);
+        simulationRouter.SetSimulationClockSegment(in segment);
+        routingOwner.AttachSimulationTimelineToWindow(window, simulationRouter);
+
+        try
+        {
+            var keyDown = CreateKeyboardEvent(
+                PhysicalInputEventKind.KeyDown,
+                166_666,
+                sequenceLease.Allocate(),
+                device,
+                window,
+                key,
+                isDown: true);
+            routingOwner.RouteCapturedInput(new PlatformInputCaptureBatch([keyDown], 0, []));
+            Assert.That(simulationRouter.PublishSimulationActionSnapshot(0).Actions[0].IsDownAtEnd, Is.True);
+
+            platformOwner.HostTimestamp = 333_332;
+            var disposedTransitions = routingOwner.DisposeInputRouter(simulationRouter);
+
+            Assert.Multiple(() => {
+                Assert.That(disposedTransitions, Has.Length.EqualTo(1));
+                Assert.That(disposedTransitions[0].Kind, Is.EqualTo(InputTransitionKind.Canceled));
+                Assert.That(disposedTransitions[0].CancellationReason, Is.EqualTo(InputCancellationReason.RecipientDisposed));
+                Assert.That(() => simulationRouter.GetSimulationActionSnapshot(0), Throws.TypeOf<ObjectDisposedException>());
+                Assert.That(() => hostRouter.GetHostActionSnapshot(), Throws.Nothing);
+            });
+        }
+        finally
+        {
+            routingOwner.ClearRoutes();
+
+            foreach (var router in inputRouters)
+            {
+                _ = router.DisposeAndGetTransitions();
+            }
+        }
+    }
+
+    [Test]
     public void FocusRegainWarningIsSuppressedOnlyByANewerAcceptedSnapshot()
     {
         var ownerThreadId = Environment.CurrentManagedThreadId;

@@ -10,7 +10,7 @@ namespace TerraFX.Hosting;
 
 internal sealed class PlatformWindowInputRoute
 {
-    private readonly InputRouter _hostLiveUiRouter;
+    private InputRouter? _hostLiveUiRouter;
     private readonly int _ownerThreadId;
     private readonly Func<PhysicalInputEvent, UiInputDisposition>? _routeUiInput;
     private InputRouter? _simulationTimelineRouter;
@@ -18,7 +18,7 @@ internal sealed class PlatformWindowInputRoute
 
     internal PlatformWindowInputRoute(
         WindowHandle window,
-        InputRouter hostLiveUiRouter,
+        InputRouter? hostLiveUiRouter,
         Func<PhysicalInputEvent, UiInputDisposition>? routeUiInput = null)
     {
         if (!window.IsValid)
@@ -26,10 +26,9 @@ internal sealed class PlatformWindowInputRoute
             throw new ArgumentException("The window route must have a valid host-issued identity.", nameof(window));
         }
 
-        ArgumentNullException.ThrowIfNull(hostLiveUiRouter);
-
-        if ((hostLiveUiRouter.RecipientKind != InputRecipientKind.HostLiveUI)
-            || (hostLiveUiRouter.Window != window))
+        if ((hostLiveUiRouter is not null)
+            && ((hostLiveUiRouter.RecipientKind != InputRecipientKind.HostLiveUI)
+                || (hostLiveUiRouter.Window != window)))
         {
             throw new ArgumentException("The input router must be the HostLiveUI recipient for this exact window.", nameof(hostLiveUiRouter));
         }
@@ -49,12 +48,21 @@ internal sealed class PlatformWindowInputRoute
         }
     }
 
-    internal InputRouter HostLiveUiRouter
+    internal InputRouter? HostLiveUiRouter
     {
         get
         {
             EnsureOwnerThread();
             return _hostLiveUiRouter;
+        }
+    }
+
+    internal bool IsEmpty
+    {
+        get
+        {
+            EnsureOwnerThread();
+            return (_hostLiveUiRouter is null) && (_simulationTimelineRouter is null);
         }
     }
 
@@ -87,6 +95,25 @@ internal sealed class PlatformWindowInputRoute
     private static bool IsSimulationActionInput(PhysicalInputEventKind kind)
         => IsHostActionInput(kind) || (kind == PhysicalInputEventKind.StateReconciliation);
 
+    internal void AttachHostLiveUiRouter(InputRouter router)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(router);
+
+        if ((router.RecipientKind != InputRecipientKind.HostLiveUI)
+            || (router.Window != _window))
+        {
+            throw new ArgumentException("The input router must be the HostLiveUI recipient for this exact window.", nameof(router));
+        }
+
+        if (_hostLiveUiRouter is not null)
+        {
+            throw new InvalidOperationException("The window already has a HostLiveUI recipient.");
+        }
+
+        _hostLiveUiRouter = router;
+    }
+
     internal void AttachSimulationTimeline(InputRouter router)
     {
         EnsureOwnerThread();
@@ -103,6 +130,19 @@ internal sealed class PlatformWindowInputRoute
         }
 
         _simulationTimelineRouter = router;
+    }
+
+    internal void DetachHostLiveUiRouter(InputRouter router)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(router);
+
+        if (!ReferenceEquals(_hostLiveUiRouter, router))
+        {
+            throw new InvalidOperationException("The HostLiveUI router is not attached to this window.");
+        }
+
+        _hostLiveUiRouter = null;
     }
 
     internal void DetachSimulationTimeline(InputRouter router)
@@ -128,15 +168,16 @@ internal sealed class PlatformWindowInputRoute
             throw new ArgumentException("The physical input event belongs to another window route.", nameof(inputEvent));
         }
 
-        var uiDisposition = _routeUiInput?.Invoke(inputEvent) ?? default;
+        var hostRouter = _hostLiveUiRouter;
+        var uiDisposition = (hostRouter is null) ? default : (_routeUiInput?.Invoke(inputEvent) ?? default);
         InputRoutingReceipt? hostReceipt = null;
         InputRoutingReceipt? simulationReceipt = null;
         var hostDiscardedInputCount = 0L;
         var simulationDiscardedInputCount = 0L;
 
-        if (IsHostActionInput(inputEvent.Kind))
+        if ((hostRouter is not null) && IsHostActionInput(inputEvent.Kind))
         {
-            hostReceipt = _hostLiveUiRouter.EnqueueHostPhysicalEvent(inputEvent, out hostDiscardedInputCount);
+            hostReceipt = hostRouter.EnqueueHostPhysicalEvent(inputEvent, out hostDiscardedInputCount);
         }
 
         if ((_simulationTimelineRouter is not null) && IsSimulationActionInput(inputEvent.Kind))
@@ -160,9 +201,16 @@ internal sealed class PlatformWindowInputRoute
     internal InputRouter.InputOverflowResult? ServiceHostControlBoundary(long hostTimestamp)
     {
         EnsureOwnerThread();
-        _hostLiveUiRouter.UpdateHostControlTimestamp(hostTimestamp);
-        var overflow = _hostLiveUiRouter.ServiceHostControlBoundary();
-        _ = _hostLiveUiRouter.ServiceInputControlBoundary();
+        var hostRouter = _hostLiveUiRouter;
+
+        if (hostRouter is null)
+        {
+            return null;
+        }
+
+        hostRouter.UpdateHostControlTimestamp(hostTimestamp);
+        var overflow = hostRouter.ServiceHostControlBoundary();
+        _ = hostRouter.ServiceInputControlBoundary();
         return overflow;
     }
 

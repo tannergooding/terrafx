@@ -458,6 +458,17 @@ public sealed partial class EngineHost : IAsyncDisposable
         }
     }
 
+    internal ImmutableArray<InputActionTransition> DisposeInputRouterFromContext(InputRouter router)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(router);
+        ThrowIfStopping();
+
+        var routingOwner = _platformInputRouting
+            ?? throw new InvalidOperationException("The EngineHost platform input routing owner is not initialized.");
+        return routingOwner.DisposeInputRouter(router);
+    }
+
     internal void EnsureOwnerThread()
     {
         if (Environment.CurrentManagedThreadId != _ownerThreadId)

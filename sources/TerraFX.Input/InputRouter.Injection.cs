@@ -1589,11 +1589,6 @@ public sealed partial class InputRouter
             return CreateRoutingRejection("InvalidRecipient", "/RecipientKind");
         }
 
-        if (_isPaused)
-        {
-            return CreateRoutingRejection("Paused", "/Recipient");
-        }
-
         if ((hostSequence <= _lastSeenHostSequence)
             || (hostTimestamp < _hostControlTimestamp)
             || (hostTimestamp < _lastSeenHostTimestamp))

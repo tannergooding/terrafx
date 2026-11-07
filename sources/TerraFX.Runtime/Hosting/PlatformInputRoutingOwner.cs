@@ -413,7 +413,8 @@ internal sealed class PlatformInputRoutingOwner
                 throw new NotSupportedException("A HostLiveUI recipient requires an Interactive EngineHost.");
             }
 
-            return GetOrCreateWindowInputRoute(window.Value).HostLiveUiRouter;
+            var route = GetOrCreateWindowInputRoute(window.Value);
+            return route.HostLiveUiRouter ?? CreateHostLiveUiRouter(route);
         }
 
         if (window.HasValue)
@@ -439,12 +440,71 @@ internal sealed class PlatformInputRoutingOwner
         }
     }
 
+    internal ImmutableArray<InputActionTransition> DisposeInputRouter(InputRouter router)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(router);
+
+        if (!_inputRouters.Contains(router))
+        {
+            throw new ArgumentException("The input router is not a live recipient owned by this host.", nameof(router));
+        }
+
+        var hostTimestamp = _platformOwner.GetHostTimestamp();
+        router.UpdateHostControlTimestamp(hostTimestamp);
+
+        if (router.RecipientKind is InputRecipientKind.HostLiveUI)
+        {
+            var window = router.Window
+                ?? throw new InvalidOperationException("The HostLiveUI router has no window route.");
+
+            if (!_windowInputRoutes.TryGetValue(window, out var route)
+                || !ReferenceEquals(route.HostLiveUiRouter, router))
+            {
+                throw new InvalidOperationException("The HostLiveUI router is not attached to its window route.");
+            }
+
+            if (route.SimulationTimelineRouter is not null)
+            {
+                ResetUiDispositionForWindow(route, hostTimestamp);
+            }
+
+            var transitions = router.DisposeAndGetTransitions();
+            route.DetachHostLiveUiRouter(router);
+
+            if (route.IsEmpty)
+            {
+                _ = _windowInputRoutes.Remove(window);
+            }
+
+            _ = _inputRouters.Remove(router);
+            return transitions;
+        }
+
+        var windowRoute = FindWindowInputRoute(router);
+        var assignedDevices = GetDeviceAssignments(router);
+        var disposedTransitions = _inputTimelineByRouter.TryGetValue(router, out var adapter)
+            ? adapter.DisposeAndGetTransitions()
+            : router.DisposeAndGetTransitions();
+        windowRoute?.DetachSimulationTimeline(router);
+
+        if (windowRoute is { IsEmpty: true } emptyRoute)
+        {
+            _ = _windowInputRoutes.Remove(emptyRoute.Window);
+        }
+
+        RemoveDeviceAssignments(router, assignedDevices);
+        _ = _inputTimelineByRouter.Remove(router);
+        _ = _inputRouters.Remove(router);
+        return disposedTransitions;
+    }
+
     internal void ResetUiDispositionForWindow(PlatformWindowInputRoute route, long hostTimestamp)
     {
         EnsureOwnerThread();
         ArgumentNullException.ThrowIfNull(route);
 
-        if (route.SimulationTimelineRouter is not { IsPaused: false } simulationRouter)
+        if (route.SimulationTimelineRouter is not { } simulationRouter)
         {
             return;
         }
@@ -595,11 +655,39 @@ internal sealed class PlatformInputRoutingOwner
 
         foreach (var route in _windowInputRoutes.Values)
         {
-            if (route.ServiceHostControlBoundary(hostTimestamp) is { } overflow)
+            if ((route.HostLiveUiRouter is { } hostLiveUiRouter)
+                && (route.ServiceHostControlBoundary(hostTimestamp) is { } overflow))
             {
-                WriteInputOverflowDiagnostic(route.Window, route.HostLiveUiRouter.RecipientId, overflow);
+                WriteInputOverflowDiagnostic(route.Window, hostLiveUiRouter.RecipientId, overflow);
                 ResetUiDispositionForWindow(route, hostTimestamp);
             }
+        }
+    }
+
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "A HostLiveUI router must be disposed if its window-route registration fails.")]
+    private InputRouter CreateHostLiveUiRouter(PlatformWindowInputRoute route)
+    {
+        var router = new InputRouter(
+            InputRecipientKind.HostLiveUI,
+            OwnerIdAllocator.Allocate(),
+            _ownerThreadId,
+            _sequenceLease,
+            route.Window);
+
+        try
+        {
+            _ = _inputRouters.Add(router);
+            route.AttachHostLiveUiRouter(router);
+            return router;
+        }
+        catch (Exception)
+        {
+            _ = _inputRouters.Remove(router);
+            _ = router.DisposeAndGetTransitions();
+            throw;
         }
     }
 
@@ -624,10 +712,21 @@ internal sealed class PlatformInputRoutingOwner
         return null;
     }
 
-    [SuppressMessage(
-        "Usage",
-        "CA1031:Do not catch general exception types",
-        Justification = "A HostLiveUI router must be disposed if its window-route registration fails.")]
+    private List<InputDeviceHandle> GetDeviceAssignments(InputRouter router)
+    {
+        var devices = new List<InputDeviceHandle>();
+
+        foreach (var (device, assignment) in _deviceAssignments)
+        {
+            if (ReferenceEquals(assignment.Router, router))
+            {
+                devices.Add(device);
+            }
+        }
+
+        return devices;
+    }
+
     private PlatformWindowInputRoute GetOrCreateWindowInputRoute(WindowHandle window)
     {
         if (_windowInputRoutes.TryGetValue(window, out var existingRoute))
@@ -636,26 +735,9 @@ internal sealed class PlatformInputRoutingOwner
         }
 
         _ = _platformOwner.GetNativeWindowBinding(window);
-        var router = new InputRouter(
-            InputRecipientKind.HostLiveUI,
-            OwnerIdAllocator.Allocate(),
-            _ownerThreadId,
-            _sequenceLease,
-            window);
-
-        try
-        {
-            _ = _inputRouters.Add(router);
-            var route = new PlatformWindowInputRoute(window, router);
-            _windowInputRoutes.Add(window, route);
-            return route;
-        }
-        catch (Exception)
-        {
-            _ = _inputRouters.Remove(router);
-            _ = router.DisposeAndGetTransitions();
-            throw;
-        }
+        var route = new PlatformWindowInputRoute(window, hostLiveUiRouter: null);
+        _windowInputRoutes.Add(window, route);
+        return route;
     }
 
     private void LatchPlatformInputSampleLoss()
@@ -664,7 +746,10 @@ internal sealed class PlatformInputRoutingOwner
 
         foreach (var route in _windowInputRoutes.Values)
         {
-            _ = recipients.Add(route.HostLiveUiRouter);
+            if (route.HostLiveUiRouter is { } hostLiveUiRouter)
+            {
+                _ = recipients.Add(hostLiveUiRouter);
+            }
         }
 
         foreach (var router in _inputTimelineByRouter.Keys)
@@ -710,6 +795,21 @@ internal sealed class PlatformInputRoutingOwner
             hostTimestamp,
             out var discardedInputCount);
         ReportReconciliationAdmission(adapter, window: null, receipt, discardedInputCount, "unassigned window input");
+    }
+
+    private void RemoveDeviceAssignments(InputRouter router, List<InputDeviceHandle> devices)
+    {
+        foreach (var device in devices)
+        {
+            if (!_deviceAssignments.TryGetValue(device, out var assignment)
+                || !ReferenceEquals(assignment.Router, router))
+            {
+                continue;
+            }
+
+            _ = _deviceAssignments.Remove(device);
+            _ = _devicesByTimelinePlayer.Remove((router.RecipientId, assignment.PlayerSlot));
+        }
     }
 
     private void ReportReconciliationAdmission(

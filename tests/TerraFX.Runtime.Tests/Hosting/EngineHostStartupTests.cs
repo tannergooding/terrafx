@@ -196,6 +196,8 @@ internal sealed partial class EngineHostOptionsTests
             var secondNextTick = -1L;
             InputActionSnapshot? firstSnapshot = null;
             InputActionSnapshot? secondSnapshot = null;
+            ImmutableArray<InputActionTransition> disposedTransitions = [];
+            ImmutableArray<InputRoutingReceipt> remainingRouterReceipts = [];
 
             await host.InvokeAsync(_ => {
                 firstNextTick = world!.NextTickIndex;
@@ -220,6 +222,28 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(inputReceipts[0].AssignedTick, Is.EqualTo(0));
                 Assert.That(inputReceipts[1].AssignedTick, Is.EqualTo(0));
             });
+
+            await host.InvokeAsync(engineContext => {
+                disposedTransitions = engineContext.DisposeInputRouter(firstRouter!);
+                remainingRouterReceipts = engineContext.InjectHeadlessInput(
+                    [secondRouter!],
+                    new InputInjection(new KeyboardControl(7, 5), InputKeyEventKind.Down));
+            }).ConfigureAwait(false);
+
+            Assert.Multiple(() => {
+                Assert.That(disposedTransitions, Is.Empty);
+                Assert.That(remainingRouterReceipts, Has.Length.EqualTo(1));
+                Assert.That(remainingRouterReceipts[0].Status, Is.EqualTo(InputRoutingStatus.Applied));
+                Assert.That(remainingRouterReceipts[0].RecipientId, Is.EqualTo(secondRouter!.RecipientId));
+            });
+
+            _ = Assert.Throws<ObjectDisposedException>(
+                () => _ = firstRouter!.GetSimulationActionSnapshot(firstNextTick - 1));
+            _ = Assert.ThrowsAsync<ArgumentException>(async () =>
+                await host.InvokeAsync(engineContext => engineContext.InjectHeadlessInput(
+                        [firstRouter!],
+                        new InputInjection(new KeyboardControl(7, 5), InputKeyEventKind.Down)))
+                    .ConfigureAwait(false));
 
             await host.InvokeAsync(static _ => Thread.Sleep(400)).ConfigureAwait(false);
             var pausedNextTick = -1L;
