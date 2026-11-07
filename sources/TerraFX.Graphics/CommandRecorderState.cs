@@ -235,7 +235,10 @@ internal sealed class CommandRecorderState : IDisposable
             byteLength: byteLength));
     }
 
-    internal void CopyTexture(GraphTextureVersion source, GraphTextureVersion destination)
+    internal void CopyTexture(
+        GraphTextureVersion source,
+        GraphTextureVersion destination,
+        TextureCopyRegion? region = null)
     {
         EnsureActive();
         EnsurePassKind(CommandRecorderPassKind.Copy);
@@ -281,10 +284,31 @@ internal sealed class CommandRecorderState : IDisposable
             destination.Range.FirstLayer,
             destination.Range.Aspect);
 
-        if (GraphicsDevice.GetTextureSubresourceExtent(source.Description, sourceSubresource)
-            != GraphicsDevice.GetTextureSubresourceExtent(destination.Description, destinationSubresource))
+        var sourceExtent = GraphicsDevice.GetTextureSubresourceExtent(source.Description, sourceSubresource);
+        var destinationExtent = GraphicsDevice.GetTextureSubresourceExtent(destination.Description, destinationSubresource);
+        TextureCopyRegion copyRegion;
+
+        if (region is TextureCopyRegion selectedRegion)
         {
-            throw new ArgumentException("Graph texture copies require matching mip extents.", nameof(destination));
+            if (!selectedRegion.IsWithin(
+                    sourceExtent.Width,
+                    sourceExtent.Height,
+                    destinationExtent.Width,
+                    destinationExtent.Height))
+            {
+                throw new ArgumentOutOfRangeException(nameof(region), "The source rectangle must fit its subresource and fill the destination subresource.");
+            }
+
+            copyRegion = selectedRegion;
+        }
+        else
+        {
+            if (sourceExtent != destinationExtent)
+            {
+                throw new ArgumentException("Complete graph texture copies require matching mip extents.", nameof(destination));
+            }
+
+            copyRegion = new TextureCopyRegion(0, 0, sourceExtent.Width, sourceExtent.Height);
         }
 
         if (!HasTextureAccess(source, source.Range, GraphTextureUsage.CopySource)
@@ -296,7 +320,8 @@ internal sealed class CommandRecorderState : IDisposable
         _commands.Add(new RecordedGraphicsCommand(
             GraphicsCommandKind.CopyTexture,
             copySourceTexture: source,
-            copyDestinationTexture: destination));
+            copyDestinationTexture: destination,
+            copyTextureRegion: copyRegion));
     }
 
     internal void Dispatch(DispatchSize size)

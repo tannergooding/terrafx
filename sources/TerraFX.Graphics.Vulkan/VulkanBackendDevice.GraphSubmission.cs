@@ -583,9 +583,9 @@ internal sealed unsafe partial class VulkanBackendDevice
                             RecordGraphCopyImageBarrier(sourceVersion.ResourceId, isDestination: false);
                             RecordGraphCopyImageBarrier(destinationVersion.ResourceId, isDestination: true);
 
-                            var (width, height, depth) = GraphicsDevice.GetTextureSubresourceExtent(
+                            var depth = GraphicsDevice.GetTextureSubresourceExtent(
                                 sourceVersion.Description,
-                                sourceSubresource);
+                                sourceSubresource).Depth;
                             var region = default(VkImageCopy);
                             region.srcSubresource.aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT;
                             region.srcSubresource.mipLevel = checked((uint)sourceSubresource.MipLevel);
@@ -595,8 +595,11 @@ internal sealed unsafe partial class VulkanBackendDevice
                             region.dstSubresource.mipLevel = checked((uint)destinationSubresource.MipLevel);
                             region.dstSubresource.baseArrayLayer = checked((uint)destinationSubresource.ArrayLayer);
                             region.dstSubresource.layerCount = 1;
-                            region.extent.width = checked((uint)width);
-                            region.extent.height = checked((uint)height);
+                            var copyRegion = command.CopyTextureRegion;
+                            region.srcOffset.x = copyRegion.SourceX;
+                            region.srcOffset.y = copyRegion.SourceY;
+                            region.extent.width = checked((uint)copyRegion.Width);
+                            region.extent.height = checked((uint)copyRegion.Height);
                             region.extent.depth = checked((uint)depth);
                             VulkanApi.vkCmdCopyImage(
                                 _commandBuffer,

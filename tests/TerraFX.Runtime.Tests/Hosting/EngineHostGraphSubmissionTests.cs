@@ -140,6 +140,24 @@ internal sealed partial class EngineHostOptionsTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsPartialTextureCopyGraphAndReadsBackAsync(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useTextureCopy: true,
+            usePartialTextureCopy: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SubmitsTextureCopyGraphAndReadsBackAsync(GraphicsBackend backend)
         => RunOffscreenGraphAsync(
             backend,
@@ -192,7 +210,8 @@ internal sealed partial class EngineHostOptionsTests
         bool usePackageResidencyTexture = false,
         bool useTextureCopy = false,
         bool useTransientTextureCopy = false,
-        bool useMultipleTextureCopies = false)
+        bool useMultipleTextureCopies = false,
+        bool usePartialTextureCopy = false)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -316,6 +335,7 @@ internal sealed partial class EngineHostOptionsTests
         GpuTexture? secondCopySourceTexture = null;
         GpuTexture? secondCopyDestinationTexture = null;
         TextureDescription? textureCopyDescription = null;
+        byte[]? sourceTextureCopyBytes = null;
         byte[]? expectedTextureCopyBytes = null;
         byte[]? expectedSecondTextureCopyBytes = null;
         GpuTexture? sampledTexture = null;
@@ -461,45 +481,80 @@ internal sealed partial class EngineHostOptionsTests
 
             if (useTextureCopy)
             {
-                expectedTextureCopyBytes = [
-                    0x13, 0x29, 0x4F, 0x97,
-                    0xE3, 0x35, 0x6B, 0xB9,
-                    0x11, 0x23, 0x47, 0x8B,
-                    0xD1, 0x2D, 0x5B, 0xA7,
-                ];
+                if (usePartialTextureCopy)
+                {
+                    sourceTextureCopyBytes = [
+                        0x00, 0x01, 0x02, 0xFF, 0x10, 0x11, 0x12, 0xFF, 0x20, 0x21, 0x22, 0xFF, 0x30, 0x31, 0x32, 0xFF,
+                        0x40, 0x41, 0x42, 0xFF, 0x50, 0x51, 0x52, 0xFF, 0x60, 0x61, 0x62, 0xFF, 0x70, 0x71, 0x72, 0xFF,
+                        0x80, 0x81, 0x82, 0xFF, 0x90, 0x91, 0x92, 0xFF, 0xA0, 0xA1, 0xA2, 0xFF, 0xB0, 0xB1, 0xB2, 0xFF,
+                        0xC0, 0xC1, 0xC2, 0xFF, 0xD0, 0xD1, 0xD2, 0xFF, 0xE0, 0xE1, 0xE2, 0xFF, 0xF0, 0xF1, 0xF2, 0xFF,
+                    ];
+                    expectedTextureCopyBytes = [
+                        0x50, 0x51, 0x52, 0xFF,
+                        0x60, 0x61, 0x62, 0xFF,
+                        0x90, 0x91, 0x92, 0xFF,
+                        0xA0, 0xA1, 0xA2, 0xFF,
+                    ];
+                }
+                else
+                {
+                    expectedTextureCopyBytes = [
+                        0x13, 0x29, 0x4F, 0x97,
+                        0xE3, 0x35, 0x6B, 0xB9,
+                        0x11, 0x23, 0x47, 0x8B,
+                        0xD1, 0x2D, 0x5B, 0xA7,
+                    ];
+                    sourceTextureCopyBytes = expectedTextureCopyBytes;
+                }
+
                 var copyTextureUsage = TextureUsage.CopySource | TextureUsage.CopyDestination;
                 var copyTextureDescription = new TextureDescription(
                     TextureDimension.Dimension2D,
                     width: useTransientTextureCopy ? 2 : 4,
                     height: useTransientTextureCopy ? 2 : 4,
                     depth: 1,
-                    arrayLayers: useTransientTextureCopy ? 1 : 2,
-                    mipLevels: useTransientTextureCopy ? 1 : 2,
+                    arrayLayers: (useTransientTextureCopy || usePartialTextureCopy) ? 1 : 2,
+                    mipLevels: (useTransientTextureCopy || usePartialTextureCopy) ? 1 : 2,
                     TextureFormat.Rgba8Unorm,
                     copyTextureUsage,
                     $"m04-{backend}-graph-copy-texture");
                 textureCopyDescription = copyTextureDescription;
                 copySourceTexture = await graphicsDevice.CreateTextureAsync(copyTextureDescription).ConfigureAwait(false);
-                copyDestinationTexture = await graphicsDevice.CreateTextureAsync(copyTextureDescription).ConfigureAwait(false);
+                var copyDestinationDescription = usePartialTextureCopy
+                    ? new TextureDescription(
+                        TextureDimension.Dimension2D,
+                        width: 2,
+                        height: 2,
+                        depth: 1,
+                        arrayLayers: 1,
+                        mipLevels: 1,
+                        TextureFormat.Rgba8Unorm,
+                        copyTextureUsage,
+                        $"m04-{backend}-graph-copy-destination-texture")
+                    : copyTextureDescription;
+                copyDestinationTexture = await graphicsDevice.CreateTextureAsync(copyDestinationDescription).ConfigureAwait(false);
                 var sourceStorage = UnmanagedBuffer<byte>.Allocate(
-                    expectedTextureCopyBytes.Length,
-                    new BufferAllocationOptions(expectedTextureCopyBytes.Length, alignment: 1));
-                sourceStorage.CopyFrom(expectedTextureCopyBytes.AsSpan(), 0);
+                    sourceTextureCopyBytes.Length,
+                    new BufferAllocationOptions(sourceTextureCopyBytes.Length, alignment: 1));
+                sourceStorage.CopyFrom(sourceTextureCopyBytes.AsSpan(), 0);
 
                 using var ownedSourceBytes = sourceStorage.TransferToOwnedBuffer();
-                using var sourceLease = ownedSourceBytes.AcquireReadLease(0, expectedTextureCopyBytes.Length);
+                using var sourceLease = ownedSourceBytes.AcquireReadLease(0, sourceTextureCopyBytes.Length);
                 UploadReceipt sourceUploadReceipt;
 
                 try
                 {
+                    var sourceSubresource = (useTransientTextureCopy || usePartialTextureCopy)
+                        ? new TextureSubresource(0, 0, TextureAspect.Color)
+                        : new TextureSubresource(1, 1, TextureAspect.Color);
                     sourceUploadReceipt = await graphicsDevice.UploadTextureAsync(
                         copySourceTexture,
-                        useTransientTextureCopy
-                            ? new TextureSubresource(0, 0, TextureAspect.Color)
-                            : new TextureSubresource(1, 1, TextureAspect.Color),
+                        sourceSubresource,
                         sourceLease,
                         0,
-                        new TextureDataLayout(rowPitch: 2 * 4, slicePitch: expectedTextureCopyBytes.Length))
+                        new TextureDataLayout(
+                            rowPitch: (usePartialTextureCopy ? 4 : 2) * 4,
+                            slicePitch: sourceTextureCopyBytes.Length))
                         .ConfigureAwait(false);
                 }
                 catch (OutOfMemoryException exception) when (
@@ -886,7 +941,7 @@ internal sealed partial class EngineHostOptionsTests
                 renderSnapshot,
                 target);
             var sampleRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
-            var copyTextureRange = useTransientTextureCopy
+            var copyTextureRange = (useTransientTextureCopy || usePartialTextureCopy)
                 ? new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)
                 : new GraphTextureRange(1, 1, 1, 1, TextureAspect.Color);
             GraphBufferVersion? frameUniformVersion = null;
@@ -1179,7 +1234,21 @@ internal sealed partial class EngineHostOptionsTests
                 else if ((copySourceTextureVersion is GraphTextureVersion directTextureSource)
                     && (copyDestinationTextureWriteVersion is GraphTextureVersion directTextureDestination))
                 {
-                    recorder.CopyTexture(directTextureSource, directTextureDestination);
+                    if (usePartialTextureCopy)
+                    {
+                        recorder.CopyTexture(
+                            directTextureSource,
+                            directTextureDestination,
+                            new TextureCopyRegion(
+                                sourceX: 1,
+                                sourceY: 1,
+                                width: 2,
+                                height: 2));
+                    }
+                    else
+                    {
+                        recorder.CopyTexture(directTextureSource, directTextureDestination);
+                    }
                 }
 
                 if (useMultipleTextureCopies
@@ -1897,9 +1966,10 @@ internal sealed partial class EngineHostOptionsTests
                     ?? throw new InvalidOperationException("The graph texture-copy test has no destination texture.");
                 var expectedBytes = expectedTextureCopyBytes
                     ?? throw new InvalidOperationException("The graph texture-copy test has no expected bytes.");
+
                 using var copyTextureReadback = await graphicsDevice.ReadbackTextureAsync(
                     copiedTexture,
-                    useTransientTextureCopy
+                    (useTransientTextureCopy || usePartialTextureCopy)
                         ? new TextureSubresource(0, 0, TextureAspect.Color)
                         : new TextureSubresource(1, 1, TextureAspect.Color))
                     .ConfigureAwait(false);

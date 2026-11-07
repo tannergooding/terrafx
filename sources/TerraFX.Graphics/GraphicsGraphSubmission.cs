@@ -1208,12 +1208,17 @@ internal sealed class GraphicsGraphSubmission
 
                         var sourceSubresource = new TextureSubresource(source.Range.FirstMip, source.Range.FirstLayer, source.Range.Aspect);
                         var destinationSubresource = new TextureSubresource(destination.Range.FirstMip, destination.Range.FirstLayer, destination.Range.Aspect);
+                        var (sourceWidth, sourceHeight, _) = GraphicsDevice.GetTextureSubresourceExtent(source.Description, sourceSubresource);
+                        var (destinationWidth, destinationHeight, _) = GraphicsDevice.GetTextureSubresourceExtent(destination.Description, destinationSubresource);
 
                         if ((source.Description.Format != destination.Description.Format)
-                            || (GraphicsDevice.GetTextureSubresourceExtent(source.Description, sourceSubresource)
-                                != GraphicsDevice.GetTextureSubresourceExtent(destination.Description, destinationSubresource)))
+                            || !command.CopyTextureRegion.IsWithin(
+                                sourceWidth,
+                                sourceHeight,
+                                destinationWidth,
+                                destinationHeight))
                         {
-                            throw new NotSupportedException("Native graph texture copies require matching formats and mip extents.");
+                            throw new NotSupportedException("Native graph texture copies require matching formats and a source rectangle that fills the destination subresource.");
                         }
 
                         var sourceAccessDeclared = false;

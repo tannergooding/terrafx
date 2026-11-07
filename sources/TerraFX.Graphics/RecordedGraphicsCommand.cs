@@ -20,6 +20,7 @@ internal readonly struct RecordedGraphicsCommand
         GraphBufferVersion? copyDestination = null,
         GraphTextureVersion? copySourceTexture = null,
         GraphTextureVersion? copyDestinationTexture = null,
+        TextureCopyRegion copyTextureRegion = default,
         long sourceOffset = 0,
         long destinationOffset = 0,
         long byteLength = 0,
@@ -55,8 +56,13 @@ internal readonly struct RecordedGraphicsCommand
             {
                 throw new ArgumentException("A graph texture copy requires distinct source and destination resources.");
             }
+
+            if (!copyTextureRegion.IsValid)
+            {
+                throw new ArgumentException("A graph texture copy requires a valid source and destination region.", nameof(copyTextureRegion));
+            }
         }
-        else if ((copySourceTexture is not null) || (copyDestinationTexture is not null))
+        else if ((copySourceTexture is not null) || (copyDestinationTexture is not null) || copyTextureRegion.IsValid)
         {
             throw new ArgumentException("Only a texture-copy command can identify texture-copy resources.");
         }
@@ -107,6 +113,7 @@ internal readonly struct RecordedGraphicsCommand
         CopySource = copySource;
         CopyDestinationTexture = copyDestinationTexture;
         CopySourceTexture = copySourceTexture;
+        CopyTextureRegion = copyTextureRegion;
         DestinationOffset = destinationOffset;
         Dispatch = dispatch;
         Draw = draw;
@@ -138,6 +145,8 @@ internal readonly struct RecordedGraphicsCommand
     internal GraphBufferVersion? CopySource { get; }
 
     internal GraphTextureVersion? CopySourceTexture { get; }
+
+    internal TextureCopyRegion CopyTextureRegion { get; }
 
     internal long DestinationOffset { get; }
 

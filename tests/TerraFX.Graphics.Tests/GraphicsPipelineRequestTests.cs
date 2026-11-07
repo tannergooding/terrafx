@@ -1216,6 +1216,14 @@ internal sealed class GraphicsPipelineRequestTests
             {
                 recorder.CopyBuffer(source1, 0, destination1, 0, 64);
                 recorder.CopyTexture(textureSourceVersion, textureDestinationVersion);
+                recorder.CopyTexture(
+                    textureSourceVersion,
+                    textureDestinationVersion,
+                    new TextureCopyRegion(
+                        sourceX: 0,
+                        sourceY: 0,
+                        width: 2,
+                        height: 2));
             }
 
             var formatMismatchDescription = new TextureDescription(
@@ -1268,10 +1276,38 @@ internal sealed class GraphicsPipelineRequestTests
                 .WaitAsync(TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false))
             {
-                Assert.That(commandList.Commands.Length, Is.EqualTo(2));
+                Assert.That(commandList.Commands.Length, Is.EqualTo(3));
                 Assert.That(commandList.Commands[0].Kind, Is.EqualTo(GraphicsCommandKind.CopyBuffer));
                 Assert.That(commandList.Commands[1].Kind, Is.EqualTo(GraphicsCommandKind.CopyTexture));
+                Assert.That(commandList.Commands[2].Kind, Is.EqualTo(GraphicsCommandKind.CopyTexture));
+                Assert.That(commandList.Commands[2].CopyTextureRegion.SourceX, Is.Zero);
+                Assert.That(commandList.Commands[2].CopyTextureRegion.SourceY, Is.Zero);
+                Assert.That(commandList.Commands[2].CopyTextureRegion.Width, Is.EqualTo(2));
+                Assert.That(commandList.Commands[2].CopyTextureRegion.Height, Is.EqualTo(2));
             }
+
+            void RecordOutOfBoundsTextureCopy(scoped ref CommandRecorder recorder)
+            {
+                recorder.CopyTexture(
+                    textureSourceVersion,
+                    textureDestinationVersion,
+                    new TextureCopyRegion(
+                        sourceX: 1,
+                        sourceY: 0,
+                        width: 2,
+                        height: 2));
+            }
+
+            _ = Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+                async () => await graphicsDevice.RecordPassAsync(
+                    copyPass,
+                    CommandRecorderPassKind.Copy,
+                    copyAccesses,
+                    [],
+                    depthTargetFormat: null,
+                    RecordOutOfBoundsTextureCopy)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
 
             void RecordFormatMismatch(scoped ref CommandRecorder recorder)
             {

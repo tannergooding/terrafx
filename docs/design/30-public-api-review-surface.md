@@ -4789,11 +4789,26 @@ public readonly struct DispatchSize
     public int GroupCountZ { get; }
 }
 
+public readonly struct TextureCopyRegion : IEquatable<TextureCopyRegion>
+{
+    public TextureCopyRegion(int sourceX, int sourceY, int width, int height);
+    public int Height { get; }
+    public int SourceX { get; }
+    public int SourceY { get; }
+    public int Width { get; }
+    public static bool operator !=(TextureCopyRegion left, TextureCopyRegion right);
+    public static bool operator ==(TextureCopyRegion left, TextureCopyRegion right);
+    public bool Equals(TextureCopyRegion other);
+    public override bool Equals(object? obj);
+    public override int GetHashCode();
+}
+
 public readonly ref struct CommandRecorder
 {
     internal CommandRecorder(CommandRecorderState state);
     public readonly void CopyBuffer(GraphBufferVersion source, long sourceOffset, GraphBufferVersion destination, long destinationOffset, long byteLength);
     public readonly void CopyTexture(GraphTextureVersion source, GraphTextureVersion destination);
+    public readonly void CopyTexture(GraphTextureVersion source, GraphTextureVersion destination, TextureCopyRegion region);
     public readonly void Dispatch(DispatchSize size);
     public readonly void Draw(DrawArguments arguments);
     public readonly void DrawIndexed(DrawIndexedArguments arguments);
@@ -5208,7 +5223,7 @@ An offscreen graph's synthetic terminal output pass transitions its selected col
 
 `CommandRecorder` is scoped to a synchronous render-thread callback. It validates epoch, declared graph ranges, render-scope legality and [17 section 4](17-graphics-device-and-resources.md#4-descriptors-and-pipeline-binding)'s pipeline/reflection/binding compatibility. It cannot escape, await, perform file I/O/ECS access, retain mutable world/snapshot state, or access undeclared ranges.
 
-`CommandRecorder.CopyTexture` is valid only in a Copy pass and copies the complete single 2D color mip/layer represented by each graph version. The imported resources must be distinct, permit `CopySource`/`CopyDestination`, and have matching format and selected mip extents. The pass must declare the exact source `ReadTexture(CopySource)` and destination `WriteTexture(CopyDestination)` ranges; unsupported shapes reject during recording before graph submission. The graph transitions both imported resources and retains them through the actual submission fence.
+`CommandRecorder.CopyTexture` is valid only in a Copy pass. Its two-argument overload copies the complete single 2D color mip/layer represented by each graph version, requiring matching format and selected mip extents. The `TextureCopyRegion` overload copies a positive source rectangle to the origin of the complete destination mip; the source rectangle must fit and match the destination extent, allowing the source mip to be larger. A complete destination write preserves subresource-level content-validity tracking. Both forms require distinct imported resources with `CopySource`/`CopyDestination` usage and exact source `ReadTexture(CopySource)` and destination `WriteTexture(CopyDestination)` declarations. Unsupported shapes reject during recording before graph submission. The graph transitions both imported resources and retains them through the actual submission fence.
 
 `Renderer.Extract` applies [21 section 1](21-2d-and-3d-rendering.md#1-draw-extraction-and-portable-semantics)'s owner-bound committed extraction, validation, snapshot identity and capacity rules. `Extracted` carries a non-null snapshot and no capacity diagnostic; `CapacityExceeded` carries no snapshot and one `RenderExtractionLimitDiagnostic` with exact draw/light/bone `Requested`/`Limit`. Successful extraction may also carry copied warnings, including conservatively drawn unknown bounds. Headless target extent is logical viewport metadata, not fabricated output.
 

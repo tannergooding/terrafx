@@ -32,6 +32,16 @@ public readonly ref struct CommandRecorder
         long byteLength)
         => State.CopyBuffer(source, sourceOffset, destination, destinationOffset, byteLength);
 
+    /// <summary>Records a rectangular copy between distinct graph texture subresources.</summary>
+    /// <param name="source">The graph-owned copy-source version with one color subresource.</param>
+    /// <param name="destination">The graph-owned copy-destination version with one color subresource.</param>
+    /// <param name="region">The source rectangle that fills the destination subresource.</param>
+    public readonly void CopyTexture(
+        GraphTextureVersion source,
+        GraphTextureVersion destination,
+        TextureCopyRegion region)
+        => State.CopyTexture(source, destination, region);
+
     /// <summary>Records a complete single-subresource color copy between distinct graph textures.</summary>
     /// <param name="source">The graph-owned copy-source version with one color subresource.</param>
     /// <param name="destination">The graph-owned copy-destination version with the same extent and format.</param>

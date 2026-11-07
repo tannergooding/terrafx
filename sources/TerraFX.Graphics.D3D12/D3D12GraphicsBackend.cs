@@ -1853,13 +1853,22 @@ public static unsafe class D3D12GraphicsBackend
                                     var destinationLocation = CreateSubresourceLocation(
                                         destinationTexture.GetResource(),
                                         GetTextureSubresourceIndex(destinationTexture.Description, destinationSubresource));
+                                    var copyRegion = command.CopyTextureRegion;
+                                    var sourceBox = new D3D12_BOX {
+                                        left = checked((uint)copyRegion.SourceX),
+                                        top = checked((uint)copyRegion.SourceY),
+                                        front = 0,
+                                        right = checked((uint)(copyRegion.SourceX + copyRegion.Width)),
+                                        bottom = checked((uint)(copyRegion.SourceY + copyRegion.Height)),
+                                        back = 1,
+                                    };
                                     commandList->CopyTextureRegion(
                                         &destinationLocation,
                                         0,
                                         0,
                                         0,
                                         &sourceLocation,
-                                        null);
+                                        &sourceBox);
                                 }
                                 else
                                 {
