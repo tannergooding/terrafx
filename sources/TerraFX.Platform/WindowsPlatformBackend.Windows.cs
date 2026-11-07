@@ -629,6 +629,59 @@ internal sealed unsafe partial class WindowsPlatformBackend
         _gameInputCapture.RequestReconciliation();
     }
 
+    public WindowCommandStatus SetWindowClientSize(WindowHandle window, Vector2 logicalClientSize)
+    {
+        EnsureOwnerThread();
+        logicalClientSize = WindowOptions.ValidateClientSize(logicalClientSize, nameof(logicalClientSize));
+        var state = FindWindowState(window);
+
+        if ((state is null) || state.IsClosing || state.NativeDestroyed)
+        {
+            return WindowCommandStatus.Disposed;
+        }
+
+        if (state.Mode != WindowMode.Windowed)
+        {
+            return WindowCommandStatus.Unsupported;
+        }
+
+        var dpi = GetDpiForWindowNative(state.NativeWindow);
+
+        if (dpi == 0)
+        {
+            throw new InvalidOperationException("Windows did not report DPI for the live window.");
+        }
+
+        var clientWidth = MathF.Max(logicalClientSize.X, state.MinimumClientWidth);
+        var clientHeight = MathF.Max(logicalClientSize.Y, state.MinimumClientHeight);
+        var frame = new NativeRect {
+            Right = GetScaledClientExtent(clientWidth, dpi),
+            Bottom = GetScaledClientExtent(clientHeight, dpi),
+        };
+
+        if (!AdjustWindowRectExForDpiNative(&frame, state.Style, hasMenu: false, state.ExtendedStyle, dpi))
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Windows could not calculate the requested client extent.");
+        }
+
+        var bounds = default(NativeRect);
+
+        if (!GetWindowRectNative(state.NativeWindow, &bounds))
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Windows could not read the live window extent.");
+        }
+
+        SetWindowBounds(
+            state.NativeWindow,
+            bounds.Left,
+            bounds.Top,
+            frame.Right - frame.Left,
+            frame.Bottom - frame.Top);
+        state.ClientWidth = clientWidth;
+        state.ClientHeight = clientHeight;
+        return WindowCommandStatus.Applied;
+    }
+
     public bool TryGetNativeWindowBinding(WindowHandle window, out PlatformNativeWindowBinding binding)
     {
         EnsureOwnerThread();

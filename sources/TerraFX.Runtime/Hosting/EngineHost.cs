@@ -640,6 +640,34 @@ public sealed partial class EngineHost : IAsyncDisposable
         return true;
     }
 
+    private Task<WindowCommandReceipt> InvokeWindowCommandAsync(
+        WindowCommandKind operation,
+        WindowHandle window,
+        Func<WindowCommandReceipt> action,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromCanceled<WindowCommandReceipt>(cancellationToken);
+        }
+
+        var request = new HostWindowCommandRequest(action, cancellationToken);
+
+        if (!TryEnqueue(request))
+        {
+            request.CompleteQueueFull(new WindowCommandReceipt(
+                operation,
+                window,
+                WindowCommandStatus.QueueFull,
+                ownerSequence: 0,
+                diagnostic: null));
+        }
+
+        return request.Result;
+    }
+
     private void RecordSimulationDebt(HostedWorldSchedule schedule, long debtTicks, bool dropped)
     {
         var world = schedule.World;
@@ -698,6 +726,14 @@ public sealed partial class EngineHost : IAsyncDisposable
                         _ => (_platformInputRouting
                             ?? throw new InvalidOperationException("The EngineHost platform input routing owner is not initialized."))
                             .AssignDevice(device, recipientId, playerSlot),
+                        cancellationToken),
+                (window, logicalClientSize, cancellationToken) =>
+                    InvokeWindowCommandAsync(
+                        WindowCommandKind.SetClientSize,
+                        window,
+                        () => (_platformOwner
+                            ?? throw new InvalidOperationException("The EngineHost platform owner is not initialized."))
+                            .SetClientSize(window, logicalClientSize),
                         cancellationToken));
             _platformOwner = platformOwner;
             _platform = platformOwner.Platform;
@@ -1257,6 +1293,47 @@ public sealed partial class EngineHost : IAsyncDisposable
             finally
             {
                 context.Invalidate();
+            }
+        }
+
+        internal override void Fail(Exception exception)
+            => _ = _completion.TrySetException(exception);
+    }
+
+    private sealed class HostWindowCommandRequest(
+        Func<WindowCommandReceipt> action,
+        CancellationToken cancellationToken) : HostActionRequest
+    {
+        private readonly TaskCompletionSource<WindowCommandReceipt> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal override Task Completion => _completion.Task;
+
+        internal Task<WindowCommandReceipt> Result => _completion.Task;
+
+        internal void CompleteQueueFull(WindowCommandReceipt receipt)
+            => _ = _completion.TrySetResult(receipt);
+
+        [SuppressMessage(
+            "Usage",
+            "CA1031:Do not catch general exception types",
+            Justification = "A native window command failure is delivered through that request's task and must not terminate the host owner loop.")]
+        internal override void Execute(EngineHost host)
+        {
+            _ = host;
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                _ = _completion.TrySetCanceled(cancellationToken);
+                return;
+            }
+
+            try
+            {
+                _ = _completion.TrySetResult(action());
+            }
+            catch (Exception exception)
+            {
+                _ = _completion.TrySetException(exception);
             }
         }
 

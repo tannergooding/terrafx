@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Immutable;
 using TerraFX;
+using TerraFX.Numerics;
 
 namespace TerraFX.Platform;
 
@@ -45,6 +46,8 @@ internal interface IPlatformBackend : IDisposable
     void RequestInputStateReconciliation(WindowHandle? window);
 
     void SetMonitorHandles(ImmutableArray<MonitorHandle> monitorHandles);
+
+    WindowCommandStatus SetWindowClientSize(WindowHandle window, Vector2 logicalClientSize);
 
     bool TakeMonitorTopologyChanged();
 

@@ -13,6 +13,7 @@ using TerraFX.Assets;
 using TerraFX.Entities;
 using TerraFX.Hosting;
 using TerraFX.Input;
+using TerraFX.Numerics;
 using TerraFX.Platform;
 using TerraFX.Runtime.Tests.Scenes;
 
@@ -49,6 +50,76 @@ internal sealed partial class EngineHostOptionsTests
         }
         finally
         {
+            if (host is not null)
+            {
+                await host.DisposeAsync().ConfigureAwait(false);
+            }
+
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task DetectsWindowClientSizeMailboxRefusalAsync()
+    {
+        var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
+        var packagePath = SceneAssetStoreTests.Package.WritePackage(packageBytes);
+        var assetStoreOptions = new AssetStoreOptions(
+            packagePath,
+            SHA256.HashData(packageBytes),
+            CreateAssetStoreOptions().Registration);
+        EngineHost? host = null;
+        using var releaseOwner = new ManualResetEventSlim();
+        var ownerEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? blocker = null;
+
+        try
+        {
+            host = await EngineHost.StartAsync(CreateHeadlessOptions(assetStoreOptions, cpuWorkerCount: 0)).ConfigureAwait(false);
+            var window = new WindowHandle(host.Platform.OwnerId, index: 0, generation: 1);
+            blocker = host.InvokeAsync(context => {
+                _ = context;
+                _ = ownerEntered.TrySetResult();
+                releaseOwner.Wait();
+            });
+            await ownerEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            var pendingCommands = new Task<WindowCommandReceipt>[512];
+
+            for (var index = 0; index < pendingCommands.Length; index++)
+            {
+                pendingCommands[index] = host.Platform.SetClientSizeAsync(window, new Vector2(640.0f, 480.0f));
+            }
+
+            var refusedCommand = await host.Platform.SetClientSizeAsync(window, new Vector2(800.0f, 600.0f))
+                .ConfigureAwait(false);
+            Assert.That(refusedCommand.Status, Is.EqualTo(WindowCommandStatus.QueueFull));
+            Assert.That(refusedCommand.OwnerSequence, Is.Zero);
+            Assert.That(refusedCommand.Diagnostic, Is.Null);
+            Assert.That(pendingCommands[0].IsCompleted, Is.False);
+
+            releaseOwner.Set();
+            await blocker.ConfigureAwait(false);
+            var appliedQueue = await Task.WhenAll(pendingCommands).ConfigureAwait(false);
+            Assert.That(appliedQueue, Has.Length.EqualTo(512));
+
+            foreach (var receipt in appliedQueue)
+            {
+                Assert.That(receipt.Status, Is.EqualTo(WindowCommandStatus.Disposed));
+                Assert.That(receipt.OwnerSequence, Is.GreaterThan(0));
+            }
+
+            await host.StopAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            releaseOwner.Set();
+
+            if (blocker is not null)
+            {
+                await blocker.ConfigureAwait(false);
+            }
+
             if (host is not null)
             {
                 await host.DisposeAsync().ConfigureAwait(false);

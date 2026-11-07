@@ -196,6 +196,14 @@ internal sealed class HeadlessPlatformBackend : IPlatformBackend
         throw new ArgumentException("The Headless platform has no monitor handles.", nameof(monitorHandles));
     }
 
+    public WindowCommandStatus SetWindowClientSize(WindowHandle window, TerraFX.Numerics.Vector2 logicalClientSize)
+    {
+        EnsureOwnerThread();
+        _ = window;
+        _ = logicalClientSize;
+        return WindowCommandStatus.Unsupported;
+    }
+
     public bool TakeMonitorTopologyChanged()
     {
         EnsureOwnerThread();

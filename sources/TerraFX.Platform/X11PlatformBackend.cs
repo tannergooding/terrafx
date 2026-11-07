@@ -327,9 +327,9 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         return effectiveDpi;
     }
 
-    private static int GetWindowExtent(float logicalExtent, string parameterName)
+    private static int GetWindowExtent(float logicalExtent, float scale, string parameterName)
     {
-        var extent = Math.Round(logicalExtent, MidpointRounding.ToEven);
+        var extent = Math.Round((double)logicalExtent * scale, MidpointRounding.ToEven);
 
         if (!double.IsFinite(extent) || (extent < 1.0) || (extent > int.MaxValue))
         {
@@ -399,17 +399,24 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         }
     }
 
-    private static void SetWindowSizeHints(nint display, nuint window, WindowOptions options, int width, int height)
+    private static void SetWindowSizeHints(
+        nint display,
+        nuint window,
+        bool resizable,
+        Vector2 minimumClientSize,
+        int width,
+        int height,
+        float scale)
     {
-        var minimumWidth = GetWindowExtent(options.MinimumClientSize.X, nameof(options.MinimumClientSize));
-        var minimumHeight = GetWindowExtent(options.MinimumClientSize.Y, nameof(options.MinimumClientSize));
+        var minimumWidth = GetWindowExtent(minimumClientSize.X, scale, nameof(minimumClientSize));
+        var minimumHeight = GetWindowExtent(minimumClientSize.Y, scale, nameof(minimumClientSize));
         var hints = new X11Native.SizeHints {
             Flags = X11Native.PMinSize,
             MinWidth = minimumWidth,
             MinHeight = minimumHeight,
         };
 
-        if (!options.Resizable)
+        if (!resizable)
         {
             hints.Flags |= X11Native.PMaxSize;
             hints.MaxWidth = width;
@@ -480,8 +487,9 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             throw new ArgumentException("The native monitor binding does not match the requested monitor option.", nameof(nativeMonitorHandle));
         }
 
-        var width = GetWindowExtent(options.ClientSize.X, nameof(options.ClientSize));
-        var height = GetWindowExtent(options.ClientSize.Y, nameof(options.ClientSize));
+        var scale = (_effectiveDpi is float dpi) ? dpi / WindowedDpi : 1.0f;
+        var width = GetWindowExtent(options.ClientSize.X, scale, nameof(options.ClientSize));
+        var height = GetWindowExtent(options.ClientSize.Y, scale, nameof(options.ClientSize));
         var x = 0;
         var y = 0;
 
@@ -512,7 +520,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             throw new InvalidOperationException("X11 did not create a native window.");
         }
 
-        var state = new WindowState(window, nativeWindow);
+        var state = new WindowState(window, nativeWindow, options);
 
         try
         {
@@ -550,7 +558,14 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             }
 
             SetWindowTitle(nativeWindow, options.Title);
-            SetWindowSizeHints(_display, nativeWindow, options, width, height);
+            SetWindowSizeHints(
+                _display,
+                nativeWindow,
+                options.Resizable,
+                options.MinimumClientSize,
+                width,
+                height,
+                scale);
             var deleteWindowAtom = _wmDeleteWindowAtom;
 
             if (X11Native.XSetWMProtocols(_display, nativeWindow, &deleteWindowAtom, 1) == 0)
@@ -934,6 +949,37 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         }
 
         _monitorHandles = [.. monitorHandles];
+    }
+
+    public WindowCommandStatus SetWindowClientSize(WindowHandle window, Vector2 logicalClientSize)
+    {
+        EnsureActiveOwnerThread();
+        logicalClientSize = WindowOptions.ValidateClientSize(logicalClientSize, nameof(logicalClientSize));
+
+        if (!_windowsByHandle.TryGetValue(window, out var state) || state.NativeDestroyed)
+        {
+            return WindowCommandStatus.Disposed;
+        }
+
+        var scale = (_effectiveDpi is float dpi) ? dpi / WindowedDpi : 1.0f;
+        var width = GetWindowExtent(logicalClientSize.X, scale, nameof(logicalClientSize));
+        var height = GetWindowExtent(logicalClientSize.Y, scale, nameof(logicalClientSize));
+        SetWindowSizeHints(
+            _display,
+            state.NativeWindow,
+            state.Resizable,
+            state.MinimumClientSize,
+            width,
+            height,
+            scale);
+
+        if (X11Native.XResizeWindow(_display, state.NativeWindow, checked((uint)width), checked((uint)height)) == 0)
+        {
+            throw new InvalidOperationException("X11 rejected the client-size request.");
+        }
+
+        _ = X11Native.XSync(_display, discard: 0);
+        return WindowCommandStatus.Applied;
     }
 
     public bool TakeMonitorTopologyChanged()
@@ -1649,6 +1695,9 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         [LibraryImport("libX11.so.6", EntryPoint = "XRefreshKeyboardMapping")]
         internal static partial int XRefreshKeyboardMapping(MappingEvent* mappingEvent);
 
+        [LibraryImport("libX11.so.6", EntryPoint = "XResizeWindow")]
+        internal static partial int XResizeWindow(nint display, nuint window, uint width, uint height);
+
         [LibraryImport("libX11.so.6", EntryPoint = "XRootWindow")]
         internal static partial nuint XRootWindow(nint display, int screen);
 
@@ -1952,12 +2001,16 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         internal bool CloseRequested;
         internal bool IsFocused;
         internal readonly HashSet<(nint Device, uint Keycode)> KeysDown = [];
+        internal Vector2 MinimumClientSize;
         internal bool NativeDestroyed;
+        internal bool Resizable;
 
-        internal WindowState(WindowHandle window, nuint nativeWindow)
+        internal WindowState(WindowHandle window, nuint nativeWindow, WindowOptions options)
         {
             Window = window;
             NativeWindow = nativeWindow;
+            MinimumClientSize = options.MinimumClientSize;
+            Resizable = options.Resizable;
         }
 
         internal nuint NativeWindow { get; }

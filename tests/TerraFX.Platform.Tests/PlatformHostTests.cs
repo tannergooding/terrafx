@@ -1,7 +1,10 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
+using System;
 using System.Threading.Tasks;
 using NUnit.Framework;
+using TerraFX;
+using TerraFX.Numerics;
 
 namespace TerraFX.Platform.Tests;
 
@@ -74,5 +77,49 @@ internal sealed class PlatformHostTests
 
         _ = Assert.Throws<System.NotSupportedException>(
             () => _ = new PlatformHost(3, PlatformBackend.Headless, ClipboardServicePolicy.Required));
+    }
+
+    [Test]
+    public void SetClientSizeCommandValidatesAndForwardsLogicalExtent()
+    {
+        var window = new WindowHandle(ownerId: 5, index: 0, generation: 1);
+        var callCount = 0;
+        var receivedSize = default(Vector2);
+        var platform = new PlatformHost(
+            ownerId: 5,
+            PlatformBackend.Headless,
+            ClipboardServicePolicy.NotRequested,
+            setClientSizeAsync: (requestedWindow, logicalClientSize, _) => {
+                callCount++;
+                receivedSize = logicalClientSize;
+                return Task.FromResult(new WindowCommandReceipt(
+                    WindowCommandKind.SetClientSize,
+                    requestedWindow,
+                    WindowCommandStatus.Applied,
+                    ownerSequence: 11,
+                    diagnostic: null));
+            });
+
+        try
+        {
+            var receipt = platform.SetClientSizeAsync(window, new Vector2(640.0f, 360.0f)).GetAwaiter().GetResult();
+            Assert.That(receipt.Status, Is.EqualTo(WindowCommandStatus.Applied));
+            Assert.That(receipt.Operation, Is.EqualTo(WindowCommandKind.SetClientSize));
+            Assert.That(receipt.Window, Is.EqualTo(window));
+            Assert.That(receipt.OwnerSequence, Is.EqualTo(11));
+            Assert.That(receivedSize, Is.EqualTo(new Vector2(640.0f, 360.0f)));
+            Assert.That(callCount, Is.EqualTo(1));
+            _ = Assert.Throws<ArgumentOutOfRangeException>(
+                () => platform.SetClientSizeAsync(window, new Vector2(0.0f, 360.0f)));
+            _ = Assert.Throws<ArgumentException>(
+                () => platform.SetClientSizeAsync(
+                    new WindowHandle(ownerId: 6, index: 0, generation: 1),
+                    new Vector2(640.0f, 360.0f)));
+            Assert.That(callCount, Is.EqualTo(1));
+        }
+        finally
+        {
+            platform.DisposeFromOwner();
+        }
     }
 }

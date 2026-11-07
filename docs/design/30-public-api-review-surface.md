@@ -7124,24 +7124,26 @@ public sealed class PlatformHost
     public Task<WindowCommandReceipt> SetTitleAsync(WindowHandle window, string title, CancellationToken cancellationToken = default);
     public Task<WindowCommandReceipt> SetModeAsync(WindowHandle window, WindowMode mode, CancellationToken cancellationToken = default);
     public Task<WindowCommandReceipt> CloseWindowAsync(WindowHandle window, CancellationToken cancellationToken = default);
+    public Task<WindowCommandReceipt> SetClientSizeAsync(WindowHandle window, Vector2 logicalClientSize, CancellationToken cancellationToken = default);
     public WindowMetrics GetMetrics(WindowHandle window);
 }
 
 public enum WindowCommandStatus
 {
-    Applied,
-    Disposed,
-    Unsupported,
-    PermissionDenied,
-    Unconfirmed,
-    QueueFull
+    Applied = 0,
+    Disposed = 1,
+    Unsupported = 2,
+    PermissionDenied = 3,
+    Unconfirmed = 4,
+    QueueFull = 5
 }
 
 public enum WindowCommandKind
 {
-    SetTitle,
-    SetMode,
-    Close
+    SetTitle = 0,
+    SetMode = 1,
+    Close = 2,
+    SetClientSize = 3
 }
 
 public sealed class WindowCommandReceipt
@@ -7582,7 +7584,7 @@ public sealed class DiagnosticsService
 }
 ```
 
-The default `WindowOptions` `ClientSize` is 1280 x 720 logical units, `MinimumClientSize` is 1 x 1, and the window is resizable/visible in `Windowed` mode. Those values are initialized once by the options type; the constructor has no optional arguments. A window is not created in `Headless`. `WindowHandle` and `MonitorHandle` are engine-issued values whose default and zero generation are invalid; removal retires the monitor generation before reuse. `GetMonitorHandles` returns a copied owner-thread snapshot in stable discovery order. A stale monitor handle is rejected before window-request admission; if removal occurs after admission, `CreateWindowAsync` completes with `WindowCreationReceipt.Rejected` and a `MonitorUnavailable` diagnostic, with no window handle. `WindowMetrics` separately reports `LogicalClientSize`, physical `ClientPixelSize`, `ContentScale`, effective DPI/source/confidence, and independent `SurfaceEpoch`/`SwapchainEpoch`. `PlatformHost` is host-created; window mutation tasks complete after owner-thread application and return an operation/status/sequence/diagnostic `WindowCommandReceipt`, not merely after queue admission. `EngineHostOptions.ClipboardServicePolicy` is explicit and defaults to `NotRequested`; `Optional` keeps startup available while exposing `Unsupported`, while `Required` fails startup if unavailable. `PlatformHost.ClipboardStatus` distinguishes `NotRequested`, `Ready`, and `Unsupported`.
+The default `WindowOptions` `ClientSize` is 1280 x 720 logical units, `MinimumClientSize` is 1 x 1, and the window is resizable/visible in `Windowed` mode. Those values are initialized once by the options type; the constructor has no optional arguments. A window is not created in `Headless`. `WindowHandle` and `MonitorHandle` are engine-issued values whose default and zero generation are invalid; removal retires the monitor generation before reuse. `GetMonitorHandles` returns a copied owner-thread snapshot in stable discovery order. A stale monitor handle is rejected before window-request admission; if removal occurs after admission, `CreateWindowAsync` completes with `WindowCreationReceipt.Rejected` and a `MonitorUnavailable` diagnostic, with no window handle. `WindowMetrics` separately reports `LogicalClientSize`, physical `ClientPixelSize`, `ContentScale`, effective DPI/source/confidence, and independent `SurfaceEpoch`/`SwapchainEpoch`. `PlatformHost` is host-created; window mutation tasks complete after owner-thread application and return an operation/status/sequence/diagnostic `WindowCommandReceipt`, not merely after queue admission. `SetClientSizeAsync` accepts finite positive logical client dimensions in 1/96-inch units and converts at owner application using current scale and checked nearest-even rounding. `Applied` confirms the native resize request was accepted; `GetMetrics` is authoritative for the resulting size. Borderless-fullscreen Windows windows and Wayland top-level clients return `Unsupported` because their selected presentation mode/protocol owns the extent. `Surface.ResizeAsync` only resizes graphics presentation resources. For a `QueueFull` receipt, `OwnerSequence` is zero and no native operation occurred; owner-applied receipts have a positive host sequence. `EngineHostOptions.ClipboardServicePolicy` is explicit and defaults to `NotRequested`; `Optional` keeps startup available while exposing `Unsupported`, while `Required` fails startup if unavailable. `PlatformHost.ClipboardStatus` distinguishes `NotRequested`, `Ready`, and `Unsupported`.
 
 Clipboard requests carry the target window, a positive maximum UTF-8 byte limit no greater than 1 MiB, and an optional one-use `UserGestureToken`. Clipboard responses use `ClipboardStatus`; `Text` is present only for `Completed`, and empty text means an actually empty selection. Permission denial, unsupported protocol, expiry, timeout, invalid data, oversize and protocol cancellation remain distinct statuses. Cancellation of the task is separate from a protocol `Canceled` response. No native clipboard storage is returned to the caller.
 

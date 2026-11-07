@@ -221,6 +221,13 @@ internal sealed class ClipboardTextServiceTests
         public void SetMonitorHandles(ImmutableArray<MonitorHandle> monitorHandles)
             => _ = monitorHandles;
 
+        public WindowCommandStatus SetWindowClientSize(WindowHandle window, TerraFX.Numerics.Vector2 logicalClientSize)
+        {
+            _ = window;
+            _ = logicalClientSize;
+            return WindowCommandStatus.Unsupported;
+        }
+
         public bool TakeMonitorTopologyChanged()
             => false;
 

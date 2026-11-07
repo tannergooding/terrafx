@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using TerraFX;
 using TerraFX.Input;
 using TerraFX.Platform;
+using TerraFX.Numerics;
 
 namespace TerraFX.Hosting;
 
@@ -26,18 +27,20 @@ internal sealed class PlatformHostOwner
     private readonly int _ownerThreadId;
     private readonly PlatformHost _platform;
     private readonly HostProfile _profile;
+    private readonly HostEventSequenceLease _sequenceLease;
 
     private PlatformHostOwner(
         uint ownerId,
         HostProfile profile,
         PlatformHost platform,
         TimeProvider timeProvider,
-        HostEventSequenceLease? sequenceLease)
+        HostEventSequenceLease sequenceLease)
     {
         _ownerId = ownerId;
         _platform = platform;
         _profile = profile;
         _ownerThreadId = Environment.CurrentManagedThreadId;
+        _sequenceLease = sequenceLease;
         _inputBroker = new PlatformInputBroker(ownerId, timeProvider, sequenceLease);
         _activeMonitorHandles = [];
         _activeWindowHandles = [];
@@ -63,18 +66,21 @@ internal sealed class PlatformHostOwner
     internal static PlatformHostOwner Create(
         EngineHostOptions options,
         HostEventSequenceLease? sequenceLease = null,
-        Func<InputDeviceHandle, uint, ushort, CancellationToken, Task<InputRoutingReceipt>>? assignDeviceAsync = null)
+        Func<InputDeviceHandle, uint, ushort, CancellationToken, Task<InputRoutingReceipt>>? assignDeviceAsync = null,
+        Func<WindowHandle, Vector2, CancellationToken, Task<WindowCommandReceipt>>? setClientSizeAsync = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         var ownerId = OwnerIdAllocator.Allocate();
         var timeProvider = TimeProvider.System;
+        sequenceLease ??= new HostEventSequenceLease();
         var platform = new PlatformHost(
             ownerId,
             options.Platform,
             options.ClipboardServicePolicy,
             timeProvider,
             clipboardAllowed: options.Profile is HostProfile.Interactive,
-            assignDeviceAsync);
+            assignDeviceAsync,
+            setClientSizeAsync);
         var owner = new PlatformHostOwner(ownerId, options.Profile, platform, timeProvider, sequenceLease);
 
         try
@@ -337,6 +343,45 @@ internal sealed class PlatformHostOwner
 
         _platform.RequestInputStateReconciliation(window);
         return _inputBroker.Capture(_platform.DrainInputSamples(), _activeWindowHandles.Contains);
+    }
+
+    internal WindowCommandReceipt SetClientSize(WindowHandle window, Vector2 logicalClientSize)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        ThrowIfStopping();
+
+        if (!window.IsValid || (window.OwnerId != _ownerId))
+        {
+            throw new ArgumentException("The window handle belongs to another platform owner.", nameof(window));
+        }
+
+        logicalClientSize = WindowOptions.ValidateClientSize(logicalClientSize, nameof(logicalClientSize));
+        var ownerSequence = _sequenceLease.Allocate();
+
+        if (!_activeWindowHandles.Contains(window))
+        {
+            return new WindowCommandReceipt(
+                WindowCommandKind.SetClientSize,
+                window,
+                WindowCommandStatus.Disposed,
+                ownerSequence,
+                diagnostic: null);
+        }
+
+        var status = _platform.SetWindowClientSize(window, logicalClientSize);
+
+        if (status is WindowCommandStatus.Applied)
+        {
+            RefreshWindowMetrics(window);
+        }
+
+        return new WindowCommandReceipt(
+            WindowCommandKind.SetClientSize,
+            window,
+            status,
+            ownerSequence,
+            diagnostic: null);
     }
 
     private void EnsureOwnerThread()

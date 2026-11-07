@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Input;
+using TerraFX.Numerics;
 
 namespace TerraFX.Platform.Tests;
 
@@ -166,8 +167,12 @@ internal sealed partial class HeadlessPlatformBackendTests
             try
             {
                 var metrics = backend.GetNativeWindowMetrics(window);
-                Assert.That(metrics.ClientPixelSize.Width, Is.EqualTo(1280));
-                Assert.That(metrics.ClientPixelSize.Height, Is.EqualTo(720));
+                Assert.That(
+                    metrics.ClientPixelSize.Width,
+                    Is.EqualTo(checked((int)Math.Round(1280.0f * metrics.ContentScale.X, MidpointRounding.ToEven))));
+                Assert.That(
+                    metrics.ClientPixelSize.Height,
+                    Is.EqualTo(checked((int)Math.Round(720.0f * metrics.ContentScale.Y, MidpointRounding.ToEven))));
                 var dpiLabel = metrics.EffectiveDpi?.ToString(CultureInfo.InvariantCulture) ?? "none";
                 TestContext.WriteLine($"X11 DPI source={metrics.DpiSource}; effective DPI={dpiLabel}.");
 
@@ -192,6 +197,23 @@ internal sealed partial class HeadlessPlatformBackendTests
                 Assert.That(
                     metrics.LogicalClientSize.Y * metrics.ContentScale.Y,
                     Is.EqualTo(metrics.ClientPixelSize.Height).Within(0.01f));
+
+                var resizeStatus = backend.SetWindowClientSize(window, new Vector2(640.0f, 360.0f));
+                Assert.That(resizeStatus, Is.EqualTo(WindowCommandStatus.Applied));
+                var resizedMetrics = backend.GetNativeWindowMetrics(window);
+                Assert.That(
+                    resizedMetrics.ClientPixelSize.Width,
+                    Is.EqualTo(checked((int)Math.Round(640.0f * resizedMetrics.ContentScale.X, MidpointRounding.ToEven))));
+                Assert.That(
+                    resizedMetrics.ClientPixelSize.Height,
+                    Is.EqualTo(checked((int)Math.Round(360.0f * resizedMetrics.ContentScale.Y, MidpointRounding.ToEven))));
+                Assert.That(
+                    resizedMetrics.LogicalClientSize.X,
+                    Is.EqualTo(640.0f).Within(0.51f / resizedMetrics.ContentScale.X));
+                Assert.That(
+                    resizedMetrics.LogicalClientSize.Y,
+                    Is.EqualTo(360.0f).Within(0.51f / resizedMetrics.ContentScale.Y));
+
                 Assert.That(backend.TryGetNativeWindowBinding(window, out var binding), Is.True);
                 Assert.That(binding.Kind, Is.EqualTo(PlatformNativeSurfaceKind.X11));
                 Assert.That(binding.NativeDisplayOrInstance, Is.Not.Zero);

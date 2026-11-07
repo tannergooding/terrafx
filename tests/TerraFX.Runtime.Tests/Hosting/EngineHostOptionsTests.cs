@@ -2129,6 +2129,8 @@ internal sealed partial class EngineHostOptionsTests
             uint OwnerId,
             bool StaleCloseRejected,
             bool StaleMetricsRejected,
+            bool ResizeApplied,
+            long ResizeOwnerSequence,
             WindowMetrics? InitialMetrics,
             WindowMetrics? ResizedMetrics)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2138,13 +2140,22 @@ internal sealed partial class EngineHostOptionsTests
             var ownerId = 0U;
             var staleCloseRejected = false;
             var staleMetricsRejected = false;
+            var resizeApplied = false;
+            var resizeOwnerSequence = 0L;
             WindowMetrics? initialMetrics = null;
             WindowMetrics? resizedMetrics = null;
             Exception? failure = null;
 
             try
             {
-                owner = PlatformHostOwner.Create(options);
+                owner = PlatformHostOwner.Create(
+                    options,
+                    setClientSizeAsync: (targetWindow, logicalClientSize, cancellationToken) => {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var currentOwner = owner
+                            ?? throw new InvalidOperationException("The Platform owner has not been initialized.");
+                        return Task.FromResult(currentOwner.SetClientSize(targetWindow, logicalClientSize));
+                    });
                 ownerId = owner.OwnerId;
                 window = owner.CreateWindow(new WindowOptions("TerraFX hidden window witness") {
                     ClientSize = new Vector2(640.0f, 480.0f),
@@ -2152,29 +2163,11 @@ internal sealed partial class EngineHostOptionsTests
                 });
                 _ = owner.Pump();
                 initialMetrics = owner.Platform.GetMetrics(window);
-
-                var binding = owner.GetNativeWindowBinding(window);
-                var initialClientPixels = initialMetrics.ClientPixelSize;
-                var requestedOuterWidth = checked(initialClientPixels.Width + 256);
-                var requestedOuterHeight = checked(initialClientPixels.Height + 256);
-
-                if (!WindowsTestNativeMethods.SetWindowPos(
-                    binding.NativeWindowOrSurface,
-                    insertAfter: 0,
-                    x: 0,
-                    y: 0,
-                    width: requestedOuterWidth,
-                    height: requestedOuterHeight,
-                    flags: WindowsTestNativeMethods.WindowPositionNoMove
-                        | WindowsTestNativeMethods.WindowPositionNoZOrder
-                        | WindowsTestNativeMethods.WindowPositionNoActivate))
-                {
-                    throw new Win32Exception(
-                        Marshal.GetLastPInvokeError(),
-                        "The Windows metrics witness could not resize its hidden HWND.");
-                }
-
-                _ = owner.Pump();
+                var resizeReceipt = owner.Platform.SetClientSizeAsync(window, new Vector2(800.0f, 600.0f))
+                    .GetAwaiter()
+                    .GetResult();
+                resizeApplied = resizeReceipt.Status is WindowCommandStatus.Applied;
+                resizeOwnerSequence = resizeReceipt.OwnerSequence;
                 resizedMetrics = owner.Platform.GetMetrics(window);
                 owner.CloseWindow(window);
                 _ = owner.Pump();
@@ -2220,6 +2213,8 @@ internal sealed partial class EngineHostOptionsTests
                     ownerId,
                     staleCloseRejected,
                     staleMetricsRejected,
+                    resizeApplied,
+                    resizeOwnerSequence,
                     initialMetrics,
                     resizedMetrics));
             }
@@ -2231,7 +2226,7 @@ internal sealed partial class EngineHostOptionsTests
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
 
-        var (window, ownerId, staleCloseRejected, staleMetricsRejected, initialMetrics, resizedMetrics) =
+        var (window, ownerId, staleCloseRejected, staleMetricsRejected, resizeApplied, resizeOwnerSequence, initialMetrics, resizedMetrics) =
             await completion.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
         Assert.That(thread.Join(TimeSpan.FromSeconds(5)), Is.True);
         Assert.That(ownerId, Is.GreaterThan(0));
@@ -2239,6 +2234,8 @@ internal sealed partial class EngineHostOptionsTests
         Assert.That(window.OwnerId, Is.EqualTo(ownerId));
         Assert.That(staleCloseRejected, Is.True);
         Assert.That(staleMetricsRejected, Is.True);
+        Assert.That(resizeApplied, Is.True);
+        Assert.That(resizeOwnerSequence, Is.GreaterThan(0));
 
         var actualInitialMetrics = initialMetrics
             ?? throw new InvalidOperationException("The Windows Platform owner did not publish the initial metrics snapshot.");
@@ -2254,8 +2251,8 @@ internal sealed partial class EngineHostOptionsTests
         Assert.That(actualInitialMetrics.LogicalClientSize.X, Is.EqualTo(640.0f).Within(0.5f));
         Assert.That(actualInitialMetrics.LogicalClientSize.Y, Is.EqualTo(480.0f).Within(0.5f));
         Assert.That(actualResizedMetrics, Is.Not.SameAs(actualInitialMetrics));
-        Assert.That(actualResizedMetrics.ClientPixelSize.Width, Is.GreaterThan(actualInitialMetrics.ClientPixelSize.Width));
-        Assert.That(actualResizedMetrics.ClientPixelSize.Height, Is.GreaterThan(actualInitialMetrics.ClientPixelSize.Height));
+        Assert.That(actualResizedMetrics.LogicalClientSize.X, Is.EqualTo(800.0f).Within(0.5f));
+        Assert.That(actualResizedMetrics.LogicalClientSize.Y, Is.EqualTo(600.0f).Within(0.5f));
         Assert.That(actualResizedMetrics.DpiSource, Is.EqualTo(DpiSource.WindowsPerMonitorV2));
         Assert.That(actualResizedMetrics.DpiConfidence, Is.EqualTo(DpiConfidence.Reported));
         Assert.That(actualResizedMetrics.ContentScale.X, Is.EqualTo(expectedScale).Within(0.0001f));

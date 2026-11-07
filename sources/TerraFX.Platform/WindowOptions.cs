@@ -123,7 +123,7 @@ public sealed class WindowOptions
         }
     }
 
-    private static Vector2 ValidateClientSize(Vector2 size, string parameterName)
+    internal static Vector2 ValidateClientSize(Vector2 size, string parameterName)
     {
         if (!size.IsFinite().All()
             || (size.X <= 0.0f)

@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using TerraFX;
 using TerraFX.Input;
+using TerraFX.Numerics;
 
 namespace TerraFX.Platform;
 
@@ -18,6 +19,7 @@ public sealed class PlatformHost
     private readonly IPlatformBackend _backend;
     private readonly ClipboardServiceStatus _clipboardStatus;
     private readonly ClipboardTextService? _clipboardText;
+    private readonly Func<WindowHandle, Vector2, CancellationToken, Task<WindowCommandReceipt>>? _setClientSizeAsync;
     private readonly Dictionary<WindowHandle, WindowMetrics> _windowMetrics = [];
 
     /// <summary>Creates one platform owner from a Runtime-issued identity and explicit service policy.</summary>
@@ -27,13 +29,15 @@ public sealed class PlatformHost
     /// <param name="timeProvider">The host's private monotonic timestamp source.</param>
     /// <param name="clipboardAllowed">Whether this host profile permits clipboard text.</param>
     /// <param name="assignDeviceAsync">The Runtime-owned route for host-bound gamepad assignment.</param>
+    /// <param name="setClientSizeAsync">The Runtime-owned route for window client-size commands.</param>
     internal PlatformHost(
         uint ownerId,
         PlatformBackend backend,
         ClipboardServicePolicy clipboardPolicy,
         TimeProvider? timeProvider = null,
         bool clipboardAllowed = true,
-        Func<InputDeviceHandle, uint, ushort, CancellationToken, Task<InputRoutingReceipt>>? assignDeviceAsync = null)
+        Func<InputDeviceHandle, uint, ushort, CancellationToken, Task<InputRoutingReceipt>>? assignDeviceAsync = null,
+        Func<WindowHandle, Vector2, CancellationToken, Task<WindowCommandReceipt>>? setClientSizeAsync = null)
     {
         if (!clipboardAllowed && (clipboardPolicy is ClipboardServicePolicy.Required))
         {
@@ -49,6 +53,7 @@ public sealed class PlatformHost
             ? null
             : new ClipboardTextService(_backend, _clipboardStatus);
         _assignDeviceAsync = assignDeviceAsync;
+        _setClientSizeAsync = setClientSizeAsync;
     }
 
     /// <summary>Gets the owner's clipboard capability state.</summary>
@@ -58,6 +63,8 @@ public sealed class PlatformHost
     public ClipboardTextService? ClipboardText => _clipboardText;
 
     internal PlatformServiceStatus GamepadStatus => _backend.GamepadStatus;
+
+    internal uint OwnerId => _backend.OwnerId;
 
     /// <summary>Assigns one connected physical gamepad to a host-owned simulation timeline and player slot.</summary>
     /// <param name="device">The current host-issued gamepad identity.</param>
@@ -113,6 +120,31 @@ public sealed class PlatformHost
     /// <summary>Gets an immutable owner-thread snapshot of monitors in stable discovery order.</summary>
     public ImmutableArray<MonitorHandle> GetMonitorHandles()
         => _backend.GetMonitorHandles();
+
+    /// <summary>Requests a logical client-size change on the platform owner.</summary>
+    /// <param name="window">The live window owned by this PlatformHost.</param>
+    /// <param name="logicalClientSize">The finite positive client extent in 1/96-inch units.</param>
+    /// <param name="cancellationToken">The token that cancels the command before owner-thread application.</param>
+    /// <returns>The owner-thread command result; <see cref="WindowMetrics"/> reports the observed extent.</returns>
+    /// <exception cref="ArgumentException"><paramref name="window"/> belongs to another platform owner.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="logicalClientSize"/> is non-finite or non-positive.</exception>
+    /// <exception cref="InvalidOperationException">The PlatformHost has no Runtime window-command owner.</exception>
+    /// <exception cref="ObjectDisposedException">The owning EngineHost is stopping or has stopped.</exception>
+    public Task<WindowCommandReceipt> SetClientSizeAsync(
+        WindowHandle window,
+        Vector2 logicalClientSize,
+        CancellationToken cancellationToken = default)
+    {
+        if (!window.IsValid || (window.OwnerId != _backend.OwnerId))
+        {
+            throw new ArgumentException("The window handle belongs to another platform owner.", nameof(window));
+        }
+
+        logicalClientSize = WindowOptions.ValidateClientSize(logicalClientSize, nameof(logicalClientSize));
+        var setClientSizeAsync = _setClientSizeAsync
+            ?? throw new InvalidOperationException("The PlatformHost has no Runtime window-command owner.");
+        return setClientSizeAsync(window, logicalClientSize, cancellationToken);
+    }
 
     internal void CloseWindow(WindowHandle window)
     {
@@ -182,6 +214,9 @@ public sealed class PlatformHost
 
     internal void SetMonitorHandles(ImmutableArray<MonitorHandle> monitorHandles)
         => _backend.SetMonitorHandles(monitorHandles);
+
+    internal WindowCommandStatus SetWindowClientSize(WindowHandle window, Vector2 logicalClientSize)
+        => _backend.SetWindowClientSize(window, logicalClientSize);
 
     internal void SetWindowMetrics(WindowHandle window, WindowMetrics metrics)
     {
