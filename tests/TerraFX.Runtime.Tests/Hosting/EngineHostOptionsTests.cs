@@ -837,6 +837,92 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(hasOffscreenOutputTransition, Is.True);
             Assert.That(hasPresentTransition, Is.False);
 
+            const int transientAliasCount = 8;
+            var aliasGraph = new RenderGraph(new RenderGraphOptions(
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                0,
+                RenderFrameDimension.TwoDimensional,
+                SpatialProfileId.Default,
+                1,
+                [Guid.NewGuid()],
+                targetExtent,
+                target));
+            var aliasRange = new GraphBufferRange(0, 16);
+            RenderPassId? previousAliasReadPass = null;
+
+            for (var index = 0; index < transientAliasCount; index++)
+            {
+                var aliasBuffer = aliasGraph.CreateTransientBuffer(
+                    new BufferDescription(
+                        16,
+                        BufferUsage.Storage,
+                        GpuMemoryKind.DeviceLocal,
+                        structuredStride: 4,
+                        debugName: $"transient-alias-chain-{index}"));
+                var writePass = previousAliasReadPass is RenderPassId previousReadPass
+                    ? aliasGraph.AddComputePass(
+                        new RenderPassDescription($"transient-alias-write-{index}", 1, [previousReadPass], false))
+                    : aliasGraph.AddComputePass(
+                        new RenderPassDescription($"transient-alias-write-{index}", 0, [], false));
+                var writtenVersion = aliasGraph.WriteBuffer(
+                    writePass,
+                    aliasBuffer,
+                    GraphBufferUsage.StorageWrite,
+                    aliasRange);
+                var readPass = aliasGraph.AddComputePass(
+                    new RenderPassDescription($"transient-alias-read-{index}", 1, [writePass], false));
+                aliasGraph.ReadBuffer(
+                    readPass,
+                    writtenVersion,
+                    GraphBufferUsage.StorageRead,
+                    aliasRange);
+                previousAliasReadPass = readPass;
+            }
+
+            var aliasOutputPass = aliasGraph.AddRasterPass(
+                new RenderPassDescription(
+                    "transient-alias-chain-output",
+                    1,
+                    [previousAliasReadPass
+                        ?? throw new InvalidOperationException("The transient alias chain has no read pass.")],
+                    false));
+            var aliasOutput = aliasGraph.WriteColorAttachment(
+                aliasOutputPass,
+                aliasGraph.OffscreenColorTargetVersion,
+                targetRange,
+                AttachmentLoadAction.Clear,
+                AttachmentStoreAction.Store,
+                new Vector4(0.0f, 0.0f, 0.0f, 1.0f));
+            aliasGraph.SetPresentationSource(aliasOutput);
+
+            var compiledAliasChain = aliasGraph.Compile();
+            Assert.That(compiledAliasChain.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
+            Assert.That(compiledAliasChain.Diagnostics, Is.Empty);
+            var compiledAliasChainPlan = compiledAliasChain.Plan
+                ?? throw new InvalidOperationException("The compiled transient alias chain has no plan.");
+            Assert.That(compiledAliasChainPlan.TransientBufferGroups.Length, Is.EqualTo(1));
+            Assert.That(compiledAliasChainPlan.TransientBufferGroups[0].Length, Is.EqualTo(transientAliasCount));
+            Assert.That(compiledAliasChainPlan.TransientBufferAliasingBarriers.Length, Is.EqualTo(transientAliasCount - 1));
+
+            for (var iteration = 0; iteration < transientAliasCount; iteration++)
+            {
+                using var materializedAliasGroup = graphicsDevice.CreateTransientBufferGroupAsync(
+                    compiledAliasChainPlan.TransientBufferGroups[0],
+                    CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                Assert.That(materializedAliasGroup.Buffers.Length, Is.EqualTo(transientAliasCount));
+
+                for (var index = 0; index < materializedAliasGroup.Buffers.Length; index++)
+                {
+                    var aliasBuffer = materializedAliasGroup.Buffers[index];
+                    Assert.That(aliasBuffer.Handle.IsValid, Is.True);
+                    Assert.That(aliasBuffer.Handle.OwnerId, Is.EqualTo(platformOwner.OwnerId));
+                    Assert.That(aliasBuffer.Handle.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
+                }
+            }
+
             var cycleGraph = new RenderGraph(new RenderGraphOptions(
                 Guid.NewGuid(),
                 Guid.NewGuid(),
