@@ -209,7 +209,7 @@ In the WSLg shell, run the same hardware-independent selection:
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release --filter "FullyQualifiedName~LinuxEvdevGamepadStateTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
-`LinuxEvdevGamepadDiscoveryTests` enumerates systemd `sd-device` input entries tagged `ID_INPUT_JOYSTICK=1` and validates event-node paths without opening them. WSLg currently exposes no `/dev/input/event*` nodes, so this is discovery/no-device evidence only; it does not qualify hotplug monitoring, permissions, or capture:
+`LinuxEvdevGamepadDiscoveryTests` initializes the systemd `sd-device` input-subsystem monitor, enumerates entries tagged `ID_INPUT_JOYSTICK=1`, and drains bounded hotplug events while validating event-node paths; it does not open nodes. WSLg currently exposes no `/dev/input/event*` nodes, so no add/remove event was observed. This does not qualify hotplug delivery under change, permission failures, or live capture:
 
 ```bash
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~LinuxEvdevGamepadDiscoveryTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"

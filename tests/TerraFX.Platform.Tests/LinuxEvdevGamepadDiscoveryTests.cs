@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using NUnit.Framework;
+using TerraFX.Input;
 
 namespace TerraFX.Platform.Tests;
 
@@ -19,7 +20,8 @@ internal sealed class LinuxEvdevGamepadDiscoveryTests
             return;
         }
 
-        var devices = LinuxEvdevGamepadDiscovery.Enumerate();
+        using var monitor = new LinuxEvdevGamepadMonitor();
+        var devices = monitor.InitialDevices;
         var sysPaths = new HashSet<string>(StringComparer.Ordinal);
         var deviceNodes = new HashSet<string>(StringComparer.Ordinal);
 
@@ -32,6 +34,18 @@ internal sealed class LinuxEvdevGamepadDiscoveryTests
             Assert.That(deviceNodes.Add(device.DeviceNode), Is.True);
         }
 
-        TestContext.WriteLine($"Discovered {devices.Length} udev gamepad event nodes.");
+        var changes = monitor.Pump();
+
+        foreach (var change in changes)
+        {
+            Assert.That(
+                change.Kind,
+                Is.AnyOf(PhysicalInputEventKind.DeviceAdded, PhysicalInputEventKind.DeviceRemoved));
+            Assert.That(change.Device.SysPath, Is.Not.Empty);
+            Assert.That(change.Device.DeviceNode.StartsWith("/dev/input/event", StringComparison.Ordinal), Is.True);
+        }
+
+        TestContext.WriteLine(
+            $"Discovered {devices.Length} udev gamepad event nodes and observed {changes.Length} hotplug changes.");
     }
 }

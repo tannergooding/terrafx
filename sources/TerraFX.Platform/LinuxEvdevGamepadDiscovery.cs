@@ -12,6 +12,14 @@ internal static partial class LinuxEvdevGamepadDiscovery
 {
     private const string SystemdLibrary = "libsystemd.so.0";
 
+    internal static void EnsureSuccess(int result, string operation)
+    {
+        if (result < 0)
+        {
+            throw new IOException($"systemd could not {operation}; status {result}.");
+        }
+    }
+
     internal static ImmutableArray<LinuxEvdevGamepadDevice> Enumerate()
     {
         if (!OperatingSystem.IsLinux())
@@ -55,15 +63,7 @@ internal static partial class LinuxEvdevGamepadDiscovery
         }
     }
 
-    private static void EnsureSuccess(int result, string operation)
-    {
-        if (result < 0)
-        {
-            throw new IOException($"systemd could not {operation}; status {result}.");
-        }
-    }
-
-    private static bool TryGetGamepadNode(
+    internal static bool TryGetGamepadNode(
         nint device,
         out LinuxEvdevGamepadDevice gamepadDevice)
     {
@@ -111,7 +111,7 @@ internal static partial class LinuxEvdevGamepadDiscovery
         return true;
     }
 
-    private static partial class SystemdNative
+    internal static partial class SystemdNative
     {
         [LibraryImport(SystemdLibrary, EntryPoint = "sd_device_enumerator_add_match_subsystem", StringMarshalling = StringMarshalling.Utf8)]
         internal static partial int DeviceEnumeratorAddMatchSubsystem(nint enumerator, string subsystem, int match);
@@ -136,5 +136,23 @@ internal static partial class LinuxEvdevGamepadDiscovery
 
         [LibraryImport(SystemdLibrary, EntryPoint = "sd_device_get_syspath")]
         internal static partial int DeviceGetSysPath(nint device, out nint syspath);
+
+        [LibraryImport(SystemdLibrary, EntryPoint = "sd_device_monitor_filter_add_match_subsystem_devtype", StringMarshalling = StringMarshalling.Utf8)]
+        internal static partial int DeviceMonitorFilterAddMatchSubsystemDevType(nint monitor, string subsystem, string? devtype);
+
+        [LibraryImport(SystemdLibrary, EntryPoint = "sd_device_monitor_filter_update")]
+        internal static partial int DeviceMonitorFilterUpdate(nint monitor);
+
+        [LibraryImport(SystemdLibrary, EntryPoint = "sd_device_monitor_new")]
+        internal static partial int DeviceMonitorNew(out nint monitor);
+
+        [LibraryImport(SystemdLibrary, EntryPoint = "sd_device_monitor_receive")]
+        internal static partial int DeviceMonitorReceive(nint monitor, out nint device);
+
+        [LibraryImport(SystemdLibrary, EntryPoint = "sd_device_monitor_unref")]
+        internal static partial nint DeviceMonitorUnref(nint monitor);
+
+        [LibraryImport(SystemdLibrary, EntryPoint = "sd_device_unref")]
+        internal static partial nint DeviceUnref(nint device);
     }
 }
