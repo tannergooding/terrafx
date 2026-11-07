@@ -119,14 +119,30 @@ dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --confi
 dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Release
 ```
 
-In the WSLg shell configured below, the same project runs the explicit X11 owner witnesses when `DISPLAY` is available. They verify an invisible native window's pixel metrics/private binding, validate reported `Xft.dpi` conversion or the documented assumed-96-DPI fallback, send duplicate synthetic `WM_DELETE_WINDOW` messages to check close-request deduplication, exercise RandR 1.5 monitor enumeration/selection when the X server exposes it, and inject synthetic core key/button/motion events through the owner pump, including the legacy release/press auto-repeat pair. The input witness also requests a fresh keyboard/pointer reconciliation snapshot. When available, the backend selects XInput2 events from master devices and retains source IDs; Xlib core-event fallback uses aggregate broker identities and maps WSLg's XKB keycodes through its evdev `+8` range. The synthetic `XSendEvent` path does not exercise XInput2 event delivery or qualify physical input. The current WSLg lane has no `Xft.dpi` resource, so it observes the assumed-96-DPI fallback; the synthetic close message does not qualify behavior from a real window manager:
+In the WSLg shell configured below, the same project runs the explicit X11 owner witnesses when `DISPLAY` is available. They verify an invisible native window's pixel metrics/private binding, validate reported `Xft.dpi` conversion or the documented assumed-96-DPI fallback, send duplicate synthetic `WM_DELETE_WINDOW` messages to check close-request deduplication, exercise RandR 1.5 monitor enumeration/selection when the X server exposes it, and inject synthetic core key/button/motion events through the owner pump, including the legacy release/press auto-repeat pair. The input witness also requests a fresh keyboard/pointer reconciliation snapshot. When XInput2 2.0 and `libXi` are available, the backend selects master-device events and preserves source IDs; Xlib core-event fallback uses aggregate broker identities. `libxkbcommon-x11` key names map physical HID controls; if that library is absent, the limited fallback uses the WSLg evdev `+8` keycode convention. The WSLg lane privately extracts `libxkbcommon-x11` and `libxcb-xkb` under `artifacts/linux/native/extracted` without changing system packages. Its X11 witness reports `XInput2=True` and `XKB keymap=True`; synthetic keycode 38 resolves through the live keymap to HID usage `AC01`. The synthetic `XSendEvent` path does not exercise XInput2 event delivery, physical input, or live keymap-change notification. The current WSLg lane has no `Xft.dpi` resource, so it observes the assumed-96-DPI fallback; the synthetic close message does not qualify behavior from a real window manager:
+
+After setting `WORKTREE` as shown in the WSLg command block below, retrieve and extract the optional XKB client libraries privately; do not install system packages:
+
+```bash
+apt-get download libxkbcommon-x11-0 libxcb-xkb1
+for package in libxkbcommon-x11-0_*.deb libxcb-xkb1_*.deb; do
+  dpkg-deb -x "$package" "$WORKTREE/artifacts/linux/native/extracted"
+done
+```
 
 ```bash
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Debug "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
-Physical keyboard/pointer devices, XInput2 device identity, general XKB keymap/compose behavior, a live DPI-setting change, clipboard, Wayland, WSI, and Interactive hosting remain unqualified or unimplemented.
+Physical keyboard/pointer input, XInput2 event delivery, general XKB compose, live keymap/DPI changes, clipboard, Wayland, WSI, and Interactive hosting remain unqualified or unimplemented.
+
+The XKB key-name table is hardware-independent and can be tested without an X server:
+
+```powershell
+dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Debug --filter "FullyQualifiedName~XkbKeyNameMapperTests"
+dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Release --filter "FullyQualifiedName~XkbKeyNameMapperTests"
+```
 
 `LinuxEvdevAxisNormalizerTests` exercises literal evdev min/max/flat/fuzz metadata without opening `/dev/input`; this validates normalization only, not device discovery, permissions, or live capture:
 

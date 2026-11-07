@@ -133,6 +133,10 @@ internal sealed partial class HeadlessPlatformBackendTests
             Assert.That(backend.PhysicalInputStatus, Is.EqualTo(PlatformServiceStatus.Available));
             Assert.That(backend.GamepadStatus, Is.EqualTo(PlatformServiceStatus.Unsupported));
             Assert.That(backend.ClipboardStatus, Is.EqualTo(ClipboardServiceStatus.NotRequested));
+            var x11Backend = backend as X11PlatformBackend
+                ?? throw new InvalidOperationException("The selected X11 backend has an unexpected implementation.");
+            TestContext.WriteLine(
+                $"XInput2={x11Backend.XInput2Available}; XKB keymap={x11Backend.HasKeyboardKeymap}.");
 
             var nativeMonitors = backend.GetMonitorInfo();
             MonitorHandle? monitorHandle = null;
@@ -210,7 +214,7 @@ internal sealed partial class HeadlessPlatformBackendTests
                 Assert.That(inputSamples.Samples[0].NativeDeviceIdentity, Is.EqualTo((nint)(-1)));
                 Assert.That(inputSamples.Samples[0].NativeUsagePage, Is.EqualTo((ushort)0x0007));
                 Assert.That(inputSamples.Samples[0].NativeUsage, Is.EqualTo((ushort)0x0004));
-                Assert.That(inputSamples.Samples[0].NativeScanCode, Is.EqualTo(30u));
+                Assert.That(inputSamples.Samples[0].NativeScanCode, Is.EqualTo(38u));
                 Assert.That(inputSamples.Samples[1].Kind, Is.EqualTo(PhysicalInputEventKind.KeyRepeat));
                 Assert.That(inputSamples.Samples[2].Kind, Is.EqualTo(PhysicalInputEventKind.KeyUp));
                 Assert.That(inputSamples.Samples[3].Kind, Is.EqualTo(PhysicalInputEventKind.PointerButtonDown));

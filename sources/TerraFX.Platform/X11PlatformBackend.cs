@@ -31,6 +31,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     private const long KeyReleaseMask = 1L << 1;
     // Core Xlib events omit source-device IDs, so negative identities isolate their aggregate routes.
     private const nint KeyboardAggregateIdentity = -1;
+    private const int MappingNotifyEvent = 34;
     // Bound the root-window resource property before parsing it on the Platform owner.
     private const int MaximumResourceManagerBytes = 64 * 1024;
     private const int MotionNotifyEvent = 6;
@@ -50,6 +51,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     private readonly nint _display;
     private float? _effectiveDpi;
     private readonly PlatformInputSampleQueue _inputSamples;
+    private readonly X11KeyboardKeymap? _keyboardKeymap;
     private readonly uint _ownerId;
     private readonly int _ownerThreadId;
     private readonly int _randrEventBase;
@@ -186,6 +188,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         _ownerId = ownerId;
         _ownerThreadId = Environment.CurrentManagedThreadId;
         _inputSamples = new PlatformInputSampleQueue(_ownerThreadId);
+        _keyboardKeymap = X11KeyboardKeymap.TryCreate(display);
         _clipboardStatus = (clipboardPolicy is ClipboardServicePolicy.Optional)
             ? ClipboardServiceStatus.Unsupported
             : ClipboardServiceStatus.NotRequested;
@@ -248,6 +251,10 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         }
     }
 
+    internal bool HasKeyboardKeymap => _keyboardKeymap is not null;
+
+    internal bool XInput2Available => _xinput2Available;
+
     internal static float? ParseXftDpiSettings(string resourceManager)
     {
         ArgumentNullException.ThrowIfNull(resourceManager);
@@ -291,40 +298,6 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         }
 
         return effectiveDpi;
-    }
-
-    private static (
-        PhysicalInputEventKind Kind,
-        ushort? NativeUsagePage,
-        ushort? NativeUsage,
-        uint EvdevKeycode) CaptureKeyState(
-            WindowState state,
-            nint nativeDeviceIdentity,
-            uint xKeycode,
-            bool isDown,
-            bool isRepeat)
-    {
-        var key = (nativeDeviceIdentity, xKeycode);
-        var isKnownKeyDown = state.KeysDown.Contains(key);
-        var kind = isDown
-            ? ((isRepeat || isKnownKeyDown) ? PhysicalInputEventKind.KeyRepeat : PhysicalInputEventKind.KeyDown)
-            : PhysicalInputEventKind.KeyUp;
-
-        if (isDown)
-        {
-            _ = state.KeysDown.Add(key);
-        }
-        else
-        {
-            _ = state.KeysDown.Remove(key);
-        }
-
-        var mapped = X11KeyboardKeyMapper.TryMap(xKeycode, out var evdevKeycode, out var hidUsage);
-        return (
-            kind,
-            mapped ? (ushort)0x0007 : null,
-            mapped ? hidUsage : null,
-            evdevKeycode);
     }
 
     private static int GetWindowExtent(float logicalExtent, string parameterName)
@@ -599,6 +572,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         _windowsByHandle.Clear();
         _closeRequests.Clear();
         _ = X11Native.XSync(_display, discard: 0);
+        _keyboardKeymap?.Dispose();
         _ = X11Native.XCloseDisplay(_display);
         _isDisposed = true;
     }
@@ -752,7 +726,19 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
                 throw new InvalidOperationException("X11 failed while draining its owner event queue.");
             }
 
-            if ((nativeEvent.Type == PropertyNotifyEvent)
+            if (nativeEvent.Type == MappingNotifyEvent)
+            {
+                if (X11Native.XRefreshKeyboardMapping(&nativeEvent.Mapping) == 0)
+                {
+                    throw new InvalidOperationException("X11 failed to refresh its keyboard mapping.");
+                }
+
+                if ((_keyboardKeymap is X11KeyboardKeymap keymap) && !keymap.Refresh())
+                {
+                    throw new InvalidOperationException("XKB could not refresh the core keyboard keymap.");
+                }
+            }
+            else if ((nativeEvent.Type == PropertyNotifyEvent)
                 && (nativeEvent.Property.Window == _rootWindow)
                 && (nativeEvent.Property.Atom == _resourceManagerAtom))
             {
@@ -1109,6 +1095,36 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             MonotonicTimestamp: TimeProvider.System.GetTimestamp()));
     }
 
+    private (PhysicalInputEventKind Kind, ushort? NativeUsagePage, ushort? NativeUsage, uint NativeScanCode) CaptureKeyState(
+        WindowState state,
+        nint nativeDeviceIdentity,
+        uint xKeycode,
+        bool isDown,
+        bool isRepeat)
+    {
+        var key = (nativeDeviceIdentity, xKeycode);
+        var isKnownKeyDown = state.KeysDown.Contains(key);
+        var kind = isDown
+            ? ((isRepeat || isKnownKeyDown) ? PhysicalInputEventKind.KeyRepeat : PhysicalInputEventKind.KeyDown)
+            : PhysicalInputEventKind.KeyUp;
+
+        if (isDown)
+        {
+            _ = state.KeysDown.Add(key);
+        }
+        else
+        {
+            _ = state.KeysDown.Remove(key);
+        }
+
+        var mapped = TryMapKeyboardKeycode(xKeycode, out var nativeScanCode, out var hidUsage);
+        return (
+            kind,
+            mapped ? (ushort)0x0007 : null,
+            mapped ? hidUsage : null,
+            nativeScanCode);
+    }
+
     private void CaptureMotion(
         WindowState state,
         float x,
@@ -1298,6 +1314,11 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         var reconciliationState = ImmutableArray.CreateBuilder<PlatformInputStateValue>();
         var keymap = stackalloc byte[32];
 
+        if ((_keyboardKeymap is X11KeyboardKeymap selectedKeymap) && !selectedKeymap.Refresh())
+        {
+            throw new InvalidOperationException("XKB could not refresh the core keyboard keymap.");
+        }
+
         if (X11Native.XQueryKeymap(_display, keymap) == 0)
         {
             throw new InvalidOperationException("X11 failed to query the current keyboard state.");
@@ -1306,7 +1327,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         for (uint keycode = 0; keycode < 256; keycode++)
         {
             if ((keymap[keycode >> 3] & (1 << checked((int)(keycode & 7)))) == 0
-                || !X11KeyboardKeyMapper.TryMap(keycode, out _, out var usage))
+                || !TryMapKeyboardKeycode(keycode, out _, out var usage))
             {
                 continue;
             }
@@ -1440,6 +1461,17 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         {
             X11Native.XRRFreeMonitors(nativeMonitors);
         }
+    }
+
+    private bool TryMapKeyboardKeycode(uint xKeycode, out uint nativeScanCode, out ushort hidUsage)
+    {
+        if (_keyboardKeymap is X11KeyboardKeymap keymap)
+        {
+            nativeScanCode = xKeycode;
+            return keymap.TryGetUsage(xKeycode, out hidUsage);
+        }
+
+        return X11KeyboardKeyMapper.TryMap(xKeycode, out nativeScanCode, out hidUsage);
     }
 
     private static unsafe partial class X11Native
@@ -1577,6 +1609,9 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         [LibraryImport("libXrandr.so.2", EntryPoint = "XRRUpdateConfiguration")]
         internal static partial int XRRUpdateConfiguration(NativeEvent* nativeEvent);
 
+        [LibraryImport("libX11.so.6", EntryPoint = "XRefreshKeyboardMapping")]
+        internal static partial int XRefreshKeyboardMapping(MappingEvent* mappingEvent);
+
         [LibraryImport("libX11.so.6", EntryPoint = "XRootWindow")]
         internal static partial nuint XRootWindow(nint display, int screen);
 
@@ -1704,6 +1739,19 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct MappingEvent
+        {
+            internal int Type;
+            internal nuint Serial;
+            internal int SendEvent;
+            internal nint Display;
+            internal nuint Window;
+            internal int Request;
+            internal int FirstKeyCode;
+            internal int Count;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct MotionEvent
         {
             internal int Type;
@@ -1731,6 +1779,9 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 
             [FieldOffset(0)]
             internal KeyEvent Key;
+
+            [FieldOffset(0)]
+            internal MappingEvent Mapping;
 
             [FieldOffset(0)]
             internal ButtonEvent Button;
