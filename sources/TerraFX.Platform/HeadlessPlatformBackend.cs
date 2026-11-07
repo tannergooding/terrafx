@@ -204,6 +204,14 @@ internal sealed class HeadlessPlatformBackend : IPlatformBackend
         return WindowCommandStatus.Unsupported;
     }
 
+    public WindowCommandStatus SetWindowTitle(WindowHandle window, string title)
+    {
+        EnsureOwnerThread();
+        _ = window;
+        _ = title;
+        return WindowCommandStatus.Unsupported;
+    }
+
     public bool TakeMonitorTopologyChanged()
     {
         EnsureOwnerThread();

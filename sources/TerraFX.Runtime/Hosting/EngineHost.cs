@@ -734,6 +734,22 @@ public sealed partial class EngineHost : IAsyncDisposable
                         () => (_platformOwner
                             ?? throw new InvalidOperationException("The EngineHost platform owner is not initialized."))
                             .SetClientSize(window, logicalClientSize),
+                        cancellationToken),
+                (window, title, cancellationToken) =>
+                    InvokeWindowCommandAsync(
+                        WindowCommandKind.SetTitle,
+                        window,
+                        () => (_platformOwner
+                            ?? throw new InvalidOperationException("The EngineHost platform owner is not initialized."))
+                            .SetTitle(window, title),
+                        cancellationToken),
+                (window, cancellationToken) =>
+                    InvokeWindowCommandAsync(
+                        WindowCommandKind.Close,
+                        window,
+                        () => (_platformOwner
+                            ?? throw new InvalidOperationException("The EngineHost platform owner is not initialized."))
+                            .CloseWindowCommand(window),
                         cancellationToken));
             _platformOwner = platformOwner;
             _platform = platformOwner.Platform;

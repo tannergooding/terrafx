@@ -982,6 +982,20 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         return WindowCommandStatus.Applied;
     }
 
+    public WindowCommandStatus SetWindowTitle(WindowHandle window, string title)
+    {
+        EnsureActiveOwnerThread();
+
+        if (!_windowsByHandle.TryGetValue(window, out var state) || state.NativeDestroyed)
+        {
+            return WindowCommandStatus.Disposed;
+        }
+
+        SetWindowTitle(state.NativeWindow, title);
+        _ = X11Native.XSync(_display, discard: 0);
+        return WindowCommandStatus.Applied;
+    }
+
     public bool TakeMonitorTopologyChanged()
     {
         EnsureActiveOwnerThread();

@@ -49,6 +49,8 @@ internal interface IPlatformBackend : IDisposable
 
     WindowCommandStatus SetWindowClientSize(WindowHandle window, Vector2 logicalClientSize);
 
+    WindowCommandStatus SetWindowTitle(WindowHandle window, string title);
+
     bool TakeMonitorTopologyChanged();
 
     bool TryGetNativeWindowBinding(WindowHandle window, out PlatformNativeWindowBinding binding);

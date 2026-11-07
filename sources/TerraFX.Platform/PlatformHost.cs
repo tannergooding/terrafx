@@ -19,7 +19,9 @@ public sealed class PlatformHost
     private readonly IPlatformBackend _backend;
     private readonly ClipboardServiceStatus _clipboardStatus;
     private readonly ClipboardTextService? _clipboardText;
+    private readonly Func<WindowHandle, CancellationToken, Task<WindowCommandReceipt>>? _closeWindowAsync;
     private readonly Func<WindowHandle, Vector2, CancellationToken, Task<WindowCommandReceipt>>? _setClientSizeAsync;
+    private readonly Func<WindowHandle, string, CancellationToken, Task<WindowCommandReceipt>>? _setTitleAsync;
     private readonly Dictionary<WindowHandle, WindowMetrics> _windowMetrics = [];
 
     /// <summary>Creates one platform owner from a Runtime-issued identity and explicit service policy.</summary>
@@ -30,6 +32,8 @@ public sealed class PlatformHost
     /// <param name="clipboardAllowed">Whether this host profile permits clipboard text.</param>
     /// <param name="assignDeviceAsync">The Runtime-owned route for host-bound gamepad assignment.</param>
     /// <param name="setClientSizeAsync">The Runtime-owned route for window client-size commands.</param>
+    /// <param name="setTitleAsync">The Runtime-owned route for window title commands.</param>
+    /// <param name="closeWindowAsync">The Runtime-owned route for window close commands.</param>
     internal PlatformHost(
         uint ownerId,
         PlatformBackend backend,
@@ -37,7 +41,9 @@ public sealed class PlatformHost
         TimeProvider? timeProvider = null,
         bool clipboardAllowed = true,
         Func<InputDeviceHandle, uint, ushort, CancellationToken, Task<InputRoutingReceipt>>? assignDeviceAsync = null,
-        Func<WindowHandle, Vector2, CancellationToken, Task<WindowCommandReceipt>>? setClientSizeAsync = null)
+        Func<WindowHandle, Vector2, CancellationToken, Task<WindowCommandReceipt>>? setClientSizeAsync = null,
+        Func<WindowHandle, string, CancellationToken, Task<WindowCommandReceipt>>? setTitleAsync = null,
+        Func<WindowHandle, CancellationToken, Task<WindowCommandReceipt>>? closeWindowAsync = null)
     {
         if (!clipboardAllowed && (clipboardPolicy is ClipboardServicePolicy.Required))
         {
@@ -53,7 +59,9 @@ public sealed class PlatformHost
             ? null
             : new ClipboardTextService(_backend, _clipboardStatus);
         _assignDeviceAsync = assignDeviceAsync;
+        _closeWindowAsync = closeWindowAsync;
         _setClientSizeAsync = setClientSizeAsync;
+        _setTitleAsync = setTitleAsync;
     }
 
     /// <summary>Gets the owner's clipboard capability state.</summary>
@@ -91,6 +99,25 @@ public sealed class PlatformHost
         var assignDeviceAsync = _assignDeviceAsync
             ?? throw new InvalidOperationException("The PlatformHost has no Runtime assignment command owner.");
         return assignDeviceAsync(device, simulationRecipientId, playerSlot, cancellationToken);
+    }
+
+    /// <summary>Requests closure of a window on the platform owner.</summary>
+    /// <param name="window">The live window owned by this PlatformHost.</param>
+    /// <param name="cancellationToken">The token that cancels the command before owner-thread application.</param>
+    /// <returns>The owner-thread command result.</returns>
+    /// <exception cref="ArgumentException"><paramref name="window"/> belongs to another platform owner.</exception>
+    /// <exception cref="InvalidOperationException">The PlatformHost has no Runtime window-command owner.</exception>
+    /// <exception cref="ObjectDisposedException">The owning EngineHost is stopping or has stopped.</exception>
+    public Task<WindowCommandReceipt> CloseWindowAsync(WindowHandle window, CancellationToken cancellationToken = default)
+    {
+        if (!window.IsValid || (window.OwnerId != _backend.OwnerId))
+        {
+            throw new ArgumentException("The window handle belongs to another platform owner.", nameof(window));
+        }
+
+        var closeWindowAsync = _closeWindowAsync
+            ?? throw new InvalidOperationException("The PlatformHost has no Runtime window-command owner.");
+        return closeWindowAsync(window, cancellationToken);
     }
 
     /// <summary>Gets the latest immutable metrics snapshot for a live window.</summary>
@@ -144,6 +171,37 @@ public sealed class PlatformHost
         var setClientSizeAsync = _setClientSizeAsync
             ?? throw new InvalidOperationException("The PlatformHost has no Runtime window-command owner.");
         return setClientSizeAsync(window, logicalClientSize, cancellationToken);
+    }
+
+    /// <summary>Requests a presentation-title change on the platform owner.</summary>
+    /// <param name="window">The live window owned by this PlatformHost.</param>
+    /// <param name="title">The UTF-16 title without embedded null characters.</param>
+    /// <param name="cancellationToken">The token that cancels the command before owner-thread application.</param>
+    /// <returns>The owner-thread command result.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="title"/> is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="window"/> belongs to another platform owner, or <paramref name="title"/> contains an embedded null character.</exception>
+    /// <exception cref="InvalidOperationException">The PlatformHost has no Runtime window-command owner.</exception>
+    /// <exception cref="ObjectDisposedException">The owning EngineHost is stopping or has stopped.</exception>
+    public Task<WindowCommandReceipt> SetTitleAsync(
+        WindowHandle window,
+        string title,
+        CancellationToken cancellationToken = default)
+    {
+        if (!window.IsValid || (window.OwnerId != _backend.OwnerId))
+        {
+            throw new ArgumentException("The window handle belongs to another platform owner.", nameof(window));
+        }
+
+        ArgumentNullException.ThrowIfNull(title);
+
+        if (title.AsSpan().Contains('\0'))
+        {
+            throw new ArgumentException("A window title cannot contain an embedded null character.", nameof(title));
+        }
+
+        var setTitleAsync = _setTitleAsync
+            ?? throw new InvalidOperationException("The PlatformHost has no Runtime window-command owner.");
+        return setTitleAsync(window, title, cancellationToken);
     }
 
     internal void CloseWindow(WindowHandle window)
@@ -234,6 +292,9 @@ public sealed class PlatformHost
 
         _windowMetrics[window] = metrics;
     }
+
+    internal WindowCommandStatus SetWindowTitle(WindowHandle window, string title)
+        => _backend.SetWindowTitle(window, title);
 
     internal bool TakeMonitorTopologyChanged()
         => _backend.TakeMonitorTopologyChanged();

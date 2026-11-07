@@ -122,4 +122,55 @@ internal sealed class PlatformHostTests
             platform.DisposeFromOwner();
         }
     }
+
+    [Test]
+    public void SetTitleAndCloseCommandsForwardOwnerResults()
+    {
+        var window = new WindowHandle(ownerId: 7, index: 0, generation: 1);
+        var receivedTitle = string.Empty;
+        var closeCount = 0;
+        var platform = new PlatformHost(
+            ownerId: 7,
+            PlatformBackend.Headless,
+            ClipboardServicePolicy.NotRequested,
+            setTitleAsync: (requestedWindow, requestedTitle, _) => {
+                receivedTitle = requestedTitle;
+                return Task.FromResult(new WindowCommandReceipt(
+                    WindowCommandKind.SetTitle,
+                    requestedWindow,
+                    WindowCommandStatus.Applied,
+                    ownerSequence: 13,
+                    diagnostic: null));
+            },
+            closeWindowAsync: (requestedWindow, _) => {
+                closeCount++;
+                return Task.FromResult(new WindowCommandReceipt(
+                    WindowCommandKind.Close,
+                    requestedWindow,
+                    WindowCommandStatus.Applied,
+                    ownerSequence: 14,
+                    diagnostic: null));
+            });
+
+        try
+        {
+            var titleReceipt = platform.SetTitleAsync(window, "Resizable window").GetAwaiter().GetResult();
+            var closeReceipt = platform.CloseWindowAsync(window).GetAwaiter().GetResult();
+
+            Assert.That(titleReceipt.Operation, Is.EqualTo(WindowCommandKind.SetTitle));
+            Assert.That(titleReceipt.OwnerSequence, Is.EqualTo(13));
+            Assert.That(closeReceipt.Operation, Is.EqualTo(WindowCommandKind.Close));
+            Assert.That(closeReceipt.OwnerSequence, Is.EqualTo(14));
+            Assert.That(receivedTitle, Is.EqualTo("Resizable window"));
+            Assert.That(closeCount, Is.EqualTo(1));
+            _ = Assert.Throws<ArgumentException>(() => platform.SetTitleAsync(
+                new WindowHandle(ownerId: 8, index: 0, generation: 1),
+                "foreign"));
+            _ = Assert.Throws<ArgumentException>(() => platform.SetTitleAsync(window, "bad\0title"));
+        }
+        finally
+        {
+            platform.DisposeFromOwner();
+        }
+    }
 }

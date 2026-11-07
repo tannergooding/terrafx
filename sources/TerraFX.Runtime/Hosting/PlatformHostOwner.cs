@@ -67,7 +67,9 @@ internal sealed class PlatformHostOwner
         EngineHostOptions options,
         HostEventSequenceLease? sequenceLease = null,
         Func<InputDeviceHandle, uint, ushort, CancellationToken, Task<InputRoutingReceipt>>? assignDeviceAsync = null,
-        Func<WindowHandle, Vector2, CancellationToken, Task<WindowCommandReceipt>>? setClientSizeAsync = null)
+        Func<WindowHandle, Vector2, CancellationToken, Task<WindowCommandReceipt>>? setClientSizeAsync = null,
+        Func<WindowHandle, string, CancellationToken, Task<WindowCommandReceipt>>? setTitleAsync = null,
+        Func<WindowHandle, CancellationToken, Task<WindowCommandReceipt>>? closeWindowAsync = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         var ownerId = OwnerIdAllocator.Allocate();
@@ -80,7 +82,9 @@ internal sealed class PlatformHostOwner
             timeProvider,
             clipboardAllowed: options.Profile is HostProfile.Interactive,
             assignDeviceAsync,
-            setClientSizeAsync);
+            setClientSizeAsync,
+            setTitleAsync,
+            closeWindowAsync);
         var owner = new PlatformHostOwner(ownerId, options.Profile, platform, timeProvider, sequenceLease);
 
         try
@@ -120,6 +124,38 @@ internal sealed class PlatformHostOwner
         }
 
         _platform.CloseWindow(window);
+    }
+
+    internal WindowCommandReceipt CloseWindowCommand(WindowHandle window)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        ThrowIfStopping();
+
+        if (!window.IsValid || (window.OwnerId != _ownerId))
+        {
+            throw new ArgumentException("The window handle belongs to another platform owner.", nameof(window));
+        }
+
+        var ownerSequence = _sequenceLease.Allocate();
+
+        if (!_activeWindowHandles.Remove(window))
+        {
+            return new WindowCommandReceipt(
+                WindowCommandKind.Close,
+                window,
+                WindowCommandStatus.Disposed,
+                ownerSequence,
+                diagnostic: null);
+        }
+
+        _platform.CloseWindow(window);
+        return new WindowCommandReceipt(
+            WindowCommandKind.Close,
+            window,
+            WindowCommandStatus.Applied,
+            ownerSequence,
+            diagnostic: null);
     }
 
     [SuppressMessage(
@@ -378,6 +414,35 @@ internal sealed class PlatformHostOwner
 
         return new WindowCommandReceipt(
             WindowCommandKind.SetClientSize,
+            window,
+            status,
+            ownerSequence,
+            diagnostic: null);
+    }
+
+    internal WindowCommandReceipt SetTitle(WindowHandle window, string title)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        ThrowIfStopping();
+        ArgumentNullException.ThrowIfNull(title);
+
+        if (!window.IsValid || (window.OwnerId != _ownerId))
+        {
+            throw new ArgumentException("The window handle belongs to another platform owner.", nameof(window));
+        }
+
+        if (title.AsSpan().Contains('\0'))
+        {
+            throw new ArgumentException("A window title cannot contain an embedded null character.", nameof(title));
+        }
+
+        var ownerSequence = _sequenceLease.Allocate();
+        var status = _activeWindowHandles.Contains(window)
+            ? _platform.SetWindowTitle(window, title)
+            : WindowCommandStatus.Disposed;
+        return new WindowCommandReceipt(
+            WindowCommandKind.SetTitle,
             window,
             status,
             ownerSequence,

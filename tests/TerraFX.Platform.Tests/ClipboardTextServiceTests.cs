@@ -228,6 +228,13 @@ internal sealed class ClipboardTextServiceTests
             return WindowCommandStatus.Unsupported;
         }
 
+        public WindowCommandStatus SetWindowTitle(WindowHandle window, string title)
+        {
+            _ = window;
+            _ = title;
+            return WindowCommandStatus.Unsupported;
+        }
+
         public bool TakeMonitorTopologyChanged()
             => false;
 

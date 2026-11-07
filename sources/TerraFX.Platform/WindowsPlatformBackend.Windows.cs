@@ -342,6 +342,10 @@ internal sealed unsafe partial class WindowsPlatformBackend
         int height,
         uint flags);
 
+    [LibraryImport("user32.dll", EntryPoint = "SetWindowTextW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SetWindowTextNative(nint window, string title);
+
     [LibraryImport("user32.dll", EntryPoint = "ShowWindow")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool ShowWindowNative(nint window, int command);
@@ -679,6 +683,25 @@ internal sealed unsafe partial class WindowsPlatformBackend
             frame.Bottom - frame.Top);
         state.ClientWidth = clientWidth;
         state.ClientHeight = clientHeight;
+        return WindowCommandStatus.Applied;
+    }
+
+    public WindowCommandStatus SetWindowTitle(WindowHandle window, string title)
+    {
+        EnsureOwnerThread();
+        var state = FindWindowState(window);
+
+        if ((state is null) || state.IsClosing || state.NativeDestroyed)
+        {
+            return WindowCommandStatus.Disposed;
+        }
+
+        if (!SetWindowTextNative(state.NativeWindow, title))
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Windows could not apply the requested window title.");
+        }
+
+        state.Title = title;
         return WindowCommandStatus.Applied;
     }
 

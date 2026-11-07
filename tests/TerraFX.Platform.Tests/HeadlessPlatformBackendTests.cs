@@ -213,6 +213,9 @@ internal sealed partial class HeadlessPlatformBackendTests
                 Assert.That(
                     resizedMetrics.LogicalClientSize.Y,
                     Is.EqualTo(360.0f).Within(0.51f / resizedMetrics.ContentScale.Y));
+                Assert.That(
+                    backend.SetWindowTitle(window, "TerraFX X11 resized test"),
+                    Is.EqualTo(WindowCommandStatus.Applied));
 
                 Assert.That(backend.TryGetNativeWindowBinding(window, out var binding), Is.True);
                 Assert.That(binding.Kind, Is.EqualTo(PlatformNativeSurfaceKind.X11));

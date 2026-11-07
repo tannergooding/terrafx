@@ -2131,6 +2131,10 @@ internal sealed partial class EngineHostOptionsTests
             bool StaleMetricsRejected,
             bool ResizeApplied,
             long ResizeOwnerSequence,
+            bool TitleApplied,
+            long TitleOwnerSequence,
+            bool CloseApplied,
+            long CloseOwnerSequence,
             WindowMetrics? InitialMetrics,
             WindowMetrics? ResizedMetrics)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2142,6 +2146,10 @@ internal sealed partial class EngineHostOptionsTests
             var staleMetricsRejected = false;
             var resizeApplied = false;
             var resizeOwnerSequence = 0L;
+            var titleApplied = false;
+            var titleOwnerSequence = 0L;
+            var closeApplied = false;
+            var closeOwnerSequence = 0L;
             WindowMetrics? initialMetrics = null;
             WindowMetrics? resizedMetrics = null;
             Exception? failure = null;
@@ -2155,6 +2163,18 @@ internal sealed partial class EngineHostOptionsTests
                         var currentOwner = owner
                             ?? throw new InvalidOperationException("The Platform owner has not been initialized.");
                         return Task.FromResult(currentOwner.SetClientSize(targetWindow, logicalClientSize));
+                    },
+                    setTitleAsync: (targetWindow, title, cancellationToken) => {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var currentOwner = owner
+                            ?? throw new InvalidOperationException("The Platform owner has not been initialized.");
+                        return Task.FromResult(currentOwner.SetTitle(targetWindow, title));
+                    },
+                    closeWindowAsync: (targetWindow, cancellationToken) => {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var currentOwner = owner
+                            ?? throw new InvalidOperationException("The Platform owner has not been initialized.");
+                        return Task.FromResult(currentOwner.CloseWindowCommand(targetWindow));
                     });
                 ownerId = owner.OwnerId;
                 window = owner.CreateWindow(new WindowOptions("TerraFX hidden window witness") {
@@ -2169,7 +2189,14 @@ internal sealed partial class EngineHostOptionsTests
                 resizeApplied = resizeReceipt.Status is WindowCommandStatus.Applied;
                 resizeOwnerSequence = resizeReceipt.OwnerSequence;
                 resizedMetrics = owner.Platform.GetMetrics(window);
-                owner.CloseWindow(window);
+                var titleReceipt = owner.Platform.SetTitleAsync(window, "TerraFX resized window witness")
+                    .GetAwaiter()
+                    .GetResult();
+                titleApplied = titleReceipt.Status is WindowCommandStatus.Applied;
+                titleOwnerSequence = titleReceipt.OwnerSequence;
+                var closeReceipt = owner.Platform.CloseWindowAsync(window).GetAwaiter().GetResult();
+                closeApplied = closeReceipt.Status is WindowCommandStatus.Applied;
+                closeOwnerSequence = closeReceipt.OwnerSequence;
                 _ = owner.Pump();
 
                 try
@@ -2215,6 +2242,10 @@ internal sealed partial class EngineHostOptionsTests
                     staleMetricsRejected,
                     resizeApplied,
                     resizeOwnerSequence,
+                    titleApplied,
+                    titleOwnerSequence,
+                    closeApplied,
+                    closeOwnerSequence,
                     initialMetrics,
                     resizedMetrics));
             }
@@ -2226,7 +2257,7 @@ internal sealed partial class EngineHostOptionsTests
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
 
-        var (window, ownerId, staleCloseRejected, staleMetricsRejected, resizeApplied, resizeOwnerSequence, initialMetrics, resizedMetrics) =
+        var (window, ownerId, staleCloseRejected, staleMetricsRejected, resizeApplied, resizeOwnerSequence, titleApplied, titleOwnerSequence, closeApplied, closeOwnerSequence, initialMetrics, resizedMetrics) =
             await completion.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
         Assert.That(thread.Join(TimeSpan.FromSeconds(5)), Is.True);
         Assert.That(ownerId, Is.GreaterThan(0));
@@ -2236,6 +2267,10 @@ internal sealed partial class EngineHostOptionsTests
         Assert.That(staleMetricsRejected, Is.True);
         Assert.That(resizeApplied, Is.True);
         Assert.That(resizeOwnerSequence, Is.GreaterThan(0));
+        Assert.That(titleApplied, Is.True);
+        Assert.That(titleOwnerSequence, Is.GreaterThan(0));
+        Assert.That(closeApplied, Is.True);
+        Assert.That(closeOwnerSequence, Is.GreaterThan(0));
 
         var actualInitialMetrics = initialMetrics
             ?? throw new InvalidOperationException("The Windows Platform owner did not publish the initial metrics snapshot.");
