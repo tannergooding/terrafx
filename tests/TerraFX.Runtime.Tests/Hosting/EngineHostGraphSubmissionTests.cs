@@ -426,6 +426,24 @@ internal sealed partial class EngineHostOptionsTests
             graphicsFrameSlotCount: 2,
             useTransientCopyAliasing: true);
 
+    [Test]
+    public Task SubmitsTransientTextureAliasGroupsAcrossLiveSlotsOnVulkan()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.Vulkan,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: true,
+            graphicsFrameSlotCount: 2,
+            useTransientCopyAliasing: true,
+            useDelayedTransientTextureAliasing: true);
+
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
     public Task SubmitsTransientTextureCopyGraphAndReadsBackAsync(GraphicsBackend backend)
@@ -468,7 +486,8 @@ internal sealed partial class EngineHostOptionsTests
         bool usePartialTextureCopy = false,
         bool overlapTransientTextureLifetimes = false,
         int graphicsFrameSlotCount = 3,
-        bool useTransientCopyAliasing = false)
+        bool useTransientCopyAliasing = false,
+        bool useDelayedTransientTextureAliasing = false)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -657,7 +676,9 @@ internal sealed partial class EngineHostOptionsTests
             GraphicsBackend.Vulkan when holdGraphCompletion => VulkanGraphicsBackend.CreateRegistrationForTesting(
                 WaitForVulkanGraphFence,
                 OverrideCompletedFence,
-                (useTransientBufferAliasing || useTransientCopyAliasing) ? ObserveGraphSubmission : null),
+                (useTransientBufferAliasing || useTransientCopyAliasing || useDelayedTransientTextureAliasing)
+                    ? ObserveGraphSubmission
+                    : null),
             GraphicsBackend.D3D12 => D3D12GraphicsBackend.CreateRegistration(),
             GraphicsBackend.Vulkan => VulkanGraphicsBackend.CreateRegistration(),
             _ => throw new ArgumentOutOfRangeException(nameof(backend)),
@@ -674,6 +695,8 @@ internal sealed partial class EngineHostOptionsTests
         };
         EngineHost? host = null;
         GpuTexture? target = null;
+        GpuTexture? delayedGraphTarget = null;
+        GpuTexture? delayedGraphDestination = null;
         GpuTexture? copySourceTexture = null;
         GpuTexture? copyDestinationTexture = null;
         GpuTexture? secondCopySourceTexture = null;
@@ -836,6 +859,34 @@ internal sealed partial class EngineHostOptionsTests
                         TextureFormat.Rgba8Unorm,
                         TextureUsage.CopySource | TextureUsage.CopyDestination,
                         $"m04-{backend}-slot-transient-copy-destination"))
+                    .ConfigureAwait(false);
+            }
+
+            if (useDelayedTransientTextureAliasing)
+            {
+                delayedGraphTarget = await graphicsDevice.CreateTextureAsync(
+                    new TextureDescription(
+                        TextureDimension.Dimension2D,
+                        targetExtent.Width,
+                        targetExtent.Height,
+                        depth: 1,
+                        arrayLayers: 1,
+                        mipLevels: 1,
+                        TextureFormat.Rgba8Unorm,
+                        TextureUsage.ColorAttachment | TextureUsage.CopySource,
+                        $"m04-{backend}-delayed-slot-target"))
+                    .ConfigureAwait(false);
+                delayedGraphDestination = await graphicsDevice.CreateTextureAsync(
+                    new TextureDescription(
+                        TextureDimension.Dimension2D,
+                        targetExtent.Width,
+                        targetExtent.Height,
+                        depth: 1,
+                        arrayLayers: 1,
+                        mipLevels: 1,
+                        TextureFormat.Rgba8Unorm,
+                        TextureUsage.CopySource | TextureUsage.CopyDestination,
+                        $"m04-{backend}-delayed-slot-copy-destination"))
                     .ConfigureAwait(false);
             }
 
@@ -2518,6 +2569,159 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(compileResponse.Diagnostics, Is.Empty);
             var plan = compileResponse.Plan
                 ?? throw new InvalidOperationException("The compiled graph response omitted its plan.");
+            RenderGraphPlan? delayedTransientTexturePlan = null;
+
+            if (useDelayedTransientTextureAliasing)
+            {
+                delayedTransientTexturePlan = CreateDelayedTransientTextureAliasPlan();
+                Assert.That(delayedTransientTexturePlan.TransientTextureGroups, Has.Length.EqualTo(1));
+                Assert.That(delayedTransientTexturePlan.TransientTextureGroups[0], Has.Length.EqualTo(2));
+                Assert.That(delayedTransientTexturePlan.TransientTextureAliasingBarriers, Has.Length.EqualTo(1));
+            }
+
+            RenderGraphPlan CreateDelayedTransientTextureAliasPlan()
+            {
+                var selectedTarget = delayedGraphTarget
+                    ?? throw new InvalidOperationException("The delayed Vulkan texture graph has no output target.");
+                var selectedDestination = secondCopyDestinationTexture
+                    ?? delayedGraphDestination
+                    ?? throw new InvalidOperationException("The delayed Vulkan texture graph has no copy destination.");
+                var delayedGraph = renderer.BuildGraph(renderSnapshot, selectedTarget);
+                var targetRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+                var targetVersion = delayedGraph.OffscreenColorTargetVersion;
+
+                void RecordTargetClear(scoped ref CommandRecorder recorder)
+                {
+                    _ = recorder;
+                }
+
+                var clearPass = delayedGraph.AddRasterPass(
+                    new RenderPassDescription("delayed-slot-target-clear", 0, [], hasExternalSideEffects: false),
+                    RecordTargetClear);
+                var clearedTarget = delayedGraph.WriteColorAttachment(
+                    clearPass,
+                    targetVersion,
+                    targetRange,
+                    AttachmentLoadAction.Clear,
+                    AttachmentStoreAction.Store,
+                    renderSnapshot.Cameras[0].ClearColor);
+                var transientDescription = new TextureDescription(
+                    TextureDimension.Dimension2D,
+                    targetExtent.Width,
+                    targetExtent.Height,
+                    depth: 1,
+                    arrayLayers: 1,
+                    mipLevels: 1,
+                    TextureFormat.Rgba8Unorm,
+                    TextureUsage.CopySource | TextureUsage.CopyDestination,
+                    "delayed-slot-alias-transient");
+                var transientA = delayedGraph.CreateTransientTexture(transientDescription);
+                var transientB = delayedGraph.CreateTransientTexture(transientDescription);
+                var destinationInitial = delayedGraph.ImportTexture(
+                    selectedDestination,
+                    targetRange,
+                    new GraphImportOptions(
+                        GraphResourceState.Undefined,
+                        contentsValid: false,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                GraphTextureVersion? transientASource = null;
+                GraphTextureVersion? transientAWrite = null;
+                GraphTextureVersion? transientBSource = null;
+                GraphTextureVersion? transientBWrite = null;
+                GraphTextureVersion? destinationWriteA = null;
+                GraphTextureVersion? destinationWriteB = null;
+
+                void RecordTransientAInitialize(scoped ref CommandRecorder recorder)
+                {
+                    if ((clearedTarget is GraphTextureVersion source)
+                        && (transientAWrite is GraphTextureVersion destination))
+                    {
+                        recorder.CopyTexture(source, destination);
+                    }
+                }
+
+                void RecordTransientACopy(scoped ref CommandRecorder recorder)
+                {
+                    if ((transientASource is GraphTextureVersion source)
+                        && (destinationWriteA is GraphTextureVersion destination))
+                    {
+                        recorder.CopyTexture(source, destination);
+                    }
+                }
+
+                void RecordTransientBInitialize(scoped ref CommandRecorder recorder)
+                {
+                    if ((clearedTarget is GraphTextureVersion source)
+                        && (transientBWrite is GraphTextureVersion destination))
+                    {
+                        recorder.CopyTexture(source, destination);
+                    }
+                }
+
+                void RecordTransientBCopy(scoped ref CommandRecorder recorder)
+                {
+                    if ((transientBSource is GraphTextureVersion source)
+                        && (destinationWriteB is GraphTextureVersion destination))
+                    {
+                        recorder.CopyTexture(source, destination);
+                    }
+                }
+
+                var initializeAPass = delayedGraph.AddCopyPass(
+                    new RenderPassDescription("delayed-slot-alias-a-in", 1, [clearPass], hasExternalSideEffects: true),
+                    RecordTransientAInitialize);
+                delayedGraph.ReadTexture(initializeAPass, clearedTarget, GraphTextureUsage.CopySource, targetRange);
+                transientAWrite = delayedGraph.WriteTexture(
+                    initializeAPass,
+                    transientA,
+                    GraphTextureUsage.CopyDestination,
+                    targetRange);
+                transientASource = transientAWrite;
+
+                var copyAPass = delayedGraph.AddCopyPass(
+                    new RenderPassDescription("delayed-slot-alias-a-out", 2, [initializeAPass], hasExternalSideEffects: true),
+                    RecordTransientACopy);
+                var selectedTransientASource = transientASource
+                    ?? throw new InvalidOperationException("The delayed Vulkan texture graph has no first transient source.");
+                delayedGraph.ReadTexture(copyAPass, selectedTransientASource, GraphTextureUsage.CopySource, targetRange);
+                destinationWriteA = delayedGraph.WriteTexture(
+                    copyAPass,
+                    destinationInitial,
+                    GraphTextureUsage.CopyDestination,
+                    targetRange);
+
+                var initializeBPass = delayedGraph.AddCopyPass(
+                    new RenderPassDescription("delayed-slot-alias-b-in", 3, [copyAPass], hasExternalSideEffects: true),
+                    RecordTransientBInitialize);
+                delayedGraph.ReadTexture(initializeBPass, clearedTarget, GraphTextureUsage.CopySource, targetRange);
+                transientBWrite = delayedGraph.WriteTexture(
+                    initializeBPass,
+                    transientB,
+                    GraphTextureUsage.CopyDestination,
+                    targetRange);
+                transientBSource = transientBWrite;
+
+                var copyBPass = delayedGraph.AddCopyPass(
+                    new RenderPassDescription("delayed-slot-alias-b-out", 4, [initializeBPass], hasExternalSideEffects: true),
+                    RecordTransientBCopy);
+                var selectedTransientBSource = transientBSource
+                    ?? throw new InvalidOperationException("The delayed Vulkan texture graph has no second transient source.");
+                var selectedDestinationWriteA = destinationWriteA
+                    ?? throw new InvalidOperationException("The delayed Vulkan texture graph has no first destination version.");
+                delayedGraph.ReadTexture(copyBPass, selectedTransientBSource, GraphTextureUsage.CopySource, targetRange);
+                destinationWriteB = delayedGraph.WriteTexture(
+                    copyBPass,
+                    selectedDestinationWriteA,
+                    GraphTextureUsage.CopyDestination,
+                    targetRange);
+                delayedGraph.SetPresentationSource(clearedTarget);
+
+                var delayedCompileResponse = delayedGraph.Compile();
+                Assert.That(delayedCompileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
+                Assert.That(delayedCompileResponse.Diagnostics, Is.Empty);
+                return delayedCompileResponse.Plan
+                    ?? throw new InvalidOperationException("The delayed Vulkan texture graph did not compile.");
+            }
 
             if (useTransientCopyAliasing)
             {
@@ -2576,7 +2780,9 @@ internal sealed partial class EngineHostOptionsTests
                 _ = Interlocked.Exchange(ref holdFenceWaitCount, 2);
                 _ = Interlocked.Exchange(ref holdCompletedGraphFenceValue, 1);
                 var submissionTask = renderer.SubmitAsync(renderSnapshot, plan);
-                var secondSubmissionTask = renderer.SubmitAsync(renderSnapshot, plan);
+                var secondSubmissionTask = renderer.SubmitAsync(
+                    renderSnapshot,
+                    delayedTransientTexturePlan ?? plan);
 
                 var twoGraphWaitsStarted = twoFenceWaitsEntered.Wait(TimeSpan.FromSeconds(5));
                 Assert.That(
@@ -2656,9 +2862,12 @@ internal sealed partial class EngineHostOptionsTests
                 }
 
                 Assert.That(submittedTargetOwner.HasActiveUses, Is.False);
+                var expectedTargetFence = delayedTransientTexturePlan is null
+                    ? Math.Max(receipt.CompletedFence, queuedReceipt.CompletedFence)
+                    : receipt.CompletedFence;
                 Assert.That(
                     submittedTargetOwner.LastSubmittedQueueFence,
-                    Is.EqualTo(Math.Max(receipt.CompletedFence, queuedReceipt.CompletedFence)));
+                    Is.EqualTo(expectedTargetFence));
 
                 if (useTransientCopyAliasing)
                 {
@@ -3297,6 +3506,8 @@ internal sealed partial class EngineHostOptionsTests
 
             storageImage?.Dispose();
             target?.Dispose();
+            delayedGraphTarget?.Dispose();
+            delayedGraphDestination?.Dispose();
 
             if (host is not null)
             {
