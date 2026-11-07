@@ -300,6 +300,228 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task ConcurrentTransientBufferGroupsRespectBudgetAndRecoverAfterUseRelease()
+    {
+        const int liveGroupCount = 4;
+        const long allocationSizeBytes = 16;
+        const long exactBudgetBytes = liveGroupCount * allocationSizeBytes;
+        var backendDevice = new FakeBackendDevice(
+            bufferAllocationSizeBytes: allocationSizeBytes,
+            bufferBudgetBytes: exactBudgetBytes);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var registry = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 7);
+        var description = new BufferDescription(
+            byteLength: allocationSizeBytes,
+            BufferUsage.Storage,
+            GpuMemoryKind.DeviceLocal,
+            structuredStride: null,
+            debugName: "Concurrent transient buffer group test");
+        var versions = ImmutableArray.Create(
+            registry.CreateTransientBuffer(description),
+            registry.CreateTransientBuffer(description));
+        var groups = new List<GraphicsTransientBufferGroup>(liveGroupCount + 1);
+        var uses = new GraphicsResourceOwner.UseLease?[liveGroupCount];
+
+        try
+        {
+            for (var index = 0; index < liveGroupCount; index++)
+            {
+                var group = await graphicsDevice.CreateTransientBufferGroupAsync(
+                        versions,
+                        CancellationToken.None)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false);
+                groups.Add(group);
+                uses[index] = group.Buffers[0].ResourceOwner.AcquireUse(nameof(groups));
+            }
+
+            var allocationLeases = new HashSet<GraphicsResourceAllocationLease>();
+
+            foreach (var group in groups)
+            {
+                var allocationLease = group.Buffers[0].ResourceOwner.AllocationLease
+                    ?? throw new InvalidOperationException("A live transient buffer group lost its shared allocation lease.");
+                Assert.That(allocationLeases.Add(allocationLease), Is.True);
+                Assert.That(group.Buffers[1].ResourceOwner.AllocationLease, Is.SameAs(allocationLease));
+            }
+
+            foreach (var group in groups)
+            {
+                group.Dispose();
+            }
+
+            Assert.That(
+                SpinWait.SpinUntil(() => backendDevice.BufferDisposalCount == liveGroupCount, TimeSpan.FromSeconds(5)),
+                Is.True);
+            Assert.That(backendDevice.BufferAllocationDisposalCount, Is.Zero);
+            _ = Assert.ThrowsAsync<OutOfMemoryException>(
+                async () => await graphicsDevice.CreateTransientBufferGroupAsync(
+                        versions,
+                        CancellationToken.None)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+
+            uses[1]?.Dispose();
+            uses[1] = null;
+            Assert.That(
+                SpinWait.SpinUntil(() => backendDevice.BufferAllocationDisposalCount == 1, TimeSpan.FromSeconds(5)),
+                Is.True);
+
+            var replacementGroup = await graphicsDevice.CreateTransientBufferGroupAsync(
+                    versions,
+                    CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            groups.Add(replacementGroup);
+            var replacementAllocationLease = replacementGroup.Buffers[0].ResourceOwner.AllocationLease
+                ?? throw new InvalidOperationException("The replacement transient buffer group lost its shared allocation lease.");
+            Assert.That(allocationLeases.Contains(replacementAllocationLease), Is.False);
+            replacementGroup.Dispose();
+            Assert.That(
+                SpinWait.SpinUntil(() => backendDevice.BufferAllocationDisposalCount == 2, TimeSpan.FromSeconds(5)),
+                Is.True);
+
+            for (var index = 0; index < uses.Length; index++)
+            {
+                uses[index]?.Dispose();
+                uses[index] = null;
+            }
+
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.That(backendDevice.BufferAllocationCreationCount, Is.EqualTo(liveGroupCount + 1));
+            Assert.That(backendDevice.BufferAllocationDisposalCount, Is.EqualTo(liveGroupCount + 1));
+            Assert.That(backendDevice.BufferDisposalCount, Is.EqualTo((liveGroupCount + 1) * 2));
+        }
+        finally
+        {
+            foreach (var use in uses)
+            {
+                use?.Dispose();
+            }
+
+            foreach (var group in groups)
+            {
+                group.Dispose();
+            }
+
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task ConcurrentTransientTextureGroupsRespectBudgetAndRecoverAfterUseRelease()
+    {
+        const int liveGroupCount = 4;
+        const long allocationSizeBytes = 16;
+        const long exactBudgetBytes = liveGroupCount * allocationSizeBytes;
+        var backendDevice = new FakeBackendDevice(
+            textureBudgetBytes: exactBudgetBytes,
+            textureAllocationSizeBytes: allocationSizeBytes);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var registry = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 7);
+        var description = new TextureDescription(
+            TextureDimension.Dimension2D,
+            width: 2,
+            height: 2,
+            depth: 1,
+            arrayLayers: 1,
+            mipLevels: 1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.Sampled | TextureUsage.CopySource | TextureUsage.CopyDestination,
+            debugName: "Concurrent transient texture group test");
+        var versions = ImmutableArray.Create(
+            registry.CreateTransientTexture(description),
+            registry.CreateTransientTexture(description));
+        var groups = new List<GraphicsTransientTextureGroup>(liveGroupCount + 1);
+        var uses = new GraphicsResourceOwner.UseLease?[liveGroupCount];
+
+        try
+        {
+            for (var index = 0; index < liveGroupCount; index++)
+            {
+                var group = await graphicsDevice.CreateTransientTextureGroupAsync(
+                        versions,
+                        CancellationToken.None)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false);
+                groups.Add(group);
+                uses[index] = group.Textures[0].ResourceOwner.AcquireUse(nameof(groups));
+            }
+
+            var allocationLeases = new HashSet<GraphicsResourceAllocationLease>();
+
+            foreach (var group in groups)
+            {
+                var allocationLease = group.Textures[0].ResourceOwner.AllocationLease
+                    ?? throw new InvalidOperationException("A live transient texture group lost its shared allocation lease.");
+                Assert.That(allocationLeases.Add(allocationLease), Is.True);
+                Assert.That(group.Textures[1].ResourceOwner.AllocationLease, Is.SameAs(allocationLease));
+            }
+
+            foreach (var group in groups)
+            {
+                group.Dispose();
+            }
+
+            Assert.That(
+                SpinWait.SpinUntil(() => backendDevice.TextureDisposalCount == liveGroupCount, TimeSpan.FromSeconds(5)),
+                Is.True);
+            Assert.That(backendDevice.TextureAllocationDisposalCount, Is.Zero);
+            _ = Assert.ThrowsAsync<OutOfMemoryException>(
+                async () => await graphicsDevice.CreateTransientTextureGroupAsync(
+                        versions,
+                        CancellationToken.None)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+
+            uses[1]?.Dispose();
+            uses[1] = null;
+            Assert.That(
+                SpinWait.SpinUntil(() => backendDevice.TextureAllocationDisposalCount == 1, TimeSpan.FromSeconds(5)),
+                Is.True);
+
+            var replacementGroup = await graphicsDevice.CreateTransientTextureGroupAsync(
+                    versions,
+                    CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            groups.Add(replacementGroup);
+            var replacementAllocationLease = replacementGroup.Textures[0].ResourceOwner.AllocationLease
+                ?? throw new InvalidOperationException("The replacement transient texture group lost its shared allocation lease.");
+            Assert.That(allocationLeases.Contains(replacementAllocationLease), Is.False);
+            replacementGroup.Dispose();
+            Assert.That(
+                SpinWait.SpinUntil(() => backendDevice.TextureAllocationDisposalCount == 2, TimeSpan.FromSeconds(5)),
+                Is.True);
+
+            for (var index = 0; index < uses.Length; index++)
+            {
+                uses[index]?.Dispose();
+                uses[index] = null;
+            }
+
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.That(backendDevice.TextureAllocationCreationCount, Is.EqualTo(liveGroupCount + 1));
+            Assert.That(backendDevice.TextureAllocationDisposalCount, Is.EqualTo(liveGroupCount + 1));
+            Assert.That(backendDevice.TextureDisposalCount, Is.EqualTo((liveGroupCount + 1) * 2));
+        }
+        finally
+        {
+            foreach (var use in uses)
+            {
+                use?.Dispose();
+            }
+
+            foreach (var group in groups)
+            {
+                group.Dispose();
+            }
+
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task GraphImportOptionsCompareWithOwnerStateAndReportPendingUses()
     {
         var backendDevice = new FakeBackendDevice();

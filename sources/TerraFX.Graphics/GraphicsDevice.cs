@@ -18,9 +18,10 @@ namespace TerraFX.Graphics;
     Justification = "The event is released by the dedicated graphics owner thread after shutdown; callers control lifetime through ShutdownAsync.")]
 public sealed partial class GraphicsDevice
 {
+    internal const int DefaultGraphFrameSlotCount = 3;
+    internal const int MaximumGraphFrameSlotCount = 4;
+    internal const int MinimumGraphFrameSlotCount = 1;
     private const long DefaultOwnedAllocationBudgetBytes = 512L * 1024 * 1024;
-    private const int MaximumGraphFrameSlotCount = 4;
-    private const int MinimumGraphFrameSlotCount = 1;
 
     // Keep an owner rooted if native disposal cannot confirm that its resources were released.
     private static readonly ConcurrentBag<IGraphicsBackendDevice> s_quarantinedBackendDevices = [];
@@ -77,6 +78,20 @@ public sealed partial class GraphicsDevice
     internal bool IsOwnerThread => ReferenceEquals(Thread.CurrentThread, _ownerThread);
 
     internal uint OwnerId => _ownerId;
+
+    internal static Task<GraphicsDevice> CreateAsync(
+        uint ownerId,
+        GraphicsBackendRegistration registration,
+        GraphicsDeviceProfile profile,
+        GraphicsPlatformKind platformKind,
+        CancellationToken cancellationToken)
+        => CreateAsync(
+            ownerId,
+            registration,
+            profile,
+            DefaultGraphFrameSlotCount,
+            platformKind,
+            cancellationToken);
 
     internal static Task<GraphicsDevice> CreateAsync(
         uint ownerId,
