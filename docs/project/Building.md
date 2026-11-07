@@ -195,6 +195,20 @@ In the WSLg shell, run the same hardware-independent selection:
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release --filter "FullyQualifiedName~LinuxEvdevGamepadAxisStateTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
+`LinuxEvdevGamepadStateTests` covers hardware-independent `EV_KEY`/`EV_ABS` translation, button/hat duplicate suppression, ignored key-repeat events, invalid button values, and complete neutral reconciliation state. It does not open `/dev/input` or qualify udev discovery/live capture:
+
+```powershell
+dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Debug --filter "FullyQualifiedName~LinuxEvdevGamepadStateTests"
+dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Release --filter "FullyQualifiedName~LinuxEvdevGamepadStateTests"
+```
+
+In the WSLg shell, run the same hardware-independent selection:
+
+```bash
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~LinuxEvdevGamepadStateTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release --filter "FullyQualifiedName~LinuxEvdevGamepadStateTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
 On Windows 11 x64, run the hidden-HWND owner witness for live client metrics, PMv2 scale/provenance, native resize refresh and snapshot replacement, pre-surface zero epochs, and stale-handle rejection:
 
 ```powershell
