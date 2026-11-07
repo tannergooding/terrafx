@@ -2339,6 +2339,25 @@ public static unsafe class D3D12GraphicsBackend
                                         break;
                                     }
 
+                                    case GraphicsCommandKind.SetIndexBuffer:
+                                    {
+                                        var binding = command.IndexBuffer;
+                                        var buffer = submission.GetBuffer(binding.Buffer.ResourceId) as D3D12BackendBuffer
+                                            ?? throw new InvalidOperationException("The graph index binding lost its D3D12 buffer.");
+                                        var resource = buffer.GetResource();
+                                        var view = new D3D12_INDEX_BUFFER_VIEW {
+                                            BufferLocation = checked(resource->GetGPUVirtualAddress() + checked((ulong)binding.Range.ByteOffset)),
+                                            SizeInBytes = checked((uint)binding.Range.ByteLength),
+                                            Format = binding.Format switch {
+                                                IndexFormat.UInt16 => DXGI_FORMAT.DXGI_FORMAT_R16_UINT,
+                                                IndexFormat.UInt32 => DXGI_FORMAT.DXGI_FORMAT_R32_UINT,
+                                                _ => throw new InvalidOperationException("The graph index binding has an invalid element format."),
+                                            },
+                                        };
+                                        commandList->IASetIndexBuffer(&view);
+                                        break;
+                                    }
+
                                     case GraphicsCommandKind.Draw:
                                     {
                                         var draw = command.Draw;
@@ -2346,6 +2365,18 @@ public static unsafe class D3D12GraphicsBackend
                                             checked((uint)draw.VertexCount),
                                             checked((uint)draw.InstanceCount),
                                             checked((uint)draw.FirstVertex),
+                                            checked((uint)draw.FirstInstance));
+                                        break;
+                                    }
+
+                                    case GraphicsCommandKind.DrawIndexed:
+                                    {
+                                        var draw = command.DrawIndexed;
+                                        commandList->DrawIndexedInstanced(
+                                            checked((uint)draw.IndexCount),
+                                            checked((uint)draw.InstanceCount),
+                                            checked((uint)draw.FirstIndex),
+                                            draw.BaseVertex,
                                             checked((uint)draw.FirstInstance));
                                         break;
                                     }

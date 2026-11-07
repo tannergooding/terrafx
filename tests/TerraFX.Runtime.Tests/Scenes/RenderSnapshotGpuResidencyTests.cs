@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Immutable;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -111,6 +112,7 @@ internal sealed partial class SceneAssetStoreTests
         GpuResidencyLease? residencyLease = null;
         GpuTexture? targetTexture = null;
         GpuBuffer? vertexBuffer = null;
+        GpuBuffer? indexBuffer = null;
         GpuSampler? sampler = null;
         GpuPipeline? pipeline = null;
 
@@ -266,8 +268,6 @@ internal sealed partial class SceneAssetStoreTests
                     quad.Vertex0,
                     quad.Vertex1,
                     quad.Vertex2,
-                    quad.Vertex0,
-                    quad.Vertex2,
                     quad.Vertex3,
                 };
                 var vertexBytes = MemoryMarshal.AsBytes(spriteVertices.AsSpan()).ToArray();
@@ -280,6 +280,16 @@ internal sealed partial class SceneAssetStoreTests
                         "snapshot-atlas-sprite-vertices")).ConfigureAwait(false);
                 var vertexUpload = await graphicsDevice.UploadBufferAsync(vertexBuffer, 0, vertexBytes).ConfigureAwait(false);
                 Assert.That(vertexUpload.Status, Is.EqualTo(UploadStatus.Ready));
+                var indexBytes = MemoryMarshal.AsBytes(RenderSpriteGeometry.Indices.AsSpan()).ToArray();
+                indexBuffer = await graphicsDevice.CreateBufferAsync(
+                    new BufferDescription(
+                        indexBytes.Length,
+                        BufferUsage.Index | BufferUsage.CopyDestination,
+                        GpuMemoryKind.DeviceLocal,
+                        structuredStride: null,
+                        "snapshot-atlas-sprite-indices")).ConfigureAwait(false);
+                var indexUpload = await graphicsDevice.UploadBufferAsync(indexBuffer, 0, indexBytes).ConfigureAwait(false);
+                Assert.That(indexUpload.Status, Is.EqualTo(UploadStatus.Ready));
                 targetTexture = await graphicsDevice.CreateTextureAsync(
                     new TextureDescription(
                         TextureDimension.Dimension2D,
@@ -327,6 +337,15 @@ internal sealed partial class SceneAssetStoreTests
                         contentsValid: true,
                         completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
                 var vertexBinding = new VertexBufferBinding(0, vertexVersion, vertexRange, 5 * sizeof(float));
+                var indexRange = new GraphBufferRange(0, indexBuffer.ByteLength);
+                var indexVersion = graph.ImportBuffer(
+                    indexBuffer,
+                    indexRange,
+                    new GraphImportOptions(
+                        GraphResourceState.General,
+                        contentsValid: true,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                var indexBinding = new IndexBufferBinding(indexVersion, indexRange, IndexFormat.UInt16);
                 var selectedPipeline = pipeline
                     ?? throw new InvalidOperationException("The snapshot-atlas graph has no graphics pipeline.");
 
@@ -334,14 +353,16 @@ internal sealed partial class SceneAssetStoreTests
                 {
                     recorder.SetPipeline(selectedPipeline.Handle);
                     recorder.SetVertexBuffer(vertexBinding);
+                    recorder.SetIndexBuffer(indexBinding);
                     recorder.SetBindings(graphBindingSet);
-                    recorder.Draw(new DrawArguments(spriteVertices.Length, 1, 0, 0));
+                    recorder.DrawIndexed(new DrawIndexedArguments(RenderSpriteGeometry.Indices.Length, 1, 0, 0, 0));
                 }
 
                 var rasterPass = graph.AddRasterPass(
                     new RenderPassDescription("snapshot-atlas-page-sample", 0, [], hasExternalSideEffects: false),
                     RecordPackageSample);
                 graph.ReadBuffer(rasterPass, vertexVersion, GraphBufferUsage.VertexRead, vertexRange);
+                graph.ReadBuffer(rasterPass, indexVersion, GraphBufferUsage.IndexRead, indexRange);
                 graph.ReadTexture(rasterPass, sampledPage, GraphTextureUsage.SampledRead, sampleRange);
                 var targetRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
                 var output = graph.WriteColorAttachment(
@@ -437,6 +458,7 @@ internal sealed partial class SceneAssetStoreTests
         {
             pipeline?.Dispose();
             sampler?.Dispose();
+            indexBuffer?.Dispose();
             vertexBuffer?.Dispose();
             targetTexture?.Dispose();
             snapshot?.Dispose();

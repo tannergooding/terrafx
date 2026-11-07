@@ -332,7 +332,7 @@ Run the public offscreen submission witness after compiling the fixture. It cove
 
 `Renderer.SubmitAsync` retains an independent shared asset-pin reference through GPU completion; the Sprite snapshot test disposes its snapshot and verifies the retained Atlas page and Material remain available.
 
-`SnapshotPinnedAtlasPageSamplesThroughNativeGraphAsync` uses a committed Scene/Sprite snapshot, resolves its exact Atlas frame page through `Renderer.EnsureSpritePageResidencyAsync`, uploads the snapshot's copied quad positions and Atlas UVs to a vertex buffer, and samples the page in a custom graph draw. It verifies both the rendered quad and an untouched clear pixel, then unloads the Scene and disposes the snapshot before verifying the retained texture readback. This is native graph use of the captured Sprite data, not a built-in Renderer Sprite pipeline or batching path.
+`SnapshotPinnedAtlasPageSamplesThroughNativeGraphAsync` uses a committed Scene/Sprite snapshot, resolves its exact Atlas frame page through `Renderer.EnsureSpritePageResidencyAsync`, uploads the four copied quad vertices and fixed six-element UInt16 index sequence with their captured Atlas UVs, and samples the page in an indexed custom graph draw. It verifies both the rendered quad and an untouched clear pixel, then unloads the Scene and disposes the snapshot before verifying the retained texture readback. This is native graph use of the captured Sprite data, not a built-in Renderer Sprite pipeline or batching path.
 
 Run the hardware-independent Sprite quad and snapshot-copy cases without the shader fixture:
 

@@ -936,6 +936,24 @@ internal sealed unsafe partial class VulkanBackendDevice
                             break;
                         }
 
+                        case GraphicsCommandKind.SetIndexBuffer:
+                        {
+                            var binding = command.IndexBuffer;
+                            var buffer = submission.GetBuffer(binding.Buffer.ResourceId) as VulkanBackendBuffer
+                                ?? throw new InvalidOperationException("The graph index binding lost its Vulkan buffer.");
+                            var indexType = binding.Format switch {
+                                IndexFormat.UInt16 => VkIndexType.VK_INDEX_TYPE_UINT16,
+                                IndexFormat.UInt32 => VkIndexType.VK_INDEX_TYPE_UINT32,
+                                _ => throw new InvalidOperationException("The graph index binding has an invalid element format."),
+                            };
+                            VulkanApi.vkCmdBindIndexBuffer(
+                                _commandBuffer,
+                                buffer.Buffer,
+                                checked((ulong)binding.Range.ByteOffset),
+                                indexType);
+                            break;
+                        }
+
                         case GraphicsCommandKind.Draw:
                         {
                             var draw = command.Draw;
@@ -944,6 +962,19 @@ internal sealed unsafe partial class VulkanBackendDevice
                                 checked((uint)draw.VertexCount),
                                 checked((uint)draw.InstanceCount),
                                 checked((uint)draw.FirstVertex),
+                                checked((uint)draw.FirstInstance));
+                            break;
+                        }
+
+                        case GraphicsCommandKind.DrawIndexed:
+                        {
+                            var draw = command.DrawIndexed;
+                            VulkanApi.vkCmdDrawIndexed(
+                                _commandBuffer,
+                                checked((uint)draw.IndexCount),
+                                checked((uint)draw.InstanceCount),
+                                checked((uint)draw.FirstIndex),
+                                draw.BaseVertex,
                                 checked((uint)draw.FirstInstance));
                             break;
                         }
