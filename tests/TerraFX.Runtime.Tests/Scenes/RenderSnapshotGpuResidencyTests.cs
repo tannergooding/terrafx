@@ -25,6 +25,10 @@ namespace TerraFX.Runtime.Tests.Scenes;
 internal sealed partial class SceneAssetStoreTests
 {
     [Test]
+    public Task SnapshotGraphRecordingFailureReleasesImportedResourcePinsAsync()
+        => RunSnapshotAtlasPageResidencyAsync(renderThroughNativeGraph: true, failGraphRecording: true);
+
+    [Test]
     public Task SnapshotPinnedAtlasPageBecomesResidentAfterSceneAndSnapshotRetireAsync()
         => RunSnapshotAtlasPageResidencyAsync(renderThroughNativeGraph: false);
 
@@ -40,7 +44,9 @@ internal sealed partial class SceneAssetStoreTests
         "Usage",
         "CA1031:Do not catch general exception types",
         Justification = "The original graph failure is logged before owner cleanup so a secondary shutdown timeout cannot obscure its cause.")]
-    private async Task RunSnapshotAtlasPageResidencyAsync(bool renderThroughNativeGraph)
+    private async Task RunSnapshotAtlasPageResidencyAsync(
+        bool renderThroughNativeGraph,
+        bool failGraphRecording = false)
     {
         static OwnedBuffer<byte> CreateBytecodeStorage(string path)
         {
@@ -351,6 +357,11 @@ internal sealed partial class SceneAssetStoreTests
 
                 void RecordPackageSample(scoped ref CommandRecorder recorder)
                 {
+                    if (failGraphRecording)
+                    {
+                        throw new InvalidOperationException("Injected Sprite graph recording failure.");
+                    }
+
                     recorder.SetPipeline(selectedPipeline.Handle);
                     recorder.SetVertexBuffer(vertexBinding);
                     recorder.SetIndexBuffer(indexBinding);
@@ -378,6 +389,10 @@ internal sealed partial class SceneAssetStoreTests
                 Assert.That(compileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
                 var plan = compileResponse.Plan
                     ?? throw new InvalidOperationException("The snapshot-atlas graph compile omitted its plan.");
+                var vertexResourceOwner = vertexBuffer.ResourceOwner;
+                var indexResourceOwner = indexBuffer.ResourceOwner;
+                var targetResourceOwner = targetTexture.ResourceOwner;
+                var pageResourceOwner = residencyLease.Texture.ResourceOwner;
                 var submissionTask = engineHost.Renderer.SubmitAsync(spriteSnapshot, plan);
                 spriteSnapshot.Dispose();
                 Assert.That(spriteSnapshot.AssetPins, Is.Null);
@@ -385,28 +400,43 @@ internal sealed partial class SceneAssetStoreTests
                 vertexBuffer = null;
                 indexBuffer.Dispose();
                 indexBuffer = null;
-                var submission = await submissionTask.ConfigureAwait(false);
-                Assert.That(submission.CompletedFence, Is.GreaterThan(0));
 
-                using var graphReadback = await graphicsDevice.ReadbackTextureAsync(
-                    targetTexture,
-                    new TextureSubresource(0, 0, TextureAspect.Color)).ConfigureAwait(false);
-                var graphReadbackBytes = new byte[checked((int)graphReadback.ByteLength)];
-
-                using (var readLease = graphReadback.AcquireReadLease())
+                if (failGraphRecording)
                 {
-                    readLease.CopyWindow(0, graphReadbackBytes);
+                    _ = Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                        await submissionTask.ConfigureAwait(false));
+                    Assert.Multiple(() => {
+                        Assert.That(vertexResourceOwner.HasActiveUses, Is.False);
+                        Assert.That(indexResourceOwner.HasActiveUses, Is.False);
+                        Assert.That(targetResourceOwner.HasActiveUses, Is.False);
+                        Assert.That(pageResourceOwner.HasActiveUses, Is.False);
+                    });
                 }
+                else
+                {
+                    var submission = await submissionTask.ConfigureAwait(false);
+                    Assert.That(submission.CompletedFence, Is.GreaterThan(0));
 
-                var centerPixelOffset = checked(
-                    (int)((graphReadback.RowPitch * (targetExtent.Height / 2)) + (targetExtent.Width / 2 * 4)));
-                Assert.Multiple(() => {
-                    Assert.That(graphReadbackBytes[centerPixelOffset], Is.EqualTo(17));
-                    Assert.That(graphReadbackBytes[centerPixelOffset + 1], Is.EqualTo(17));
-                    Assert.That(graphReadbackBytes[centerPixelOffset + 2], Is.EqualTo(17));
-                    Assert.That(graphReadbackBytes[centerPixelOffset + 3], Is.EqualTo(17));
-                    Assert.That(graphReadbackBytes[0], Is.Not.EqualTo(17));
-                });
+                    using var graphReadback = await graphicsDevice.ReadbackTextureAsync(
+                        targetTexture,
+                        new TextureSubresource(0, 0, TextureAspect.Color)).ConfigureAwait(false);
+                    var graphReadbackBytes = new byte[checked((int)graphReadback.ByteLength)];
+
+                    using (var readLease = graphReadback.AcquireReadLease())
+                    {
+                        readLease.CopyWindow(0, graphReadbackBytes);
+                    }
+
+                    var centerPixelOffset = checked(
+                        (int)((graphReadback.RowPitch * (targetExtent.Height / 2)) + (targetExtent.Width / 2 * 4)));
+                    Assert.Multiple(() => {
+                        Assert.That(graphReadbackBytes[centerPixelOffset], Is.EqualTo(17));
+                        Assert.That(graphReadbackBytes[centerPixelOffset + 1], Is.EqualTo(17));
+                        Assert.That(graphReadbackBytes[centerPixelOffset + 2], Is.EqualTo(17));
+                        Assert.That(graphReadbackBytes[centerPixelOffset + 3], Is.EqualTo(17));
+                        Assert.That(graphReadbackBytes[0], Is.Not.EqualTo(17));
+                    });
+                }
             }
 
             var unload = await activeSceneInstance.UnloadAsync(HierarchyDestroyMode.DestroySubtree)

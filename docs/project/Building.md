@@ -332,7 +332,7 @@ Run the public offscreen submission witness after compiling the fixture. It cove
 
 `Renderer.SubmitAsync` retains an independent shared asset-pin reference through GPU completion; the Sprite snapshot test disposes its snapshot and verifies the retained Atlas page and Material remain available.
 
-`SnapshotPinnedAtlasPageSamplesThroughNativeGraphAsync` uses a committed Scene/Sprite snapshot, resolves its exact Atlas frame page through `Renderer.EnsureSpritePageResidencyAsync`, uploads the four copied quad vertices and fixed six-element UInt16 index sequence with their captured Atlas UVs, and samples the page in an indexed custom graph draw. It verifies both the rendered quad and an untouched clear pixel, then unloads the Scene and disposes the snapshot before verifying the retained texture readback. The lifetime regression also disposes the imported vertex and index buffers immediately after starting `Renderer.SubmitAsync`; submission pins the output target and imported resources before asynchronous preparation/recording and transfers them to accepted GPU work. This is native graph use of the captured Sprite data, not a built-in Renderer Sprite pipeline or batching path.
+`SnapshotPinnedAtlasPageSamplesThroughNativeGraphAsync` uses a committed Scene/Sprite snapshot, resolves its exact Atlas frame page through `Renderer.EnsureSpritePageResidencyAsync`, uploads the four copied quad vertices and fixed six-element UInt16 index sequence with their captured Atlas UVs, and samples the page in an indexed custom graph draw. It verifies both the rendered quad and an untouched clear pixel, then unloads the Scene and disposes the snapshot before verifying the retained texture readback. The lifetime regression also disposes the imported vertex and index buffers immediately after starting `Renderer.SubmitAsync`; submission pins the output target and imported resources before asynchronous preparation/recording and transfers them to accepted GPU work. `SnapshotGraphRecordingFailureReleasesImportedResourcePinsAsync` injects a recording callback failure and verifies those imported-resource and target-use leases are released without graph admission. This is native graph use of the captured Sprite data, not a built-in Renderer Sprite pipeline or batching path.
 
 Run the hardware-independent Sprite quad and snapshot-copy cases without the shader fixture:
 
@@ -360,6 +360,8 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SnapshotPinnedAtlasPageBecomesResidentAfterSceneAndSnapshotRetireAsync"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SnapshotPinnedAtlasPageSamplesThroughNativeGraphAsync"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SnapshotPinnedAtlasPageSamplesThroughNativeGraphAsync"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SnapshotGraphRecordingFailureReleasesImportedResourcePinsAsync"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SnapshotGraphRecordingFailureReleasesImportedResourcePinsAsync"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "Name~D3D12GraphSubmissionRetainsTargetUntilFenceCompletion"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "Name~D3D12GraphSubmissionRetainsTargetUntilFenceCompletion"
 ```
@@ -405,6 +407,14 @@ export TERRAFX_M04_SHADER_FIXTURE_DIRECTORY=
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SubmitsMultipleTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~SubmitsCombinedBufferAndTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SubmitsCombinedBufferAndTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
+Run the graph callback-failure lease-release witness in WSLg with the cooked Sprite shader fixture:
+
+```bash
+export TERRAFX_M04_SHADER_FIXTURE_DIRECTORY="$WORKTREE/artifacts/shader-fixtures/m04-offscreen-sprite-quad"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~SnapshotGraphRecordingFailureReleasesImportedResourcePinsAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SnapshotGraphRecordingFailureReleasesImportedResourcePinsAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
 ### Vulkan GraphicsDevice startup through the host issuer
