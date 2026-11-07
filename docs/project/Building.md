@@ -195,7 +195,7 @@ In the WSLg shell, run the same hardware-independent selection:
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release --filter "FullyQualifiedName~LinuxEvdevGamepadAxisStateTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
-`LinuxEvdevGamepadStateTests` covers hardware-independent `EV_KEY`/`EV_ABS` translation, button/hat duplicate suppression, ignored key-repeat events, invalid button values, and complete neutral reconciliation state. It does not open `/dev/input` or qualify udev discovery/live capture:
+`LinuxEvdevGamepadStateTests` covers hardware-independent `EV_KEY`/`EV_ABS` translation, button/hat duplicate suppression, ignored key-repeat events, invalid button values, complete neutral reconciliation state, and retirement releases/neutralization with late-event suppression. It does not open `/dev/input` or qualify udev discovery/live capture:
 
 ```powershell
 dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Debug --filter "FullyQualifiedName~LinuxEvdevGamepadStateTests"

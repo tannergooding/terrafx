@@ -16,6 +16,7 @@ internal sealed class LinuxEvdevGamepadState
 
     private readonly LinuxEvdevGamepadAxisState _axes;
     private readonly LinuxEvdevGamepadButtonState _buttons = new();
+    private bool _isRetired;
 
     internal LinuxEvdevGamepadState(
         ReadOnlySpan<(ushort Code, LinuxEvdevAxisInfo Info, int InitialValue)> axisDescriptors)
@@ -41,6 +42,31 @@ internal sealed class LinuxEvdevGamepadState
         return state.MoveToImmutable();
     }
 
+    internal ImmutableArray<PlatformInputStateValue> Reset()
+    {
+        if (_isRetired)
+        {
+            return [];
+        }
+
+        _isRetired = true;
+        var buttonTransitions = _buttons.Reset();
+        var axisChanges = _axes.Reset();
+        var changes = ImmutableArray.CreateBuilder<PlatformInputStateValue>(
+            buttonTransitions.Length + axisChanges.Length);
+
+        foreach (var transition in buttonTransitions)
+        {
+            changes.Add(new PlatformInputStateValue(
+                PlatformInputStateValueKind.GamepadButton,
+                GamepadButton: transition.Button,
+                IsDown: false));
+        }
+
+        changes.AddRange(axisChanges);
+        return changes.MoveToImmutable();
+    }
+
     internal bool TryProcessEvent(
         ushort type,
         ushort code,
@@ -48,6 +74,11 @@ internal sealed class LinuxEvdevGamepadState
         out ImmutableArray<PlatformInputStateValue> changes)
     {
         changes = [];
+
+        if (_isRetired)
+        {
+            return false;
+        }
 
         if (type == EvKey)
         {

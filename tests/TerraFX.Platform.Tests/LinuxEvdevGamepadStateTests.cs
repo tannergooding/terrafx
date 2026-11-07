@@ -95,4 +95,45 @@ internal sealed class LinuxEvdevGamepadStateTests
         Assert.That(state.TryProcessEvent(0x0001, 0x0130, 2, out var repeat), Is.False);
         Assert.That(repeat, Is.Empty);
     }
+
+    [Test]
+    public void RetiresActiveControlsAndIgnoresLateEvents()
+    {
+        var state = new LinuxEvdevGamepadState([
+            (0x0000, new LinuxEvdevAxisInfo(-100, 100, Fuzz: 0, Flat: 0), 0),
+            (0x0002, new LinuxEvdevAxisInfo(0, 100, Fuzz: 0, Flat: 0), 0),
+        ]);
+        _ = state.TryProcessEvent(0x0001, 0x0130, 1, out _);
+        _ = state.TryProcessEvent(0x0003, 0x0010, 1, out _);
+        _ = state.TryProcessEvent(0x0003, 0x0000, 100, out _);
+        _ = state.TryProcessEvent(0x0003, 0x0002, 100, out _);
+
+        var releases = state.Reset();
+
+        Assert.That(releases, Has.Length.EqualTo(5));
+        Assert.That(releases[0].GamepadButton, Is.EqualTo(GamepadButtonValue.South));
+        Assert.That(releases[0].IsDown, Is.False);
+        Assert.That(releases[1].GamepadButton, Is.EqualTo(GamepadButtonValue.DpadRight));
+        Assert.That(releases[1].IsDown, Is.False);
+        Assert.That(releases[2].Axis, Is.EqualTo(GamepadAxis.LeftX));
+        Assert.That(releases[2].AxisValue, Is.Zero);
+        Assert.That(releases[3].Stick, Is.EqualTo(GamepadStick.Left));
+        var neutralStick = releases[3].StickValue
+            ?? throw new InvalidOperationException("The retired left-stick state has no value.");
+        Assert.That(neutralStick.X, Is.Zero);
+        Assert.That(neutralStick.Y, Is.Zero);
+        Assert.That(releases[4].Trigger, Is.EqualTo(GamepadTrigger.Left));
+        Assert.That(releases[4].TriggerValue, Is.Zero);
+        Assert.That(state.Reset(), Is.Empty);
+        Assert.That(state.TryProcessEvent(0x0001, 0x0130, 0, out var lateEvent), Is.False);
+        Assert.That(lateEvent, Is.Empty);
+
+        var neutralState = state.GetCurrentState();
+        var buttonCount = Enum.GetValues<GamepadButtonValue>().Length;
+        Assert.That(neutralState[0].IsDown, Is.False);
+        Assert.That(neutralState[buttonCount].AxisValue, Is.Zero);
+        Assert.That(neutralState[buttonCount + 4].StickValue?.X, Is.Zero);
+        Assert.That(neutralState[buttonCount + 4].StickValue?.Y, Is.Zero);
+        Assert.That(neutralState[buttonCount + 6].TriggerValue, Is.Zero);
+    }
 }

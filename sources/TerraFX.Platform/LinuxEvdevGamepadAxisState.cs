@@ -18,6 +18,7 @@ internal sealed class LinuxEvdevGamepadAxisState
     private const ushort AbsZ = 0x0002;
 
     private readonly Dictionary<ushort, AxisState> _axes = [];
+    private bool _isRetired;
     private float _leftTrigger;
     private float _leftX;
     private float _leftY;
@@ -106,6 +107,67 @@ internal sealed class LinuxEvdevGamepadAxisState
             CreateTriggerState(GamepadTrigger.Right, _rightTrigger),
         ];
 
+    internal ImmutableArray<PlatformInputStateValue> Reset()
+    {
+        if (_isRetired)
+        {
+            return [];
+        }
+
+        _isRetired = true;
+        var leftStick = GetStick(GamepadStick.Left);
+        var rightStick = GetStick(GamepadStick.Right);
+        var changes = ImmutableArray.CreateBuilder<PlatformInputStateValue>(8);
+
+        if (_leftX != 0.0f)
+        {
+            changes.Add(CreateAxisState(GamepadAxis.LeftX, 0.0f));
+        }
+
+        if (_leftY != 0.0f)
+        {
+            changes.Add(CreateAxisState(GamepadAxis.LeftY, 0.0f));
+        }
+
+        if (_rightX != 0.0f)
+        {
+            changes.Add(CreateAxisState(GamepadAxis.RightX, 0.0f));
+        }
+
+        if (_rightY != 0.0f)
+        {
+            changes.Add(CreateAxisState(GamepadAxis.RightY, 0.0f));
+        }
+
+        if (!VectorEquals(leftStick, default))
+        {
+            changes.Add(CreateStickState(GamepadStick.Left, default));
+        }
+
+        if (!VectorEquals(rightStick, default))
+        {
+            changes.Add(CreateStickState(GamepadStick.Right, default));
+        }
+
+        if (_leftTrigger != 0.0f)
+        {
+            changes.Add(CreateTriggerState(GamepadTrigger.Left, 0.0f));
+        }
+
+        if (_rightTrigger != 0.0f)
+        {
+            changes.Add(CreateTriggerState(GamepadTrigger.Right, 0.0f));
+        }
+
+        _leftTrigger = 0.0f;
+        _leftX = 0.0f;
+        _leftY = 0.0f;
+        _rightTrigger = 0.0f;
+        _rightX = 0.0f;
+        _rightY = 0.0f;
+        return changes.ToImmutable();
+    }
+
     internal bool TryUpdate(
         ushort code,
         int rawValue,
@@ -113,7 +175,7 @@ internal sealed class LinuxEvdevGamepadAxisState
     {
         changes = [];
 
-        if (!_axes.TryGetValue(code, out var axis))
+        if (_isRetired || !_axes.TryGetValue(code, out var axis))
         {
             return false;
         }
