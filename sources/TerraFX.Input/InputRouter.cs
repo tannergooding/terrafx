@@ -19,6 +19,8 @@ public sealed partial class InputRouter
     private TextInputSession? _activeTextSession;
     private int _controlCommandsInBoundary;
     private InputActionSnapshot _hostActionSnapshot;
+    private long _inputControlBoundaryOrdinal;
+    private InputRecorder? _inputRecorder;
     private int _isDisposed;
     private bool _isPaused;
     private long _lastInsertionSequence;
@@ -264,6 +266,11 @@ public sealed partial class InputRouter
         _lastInsertionSequence = lastInsertionSequence;
         _controlCommandsInBoundary++;
         PublishHostActionSnapshot();
+        RecordMapChange(
+            InputRecordingEntryKind.MapRegistered,
+            map,
+            hostSequence,
+            (_recipientKind == InputRecipientKind.SimulationTimeline) ? _nextOpenTick : null);
 
         return new InputMapResponse(InputMapStatus.Registered, hostSequence, map.Revision, null);
     }
@@ -376,6 +383,12 @@ public sealed partial class InputRouter
             deferTransitions: _recipientKind == InputRecipientKind.SimulationTimeline);
         _controlCommandsInBoundary++;
         PublishHostActionSnapshot();
+        RecordMapChange(
+            InputRecordingEntryKind.MapReplaced,
+            map,
+            hostSequence,
+            (_recipientKind == InputRecipientKind.SimulationTimeline) ? _nextOpenTick : null,
+            expectedRevision);
 
         return new InputMapResponse(InputMapStatus.Replaced, hostSequence, map.Revision, null);
     }
@@ -453,7 +466,7 @@ public sealed partial class InputRouter
         var hostSequence = _sequenceLease.Allocate();
         RecordHostControlSequence(hostSequence);
         _lastSeenHostTimestamp = _hostControlTimestamp;
-        _inputControlInbox.Enqueue(new InputControlEnvelope(
+        EnqueueInputControlEnvelope(new InputControlEnvelope(
             InputControlCommandKind.SetActiveContextMask,
             mapId,
             expectedRevision,
@@ -503,7 +516,7 @@ public sealed partial class InputRouter
         _ = DisposeAndGetTransitions();
     }
 
-    internal ImmutableArray<InputActionTransition> DisposeAndGetTransitions()
+    internal ImmutableArray<InputActionTransition> DisposeAndGetTransitions(long? hostSequenceOverride = null)
     {
         if (Environment.CurrentManagedThreadId != _ownerThreadId)
         {
@@ -515,9 +528,24 @@ public sealed partial class InputRouter
             return [];
         }
 
-        var hostSequence = _sequenceLease.Allocate();
+        var hostSequence = hostSequenceOverride ?? _sequenceLease.Allocate();
+
+        ArgumentOutOfRangeException.ThrowIfLessThan(hostSequence, 1);
+        _hostControlTimestamp = Math.Max(_hostControlTimestamp, _lastSeenHostTimestamp);
         RecordHostControlSequence(hostSequence);
         _activeTextSession?.EndForRecipientDisposal(hostSequence, _hostControlTimestamp);
+        _inputRecorder?.Record(new InputRecordingEntry(
+            InputRecordingEntryKind.RecipientDisposed,
+            _hostControlTimestamp,
+            hostSequence,
+            assignedTick: null,
+            checked(_inputControlBoundaryOrdinal + 1)));
+
+        if (_inputRecorder is { } inputRecorder)
+        {
+            _ = CompleteRecording(inputRecorder, allowPending: true);
+        }
+
         _unreconciledControls.Clear();
         ClearInputValuesForScope(InputClass.Keyboard | InputClass.Pointing | InputClass.Gamepad, playerSlot: null);
         UpdateBindingsForScope(InputClass.Keyboard | InputClass.Pointing | InputClass.Gamepad, playerSlot: null);
@@ -548,6 +576,12 @@ public sealed partial class InputRouter
             throw new InvalidOperationException("Only a simulation timeline can publish a tick snapshot.");
         }
 
+        _inputRecorder?.Record(new InputRecordingEntry(
+            InputRecordingEntryKind.SimulationTick,
+            _hostControlTimestamp,
+            _lastSeenHostSequence,
+            assignedTick,
+            _inputControlBoundaryOrdinal));
         return ProcessSimulationInputStage(assignedTick);
     }
 

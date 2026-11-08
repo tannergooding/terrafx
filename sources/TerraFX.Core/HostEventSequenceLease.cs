@@ -8,11 +8,20 @@ namespace TerraFX;
 /// <summary>Provides host-owned access to the process-wide event sequence issuer.</summary>
 public sealed class HostEventSequenceLease
 {
+    private readonly bool _isReplayLease;
     private int _isRevoked;
 
     internal HostEventSequenceLease()
     {
     }
+
+    private HostEventSequenceLease(bool isReplayLease)
+    {
+        _isReplayLease = isReplayLease;
+    }
+
+    internal static HostEventSequenceLease CreateReplayLease()
+        => new(isReplayLease: true);
 
     /// <summary>Allocates the next positive host event sequence.</summary>
     /// <returns>The unique process-wide sequence.</returns>
@@ -21,6 +30,12 @@ public sealed class HostEventSequenceLease
     public long Allocate()
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _isRevoked) != 0, this);
+
+        if (_isReplayLease)
+        {
+            throw new InvalidOperationException("A replay sequence lease cannot allocate new host event identities.");
+        }
+
         return HostEventSequenceAllocator.Allocate();
     }
 

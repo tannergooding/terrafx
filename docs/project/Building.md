@@ -63,6 +63,20 @@ With a compatible SDK installed, `dotnet build` also restores dependencies autom
 
 Test filtering uses the runner's existing `FullyQualifiedName` support, as in the foundation-codec commands below. For implemented cases, confirm nonzero selected and executed counts and inspect current-run TRX results under `artifacts\tst`. A successful command with no selected tests is not validation.
 
+Run recipient-local input recording/replay regressions on Windows:
+
+```powershell
+dotnet test .\tests\TerraFX.Input.Tests\TerraFX.Input.Tests.csproj --configuration Debug --filter "FullyQualifiedName~InputRecordingTests"
+dotnet test .\tests\TerraFX.Input.Tests\TerraFX.Input.Tests.csproj --configuration Release --filter "FullyQualifiedName~InputRecordingTests"
+```
+
+In the configured WSLg shell below, run the same selection with Linux outputs isolated under `artifacts/linux`:
+
+```bash
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Input.Tests/TerraFX.Input.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~InputRecordingTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Input.Tests/TerraFX.Input.Tests.csproj" --configuration Release --filter "FullyQualifiedName~InputRecordingTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
 ### Graphics capability contracts
 
 Run the owning-project tests for immutable device/surface capabilities, profile admission, buffer/texture/sampler descriptions, and invalid boundary rejection:

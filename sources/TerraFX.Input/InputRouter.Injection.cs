@@ -843,7 +843,7 @@ public sealed partial class InputRouter
             hostTick);
 
         discardedInputCount = DiscardPendingInputCopies(inputClasses, playerSlot);
-        _inputControlInbox.Enqueue(envelope);
+        EnqueueInputControlEnvelope(envelope);
         RecordHostControlSequence(hostSequence);
         _hostControlTimestamp = hostTimestamp;
         _lastSeenHostTimestamp = hostTimestamp;
@@ -878,26 +878,36 @@ public sealed partial class InputRouter
             return CreateInputRejection("InvalidRecipient", "/RecipientKind");
         }
 
+        if (_isPaused)
+        {
+            RecordPausedInjectionDiscard(injection, hostTimestamp, hostSequence);
+            return CreateInputRejection("Paused", "/Recipient");
+        }
+
         var segment = _simulationClockSegment;
 
         if (!segment.IsValid)
         {
+            MarkRecordingDiscontinuity(hostSequence);
             return CreateInputRejection("ClockSegmentUnavailable", "/ClockSegment");
         }
 
         if (hostTimestamp < segment.HostTimestampStartTicks)
         {
+            MarkRecordingDiscontinuity(hostSequence);
             return CreateInputRejection("InvalidEventOrder", "/HostTimestamp");
         }
 
         if ((hostTimestamp == segment.HostTimestampStartTicks)
             && (hostSequence < segment.HostSequenceStart))
         {
+            MarkRecordingDiscontinuity(hostSequence);
             return CreateInputRejection("InvalidEventOrder", "/HostSequence");
         }
 
         if (!segment.TryGetTickIndexForHostEvent(hostTimestamp, hostSequence, out var assignedTick, out var late))
         {
+            RecordNoEligibleInjectionDiscard(injection, hostTimestamp, hostSequence);
             return CreateInputRejection("NoEligibleTick", "/ClockSegment");
         }
 
@@ -949,6 +959,12 @@ public sealed partial class InputRouter
             throw new InvalidOperationException("The host physical event does not match this HostLiveUI window route.");
         }
 
+        if (_isPaused)
+        {
+            RecordPausedPhysicalDiscard(inputEvent, playerSlot: null, uiCapturedClasses: InputClass.None);
+            return CreateInputRejection("Paused", "/Recipient");
+        }
+
         if (inputEvent.Kind == PhysicalInputEventKind.FocusLost)
         {
             var cancellation = CancelInputState(
@@ -976,6 +992,7 @@ public sealed partial class InputRouter
 
         if (!TryGetControlKey(inputEvent, playerSlot: null, out var control))
         {
+            MarkRecordingDiscontinuity(inputEvent.HostSequence);
             return CreateInputRejection("UnsupportedPhysicalEvent", "/Kind");
         }
 
@@ -1076,6 +1093,12 @@ public sealed partial class InputRouter
                 physicalInputs: inputEvent.ReconciliationState);
         }
 
+        if (_isPaused)
+        {
+            RecordPausedPhysicalDiscard(inputEvent, playerSlot, uiCapturedClasses);
+            return CreateInputRejection("Paused", "/Recipient");
+        }
+
         var isGamepadEvent = inputEvent.Kind is PhysicalInputEventKind.GamepadButtonDown
             or PhysicalInputEventKind.GamepadButtonUp
             or PhysicalInputEventKind.GamepadAxis
@@ -1094,6 +1117,7 @@ public sealed partial class InputRouter
 
         if (!TryGetControlKey(inputEvent, playerSlot, out var control))
         {
+            MarkRecordingDiscontinuity(inputEvent.HostSequence);
             return CreateInputRejection("UnsupportedPhysicalEvent", "/Kind");
         }
 
@@ -1101,17 +1125,20 @@ public sealed partial class InputRouter
 
         if (!segment.IsValid)
         {
+            MarkRecordingDiscontinuity(inputEvent.HostSequence);
             return CreateInputRejection("ClockSegmentUnavailable", "/ClockSegment");
         }
 
         if (inputEvent.HostTimestamp < segment.HostTimestampStartTicks)
         {
+            MarkRecordingDiscontinuity(inputEvent.HostSequence);
             return CreateInputRejection("InvalidEventOrder", "/HostTimestamp");
         }
 
         if ((inputEvent.HostTimestamp == segment.HostTimestampStartTicks)
             && (inputEvent.HostSequence < segment.HostSequenceStart))
         {
+            MarkRecordingDiscontinuity(inputEvent.HostSequence);
             return CreateInputRejection("InvalidEventOrder", "/HostSequence");
         }
 
@@ -1121,6 +1148,7 @@ public sealed partial class InputRouter
             out var assignedTick,
             out var late))
         {
+            RecordNoEligibleTickDiscard(inputEvent, playerSlot, uiCapturedClasses);
             return CreateInputRejection("NoEligibleTick", "/ClockSegment");
         }
 
@@ -1159,7 +1187,7 @@ public sealed partial class InputRouter
             return admission;
         }
 
-        _inputControlInbox.Enqueue(new InputControlEnvelope(
+        EnqueueInputControlEnvelope(new InputControlEnvelope(
             InputControlCommandKind.ResetUiDisposition,
             Guid.Empty,
             0,
@@ -1429,7 +1457,7 @@ public sealed partial class InputRouter
             physicalInputs);
 
         discardedInputCount = DiscardPendingInputCopies(inputClasses, playerSlot);
-        _inputControlInbox.Enqueue(envelope);
+        EnqueueInputControlEnvelope(envelope);
         _pendingReconciliationInputCount += checked((int)reconciliationInputCount);
         RecordHostControlSequence(hostSequence);
         _hostControlTimestamp = hostTimestamp;
@@ -1459,6 +1487,13 @@ public sealed partial class InputRouter
     internal ImmutableArray<InputActionTransition> ServiceInputControlBoundary()
     {
         EnsureOwnerThread();
+        _inputControlBoundaryOrdinal = checked(_inputControlBoundaryOrdinal + 1);
+        _inputRecorder?.Record(new InputRecordingEntry(
+            InputRecordingEntryKind.HostControlBoundary,
+            Math.Max(_hostControlTimestamp, _lastSeenHostTimestamp),
+            _lastSeenHostSequence,
+            (_recipientKind == InputRecipientKind.SimulationTimeline) ? _nextOpenTick : null,
+            _inputControlBoundaryOrdinal));
         var transitions = ImmutableArray.CreateBuilder<InputActionTransition>();
         var isHostLiveUi = _recipientKind == InputRecipientKind.HostLiveUI;
         var appliedWork = false;
@@ -1572,6 +1607,13 @@ public sealed partial class InputRouter
         }
 
         _simulationClockSegment = segment;
+        _inputRecorder?.Record(new InputRecordingEntry(
+            InputRecordingEntryKind.ClockSegment,
+            segment.HostTimestampStartTicks,
+            segment.HostSequenceStart,
+            segment.NextOpenTick,
+            _inputControlBoundaryOrdinal,
+            clockSegment: segment));
     }
 
     internal InputRoutingReceipt ValidateHostControlBoundaryAdmission(
@@ -2447,12 +2489,23 @@ public sealed partial class InputRouter
 
         if (_isPaused)
         {
+            _inputRecorder?.Record(new InputRecordingEntry(
+                InputRecordingEntryKind.PausedInputDiscard,
+                hostTimestamp,
+                hostSequence,
+                assignedTick,
+                checked(_inputControlBoundaryOrdinal + 1),
+                late,
+                physicalEvent: envelope.PhysicalEvent,
+                injection: envelope.Injection,
+                uiCapturedClasses: envelope.UiCapturedClasses));
             return CreateInputRejection("Paused", "/Recipient");
         }
 
         if ((hostSequence <= _lastSeenHostSequence) || (hostTimestamp < _lastSeenHostTimestamp))
         {
             _lastSeenHostSequence = Math.Max(hostSequence, _lastSeenHostSequence);
+            _inputRecorder?.MarkDiscontinuity(hostSequence);
             return CreateInputRejection("InvalidEventOrder", "/HostSequence");
         }
 
@@ -2468,6 +2521,7 @@ public sealed partial class InputRouter
         if (_inputOverflowed)
         {
             RecordUnacceptedSequence(hostSequence);
+            _inputRecorder?.MarkDiscontinuity(hostSequence);
 
             var inputClass = GetInputClass(envelope.Control);
 
@@ -2491,6 +2545,8 @@ public sealed partial class InputRouter
             && CanCoalesceInputEnvelope(tail, envelope)
             && tail.TryCoalesceWith(envelope))
         {
+            RecordInputEnvelope(envelope, effectiveTick, effectiveLate);
+
             if (effectiveTick is { } coalescedTick)
             {
                 _lastAssignedInputTick = coalescedTick;
@@ -2503,11 +2559,13 @@ public sealed partial class InputRouter
         {
             _inputOverflowed = true;
             RecordUnacceptedSequence(hostSequence);
+            _inputRecorder?.MarkDiscontinuity(hostSequence);
             return CreateInputCapacityFailure(hostSequence, effectiveTick, effectiveLate);
         }
 
         _inputInbox.Enqueue(envelope);
         _inputInboxTail = envelope;
+        RecordInputEnvelope(envelope, effectiveTick, effectiveLate);
 
         if (effectiveTick is { } admittedTick)
         {
@@ -2944,7 +3002,7 @@ public sealed partial class InputRouter
             InputClass.Keyboard | InputClass.Pointing,
             playerSlot: null,
             physicalDevice: device);
-        _inputControlInbox.Enqueue(envelope);
+        EnqueueInputControlEnvelope(envelope);
         RecordHostControlSequence(hostSequence);
         _hostControlTimestamp = hostTimestamp;
         _lastSeenHostTimestamp = hostTimestamp;

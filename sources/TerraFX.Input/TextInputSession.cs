@@ -2,8 +2,8 @@
 
 using System;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using TerraFX;
 
 namespace TerraFX.Input;
@@ -706,6 +706,11 @@ public sealed class TextInputSession : IDisposable
         }
 
         _batches.Enqueue(batch);
+        _router?.RecordTextInputBatch(
+            batch,
+            _options is { } options
+                && ((options.Purpose == TextInputPurpose.Password)
+                    || ((options.Hints & TextInputHints.Sensitive) != 0)));
         return true;
     }
 }

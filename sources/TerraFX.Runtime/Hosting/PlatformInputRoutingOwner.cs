@@ -8,8 +8,8 @@ using System.Globalization;
 using System.Linq;
 using TerraFX;
 using TerraFX.Entities;
-using TerraFX.Integration;
 using TerraFX.Input;
+using TerraFX.Integration;
 using TerraFX.Platform;
 using TerraFX.UI;
 
@@ -213,6 +213,27 @@ internal sealed class PlatformInputRoutingOwner
 
         _deviceAssignments.Add(device, (targetRouter, playerSlot));
         _devicesByTimelinePlayer.Add(targetRoute, device);
+
+        if (hasPreviousAssignment && !isSameAssignment)
+        {
+            previousAssignment.Router.RecordDeviceAssignment(
+                device,
+                previousAssignment.PlayerSlot,
+                isAssigned: false,
+                hostTimestamp,
+                previousSequence ?? assignmentSequence);
+        }
+
+        if (!isSameAssignment)
+        {
+            targetRouter.RecordDeviceAssignment(
+                device,
+                playerSlot,
+                isAssigned: true,
+                hostTimestamp,
+                assignmentSequence);
+        }
+
         RouteCapturedInput(capturedInput);
         return assignmentReceipt;
     }

@@ -6939,7 +6939,104 @@ public sealed class InputRouter
     public InputRoutingReceipt SetActiveContextMask(Guid mapId, long expectedRevision, ulong newMask);
     public InputActionSnapshot GetHostActionSnapshot();
     public InputActionSnapshot GetSimulationActionSnapshot(long assignedTick);
+    public InputRecorder StartRecording(bool recordTextBatches = false);
     public TextInputSession BeginTextSession(TextInputSessionOptions options);
+}
+
+public sealed class InputRecorder : IDisposable
+{
+    public bool IsComplete { get; }
+    public InputRecording Complete();
+    public void Dispose();
+}
+
+public sealed class InputRecording
+{
+    public ImmutableArray<InputRecordingEntry> Entries { get; }
+    public long? FirstMissingHostSequence { get; }
+    public bool HasSensitiveTextRedaction { get; }
+    public bool HasTextOmission { get; }
+    public bool IsComplete { get; }
+    public long? LastMissingHostSequence { get; }
+    public uint RecipientId { get; }
+    public InputRecipientKind RecipientKind { get; }
+    public int RecordCount { get; }
+    public int Version { get; }
+    public WindowHandle? Window { get; }
+}
+
+public enum InputRecordingEntryKind
+{
+    None = 0,
+    PhysicalInput = 1,
+    HeadlessInjection = 2,
+    Control = 3,
+    MapRegistered = 4,
+    MapReplaced = 5,
+    TextBatch = 6,
+    SensitiveTextRedacted = 7,
+    HostControlBoundary = 8,
+    ClockSegment = 9,
+    Discontinuity = 10,
+    SimulationTick = 11,
+    RecipientDisposed = 12,
+    TextOmitted = 13,
+    DeviceAssignment = 14,
+    PausedInputDiscard = 15,
+    NoEligibleTickDiscard = 16
+}
+
+public enum InputRecordingControlKind
+{
+    CancelInput = 0,
+    ReconcileInput = 1,
+    ResetUiDisposition = 2,
+    RemovePhysicalDevice = 3,
+    SetActiveContextMask = 4
+}
+
+public sealed class InputRecordingEntry
+{
+    public InputActionMapV1? ActionMap { get; }
+    public long? AssignedTick { get; }
+    public long BoundaryOrdinal { get; }
+    public InputCancellationReason? CancellationReason { get; }
+    public SimulationClockSegment? ClockSegment { get; }
+    public ImmutableArray<long> ContextInsertionSequences { get; }
+    public InputRecordingControlKind? ControlKind { get; }
+    public InputDeviceHandle? Device { get; }
+    public long ExpectedRevision { get; }
+    public long HostSequence { get; }
+    public long HostTimestamp { get; }
+    public InputClass InputClasses { get; }
+    public InputInjection? Injection { get; }
+    public bool IsAssigned { get; }
+    public InputRecordingEntryKind Kind { get; }
+    public bool Late { get; }
+    public long LastInsertionSequence { get; }
+    public Guid? MapId { get; }
+    public ulong NewMask { get; }
+    public PhysicalInputEvent? PhysicalEvent { get; }
+    public ImmutableArray<PhysicalInputValue> PhysicalReconciliationInputs { get; }
+    public InputDeviceHandle? PhysicalSourceDevice { get; }
+    public ushort? PlayerSlot { get; }
+    public ImmutableArray<InputInjection> ReconciliationInputs { get; }
+    public TextInputBatch? TextBatch { get; }
+    public InputClass UiCapturedClasses { get; }
+}
+
+public static class InputReplay
+{
+    public static InputReplayResult Play(InputRecording recording);
+}
+
+public sealed class InputReplayResult
+{
+    public bool IsComplete { get; }
+    public InputRecipientKind RecipientKind { get; }
+    public ImmutableArray<InputActionSnapshot> Snapshots { get; }
+    public ImmutableArray<InputActionTransition> TerminalTransitions { get; }
+    public ImmutableArray<TextInputBatch> TextBatches { get; }
 }
 }
 ```
@@ -6963,6 +7060,8 @@ The mixer exposes named `PlayAsync`, `StopAsync`, `StopAllAsync`, `SetBusGainAsy
 `InputRouter` is one recipient, either `HostLiveUI` or one `SimulationTimeline`, and is host-created; it cannot inspect/drain another recipient. `RegisterMap` and `ReplaceMap` validate an entire typed `InputActionMapV1`; success reports the published revision, while rejection reports the first stable `ValidationIssue(Code, SchemaPath)` and leaves the prior state unchanged. `SchemaPath` is a format-independent RFC 6901 escaped path, selected using the schema's stable ordinal path order; it is not tied to JSON authoring. `SetActiveContextMask` validates `MapId`, `ExpectedRevision`, and the complete new mask, then reports the applied host sequence or assigned tick; rejected changes carry a validation issue and do not mutate state. `PlatformHost.AssignDeviceAsync` applies assignment at the named simulation recipient's tick boundary. `InputActionSnapshot` is immutable copied action state, not a destructive queue read: digital actions carry end state and ordered edges; axis actions also carry the effective components and value-change transitions. Transitions retain original host sequence and recipient-assigned tick when present. On map replacement, a still-declared previously-down action carries `Canceled(Rebound)` on its new-revision state and previously staged transitions are preserved. A removed action with a down state or staged transitions appears once as a terminal old-revision `InputActionState` if still absent when delivered; it preserves staged transitions and appends `Canceled(Rebound)` only when the old state was down. If reintroduced before delivery, pending transitions attach to the current state instead, preserving unique `(MapId, ActionId)` entries. Terminal states are ordered with current states by canonical `(MapId, ActionId)`.
 
 `InputActionMapV1`, action/binding/context records, physical event envelopes, device generations, recipient inbox limits, overflow/reconciliation, text composition/commit, and timeline assignment are chapter [14](14-custom-input-actions-and-text.md) contracts. `InputRouter` does not own native capture, clipboard, shaping, widget focus, or text rendering. Platform capture fans out one copied envelope per recipient; UI's event-time `UiInputDisposition` is captured with that recipient's copy before its later tick mapping. Headless input uses explicit normalized injection/replay, never a hidden native route.
+
+`StartRecording` requires a neutral owner-thread boundary, permits only one active recorder per `InputRouter`, and rejects pending/active recipient state. `InputRecording` is immutable version-one in-memory data with a 65,536-record limit; the complete records are public copied values for caller-owned storage, but the library defines no serialized wire format or loader. Text batches are recorded only when opted in, and sensitive/Password text is redacted. Overflow, text omission, or redaction marks the recording and replay result incomplete. `InputReplay.Play` creates an isolated recipient router, consumes only that recording's event/control copies at their recorded boundaries and ticks, and returns action snapshots, terminal transitions, and opted-in nonsensitive text batches. It reads no Platform state, routes no input to another recipient, and does not apply returned text batches to a UI document.
 
 ## 10. Platform, UI, editor, modules, persistence, diagnostics
 
