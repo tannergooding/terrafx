@@ -1968,6 +1968,99 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task TransientTextureAllocationPoolReusesAllocationsAcrossConcurrentWaves()
+    {
+        const int waveCount = 32;
+        const int liveGroupCount = 4;
+        const long allocationSizeBytes = 16;
+        const long exactBudgetBytes = liveGroupCount * allocationSizeBytes;
+        var backendDevice = new FakeBackendDevice(
+            textureBudgetBytes: exactBudgetBytes,
+            textureAllocationSizeBytes: allocationSizeBytes);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        var registry = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 7);
+        var description = new TextureDescription(
+            TextureDimension.Dimension2D,
+            width: 2,
+            height: 2,
+            depth: 1,
+            arrayLayers: 1,
+            mipLevels: 1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.Sampled | TextureUsage.CopySource | TextureUsage.CopyDestination,
+            debugName: "Transient texture allocation pool stress");
+        var versions = ImmutableArray.Create(
+            registry.CreateTransientTexture(description),
+            registry.CreateTransientTexture(description));
+        var groups = new List<GraphicsTransientTextureGroup>(liveGroupCount);
+
+        try
+        {
+            for (var wave = 0; wave < waveCount; wave++)
+            {
+                for (var index = 0; index < liveGroupCount; index++)
+                {
+                    groups.Add(await graphicsDevice.CreateTransientTextureGroupAsync(
+                            versions,
+                            CancellationToken.None)
+                        .WaitAsync(TimeSpan.FromSeconds(5))
+                        .ConfigureAwait(false));
+                }
+
+                var allocationLeases = new HashSet<GraphicsResourceAllocationLease>();
+
+                foreach (var group in groups)
+                {
+                    var allocationLease = group.Textures[0].ResourceOwner.AllocationLease
+                        ?? throw new InvalidOperationException("A live transient texture group lost its shared allocation lease.");
+                    Assert.That(allocationLeases.Add(allocationLease), Is.True);
+                    Assert.That(group.Textures[1].ResourceOwner.AllocationLease, Is.SameAs(allocationLease));
+                }
+
+                while (groups.Count > 0)
+                {
+                    var lastGroupIndex = groups.Count - 1;
+                    var group = groups[lastGroupIndex];
+                    groups.RemoveAt(lastGroupIndex);
+                    group.Dispose();
+                }
+
+                var expectedTextureDisposals = (wave + 1) * liveGroupCount * versions.Length;
+                Assert.That(
+                    SpinWait.SpinUntil(
+                        () => backendDevice.TextureDisposalCount == expectedTextureDisposals,
+                        TimeSpan.FromSeconds(5)),
+                    Is.True);
+                Assert.That(backendDevice.TextureAllocationCreationCount, Is.EqualTo(liveGroupCount));
+                Assert.That(backendDevice.TextureAllocationDisposalCount, Is.Zero);
+
+                foreach (var allocationLease in allocationLeases)
+                {
+                    Assert.That(
+                        SpinWait.SpinUntil(() => allocationLease.ReferenceCount == 1, TimeSpan.FromSeconds(5)),
+                        Is.True);
+                }
+            }
+
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.That(backendDevice.TextureAllocationCreationCount, Is.EqualTo(liveGroupCount));
+            Assert.That(backendDevice.TextureAllocationDisposalCount, Is.EqualTo(liveGroupCount));
+            Assert.That(
+                backendDevice.TextureDisposalCount,
+                Is.EqualTo(waveCount * liveGroupCount * versions.Length));
+        }
+        finally
+        {
+            foreach (var group in groups)
+            {
+                group.Dispose();
+            }
+
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task TransientTextureGroupRetainsSharedAllocationUntilActiveUseCompletes()
     {
         const long exactBudgetBytes = 16;
