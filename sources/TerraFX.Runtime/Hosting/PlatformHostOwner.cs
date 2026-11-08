@@ -52,6 +52,22 @@ internal sealed class PlatformHostOwner
         _nativeMonitorHandles = [];
     }
 
+    internal GraphicsPlatformKind GraphicsPlatformKind
+    {
+        get
+        {
+            EnsureOwnerThread();
+            ThrowIfDisposed();
+
+            return _platform.SelectedBackend switch {
+                PlatformBackend.WindowsNative => TerraFX.Graphics.GraphicsPlatformKind.Win32,
+                PlatformBackend.WaylandOnly => TerraFX.Graphics.GraphicsPlatformKind.Wayland,
+                PlatformBackend.X11Only => TerraFX.Graphics.GraphicsPlatformKind.X11,
+                _ => throw new PlatformNotSupportedException("The selected Platform backend has no interactive Graphics surface binding."),
+            };
+        }
+    }
+
     internal uint OwnerId => _ownerId;
 
     internal PlatformHost Platform
@@ -209,6 +225,11 @@ internal sealed class PlatformHostOwner
             throw new InvalidOperationException($"A platform host supports at most {PlatformHost.MaximumWindowCount} windows.");
         }
 
+        if (options.Monitor is not null)
+        {
+            RefreshMonitorSnapshot();
+        }
+
         var nativeMonitorHandle = options.Monitor is MonitorHandle monitor
             ? GetNativeMonitorHandle(monitor)
             : 0;
@@ -347,7 +368,7 @@ internal sealed class PlatformHostOwner
 
         if (!_nativeMonitorHandles.TryGetValue(monitor, out var nativeHandle))
         {
-            throw new InvalidOperationException("The monitor handle is stale or no longer enumerated.");
+            throw new PlatformMonitorUnavailableException("The monitor handle is stale or no longer enumerated.");
         }
 
         return nativeHandle;
@@ -600,6 +621,44 @@ internal sealed class PlatformHostOwner
             status,
             ownerSequence,
             diagnostic: null);
+    }
+
+    internal void SetWindowSurfaceEpochs(WindowHandle window, uint surfaceEpoch, uint swapchainEpoch)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        ThrowIfStopping();
+        ArgumentOutOfRangeException.ThrowIfZero(surfaceEpoch);
+
+        if (!window.IsValid || (window.OwnerId != _ownerId))
+        {
+            throw new ArgumentException("The window handle belongs to another platform owner.", nameof(window));
+        }
+
+        if (!_activeWindowHandles.Contains(window))
+        {
+            throw new InvalidOperationException("The window handle is stale or no longer active.");
+        }
+
+        var metrics = _platform.GetWindowMetricsSnapshot(window)
+            ?? throw new InvalidOperationException("Window metrics have not been published for this window.");
+
+        if ((metrics.SurfaceEpoch == surfaceEpoch) && (metrics.SwapchainEpoch == swapchainEpoch))
+        {
+            return;
+        }
+
+        _platform.SetWindowMetrics(
+            window,
+            new WindowMetrics(
+                metrics.LogicalClientSize,
+                metrics.ClientPixelSize,
+                metrics.ContentScale,
+                metrics.EffectiveDpi,
+                metrics.DpiSource,
+                metrics.DpiConfidence,
+                surfaceEpoch,
+                swapchainEpoch));
     }
 
     private void CompleteObservedModeTransitions()

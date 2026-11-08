@@ -97,6 +97,8 @@ public sealed class PlatformHost
 
     internal uint OwnerId => _backend.OwnerId;
 
+    internal PlatformBackend SelectedBackend => _backend.Backend;
+
     /// <summary>Assigns one connected physical gamepad to a host-owned simulation timeline and player slot.</summary>
     /// <param name="device">The current host-issued gamepad identity.</param>
     /// <param name="simulationRecipientId">The same-host SimulationTimeline recipient.</param>

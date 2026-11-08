@@ -613,7 +613,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         {
             if (!TryGetRandrMonitor(nativeMonitorHandle, out var monitor))
             {
-                throw new InvalidOperationException("The requested X11 monitor is no longer available.");
+                throw new PlatformMonitorUnavailableException("The requested X11 monitor is no longer available.");
             }
 
             x = checked(monitor.X + ((monitor.Width - width) / 2));

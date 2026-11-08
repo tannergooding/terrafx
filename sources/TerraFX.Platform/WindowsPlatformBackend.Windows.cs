@@ -591,7 +591,7 @@ internal sealed unsafe partial class WindowsPlatformBackend
 
         if ((nativeMonitorHandle != 0) && !TryGetNativeMonitorInfo(nativeMonitorHandle, out _))
         {
-            throw new InvalidOperationException("The requested monitor is no longer available.");
+            throw new PlatformMonitorUnavailableException("The requested monitor is no longer available.");
         }
 
         EnsureWindowClassRegistered();
@@ -1316,7 +1316,7 @@ internal sealed unsafe partial class WindowsPlatformBackend
         {
             if (!TryGetNativeMonitorInfo(monitor, out var monitorInfo))
             {
-                throw new InvalidOperationException("The requested monitor is no longer available.");
+                throw new PlatformMonitorUnavailableException("The requested monitor is no longer available.");
             }
 
             var width = initialRect.Right - initialRect.Left;

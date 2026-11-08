@@ -206,7 +206,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
 
         if ((nativeMonitorHandle != 0) && !_outputsByProxy.ContainsKey(nativeMonitorHandle))
         {
-            throw new InvalidOperationException("The requested Wayland output is no longer available.");
+            throw new PlatformMonitorUnavailableException("The requested Wayland output is no longer available.");
         }
 
         nint surface = 0;

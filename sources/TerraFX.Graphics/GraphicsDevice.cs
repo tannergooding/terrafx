@@ -26,6 +26,7 @@ public sealed partial class GraphicsDevice
     // Keep an owner rooted if native disposal cannot confirm that its resources were released.
     private static readonly ConcurrentBag<IGraphicsBackendDevice> s_quarantinedBackendDevices = [];
     private static readonly ConcurrentBag<IGraphicsBackendResource> s_quarantinedBackendResources = [];
+    private static readonly ConcurrentBag<IGraphicsBackendSurface> s_quarantinedBackendSurfaces = [];
     private static readonly ConcurrentBag<GraphicsDevice> s_quarantinedGraphicsDevices = [];
     private static readonly ConcurrentBag<GraphicsResourceOwner> s_quarantinedResources = [];
 
@@ -45,20 +46,27 @@ public sealed partial class GraphicsDevice
     private readonly uint _ownerId;
     private readonly GraphicsOwnerRequestQueue _ownerQueue = new();
     private readonly Thread _ownerThread;
+    private readonly GraphicsPlatformKind _platformKind;
     private readonly List<SubmitGraphRequest> _pendingGraphSubmissions = [];
     private readonly HashSet<GraphicsResourceOwner> _resources = [];
     private Exception? _retirementFailure;
     private readonly TaskCompletionSource _shutdownCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _shutdownTask;
     private int _status;
+    private readonly HashSet<Surface> _surfaces = [];
     private readonly List<(TextureDescription Description, GraphicsResourceAllocationInfo AllocationInfo, GraphicsResourceAllocationLease Lease)> _transientTextureAllocationPool = [];
 
-    private GraphicsDevice(uint ownerId, IGraphicsBackendDevice backendDevice, int frameSlotCount)
+    private GraphicsDevice(
+        uint ownerId,
+        IGraphicsBackendDevice backendDevice,
+        int frameSlotCount,
+        GraphicsPlatformKind platformKind)
     {
         _ownerId = ownerId;
         _backendDevice = backendDevice;
         _capabilities = backendDevice.Capabilities;
         _ownerThread = Thread.CurrentThread;
+        _platformKind = platformKind;
         _ = _pendingGraphSubmissions.EnsureCapacity(frameSlotCount);
         _graphFrameSlots = new SemaphoreSlim(frameSlotCount, frameSlotCount);
         DeviceEpoch = 1;
@@ -1416,6 +1424,21 @@ public sealed partial class GraphicsDevice
             }
         }
 
+        var activeSurfaces = new Surface[_surfaces.Count];
+        _surfaces.CopyTo(activeSurfaces);
+
+        foreach (var surface in activeSurfaces)
+        {
+            try
+            {
+                QuarantineSurface(surface, exception);
+            }
+            catch (Exception failureException)
+            {
+                exception = new AggregateException(exception, failureException);
+            }
+        }
+
         s_quarantinedGraphicsDevices.Add(this);
         return exception;
     }
@@ -1800,6 +1823,7 @@ public sealed partial class GraphicsDevice
                     }
 
                     RetireResourcesForShutdown();
+                    RetireSurfacesForShutdown();
 
                     if (!_hasQuarantinedResources)
                     {
@@ -2891,7 +2915,7 @@ public sealed partial class GraphicsDevice
 
                 _cancellationToken.ThrowIfCancellationRequested();
 
-                var device = new GraphicsDevice(_ownerId, backendDevice, _frameSlotCount);
+                var device = new GraphicsDevice(_ownerId, backendDevice, _frameSlotCount, _platformKind);
                 backendDevice = null;
                 _completion.SetResult(device);
                 device.RunOwnerLoop();

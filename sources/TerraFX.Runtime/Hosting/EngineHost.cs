@@ -20,7 +20,7 @@ using TerraFX.Rendering;
 
 namespace TerraFX.Hosting;
 
-/// <summary>Owns CPU, asset, persistence, platform, and optional offscreen graphics services.</summary>
+/// <summary>Owns CPU, asset, persistence, platform, and optional graphics services.</summary>
 public sealed partial class EngineHost : IAsyncDisposable
 {
     private const long DefaultAdmissionDomainBytes = 8_589_934_592L;
@@ -37,8 +37,8 @@ public sealed partial class EngineHost : IAsyncDisposable
     private readonly AssetStore _assets;
     private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private DiagnosticsService? _diagnostics;
-    private readonly GpuResidencyService? _gpuResidency;
-    private readonly GraphicsDevice? _graphicsDevice;
+    private GpuResidencyService? _gpuResidency;
+    private GraphicsDevice? _graphicsDevice;
     private HostEventSequenceLease? _hostEventSequenceLease;
     private readonly HashSet<InputRouter> _inputRouters = [];
     private readonly Dictionary<InputRouter, WorldInputTimelineAdapter> _inputTimelineByRouter = [];
@@ -51,7 +51,7 @@ public sealed partial class EngineHost : IAsyncDisposable
     private PlatformHost? _platform;
     private PlatformInputRoutingOwner? _platformInputRouting;
     private PlatformHostOwner? _platformOwner;
-    private readonly Renderer _renderer;
+    private Renderer _renderer;
     private readonly TaskCompletionSource _startupCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Task? _stopTask;
     private bool _stopping;
@@ -80,6 +80,13 @@ public sealed partial class EngineHost : IAsyncDisposable
             IsBackground = true,
             Name = "TerraFX.EngineHost",
         };
+
+        if (OperatingSystem.IsWindows()
+            && (options.Profile == HostProfile.Interactive)
+            && (options.Platform == PlatformBackend.WindowsNative))
+        {
+            _ownerThread.SetApartmentState(ApartmentState.STA);
+        }
     }
 
     /// <summary>Gets the host-owned selected AssetStore.</summary>
@@ -99,7 +106,7 @@ public sealed partial class EngineHost : IAsyncDisposable
     /// <summary>Gets the host-owned GPU texture residency service, or null for Headless.</summary>
     public GpuResidencyService? GpuResidency => _gpuResidency;
 
-    /// <summary>Gets the selected offscreen GraphicsDevice, or null for Headless.</summary>
+    /// <summary>Gets the selected native GraphicsDevice, or null for Headless.</summary>
     public GraphicsDevice? GraphicsDevice => _graphicsDevice;
 
     /// <summary>Gets the host-owned Persistence service.</summary>
@@ -113,13 +120,13 @@ public sealed partial class EngineHost : IAsyncDisposable
     /// <summary>Gets the CPU render-snapshot extraction service.</summary>
     public Renderer Renderer => _renderer;
 
-    /// <summary>Starts a Headless or OffscreenNative host with its explicitly selected services.</summary>
+    /// <summary>Starts a host with its explicitly selected services.</summary>
     /// <param name="options">The immutable host profile and service selections.</param>
     /// <param name="cancellationToken">The token that cancels startup before the owner thread is admitted.</param>
     /// <returns>A running host whose owner thread and selected services are initialized.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="options"/> contains invalid scalar settings.</exception>
-    /// <exception cref="NotSupportedException">Interactive startup is not yet available because Surface/WSI ownership is not implemented.</exception>
+    /// <exception cref="NotSupportedException">The selected platform or graphics backend cannot satisfy the requested host profile.</exception>
     /// <exception cref="OperationCanceledException">Cancellation was requested before the host owner thread was admitted.</exception>
     /// <exception cref="System.IO.InvalidDataException">The selected package fails AssetStore admission.</exception>
     [SuppressMessage(
@@ -133,11 +140,6 @@ public sealed partial class EngineHost : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(options.PersistenceMetadata);
         cancellationToken.ThrowIfCancellationRequested();
-
-        if (options.Profile is HostProfile.Interactive)
-        {
-            throw new NotSupportedException("Interactive EngineHost startup requires the unfinished Surface/WSI and live-input owner path.");
-        }
 
         AssetStore? assets = null;
         GraphicsDevice? graphicsDevice = null;
@@ -776,9 +778,7 @@ public sealed partial class EngineHost : IAsyncDisposable
                     InvokeWindowCommandAsync(
                         WindowCommandKind.Close,
                         window,
-                        () => (_platformOwner
-                            ?? throw new InvalidOperationException("The EngineHost platform owner is not initialized."))
-                            .CloseWindowCommand(window),
+                        () => CloseWindowOnOwner(window),
                         cancellationToken),
                 (window, mode, cancellationToken) =>
                     InvokeWindowModeCommandAsync(window, mode, cancellationToken));
@@ -794,6 +794,22 @@ public sealed partial class EngineHost : IAsyncDisposable
                 _inputTimelineByRouter,
                 recipientId => _inputTimelineByRouter.Keys
                     .FirstOrDefault(router => router.RecipientId == recipientId));
+
+            if (_options.Profile is HostProfile.Interactive)
+            {
+                var registration = _options.GraphicsBackendRegistration
+                    ?? throw new InvalidOperationException("Interactive startup has no admitted graphics registration.");
+                var graphicsDevice = GraphicsDevice.CreateAsync(
+                    platformOwner.OwnerId,
+                    registration,
+                    GraphicsDeviceProfile.Interactive,
+                    _options.GraphicsFrameSlotCount,
+                    platformOwner.GraphicsPlatformKind,
+                    CancellationToken.None).GetAwaiter().GetResult();
+                _graphicsDevice = graphicsDevice;
+                _gpuResidency = new GpuResidencyService(graphicsDevice);
+                _renderer = Renderer.Create(graphicsDevice, _gpuResidency);
+            }
 
             foreach (var diagnostic in platformOwner.DrainStartupDiagnostics())
             {
@@ -835,6 +851,7 @@ public sealed partial class EngineHost : IAsyncDisposable
                 }
 
                 var capturedInput = _platformOwner.Pump();
+                RefreshWindowSurfaceMetricsOnOwner();
                 var modeDiagnostics = _platformOwner.DrainModeDiagnostics();
 
                 if (!modeDiagnostics.IsEmpty)
@@ -1109,8 +1126,19 @@ public sealed partial class EngineHost : IAsyncDisposable
         }
 
         var failures = inputFailures;
+        var surfaceRetirementFailed = false;
 
-        if (_platformOwner is not null)
+        try
+        {
+            RetireSurfacesBeforePlatformShutdown();
+        }
+        catch (Exception exception)
+        {
+            failures.Add(exception);
+            surfaceRetirementFailed = true;
+        }
+
+        if ((_platformOwner is not null) && !surfaceRetirementFailed)
         {
             try
             {
