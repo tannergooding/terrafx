@@ -8,6 +8,7 @@ using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX;
+using TerraFX.Graphics;
 using TerraFX.Input;
 using TerraFX.Platform;
 using TerraFX.Numerics;
@@ -111,6 +112,28 @@ internal sealed class PlatformHostOwner
 
             throw;
         }
+    }
+
+    internal static GraphicsNativeSurfaceBinding CreateGraphicsNativeSurfaceBinding(
+        PlatformNativeWindowBinding binding,
+        uint surfaceEpoch)
+    {
+        if (!binding.Window.IsValid)
+        {
+            throw new ArgumentException("The platform binding does not identify a live window.", nameof(binding));
+        }
+
+        var platformKind = binding.Kind switch {
+            PlatformNativeSurfaceKind.Win32 => GraphicsPlatformKind.Win32,
+            PlatformNativeSurfaceKind.Wayland => GraphicsPlatformKind.Wayland,
+            PlatformNativeSurfaceKind.X11 => GraphicsPlatformKind.X11,
+            _ => throw new ArgumentOutOfRangeException(nameof(binding)),
+        };
+        return new GraphicsNativeSurfaceBinding(
+            platformKind,
+            binding.NativeDisplayOrInstance,
+            binding.NativeWindowOrSurface,
+            surfaceEpoch);
     }
 
     internal void CloseWindow(WindowHandle window)
@@ -301,6 +324,9 @@ internal sealed class PlatformHostOwner
 
         return activeRequests.MoveToImmutable();
     }
+
+    internal GraphicsNativeSurfaceBinding GetGraphicsNativeSurfaceBinding(WindowHandle window, uint surfaceEpoch)
+        => CreateGraphicsNativeSurfaceBinding(GetNativeWindowBinding(window), surfaceEpoch);
 
     internal long GetHostTimestamp()
     {
