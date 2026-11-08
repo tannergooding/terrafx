@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using TerraFX;
 using TerraFX.Buffers;
 
 namespace TerraFX.Graphics;
@@ -28,6 +29,9 @@ internal interface IGraphicsBackendDevice : IDisposable
         ReadOnlySpan<BufferReadLease<byte>> bytecodeLeases);
 
     IGraphicsBackendSampler CreateSampler(SamplerDescription description, float effectiveMaximumAnisotropy);
+
+    IGraphicsBackendSurface CreateSurface(GraphicsNativeSurfaceBinding binding, PixelSize clientPixelSize)
+        => throw new PlatformNotSupportedException("The selected backend does not support native presentation surfaces.");
 
     IGraphicsBackendTexture CreateTexture(
         TextureDescription description,

@@ -1268,6 +1268,29 @@ public static unsafe class D3D12GraphicsBackend
                 }
             }
 
+            public IGraphicsBackendSurface CreateSurface(GraphicsNativeSurfaceBinding binding, PixelSize clientPixelSize)
+            {
+                EnsureOwnerThread();
+
+                if (Capabilities.Profile != GraphicsDeviceProfile.Interactive)
+                {
+                    throw new InvalidOperationException("OffscreenNative devices do not create presentation surfaces.");
+                }
+
+                if (binding.PlatformKind != GraphicsPlatformKind.Win32)
+                {
+                    throw new PlatformNotSupportedException("The D3D12 backend requires a Win32 presentation surface.");
+                }
+
+                var transferQueue = GetTransferQueue();
+                return D3D12BackendSurface.Create(
+                    _device,
+                    transferQueue.CommandQueue,
+                    binding,
+                    clientPixelSize,
+                    Capabilities);
+            }
+
             public IGraphicsBackendTexture CreateTexture(
                 TextureDescription description,
                 IGraphicsBackendTextureAllocation allocation)
@@ -5210,6 +5233,7 @@ public static unsafe class D3D12GraphicsBackend
             }
 
             internal int ActiveGraphFrameSlotIndex => _activeGraphFrameSlotIndex;
+            internal ID3D12CommandQueue* CommandQueue => _commandQueue;
             internal bool HasUncertainSubmission => _hasUncertainSubmission;
 
             private static void ThrowLastWin32Error(string message)
