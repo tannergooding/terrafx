@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX;
@@ -18,6 +19,7 @@ internal sealed class PlatformHostOwner
     private Dictionary<string, MonitorHandle> _activeMonitorHandles;
     private readonly HashSet<WindowHandle> _activeWindowHandles;
     private readonly PlatformInputBroker _inputBroker;
+    private readonly Dictionary<WindowHandle, PendingWindowModeTransition> _pendingWindowModeTransitions = [];
     private bool _isDisposed;
     private bool _isStopping;
     private Dictionary<MonitorHandle, nint> _nativeMonitorHandles;
@@ -28,6 +30,7 @@ internal sealed class PlatformHostOwner
     private readonly PlatformHost _platform;
     private readonly HostProfile _profile;
     private readonly HostEventSequenceLease _sequenceLease;
+    private readonly TimeProvider _timeProvider;
 
     private PlatformHostOwner(
         uint ownerId,
@@ -39,6 +42,7 @@ internal sealed class PlatformHostOwner
         _ownerId = ownerId;
         _platform = platform;
         _profile = profile;
+        _timeProvider = timeProvider;
         _ownerThreadId = Environment.CurrentManagedThreadId;
         _sequenceLease = sequenceLease;
         _inputBroker = new PlatformInputBroker(ownerId, timeProvider, sequenceLease);
@@ -69,7 +73,8 @@ internal sealed class PlatformHostOwner
         Func<InputDeviceHandle, uint, ushort, CancellationToken, Task<InputRoutingReceipt>>? assignDeviceAsync = null,
         Func<WindowHandle, Vector2, CancellationToken, Task<WindowCommandReceipt>>? setClientSizeAsync = null,
         Func<WindowHandle, string, CancellationToken, Task<WindowCommandReceipt>>? setTitleAsync = null,
-        Func<WindowHandle, CancellationToken, Task<WindowCommandReceipt>>? closeWindowAsync = null)
+        Func<WindowHandle, CancellationToken, Task<WindowCommandReceipt>>? closeWindowAsync = null,
+        Func<WindowHandle, WindowMode, CancellationToken, Task<WindowCommandReceipt>>? setModeAsync = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         var ownerId = OwnerIdAllocator.Allocate();
@@ -84,7 +89,8 @@ internal sealed class PlatformHostOwner
             assignDeviceAsync,
             setClientSizeAsync,
             setTitleAsync,
-            closeWindowAsync);
+            closeWindowAsync,
+            setModeAsync);
         var owner = new PlatformHostOwner(ownerId, options.Profile, platform, timeProvider, sequenceLease);
 
         try
@@ -123,6 +129,7 @@ internal sealed class PlatformHostOwner
             throw new InvalidOperationException("The window handle is stale or no longer active.");
         }
 
+        CompletePendingModeTransition(window, WindowCommandStatus.Disposed);
         _platform.CloseWindow(window);
     }
 
@@ -203,6 +210,7 @@ internal sealed class PlatformHostOwner
             _platform.CreateWindow(window, options, nativeMonitorHandle);
             nativeWindowCreated = true;
             RefreshWindowMetrics(window);
+            RefreshWindowModeState(window);
             creationCompleted = true;
             return window;
         }
@@ -241,10 +249,31 @@ internal sealed class PlatformHostOwner
         }
 
         _isStopping = true;
+
+        while (_pendingWindowModeTransitions.Count > 0)
+        {
+            var window = default(WindowHandle);
+
+            foreach (var pendingWindow in _pendingWindowModeTransitions.Keys)
+            {
+                window = pendingWindow;
+                break;
+            }
+
+            CompletePendingModeTransition(window, WindowCommandStatus.Disposed);
+        }
+
         _activeWindowHandles.Clear();
         _inputBroker.Retire();
         _platform.DisposeFromOwner();
         _isDisposed = true;
+    }
+
+    internal ImmutableArray<Diagnostic> DrainModeDiagnostics()
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        return _platform.DrainModeDiagnostics();
     }
 
     internal ImmutableArray<WindowHandle> DrainWindowCloseRequests()
@@ -337,8 +366,10 @@ internal sealed class PlatformHostOwner
         foreach (var window in _activeWindowHandles)
         {
             RefreshWindowMetrics(window);
+            RefreshWindowModeState(window);
         }
 
+        CompleteObservedModeTransitions();
         return _inputBroker.Capture(_platform.DrainInputSamples(), _activeWindowHandles.Contains);
     }
 
@@ -420,6 +451,95 @@ internal sealed class PlatformHostOwner
             diagnostic: null);
     }
 
+    internal void SetModeCommand(
+        WindowHandle window,
+        WindowMode mode,
+        Action<WindowCommandReceipt> complete)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        ThrowIfStopping();
+        ArgumentNullException.ThrowIfNull(complete);
+
+        if (!window.IsValid || (window.OwnerId != _ownerId))
+        {
+            throw new ArgumentException("The window handle belongs to another platform owner.", nameof(window));
+        }
+
+        if (!Enum.IsDefined(mode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode));
+        }
+
+        if (_pendingWindowModeTransitions.ContainsKey(window))
+        {
+            complete(new WindowCommandReceipt(
+                WindowCommandKind.SetMode,
+                window,
+                WindowCommandStatus.QueueFull,
+                ownerSequence: 0,
+                diagnostic: null));
+            return;
+        }
+
+        var ownerSequence = _sequenceLease.Allocate();
+
+        if (!_activeWindowHandles.Contains(window))
+        {
+            complete(new WindowCommandReceipt(
+                WindowCommandKind.SetMode,
+                window,
+                WindowCommandStatus.Disposed,
+                ownerSequence,
+                diagnostic: null));
+            return;
+        }
+
+        var status = _platform.SetWindowMode(window, mode);
+
+        if (status is not WindowCommandStatus.Applied)
+        {
+            var diagnostic = status switch {
+                WindowCommandStatus.Unsupported => CreateWindowModeDiagnostic(
+                    "platform-window-mode-unsupported",
+                    window,
+                    mode,
+                    "The selected platform does not support the requested window mode."),
+                WindowCommandStatus.PermissionDenied => CreateWindowModeDiagnostic(
+                    "platform-window-mode-denied",
+                    window,
+                    mode,
+                    "The native platform denied the requested window mode."),
+                _ => null,
+            };
+            complete(new WindowCommandReceipt(WindowCommandKind.SetMode, window, status, ownerSequence, diagnostic));
+            return;
+        }
+
+        RefreshWindowModeState(window, ownerSequence);
+        var modeState = _platform.GetWindowModeStateSnapshot(window)
+            ?? throw new InvalidOperationException("The PlatformHost did not publish mode state for an active window.");
+
+        if ((modeState.RequestedMode == mode) && (modeState.ObservedMode == mode))
+        {
+            complete(new WindowCommandReceipt(
+                WindowCommandKind.SetMode,
+                window,
+                WindowCommandStatus.Applied,
+                ownerSequence,
+                diagnostic: null));
+            return;
+        }
+
+        _pendingWindowModeTransitions.Add(
+            window,
+            new PendingWindowModeTransition(
+                mode,
+                ownerSequence,
+                _timeProvider.GetTimestamp(),
+                complete));
+    }
+
     internal WindowCommandReceipt SetTitle(WindowHandle window, string title)
     {
         EnsureOwnerThread();
@@ -448,6 +568,94 @@ internal sealed class PlatformHostOwner
             ownerSequence,
             diagnostic: null);
     }
+
+    private void CompleteObservedModeTransitions()
+    {
+        if (_pendingWindowModeTransitions.Count == 0)
+        {
+            return;
+        }
+
+        var completed = new List<WindowHandle>();
+        var now = _timeProvider.GetTimestamp();
+
+        foreach (var (window, transition) in _pendingWindowModeTransitions)
+        {
+            var modeState = _platform.GetWindowModeStateSnapshot(window);
+
+            if ((modeState is not null)
+                && (modeState.RequestedMode == transition.RequestedMode)
+                && (modeState.ObservedMode == transition.RequestedMode))
+            {
+                transition.Complete(new WindowCommandReceipt(
+                    WindowCommandKind.SetMode,
+                    window,
+                    WindowCommandStatus.Applied,
+                    transition.OwnerSequence,
+                    diagnostic: null));
+                completed.Add(window);
+            }
+            else if (_timeProvider.GetElapsedTime(transition.StartedTimestamp, now) >= TimeSpan.FromSeconds(5))
+            {
+                var diagnostic = CreateWindowModeDiagnostic(
+                    "platform-window-mode-unconfirmed",
+                    window,
+                    transition.RequestedMode,
+                    "The native platform did not confirm the requested window mode within five host seconds.");
+                transition.Complete(new WindowCommandReceipt(
+                    WindowCommandKind.SetMode,
+                    window,
+                    WindowCommandStatus.Unconfirmed,
+                    transition.OwnerSequence,
+                    diagnostic));
+                completed.Add(window);
+            }
+        }
+
+        foreach (var window in completed)
+        {
+            _ = _pendingWindowModeTransitions.Remove(window);
+        }
+    }
+
+    private void CompletePendingModeTransition(WindowHandle window, WindowCommandStatus status)
+    {
+        if (_pendingWindowModeTransitions.Remove(window, out var transition))
+        {
+            transition.Complete(new WindowCommandReceipt(
+                WindowCommandKind.SetMode,
+                window,
+                status,
+                transition.OwnerSequence,
+                diagnostic: null));
+        }
+    }
+
+    private Diagnostic CreateWindowModeDiagnostic(string code, WindowHandle window, WindowMode mode, string message)
+        => new(
+            code,
+            DiagnosticSeverity.Warning,
+            _timeProvider.GetTimestamp(),
+            _ownerId,
+            worldGuid: null,
+            deviceId: null,
+            surfaceId: null,
+            deviceEpoch: null,
+            surfaceEpoch: null,
+            swapchainEpoch: null,
+            tick: null,
+            systemId: null,
+            passId: null,
+            assetId: null,
+            commandIdentity: null,
+            operation: "PlatformHost.SetModeAsync",
+            nativeResult: null,
+            message,
+            context: [
+                new DiagnosticContextEntry("WindowIndex", window.Index.ToString(CultureInfo.InvariantCulture)),
+                new DiagnosticContextEntry("WindowGeneration", window.Generation.ToString(CultureInfo.InvariantCulture)),
+                new DiagnosticContextEntry("RequestedMode", mode.ToString()),
+            ]);
 
     private void EnsureOwnerThread()
     {
@@ -531,6 +739,24 @@ internal sealed class PlatformHostOwner
         _platform.SetWindowMetrics(window, metrics);
     }
 
+    private void RefreshWindowModeState(WindowHandle window, long? ownerSequence = null)
+    {
+        var nativeModeState = _platform.GetNativeWindowModeState(window);
+        var previousModeState = _platform.GetWindowModeStateSnapshot(window);
+
+        if ((previousModeState is not null)
+            && (previousModeState.RequestedMode == nativeModeState.RequestedMode)
+            && (previousModeState.ObservedMode == nativeModeState.ObservedMode))
+        {
+            return;
+        }
+
+        _ = _platform.SetWindowModeState(
+            window,
+            nativeModeState,
+            ownerSequence ?? _sequenceLease.Allocate());
+    }
+
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -543,4 +769,10 @@ internal sealed class PlatformHostOwner
             throw new InvalidOperationException("The PlatformHost owner is stopping.");
         }
     }
+
+    private sealed record PendingWindowModeTransition(
+        WindowMode RequestedMode,
+        long OwnerSequence,
+        long StartedTimestamp,
+        Action<WindowCommandReceipt> Complete);
 }

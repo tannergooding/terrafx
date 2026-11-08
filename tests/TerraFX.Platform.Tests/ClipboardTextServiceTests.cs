@@ -200,6 +200,12 @@ internal sealed class ClipboardTextServiceTests
             return default;
         }
 
+        public PlatformNativeWindowModeState GetNativeWindowModeState(WindowHandle window)
+        {
+            _ = window;
+            return default;
+        }
+
         public void Pump()
         {
         }
@@ -225,6 +231,13 @@ internal sealed class ClipboardTextServiceTests
         {
             _ = window;
             _ = logicalClientSize;
+            return WindowCommandStatus.Unsupported;
+        }
+
+        public WindowCommandStatus SetWindowMode(WindowHandle window, WindowMode mode)
+        {
+            _ = window;
+            _ = mode;
             return WindowCommandStatus.Unsupported;
         }
 

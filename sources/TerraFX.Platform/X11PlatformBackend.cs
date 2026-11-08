@@ -21,6 +21,9 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     private const long ButtonReleaseMask = 1L << 3;
     private const int ClientMessageEvent = 33;
     private const int DestroyNotifyEvent = 17;
+    private const int EwmhAdd = 1;
+    private const int EwmhRemove = 0;
+    private const int EwmhSourceApplication = 1;
     private const long FocusChangeMask = 1L << 21;
     private const int FocusInEvent = 9;
     private const int FocusOutEvent = 10;
@@ -42,18 +45,25 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     private const int RandrNotifyEventOffset = 1;
     private const int RandrScreenChangeEventOffset = 0;
     private const long StructureNotifyMask = 1L << 17;
+    private const long SubstructureNotifyMask = 1L << 19;
+    private const long SubstructureRedirectMask = 1L << 20;
     private const int WindowedDpi = 96;
 
-    private readonly Dictionary<nuint, WindowState> _windowsByNativeId = [];
-    private readonly Dictionary<WindowHandle, WindowState> _windowsByHandle = [];
-    private readonly List<WindowHandle> _closeRequests = [];
+    private readonly nuint _atomAtom;
     private readonly ClipboardServiceStatus _clipboardStatus;
+    private readonly List<WindowHandle> _closeRequests = [];
     private readonly nint _display;
     private float? _effectiveDpi;
+    private readonly bool _ewmhFullscreenAvailable;
     private readonly LinuxEvdevGamepadCapture? _gamepadCapture;
     private readonly PlatformServiceStatus _gamepadStatus;
     private readonly PlatformInputSampleQueue _inputSamples;
+    private bool _isDisposed;
     private readonly X11KeyboardKeymap? _keyboardKeymap;
+    private ImmutableArray<MonitorHandle> _monitorHandles = [];
+    private bool _monitorTopologyChanged;
+    private readonly nuint _netWmStateAtom;
+    private readonly nuint _netWmStateFullscreenAtom;
     private readonly uint _ownerId;
     private readonly int _ownerThreadId;
     private readonly int _randrEventBase;
@@ -62,11 +72,10 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     private readonly nuint _rootWindow;
     private readonly nuint _wmDeleteWindowAtom;
     private readonly nuint _wmProtocolsAtom;
+    private readonly Dictionary<WindowHandle, WindowState> _windowsByHandle = [];
+    private readonly Dictionary<nuint, WindowState> _windowsByNativeId = [];
     private readonly bool _xinput2Available;
     private readonly int _xinput2Opcode;
-    private ImmutableArray<MonitorHandle> _monitorHandles = [];
-    private bool _isDisposed;
-    private bool _monitorTopologyChanged;
 
     internal X11PlatformBackend(uint ownerId, ClipboardServicePolicy clipboardPolicy)
     {
@@ -93,6 +102,10 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             var wmProtocolsAtom = X11Native.XInternAtom(display, "WM_PROTOCOLS", onlyIfExists: 0);
             var wmDeleteWindowAtom = X11Native.XInternAtom(display, "WM_DELETE_WINDOW", onlyIfExists: 0);
             var resourceManagerAtom = X11Native.XInternAtom(display, "RESOURCE_MANAGER", onlyIfExists: 0);
+            var atomAtom = X11Native.XInternAtom(display, "ATOM", onlyIfExists: 0);
+            var netSupportedAtom = X11Native.XInternAtom(display, "_NET_SUPPORTED", onlyIfExists: 0);
+            var netWmStateAtom = X11Native.XInternAtom(display, "_NET_WM_STATE", onlyIfExists: 0);
+            var netWmStateFullscreenAtom = X11Native.XInternAtom(display, "_NET_WM_STATE_FULLSCREEN", onlyIfExists: 0);
             var randrEventBase = -1;
             var randrErrorBase = 0;
             var randrMajorVersion = 1;
@@ -107,10 +120,22 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             if ((rootWindow == 0)
                 || (wmProtocolsAtom == 0)
                 || (wmDeleteWindowAtom == 0)
-                || (resourceManagerAtom == 0))
+                || (resourceManagerAtom == 0)
+                || (atomAtom == 0)
+                || (netSupportedAtom == 0)
+                || (netWmStateAtom == 0)
+                || (netWmStateFullscreenAtom == 0))
             {
-                throw new InvalidOperationException("X11 did not provide the required default-screen, window-manager, or resource-manager atoms.");
+                throw new InvalidOperationException("X11 did not provide the required default-screen, window-manager, or EWMH atoms.");
             }
+
+            var ewmhFullscreenAvailable = IsEwmhFullscreenSupported(
+                display,
+                rootWindow,
+                atomAtom,
+                netSupportedAtom,
+                netWmStateAtom,
+                netWmStateFullscreenAtom);
 
             if (X11Native.XSelectInput(display, rootWindow, checked((nint)PropertyChangeMask)) == 0)
             {
@@ -173,6 +198,10 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 
             _display = display;
             _rootWindow = rootWindow;
+            _atomAtom = atomAtom;
+            _ewmhFullscreenAvailable = ewmhFullscreenAvailable;
+            _netWmStateAtom = netWmStateAtom;
+            _netWmStateFullscreenAtom = netWmStateFullscreenAtom;
             _randrEventBase = randrEventsAvailable ? randrEventBase : -1;
             _randrMonitorInfoAvailable = randrMonitorInfoAvailable;
             _resourceManagerAtom = resourceManagerAtom;
@@ -337,6 +366,93 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         }
 
         return checked((int)extent);
+    }
+
+    private static bool IsEwmhFullscreenSupported(
+        nint display,
+        nuint rootWindow,
+        nuint atomAtom,
+        nuint netSupportedAtom,
+        nuint netWmStateAtom,
+        nuint netWmStateFullscreenAtom)
+    {
+        var supportedAtoms = ReadAtomProperty(display, rootWindow, atomAtom, netSupportedAtom);
+        var supportsWmState = false;
+        var supportsFullscreen = false;
+
+        foreach (var atom in supportedAtoms)
+        {
+            supportsWmState |= atom == netWmStateAtom;
+            supportsFullscreen |= atom == netWmStateFullscreenAtom;
+        }
+
+        return supportsWmState && supportsFullscreen;
+    }
+
+    private static ImmutableArray<nuint> ReadAtomProperty(
+        nint display,
+        nuint window,
+        nuint atomAtom,
+        nuint property)
+    {
+        const int maximumAtomCount = 4096;
+        var actualType = (nuint)0;
+        var actualFormat = 0;
+        var itemCount = (nuint)0;
+        var bytesAfter = (nuint)0;
+        nint propertyValue = 0;
+        var status = X11Native.XGetWindowProperty(
+            display,
+            window,
+            property,
+            longOffset: 0,
+            longLength: maximumAtomCount,
+            delete: 0,
+            requestedType: atomAtom,
+            &actualType,
+            &actualFormat,
+            &itemCount,
+            &bytesAfter,
+            &propertyValue);
+
+        try
+        {
+            if (status != 0)
+            {
+                throw new InvalidOperationException("X11 could not read an EWMH atom property.");
+            }
+
+            if ((actualType == 0) && (itemCount == 0) && (bytesAfter == 0) && (propertyValue == 0))
+            {
+                return [];
+            }
+
+            if ((actualType != atomAtom)
+                || (actualFormat != 32)
+                || (itemCount > maximumAtomCount)
+                || (bytesAfter != 0)
+                || ((itemCount != 0) && (propertyValue == 0)))
+            {
+                throw new InvalidOperationException("X11 returned an unsupported or unbounded EWMH atom property.");
+            }
+
+            var atoms = (nuint*)propertyValue;
+            var result = ImmutableArray.CreateBuilder<nuint>(checked((int)itemCount));
+
+            for (var index = 0; index < checked((int)itemCount); index++)
+            {
+                result.Add(atoms[index]);
+            }
+
+            return result.MoveToImmutable();
+        }
+        finally
+        {
+            if (propertyValue != 0)
+            {
+                _ = X11Native.XFree(propertyValue);
+            }
+        }
     }
 
     private static float? ReadXftDpiSettings(nint display, nuint rootWindow, nuint resourceManagerAtom)
@@ -756,6 +872,18 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             effectiveDpi.HasValue ? DpiConfidence.Reported : DpiConfidence.Assumed96Dpi);
     }
 
+    public PlatformNativeWindowModeState GetNativeWindowModeState(WindowHandle window)
+    {
+        EnsureActiveOwnerThread();
+        var state = GetWindowState(window);
+        WindowMode? observedMode = !_ewmhFullscreenAvailable
+            ? (state.RequestedMode is WindowMode.Windowed ? WindowMode.Windowed : null)
+            : IsWindowFullscreen(state.NativeWindow)
+                ? WindowMode.BorderlessFullscreen
+                : WindowMode.Windowed;
+        return new PlatformNativeWindowModeState(state.RequestedMode, observedMode);
+    }
+
     public void Pump()
     {
         EnsureActiveOwnerThread();
@@ -979,6 +1107,47 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         }
 
         _ = X11Native.XSync(_display, discard: 0);
+        return WindowCommandStatus.Applied;
+    }
+
+    public WindowCommandStatus SetWindowMode(WindowHandle window, WindowMode mode)
+    {
+        EnsureActiveOwnerThread();
+
+        if (!Enum.IsDefined(mode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode));
+        }
+
+        if (!_windowsByHandle.TryGetValue(window, out var state) || state.NativeDestroyed)
+        {
+            return WindowCommandStatus.Disposed;
+        }
+
+        if (mode is WindowMode.ExclusiveFullscreen)
+        {
+            return WindowCommandStatus.Unsupported;
+        }
+
+        if (mode is WindowMode.BorderlessFullscreen && !_ewmhFullscreenAvailable)
+        {
+            return WindowCommandStatus.Unsupported;
+        }
+
+        var observedMode = !_ewmhFullscreenAvailable
+            ? WindowMode.Windowed
+            : IsWindowFullscreen(state.NativeWindow)
+                ? WindowMode.BorderlessFullscreen
+                : WindowMode.Windowed;
+
+        if (observedMode == mode)
+        {
+            state.RequestedMode = mode;
+            return WindowCommandStatus.Applied;
+        }
+
+        SendEwmhFullscreenRequest(state.NativeWindow, mode is WindowMode.BorderlessFullscreen);
+        state.RequestedMode = mode;
         return WindowCommandStatus.Applied;
     }
 
@@ -1397,6 +1566,21 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             && (nextEvent.Key.Time == keyEvent.Time);
     }
 
+    private bool IsWindowFullscreen(nuint window)
+    {
+        var stateAtoms = ReadAtomProperty(window, _netWmStateAtom);
+
+        foreach (var atom in stateAtoms)
+        {
+            if (atom == _netWmStateFullscreenAtom)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private void QueueCloseRequest(WindowState state)
     {
         if (!state.CloseRequested)
@@ -1478,10 +1662,44 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             ReconciliationState: reconciliationState.ToImmutable()));
     }
 
+    private ImmutableArray<nuint> ReadAtomProperty(nuint window, nuint property)
+        => ReadAtomProperty(_display, window, _atomAtom, property);
+
     private void RefreshDpiSettings()
     {
         EnsureActiveOwnerThread();
         _effectiveDpi = ReadXftDpiSettings(_display, _rootWindow, _resourceManagerAtom);
+    }
+
+    private void SendEwmhFullscreenRequest(nuint window, bool fullscreen)
+    {
+        var nativeEvent = default(X11Native.NativeEvent);
+        nativeEvent.ClientMessage = new X11Native.ClientMessageEvent {
+            Type = ClientMessageEvent,
+            Display = _display,
+            Window = window,
+            MessageType = _netWmStateAtom,
+            Format = 32,
+            Data = new X11Native.ClientMessageData {
+                Long0 = fullscreen ? EwmhAdd : EwmhRemove,
+                Long1 = checked((nint)_netWmStateFullscreenAtom),
+                Long2 = 0,
+                Long3 = EwmhSourceApplication,
+                Long4 = 0,
+            },
+        };
+
+        if (X11Native.XSendEvent(
+                _display,
+                _rootWindow,
+                propagate: 0,
+                SubstructureNotifyMask | SubstructureRedirectMask,
+                &nativeEvent) == 0)
+        {
+            throw new InvalidOperationException("X11 could not deliver the EWMH fullscreen request.");
+        }
+
+        _ = X11Native.XFlush(_display);
     }
 
     private void SetWindowTitle(nuint window, string title)
@@ -1718,6 +1936,14 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         [LibraryImport("libX11.so.6", EntryPoint = "XSelectInput")]
         internal static partial int XSelectInput(nint display, nuint window, nint eventMask);
 
+        [LibraryImport("libX11.so.6", EntryPoint = "XSendEvent")]
+        internal static partial int XSendEvent(
+            nint display,
+            nuint window,
+            int propagate,
+            long eventMask,
+            NativeEvent* eventSend);
+
         [LibraryImport("libX11.so.6", EntryPoint = "XSetWMNormalHints")]
         internal static partial void XSetWMNormalHints(nint display, nuint window, SizeHints* hints);
 
@@ -1767,6 +1993,18 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         {
             [FieldOffset(0)]
             internal nint Long0;
+
+            [FieldOffset(8)]
+            internal nint Long1;
+
+            [FieldOffset(16)]
+            internal nint Long2;
+
+            [FieldOffset(24)]
+            internal nint Long3;
+
+            [FieldOffset(32)]
+            internal nint Long4;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -2017,6 +2255,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         internal readonly HashSet<(nint Device, uint Keycode)> KeysDown = [];
         internal Vector2 MinimumClientSize;
         internal bool NativeDestroyed;
+        internal WindowMode RequestedMode;
         internal bool Resizable;
 
         internal WindowState(WindowHandle window, nuint nativeWindow, WindowOptions options)
@@ -2024,6 +2263,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             Window = window;
             NativeWindow = nativeWindow;
             MinimumClientSize = options.MinimumClientSize;
+            RequestedMode = options.Mode;
             Resizable = options.Resizable;
         }
 

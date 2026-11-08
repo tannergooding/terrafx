@@ -668,6 +668,35 @@ public sealed partial class EngineHost : IAsyncDisposable
         return request.Result;
     }
 
+    private Task<WindowCommandReceipt> InvokeWindowModeCommandAsync(
+        WindowHandle window,
+        WindowMode mode,
+        CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromCanceled<WindowCommandReceipt>(cancellationToken);
+        }
+
+        var request = new HostWindowModeCommandRequest(
+            complete => (_platformOwner
+                ?? throw new InvalidOperationException("The EngineHost platform owner is not initialized."))
+                .SetModeCommand(window, mode, complete),
+            cancellationToken);
+
+        if (!TryEnqueue(request))
+        {
+            request.CompleteQueueFull(new WindowCommandReceipt(
+                WindowCommandKind.SetMode,
+                window,
+                WindowCommandStatus.QueueFull,
+                ownerSequence: 0,
+                diagnostic: null));
+        }
+
+        return request.Result;
+    }
+
     private void RecordSimulationDebt(HostedWorldSchedule schedule, long debtTicks, bool dropped)
     {
         var world = schedule.World;
@@ -750,7 +779,9 @@ public sealed partial class EngineHost : IAsyncDisposable
                         () => (_platformOwner
                             ?? throw new InvalidOperationException("The EngineHost platform owner is not initialized."))
                             .CloseWindowCommand(window),
-                        cancellationToken));
+                        cancellationToken),
+                (window, mode, cancellationToken) =>
+                    InvokeWindowModeCommandAsync(window, mode, cancellationToken));
             _platformOwner = platformOwner;
             _platform = platformOwner.Platform;
             _platformInputRouting = new PlatformInputRoutingOwner(
@@ -799,6 +830,15 @@ public sealed partial class EngineHost : IAsyncDisposable
                 }
 
                 var capturedInput = _platformOwner.Pump();
+                var modeDiagnostics = _platformOwner.DrainModeDiagnostics();
+
+                if (!modeDiagnostics.IsEmpty)
+                {
+                    foreach (var diagnostic in modeDiagnostics)
+                    {
+                        diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+                    }
+                }
 
                 if (!capturedInput.Diagnostics.IsEmpty)
                 {
@@ -1346,6 +1386,47 @@ public sealed partial class EngineHost : IAsyncDisposable
             try
             {
                 _ = _completion.TrySetResult(action());
+            }
+            catch (Exception exception)
+            {
+                _ = _completion.TrySetException(exception);
+            }
+        }
+
+        internal override void Fail(Exception exception)
+            => _ = _completion.TrySetException(exception);
+    }
+
+    private sealed class HostWindowModeCommandRequest(
+        Action<Action<WindowCommandReceipt>> action,
+        CancellationToken cancellationToken) : HostActionRequest
+    {
+        private readonly TaskCompletionSource<WindowCommandReceipt> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal override Task Completion => _completion.Task;
+
+        internal Task<WindowCommandReceipt> Result => _completion.Task;
+
+        internal void CompleteQueueFull(WindowCommandReceipt receipt)
+            => _ = _completion.TrySetResult(receipt);
+
+        [SuppressMessage(
+            "Usage",
+            "CA1031:Do not catch general exception types",
+            Justification = "A native window mode command failure is delivered through its task while asynchronous confirmation remains owned by PlatformHostOwner.")]
+        internal override void Execute(EngineHost host)
+        {
+            _ = host;
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                _ = _completion.TrySetCanceled(cancellationToken);
+                return;
+            }
+
+            try
+            {
+                action(receipt => _ = _completion.TrySetResult(receipt));
             }
             catch (Exception exception)
             {

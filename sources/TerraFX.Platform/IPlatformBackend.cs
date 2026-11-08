@@ -37,6 +37,8 @@ internal interface IPlatformBackend : IDisposable
 
     PlatformNativeWindowMetrics GetNativeWindowMetrics(WindowHandle window);
 
+    PlatformNativeWindowModeState GetNativeWindowModeState(WindowHandle window);
+
     void Pump();
 
     ClipboardReadResponse ReadClipboardText(ClipboardReadRequest request);
@@ -48,6 +50,8 @@ internal interface IPlatformBackend : IDisposable
     void SetMonitorHandles(ImmutableArray<MonitorHandle> monitorHandles);
 
     WindowCommandStatus SetWindowClientSize(WindowHandle window, Vector2 logicalClientSize);
+
+    WindowCommandStatus SetWindowMode(WindowHandle window, WindowMode mode);
 
     WindowCommandStatus SetWindowTitle(WindowHandle window, string title);
 

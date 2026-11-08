@@ -2045,6 +2045,149 @@ internal sealed partial class EngineHostOptionsTests
         "Usage",
         "CA1031:Do not catch general exception types",
         Justification = "The dedicated STA test thread must transfer native failures after owner cleanup.")]
+    public async Task WindowsPlatformOwnerConfirmsBorderlessAndWindowedModeTransitions()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)
+            || (RuntimeInformation.ProcessArchitecture != Architecture.X64))
+        {
+            Assert.Ignore("The Windows Platform backend requires Windows 11 x64.");
+            return;
+        }
+
+        var options = new EngineHostOptions(
+            HostProfile.Interactive,
+            PlatformBackend.WindowsNative,
+            GraphicsBackend.D3D12,
+            D3D12GraphicsBackend.CreateRegistration(),
+            CreateAssetStoreOptions()) {
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
+        var completion = new TaskCompletionSource<(
+            WindowCommandReceipt BorderlessReceipt,
+            WindowCommandReceipt WindowedReceipt,
+            WindowCommandReceipt ExclusiveReceipt,
+            WindowModeState InitialState,
+            WindowModeState BorderlessState,
+            WindowModeState WindowedState,
+            ImmutableArray<long> EventSequences)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() => {
+            PlatformHostOwner? owner = null;
+            Exception? failure = null;
+
+            try
+            {
+                owner = PlatformHostOwner.Create(
+                    options,
+                    setModeAsync: (window, mode, cancellationToken) => {
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            return Task.FromCanceled<WindowCommandReceipt>(cancellationToken);
+                        }
+
+                        var commandCompletion = new TaskCompletionSource<WindowCommandReceipt>(
+                            TaskCreationOptions.RunContinuationsAsynchronously);
+
+                        try
+                        {
+                            var currentOwner = owner
+                                ?? throw new InvalidOperationException("The Platform owner has not been initialized.");
+                            currentOwner.SetModeCommand(window, mode, receipt => _ = commandCompletion.TrySetResult(receipt));
+                        }
+                        catch (Exception exception)
+                        {
+                            _ = commandCompletion.TrySetException(exception);
+                        }
+
+                        return commandCompletion.Task;
+                    });
+                var window = owner.CreateWindow(new WindowOptions("TerraFX window mode witness") {
+                    ClientSize = new Vector2(640.0f, 480.0f),
+                    Visible = false,
+                });
+                var eventSequences = ImmutableArray.CreateBuilder<long>();
+                owner.Platform.WindowModeChanged += (_, eventArgs) => eventSequences.Add(eventArgs.HostSequence);
+                _ = owner.Pump();
+                var initialState = owner.Platform.GetWindowModeState(window);
+                var borderlessReceipt = owner.Platform.SetModeAsync(window, WindowMode.BorderlessFullscreen)
+                    .GetAwaiter()
+                    .GetResult();
+                var borderlessState = owner.Platform.GetWindowModeState(window);
+                var windowedReceipt = owner.Platform.SetModeAsync(window, WindowMode.Windowed)
+                    .GetAwaiter()
+                    .GetResult();
+                var windowedState = owner.Platform.GetWindowModeState(window);
+                var exclusiveReceipt = owner.Platform.SetModeAsync(window, WindowMode.ExclusiveFullscreen)
+                    .GetAwaiter()
+                    .GetResult();
+                owner.CloseWindow(window);
+                _ = owner.Pump();
+                _ = completion.TrySetResult((
+                    borderlessReceipt,
+                    windowedReceipt,
+                    exclusiveReceipt,
+                    initialState,
+                    borderlessState,
+                    windowedState,
+                    eventSequences.ToImmutable()));
+            }
+            catch (Exception exception)
+            {
+                failure = exception;
+            }
+
+            try
+            {
+                owner?.DisposeFromOwner();
+            }
+            catch (Exception cleanupException)
+            {
+                failure = failure is null
+                    ? cleanupException
+                    : new AggregateException(failure, cleanupException);
+            }
+
+            if (failure is not null)
+            {
+                _ = completion.TrySetException(failure);
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+
+        var (
+            borderlessReceipt,
+            windowedReceipt,
+            exclusiveReceipt,
+            initialState,
+            borderlessState,
+            windowedState,
+            eventSequences) = await completion.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        Assert.That(thread.Join(TimeSpan.FromSeconds(5)), Is.True);
+        Assert.That(initialState.RequestedMode, Is.EqualTo(WindowMode.Windowed));
+        Assert.That(initialState.ObservedMode, Is.EqualTo(WindowMode.Windowed));
+        Assert.That(initialState.IsConfirmed, Is.True);
+        Assert.That(borderlessReceipt.Status, Is.EqualTo(WindowCommandStatus.Applied));
+        Assert.That(borderlessReceipt.OwnerSequence, Is.GreaterThan(0));
+        Assert.That(borderlessState.RequestedMode, Is.EqualTo(WindowMode.BorderlessFullscreen));
+        Assert.That(borderlessState.ObservedMode, Is.EqualTo(WindowMode.BorderlessFullscreen));
+        Assert.That(borderlessState.IsConfirmed, Is.True);
+        Assert.That(windowedReceipt.Status, Is.EqualTo(WindowCommandStatus.Applied));
+        Assert.That(windowedReceipt.OwnerSequence, Is.GreaterThan(borderlessReceipt.OwnerSequence));
+        Assert.That(windowedState.RequestedMode, Is.EqualTo(WindowMode.Windowed));
+        Assert.That(windowedState.ObservedMode, Is.EqualTo(WindowMode.Windowed));
+        Assert.That(windowedState.IsConfirmed, Is.True);
+        Assert.That(exclusiveReceipt.Status, Is.EqualTo(WindowCommandStatus.Unsupported));
+        Assert.That(exclusiveReceipt.Diagnostic?.Code, Is.EqualTo("platform-window-mode-unsupported"));
+        Assert.That(eventSequences, Has.Length.EqualTo(2));
+        Assert.That(eventSequences[0], Is.EqualTo(borderlessReceipt.OwnerSequence));
+        Assert.That(eventSequences[1], Is.EqualTo(windowedReceipt.OwnerSequence));
+    }
+
+    [Test]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "The dedicated STA test thread must transfer native failures after owner cleanup.")]
     public async Task WindowsPlatformOwnerIssuesHandlesForEnumeratedMonitors()
     {
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)
@@ -2590,6 +2733,166 @@ internal sealed partial class EngineHostOptionsTests
             Is.EqualTo(actualMovedMetrics.ClientPixelSize.Width).Within(0.01f));
         Assert.That(actualMovedMetrics.LogicalClientSize.Y * actualMovedMetrics.ContentScale.Y,
             Is.EqualTo(actualMovedMetrics.ClientPixelSize.Height).Within(0.01f));
+    }
+
+    [Test]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "The X11 mode witness transfers owner-command failures through their task and disposes the owner in finally.")]
+    public void X11PlatformOwnerReportsEwmhFullscreenConfirmationOrRefusal()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Ignore("The X11 mode witness requires Linux.");
+            return;
+        }
+
+        var options = new EngineHostOptions(
+            HostProfile.Interactive,
+            PlatformBackend.X11Only,
+            GraphicsBackend.Vulkan,
+            VulkanGraphicsBackend.CreateRegistration(),
+            CreateAssetStoreOptions()) {
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
+        PlatformHostOwner? owner = null;
+        WindowHandle window = default;
+
+        try
+        {
+            try
+            {
+                owner = PlatformHostOwner.Create(
+                    options,
+                    setModeAsync: (targetWindow, mode, cancellationToken) => {
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            return Task.FromCanceled<WindowCommandReceipt>(cancellationToken);
+                        }
+
+                        var completion = new TaskCompletionSource<WindowCommandReceipt>(
+                            TaskCreationOptions.RunContinuationsAsynchronously);
+
+                        try
+                        {
+                            var currentOwner = owner
+                                ?? throw new InvalidOperationException("The Platform owner has not been initialized.");
+                            currentOwner.SetModeCommand(
+                                targetWindow,
+                                mode,
+                                receipt => _ = completion.TrySetResult(receipt));
+                        }
+                        catch (Exception exception)
+                        {
+                            _ = completion.TrySetException(exception);
+                        }
+
+                        return completion.Task;
+                    });
+            }
+            catch (PlatformNotSupportedException exception)
+            {
+                Assert.Ignore($"The X11 display is unavailable: {exception.Message}");
+                return;
+            }
+
+            window = owner.CreateWindow(new WindowOptions("TerraFX X11 mode witness") {
+                ClientSize = new Vector2(640.0f, 480.0f),
+                Visible = false,
+            });
+            var modeEvents = new List<WindowModeState>();
+            owner.Platform.WindowModeChanged += (_, eventArgs) => modeEvents.Add(eventArgs.State);
+            _ = owner.Pump();
+            var initialState = owner.Platform.GetWindowModeState(window);
+            Assert.That(initialState.RequestedMode, Is.EqualTo(WindowMode.Windowed));
+            Assert.That(initialState.ObservedMode, Is.EqualTo(WindowMode.Windowed));
+            Assert.That(initialState.IsConfirmed, Is.True);
+
+            var borderlessTask = owner.Platform.SetModeAsync(window, WindowMode.BorderlessFullscreen);
+
+            if (!borderlessTask.IsCompleted)
+            {
+                var refusedReceipt = owner.Platform.SetModeAsync(window, WindowMode.Windowed)
+                    .GetAwaiter()
+                    .GetResult();
+                var pendingState = owner.Platform.GetWindowModeState(window);
+                Assert.That(refusedReceipt.Status, Is.EqualTo(WindowCommandStatus.QueueFull));
+                Assert.That(refusedReceipt.OwnerSequence, Is.Zero);
+                Assert.That(pendingState.RequestedMode, Is.EqualTo(WindowMode.BorderlessFullscreen));
+                TestContext.WriteLine("X11 refused a second mode transition while fullscreen confirmation was pending.");
+            }
+
+            var borderlessReceipt = PumpUntilTerminal(owner, borderlessTask);
+            var borderlessState = owner.Platform.GetWindowModeState(window);
+            TestContext.WriteLine(
+                $"X11 EWMH borderless result: {borderlessReceipt.Status}; requested={borderlessState.RequestedMode}; "
+                + $"observed={borderlessState.ObservedMode?.ToString() ?? "unobserved"}.");
+
+            if (borderlessReceipt.Status is WindowCommandStatus.Unsupported)
+            {
+                Assert.That(borderlessReceipt.Diagnostic?.Code, Is.EqualTo("platform-window-mode-unsupported"));
+                Assert.That(borderlessState.RequestedMode, Is.EqualTo(WindowMode.Windowed));
+                Assert.That(borderlessState.ObservedMode, Is.EqualTo(WindowMode.Windowed));
+                Assert.That(modeEvents, Is.Empty);
+                return;
+            }
+
+            Assert.That(borderlessReceipt.Status, Is.AnyOf(WindowCommandStatus.Applied, WindowCommandStatus.Unconfirmed));
+            Assert.That(borderlessReceipt.OwnerSequence, Is.GreaterThan(0));
+            Assert.That(borderlessState.RequestedMode, Is.EqualTo(WindowMode.BorderlessFullscreen));
+
+            if (borderlessReceipt.Status is WindowCommandStatus.Applied)
+            {
+                Assert.That(borderlessState.ObservedMode, Is.EqualTo(WindowMode.BorderlessFullscreen));
+                Assert.That(borderlessState.IsConfirmed, Is.True);
+            }
+            else
+            {
+                Assert.That(borderlessReceipt.Diagnostic?.Code, Is.EqualTo("platform-window-mode-unconfirmed"));
+                Assert.That(borderlessState.ObservedMode, Is.EqualTo(WindowMode.Windowed));
+                Assert.That(borderlessState.IsConfirmed, Is.False);
+            }
+
+            var windowedReceipt = RequestAndPumpUntilTerminal(owner, window, WindowMode.Windowed);
+            var windowedState = owner.Platform.GetWindowModeState(window);
+            Assert.That(windowedReceipt.Status, Is.EqualTo(WindowCommandStatus.Applied));
+            Assert.That(windowedState.RequestedMode, Is.EqualTo(WindowMode.Windowed));
+            Assert.That(windowedState.ObservedMode, Is.EqualTo(WindowMode.Windowed));
+            Assert.That(windowedState.IsConfirmed, Is.True);
+            Assert.That(modeEvents, Is.Not.Empty);
+            owner.CloseWindow(window);
+            window = default;
+        }
+        finally
+        {
+            owner?.DisposeFromOwner();
+        }
+
+        static WindowCommandReceipt RequestAndPumpUntilTerminal(
+            PlatformHostOwner platformOwner,
+            WindowHandle targetWindow,
+            WindowMode mode)
+        {
+            var task = platformOwner.Platform.SetModeAsync(targetWindow, mode);
+            return PumpUntilTerminal(platformOwner, task);
+        }
+
+        static WindowCommandReceipt PumpUntilTerminal(
+            PlatformHostOwner platformOwner,
+            Task<WindowCommandReceipt> task)
+        {
+            var startTimestamp = TimeProvider.System.GetTimestamp();
+
+            while (!task.IsCompleted && (TimeProvider.System.GetElapsedTime(startTimestamp) < TimeSpan.FromSeconds(6)))
+            {
+                _ = platformOwner.Pump();
+                Thread.Sleep(10);
+            }
+
+            Assert.That(task.IsCompleted, Is.True, "The window mode command did not complete after its confirmation timeout.");
+            return task.GetAwaiter().GetResult();
+        }
     }
 
     private static partial class WindowsTestNativeMethods

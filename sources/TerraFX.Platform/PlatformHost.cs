@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX;
@@ -15,14 +16,20 @@ namespace TerraFX.Platform;
 public sealed class PlatformHost
 {
     internal const int MaximumWindowCount = 32;
+    /// <summary>Occurs when a window's requested or natively observed mode changes.</summary>
+    public event EventHandler<WindowModeChangedEventArgs>? WindowModeChanged;
     private readonly Func<InputDeviceHandle, uint, ushort, CancellationToken, Task<InputRoutingReceipt>>? _assignDeviceAsync;
     private readonly IPlatformBackend _backend;
     private readonly ClipboardServiceStatus _clipboardStatus;
     private readonly ClipboardTextService? _clipboardText;
     private readonly Func<WindowHandle, CancellationToken, Task<WindowCommandReceipt>>? _closeWindowAsync;
+    private readonly List<Diagnostic> _pendingModeDiagnostics = [];
     private readonly Func<WindowHandle, Vector2, CancellationToken, Task<WindowCommandReceipt>>? _setClientSizeAsync;
+    private readonly Func<WindowHandle, WindowMode, CancellationToken, Task<WindowCommandReceipt>>? _setModeAsync;
     private readonly Func<WindowHandle, string, CancellationToken, Task<WindowCommandReceipt>>? _setTitleAsync;
+    private readonly TimeProvider _timeProvider;
     private readonly Dictionary<WindowHandle, WindowMetrics> _windowMetrics = [];
+    private readonly Dictionary<WindowHandle, WindowModeState> _windowModeStates = [];
 
     /// <summary>Creates one platform owner from a Runtime-issued identity and explicit service policy.</summary>
     /// <param name="ownerId">The nonzero identity issued by the Runtime host owner.</param>
@@ -34,6 +41,7 @@ public sealed class PlatformHost
     /// <param name="setClientSizeAsync">The Runtime-owned route for window client-size commands.</param>
     /// <param name="setTitleAsync">The Runtime-owned route for window title commands.</param>
     /// <param name="closeWindowAsync">The Runtime-owned route for window close commands.</param>
+    /// <param name="setModeAsync">The Runtime-owned route for window presentation-mode commands.</param>
     internal PlatformHost(
         uint ownerId,
         PlatformBackend backend,
@@ -43,7 +51,8 @@ public sealed class PlatformHost
         Func<InputDeviceHandle, uint, ushort, CancellationToken, Task<InputRoutingReceipt>>? assignDeviceAsync = null,
         Func<WindowHandle, Vector2, CancellationToken, Task<WindowCommandReceipt>>? setClientSizeAsync = null,
         Func<WindowHandle, string, CancellationToken, Task<WindowCommandReceipt>>? setTitleAsync = null,
-        Func<WindowHandle, CancellationToken, Task<WindowCommandReceipt>>? closeWindowAsync = null)
+        Func<WindowHandle, CancellationToken, Task<WindowCommandReceipt>>? closeWindowAsync = null,
+        Func<WindowHandle, WindowMode, CancellationToken, Task<WindowCommandReceipt>>? setModeAsync = null)
     {
         if (!clipboardAllowed && (clipboardPolicy is ClipboardServicePolicy.Required))
         {
@@ -52,6 +61,7 @@ public sealed class PlatformHost
 
         var backendClipboardPolicy = clipboardAllowed ? clipboardPolicy : ClipboardServicePolicy.NotRequested;
         _backend = PlatformBackendFactory.Create(backend, ownerId, backendClipboardPolicy, timeProvider);
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _clipboardStatus = (clipboardPolicy is ClipboardServicePolicy.NotRequested)
             ? ClipboardServiceStatus.NotRequested
             : (clipboardAllowed ? _backend.ClipboardStatus : ClipboardServiceStatus.Unsupported);
@@ -61,6 +71,7 @@ public sealed class PlatformHost
         _assignDeviceAsync = assignDeviceAsync;
         _closeWindowAsync = closeWindowAsync;
         _setClientSizeAsync = setClientSizeAsync;
+        _setModeAsync = setModeAsync;
         _setTitleAsync = setTitleAsync;
     }
 
@@ -148,6 +159,30 @@ public sealed class PlatformHost
     public ImmutableArray<MonitorHandle> GetMonitorHandles()
         => _backend.GetMonitorHandles();
 
+    /// <summary>Gets the latest requested and natively observed mode for a live window.</summary>
+    /// <param name="window">The live window owned by this platform host.</param>
+    /// <exception cref="ArgumentException">The window handle belongs to another platform owner.</exception>
+    /// <exception cref="InvalidOperationException">The window is stale or no mode snapshot has been published.</exception>
+    public WindowModeState GetWindowModeState(WindowHandle window)
+    {
+        if (!window.IsValid || (window.OwnerId != _backend.OwnerId))
+        {
+            throw new ArgumentException("The window handle belongs to another platform owner.", nameof(window));
+        }
+
+        if (!_backend.TryGetNativeWindowBinding(window, out _))
+        {
+            throw new InvalidOperationException("The window handle is stale or no longer active.");
+        }
+
+        if (!_windowModeStates.TryGetValue(window, out var state))
+        {
+            throw new InvalidOperationException("Window mode state has not been published for this window.");
+        }
+
+        return state;
+    }
+
     /// <summary>Requests a logical client-size change on the platform owner.</summary>
     /// <param name="window">The live window owned by this PlatformHost.</param>
     /// <param name="logicalClientSize">The finite positive client extent in 1/96-inch units.</param>
@@ -171,6 +206,35 @@ public sealed class PlatformHost
         var setClientSizeAsync = _setClientSizeAsync
             ?? throw new InvalidOperationException("The PlatformHost has no Runtime window-command owner.");
         return setClientSizeAsync(window, logicalClientSize, cancellationToken);
+    }
+
+    /// <summary>Requests a window presentation mode on the platform owner.</summary>
+    /// <param name="window">The live window owned by this platform host.</param>
+    /// <param name="mode">The requested presentation mode.</param>
+    /// <param name="cancellationToken">The token that cancels the command before owner-thread application.</param>
+    /// <returns>The owner-thread result; native confirmation is reported separately through <see cref="WindowModeChanged"/>.</returns>
+    /// <exception cref="ArgumentException"><paramref name="window"/> belongs to another platform owner.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="mode"/> is invalid.</exception>
+    /// <exception cref="InvalidOperationException">The PlatformHost has no Runtime window-mode command owner.</exception>
+    /// <exception cref="ObjectDisposedException">The owning EngineHost is stopping or has stopped.</exception>
+    public Task<WindowCommandReceipt> SetModeAsync(
+        WindowHandle window,
+        WindowMode mode,
+        CancellationToken cancellationToken = default)
+    {
+        if (!window.IsValid || (window.OwnerId != _backend.OwnerId))
+        {
+            throw new ArgumentException("The window handle belongs to another platform owner.", nameof(window));
+        }
+
+        if (!Enum.IsDefined(mode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode));
+        }
+
+        var setModeAsync = _setModeAsync
+            ?? throw new InvalidOperationException("The PlatformHost has no Runtime window-mode command owner.");
+        return setModeAsync(window, mode, cancellationToken);
     }
 
     /// <summary>Requests a presentation-title change on the platform owner.</summary>
@@ -212,6 +276,7 @@ public sealed class PlatformHost
         }
 
         _ = _windowMetrics.Remove(window);
+        _ = _windowModeStates.Remove(window);
         _backend.CloseWindow(window);
     }
 
@@ -223,10 +288,19 @@ public sealed class PlatformHost
         _clipboardText?.DisposeFromOwner();
         _backend.Dispose();
         _windowMetrics.Clear();
+        _windowModeStates.Clear();
+        _pendingModeDiagnostics.Clear();
     }
 
     internal PlatformInputSampleBatch DrainInputSamples()
         => _backend.DrainInputSamples();
+
+    internal ImmutableArray<Diagnostic> DrainModeDiagnostics()
+    {
+        var diagnostics = ImmutableArray.CreateRange(_pendingModeDiagnostics);
+        _pendingModeDiagnostics.Clear();
+        return diagnostics;
+    }
 
     internal ImmutableArray<WindowHandle> DrainWindowCloseRequests()
         => _backend.DrainWindowCloseRequests();
@@ -237,8 +311,14 @@ public sealed class PlatformHost
     internal PlatformNativeWindowMetrics GetNativeWindowMetrics(WindowHandle window)
         => _backend.GetNativeWindowMetrics(window);
 
+    internal PlatformNativeWindowModeState GetNativeWindowModeState(WindowHandle window)
+        => _backend.GetNativeWindowModeState(window);
+
     internal WindowMetrics? GetWindowMetricsSnapshot(WindowHandle window)
         => _windowMetrics.GetValueOrDefault(window);
+
+    internal WindowModeState? GetWindowModeStateSnapshot(WindowHandle window)
+        => _windowModeStates.GetValueOrDefault(window);
 
     internal void Pump()
     {
@@ -291,6 +371,84 @@ public sealed class PlatformHost
         }
 
         _windowMetrics[window] = metrics;
+    }
+
+    internal WindowCommandStatus SetWindowMode(WindowHandle window, WindowMode mode)
+        => _backend.SetWindowMode(window, mode);
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "Each mode-state subscriber is isolated so one callback cannot suppress later subscribers or unwind native dispatch.")]
+    internal WindowModeState SetWindowModeState(
+        WindowHandle window,
+        PlatformNativeWindowModeState nativeState,
+        long hostSequence)
+    {
+        if (!window.IsValid || (window.OwnerId != _backend.OwnerId))
+        {
+            throw new ArgumentException("The window handle belongs to another platform owner.", nameof(window));
+        }
+
+        if (!_backend.TryGetNativeWindowBinding(window, out _))
+        {
+            throw new InvalidOperationException("The window handle is stale or no longer active.");
+        }
+
+        var state = new WindowModeState(window, nativeState.RequestedMode, nativeState.ObservedMode);
+
+        if (_windowModeStates.TryGetValue(window, out var previousState)
+            && (previousState.RequestedMode == state.RequestedMode)
+            && (previousState.ObservedMode == state.ObservedMode))
+        {
+            return previousState;
+        }
+
+        _windowModeStates[window] = state;
+        var handlers = WindowModeChanged;
+
+        if (handlers is null)
+        {
+            return state;
+        }
+
+        var eventArgs = new WindowModeChangedEventArgs(state, hostSequence);
+
+        foreach (EventHandler<WindowModeChangedEventArgs> handler in handlers.GetInvocationList())
+        {
+            try
+            {
+                handler(this, eventArgs);
+            }
+            catch (Exception exception)
+            {
+                _pendingModeDiagnostics.Add(new Diagnostic(
+                    "SubscriberDeliveryFailed",
+                    DiagnosticSeverity.Error,
+                    _timeProvider.GetTimestamp(),
+                    _backend.OwnerId,
+                    worldGuid: null,
+                    deviceId: null,
+                    surfaceId: null,
+                    deviceEpoch: null,
+                    surfaceEpoch: null,
+                    swapchainEpoch: null,
+                    tick: null,
+                    systemId: null,
+                    passId: null,
+                    assetId: null,
+                    commandIdentity: null,
+                    operation: "PlatformHost.WindowModeChanged",
+                    nativeResult: null,
+                    message: "A window mode state subscriber failed.",
+                    context: [
+                        new DiagnosticContextEntry("HostSequence", hostSequence.ToString(CultureInfo.InvariantCulture)),
+                        new DiagnosticContextEntry("Exception", exception.ToString()),
+                    ]));
+            }
+        }
+
+        return state;
     }
 
     internal WindowCommandStatus SetWindowTitle(WindowHandle window, string title)

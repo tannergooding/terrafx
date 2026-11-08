@@ -147,6 +147,13 @@ internal sealed class HeadlessPlatformBackend : IPlatformBackend
         throw new NotSupportedException("The Headless platform does not create windows.");
     }
 
+    public PlatformNativeWindowModeState GetNativeWindowModeState(WindowHandle window)
+    {
+        EnsureOwnerThread();
+        _ = window;
+        throw new NotSupportedException("The Headless platform does not create windows.");
+    }
+
     public void Pump()
     {
         EnsureOwnerThread();
@@ -201,6 +208,14 @@ internal sealed class HeadlessPlatformBackend : IPlatformBackend
         EnsureOwnerThread();
         _ = window;
         _ = logicalClientSize;
+        return WindowCommandStatus.Unsupported;
+    }
+
+    public WindowCommandStatus SetWindowMode(WindowHandle window, WindowMode mode)
+    {
+        EnsureOwnerThread();
+        _ = window;
+        _ = mode;
         return WindowCommandStatus.Unsupported;
     }
 

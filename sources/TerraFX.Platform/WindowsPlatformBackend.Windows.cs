@@ -18,6 +18,7 @@ internal sealed unsafe partial class WindowsPlatformBackend
 {
     private const int CreateWindowDefaultPosition = int.MinValue;
     private const uint MapVirtualKeyVirtualKeyToScanCodeEx = 4;
+    private const uint MonitorDefaultToNearest = 0x00000002;
     private const uint MonitorDefaultToPrimary = 0x00000001;
     private const uint RawInputCommandInput = 0x10000003;
     private const uint RawInputTypeKeyboard = 1;
@@ -59,11 +60,13 @@ internal sealed unsafe partial class WindowsPlatformBackend
     private const uint WindowMessageKillFocus = 0x0008;
     private const uint WindowMessageNcDestroy = 0x0082;
     private const uint WindowMessageSetFocus = 0x0007;
+    private const uint WindowPositionFrameChanged = 0x0020;
     private const uint WindowPositionNoActivate = 0x0010;
     private const uint WindowPositionNoZOrder = 0x0004;
     private const uint WindowResizableStyleMask = 0x00050000;
     private const int WindowShowNormal = 1;
     private const string WindowStatePropertyName = "TerraFX.Platform.WindowState";
+    private const int WindowStyleIndex = -16;
     private const uint WindowStyleOverlapped = 0x00CF0000;
     private const uint WindowStylePopup = 0x80000000;
     private const string WindowsMessageTimeClockDomain = "win32.message-time-ms";
@@ -246,6 +249,48 @@ internal sealed unsafe partial class WindowsPlatformBackend
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool DestroyWindowNative(nint window);
 
+    private static NativeRect GetCenteredWindowedBounds(WindowState state)
+    {
+        var dpi = GetDpiForWindowNative(state.NativeWindow);
+
+        if (dpi == 0)
+        {
+            throw new InvalidOperationException("Windows did not report DPI for the live window.");
+        }
+
+        var frame = new NativeRect {
+            Right = GetScaledClientExtent(state.ClientWidth, dpi),
+            Bottom = GetScaledClientExtent(state.ClientHeight, dpi),
+        };
+
+        var style = state.Resizable
+            ? WindowStyleOverlapped
+            : WindowStyleOverlapped & ~WindowResizableStyleMask;
+
+        if (!AdjustWindowRectExForDpiNative(&frame, style, hasMenu: false, state.ExtendedStyle, dpi))
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Windows could not calculate the restored windowed extent.");
+        }
+
+        var monitor = MonitorFromWindowNative(state.NativeWindow, MonitorDefaultToNearest);
+
+        if (!TryGetNativeMonitorInfo(monitor, out var monitorInfo))
+        {
+            throw new InvalidOperationException("Windows could not resolve the monitor for the restored windowed extent.");
+        }
+
+        var width = checked(frame.Right - frame.Left);
+        var height = checked(frame.Bottom - frame.Top);
+        var x = monitorInfo.Work.Left + ((monitorInfo.Work.Right - monitorInfo.Work.Left - width) / 2);
+        var y = monitorInfo.Work.Top + ((monitorInfo.Work.Bottom - monitorInfo.Work.Top - height) / 2);
+        return new NativeRect {
+            Left = x,
+            Top = y,
+            Right = checked(x + width),
+            Bottom = checked(y + height),
+        };
+    }
+
     [LibraryImport("user32.dll", EntryPoint = "GetClientRect", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool GetClientRectNative(nint window, NativeRect* rect);
@@ -289,6 +334,9 @@ internal sealed unsafe partial class WindowsPlatformBackend
         return Math.Max(1, checked((int)Math.Round(scaledExtent, MidpointRounding.ToEven)));
     }
 
+    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+    private static partial nint GetWindowLongPtrNative(nint window, int index);
+
     [LibraryImport("user32.dll", EntryPoint = "GetWindowRect", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool GetWindowRectNative(nint window, NativeRect* rect);
@@ -301,6 +349,9 @@ internal sealed unsafe partial class WindowsPlatformBackend
 
     [LibraryImport("user32.dll", EntryPoint = "MonitorFromPoint")]
     private static partial nint MonitorFromPointNative(NativePoint point, uint flags);
+
+    [LibraryImport("user32.dll", EntryPoint = "MonitorFromWindow")]
+    private static partial nint MonitorFromWindowNative(nint window, uint flags);
 
     [LibraryImport("user32.dll", EntryPoint = "RegisterClassExW", SetLastError = true)]
     private static partial ushort RegisterClassExNative(NativeWindowClassEx* windowClass);
@@ -316,8 +367,15 @@ internal sealed unsafe partial class WindowsPlatformBackend
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool SetPropertyNative(nint window, string name, nint data);
 
-    private static void SetWindowBounds(nint window, int x, int y, int width, int height)
+    private static void SetWindowBounds(nint window, int x, int y, int width, int height, bool frameChanged = false)
     {
+        var flags = WindowPositionNoActivate | WindowPositionNoZOrder;
+
+        if (frameChanged)
+        {
+            flags |= WindowPositionFrameChanged;
+        }
+
         if (!SetWindowPositionNative(
             window,
             insertAfter: 0,
@@ -325,11 +383,14 @@ internal sealed unsafe partial class WindowsPlatformBackend
             y,
             width,
             height,
-            WindowPositionNoActivate | WindowPositionNoZOrder))
+            flags))
         {
             throw new Win32Exception(Marshal.GetLastPInvokeError(), "Windows could not apply the requested window bounds.");
         }
     }
+
+    [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+    private static partial nint SetWindowLongPtrNative(nint window, int index, nint newLong);
 
     [LibraryImport("user32.dll", EntryPoint = "SetWindowPos", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -341,6 +402,19 @@ internal sealed unsafe partial class WindowsPlatformBackend
         int width,
         int height,
         uint flags);
+
+    private static void SetWindowStyle(nint window, uint style)
+    {
+        Marshal.SetLastPInvokeError(0);
+        _ = SetWindowLongPtrNative(window, WindowStyleIndex, (nint)style);
+
+        var error = Marshal.GetLastPInvokeError();
+
+        if (error != 0)
+        {
+            throw new Win32Exception(error, "Windows could not apply the requested window style.");
+        }
+    }
 
     [LibraryImport("user32.dll", EntryPoint = "SetWindowTextW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -611,6 +685,23 @@ internal sealed unsafe partial class WindowsPlatformBackend
             DpiConfidence.Reported);
     }
 
+    public PlatformNativeWindowModeState GetNativeWindowModeState(WindowHandle window)
+    {
+        EnsureOwnerThread();
+        var state = FindWindowState(window);
+
+        if ((state is null) || state.IsClosing || state.NativeDestroyed || (state.NativeWindow == 0))
+        {
+            throw new InvalidOperationException("The window handle is stale or no longer active.");
+        }
+
+        var style = unchecked((uint)GetWindowLongPtrNative(state.NativeWindow, WindowStyleIndex));
+        var observedMode = ((style & WindowStylePopup) != 0)
+            ? WindowMode.BorderlessFullscreen
+            : WindowMode.Windowed;
+        return new PlatformNativeWindowModeState(state.Mode, observedMode);
+    }
+
     public void RequestGamepadStateReconciliation(nint nativeDeviceIdentity)
     {
         EnsureOwnerThread();
@@ -683,6 +774,123 @@ internal sealed unsafe partial class WindowsPlatformBackend
             frame.Bottom - frame.Top);
         state.ClientWidth = clientWidth;
         state.ClientHeight = clientHeight;
+        return WindowCommandStatus.Applied;
+    }
+
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "A failed mode transition restores the prior native style/bounds before the owner reports the original failure.")]
+    public WindowCommandStatus SetWindowMode(WindowHandle window, WindowMode mode)
+    {
+        EnsureOwnerThread();
+
+        if (!Enum.IsDefined(mode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode));
+        }
+
+        var state = FindWindowState(window);
+
+        if ((state is null) || state.IsClosing || state.NativeDestroyed || (state.NativeWindow == 0))
+        {
+            return WindowCommandStatus.Disposed;
+        }
+
+        if (mode is WindowMode.ExclusiveFullscreen)
+        {
+            return WindowCommandStatus.Unsupported;
+        }
+
+        var currentMode = GetNativeWindowModeState(window).ObservedMode;
+
+        if (currentMode == mode)
+        {
+            state.Mode = mode;
+            return WindowCommandStatus.Applied;
+        }
+
+        var currentBounds = default(NativeRect);
+
+        if (!GetWindowRectNative(state.NativeWindow, &currentBounds))
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Windows could not read the live window bounds before a mode transition.");
+        }
+
+        var previousStyle = state.Style;
+        var previousWindowedBounds = state.WindowedBounds;
+        var previousHasWindowedBounds = state.HasWindowedBounds;
+        var targetStyle = mode is WindowMode.BorderlessFullscreen
+            ? WindowStylePopup
+            : state.Resizable
+                ? WindowStyleOverlapped
+                : WindowStyleOverlapped & ~WindowResizableStyleMask;
+        NativeRect targetBounds;
+
+        if (mode is WindowMode.BorderlessFullscreen)
+        {
+            state.WindowedBounds = currentBounds;
+            state.HasWindowedBounds = currentMode is WindowMode.Windowed;
+            var monitor = MonitorFromWindowNative(state.NativeWindow, MonitorDefaultToNearest);
+
+            if (!TryGetNativeMonitorInfo(monitor, out var monitorInfo))
+            {
+                throw new InvalidOperationException("Windows could not resolve the monitor for borderless fullscreen.");
+            }
+
+            targetBounds = monitorInfo.Monitor;
+        }
+        else if (state.HasWindowedBounds)
+        {
+            targetBounds = state.WindowedBounds;
+        }
+        else
+        {
+            targetBounds = GetCenteredWindowedBounds(state);
+        }
+
+        try
+        {
+            SetWindowStyle(state.NativeWindow, targetStyle);
+            SetWindowBounds(
+                state.NativeWindow,
+                targetBounds.Left,
+                targetBounds.Top,
+                checked(targetBounds.Right - targetBounds.Left),
+                checked(targetBounds.Bottom - targetBounds.Top),
+                frameChanged: true);
+        }
+        catch (Exception transitionException)
+        {
+            try
+            {
+                SetWindowStyle(state.NativeWindow, previousStyle);
+                SetWindowBounds(
+                    state.NativeWindow,
+                    currentBounds.Left,
+                    currentBounds.Top,
+                    checked(currentBounds.Right - currentBounds.Left),
+                    checked(currentBounds.Bottom - currentBounds.Top),
+                    frameChanged: true);
+                state.WindowedBounds = previousWindowedBounds;
+                state.HasWindowedBounds = previousHasWindowedBounds;
+            }
+            catch (Exception rollbackException)
+            {
+                throw new AggregateException("The Windows mode transition and rollback both failed.", transitionException, rollbackException);
+            }
+
+            throw;
+        }
+
+        state.Style = targetStyle;
+        state.Mode = mode;
+
+        if (mode is WindowMode.Windowed)
+        {
+            state.HasWindowedBounds = false;
+        }
+
         return WindowCommandStatus.Applied;
     }
 
@@ -1426,6 +1634,7 @@ internal sealed unsafe partial class WindowsPlatformBackend
         internal float ClientWidth;
         internal int CloseRequested;
         internal uint ExtendedStyle;
+        internal bool HasWindowedBounds;
         internal bool IsClosing;
         internal bool IsFocused;
         internal float MinimumClientHeight;
@@ -1445,6 +1654,7 @@ internal sealed unsafe partial class WindowsPlatformBackend
         internal string Title;
         internal bool Visible;
         internal WindowHandle Window;
+        internal NativeRect WindowedBounds;
         private Exception? _callbackFailure;
 
         internal WindowState(
