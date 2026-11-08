@@ -720,6 +720,34 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 Remove-Item Env:\TERRAFX_SCENE_ACTIVATION_CONSUMER
 ```
 
-When set, the test launches that exact executable and does not fall back to JIT if it fails. Windows x64 NativeAOT does not qualify Linux.
+When set, the test launches that exact executable and does not fall back to JIT if it fails.
 
-NativeAOT does not support cross-OS compilation; publish Linux artifacts on the required Linux host, then execute them there. JIT or Windows NativeAOT execution does not qualify the Linux target or M02 profiles.
+NativeAOT does not support cross-OS compilation. On WSLg, the Linux GCC 15 toolchain is privately extracted under `artifacts/linux/native/gcc-toolchain`; no system packages are installed. For a fresh WSLg workspace, stage GCC and its development dependencies without system installation:
+
+```bash
+TOOLCHAIN="$WORKTREE/artifacts/linux/native/gcc-toolchain"
+mkdir -p "$TOOLCHAIN/packages" "$TOOLCHAIN/root" "$TOOLCHAIN/bin"
+cd "$TOOLCHAIN/packages"
+apt-get download gcc-15 gcc-15-x86-64-linux-gnu cpp-15 cpp-15-x86-64-linux-gnu gcc-15-base libcc1-0 binutils-x86-64-linux-gnu libgcc-15-dev libc6 libc6-dev libc-dev-bin linux-libc-dev rpcsvc-proto libgcc-s1 libgomp1 libitm1 libatomic1 libasan8 liblsan0 libtsan2 libubsan1 libhwasan0 libquadmath0 libgmp10 libisl23 libmpc3 libmpfr6 libstdc++6 libzstd1 zlib1g
+for package in ./*.deb; do dpkg-deb -x "$package" "$TOOLCHAIN/root"; done
+export TERRAFX_GCC_ROOT="$TOOLCHAIN/root"
+printf '%s\n' '#!/bin/sh' ': "${TERRAFX_GCC_ROOT:?set TERRAFX_GCC_ROOT}"' 'exec "$TERRAFX_GCC_ROOT/usr/bin/x86_64-linux-gnu-gcc-15" --sysroot="$TERRAFX_GCC_ROOT" "$@"' > "$TOOLCHAIN/bin/gcc"
+chmod +x "$TOOLCHAIN/bin/gcc"
+export PATH="$TOOLCHAIN/bin:$TERRAFX_GCC_ROOT/usr/bin:$PATH"
+export GCC_EXEC_PREFIX="$TERRAFX_GCC_ROOT/usr/lib/gcc/"
+export CPATH="$TERRAFX_GCC_ROOT/usr/include:$TERRAFX_GCC_ROOT/usr/include/x86_64-linux-gnu"
+export C_INCLUDE_PATH="$CPATH"
+export LIBRARY_PATH="$TERRAFX_GCC_ROOT/usr/lib/x86_64-linux-gnu:$TERRAFX_GCC_ROOT/lib/x86_64-linux-gnu:$TERRAFX_GCC_ROOT/usr/lib/gcc/x86_64-linux-gnu/15"
+export LD_LIBRARY_PATH="$WORKTREE/artifacts/linux/native/extracted/usr/lib/x86_64-linux-gnu:$TERRAFX_GCC_ROOT/usr/lib/x86_64-linux-gnu:$TERRAFX_GCC_ROOT/lib/x86_64-linux-gnu:$TERRAFX_GCC_ROOT/usr/lib/gcc/x86_64-linux-gnu/15${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+```
+
+Publish and execute the unsafe-disabled handwritten and generated consumers with the pinned Linux SDK:
+
+```bash
+"$DOTNET_ROOT/dotnet" publish "$WORKTREE/tests/TerraFX.Runtime.ComponentConsumer/TerraFX.Runtime.ComponentConsumer.csproj" --configuration Release --runtime linux-x64 --self-contained true -p:TerraFXPublishAot=true "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" publish "$WORKTREE/tests/TerraFX.Runtime.GeneratedComponentConsumer/TerraFX.Runtime.GeneratedComponentConsumer.csproj" --configuration Release --runtime linux-x64 --self-contained true -p:TerraFXPublishAot=true "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$WORKTREE/artifacts/linux/bin/tests/TerraFX.Runtime.GeneratedComponentConsumer/Release/net11.0/linux-x64/publish/TerraFX.Runtime.GeneratedComponentConsumer"
+TERRAFX_SCENE_ACTIVATION_CONSUMER="$WORKTREE/artifacts/linux/bin/tests/TerraFX.Runtime.ComponentConsumer/Release/net11.0/linux-x64/publish/TerraFX.Runtime.ComponentConsumer" "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SceneLoaderActivationHandlesExplicitNullEntityReference" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
+Both Linux x64 NativeAOT consumers execute successfully; the Headless Scene activation selection passes 4/4 with the exact published executable. This does not qualify Interactive hosting, graphics presentation/WSI, physical input, or Linux GPU hardware. JIT or Windows NativeAOT execution does not qualify the Linux target.
