@@ -290,6 +290,31 @@ internal sealed unsafe partial class WaylandPlatformBackend
             SetTitle(state, options.Title);
             SetApplicationId(state);
 
+            var minimumSizeArguments = stackalloc WaylandArgument[2];
+            minimumSizeArguments[0].Unsigned = checked((uint)GetPixelExtent(
+                options.MinimumClientSize.X,
+                1.0f,
+                nameof(options.MinimumClientSize)));
+            minimumSizeArguments[1].Unsigned = checked((uint)GetPixelExtent(
+                options.MinimumClientSize.Y,
+                1.0f,
+                nameof(options.MinimumClientSize)));
+            Connection.SendRequest(toplevel, opcode: 8, minimumSizeArguments);
+
+            if (!options.Resizable)
+            {
+                var maximumSizeArguments = stackalloc WaylandArgument[2];
+                maximumSizeArguments[0].Unsigned = checked((uint)GetPixelExtent(
+                    options.ClientSize.X,
+                    1.0f,
+                    nameof(options.ClientSize)));
+                maximumSizeArguments[1].Unsigned = checked((uint)GetPixelExtent(
+                    options.ClientSize.Y,
+                    1.0f,
+                    nameof(options.ClientSize)));
+                Connection.SendRequest(toplevel, opcode: 7, maximumSizeArguments);
+            }
+
             if (options.Mode is WindowMode.BorderlessFullscreen)
             {
                 SetFullscreen(state, requestedFullscreen: true);

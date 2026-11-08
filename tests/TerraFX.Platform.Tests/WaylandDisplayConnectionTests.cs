@@ -83,6 +83,8 @@ internal sealed class WaylandDisplayConnectionTests
                 window,
                 new WindowOptions("TerraFX Wayland test") {
                     ClientSize = new Vector2(640.0f, 360.0f),
+                    MinimumClientSize = new Vector2(320.0f, 180.0f),
+                    Resizable = false,
                     Visible = false,
                 },
                 nativeMonitorHandle: 0);
