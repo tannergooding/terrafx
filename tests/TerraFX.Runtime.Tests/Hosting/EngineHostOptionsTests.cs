@@ -1041,22 +1041,36 @@ internal sealed partial class EngineHostOptionsTests
                 compiledTextureAliasChainPlan.TransientTextureAliasingBarriers.Length,
                 Is.EqualTo(transientTextureAliasCount - 1));
 
+            GraphicsResourceAllocationLease? sequentialTextureAllocationLease = null;
+
             for (var iteration = 0; iteration < transientTextureAliasCount; iteration++)
             {
-                using var materializedAliasGroup = graphicsDevice.CreateTransientTextureGroupAsync(
-                    compiledTextureAliasChainPlan.TransientTextureGroups[0],
-                    CancellationToken.None)
-                    .GetAwaiter()
-                    .GetResult();
-                Assert.That(materializedAliasGroup.Textures.Length, Is.EqualTo(transientTextureAliasCount));
+                GraphicsResourceAllocationLease allocationLease;
 
-                for (var index = 0; index < materializedAliasGroup.Textures.Length; index++)
+                using (var materializedAliasGroup = graphicsDevice.CreateTransientTextureGroupAsync(
+                           compiledTextureAliasChainPlan.TransientTextureGroups[0],
+                           CancellationToken.None)
+                       .GetAwaiter()
+                       .GetResult())
                 {
-                    var aliasTexture = materializedAliasGroup.Textures[index];
-                    Assert.That(aliasTexture.Handle.IsValid, Is.True);
-                    Assert.That(aliasTexture.Handle.OwnerId, Is.EqualTo(platformOwner.OwnerId));
-                    Assert.That(aliasTexture.Handle.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
+                    Assert.That(materializedAliasGroup.Textures.Length, Is.EqualTo(transientTextureAliasCount));
+                    allocationLease = materializedAliasGroup.Textures[0].ResourceOwner.AllocationLease
+                        ?? throw new InvalidOperationException("A materialized transient texture alias group lost its allocation lease.");
+                    sequentialTextureAllocationLease ??= allocationLease;
+                    Assert.That(allocationLease, Is.SameAs(sequentialTextureAllocationLease));
+
+                    for (var index = 0; index < materializedAliasGroup.Textures.Length; index++)
+                    {
+                        var aliasTexture = materializedAliasGroup.Textures[index];
+                        Assert.That(aliasTexture.Handle.IsValid, Is.True);
+                        Assert.That(aliasTexture.Handle.OwnerId, Is.EqualTo(platformOwner.OwnerId));
+                        Assert.That(aliasTexture.Handle.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
+                    }
                 }
+
+                Assert.That(
+                    SpinWait.SpinUntil(() => allocationLease.ReferenceCount == 1, TimeSpan.FromSeconds(5)),
+                    Is.True);
             }
 
             {

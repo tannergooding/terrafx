@@ -48,6 +48,8 @@ Lifetimes use first/last scheduled access, including side-effect/readback export
 
 The host-configured graphics frame-slot count defaults to 3; `EngineHostOptions.GraphicsFrameSlotCount` accepts integer counts in `[1, 4]`. Headless creates no graphics slots. Each accepted graph owns one slot through its actual queue fence; an incomplete slot cannot be reset or reused. A different slot's transient allocation remains protected by its own last-use timeline, so graph lifetime intervals alone cannot alias across live slots. Deterministic allocator first-fit aligned block order; reject budget overflow before submit, retain previous completed frame with an explicit failed-frame event.
 
+Compatible transient-texture alias allocations may be reused by later graphs only after every resource owner from the previous group has retired through its actual last-use fence. The device retains one pool reference to free allocations, so cached bytes remain charged to the normal resource budgets; when an allocation needs room, it evicts the earliest-created reusable pool entry first. Clean device shutdown releases the pool after resource retirement, while uncertain native teardown retains it with the quarantined device. A live resource or incomplete graph fence always prevents reuse.
+
 ## 4. D3D12 presentation
 
 DirectX Graphics Infrastructure (DXGI) flip-discard swapchain, requested 3 buffers (clamped to supported profile), waitable frame-latency object, standard dynamic range (SDR) RGBA/BGRA UNorm with matching sRGB RTV when legal. If hardware sRGB output attachment unavailable, explicit final shader sRGB encoding to UNorm; never both.

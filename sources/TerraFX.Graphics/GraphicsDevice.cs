@@ -51,6 +51,7 @@ public sealed partial class GraphicsDevice
     private readonly TaskCompletionSource _shutdownCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _shutdownTask;
     private int _status;
+    private readonly List<(TextureDescription Description, GraphicsResourceAllocationInfo AllocationInfo, GraphicsResourceAllocationLease Lease)> _transientTextureAllocationPool = [];
 
     private GraphicsDevice(uint ownerId, IGraphicsBackendDevice backendDevice, int frameSlotCount)
     {
@@ -1536,11 +1537,6 @@ public sealed partial class GraphicsDevice
         Justification = "The Graphics allocation contract uses contextual OutOfMemoryException for exhausted resource budgets.")]
     private void ReserveResourceAllocation(GpuMemoryKind memoryKind, GraphicsResourceAllocationInfo allocationInfo)
     {
-        if (allocationInfo.SizeBytes > (DefaultOwnedAllocationBudgetBytes - _allocatedResourceBytes))
-        {
-            throw new OutOfMemoryException("The GraphicsDevice's persistent allocation budget is exhausted.");
-        }
-
         GraphicsMemoryHeapCapabilities? selectedHeap = null;
 
         foreach (var heap in Capabilities.MemoryHeaps)
@@ -1569,10 +1565,26 @@ public sealed partial class GraphicsDevice
 
         var heapBudget = allocationInfo.BudgetBytes ?? selectedHeap.BudgetBytes ?? selectedHeap.SizeBytes;
         var allocatedOnHeap = _allocatedBytesByHeap.GetValueOrDefault(allocationInfo.HeapIndex);
+        var exceedsPersistentBudget = allocationInfo.SizeBytes > (DefaultOwnedAllocationBudgetBytes - _allocatedResourceBytes);
+        var exceedsHeapBudget = allocationInfo.SizeBytes > (heapBudget - allocatedOnHeap);
 
-        if (allocationInfo.SizeBytes > (heapBudget - allocatedOnHeap))
+        while (exceedsPersistentBudget || exceedsHeapBudget)
         {
-            throw new OutOfMemoryException($"The GraphicsDevice's native memory heap {allocationInfo.HeapIndex} budget is exhausted.");
+            var heapToEvict = exceedsHeapBudget ? allocationInfo.HeapIndex : (int?)null;
+
+            if (!TryEvictTransientTextureAllocationOnOwner(heapToEvict))
+            {
+                if (exceedsPersistentBudget)
+                {
+                    throw new OutOfMemoryException("The GraphicsDevice's persistent allocation budget is exhausted.");
+                }
+
+                throw new OutOfMemoryException($"The GraphicsDevice's native memory heap {allocationInfo.HeapIndex} budget is exhausted.");
+            }
+
+            allocatedOnHeap = _allocatedBytesByHeap.GetValueOrDefault(allocationInfo.HeapIndex);
+            exceedsPersistentBudget = allocationInfo.SizeBytes > (DefaultOwnedAllocationBudgetBytes - _allocatedResourceBytes);
+            exceedsHeapBudget = allocationInfo.SizeBytes > (heapBudget - allocatedOnHeap);
         }
 
         var totalBytes = checked(_allocatedResourceBytes + allocationInfo.SizeBytes);
@@ -1788,6 +1800,11 @@ public sealed partial class GraphicsDevice
                     }
 
                     RetireResourcesForShutdown();
+
+                    if (!_hasQuarantinedResources)
+                    {
+                        DisposeTransientTextureAllocationsOnOwner();
+                    }
 
                     if (_hasQuarantinedResources)
                     {

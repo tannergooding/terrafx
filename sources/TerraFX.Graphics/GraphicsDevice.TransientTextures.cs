@@ -193,17 +193,27 @@ public sealed partial class GraphicsDevice
 
         var description = versions[0].Description;
         var allocationInfo = backendDevice.GetTransientTextureAllocationInfo(description);
-        ReserveResourceAllocation(GpuMemoryKind.DeviceLocal, allocationInfo);
+        var allocationLease = FindReusableTransientTextureAllocation(description, allocationInfo);
+        var isReusedAllocation = allocationLease is not null;
 
         IGraphicsBackendTextureAllocation? backendAllocation = null;
-        GraphicsResourceAllocationLease? allocationLease = null;
+
+        if (!isReusedAllocation)
+        {
+            _ = _transientTextureAllocationPool.EnsureCapacity(_transientTextureAllocationPool.Count + 1);
+            ReserveResourceAllocation(GpuMemoryKind.DeviceLocal, allocationInfo);
+        }
+
         var textures = new List<GpuTexture>(versions.Length);
 
         try
         {
-            backendAllocation = backendDevice.CreateTextureAllocation(description, allocationInfo);
-            allocationLease = new GraphicsResourceAllocationLease(backendAllocation, allocationInfo);
-            backendAllocation = null;
+            if (allocationLease is null)
+            {
+                backendAllocation = backendDevice.CreateTextureAllocation(description, allocationInfo);
+                allocationLease = new GraphicsResourceAllocationLease(backendAllocation, allocationInfo);
+                backendAllocation = null;
+            }
 
             for (var index = 0; index < versions.Length; index++)
             {
@@ -217,7 +227,15 @@ public sealed partial class GraphicsDevice
                 reservations[index] = null;
             }
 
-            return new GraphicsTransientTextureGroup([.. textures]);
+            var group = new GraphicsTransientTextureGroup([.. textures]);
+
+            if (!isReusedAllocation)
+            {
+                allocationLease.AddReference();
+                _transientTextureAllocationPool.Add((description, allocationInfo, allocationLease));
+            }
+
+            return group;
         }
         catch (Exception exception)
         {
@@ -298,12 +316,88 @@ public sealed partial class GraphicsDevice
         }
     }
 
+    private void DisposeTransientTextureAllocationsOnOwner()
+    {
+        if (!IsOwnerThread)
+        {
+            throw new InvalidOperationException("Transient texture allocations must be released on the graphics owner thread.");
+        }
+
+        while (_transientTextureAllocationPool.Count > 0)
+        {
+            if (!TryEvictTransientTextureAllocationOnOwner(heapIndex: null))
+            {
+                throw new InvalidOperationException("A transient texture allocation remained in use during GraphicsDevice shutdown.");
+            }
+        }
+    }
+
+    private GraphicsResourceAllocationLease? FindReusableTransientTextureAllocation(
+        TextureDescription description,
+        GraphicsResourceAllocationInfo allocationInfo)
+    {
+        for (var index = 0; index < _transientTextureAllocationPool.Count; index++)
+        {
+            (var candidateDescription, var candidateAllocationInfo, var candidateLease) = _transientTextureAllocationPool[index];
+
+            if ((candidateLease.ReferenceCount == 1)
+                && !candidateLease.IsReleased
+                && AreTransientTextureDescriptionsCompatible(description, candidateDescription)
+                && (allocationInfo.SizeBytes == candidateAllocationInfo.SizeBytes)
+                && (allocationInfo.Alignment == candidateAllocationInfo.Alignment)
+                && (allocationInfo.HeapIndex == candidateAllocationInfo.HeapIndex))
+            {
+                return candidateLease;
+            }
+        }
+
+        return null;
+    }
+
     private void QuarantineTransientTextureGroup(GraphicsTransientTextureGroup group, Exception exception)
     {
         foreach (var texture in group.Textures)
         {
             QuarantineResource(texture.ResourceOwner, exception);
         }
+    }
+
+    private bool TryEvictTransientTextureAllocationOnOwner(int? heapIndex)
+    {
+        for (var index = 0; index < _transientTextureAllocationPool.Count; index++)
+        {
+            var (_, allocationInfo, allocationLease) = _transientTextureAllocationPool[index];
+
+            if ((allocationLease.ReferenceCount != 1)
+                || allocationLease.IsReleased
+                || (heapIndex.HasValue && (allocationInfo.HeapIndex != heapIndex.Value)))
+            {
+                continue;
+            }
+
+            _transientTextureAllocationPool.RemoveAt(index);
+
+            GraphicsResourceAllocationInfo releasedAllocationInfo;
+
+            try
+            {
+                releasedAllocationInfo = allocationLease.Release();
+            }
+            catch (Exception exception)
+            {
+                QuarantineBackendResource(allocationLease.BackendAllocation, exception);
+                throw;
+            }
+
+            if (releasedAllocationInfo.SizeBytes > 0)
+            {
+                ReleaseResourceAllocation(releasedAllocationInfo);
+            }
+
+            return true;
+        }
+
+        return false;
     }
 
     private sealed class CreateTransientTextureGroupRequest : IGraphicsDeviceWork

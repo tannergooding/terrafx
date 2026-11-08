@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Threading;
 
 namespace TerraFX.Graphics;
 
@@ -25,24 +26,26 @@ internal sealed class GraphicsResourceAllocationLease
 
     internal bool IsReleased => _backendAllocation is null;
 
-    internal int ReferenceCount => _referenceCount;
+    internal int ReferenceCount => Volatile.Read(ref _referenceCount);
 
     internal void AddReference()
     {
         ObjectDisposedException.ThrowIf(_backendAllocation is null, this);
-        _referenceCount = checked(_referenceCount + 1);
+        Volatile.Write(ref _referenceCount, checked(ReferenceCount + 1));
     }
 
     internal GraphicsResourceAllocationInfo Release()
     {
-        if (_referenceCount <= 0)
+        var referenceCount = ReferenceCount;
+
+        if (referenceCount <= 0)
         {
             throw new InvalidOperationException("The shared Graphics allocation has no resource references.");
         }
 
-        if (_referenceCount > 1)
+        if (referenceCount > 1)
         {
-            _referenceCount--;
+            Volatile.Write(ref _referenceCount, referenceCount - 1);
             return default;
         }
 
@@ -50,13 +53,13 @@ internal sealed class GraphicsResourceAllocationLease
             ?? throw new ObjectDisposedException(nameof(GraphicsResourceAllocationLease));
         backendAllocation.Dispose();
         _backendAllocation = null;
-        _referenceCount = 0;
+        Volatile.Write(ref _referenceCount, 0);
         return _allocationInfo;
     }
 
     internal GraphicsResourceAllocationInfo ReleaseUnreferenced()
     {
-        if (_referenceCount != 0)
+        if (ReferenceCount != 0)
         {
             throw new InvalidOperationException("A shared Graphics allocation still has resource references.");
         }

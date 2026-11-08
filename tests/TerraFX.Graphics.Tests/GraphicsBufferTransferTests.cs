@@ -446,6 +446,7 @@ internal sealed class GraphicsBufferTransferTests
             registry.CreateTransientTexture(description));
         var groups = new List<GraphicsTransientTextureGroup>(liveGroupCount + 1);
         var uses = new GraphicsResourceOwner.UseLease?[liveGroupCount];
+        GpuTexture? budgetProbe = null;
 
         try
         {
@@ -489,7 +490,7 @@ internal sealed class GraphicsBufferTransferTests
             uses[1]?.Dispose();
             uses[1] = null;
             Assert.That(
-                SpinWait.SpinUntil(() => backendDevice.TextureAllocationDisposalCount == 1, TimeSpan.FromSeconds(5)),
+                SpinWait.SpinUntil(() => backendDevice.TextureDisposalCount == (liveGroupCount + 1), TimeSpan.FromSeconds(5)),
                 Is.True);
 
             var replacementGroup = await graphicsDevice.CreateTransientTextureGroupAsync(
@@ -500,10 +501,26 @@ internal sealed class GraphicsBufferTransferTests
             groups.Add(replacementGroup);
             var replacementAllocationLease = replacementGroup.Textures[0].ResourceOwner.AllocationLease
                 ?? throw new InvalidOperationException("The replacement transient texture group lost its shared allocation lease.");
-            Assert.That(allocationLeases.Contains(replacementAllocationLease), Is.False);
+            Assert.That(allocationLeases.Contains(replacementAllocationLease), Is.True);
+            Assert.That(backendDevice.TextureAllocationCreationCount, Is.EqualTo(liveGroupCount));
+            Assert.That(backendDevice.TextureAllocationDisposalCount, Is.Zero);
             replacementGroup.Dispose();
             Assert.That(
-                SpinWait.SpinUntil(() => backendDevice.TextureAllocationDisposalCount == 2, TimeSpan.FromSeconds(5)),
+                SpinWait.SpinUntil(
+                    () => backendDevice.TextureDisposalCount == (liveGroupCount + 3),
+                    TimeSpan.FromSeconds(5)),
+                Is.True);
+
+            budgetProbe = await graphicsDevice.CreateTextureAsync(description)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert.That(backendDevice.TextureAllocationDisposalCount, Is.EqualTo(1));
+            budgetProbe.Dispose();
+            budgetProbe = null;
+            Assert.That(
+                SpinWait.SpinUntil(
+                    () => backendDevice.TextureDisposalCount == (liveGroupCount + 4),
+                    TimeSpan.FromSeconds(5)),
                 Is.True);
 
             for (var index = 0; index < uses.Length; index++)
@@ -513,12 +530,14 @@ internal sealed class GraphicsBufferTransferTests
             }
 
             await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            Assert.That(backendDevice.TextureAllocationCreationCount, Is.EqualTo(liveGroupCount + 1));
-            Assert.That(backendDevice.TextureAllocationDisposalCount, Is.EqualTo(liveGroupCount + 1));
-            Assert.That(backendDevice.TextureDisposalCount, Is.EqualTo((liveGroupCount + 1) * 2));
+            Assert.That(backendDevice.TextureAllocationCreationCount, Is.EqualTo(liveGroupCount));
+            Assert.That(backendDevice.TextureAllocationDisposalCount, Is.EqualTo(liveGroupCount));
+            Assert.That(backendDevice.TextureDisposalCount, Is.EqualTo(((liveGroupCount + 1) * 2) + 1));
         }
         finally
         {
+            budgetProbe?.Dispose();
+
             foreach (var use in uses)
             {
                 use?.Dispose();

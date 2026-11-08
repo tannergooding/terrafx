@@ -2961,7 +2961,7 @@ internal sealed partial class EngineHostOptionsTests
                             {
                                 foreach (var allocationLease in allocationGroup)
                                 {
-                                    if (!allocationLease.IsReleased)
+                                    if (allocationLease.IsReleased || (allocationLease.ReferenceCount != 1))
                                     {
                                         return false;
                                     }
