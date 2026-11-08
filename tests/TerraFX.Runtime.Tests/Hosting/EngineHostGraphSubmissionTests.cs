@@ -240,6 +240,102 @@ internal sealed partial class EngineHostOptionsTests
             useUploadHeapGraphSources: true);
 
     [Test]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "The synchronous GraphicsDevice requests complete before their native owners are retired.")]
+    public void D3D12TransientTextureAllocationPoolReusesAfterRetirement()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            Assert.Ignore("The D3D12 transient allocation witness requires Windows 11.");
+            return;
+        }
+
+        var registration = D3D12GraphicsBackend.CreateRegistration();
+        var options = new EngineHostOptions(
+            HostProfile.OffscreenNative,
+            PlatformBackend.Headless,
+            GraphicsBackend.D3D12,
+            registration,
+            CreateAssetStoreOptions()) {
+            CpuWorkerCount = 0,
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
+        var platformOwner = PlatformHostOwner.Create(options);
+        GraphicsDevice? graphicsDevice = null;
+
+        try
+        {
+            try
+            {
+                graphicsDevice = GraphicsDevice.CreateAsync(
+                    platformOwner.OwnerId,
+                    registration,
+                    GraphicsDeviceProfile.OffscreenNative,
+                    options.GraphicsFrameSlotCount,
+                    GraphicsPlatformKind.None,
+                    CancellationToken.None).GetAwaiter().GetResult();
+            }
+            catch (NotSupportedException exception)
+            {
+                Assert.Ignore($"No D3D12 device satisfies OffscreenNative: {exception.Message}");
+                return;
+            }
+
+            var registry = new GraphResourceRegistry(graphicsDevice, graphOwnerId: 7);
+            var description = new TextureDescription(
+                TextureDimension.Dimension2D,
+                width: 4,
+                height: 4,
+                depth: 1,
+                arrayLayers: 1,
+                mipLevels: 1,
+                TextureFormat.Rgba8Unorm,
+                TextureUsage.Sampled | TextureUsage.ColorAttachment,
+                debugName: "D3D12 completed transient texture reuse");
+            var versions = ImmutableArray.Create(
+                registry.CreateTransientTexture(description),
+                registry.CreateTransientTexture(description));
+            GraphicsResourceAllocationLease? firstAllocationLease = null;
+
+            for (var iteration = 0; iteration < 16; iteration++)
+            {
+                GraphicsResourceAllocationLease allocationLease;
+
+                using (var group = graphicsDevice.CreateTransientTextureGroupAsync(
+                           versions,
+                           CancellationToken.None)
+                       .GetAwaiter()
+                       .GetResult())
+                {
+                    Assert.That(group.Textures.Length, Is.EqualTo(2));
+                    allocationLease = group.Textures[0].ResourceOwner.AllocationLease
+                        ?? throw new InvalidOperationException("The D3D12 transient texture group lost its shared allocation lease.");
+                    Assert.That(group.Textures[1].ResourceOwner.AllocationLease, Is.SameAs(allocationLease));
+                    firstAllocationLease ??= allocationLease;
+                    Assert.That(allocationLease, Is.SameAs(firstAllocationLease));
+                }
+
+                Assert.That(
+                    SpinWait.SpinUntil(() => allocationLease.ReferenceCount == 1, TimeSpan.FromSeconds(5)),
+                    Is.True);
+            }
+        }
+        finally
+        {
+            try
+            {
+                graphicsDevice?.ShutdownAsync().GetAwaiter().GetResult();
+            }
+            finally
+            {
+                platformOwner.DisposeFromOwner();
+            }
+        }
+    }
+
+    [Test]
     public Task PlansOverlappingTransientTextureLifetimesSeparatelyOnVulkan()
         => RunOffscreenGraphAsync(
             GraphicsBackend.Vulkan,

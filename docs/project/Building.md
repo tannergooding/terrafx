@@ -379,6 +379,8 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "Name~D3D12GraphAllocatesTransientBufferAliasGroupsAcrossReservedSlots"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "Name~D3D12SubmitsTransientBufferAliasGroupsAcrossLiveSlots"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "Name~D3D12SubmitsTransientBufferAliasGroupsAcrossLiveSlots"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~D3D12TransientTextureAllocationPoolReusesAfterRetirement"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~D3D12TransientTextureAllocationPoolReusesAfterRetirement"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "Name~SubmitsTransientBufferAliasGraphFromUploadBufferOnVulkan"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "Name~SubmitsTransientBufferAliasGraphFromUploadBufferOnVulkan"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "Name~SubmitsTransientBufferAliasGroupsAcrossLiveSlotsOnVulkan"
