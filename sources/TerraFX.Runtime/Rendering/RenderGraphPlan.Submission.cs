@@ -10,10 +10,13 @@ namespace TerraFX.Rendering;
 public sealed partial class RenderGraphPlan
 {
     internal GraphicsGraphSubmission CreateGraphicsSubmission(
+        GpuTexture outputColorTarget,
         ImmutableArray<RecordedPassCommandList> recordedPassCommandLists,
         ImmutableArray<GraphBufferImportRecord> transientBufferImports,
         ImmutableArray<GraphTextureImportRecord> transientTextureImports)
     {
+        ArgumentNullException.ThrowIfNull(outputColorTarget);
+
         if (recordedPassCommandLists.IsDefault)
         {
             throw new ArgumentException("Recorded pass command lists must be initialized.", nameof(recordedPassCommandLists));
@@ -126,12 +129,44 @@ public sealed partial class RenderGraphPlan
             throw new ArgumentException("A recorded command list does not belong to this compiled graph.", nameof(recordedPassCommandLists));
         }
 
-        var outputTarget = OffscreenColorTarget
-            ?? throw new NotSupportedException("Native submission of surface-targeted graphs is not available.");
+        var outputImportIndex = -1;
+
+        for (var index = 0; index < textureImports.Count; index++)
+        {
+            if (ReferenceEquals(textureImports[index].Texture, outputColorTarget))
+            {
+                if (outputImportIndex >= 0)
+                {
+                    throw new ArgumentException("The selected graph output texture has duplicate imports.", nameof(outputColorTarget));
+                }
+
+                outputImportIndex = index;
+            }
+        }
+
+        if (outputImportIndex < 0)
+        {
+            throw new ArgumentException("The selected graph output texture is not imported by the compiled plan.", nameof(outputColorTarget));
+        }
+
+        var orderedTextureImports = ImmutableArray.CreateBuilder<GraphTextureImportRecord>(textureImports.Count);
+        orderedTextureImports.Add(textureImports[outputImportIndex]);
+
+        for (var index = 0; index < textureImports.Count; index++)
+        {
+            if (index != outputImportIndex)
+            {
+                orderedTextureImports.Add(textureImports[index]);
+            }
+        }
 
         return new GraphicsGraphSubmission(
             DeviceEpoch,
-            outputTarget,
+            outputColorTarget,
+            SurfaceTarget,
+            PresentationSource,
+            SurfaceEpoch,
+            SwapchainEpoch,
             OrderedPasses,
             passes.ToImmutable(),
             StateTransitions,
@@ -139,7 +174,7 @@ public sealed partial class RenderGraphPlan
             TransientTextureAliasingBarriers,
             Accesses,
             bufferImports.MoveToImmutable(),
-            textureImports.MoveToImmutable(),
+            orderedTextureImports.MoveToImmutable(),
             recordedPassCommandLists);
     }
 }

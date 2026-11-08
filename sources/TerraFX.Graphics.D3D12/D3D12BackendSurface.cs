@@ -1,10 +1,13 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
+using System.Threading;
 using TerraFX;
 using TerraFX.Graphics;
 using TerraFX.Interop.DirectX;
@@ -12,14 +15,25 @@ using TerraFX.Interop.Windows;
 
 namespace TerraFX.Graphics.D3D12;
 
-internal sealed unsafe class D3D12BackendSurface : IGraphicsBackendSurface
+internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurface
 {
-    private const uint DefaultMaximumFrameLatency = 2;
+    private const uint DefaultMaximumFrameLatency = 1;
+    private const int DxgiErrorDeviceRemoved = unchecked((int)0x887A0005);
+    private const int DxgiErrorDeviceReset = unchecked((int)0x887A0007);
+    private const int DxgiErrorFrameStatisticsDisjoint = unchecked((int)0x887A000B);
+    private const uint DxgiPresentTest = 1;
+    private const int DxgiStatusOccluded = 0x087A0001;
     private const int EInvalidArgument = unchecked((int)0x80070057);
     private const int ENoInterface = unchecked((int)0x80004002);
+    private const uint FrameLatencyWaitMilliseconds = 5000;
+    private const uint PresentationObservationTimeoutMilliseconds = 5000;
+    private const uint PresentationWaitMilliseconds = 16;
     private const uint SwapChainBufferCount = 3;
     // DXGI_USAGE_RENDER_TARGET_OUTPUT from the DXGI_SWAP_CHAIN_DESC1 contract.
     private const uint SwapChainBufferUsageRenderTargetOutput = 0x20;
+    private const uint WaitFailed = uint.MaxValue;
+    private const uint WaitObject0 = 0;
+    private const uint WaitTimeout = 258;
 
     private readonly GraphicsNativeSurfaceBinding _binding;
     private SurfaceCapabilities _capabilities;
@@ -31,7 +45,20 @@ internal sealed unsafe class D3D12BackendSurface : IGraphicsBackendSurface
     private HANDLE _frameLatencyWaitableObject;
     private readonly GraphicsCapabilities _graphicsCapabilities;
     private uint _lastSwapchainEpoch;
+    private long _nextPresentationSequence;
     private readonly int _ownerThreadId = Environment.CurrentManagedThreadId;
+    private readonly Dictionary<long, (
+        uint NativePresentCount,
+        uint SurfaceEpoch,
+        uint SwapchainEpoch,
+        PresentationStatus? TerminalStatus)> _pendingPresentations = [];
+    private readonly Lock _presentationGate = new();
+    private readonly List<(
+        long FirstSequence,
+        long LastSequence,
+        uint SurfaceEpoch,
+        uint SwapchainEpoch,
+        PresentationStatus Status)> _presentationHistory = [];
     private readonly bool _supportsTearing;
     private IDXGISwapChain3* _swapChain;
     private readonly uint _swapChainFlags;
@@ -341,6 +368,45 @@ internal sealed unsafe class D3D12BackendSurface : IGraphicsBackendSurface
         }
     }
 
+    private static Diagnostic? CreatePresentationDiagnostic(
+        PresentationStatus status,
+        uint deviceEpoch,
+        uint surfaceEpoch,
+        uint swapchainEpoch)
+    {
+        if (status is PresentationStatus.Presented or PresentationStatus.Occluded or PresentationStatus.Suspended)
+        {
+            return null;
+        }
+
+        var code = status switch {
+            PresentationStatus.DeviceLost => "graphics.presentation.device-lost",
+            PresentationStatus.SurfaceLost => "graphics.presentation.surface-lost",
+            PresentationStatus.SwapchainLost => "graphics.presentation.swapchain-lost",
+            _ => throw new ArgumentOutOfRangeException(nameof(status)),
+        };
+        return new Diagnostic(
+            code,
+            DiagnosticSeverity.Error,
+            Stopwatch.GetTimestamp(),
+            hostId: null,
+            worldGuid: null,
+            deviceId: null,
+            surfaceId: null,
+            deviceEpoch,
+            surfaceEpoch,
+            swapchainEpoch,
+            tick: null,
+            systemId: null,
+            passId: null,
+            assetId: null,
+            commandIdentity: null,
+            operation: "Surface.WaitForPresentation",
+            nativeResult: null,
+            message: $"D3D12 presentation ended with {status}.",
+            context: []);
+    }
+
     private static SurfaceCapabilities CreateSurfaceCapabilities(
         GraphicsCapabilities graphicsCapabilities,
         TextureFormat colorFormat,
@@ -364,12 +430,24 @@ internal sealed unsafe class D3D12BackendSurface : IGraphicsBackendSurface
             swapchainEpoch);
     }
 
+    private static PresentationStatus? GetPresentationFailureStatus(int result)
+        => result switch {
+            DxgiErrorDeviceRemoved or DxgiErrorDeviceReset => PresentationStatus.DeviceLost,
+            DxgiStatusOccluded => PresentationStatus.Occluded,
+            _ => null,
+        };
+
     private static DXGI_FORMAT GetSwapChainFormat(TextureFormat colorFormat)
         => colorFormat switch {
             TextureFormat.Bgra8Srgb or TextureFormat.Bgra8Unorm => DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM,
             TextureFormat.Rgba8Srgb or TextureFormat.Rgba8Unorm => DXGI_FORMAT.DXGI_FORMAT_R8G8B8A8_UNORM,
             _ => throw new ArgumentOutOfRangeException(nameof(colorFormat)),
         };
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll", EntryPoint = "IsWindowVisible")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool IsWindowVisible(nint window);
 
     private static TextureFormat SelectSurfaceColorFormat(GraphicsCapabilities capabilities)
     {
@@ -504,12 +582,449 @@ internal sealed unsafe class D3D12BackendSurface : IGraphicsBackendSurface
         return resizedCapabilities;
     }
 
+    public bool TryGetCompletedPresentation(
+        long presentationSequence,
+        uint deviceEpoch,
+        out PresentationReceipt? receipt)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(presentationSequence);
+        ArgumentOutOfRangeException.ThrowIfZero(deviceEpoch);
+
+        lock (_presentationGate)
+        {
+            foreach (var (firstSequence, lastSequence, surfaceEpoch, swapchainEpoch, status) in _presentationHistory)
+            {
+                if ((presentationSequence < firstSequence)
+                    || (presentationSequence > lastSequence))
+                {
+                    continue;
+                }
+
+                receipt = new PresentationReceipt(
+                    status,
+                    presentationSequence,
+                    deviceEpoch,
+                    surfaceEpoch,
+                    swapchainEpoch,
+                    CreatePresentationDiagnostic(
+                        status,
+                        deviceEpoch,
+                        surfaceEpoch,
+                        swapchainEpoch));
+                return true;
+            }
+        }
+
+        receipt = null;
+        return false;
+    }
+
+    public PresentationReceipt WaitForPresentation(
+        long presentationSequence,
+        uint deviceEpoch,
+        CancellationToken cancellationToken)
+    {
+        EnsureOwnerThread();
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(presentationSequence);
+        ArgumentOutOfRangeException.ThrowIfZero(deviceEpoch);
+
+        if (TryGetCompletedPresentation(presentationSequence, deviceEpoch, out var completedReceipt))
+        {
+            return completedReceipt
+                ?? throw new InvalidOperationException("The DXGI presentation history returned no receipt.");
+        }
+
+        if (!_pendingPresentations.TryGetValue(presentationSequence, out var presentation))
+        {
+            throw new ArgumentOutOfRangeException(nameof(presentationSequence), "The sequence was not submitted by this Surface.");
+        }
+
+        if (presentation.TerminalStatus is PresentationStatus terminalStatus)
+        {
+            return CompletePresentation(presentationSequence, deviceEpoch, terminalStatus);
+        }
+
+        var observationTimer = Stopwatch.StartNew();
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (observationTimer.ElapsedMilliseconds >= PresentationObservationTimeoutMilliseconds)
+            {
+                throw new TimeoutException("DXGI did not report a terminal presentation outcome before the observation timeout.");
+            }
+
+            if ((_swapChain is null)
+                || (presentation.SurfaceEpoch != _capabilities.SurfaceEpoch)
+                || (presentation.SwapchainEpoch != _capabilities.SwapchainEpoch))
+            {
+                return CompletePresentation(
+                    presentationSequence,
+                    deviceEpoch,
+                    PresentationStatus.SwapchainLost);
+            }
+
+            if (!IsWindowVisible(_binding.NativeWindowOrSurface))
+            {
+                return CompletePresentation(
+                    presentationSequence,
+                    deviceEpoch,
+                    PresentationStatus.Occluded);
+            }
+
+            var testResult = _swapChain->Present(0, DxgiPresentTest);
+
+            if (testResult.Value == DxgiStatusOccluded)
+            {
+                return CompletePresentation(
+                    presentationSequence,
+                    deviceEpoch,
+                    PresentationStatus.Occluded);
+            }
+
+            if (testResult.FAILED)
+            {
+                if (GetPresentationFailureStatus(testResult.Value) is PresentationStatus testFailureStatus)
+                {
+                    return CompletePresentation(presentationSequence, deviceEpoch, testFailureStatus);
+                }
+
+                ThrowIfFailed(testResult);
+            }
+
+            DXGI_FRAME_STATISTICS frameStatistics = default;
+            var statisticsResult = _swapChain->GetFrameStatistics(&frameStatistics);
+
+            var frameStatisticsDisjoint = statisticsResult.Value == DxgiErrorFrameStatisticsDisjoint;
+
+            if (!frameStatisticsDisjoint && statisticsResult.FAILED)
+            {
+                if (GetPresentationFailureStatus(statisticsResult.Value) is PresentationStatus failedStatus)
+                {
+                    return CompletePresentation(presentationSequence, deviceEpoch, failedStatus);
+                }
+
+                ThrowIfFailed(statisticsResult);
+            }
+
+            if (!frameStatisticsDisjoint
+                && (frameStatistics.PresentCount >= presentation.NativePresentCount))
+            {
+                return CompletePresentation(
+                    presentationSequence,
+                    deviceEpoch,
+                    PresentationStatus.Presented);
+            }
+
+            var waitResult = Windows.WaitForSingleObject(
+                _frameLatencyWaitableObject,
+                PresentationWaitMilliseconds);
+
+            if (waitResult == WaitFailed)
+            {
+                ThrowLastWin32Error("Waiting for D3D12 presentation progress failed.");
+            }
+
+            if (waitResult == WaitObject0)
+            {
+                return CompletePresentationAfterLatencySignal(presentationSequence, deviceEpoch);
+            }
+        }
+    }
+
+    public ImmutableArray<PresentationReceipt> WaitForPresentations(uint deviceEpoch)
+    {
+        EnsureOwnerThread();
+        ArgumentOutOfRangeException.ThrowIfZero(deviceEpoch);
+
+        if (_pendingPresentations.Count == 0)
+        {
+            return [];
+        }
+
+        return WaitForFrameLatency(deviceEpoch);
+    }
+
+    internal long Present()
+    {
+        EnsureOwnerThread();
+        var swapChain = _swapChain;
+
+        if (swapChain is null)
+        {
+            throw new InvalidOperationException("The D3D12 Surface has no active swapchain.");
+        }
+
+        if (_pendingPresentations.Count != 0)
+        {
+            throw new InvalidOperationException("The previous D3D12 presentation has not reached a terminal state.");
+        }
+
+        var presentationSequence = checked(_nextPresentationSequence + 1);
+        _nextPresentationSequence = presentationSequence;
+        var presentResult = swapChain->Present(1, 0);
+
+        if (presentResult.Value == DxgiStatusOccluded)
+        {
+            _pendingPresentations.Add(presentationSequence, (
+                0,
+                _capabilities.SurfaceEpoch,
+                _capabilities.SwapchainEpoch,
+                PresentationStatus.Occluded));
+            return presentationSequence;
+        }
+
+        if (presentResult.FAILED)
+        {
+            if (GetPresentationFailureStatus(presentResult.Value) is PresentationStatus status)
+            {
+                _pendingPresentations.Add(presentationSequence, (
+                    0,
+                    _capabilities.SurfaceEpoch,
+                    _capabilities.SwapchainEpoch,
+                    status));
+                return presentationSequence;
+            }
+
+            ThrowIfFailed(presentResult);
+        }
+
+        uint nativePresentCount = 0;
+        ThrowIfFailed(swapChain->GetLastPresentCount(&nativePresentCount));
+
+        if (nativePresentCount == 0)
+        {
+            throw new InvalidOperationException("DXGI returned an empty presentation count after Present succeeded.");
+        }
+
+        _pendingPresentations.Add(presentationSequence, (
+            nativePresentCount,
+            _capabilities.SurfaceEpoch,
+            _capabilities.SwapchainEpoch,
+            null));
+        return presentationSequence;
+    }
+
+    internal void RecordPresentationCopy(ID3D12GraphicsCommandList* commandList, ID3D12Resource* source)
+    {
+        EnsureOwnerThread();
+        ArgumentNullException.ThrowIfNull(commandList);
+        ArgumentNullException.ThrowIfNull(source);
+        var swapChain = _swapChain;
+
+        if (swapChain is null)
+        {
+            throw new InvalidOperationException("The D3D12 Surface has no active swapchain.");
+        }
+
+        ID3D12Resource* backBuffer = null;
+        var resourceId = typeof(ID3D12Resource).GUID;
+
+        try
+        {
+            ThrowIfFailed(swapChain->GetBuffer(
+                swapChain->GetCurrentBackBufferIndex(),
+                &resourceId,
+                (void**)&backBuffer));
+
+            if (backBuffer is null)
+            {
+                throw new InvalidOperationException("DXGI returned no current swapchain backbuffer.");
+            }
+
+            var toCopyDestination = D3D12_RESOURCE_BARRIER.InitTransition(
+                backBuffer,
+                D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_PRESENT,
+                D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_DEST,
+                uint.MaxValue,
+                D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+            commandList->ResourceBarrier(1, &toCopyDestination);
+            commandList->CopyResource(backBuffer, source);
+            var toPresent = D3D12_RESOURCE_BARRIER.InitTransition(
+                backBuffer,
+                D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATES.D3D12_RESOURCE_STATE_PRESENT,
+                uint.MaxValue,
+                D3D12_RESOURCE_BARRIER_FLAGS.D3D12_RESOURCE_BARRIER_FLAG_NONE);
+            commandList->ResourceBarrier(1, &toPresent);
+        }
+        finally
+        {
+            if (backBuffer is not null)
+            {
+                _ = backBuffer->Release();
+            }
+        }
+    }
+
+    internal ImmutableArray<PresentationReceipt> WaitForFrameLatency(uint deviceEpoch)
+    {
+        EnsureOwnerThread();
+        ArgumentOutOfRangeException.ThrowIfZero(deviceEpoch);
+
+        if (_frameLatencyWaitableObject.Value is null)
+        {
+            throw new InvalidOperationException("The D3D12 Surface has no active frame-latency waitable object.");
+        }
+
+        var waitResult = Windows.WaitForSingleObject(_frameLatencyWaitableObject, FrameLatencyWaitMilliseconds);
+
+        if (waitResult == WaitFailed)
+        {
+            ThrowLastWin32Error("Waiting for the D3D12 Surface frame-latency object failed.");
+        }
+
+        if (waitResult == WaitTimeout)
+        {
+            throw new TimeoutException("The D3D12 Surface frame-latency wait timed out.");
+        }
+
+        if (waitResult != WaitObject0)
+        {
+            throw new InvalidOperationException("The D3D12 Surface frame-latency wait returned an unknown status.");
+        }
+
+        return CompletePendingPresentationsAfterLatencySignal(deviceEpoch);
+    }
+
+    private ImmutableArray<PresentationReceipt> CompletePendingPresentationsAfterLatencySignal(uint deviceEpoch)
+    {
+        var sequences = new long[_pendingPresentations.Count];
+        _pendingPresentations.Keys.CopyTo(sequences, 0);
+        Array.Sort(sequences);
+        var receipts = ImmutableArray.CreateBuilder<PresentationReceipt>(sequences.Length);
+
+        foreach (var sequence in sequences)
+        {
+            var status = GetPresentationStatusAfterLatencySignal(sequence);
+            receipts.Add(CompletePresentation(sequence, deviceEpoch, status));
+        }
+
+        return receipts.MoveToImmutable();
+    }
+
+    private PresentationReceipt CompletePresentation(
+        long presentationSequence,
+        uint deviceEpoch,
+        PresentationStatus status)
+    {
+        if (!_pendingPresentations.TryGetValue(presentationSequence, out var presentation))
+        {
+            if (TryGetCompletedPresentation(presentationSequence, deviceEpoch, out var completedReceipt))
+            {
+                return completedReceipt
+                    ?? throw new InvalidOperationException("The DXGI presentation history returned no receipt.");
+            }
+
+            throw new ArgumentOutOfRangeException(nameof(presentationSequence));
+        }
+
+        var receipt = new PresentationReceipt(
+            status,
+            presentationSequence,
+            deviceEpoch,
+            presentation.SurfaceEpoch,
+            presentation.SwapchainEpoch,
+            CreatePresentationDiagnostic(
+                status,
+                deviceEpoch,
+                presentation.SurfaceEpoch,
+                presentation.SwapchainEpoch));
+        _ = _pendingPresentations.Remove(presentationSequence);
+
+        lock (_presentationGate)
+        {
+            if (_presentationHistory.Count != 0)
+            {
+                var (previousFirstSequence, previousLastSequence, previousSurfaceEpoch, previousSwapchainEpoch, previousStatus)
+                    = _presentationHistory[^1];
+
+                if ((previousLastSequence < long.MaxValue)
+                    && ((previousLastSequence + 1) == presentationSequence)
+                    && (previousSurfaceEpoch == presentation.SurfaceEpoch)
+                    && (previousSwapchainEpoch == presentation.SwapchainEpoch)
+                    && (previousStatus == status))
+                {
+                    _presentationHistory[^1] = (
+                        previousFirstSequence,
+                        presentationSequence,
+                        previousSurfaceEpoch,
+                        previousSwapchainEpoch,
+                        previousStatus);
+                    return receipt;
+                }
+            }
+
+            _presentationHistory.Add((
+                presentationSequence,
+                presentationSequence,
+                presentation.SurfaceEpoch,
+                presentation.SwapchainEpoch,
+                status));
+        }
+
+        return receipt;
+    }
+
+    private PresentationReceipt CompletePresentationAfterLatencySignal(
+        long presentationSequence,
+        uint deviceEpoch)
+        => CompletePresentation(
+            presentationSequence,
+            deviceEpoch,
+            GetPresentationStatusAfterLatencySignal(presentationSequence));
+
     private void EnsureOwnerThread()
     {
         if (Environment.CurrentManagedThreadId != _ownerThreadId)
         {
             throw new InvalidOperationException("The D3D12 surface is restricted to its creating graphics owner thread.");
         }
+    }
+
+    private PresentationStatus GetPresentationStatusAfterLatencySignal(long presentationSequence)
+    {
+        if (!_pendingPresentations.TryGetValue(presentationSequence, out var presentation))
+        {
+            throw new ArgumentOutOfRangeException(nameof(presentationSequence));
+        }
+
+        if (presentation.TerminalStatus is PresentationStatus terminalStatus)
+        {
+            return terminalStatus;
+        }
+
+        if (!IsWindowVisible(_binding.NativeWindowOrSurface))
+        {
+            return PresentationStatus.Occluded;
+        }
+
+        var swapChain = _swapChain;
+
+        if (swapChain is null)
+        {
+            throw new InvalidOperationException("The D3D12 Surface lost its swapchain before presentation completion.");
+        }
+
+        var testResult = swapChain->Present(0, DxgiPresentTest);
+
+        if (testResult.Value == DxgiStatusOccluded)
+        {
+            return PresentationStatus.Occluded;
+        }
+
+        if (testResult.FAILED)
+        {
+            if (GetPresentationFailureStatus(testResult.Value) is PresentationStatus status)
+            {
+                return status;
+            }
+
+            ThrowIfFailed(testResult);
+        }
+
+        return PresentationStatus.Presented;
     }
 
     private Win32Exception? RetireSwapChain()

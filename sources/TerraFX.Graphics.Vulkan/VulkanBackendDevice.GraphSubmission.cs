@@ -104,7 +104,13 @@ internal sealed unsafe partial class VulkanBackendDevice
     internal long SubmitGraph(GraphicsGraphSubmission submission)
     {
         ArgumentNullException.ThrowIfNull(submission);
-        submission.ValidateOffscreenRasterSubmission();
+
+        if (submission.SurfaceTarget is not null)
+        {
+            throw new PlatformNotSupportedException("Vulkan Surface-target graph submission requires the pending WSI implementation.");
+        }
+
+        submission.ValidateNativeRasterSubmission();
         EnsureOwnerThread();
         EnsureActive();
         _graphSubmissionObserver?.Invoke(submission);

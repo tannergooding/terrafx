@@ -50,4 +50,43 @@ public sealed partial class Renderer
             snapshot.TargetExtent,
             offscreenColorTarget));
     }
+
+    /// <summary>Builds an interactive graph for one exact committed render snapshot and Surface.</summary>
+    /// <param name="snapshot">The immutable World-produced render snapshot.</param>
+    /// <param name="surface">The live same-device interactive Surface.</param>
+    /// <returns>A graph bound to the exact snapshot and Surface/swapchain generation.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="snapshot"/> or <paramref name="surface"/> is null.</exception>
+    /// <exception cref="ArgumentException">The Surface belongs to another device or has another extent.</exception>
+    /// <exception cref="InvalidOperationException">The selected GraphicsDevice or Surface is not ready.</exception>
+    /// <exception cref="NotSupportedException">This Renderer is Headless and has no native GraphicsDevice.</exception>
+    /// <exception cref="ObjectDisposedException">The snapshot or Surface has been disposed or retired.</exception>
+    public RenderGraph BuildGraph(RenderSnapshot snapshot, Surface surface)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(surface);
+
+        if (_graphicsDevice is null)
+        {
+            throw new NotSupportedException("Headless rendering does not construct native render graphs.");
+        }
+
+        ObjectDisposedException.ThrowIf(snapshot.IsDisposed, snapshot);
+        ObjectDisposedException.ThrowIf(!surface.IsLive, surface);
+
+        if (!ReferenceEquals(surface.Device, _graphicsDevice))
+        {
+            throw new ArgumentException("The Surface belongs to another GraphicsDevice.", nameof(surface));
+        }
+
+        return new RenderGraph(new RenderGraphOptions(
+            snapshot.SnapshotId,
+            snapshot.WorldGuid,
+            snapshot.TickIndex,
+            snapshot.FrameDimension,
+            snapshot.ProfileId,
+            snapshot.FrameRevision,
+            snapshot.CameraIds,
+            snapshot.TargetExtent,
+            surface));
+    }
 }

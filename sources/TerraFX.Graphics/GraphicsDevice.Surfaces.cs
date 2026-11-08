@@ -114,6 +114,54 @@ public sealed partial class GraphicsDevice
         return request.Task;
     }
 
+    internal async Task<PresentationReceipt> WaitForPresentationAsync(
+        Surface surface,
+        long presentationSequence,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(surface);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(presentationSequence);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!ReferenceEquals(surface.Device, this))
+        {
+            throw new ArgumentException("The Surface belongs to a different GraphicsDevice.", nameof(surface));
+        }
+
+        if (surface.BackendSurface.TryGetCompletedPresentation(
+            presentationSequence,
+            DeviceEpoch,
+            out var completedReceipt))
+        {
+            return completedReceipt
+                ?? throw new InvalidOperationException("The backend presentation history returned no receipt.");
+        }
+
+        ObjectDisposedException.ThrowIf(surface.IsRetired || surface.IsQuarantined, surface);
+
+        if (Status != GraphicsDeviceStatus.Ready)
+        {
+            throw new InvalidOperationException("The GraphicsDevice is not accepting presentation waits.");
+        }
+
+        var request = new WaitForPresentationRequest(
+            surface,
+            presentationSequence,
+            cancellationToken);
+
+        try
+        {
+            await _ownerQueue.WriteRequestAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            request.AdmissionFailed();
+            throw;
+        }
+
+        return await request.Task.ConfigureAwait(false);
+    }
+
     [SuppressMessage(
         "Usage",
         "CA1031:Do not catch general exception types",
@@ -212,6 +260,10 @@ public sealed partial class GraphicsDevice
 
         try
         {
+            WaitForPendingGraphSubmissions();
+
+            _ = surface.BackendSurface.WaitForPresentations(DeviceEpoch);
+
             surface.BackendSurface.Dispose();
             surface.RetirementReservation.Dispose();
             _ = _surfaces.Remove(surface);
@@ -257,6 +309,28 @@ public sealed partial class GraphicsDevice
             clientPixelSize.Height,
             Capabilities.Limits.MaximumTextureDimension2D,
             nameof(clientPixelSize));
+    }
+
+    private void WaitForPendingGraphSubmissions()
+    {
+        if (!IsOwnerThread)
+        {
+            throw new InvalidOperationException("Surface lifecycle changes are restricted to the graphics owner thread.");
+        }
+
+        var maximumSubmittedFence = 0L;
+
+        foreach (var submission in _pendingGraphSubmissions)
+        {
+            maximumSubmittedFence = Math.Max(maximumSubmittedFence, submission.SubmittedFence);
+        }
+
+        if (maximumSubmittedFence > 0)
+        {
+            var backendDevice = _backendDevice
+                ?? throw new InvalidOperationException("The GraphicsDevice has no live backend owner.");
+            backendDevice.WaitForGraphFence(maximumSubmittedFence);
+        }
     }
 
     private sealed class CreateSurfaceRequest : IGraphicsDeviceWork
@@ -384,6 +458,10 @@ public sealed partial class GraphicsDevice
 
             try
             {
+                device.WaitForPendingGraphSubmissions();
+
+                _ = backendSurface.WaitForPresentations(device.DeviceEpoch);
+
                 capabilities = backendSurface.Resize(_clientPixelSize);
             }
             catch
@@ -442,6 +520,73 @@ public sealed partial class GraphicsDevice
         {
             _device.QuarantineSurface(_surface, exception);
             _ = _completion.TrySetException(exception);
+        }
+    }
+
+    private sealed class WaitForPresentationRequest : IGraphicsDeviceWork
+    {
+        private readonly CancellationToken _cancellationToken;
+        private readonly TaskCompletionSource<PresentationReceipt> _completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly long _presentationSequence;
+        private readonly Surface _surface;
+
+        internal WaitForPresentationRequest(
+            Surface surface,
+            long presentationSequence,
+            CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(surface);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(presentationSequence);
+            _surface = surface;
+            _presentationSequence = presentationSequence;
+            _cancellationToken = cancellationToken;
+        }
+
+        internal Task<PresentationReceipt> Task => _completion.Task;
+
+        public void Execute(GraphicsDevice device)
+        {
+            if (_surface.BackendSurface.TryGetCompletedPresentation(
+                _presentationSequence,
+                device.DeviceEpoch,
+                out var completedReceipt))
+            {
+                _ = _completion.TrySetResult(
+                    completedReceipt
+                        ?? throw new InvalidOperationException("The Surface presentation cache returned no receipt."));
+                return;
+            }
+
+            var receipt = _surface.BackendSurface.WaitForPresentation(
+                _presentationSequence,
+                device.DeviceEpoch,
+                _cancellationToken);
+            _ = _completion.TrySetResult(receipt);
+        }
+
+        public void Fail(Exception exception)
+        {
+            if ((exception is OperationCanceledException) && _cancellationToken.IsCancellationRequested)
+            {
+                _ = _completion.TrySetCanceled(_cancellationToken);
+            }
+            else
+            {
+                _ = _completion.TrySetException(exception);
+            }
+        }
+
+        internal void AdmissionFailed()
+        {
+            if (_cancellationToken.IsCancellationRequested)
+            {
+                _ = _completion.TrySetCanceled(_cancellationToken);
+            }
+            else
+            {
+                _ = _completion.TrySetException(new InvalidOperationException("The presentation wait was not admitted."));
+            }
         }
     }
 }

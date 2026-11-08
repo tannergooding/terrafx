@@ -12,13 +12,27 @@ public sealed partial class RenderGraphPlan
 {
     internal async Task<ImmutableArray<RecordedPassCommandList>> RecordPassCallbacksAsync()
     {
-        var target = OffscreenColorTarget
-            ?? throw new NotSupportedException("A surface-targeted graph cannot be recorded before its Surface executor is available.");
-        var device = target.ResourceOwner.Device;
+        var surface = SurfaceTarget;
+        var device = surface?.Device
+            ?? OffscreenColorTarget?.ResourceOwner.Device
+            ?? throw new InvalidOperationException("The graph plan has no output target owner.");
 
         if (device.DeviceEpoch != DeviceEpoch)
         {
             throw new InvalidOperationException("The graph plan belongs to a different GraphicsDevice generation.");
+        }
+
+        if (surface is not null)
+        {
+            ObjectDisposedException.ThrowIf(!surface.IsLive, surface);
+            var current = surface.CaptureSnapshot();
+
+            if ((current.Capabilities.SurfaceEpoch != SurfaceEpoch)
+                || (current.Capabilities.SwapchainEpoch != SwapchainEpoch)
+                || (current.ClientPixelSize != TargetExtent))
+            {
+                throw new InvalidOperationException("The Surface graph plan belongs to a stale Surface or swapchain generation.");
+            }
         }
 
         var commandLists = ImmutableArray.CreateBuilder<RecordedPassCommandList>();

@@ -10,7 +10,11 @@ internal sealed class GraphicsGraphSubmission
 {
     internal GraphicsGraphSubmission(
         uint deviceEpoch,
-        GpuTexture offscreenColorTarget,
+        GpuTexture outputColorTarget,
+        Surface? surfaceTarget,
+        GraphTextureVersion presentationSource,
+        uint surfaceEpoch,
+        uint swapchainEpoch,
         ImmutableArray<RenderPassId> orderedPasses,
         ImmutableArray<GraphicsGraphSubmissionPass> passes,
         ImmutableArray<GraphResourceStateTransition> stateTransitions,
@@ -22,7 +26,8 @@ internal sealed class GraphicsGraphSubmission
         ImmutableArray<RecordedPassCommandList> recordedPassCommandLists)
     {
         ArgumentOutOfRangeException.ThrowIfZero(deviceEpoch);
-        ArgumentNullException.ThrowIfNull(offscreenColorTarget);
+        ArgumentNullException.ThrowIfNull(outputColorTarget);
+        ArgumentNullException.ThrowIfNull(presentationSource);
 
         if (orderedPasses.IsDefault
             || passes.IsDefault
@@ -37,13 +42,54 @@ internal sealed class GraphicsGraphSubmission
             throw new ArgumentException("A graphics graph submission requires initialized immutable data.");
         }
 
-        if (offscreenColorTarget.DeviceEpoch != deviceEpoch)
+        if (outputColorTarget.DeviceEpoch != deviceEpoch)
         {
-            throw new ArgumentException("The graph output target belongs to another device epoch.", nameof(offscreenColorTarget));
+            throw new ArgumentException("The graph output target belongs to another device epoch.", nameof(outputColorTarget));
+        }
+
+        if (presentationSource.DeviceEpoch != deviceEpoch)
+        {
+            throw new ArgumentException("The presentation source belongs to another device epoch.", nameof(presentationSource));
+        }
+
+        if (surfaceTarget is null)
+        {
+            if ((surfaceEpoch != 0) || (swapchainEpoch != 0))
+            {
+                throw new ArgumentException("An offscreen graph cannot carry Surface or swapchain epochs.");
+            }
+        }
+        else
+        {
+            ArgumentOutOfRangeException.ThrowIfZero(surfaceEpoch);
+            ArgumentOutOfRangeException.ThrowIfZero(swapchainEpoch);
+            ObjectDisposedException.ThrowIf(!surfaceTarget.IsLive, surfaceTarget);
+            var surfaceSnapshot = surfaceTarget.CaptureSnapshot();
+
+            if (!ReferenceEquals(surfaceTarget.Device, outputColorTarget.ResourceOwner.Device)
+                || (surfaceSnapshot.Capabilities.SurfaceEpoch != surfaceEpoch)
+                || (surfaceSnapshot.Capabilities.SwapchainEpoch != swapchainEpoch)
+                || (surfaceSnapshot.ClientPixelSize.Width != outputColorTarget.Description.Width)
+                || (surfaceSnapshot.ClientPixelSize.Height != outputColorTarget.Description.Height)
+                || (surfaceSnapshot.ColorFormat != outputColorTarget.Description.Format))
+            {
+                throw new ArgumentException("The Surface presentation target does not match the output texture and captured epochs.", nameof(surfaceTarget));
+            }
+        }
+
+        if (textureImports.IsDefaultOrEmpty
+            || !ReferenceEquals(textureImports[0].Texture, outputColorTarget)
+            || (textureImports[0].Version.ResourceId != presentationSource.ResourceId))
+        {
+            throw new ArgumentException("The graph output texture must be the first texture import and contain the selected presentation source.");
         }
 
         DeviceEpoch = deviceEpoch;
-        OffscreenColorTarget = offscreenColorTarget;
+        OutputColorTarget = outputColorTarget;
+        SurfaceTarget = surfaceTarget;
+        PresentationSource = presentationSource;
+        SurfaceEpoch = surfaceEpoch;
+        SwapchainEpoch = swapchainEpoch;
         OrderedPasses = [.. orderedPasses];
         Passes = [.. passes];
         StateTransitions = [.. stateTransitions];
@@ -63,15 +109,25 @@ internal sealed class GraphicsGraphSubmission
 
     internal uint DeviceEpoch { get; }
 
-    internal GpuTexture OffscreenColorTarget { get; }
-
     internal ImmutableArray<RenderPassId> OrderedPasses { get; }
 
+    internal GpuTexture OutputColorTarget { get; }
+
     internal ImmutableArray<GraphicsGraphSubmissionPass> Passes { get; }
+
+    internal long? PresentationSequence { get; private set; }
+
+    internal GraphTextureVersion PresentationSource { get; }
 
     internal ImmutableArray<RecordedPassCommandList> RecordedPassCommandLists { get; }
 
     internal ImmutableArray<GraphResourceStateTransition> StateTransitions { get; }
+
+    internal uint SurfaceEpoch { get; }
+
+    internal Surface? SurfaceTarget { get; }
+
+    internal uint SwapchainEpoch { get; }
 
     internal ImmutableArray<GraphTextureAliasingBarrier> TextureAliasingBarriers { get; }
 
@@ -221,16 +277,61 @@ internal sealed class GraphicsGraphSubmission
         }
     }
 
-    internal void ValidateOffscreenRasterSubmission()
+    internal void SetPresentationSequence(long presentationSequence)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(presentationSequence);
+
+        if (SurfaceTarget is null)
+        {
+            throw new InvalidOperationException("An offscreen graph cannot report a presentation sequence.");
+        }
+
+        if (PresentationSequence.HasValue)
+        {
+            throw new InvalidOperationException("A Surface graph submission cannot present more than once.");
+        }
+
+        PresentationSequence = presentationSequence;
+    }
+
+    internal void ValidateNativeRasterSubmission()
     {
         if ((BufferImports.Length > 8)
             || (TextureImports.Length is < 1 or > 8)
-            || !ReferenceEquals(TextureImports[0].Texture, OffscreenColorTarget))
+            || !ReferenceEquals(TextureImports[0].Texture, OutputColorTarget))
         {
-            throw new NotSupportedException("Native graph submission supports one offscreen color target and up to seven imported or transient Frame resource textures.");
+            throw new NotSupportedException("Native graph submission supports one graph output color target and up to seven imported or transient Frame resource textures.");
         }
 
         var targetResourceId = TextureImports[0].Version.ResourceId;
+
+        if (PresentationSource.ResourceId != targetResourceId)
+        {
+            throw new NotSupportedException("Native graph submission requires the selected terminal color version to share its output texture.");
+        }
+
+        if (SurfaceTarget is Surface surface)
+        {
+            var surfaceSnapshot = surface.CaptureSnapshot();
+            var sourceDescription = PresentationSource.Description;
+
+            if (surface.IsRetired
+                || surface.IsQuarantined
+                || (surface.Device.DeviceEpoch != DeviceEpoch)
+                || (surface.Device.Status != GraphicsDeviceStatus.Ready)
+                || (surfaceSnapshot.Capabilities.SurfaceEpoch != SurfaceEpoch)
+                || (surfaceSnapshot.Capabilities.SwapchainEpoch != SwapchainEpoch)
+                || (surfaceSnapshot.ClientPixelSize.Width != sourceDescription.Width)
+                || (surfaceSnapshot.ClientPixelSize.Height != sourceDescription.Height)
+                || (surfaceSnapshot.ColorFormat != sourceDescription.Format)
+                || (sourceDescription.Format is not (TextureFormat.Rgba8Srgb or TextureFormat.Bgra8Srgb))
+                || ((sourceDescription.Usage & (TextureUsage.ColorAttachment | TextureUsage.CopySource))
+                    != (TextureUsage.ColorAttachment | TextureUsage.CopySource)))
+            {
+                throw new InvalidOperationException("The graph output texture no longer matches the active sRGB Surface generation.");
+            }
+        }
+
         GraphBufferImportRecord? uniformBufferImport = null;
         var vertexBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
         var indexBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
@@ -361,7 +462,7 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
-        var offscreenTargetCopySourceAccess = false;
+        var outputTargetCopySourceAccess = false;
 
         foreach (var access in Accesses)
         {
@@ -372,21 +473,21 @@ internal sealed class GraphicsGraphSubmission
             {
                 if (!access.ContentsValid)
                 {
-                    throw new NotSupportedException("The offscreen color target must have initialized contents before serving as a graph copy source.");
+                    throw new NotSupportedException("The graph output color target must have initialized contents before serving as a graph copy source.");
                 }
 
-                offscreenTargetCopySourceAccess = true;
+                outputTargetCopySourceAccess = true;
             }
         }
 
-        if (offscreenTargetCopySourceAccess)
+        if (outputTargetCopySourceAccess)
         {
-            var offscreenTargetImport = TextureImports[0];
+            var outputTargetImport = TextureImports[0];
 
-            if (((offscreenTargetImport.Version.Description.Usage & TextureUsage.CopySource) == 0)
-                || !copySourceTextureImports.TryAdd(targetResourceId, offscreenTargetImport))
+            if (((outputTargetImport.Version.Description.Usage & TextureUsage.CopySource) == 0)
+                || !copySourceTextureImports.TryAdd(targetResourceId, outputTargetImport))
             {
-                throw new NotSupportedException("The offscreen color target requires copy-source usage before it can be copied.");
+                throw new NotSupportedException("The graph output color target requires copy-source usage before it can be copied.");
             }
         }
 
@@ -452,7 +553,7 @@ internal sealed class GraphicsGraphSubmission
             var hasCopySourceImportAccess = false;
             var hasCopyDestinationImportAccess = false;
 
-            if (ReferenceEquals(import.Texture, OffscreenColorTarget)
+            if (ReferenceEquals(import.Texture, OutputColorTarget)
                 || (import.Version.ResourceId == targetResourceId)
                 || (import.Version.Description.Dimension != TextureDimension.Dimension2D)
                 || (import.Version.Range.MipCount != 1)
@@ -732,7 +833,30 @@ internal sealed class GraphicsGraphSubmission
             {
                 if (!pass.Commands.IsEmpty || !pass.Attachments.IsEmpty)
                 {
-                    throw new InvalidOperationException("The synthetic offscreen output pass cannot record commands or attachments.");
+                    throw new InvalidOperationException("A synthetic terminal-output pass cannot record commands or attachments.");
+                }
+
+                if (SurfaceTarget is not null)
+                {
+                    var hasPresentationSourceRead = false;
+
+                    foreach (var access in Accesses)
+                    {
+                        hasPresentationSourceRead |= (access.PassId == pass.PassId)
+                            && access.IsTexture
+                            && (access.ResourceId == targetResourceId)
+                            && ReferenceEquals(access.TextureVersion, PresentationSource)
+                            && (access.TextureRange == new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color))
+                            && (access.RequiredState == GraphResourceState.CopySource)
+                            && !access.IsWrite;
+                    }
+
+                    if (!hasPresentationSourceRead)
+                    {
+                        throw new InvalidOperationException("A Surface terminal pass must read its selected source for presentation.");
+                    }
+
+                    _ = copySourceTexturePasses.Add(pass.PassId);
                 }
 
                 continue;
@@ -766,7 +890,7 @@ internal sealed class GraphicsGraphSubmission
                     || (attachment.LoadAction != AttachmentLoadAction.Clear)
                     || (attachment.StoreAction != AttachmentStoreAction.Store))
                 {
-                    throw new NotSupportedException("Native graph submission currently supports only stored mip-0/layer-0 color clears to its offscreen target.");
+                    throw new NotSupportedException("Native graph submission currently supports only stored mip-0/layer-0 color clears to its graph output target.");
                 }
 
                 hasColorClear = true;
@@ -806,7 +930,7 @@ internal sealed class GraphicsGraphSubmission
                         var isComputePass = pass.Kind == CommandRecorderPassKind.Compute;
 
                         if ((pipeline.DeviceEpoch != DeviceEpoch)
-                            || !ReferenceEquals(pipeline.ResourceOwner.Device, OffscreenColorTarget.ResourceOwner.Device)
+                            || !ReferenceEquals(pipeline.ResourceOwner.Device, OutputColorTarget.ResourceOwner.Device)
                             || (layout.IsCompute != isComputePass)
                             || (isComputePass && ((layout.VertexStride != 0) || !layout.VertexElements.IsEmpty)))
                         {
@@ -820,7 +944,7 @@ internal sealed class GraphicsGraphSubmission
                                 || (layout.ColorTargetFormats.Length != 1)
                                 || (layout.ColorTargetFormats[0] != TextureImports[0].Version.Description.Format)))
                         {
-                            throw new NotSupportedException("Native graph submission requires compute pipelines without attachments and triangle-list graphics pipelines for its offscreen color format.");
+                            throw new NotSupportedException("Native graph submission requires compute pipelines without attachments and triangle-list graphics pipelines for its output color format.");
                         }
 
                         var reflectedResources = new HashSet<ShaderResourceSignature>();
@@ -1286,7 +1410,7 @@ internal sealed class GraphicsGraphSubmission
 
                             if ((binding.Group != ShaderBindingGroup.Frame)
                                 || (binding.Binding != 0)
-                                || !ReferenceEquals(binding.Sampler.ResourceOwner.Device, OffscreenColorTarget.ResourceOwner.Device)
+                                || !ReferenceEquals(binding.Sampler.ResourceOwner.Device, OutputColorTarget.ResourceOwner.Device)
                                 || (binding.Sampler.DeviceEpoch != DeviceEpoch))
                             {
                                 throw new NotSupportedException("The Frame sampler binding must identify a live same-device sampler at binding 0.");
@@ -2003,7 +2127,7 @@ internal sealed class GraphicsGraphSubmission
 
         if (!hasColorClear)
         {
-            throw new NotSupportedException("Native graph submission requires at least one stored offscreen color clear.");
+            throw new NotSupportedException("Native graph submission requires at least one stored graph-output color clear.");
         }
     }
 

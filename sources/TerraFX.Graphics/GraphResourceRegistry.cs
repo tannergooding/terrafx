@@ -168,6 +168,30 @@ internal sealed class GraphResourceRegistry
     }
 
     internal RenderPassId AddOffscreenOutputSourcePass(GraphTextureVersion version, GraphTextureRange range)
+        => AddTerminalTextureSourcePass(
+            version,
+            range,
+            "TerraFX.OffscreenOutput",
+            GraphResourceState.OffscreenOutput);
+
+    internal RenderPassId AddPass(RenderPassDescription description)
+    {
+        EnsureOwnerThread();
+        return _passRegistry.AddPass(description);
+    }
+
+    internal RenderPassId AddPresentationSourcePass(GraphTextureVersion version, GraphTextureRange range)
+        => AddTerminalTextureSourcePass(
+            version,
+            range,
+            "TerraFX.Presentation",
+            GraphResourceState.CopySource);
+
+    internal RenderPassId AddTerminalTextureSourcePass(
+        GraphTextureVersion version,
+        GraphTextureRange range,
+        string name,
+        GraphResourceState requiredState)
     {
         EnsureOwnerThread();
         ArgumentNullException.ThrowIfNull(version);
@@ -181,7 +205,7 @@ internal sealed class GraphResourceRegistry
         }
 
         var passId = _passRegistry.AddPass(new RenderPassDescription(
-            "TerraFX.OffscreenOutput",
+            name,
             int.MaxValue,
             predecessors.MoveToImmutable(),
             hasExternalSideEffects: true));
@@ -189,15 +213,9 @@ internal sealed class GraphResourceRegistry
             passId,
             version,
             range,
-            GraphResourceState.OffscreenOutput,
+            requiredState,
             resource.IsInitialized(version, range)));
         return passId;
-    }
-
-    internal RenderPassId AddPass(RenderPassDescription description)
-    {
-        EnsureOwnerThread();
-        return _passRegistry.AddPass(description);
     }
 
     internal GraphBufferVersion CreateTransientBuffer(BufferDescription description)

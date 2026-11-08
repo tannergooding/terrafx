@@ -90,9 +90,13 @@ internal readonly struct GraphResourceAccess
             throw new ArgumentException("The presentation access range must fit its graph version.", nameof(range));
         }
 
-        if (requiredState is not (GraphResourceState.Present or GraphResourceState.OffscreenOutput))
+        if (requiredState is not (
+            GraphResourceState.Present or
+            GraphResourceState.OffscreenOutput or
+            GraphResourceState.CopySource or
+            GraphResourceState.ShaderSampledRead))
         {
-            throw new ArgumentOutOfRangeException(nameof(requiredState), "A terminal texture access must name a surface-present or offscreen-output state.");
+            throw new ArgumentOutOfRangeException(nameof(requiredState), "A terminal texture access must name a presentation-source read, surface-present, or offscreen-output state.");
         }
 
         DeviceEpoch = version.DeviceEpoch;

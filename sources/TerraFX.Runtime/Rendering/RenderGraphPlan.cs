@@ -19,12 +19,14 @@ public sealed partial class RenderGraphPlan
         ImmutableArray<RenderPassCallback?> orderedPassCallbacks,
         ImmutableArray<RenderGraphPassNode> passes,
         ImmutableArray<GraphResourceStateTransition> stateTransitions,
+        GraphTextureVersion presentationSource,
         ImmutableArray<GraphResourceAccess> accesses,
         ImmutableArray<GraphBufferImportRecord> bufferImports,
         ImmutableArray<GraphTextureImportRecord> textureImports,
         ImmutableArray<RenderGraphAttachmentWrite> attachmentWrites)
     {
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(presentationSource);
         ArgumentOutOfRangeException.ThrowIfZero(deviceEpoch);
 
         if (orderedPasses.IsDefault
@@ -268,15 +270,17 @@ public sealed partial class RenderGraphPlan
         OrderedPassKinds = [.. orderedPassKinds];
         OrderedPasses = [.. orderedPasses];
         Passes = [.. passes];
+        PresentationSource = presentationSource;
         ProfileId = options.ProfileId;
         SnapshotId = options.SnapshotId;
         StateTransitions = [.. stateTransitions];
+        SurfaceEpoch = options.SurfaceEpoch;
         TransientBufferAliasingBarriers = aliasingBarriers.ToImmutable();
         TransientBufferGroups = transientBufferGroups.ToImmutable();
         TransientTextureAliasingBarriers = textureAliasingBarriers.ToImmutable();
         TransientTextureGroups = transientTextureGroups.ToImmutable();
-        SwapchainEpoch = 0;
-        SurfaceEpoch = 0;
+        SwapchainEpoch = options.SwapchainEpoch;
+        SurfaceTarget = options.Surface;
         TargetExtent = options.TargetExtent;
         TextureImports = [.. textureImports];
         TickIndex = options.TickIndex;
@@ -335,7 +339,11 @@ public sealed partial class RenderGraphPlan
 
     internal ImmutableArray<RenderGraphPassNode> Passes { get; }
 
+    internal GraphTextureVersion PresentationSource { get; }
+
     internal ImmutableArray<GraphResourceStateTransition> StateTransitions { get; }
+
+    internal Surface? SurfaceTarget { get; }
 
     internal ImmutableArray<GraphTextureImportRecord> TextureImports { get; }
 

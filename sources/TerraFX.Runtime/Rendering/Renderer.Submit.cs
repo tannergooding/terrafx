@@ -51,20 +51,42 @@ public sealed partial class Renderer
             throw new InvalidOperationException("The graph plan belongs to a stale GraphicsDevice epoch.");
         }
 
-        if (graph.OffscreenColorTarget is not GpuTexture outputTarget)
-        {
-            throw new NotSupportedException("Native submission of surface-targeted graphs is not available.");
-        }
+        var offscreenOutputTarget = graph.OffscreenColorTarget;
 
-        if (!ReferenceEquals(outputTarget.ResourceOwner.Device, device)
-            || (outputTarget.DeviceEpoch != graph.DeviceEpoch))
+        if (offscreenOutputTarget is not null
+            && (!ReferenceEquals(offscreenOutputTarget.ResourceOwner.Device, device)
+                || (offscreenOutputTarget.DeviceEpoch != graph.DeviceEpoch)))
         {
             throw new ArgumentException("The graph output target belongs to another device or epoch.", nameof(graph));
         }
 
-        var graphResourceOwners = new HashSet<GraphicsResourceOwner> {
-            outputTarget.ResourceOwner,
-        };
+        var surfaceTarget = graph.SurfaceTarget;
+
+        if (surfaceTarget is not null)
+        {
+            ObjectDisposedException.ThrowIf(!surfaceTarget.IsLive, surfaceTarget);
+            var surfaceSnapshot = surfaceTarget.CaptureSnapshot();
+
+            if (!ReferenceEquals(surfaceTarget.Device, device))
+            {
+                throw new ArgumentException("The graph Surface belongs to another GraphicsDevice.", nameof(graph));
+            }
+
+            if ((surfaceTarget.Device.DeviceEpoch != graph.DeviceEpoch)
+                || (surfaceSnapshot.Capabilities.SurfaceEpoch != graph.SurfaceEpoch)
+                || (surfaceSnapshot.Capabilities.SwapchainEpoch != graph.SwapchainEpoch)
+                || (surfaceSnapshot.ClientPixelSize != graph.TargetExtent))
+            {
+                throw new InvalidOperationException("The graph plan belongs to a stale Surface or swapchain generation.");
+            }
+        }
+
+        var graphResourceOwners = new HashSet<GraphicsResourceOwner>();
+
+        if (offscreenOutputTarget is not null)
+        {
+            _ = graphResourceOwners.Add(offscreenOutputTarget.ResourceOwner);
+        }
 
         foreach (var import in graph.BufferImports)
         {
@@ -171,12 +193,42 @@ public sealed partial class Renderer
                     isTransient: true));
             }
 
+            GpuTexture outputColorTarget;
+
+            if (offscreenOutputTarget is not null)
+            {
+                outputColorTarget = offscreenOutputTarget;
+            }
+            else
+            {
+                var outputResourceId = graph.PresentationSource.ResourceId;
+                GpuTexture? selectedTarget = null;
+
+                foreach (var import in graph.TextureImports)
+                {
+                    if (import.Version.ResourceId == outputResourceId)
+                    {
+                        selectedTarget = import.Texture;
+                        break;
+                    }
+                }
+
+                if ((selectedTarget is null)
+                    && !transientTexturesByResourceId.TryGetValue(outputResourceId, out selectedTarget))
+                {
+                    throw new InvalidOperationException("The Surface presentation source was not materialized for submission.");
+                }
+
+                outputColorTarget = selectedTarget;
+            }
+
             var commandLists = await graph.RecordPassCallbacksAsync().ConfigureAwait(false);
             GraphicsGraphSubmission submission;
 
             try
             {
                 submission = graph.CreateGraphicsSubmission(
+                    outputColorTarget,
                     commandLists,
                     transientBufferImports.MoveToImmutable(),
                     transientTextureImports.MoveToImmutable());
@@ -202,10 +254,10 @@ public sealed partial class Renderer
             return new RenderSubmissionReceipt(
                 result.SubmissionSequence,
                 result.CompletedFence,
-                presentationSequence: null,
+                result.PresentationSequence,
                 result.DeviceEpoch,
-                surfaceEpoch: 0,
-                swapchainEpoch: 0);
+                result.SurfaceEpoch,
+                result.SwapchainEpoch);
         }
         finally
         {

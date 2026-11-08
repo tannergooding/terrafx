@@ -24,6 +24,7 @@ public sealed class RenderGraph
     private RenderGraphCompileResponse? _compiledResponse;
     private readonly uint _graphOwnerId;
     private bool _isSealed;
+    private readonly GraphTextureVersion? _offscreenColorTargetVersion;
     private readonly RenderGraphOptions _options;
     private readonly Dictionary<RenderPassId, RenderPassCallback> _passCallbacks = [];
     private readonly Dictionary<RenderPassId, RenderGraphPassKind> _passKinds = [];
@@ -31,8 +32,9 @@ public sealed class RenderGraph
     private GraphTextureVersion? _presentationSource;
     private readonly GraphResourceRegistry _resources;
 
-    /// <summary>Initializes a graph from immutable snapshot metadata and a real offscreen target.</summary>
+    /// <summary>Initializes a graph from immutable snapshot metadata and one typed output target.</summary>
     /// <param name="options">The snapshot identity and output-target contract.</param>
+    /// <exception cref="ArgumentException">The options do not select an output target.</exception>
     /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
     /// <exception cref="InvalidOperationException">The selected GraphicsDevice is not ready.</exception>
     public RenderGraph(RenderGraphOptions options)
@@ -40,19 +42,27 @@ public sealed class RenderGraph
         ArgumentNullException.ThrowIfNull(options);
         _options = options;
         _graphOwnerId = AllocateGraphOwnerId();
-        var target = options.OffscreenColorTarget;
-        var device = target.ResourceOwner.Device;
+        var device = options.Surface?.Device
+            ?? options.OffscreenColorTarget?.ResourceOwner.Device
+            ?? throw new ArgumentException("The graph options do not select an output target.", nameof(options));
         _resources = new GraphResourceRegistry(device, _graphOwnerId);
-        var outputRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
-        (var initialState, var contentsValid, _, _) = target.ResourceOwner.CaptureGraphImportState(outputRange);
-        OffscreenColorTargetVersion = _resources.ImportTexture(
-            target,
-            outputRange,
-            new GraphImportOptions(initialState, contentsValid, GraphImportCompletionPolicy.WaitForLastUse));
+
+        if (options.OffscreenColorTarget is GpuTexture target)
+        {
+            var outputRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+            (var initialState, var contentsValid, _, _) = target.ResourceOwner.CaptureGraphImportState(outputRange);
+            _offscreenColorTargetVersion = _resources.ImportTexture(
+                target,
+                outputRange,
+                new GraphImportOptions(initialState, contentsValid, GraphImportCompletionPolicy.WaitForLastUse));
+        }
     }
 
-    /// <summary>Gets the automatically imported mip-0/layer-0 color version of the offscreen target.</summary>
-    public GraphTextureVersion OffscreenColorTargetVersion { get; }
+    /// <summary>Gets the automatically imported mip-0/layer-0 color version of an offscreen target.</summary>
+    /// <exception cref="InvalidOperationException">This graph targets a Surface.</exception>
+    public GraphTextureVersion OffscreenColorTargetVersion
+        => _offscreenColorTargetVersion
+            ?? throw new InvalidOperationException("A Surface-targeted graph has no offscreen color target version.");
 
     /// <summary>Gets the selected presentation source version.</summary>
     public GraphTextureVersion? PresentationSource => _presentationSource;
@@ -141,11 +151,21 @@ public sealed class RenderGraph
 
         if (!_presentationPassId.HasValue)
         {
-            _presentationPassId = _resources.AddOffscreenOutputSourcePass(
-                _presentationSource
-                    ?? throw new InvalidOperationException("The graph has no selected presentation source."),
-                new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
-            _passKinds.Add(_presentationPassId.Value, RenderGraphPassKind.OffscreenOutput);
+            var source = _presentationSource
+                ?? throw new InvalidOperationException("The graph has no selected presentation source.");
+            var range = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+
+            if (_options.Surface is null)
+            {
+                _presentationPassId = _resources.AddOffscreenOutputSourcePass(source, range);
+                _passKinds.Add(_presentationPassId.Value, RenderGraphPassKind.OffscreenOutput);
+            }
+            else
+            {
+                _presentationPassId = _resources.AddPresentationSourcePass(source, range);
+                _passKinds.Add(_presentationPassId.Value, RenderGraphPassKind.Presentation);
+            }
+
             _isSealed = true;
             validation = _resources.ValidateCompilation();
         }
@@ -166,6 +186,8 @@ public sealed class RenderGraph
             GetOrderedPassCallbacks(validation.OrderedPasses),
             _resources.Passes,
             validation.StateTransitions,
+            _presentationSource
+                ?? throw new InvalidOperationException("The graph has no selected presentation source."),
             _resources.Accesses,
             _resources.BufferImports,
             _resources.TextureImports,
@@ -273,16 +295,21 @@ public sealed class RenderGraph
         return _resources.ReadWriteTexture(pass, previousVersion, range);
     }
 
-    /// <summary>Selects the latest initialized mip-0/layer-0 color version of the offscreen target.</summary>
+    /// <summary>Selects the latest initialized mip-0/layer-0 color version for the graph's output target.</summary>
     /// <param name="version">The graph-owned version of the selected output target.</param>
-    /// <exception cref="ArgumentException">The version is not a current, exact offscreen color-target version.</exception>
+    /// <exception cref="ArgumentException">The version does not satisfy the selected output target contract.</exception>
     /// <exception cref="InvalidOperationException">A presentation source was already selected.</exception>
+    /// <exception cref="NotSupportedException">The Surface format has no implemented terminal output encoding.</exception>
     public void SetPresentationSource(GraphTextureVersion version)
     {
         EnsureCanMutate();
         ArgumentNullException.ThrowIfNull(version);
 
-        var target = _options.OffscreenColorTarget;
+        if (_presentationSource is not null)
+        {
+            throw new InvalidOperationException("A presentation source was already selected.");
+        }
+
         var requiredRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
 
         if ((version.DeviceEpoch != _resources.DeviceEpoch)
@@ -290,11 +317,32 @@ public sealed class RenderGraph
             || (version.Description.Dimension != TextureDimension.Dimension2D)
             || (version.Description.Width != _options.TargetExtent.Width)
             || (version.Description.Height != _options.TargetExtent.Height)
-            || ((version.Description.Usage & TextureUsage.ColorAttachment) == 0)
-            || !_resources.IsTextureImportedFrom(version, target)
+            || (version.Description.Format == TextureFormat.D32Float)
             || !_resources.IsTextureCurrentVersion(version))
         {
-            throw new ArgumentException("The presentation source must be the current mip-0/layer-0 version of the selected offscreen target.", nameof(version));
+            throw new ArgumentException("The presentation source must be the current mip-0/layer-0 color version with the selected target extent.", nameof(version));
+        }
+
+        if (_options.Surface is null)
+        {
+            var target = _options.OffscreenColorTarget;
+
+            if (((version.Description.Usage & TextureUsage.ColorAttachment) == 0)
+                || (target is null)
+                || !_resources.IsTextureImportedFrom(version, target))
+            {
+                throw new ArgumentException("The offscreen presentation source must be the selected color-attachment target.", nameof(version));
+            }
+        }
+        else if (_options.Surface.ColorFormat is not (TextureFormat.Rgba8Srgb or TextureFormat.Bgra8Srgb))
+        {
+            throw new NotSupportedException("Surface output currently requires an sRGB color-attachment format.");
+        }
+        else if (((version.Description.Usage & TextureUsage.CopySource) == 0)
+            || (version.Description.Format != _options.Surface.ColorFormat)
+            || !IsSurfaceTargetCurrent())
+        {
+            throw new ArgumentException("A Surface presentation source must be copyable and match the captured surface format and active generation.", nameof(version));
         }
 
         _presentationSource = version;
@@ -494,7 +542,8 @@ public sealed class RenderGraph
 
         if (!presentationSourceValid)
         {
-            diagnostics.Add(CreateDiagnostic(PresentationSourceInvalidCode, "The graph has no initialized final color version for the selected offscreen target."));
+            var targetName = (_options.Surface is null) ? "offscreen target" : "interactive Surface";
+            diagnostics.Add(CreateDiagnostic(PresentationSourceInvalidCode, $"The graph has no initialized final color version for the selected {targetName}."));
         }
 
         return diagnostics.ToImmutable();
@@ -542,11 +591,53 @@ public sealed class RenderGraph
         throw new ArgumentException("The pass ID is not registered in this graph.", nameof(pass));
     }
 
+    private bool IsSurfaceTargetCurrent()
+    {
+        var surface = _options.Surface;
+
+        if ((surface is null)
+            || !surface.IsLive
+            || (surface.Device.DeviceEpoch != _options.DeviceEpoch)
+            || (surface.Device.Status != GraphicsDeviceStatus.Ready))
+        {
+            return false;
+        }
+
+        var current = surface.CaptureSnapshot();
+        return (current.Capabilities.SurfaceEpoch == _options.SurfaceEpoch)
+            && (current.Capabilities.SwapchainEpoch == _options.SwapchainEpoch)
+            && (current.Capabilities.SwapchainEpoch != 0)
+            && (current.ClientPixelSize == _options.TargetExtent);
+    }
+
     private bool IsValidPresentationSource()
-        => (_presentationSource is GraphTextureVersion version)
-            && _resources.IsTextureImportedFrom(version, _options.OffscreenColorTarget)
-            && _resources.IsTextureCurrentVersion(version)
-            && _resources.IsTextureInitialized(version, version.Range);
+    {
+        if ((_presentationSource is not GraphTextureVersion version)
+            || (version.DeviceEpoch != _resources.DeviceEpoch)
+            || (version.Range != new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color))
+            || (version.Description.Dimension != TextureDimension.Dimension2D)
+            || (version.Description.Width != _options.TargetExtent.Width)
+            || (version.Description.Height != _options.TargetExtent.Height)
+            || (version.Description.Format == TextureFormat.D32Float)
+            || !_resources.IsTextureCurrentVersion(version)
+            || !_resources.IsTextureInitialized(version, version.Range))
+        {
+            return false;
+        }
+
+        if (_options.Surface is not null)
+        {
+            return (_options.Surface.ColorFormat is TextureFormat.Rgba8Srgb or TextureFormat.Bgra8Srgb)
+                && ((version.Description.Usage & TextureUsage.CopySource) != 0)
+                && (version.Description.Format == _options.Surface.ColorFormat)
+                && IsSurfaceTargetCurrent();
+        }
+
+        var target = _options.OffscreenColorTarget;
+        return ((version.Description.Usage & TextureUsage.ColorAttachment) != 0)
+            && (target is not null)
+            && _resources.IsTextureImportedFrom(version, target);
+    }
 
     private void ValidateBufferUsage(RenderPassId pass, GraphBufferUsage usage, bool isWrite)
     {

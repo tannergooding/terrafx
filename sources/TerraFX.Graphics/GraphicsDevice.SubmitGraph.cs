@@ -155,7 +155,7 @@ public sealed partial class GraphicsDevice
             }
 
             useLeases = resourceUseLeases.TransferToSubmission(submission);
-            submission.ValidateOffscreenRasterSubmission();
+            submission.ValidateNativeRasterSubmission();
 
             var request = new SubmitGraphRequest(this, submission, useLeases, frameSlotReservation);
             ownershipTransferred = true;
@@ -229,7 +229,13 @@ public sealed partial class GraphicsDevice
             QuarantineResource(import.Texture.ResourceOwner, exception);
         }
 
-        QuarantineResource(submission.OffscreenColorTarget.ResourceOwner, exception);
+        QuarantineResource(submission.OutputColorTarget.ResourceOwner, exception);
+
+        if (submission.SurfaceTarget is Surface surface)
+        {
+            QuarantineSurface(surface, exception);
+        }
+
         MarkDeviceLost();
     }
 
@@ -299,7 +305,7 @@ public sealed partial class GraphicsDevice
             var useLeases = _useLeases
                 ?? throw new ObjectDisposedException(nameof(GraphResourceUseLeaseSet));
             var resourceOwners = new HashSet<GraphicsResourceOwner>();
-            _ = resourceOwners.Add(submission.OffscreenColorTarget.ResourceOwner);
+            _ = resourceOwners.Add(submission.OutputColorTarget.ResourceOwner);
 
             foreach (var import in submission.BufferImports)
             {
@@ -394,12 +400,23 @@ public sealed partial class GraphicsDevice
 
             var backendDevice = device._backendDevice
                 ?? throw new InvalidOperationException("The GraphicsDevice has no live backend owner.");
+
+            if (_submission.SurfaceTarget is Surface surface)
+            {
+                ObjectDisposedException.ThrowIf(surface.IsRetired || surface.IsQuarantined, surface);
+            }
+
             var submissionSequence = device.GetNextGraphSubmissionSequence();
             Volatile.Write(ref _submissionSequence, submissionSequence);
             Volatile.Write(ref _nativeSubmissionStarted, 1);
             var submittedFence = backendDevice.SubmitGraph(_submission);
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(submittedFence);
             Volatile.Write(ref _submittedFence, submittedFence);
+
+            if ((_submission.SurfaceTarget is not null) != _submission.PresentationSequence.HasValue)
+            {
+                throw new InvalidOperationException("The backend presentation result does not match the graph output target.");
+            }
 
             foreach (var useLease in _useLeases)
             {
@@ -446,7 +463,10 @@ public sealed partial class GraphicsDevice
             _ = _completion.TrySetResult(new GraphicsGraphSubmissionResult(
                 Volatile.Read(ref _submissionSequence),
                 submittedFence,
-                _device.DeviceEpoch));
+                _submission.PresentationSequence,
+                _device.DeviceEpoch,
+                _submission.SurfaceEpoch,
+                _submission.SwapchainEpoch));
         }
 
         internal void ObserveFenceWait()

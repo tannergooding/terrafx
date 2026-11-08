@@ -5,4 +5,7 @@ namespace TerraFX.Graphics;
 internal readonly record struct GraphicsGraphSubmissionResult(
     long SubmissionSequence,
     long CompletedFence,
-    uint DeviceEpoch);
+    long? PresentationSequence,
+    uint DeviceEpoch,
+    uint SurfaceEpoch,
+    uint SwapchainEpoch);

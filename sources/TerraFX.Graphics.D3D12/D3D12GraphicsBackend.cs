@@ -1781,10 +1781,10 @@ public static unsafe class D3D12GraphicsBackend
             public long SubmitGraph(GraphicsGraphSubmission submission)
             {
                 ArgumentNullException.ThrowIfNull(submission);
-                submission.ValidateOffscreenRasterSubmission();
+                submission.ValidateNativeRasterSubmission();
                 EnsureOwnerThread();
                 _graphSubmissionObserver?.Invoke(submission);
-                var target = submission.OffscreenColorTarget.ResourceOwner.BackendResource as D3D12BackendTexture
+                var target = submission.OutputColorTarget.ResourceOwner.BackendResource as D3D12BackendTexture
                     ?? throw new ArgumentException("The graph output target is not a D3D12 texture.", nameof(submission));
                 ObjectDisposedException.ThrowIf(target.IsDisposed, nameof(submission));
 
@@ -1793,6 +1793,15 @@ public static unsafe class D3D12GraphicsBackend
                     || ((target.Description.Usage & TextureUsage.ColorAttachment) == 0))
                 {
                     throw new NotSupportedException("D3D12 graph submission requires a live 2D color-attachment texture owned by this device.");
+                }
+
+                D3D12BackendSurface? surface = null;
+
+                if (submission.SurfaceTarget is Surface surfaceTarget)
+                {
+                    surface = surfaceTarget.BackendSurface as D3D12BackendSurface
+                        ?? throw new NotSupportedException("D3D12 graph submission requires a D3D12-backed Surface.");
+                    _ = surface.WaitForFrameLatency(submission.DeviceEpoch);
                 }
 
                 var transferQueue = GetTransferQueue();
@@ -2015,6 +2024,12 @@ public static unsafe class D3D12GraphicsBackend
                             clearColor[2] = attachment.ClearColor.Z;
                             clearColor[3] = attachment.ClearColor.W;
                             commandList->ClearRenderTargetView(renderTargetView, clearColor, 0, null);
+                        }
+
+                        if (pass.Kind == CommandRecorderPassKind.Presentation)
+                        {
+                            surface?.RecordPresentationCopy(commandList, target.GetResource());
+                            continue;
                         }
 
                         if (pass.Kind == CommandRecorderPassKind.Copy)
@@ -2494,6 +2509,30 @@ public static unsafe class D3D12GraphicsBackend
                     _graphFrameRenderTargetHeaps[graphFrameSlotIndex] = (nint)renderTargetHeap;
                     renderTargetHeap = null;
                     graphSubmissionAccepted = true;
+
+                    if (surface is not null)
+                    {
+                        try
+                        {
+                            submission.SetPresentationSequence(surface.Present());
+                        }
+                        catch (Exception presentationException)
+                        {
+                            try
+                            {
+                                transferQueue.WaitForFence(submittedFence);
+                            }
+                            catch (Exception fenceWaitException)
+                            {
+                                transferQueue.MarkUncertainSubmission();
+                                throw new AggregateException(presentationException, fenceWaitException);
+                            }
+
+                            transferQueue.MarkUncertainSubmission();
+                            throw;
+                        }
+                    }
+
                     return submittedFence;
                 }
                 catch (Exception exception)
@@ -5404,6 +5443,12 @@ public static unsafe class D3D12GraphicsBackend
                 }
 
                 return completedFence;
+            }
+
+            internal void MarkUncertainSubmission()
+            {
+                EnsureOwnerThread();
+                _hasUncertainSubmission = true;
             }
 
             internal void StopRecording()

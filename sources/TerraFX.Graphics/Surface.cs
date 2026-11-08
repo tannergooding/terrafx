@@ -83,6 +83,24 @@ public sealed class Surface
         return _device.ResizeSurfaceAsync(this, clientPixelSize, cancellationToken);
     }
 
+    /// <summary>Waits for an independently observable presentation outcome.</summary>
+    /// <param name="presentationSequence">The sequence returned by an interactive render submission.</param>
+    /// <param name="cancellationToken">A token that cancels only this observation wait.</param>
+    /// <returns>The terminal presentation status and the native generations that produced it.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="presentationSequence"/> is not positive.</exception>
+    /// <exception cref="OperationCanceledException">The observation wait was canceled.</exception>
+    public Task<PresentationReceipt> WaitForPresentationAsync(
+        long presentationSequence,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(presentationSequence);
+        cancellationToken.ThrowIfCancellationRequested();
+        return _device.WaitForPresentationAsync(this, presentationSequence, cancellationToken);
+    }
+
+    internal SurfaceSnapshot CaptureSnapshot()
+        => Volatile.Read(ref _snapshot);
+
     internal void MarkQuarantined(Exception exception)
     {
         ArgumentNullException.ThrowIfNull(exception);
@@ -102,7 +120,7 @@ public sealed class Surface
     internal bool TryInvalidate()
         => Interlocked.CompareExchange(ref _lifecycle, 1, 0) == 0;
 
-    private sealed record SurfaceSnapshot(
+    internal sealed record SurfaceSnapshot(
         SurfaceCapabilities Capabilities,
         PixelSize ClientPixelSize,
         TextureFormat ColorFormat);
