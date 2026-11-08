@@ -146,6 +146,13 @@ In the WSLg shell configured below, the same project runs the explicit X11 owner
 
 The X11 owner witness also requests a 640x360 logical client size, verifies current-scale pixel rounding and refreshed metrics, and applies a native window title. Its mode witness requests EWMH fullscreen and waits for the observed `_NET_WM_STATE`; when confirmation is still pending, it verifies a second request returns `QueueFull` with sequence zero and no replacement. WSLg confirms `Applied` with `BorderlessFullscreen` observed in Debug and Release. This does not qualify public EngineHost window creation, exclusive fullscreen, or WSI.
 
+The live `Xft.dpi` transition witness changes the X server's root `RESOURCE_MANAGER` property, so run it only against a test-owned Xvfb display with `xkbcomp` and XKB data available. Set `TERRAFX_TEST_ISOLATED_X11=1` with that isolated `DISPLAY`; never set the flag against WSLg's shared `:0` display. The witness verifies the reported 96-to-144 DPI transition, content-scale refresh, and a 640x360 logical client-size request producing 960x540 pixels. With Xvfb listening on `:99`, run:
+
+```bash
+DISPLAY=:99 TERRAFX_TEST_ISOLATED_X11=1 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Debug --filter "FullyQualifiedName=TerraFX.Platform.Tests.HeadlessPlatformBackendTests.X11OnlyRefreshesDpiAfterResourceManagerChangesOnAnIsolatedDisplay" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+DISPLAY=:99 TERRAFX_TEST_ISOLATED_X11=1 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release --filter "FullyQualifiedName=TerraFX.Platform.Tests.HeadlessPlatformBackendTests.X11OnlyRefreshesDpiAfterResourceManagerChangesOnAnIsolatedDisplay" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
 After setting `WORKTREE` as shown in the WSLg command block below, retrieve and extract the optional XKB client libraries privately; do not install system packages:
 
 ```bash
