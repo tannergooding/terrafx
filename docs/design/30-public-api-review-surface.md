@@ -7088,6 +7088,22 @@ public enum WindowMode
     ExclusiveFullscreen = 2
 }
 
+public sealed class WindowModeState
+{
+    internal WindowModeState(WindowHandle window, WindowMode requestedMode, WindowMode? observedMode);
+    public bool IsConfirmed { get; }
+    public WindowMode? ObservedMode { get; }
+    public WindowMode RequestedMode { get; }
+    public WindowHandle Window { get; }
+}
+
+public sealed class WindowModeChangedEventArgs : EventArgs
+{
+    internal WindowModeChangedEventArgs(WindowModeState state, long hostSequence);
+    public long HostSequence { get; }
+    public WindowModeState State { get; }
+}
+
 public sealed class WindowOptions
 {
     public WindowOptions(string title);
@@ -7119,7 +7135,9 @@ public sealed class PlatformHost
     internal PlatformHost(uint ownerId, PlatformBackend backend, ClipboardServicePolicy clipboardPolicy);
     public ClipboardServiceStatus ClipboardStatus { get; }
     public ClipboardTextService? ClipboardText { get; }
+    public event EventHandler<WindowModeChangedEventArgs>? WindowModeChanged;
     public ImmutableArray<MonitorHandle> GetMonitorHandles();
+    public WindowModeState GetWindowModeState(WindowHandle window);
     public Task<InputRoutingReceipt> AssignDeviceAsync(InputDeviceHandle device, uint simulationRecipientId, ushort playerSlot, CancellationToken cancellationToken = default);
     public Task<WindowCommandReceipt> SetTitleAsync(WindowHandle window, string title, CancellationToken cancellationToken = default);
     public Task<WindowCommandReceipt> SetModeAsync(WindowHandle window, WindowMode mode, CancellationToken cancellationToken = default);
