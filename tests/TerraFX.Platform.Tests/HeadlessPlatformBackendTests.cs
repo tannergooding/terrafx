@@ -70,21 +70,45 @@ internal sealed partial class HeadlessPlatformBackendTests
     }
 
     [Test]
-    public void UnimplementedNativeBackendFailsWithoutHeadlessFallback()
+    public void WaylandOnlyFailsWithoutSubstitutingAnotherBackend()
     {
         _ = Assert.Throws<PlatformNotSupportedException>(
             () => PlatformBackendFactory.Create(PlatformBackend.WaylandOnly, 1, ClipboardServicePolicy.NotRequested));
-        _ = Assert.Throws<PlatformNotSupportedException>(
-            () => PlatformBackendFactory.Create(PlatformBackend.WaylandThenX11, 1, ClipboardServicePolicy.NotRequested));
 
         if (!OperatingSystem.IsLinux())
         {
+            _ = Assert.Throws<PlatformNotSupportedException>(
+                () => PlatformBackendFactory.Create(PlatformBackend.WaylandThenX11, 1, ClipboardServicePolicy.NotRequested));
             _ = Assert.Throws<PlatformNotSupportedException>(
                 () => PlatformBackendFactory.Create(PlatformBackend.X11Only, 1, ClipboardServicePolicy.NotRequested));
         }
 
         _ = Assert.Throws<ArgumentOutOfRangeException>(
             () => PlatformBackendFactory.Create(PlatformBackend.None, 1, ClipboardServicePolicy.NotRequested));
+    }
+
+    [Test]
+    public void WaylandThenX11SelectsX11AndRetainsWaylandFailureWhenDisplayIsAvailable()
+    {
+        if (!OperatingSystem.IsLinux()
+            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
+        {
+            Assert.Ignore("The WaylandThenX11 fallback witness requires a Linux X11 display.");
+            return;
+        }
+
+        using var backend = PlatformBackendFactory.Create(
+            PlatformBackend.WaylandThenX11,
+            ownerId: 1,
+            ClipboardServicePolicy.NotRequested,
+            out var startupDiagnostic);
+
+        Assert.That(backend.Backend, Is.EqualTo(PlatformBackend.X11Only));
+        Assert.That(startupDiagnostic, Is.Not.Null);
+        Assert.That(startupDiagnostic!.Code, Is.EqualTo("platform-wayland-fallback-x11"));
+        Assert.That(startupDiagnostic.HostId, Is.EqualTo(1));
+        Assert.That(startupDiagnostic.Message, Does.Contain("Wayland startup failed"));
+        Assert.That(startupDiagnostic.Message, Does.Contain("selected the X11 backend"));
     }
 
     [Test]

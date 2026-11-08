@@ -24,6 +24,7 @@ public sealed class PlatformHost
     private readonly ClipboardTextService? _clipboardText;
     private readonly Func<WindowHandle, CancellationToken, Task<WindowCommandReceipt>>? _closeWindowAsync;
     private readonly List<Diagnostic> _pendingModeDiagnostics = [];
+    private readonly List<Diagnostic> _pendingStartupDiagnostics = [];
     private readonly Func<WindowHandle, Vector2, CancellationToken, Task<WindowCommandReceipt>>? _setClientSizeAsync;
     private readonly Func<WindowHandle, WindowMode, CancellationToken, Task<WindowCommandReceipt>>? _setModeAsync;
     private readonly Func<WindowHandle, string, CancellationToken, Task<WindowCommandReceipt>>? _setTitleAsync;
@@ -60,7 +61,18 @@ public sealed class PlatformHost
         }
 
         var backendClipboardPolicy = clipboardAllowed ? clipboardPolicy : ClipboardServicePolicy.NotRequested;
-        _backend = PlatformBackendFactory.Create(backend, ownerId, backendClipboardPolicy, timeProvider);
+        _backend = PlatformBackendFactory.Create(
+            backend,
+            ownerId,
+            backendClipboardPolicy,
+            out var startupDiagnostic,
+            timeProvider);
+
+        if (startupDiagnostic is not null)
+        {
+            _pendingStartupDiagnostics.Add(startupDiagnostic);
+        }
+
         _timeProvider = timeProvider ?? TimeProvider.System;
         _clipboardStatus = (clipboardPolicy is ClipboardServicePolicy.NotRequested)
             ? ClipboardServiceStatus.NotRequested
@@ -290,6 +302,7 @@ public sealed class PlatformHost
         _windowMetrics.Clear();
         _windowModeStates.Clear();
         _pendingModeDiagnostics.Clear();
+        _pendingStartupDiagnostics.Clear();
     }
 
     internal PlatformInputSampleBatch DrainInputSamples()
@@ -299,6 +312,13 @@ public sealed class PlatformHost
     {
         var diagnostics = ImmutableArray.CreateRange(_pendingModeDiagnostics);
         _pendingModeDiagnostics.Clear();
+        return diagnostics;
+    }
+
+    internal ImmutableArray<Diagnostic> DrainStartupDiagnostics()
+    {
+        var diagnostics = ImmutableArray.CreateRange(_pendingStartupDiagnostics);
+        _pendingStartupDiagnostics.Clear();
         return diagnostics;
     }
 

@@ -276,6 +276,13 @@ internal sealed class PlatformHostOwner
         return _platform.DrainModeDiagnostics();
     }
 
+    internal ImmutableArray<Diagnostic> DrainStartupDiagnostics()
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        return _platform.DrainStartupDiagnostics();
+    }
+
     internal ImmutableArray<WindowHandle> DrainWindowCloseRequests()
     {
         EnsureOwnerThread();

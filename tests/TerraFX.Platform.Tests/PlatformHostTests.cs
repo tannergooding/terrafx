@@ -173,4 +173,31 @@ internal sealed class PlatformHostTests
             platform.DisposeFromOwner();
         }
     }
+
+    [Test]
+    public void WaylandFallbackDiagnosticIsDrainedOnce()
+    {
+        if (!OperatingSystem.IsLinux()
+            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
+        {
+            Assert.Ignore("The WaylandThenX11 fallback witness requires a Linux X11 display.");
+            return;
+        }
+
+        var host = new PlatformHost(5, PlatformBackend.WaylandThenX11, ClipboardServicePolicy.NotRequested);
+
+        try
+        {
+            var diagnostics = host.DrainStartupDiagnostics();
+
+            Assert.That(diagnostics, Has.Length.EqualTo(1));
+            Assert.That(diagnostics[0].Code, Is.EqualTo("platform-wayland-fallback-x11"));
+            Assert.That(diagnostics[0].Message, Does.Contain("selected the X11 backend"));
+            Assert.That(host.DrainStartupDiagnostics(), Is.Empty);
+        }
+        finally
+        {
+            host.DisposeFromOwner();
+        }
+    }
 }

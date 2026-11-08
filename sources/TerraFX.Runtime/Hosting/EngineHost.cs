@@ -795,6 +795,11 @@ public sealed partial class EngineHost : IAsyncDisposable
                 recipientId => _inputTimelineByRouter.Keys
                     .FirstOrDefault(router => router.RecipientId == recipientId));
 
+            foreach (var diagnostic in platformOwner.DrainStartupDiagnostics())
+            {
+                diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+            }
+
             if (_platform.GamepadStatus is PlatformServiceStatus.Unavailable)
             {
                 var gamepadDiagnostic = new Diagnostic(
