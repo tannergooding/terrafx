@@ -78,6 +78,7 @@ internal sealed class WaylandDisplayConnectionTests
         {
             Assert.That(backend.Backend, Is.EqualTo(PlatformBackend.WaylandOnly));
             Assert.That(backend.DisplayStatus, Is.EqualTo(PlatformServiceStatus.Available));
+            Assert.That(backend.GetMonitorInfo(), Is.Not.Empty);
 
             backend.CreateWindow(
                 window,
