@@ -142,6 +142,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
         ThrowIfCallbackFailed();
         Connection.Pump();
         ThrowIfCallbackFailed();
+        PumpKeyboardRepeats();
     }
 
     public void SetMonitorHandles(ImmutableArray<MonitorHandle> monitorHandles)

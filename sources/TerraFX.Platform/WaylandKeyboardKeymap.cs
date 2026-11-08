@@ -130,6 +130,18 @@ internal sealed unsafe partial class WaylandKeyboardKeymap : IDisposable
         _isDisposed = true;
     }
 
+    internal bool CanRepeat(uint evdevKeycode)
+    {
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+        if (evdevKeycode is > 0x2FF)
+        {
+            return false;
+        }
+
+        return Native.XkbKeymapKeyRepeats(_keymap, checked(evdevKeycode + 8)) != 0;
+    }
+
     internal bool TryGetUsage(uint evdevKeycode, out ushort hidUsage)
     {
         ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -154,6 +166,9 @@ internal sealed unsafe partial class WaylandKeyboardKeymap : IDisposable
 
         [LibraryImport("libxkbcommon.so.0", EntryPoint = "xkb_keymap_key_get_name")]
         internal static partial nint XkbKeymapKeyGetName(nint keymap, uint key);
+
+        [LibraryImport("libxkbcommon.so.0", EntryPoint = "xkb_keymap_key_repeats")]
+        internal static partial int XkbKeymapKeyRepeats(nint keymap, uint key);
 
         [LibraryImport("libxkbcommon.so.0", EntryPoint = "xkb_keymap_new_from_string")]
         internal static partial nint XkbKeymapNewFromString(nint context, nint keymapString, int format, uint flags);

@@ -141,10 +141,19 @@ internal sealed unsafe partial class WaylandPlatformBackend
         Justification = "Exceptions must not cross the Wayland unmanaged callback boundary.")]
     private static void OnKeyboardRepeatInfo(nint data, nint keyboard, int rate, int delay)
     {
-        _ = data;
-        _ = keyboard;
-        _ = rate;
-        _ = delay;
+        if (GCHandle.FromIntPtr(data).Target is not WaylandPlatformBackend backend)
+        {
+            return;
+        }
+
+        try
+        {
+            backend.HandleKeyboardRepeatInfo(keyboard, rate, delay);
+        }
+        catch (Exception exception)
+        {
+            backend._callbackFailure ??= exception;
+        }
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
@@ -480,6 +489,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
             _ = _keyboardKeysDown.Add(key);
         }
 
+        RescheduleKeyboardRepeats(_timeProvider.GetTimestamp());
         QueueFocusEvent(window, PhysicalInputEventKind.FocusGained);
         QueueKeyboardReconciliation(window);
     }
@@ -501,31 +511,30 @@ internal sealed unsafe partial class WaylandPlatformBackend
             return;
         }
 
+        var timestamp = _timeProvider.GetTimestamp();
         var isDown = state == 1;
-        var kind = isDown
-            ? (_keyboardKeysDown.Add(key) ? PhysicalInputEventKind.KeyDown : PhysicalInputEventKind.KeyRepeat)
-            : PhysicalInputEventKind.KeyUp;
+        PhysicalInputEventKind kind;
 
-        if (!isDown)
+        if (isDown)
+        {
+            var wasDown = !_keyboardKeysDown.Add(key);
+            kind = wasDown ? PhysicalInputEventKind.KeyRepeat : PhysicalInputEventKind.KeyDown;
+
+            if (!wasDown)
+            {
+                var repeatable = (_keyboardKeymap is WaylandKeyboardKeymap keymap)
+                    && keymap.CanRepeat(key);
+                _keyboardRepeatSchedule.StartKey(key, timestamp, repeatable);
+            }
+        }
+        else
         {
             _ = _keyboardKeysDown.Remove(key);
+            _keyboardRepeatSchedule.StopKey(key);
+            kind = PhysicalInputEventKind.KeyUp;
         }
 
-        ushort hidUsage = 0;
-        var hasUsage = (_keyboardKeymap is WaylandKeyboardKeymap keymap)
-            && keymap.TryGetUsage(key, out hidUsage);
-        _ = _inputSamples.TryEnqueue(new PlatformInputSample(
-            kind,
-            window.Window,
-            NativeDeviceIdentity: _keyboard,
-            PlatformInputDeviceKind.Keyboard,
-            NativeUsagePage: hasUsage ? (ushort)0x0007 : null,
-            NativeUsage: hasUsage ? hidUsage : null,
-            NativeScanCode: key,
-            IsDown: isDown,
-            NativeTimestamp: checked((long)time),
-            NativeClockDomain: "WaylandMonotonicMilliseconds",
-            MonotonicTimestamp: _timeProvider.GetTimestamp()));
+        QueueKeyboardSample(window, key, kind, isDown, timestamp, time);
     }
 
     private void HandleKeyboardKeymap(nint keyboard, uint format, int fileDescriptor, uint size)
@@ -539,6 +548,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
         var keymap = WaylandKeyboardKeymap.TryCreate(format, fileDescriptor, size);
         _keyboardKeymap?.Dispose();
         _keyboardKeymap = keymap;
+        RescheduleKeyboardRepeats(_timeProvider.GetTimestamp());
 
         if (_keyboardFocusedWindow is WaylandWindowState window)
         {
@@ -554,8 +564,20 @@ internal sealed unsafe partial class WaylandPlatformBackend
         {
             _keyboardFocusedWindow = null;
             _keyboardKeysDown.Clear();
+            _keyboardRepeatSchedule.Reset();
             QueueFocusEvent(window, PhysicalInputEventKind.FocusLost);
         }
+    }
+
+    private void HandleKeyboardRepeatInfo(nint keyboard, int rate, int delay)
+    {
+        if (keyboard != _keyboard)
+        {
+            return;
+        }
+
+        _keyboardRepeatSchedule.Configure(rate, delay);
+        RescheduleKeyboardRepeats(_timeProvider.GetTimestamp());
     }
 
     private void HandlePointerAxis(nint pointer, uint time, uint axis, int value)
@@ -719,6 +741,27 @@ internal sealed unsafe partial class WaylandPlatformBackend
             (nint)(delegate* unmanaged[Cdecl]<nint, nint, uint, uint, int, void>)&OnPointerAxis);
     }
 
+    private void PumpKeyboardRepeats()
+    {
+        if (_keyboardFocusedWindow is not WaylandWindowState window)
+        {
+            return;
+        }
+
+        var timestamp = _timeProvider.GetTimestamp();
+
+        foreach (var key in _keyboardRepeatSchedule.TakeDueKeys(timestamp, PlatformInputSampleQueue.DefaultCapacity))
+        {
+            QueueKeyboardSample(
+                window,
+                key,
+                PhysicalInputEventKind.KeyRepeat,
+                isDown: true,
+                timestamp,
+                nativeTime: null);
+        }
+    }
+
     private void QueueFocusEvent(WaylandWindowState window, PhysicalInputEventKind kind)
         => _ = _inputSamples.TryEnqueue(new PlatformInputSample(
             kind,
@@ -752,6 +795,31 @@ internal sealed unsafe partial class WaylandPlatformBackend
             PlatformInputDeviceKind.Keyboard,
             MonotonicTimestamp: _timeProvider.GetTimestamp(),
             ReconciliationState: reconciliationState.ToImmutable()));
+    }
+
+    private void QueueKeyboardSample(
+        WaylandWindowState window,
+        uint key,
+        PhysicalInputEventKind kind,
+        bool isDown,
+        long timestamp,
+        uint? nativeTime)
+    {
+        ushort hidUsage = 0;
+        var hasUsage = (_keyboardKeymap is WaylandKeyboardKeymap keymap)
+            && keymap.TryGetUsage(key, out hidUsage);
+        _ = _inputSamples.TryEnqueue(new PlatformInputSample(
+            kind,
+            window.Window,
+            NativeDeviceIdentity: _keyboard,
+            PlatformInputDeviceKind.Keyboard,
+            NativeUsagePage: hasUsage ? (ushort)0x0007 : null,
+            NativeUsage: hasUsage ? hidUsage : null,
+            NativeScanCode: key,
+            IsDown: isDown,
+            NativeTimestamp: nativeTime.HasValue ? checked((long)nativeTime.Value) : null,
+            NativeClockDomain: nativeTime.HasValue ? "WaylandMonotonicMilliseconds" : null,
+            MonotonicTimestamp: timestamp));
     }
 
     private void QueuePointerPosition(WaylandWindowState window, int x, int y, uint? nativeTime)
@@ -812,6 +880,21 @@ internal sealed unsafe partial class WaylandPlatformBackend
         }
     }
 
+    private void RescheduleKeyboardRepeats(long timestamp)
+    {
+        _keyboardRepeatSchedule.Reset();
+
+        if (_keyboardKeymap is not WaylandKeyboardKeymap keymap)
+        {
+            return;
+        }
+
+        foreach (var key in _keyboardKeysDown)
+        {
+            _keyboardRepeatSchedule.StartKey(key, timestamp, keymap.CanRepeat(key));
+        }
+    }
+
     [SuppressMessage(
         "Usage",
         "CA1031:Do not catch general exception types",
@@ -825,6 +908,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
 
         _keyboardFocusedWindow = null;
         _keyboardKeysDown.Clear();
+        _keyboardRepeatSchedule.Reset();
         _keyboardKeymap?.Dispose();
         _keyboardKeymap = null;
         var keyboard = _keyboard;

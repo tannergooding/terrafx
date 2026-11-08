@@ -36,6 +36,7 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
     private WaylandKeyboardKeymap? _keyboardKeymap;
     private readonly HashSet<uint> _keyboardKeysDown;
     private nint _keyboardListener;
+    private readonly WaylandKeyboardRepeatSchedule _keyboardRepeatSchedule;
     private readonly List<nint> _listenerTables;
     private ImmutableArray<MonitorHandle> _monitorHandles;
     private bool _monitorTopologyChanged;
@@ -92,6 +93,7 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
         _windowsByXdgSurface = [];
         _windowsByHandle = [];
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _keyboardRepeatSchedule = new WaylandKeyboardRepeatSchedule(_timeProvider.TimestampFrequency);
     }
 
     public PlatformServiceStatus AudioStatus

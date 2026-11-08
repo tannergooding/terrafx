@@ -169,7 +169,7 @@ done
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.EngineHostOptionsTests.X11PlatformOwnerReportsEwmhFullscreenConfirmationOrRefusal" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
-The standard Platform.Tests selection also exercises `WaylandDisplayConnectionTests` when `WAYLAND_DISPLAY` is available. On WSLg, the Wayland adapter binds compositor/output/seat globals, initializes the compositor keyboard keymap, creates an xdg-shell toplevel, acknowledges its configure, applies minimum/resizability size hints and a title, reports logical/pixel metrics and a Wayland surface binding, and retires the window. The selection passes 3/3 in Debug and Release. This does not observe physical keyboard/pointer events, text input, clipboard, a mapped/presented buffer, or WSI.
+The standard Platform.Tests selection also exercises `WaylandDisplayConnectionTests` when `WAYLAND_DISPLAY` is available. On WSLg, the Wayland adapter binds compositor/output/seat globals, initializes the compositor keyboard keymap and repeat schedule, creates an xdg-shell toplevel, acknowledges its configure, applies minimum/resizability size hints and a title, reports logical/pixel metrics and a Wayland surface binding, and retires the window. The compositor-window selection passes 3/3, and the hardware-independent repeat-schedule tests pass 5/5 in Debug and Release. This does not observe physical keyboard/pointer events, text input, clipboard, a mapped/presented buffer, or WSI.
 
 Wayland fallback tests require an available X11 display and an intentionally unavailable Wayland socket. Run them with the WSLg environment configured above:
 
