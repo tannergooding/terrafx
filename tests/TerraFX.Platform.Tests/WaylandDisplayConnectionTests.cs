@@ -97,6 +97,9 @@ internal sealed class WaylandDisplayConnectionTests
             var metrics = backend.GetNativeWindowMetrics(window);
             Assert.That(metrics.ClientPixelSize.Width, Is.GreaterThan(0));
             Assert.That(metrics.ClientPixelSize.Height, Is.GreaterThan(0));
+            var modeState = backend.GetNativeWindowModeState(window);
+            Assert.That(modeState.RequestedMode, Is.EqualTo(WindowMode.Windowed));
+            Assert.That(modeState.ObservedMode, Is.EqualTo(WindowMode.Windowed));
             Assert.That(backend.SetWindowTitle(window, "TerraFX Wayland configured"), Is.EqualTo(WindowCommandStatus.Applied));
             Assert.That(backend.SetWindowClientSize(window, new Vector2(640.0f, 360.0f)), Is.EqualTo(WindowCommandStatus.Unsupported));
             backend.Pump();
