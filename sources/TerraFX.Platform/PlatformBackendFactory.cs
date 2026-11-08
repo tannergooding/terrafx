@@ -51,7 +51,26 @@ internal static class PlatformBackendFactory
     }
 
     private static IPlatformBackend CreateWayland(uint ownerId, ClipboardServicePolicy clipboardPolicy)
-        => throw new PlatformNotSupportedException("The Wayland Platform backend has no implementation.");
+    {
+        ArgumentOutOfRangeException.ThrowIfZero(ownerId);
+        ArgumentOutOfRangeException.ThrowIfNegative((int)clipboardPolicy);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan((int)clipboardPolicy, (int)ClipboardServicePolicy.Required);
+
+        if (clipboardPolicy is ClipboardServicePolicy.Required)
+        {
+            throw new NotSupportedException("The Wayland backend does not provide clipboard transfers yet.");
+        }
+
+        using var connection = WaylandDisplayConnection.Connect();
+
+        if (!connection.HasGlobal("wl_compositor") || !connection.HasGlobal("xdg_wm_base"))
+        {
+            throw new PlatformNotSupportedException("The Wayland compositor does not advertise the required wl_compositor and xdg_wm_base globals.");
+        }
+
+        throw new PlatformNotSupportedException(
+            "The Wayland compositor connection succeeded, but the xdg-shell window backend is not implemented.");
+    }
 
     [SuppressMessage(
         "Reliability",

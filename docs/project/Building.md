@@ -169,6 +169,8 @@ done
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.EngineHostOptionsTests.X11PlatformOwnerReportsEwmhFullscreenConfirmationOrRefusal" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
+The standard Platform.Tests selection also exercises `WaylandDisplayConnectionTests` when `WAYLAND_DISPLAY` is available. It connects to the compositor, round-trips the registry, checks `wl_compositor`, `xdg_wm_base`, and `wl_output` globals, and pumps without blocking. This validates connection and global discovery only; Wayland xdg-shell windows, input, and native surfaces remain unimplemented.
+
 Physical keyboard/pointer input, XInput2 event delivery, general XKB compose, live keymap/DPI changes, clipboard, Wayland, WSI, and Interactive hosting remain unqualified or unimplemented.
 
 The XKB key-name table is hardware-independent and can be tested without an X server:
