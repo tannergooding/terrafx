@@ -7,4 +7,7 @@ public enum GraphicsFailurePolicy
 {
     /// <summary>Stop the host after reporting the graphics failure.</summary>
     StopHost = 0,
+
+    /// <summary>Keep simulation and audio active while presentation is suspended after reporting the failure.</summary>
+    SuspendPresentation = 1,
 }

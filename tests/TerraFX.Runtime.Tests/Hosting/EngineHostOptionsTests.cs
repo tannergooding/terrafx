@@ -1928,6 +1928,10 @@ internal sealed partial class EngineHostOptionsTests
         Assert.That((int)SimulationOverrunPolicy.Pause, Is.EqualTo(0));
         Assert.That((int)SimulationOverrunPolicy.DropDebt, Is.EqualTo(1));
         Assert.That((int)GraphicsFailurePolicy.StopHost, Is.EqualTo(0));
+        Assert.That((int)GraphicsFailurePolicy.SuspendPresentation, Is.EqualTo(1));
+        Assert.That(
+            CreateHeadlessOptions(assetStoreOptions, graphicsFailurePolicy: GraphicsFailurePolicy.SuspendPresentation).GraphicsFailurePolicy,
+            Is.EqualTo(GraphicsFailurePolicy.SuspendPresentation));
         Assert.That(CreateHeadlessOptions(assetStoreOptions, cpuWorkerCount: 0).CpuWorkerCount, Is.Zero);
         Assert.That(CreateHeadlessOptions(assetStoreOptions, graphicsFrameSlotCount: 1).GraphicsFrameSlotCount, Is.EqualTo(1));
         Assert.That(CreateHeadlessOptions(assetStoreOptions, graphicsFrameSlotCount: 4).GraphicsFrameSlotCount, Is.EqualTo(4));
@@ -1949,7 +1953,7 @@ internal sealed partial class EngineHostOptionsTests
         _ = Assert.Throws<ArgumentOutOfRangeException>(
             () => _ = CreateHeadlessOptions(assetStoreOptions, overrunPolicy: (SimulationOverrunPolicy)2));
         _ = Assert.Throws<ArgumentOutOfRangeException>(
-            () => _ = CreateHeadlessOptions(assetStoreOptions, graphicsFailurePolicy: (GraphicsFailurePolicy)1));
+            () => _ = CreateHeadlessOptions(assetStoreOptions, graphicsFailurePolicy: (GraphicsFailurePolicy)2));
         _ = Assert.Throws<ArgumentOutOfRangeException>(
             () => _ = CreateHeadlessOptions(assetStoreOptions, clipboardServicePolicy: (ClipboardServicePolicy)3));
         _ = Assert.Throws<ArgumentOutOfRangeException>(

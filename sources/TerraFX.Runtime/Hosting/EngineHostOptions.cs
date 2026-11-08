@@ -102,7 +102,7 @@ public sealed class EngineHostOptions
         }
         init
         {
-            if (value != GraphicsFailurePolicyKind.StopHost)
+            if (value is not (GraphicsFailurePolicyKind.StopHost or GraphicsFailurePolicyKind.SuspendPresentation))
             {
                 throw new ArgumentOutOfRangeException(nameof(GraphicsFailurePolicy));
             }
