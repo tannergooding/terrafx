@@ -130,6 +130,76 @@ internal sealed unsafe partial class WaylandDisplayConnection : IDisposable
         DisposeCore();
     }
 
+    internal nint BindGlobal(WaylandGlobal global, nint interfacePointer, uint version)
+    {
+        EnsureActiveOwnerThread();
+        ThrowIfCallbackFailed();
+
+        if ((interfacePointer == 0) || (version == 0) || (version > global.Version))
+        {
+            throw new ArgumentOutOfRangeException(nameof(version));
+        }
+
+        if (!_globals.Contains(global))
+        {
+            throw new InvalidOperationException("The Wayland global was removed before it could be bound.");
+        }
+
+        var interfaceName = Marshal.StringToCoTaskMemUTF8(global.InterfaceName);
+
+        try
+        {
+            var arguments = stackalloc WaylandArgument[4];
+            arguments[0].Unsigned = global.Name;
+            arguments[1].Pointer = interfaceName;
+            arguments[2].Unsigned = version;
+            arguments[3].Pointer = 0;
+            var proxy = WaylandNative.ProxyMarshalArrayFlags(
+                _registry,
+                opcode: 0,
+                interfacePointer,
+                version,
+                flags: 0,
+                arguments);
+
+            if (proxy == 0)
+            {
+                throw new IOException($"The Wayland compositor refused to bind {global.InterfaceName}.");
+            }
+
+            return proxy;
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(interfaceName);
+        }
+    }
+
+    internal nint BindGlobal(string interfaceName, uint maximumVersion)
+    {
+        ArgumentNullException.ThrowIfNull(interfaceName);
+        ArgumentOutOfRangeException.ThrowIfZero(maximumVersion);
+        EnsureActiveOwnerThread();
+        ThrowIfCallbackFailed();
+
+        WaylandGlobal? selectedGlobal = null;
+
+        foreach (var global in _globals)
+        {
+            if (global.InterfaceName.Equals(interfaceName, StringComparison.Ordinal)
+                && ((selectedGlobal is null) || (global.Version > selectedGlobal.Value.Version)))
+            {
+                selectedGlobal = global;
+            }
+        }
+
+        var target = selectedGlobal
+            ?? throw new PlatformNotSupportedException($"The Wayland compositor does not advertise {interfaceName}.");
+        var version = Math.Min(target.Version, maximumVersion);
+        var interfacePointer = GetInterface($"{interfaceName}_interface");
+        return BindGlobal(target, interfacePointer, version);
+    }
+
     internal ImmutableArray<WaylandGlobal> GetGlobals(string interfaceName)
     {
         ArgumentNullException.ThrowIfNull(interfaceName);
@@ -146,6 +216,14 @@ internal sealed unsafe partial class WaylandDisplayConnection : IDisposable
         }
 
         return globals.ToImmutable();
+    }
+
+    internal nint GetInterface(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        EnsureActiveOwnerThread();
+        ThrowIfCallbackFailed();
+        return NativeLibrary.GetExport(_waylandLibrary, name);
     }
 
     internal bool HasGlobal(string interfaceName)
@@ -420,5 +498,8 @@ internal sealed unsafe partial class WaylandDisplayConnection : IDisposable
     {
         [FieldOffset(0)]
         internal nint Pointer;
+
+        [FieldOffset(0)]
+        internal uint Unsigned;
     }
 }

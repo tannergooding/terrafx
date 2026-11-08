@@ -23,6 +23,7 @@ internal sealed class WaylandDisplayConnectionTests
         Assert.That(connection.HasGlobal("wl_compositor"), Is.True);
         Assert.That(connection.HasGlobal("xdg_wm_base"), Is.True);
         Assert.That(connection.GetGlobals("wl_output"), Is.Not.Empty);
+        Assert.That(connection.BindGlobal("wl_compositor", maximumVersion: 4), Is.Not.Zero);
         connection.Pump();
     }
 }
