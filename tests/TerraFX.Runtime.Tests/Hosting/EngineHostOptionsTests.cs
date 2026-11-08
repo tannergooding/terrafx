@@ -1073,36 +1073,50 @@ internal sealed partial class EngineHostOptionsTests
                     Is.True);
             }
 
+            const int liveAllocationPairWaveCount = 16;
+            var textureAliasVersions = compiledTextureAliasChainPlan.TransientTextureGroups[0];
+
+            for (var iteration = 0; iteration < liveAllocationPairWaveCount; iteration++)
             {
-                var aliasVersions = compiledTextureAliasChainPlan.TransientTextureGroups[0];
-                using var firstFrameSlotReservation = graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None)
-                    .GetAwaiter()
-                    .GetResult();
-                using var secondFrameSlotReservation = graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None)
-                    .GetAwaiter()
-                    .GetResult();
-                using var firstLiveAliasGroup = graphicsDevice.CreateTransientTextureGroupAsync(
-                    aliasVersions,
-                    CancellationToken.None)
-                    .GetAwaiter()
-                    .GetResult();
-                using var secondLiveAliasGroup = graphicsDevice.CreateTransientTextureGroupAsync(
-                    aliasVersions,
-                    CancellationToken.None)
-                    .GetAwaiter()
-                    .GetResult();
-                var firstAllocationLease = firstLiveAliasGroup.Textures[0].ResourceOwner.AllocationLease
-                    ?? throw new InvalidOperationException("The first live texture alias group lost its shared allocation lease.");
-                var secondAllocationLease = secondLiveAliasGroup.Textures[0].ResourceOwner.AllocationLease
-                    ?? throw new InvalidOperationException("The second live texture alias group lost its shared allocation lease.");
+                GraphicsResourceAllocationLease firstAllocationLease;
+                GraphicsResourceAllocationLease secondAllocationLease;
 
-                Assert.That(firstAllocationLease, Is.Not.SameAs(secondAllocationLease));
-
-                for (var index = 0; index < transientTextureAliasCount; index++)
                 {
-                    Assert.That(firstLiveAliasGroup.Textures[index].ResourceOwner.AllocationLease, Is.SameAs(firstAllocationLease));
-                    Assert.That(secondLiveAliasGroup.Textures[index].ResourceOwner.AllocationLease, Is.SameAs(secondAllocationLease));
+                    using var firstFrameSlotReservation = graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None)
+                        .GetAwaiter()
+                        .GetResult();
+                    using var secondFrameSlotReservation = graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None)
+                        .GetAwaiter()
+                        .GetResult();
+                    using var firstLiveAliasGroup = graphicsDevice.CreateTransientTextureGroupAsync(
+                        textureAliasVersions,
+                        CancellationToken.None)
+                        .GetAwaiter()
+                        .GetResult();
+                    using var secondLiveAliasGroup = graphicsDevice.CreateTransientTextureGroupAsync(
+                        textureAliasVersions,
+                        CancellationToken.None)
+                        .GetAwaiter()
+                        .GetResult();
+                    firstAllocationLease = firstLiveAliasGroup.Textures[0].ResourceOwner.AllocationLease
+                        ?? throw new InvalidOperationException("The first live texture alias group lost its shared allocation lease.");
+                    secondAllocationLease = secondLiveAliasGroup.Textures[0].ResourceOwner.AllocationLease
+                        ?? throw new InvalidOperationException("The second live texture alias group lost its shared allocation lease.");
+
+                    Assert.That(firstAllocationLease, Is.Not.SameAs(secondAllocationLease));
+
+                    for (var index = 0; index < transientTextureAliasCount; index++)
+                    {
+                        Assert.That(firstLiveAliasGroup.Textures[index].ResourceOwner.AllocationLease, Is.SameAs(firstAllocationLease));
+                        Assert.That(secondLiveAliasGroup.Textures[index].ResourceOwner.AllocationLease, Is.SameAs(secondAllocationLease));
+                    }
                 }
+
+                Assert.That(
+                    SpinWait.SpinUntil(
+                        () => (firstAllocationLease.ReferenceCount == 1) && (secondAllocationLease.ReferenceCount == 1),
+                        TimeSpan.FromSeconds(5)),
+                    Is.True);
             }
 
             var cycleGraph = new RenderGraph(new RenderGraphOptions(
