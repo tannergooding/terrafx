@@ -70,10 +70,23 @@ internal sealed partial class HeadlessPlatformBackendTests
     }
 
     [Test]
-    public void WaylandOnlyFailsWithoutSubstitutingAnotherBackend()
+    public void WaylandOnlySelectsWaylandWhenDisplayIsConfigured()
     {
-        _ = Assert.Throws<PlatformNotSupportedException>(
-            () => PlatformBackendFactory.Create(PlatformBackend.WaylandOnly, 1, ClipboardServicePolicy.NotRequested));
+        if (OperatingSystem.IsLinux()
+            && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY")))
+        {
+            using var wayland = PlatformBackendFactory.Create(
+                PlatformBackend.WaylandOnly,
+                1,
+                ClipboardServicePolicy.NotRequested);
+
+            Assert.That(wayland.Backend, Is.EqualTo(PlatformBackend.WaylandOnly));
+        }
+        else
+        {
+            _ = Assert.Throws<PlatformNotSupportedException>(
+                () => PlatformBackendFactory.Create(PlatformBackend.WaylandOnly, 1, ClipboardServicePolicy.NotRequested));
+        }
 
         if (!OperatingSystem.IsLinux())
         {
@@ -91,9 +104,11 @@ internal sealed partial class HeadlessPlatformBackendTests
     public void WaylandThenX11SelectsX11AndRetainsWaylandFailureWhenDisplayIsAvailable()
     {
         if (!OperatingSystem.IsLinux()
-            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
+            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY"))
+            || (Environment.GetEnvironmentVariable("WAYLAND_DISPLAY") != "terrafx-unavailable")
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_WAYLAND_UNAVAILABLE") != "1"))
         {
-            Assert.Ignore("The WaylandThenX11 fallback witness requires a Linux X11 display.");
+            Assert.Ignore("The fallback witness requires Linux X11 and an explicitly unavailable Wayland display.");
             return;
         }
 

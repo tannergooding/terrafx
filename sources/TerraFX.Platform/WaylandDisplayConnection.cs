@@ -39,6 +39,15 @@ internal sealed unsafe partial class WaylandDisplayConnection : IDisposable
         _ownerThreadId = Environment.CurrentManagedThreadId;
     }
 
+    internal nint Display
+    {
+        get
+        {
+            EnsureActiveOwnerThread();
+            return _display;
+        }
+    }
+
     internal static WaylandDisplayConnection Connect()
     {
         var connection = new WaylandDisplayConnection();
@@ -130,6 +139,12 @@ internal sealed unsafe partial class WaylandDisplayConnection : IDisposable
         DisposeCore();
     }
 
+    internal int AddListener(nint proxy, nint implementation, nint data)
+    {
+        EnsureActiveOwnerThread();
+        return WaylandNative.ProxyAddListener(proxy, implementation, data);
+    }
+
     internal nint BindGlobal(WaylandGlobal global, nint interfacePointer, uint version)
     {
         EnsureActiveOwnerThread();
@@ -200,6 +215,23 @@ internal sealed unsafe partial class WaylandDisplayConnection : IDisposable
         return BindGlobal(target, interfacePointer, version);
     }
 
+    internal nint CreateProxy(
+        nint proxy,
+        uint opcode,
+        nint interfacePointer,
+        uint version,
+        WaylandArgument* arguments)
+    {
+        EnsureActiveOwnerThread();
+        return WaylandNative.ProxyMarshalArrayFlags(proxy, opcode, interfacePointer, version, flags: 0, arguments);
+    }
+
+    internal void DestroyProxy(nint proxy)
+    {
+        EnsureActiveOwnerThread();
+        WaylandNative.ProxyDestroy(proxy);
+    }
+
     internal ImmutableArray<WaylandGlobal> GetGlobals(string interfaceName)
     {
         ArgumentNullException.ThrowIfNull(interfaceName);
@@ -224,6 +256,12 @@ internal sealed unsafe partial class WaylandDisplayConnection : IDisposable
         EnsureActiveOwnerThread();
         ThrowIfCallbackFailed();
         return NativeLibrary.GetExport(_waylandLibrary, name);
+    }
+
+    internal uint GetProxyVersion(nint proxy)
+    {
+        EnsureActiveOwnerThread();
+        return WaylandNative.ProxyGetVersion(proxy);
     }
 
     internal bool HasGlobal(string interfaceName)
@@ -308,6 +346,43 @@ internal sealed unsafe partial class WaylandDisplayConnection : IDisposable
         {
             throw CreateDisplayException("flush requests");
         }
+    }
+
+    internal void Roundtrip()
+    {
+        EnsureActiveOwnerThread();
+        ThrowIfCallbackFailed();
+
+        if (WaylandNative.DisplayRoundtrip(_display) < 0)
+        {
+            throw CreateDisplayException("complete a registry synchronization roundtrip");
+        }
+
+        ThrowIfCallbackFailed();
+    }
+
+    internal void SendRequest(nint proxy, uint opcode)
+    {
+        EnsureActiveOwnerThread();
+        _ = WaylandNative.ProxyMarshalArrayFlags(
+            proxy,
+            opcode,
+            interfacePointer: 0,
+            version: WaylandNative.ProxyGetVersion(proxy),
+            flags: 0,
+            arguments: null);
+    }
+
+    internal void SendRequest(nint proxy, uint opcode, WaylandArgument* arguments)
+    {
+        EnsureActiveOwnerThread();
+        _ = WaylandNative.ProxyMarshalArrayFlags(
+            proxy,
+            opcode,
+            interfacePointer: 0,
+            version: WaylandNative.ProxyGetVersion(proxy),
+            flags: 0,
+            arguments);
     }
 
     private void AddGlobal(uint name, nint interfaceNamePointer, uint version)
@@ -473,6 +548,9 @@ internal sealed unsafe partial class WaylandDisplayConnection : IDisposable
         [LibraryImport(WaylandClientLibrary, EntryPoint = "wl_proxy_add_listener")]
         internal static partial int ProxyAddListener(nint proxy, nint implementation, nint data);
 
+        [LibraryImport(WaylandClientLibrary, EntryPoint = "wl_proxy_destroy")]
+        internal static partial void ProxyDestroy(nint proxy);
+
         [LibraryImport(WaylandClientLibrary, EntryPoint = "wl_proxy_get_version")]
         internal static partial uint ProxyGetVersion(nint proxy);
 
@@ -491,15 +569,5 @@ internal sealed unsafe partial class WaylandDisplayConnection : IDisposable
         internal int FileDescriptor;
         internal short Events;
         internal short ReturnedEvents;
-    }
-
-    [StructLayout(LayoutKind.Explicit)]
-    private struct WaylandArgument
-    {
-        [FieldOffset(0)]
-        internal nint Pointer;
-
-        [FieldOffset(0)]
-        internal uint Unsigned;
     }
 }

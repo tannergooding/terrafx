@@ -169,9 +169,16 @@ done
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.EngineHostOptionsTests.X11PlatformOwnerReportsEwmhFullscreenConfirmationOrRefusal" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
-The standard Platform.Tests selection also exercises `WaylandDisplayConnectionTests` when `WAYLAND_DISPLAY` is available. It connects to the compositor, round-trips the registry, checks `wl_compositor`, `xdg_wm_base`, and `wl_output` globals, binds the compositor, and pumps without blocking. This validates connection and core binding only; Wayland xdg-shell windows, input, and native surfaces remain unimplemented.
+The standard Platform.Tests selection also exercises `WaylandDisplayConnectionTests` when `WAYLAND_DISPLAY` is available. On WSLg, the Wayland adapter binds compositor/output/seat globals, initializes the compositor keyboard keymap, creates an xdg-shell toplevel, acknowledges its configure, reports logical/pixel metrics and a Wayland surface binding, applies a title, and retires the window. The selection passes 3/3 in Debug and Release. This does not observe physical keyboard/pointer events, text input, clipboard, a mapped/presented buffer, or WSI.
 
-Physical keyboard/pointer input, XInput2 event delivery, general XKB compose, live keymap/DPI changes, clipboard, Wayland, WSI, and Interactive hosting remain unqualified or unimplemented.
+Wayland fallback tests require an available X11 display and an intentionally unavailable Wayland socket. Run them with the WSLg environment configured above:
+
+```bash
+TERRAFX_TEST_WAYLAND_UNAVAILABLE=1 WAYLAND_DISPLAY=terrafx-unavailable "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~WaylandThenX11SelectsX11AndRetainsWaylandFailureWhenDisplayIsAvailable|FullyQualifiedName~WaylandFallbackDiagnosticIsDrainedOnce" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+TERRAFX_TEST_WAYLAND_UNAVAILABLE=1 WAYLAND_DISPLAY=terrafx-unavailable "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release --filter "FullyQualifiedName~WaylandThenX11SelectsX11AndRetainsWaylandFailureWhenDisplayIsAvailable|FullyQualifiedName~WaylandFallbackDiagnosticIsDrainedOnce" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
+Wayland input normalization is implemented for keyboard keycodes/keymap names, pointer buttons, absolute motion, and continuous scroll. Physical event delivery/focus observations, XInput2 event delivery, general XKB compose, text-input-v3, live keymap changes, clipboard, WSI, and Interactive hosting remain unqualified or unimplemented.
 
 The XKB key-name table is hardware-independent and can be tested without an X server:
 

@@ -39,7 +39,7 @@ internal static class PlatformBackendFactory
             PlatformBackend.WaylandThenX11
                 => throw new PlatformNotSupportedException("The WaylandThenX11 Platform backend requires Linux."),
             PlatformBackend.WaylandOnly when OperatingSystem.IsLinux()
-                => CreateWayland(ownerId, clipboardPolicy),
+                => CreateWayland(ownerId, clipboardPolicy, timeProvider),
             PlatformBackend.X11Only when OperatingSystem.IsLinux()
                 => new X11PlatformBackend(ownerId, clipboardPolicy),
             PlatformBackend.X11Only
@@ -50,26 +50,16 @@ internal static class PlatformBackendFactory
         };
     }
 
-    private static IPlatformBackend CreateWayland(uint ownerId, ClipboardServicePolicy clipboardPolicy)
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "The created Wayland backend transfers disposal ownership to the caller.")]
+    private static WaylandPlatformBackend CreateWayland(
+        uint ownerId,
+        ClipboardServicePolicy clipboardPolicy,
+        TimeProvider? timeProvider)
     {
-        ArgumentOutOfRangeException.ThrowIfZero(ownerId);
-        ArgumentOutOfRangeException.ThrowIfNegative((int)clipboardPolicy);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan((int)clipboardPolicy, (int)ClipboardServicePolicy.Required);
-
-        if (clipboardPolicy is ClipboardServicePolicy.Required)
-        {
-            throw new NotSupportedException("The Wayland backend does not provide clipboard transfers yet.");
-        }
-
-        using var connection = WaylandDisplayConnection.Connect();
-
-        if (!connection.HasGlobal("wl_compositor") || !connection.HasGlobal("xdg_wm_base"))
-        {
-            throw new PlatformNotSupportedException("The Wayland compositor does not advertise the required wl_compositor and xdg_wm_base globals.");
-        }
-
-        throw new PlatformNotSupportedException(
-            "The Wayland compositor connection succeeded, but the xdg-shell window backend is not implemented.");
+        return WaylandPlatformBackend.Create(ownerId, clipboardPolicy, timeProvider);
     }
 
     [SuppressMessage(
@@ -90,7 +80,7 @@ internal static class PlatformBackendFactory
 
         try
         {
-            return CreateWayland(ownerId, clipboardPolicy);
+            return CreateWayland(ownerId, clipboardPolicy, timeProvider);
         }
         catch (Exception waylandFailure) when (IsNativeStartupFailure(waylandFailure))
         {

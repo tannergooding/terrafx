@@ -178,9 +178,11 @@ internal sealed class PlatformHostTests
     public void WaylandFallbackDiagnosticIsDrainedOnce()
     {
         if (!OperatingSystem.IsLinux()
-            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
+            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY"))
+            || (Environment.GetEnvironmentVariable("WAYLAND_DISPLAY") != "terrafx-unavailable")
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_WAYLAND_UNAVAILABLE") != "1"))
         {
-            Assert.Ignore("The WaylandThenX11 fallback witness requires a Linux X11 display.");
+            Assert.Ignore("The fallback witness requires Linux X11 and an explicitly unavailable Wayland display.");
             return;
         }
 
