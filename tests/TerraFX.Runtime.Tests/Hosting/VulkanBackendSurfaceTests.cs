@@ -10,6 +10,7 @@ using TerraFX.Entities;
 using TerraFX.Graphics;
 using TerraFX.Graphics.Vulkan;
 using TerraFX.Hosting;
+using TerraFX.Interop.Vulkan;
 using TerraFX.Numerics;
 using TerraFX.Platform;
 using TerraFX.Rendering;
@@ -25,7 +26,8 @@ internal sealed partial class EngineHostOptionsTests
         GraphicsBackendRegistration Registration,
         CompiledContentSchemaRegistry Schemas) CreateVulkanSurfaceTestSetup(
             PlatformBackend platformBackend,
-            Action? surfaceImageAcquiredObserver = null)
+            Action? surfaceImageAcquiredObserver = null,
+            Func<VkResult, VkResult>? surfacePresentResultOverride = null)
     {
         var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
         var packagePath = SceneAssetStoreTests.Package.WritePackage(packageBytes);
@@ -36,13 +38,15 @@ internal sealed partial class EngineHostOptionsTests
             .. SceneSchemaCatalogue.Schemas,
             .. RenderingSchemaCatalogue.Schemas,
         ]);
-        var registration = surfaceImageAcquiredObserver is null
+        var registration = (surfaceImageAcquiredObserver is null)
+            && (surfacePresentResultOverride is null)
             ? VulkanGraphicsBackend.CreateRegistration()
             : VulkanGraphicsBackend.CreateRegistrationForTesting(
                 graphFenceWaitObserver: null,
                 completedGraphFenceValueOverride: null,
                 graphSubmissionObserver: null,
-                surfaceImageAcquiredObserver: surfaceImageAcquiredObserver);
+                surfaceImageAcquiredObserver: surfaceImageAcquiredObserver,
+                surfacePresentResultOverride: surfacePresentResultOverride);
         var options = new EngineHostOptions(
             HostProfile.Interactive,
             platformBackend,
@@ -90,7 +94,8 @@ internal sealed partial class EngineHostOptionsTests
         PlatformBackend platformBackend,
         GraphicsBackendRegistration registration,
         CompiledContentSchemaRegistry schemas,
-        bool expectAcquiredImageFailure = false)
+        bool expectAcquiredImageFailure = false,
+        PresentationStatus expectedFirstPresentationStatus = PresentationStatus.Presented)
     {
         var platformOwner = PlatformHostOwner.Create(options);
         GraphicsDevice? graphicsDevice = null;
@@ -221,35 +226,58 @@ internal sealed partial class EngineHostOptionsTests
                 CreateSurfaceGraphPlan("vulkan-surface-first-frame"))
                 .GetAwaiter()
                 .GetResult();
+            var firstSequence = firstSubmission.PresentationSequence
+                ?? throw new InvalidOperationException("The first Vulkan Surface submission omitted its presentation sequence.");
+            var firstPresentation = activeSurface.WaitForPresentationAsync(firstSequence).GetAwaiter().GetResult();
+
+            if (expectedFirstPresentationStatus is PresentationStatus.SurfaceLost)
+            {
+                Assert.That(firstPresentation.Status, Is.EqualTo(PresentationStatus.SurfaceLost));
+                _ = Assert.Throws<InvalidOperationException>(
+                    () => activeSurface.ResizeAsync(clientPixelSize).GetAwaiter().GetResult());
+                graphicsDevice.RetireSurfaceAsync(activeSurface).GetAwaiter().GetResult();
+                platformOwner.CloseWindow(window.Value);
+                window = null;
+                var surfaceLostHistory = activeSurface.WaitForPresentationAsync(firstSequence).GetAwaiter().GetResult();
+                Assert.That(surfaceLostHistory.Status, Is.EqualTo(PresentationStatus.SurfaceLost));
+                return;
+            }
+
+            if (expectedFirstPresentationStatus is PresentationStatus.SwapchainLost)
+            {
+                var stalePlan = CreateSurfaceGraphPlan("vulkan-surface-stale-after-recreate");
+                _ = Assert.Throws<InvalidOperationException>(
+                    () => renderer.SubmitAsync(renderSnapshot, stalePlan).GetAwaiter().GetResult());
+            }
+
             var secondSubmission = renderer.SubmitAsync(
                 renderSnapshot,
                 CreateSurfaceGraphPlan("vulkan-surface-second-frame"))
                 .GetAwaiter()
                 .GetResult();
-            var firstSequence = firstSubmission.PresentationSequence
-                ?? throw new InvalidOperationException("The first Vulkan Surface submission omitted its presentation sequence.");
             var secondSequence = secondSubmission.PresentationSequence
                 ?? throw new InvalidOperationException("The second Vulkan Surface submission omitted its presentation sequence.");
             Assert.That(secondSequence, Is.GreaterThan(firstSequence));
-            var firstPresentation = activeSurface.WaitForPresentationAsync(firstSequence).GetAwaiter().GetResult();
             var secondPresentation = activeSurface.WaitForPresentationAsync(secondSequence).GetAwaiter().GetResult();
-            Assert.That(firstPresentation.Status, Is.EqualTo(PresentationStatus.Presented));
+            Assert.That(firstPresentation.Status, Is.EqualTo(expectedFirstPresentationStatus));
             Assert.That(secondPresentation.Status, Is.EqualTo(PresentationStatus.Presented));
+            var expectedSwapchainEpochAfterSubmissions =
+                (expectedFirstPresentationStatus == PresentationStatus.SwapchainLost) ? 2u : 1u;
 
             var resized = activeSurface.ResizeAsync(clientPixelSize).GetAwaiter().GetResult();
             Assert.That(resized.Status, Is.EqualTo(SurfaceResizeStatus.Resized));
-            Assert.That(resized.SwapchainEpoch, Is.EqualTo(2));
+            Assert.That(resized.SwapchainEpoch, Is.EqualTo(expectedSwapchainEpochAfterSubmissions + 1));
             var suspended = activeSurface.ResizeAsync(new PixelSize(0, 0)).GetAwaiter().GetResult();
             Assert.That(suspended.Status, Is.EqualTo(SurfaceResizeStatus.Suspended));
             Assert.That(suspended.SwapchainEpoch, Is.Zero);
             var restored = activeSurface.ResizeAsync(clientPixelSize).GetAwaiter().GetResult();
-            Assert.That(restored.SwapchainEpoch, Is.EqualTo(3));
+            Assert.That(restored.SwapchainEpoch, Is.EqualTo(expectedSwapchainEpochAfterSubmissions + 2));
 
             graphicsDevice.RetireSurfaceAsync(activeSurface).GetAwaiter().GetResult();
             platformOwner.CloseWindow(window.Value);
             window = null;
             var historicalPresentation = activeSurface.WaitForPresentationAsync(firstSequence).GetAwaiter().GetResult();
-            Assert.That(historicalPresentation.Status, Is.EqualTo(PresentationStatus.Presented));
+            Assert.That(historicalPresentation.Status, Is.EqualTo(expectedFirstPresentationStatus));
         }
         finally
         {
@@ -508,6 +536,51 @@ internal sealed partial class EngineHostOptionsTests
 
         var (options, registration, schemas) = CreateVulkanSurfaceTestSetup(PlatformBackend.X11Only);
         RunVulkanSurfaceWithDirectOwners(options, PlatformBackend.X11Only, registration, schemas);
+    }
+
+    [Test]
+    [TestCase(VkResult.VK_ERROR_OUT_OF_DATE_KHR, PresentationStatus.SwapchainLost)]
+    [TestCase(VkResult.VK_ERROR_SURFACE_LOST_KHR, PresentationStatus.SurfaceLost)]
+    public void VulkanBackendTracksPresentErrorFencesAndLifecycle(
+        VkResult injectedResult,
+        PresentationStatus expectedStatus)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Ignore("The Vulkan error-result witness uses the Linux direct-owner path.");
+            return;
+        }
+
+        var platformBackend = GetInteractivePlatformBackend();
+
+        if (platformBackend is null)
+        {
+            Assert.Ignore("The Vulkan Surface error witness requires a Linux interactive display.");
+            return;
+        }
+
+        var overrideNextPresent = true;
+
+        VkResult OverridePresentResult(VkResult nativeResult)
+        {
+            if (overrideNextPresent && (nativeResult == VkResult.VK_SUCCESS))
+            {
+                overrideNextPresent = false;
+                return injectedResult;
+            }
+
+            return nativeResult;
+        }
+
+        var (options, registration, schemas) = CreateVulkanSurfaceTestSetup(
+            platformBackend.Value,
+            surfacePresentResultOverride: OverridePresentResult);
+        RunVulkanSurfaceWithDirectOwners(
+            options,
+            platformBackend.Value,
+            registration,
+            schemas,
+            expectedFirstPresentationStatus: expectedStatus);
     }
 
     [Test]

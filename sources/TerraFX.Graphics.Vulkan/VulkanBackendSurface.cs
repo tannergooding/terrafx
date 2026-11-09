@@ -46,6 +46,7 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
     private bool[] _imageHasPresented = [];
     private long[] _imagePresentationSequences = [];
     private bool _isDisposed;
+    private bool _isSurfaceLost;
     private uint _lastSwapchainEpoch;
     private bool _needsSwapchainRecreate;
     private long _nextPresentationSequence;
@@ -403,6 +404,45 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
         }
 
         return surface;
+    }
+
+    private static Diagnostic? CreatePresentationDiagnostic(
+        PresentationStatus status,
+        uint deviceEpoch,
+        uint surfaceEpoch,
+        uint swapchainEpoch)
+    {
+        if (status is PresentationStatus.Presented or PresentationStatus.Occluded or PresentationStatus.Suspended)
+        {
+            return null;
+        }
+
+        var code = status switch {
+            PresentationStatus.DeviceLost => "graphics.presentation.device-lost",
+            PresentationStatus.SurfaceLost => "graphics.presentation.surface-lost",
+            PresentationStatus.SwapchainLost => "graphics.presentation.swapchain-lost",
+            _ => throw new ArgumentOutOfRangeException(nameof(status)),
+        };
+        return new Diagnostic(
+            code,
+            DiagnosticSeverity.Error,
+            Stopwatch.GetTimestamp(),
+            hostId: null,
+            worldGuid: null,
+            deviceId: null,
+            surfaceId: null,
+            deviceEpoch,
+            surfaceEpoch,
+            swapchainEpoch,
+            tick: null,
+            systemId: null,
+            passId: null,
+            assetId: null,
+            commandIdentity: null,
+            operation: "Surface.WaitForPresentation",
+            nativeResult: null,
+            message: $"Vulkan presentation ended with {status}.",
+            context: []);
     }
 
     private static VkSemaphore[] CreateSemaphores(VkDevice device, int count)
@@ -920,6 +960,12 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
     {
         EnsureOwnerThread();
         ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+        if (_isSurfaceLost)
+        {
+            throw new InvalidOperationException("The Vulkan native surface was lost and must be retired.");
+        }
+
         ArgumentOutOfRangeException.ThrowIfGreaterThan(
             clientPixelSize.Width,
             _device.Capabilities.Limits.MaximumTextureDimension2D,
@@ -1040,7 +1086,7 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
                     deviceEpoch,
                     surfaceEpoch,
                     swapchainEpoch,
-                    diagnostic: null);
+                    CreatePresentationDiagnostic(status, deviceEpoch, surfaceEpoch, swapchainEpoch));
                 return true;
             }
         }
@@ -1079,12 +1125,16 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
         _ = _pendingPresentations.Remove(presentationSequence);
         VulkanApi.vkDestroyFence(_device.DeviceHandle, presentation.PresentFence, null);
         var receipt = new PresentationReceipt(
-            PresentationStatus.Presented,
+            presentation.Status,
             presentationSequence,
             deviceEpoch,
             presentation.SurfaceEpoch,
             presentation.SwapchainEpoch,
-            diagnostic: null);
+            CreatePresentationDiagnostic(
+                presentation.Status,
+                deviceEpoch,
+                presentation.SurfaceEpoch,
+                presentation.SwapchainEpoch));
         AddPresentationHistory(receipt);
         return receipt;
     }
@@ -1100,6 +1150,12 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
     {
         EnsureOwnerThread();
         ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+        if (_isSurfaceLost)
+        {
+            throw new InvalidOperationException("The Vulkan native surface was lost and must be retired.");
+        }
+
         ObjectDisposedException.ThrowIf(_swapchain.Value == 0, this);
         ArgumentOutOfRangeException.ThrowIfNegative(frameSlotIndex);
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(frameSlotIndex, _acquireSemaphores.Length);
@@ -1124,6 +1180,12 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
             {
                 _ = Resize(_clientPixelSize);
                 continue;
+            }
+
+            if (result == VkResult.VK_ERROR_SURFACE_LOST_KHR)
+            {
+                _isSurfaceLost = true;
+                throw new InvalidOperationException("The Vulkan native surface was lost during image acquisition.");
             }
 
             if (result is not (VkResult.VK_SUCCESS or VkResult.VK_SUBOPTIMAL_KHR))
@@ -1196,6 +1258,10 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
         return _imageHasPresented[imageIndex];
     }
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "A result override runs after vkQueuePresentKHR may enqueue native work; failures must retain its fence.")]
     internal long Present(uint frameSlotIndex, uint imageIndex, uint deviceEpoch)
     {
         EnsureOwnerThread();
@@ -1236,13 +1302,58 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
         presentInfo.swapchainCount = 1;
         presentInfo.pSwapchains = &swapchain;
         presentInfo.pImageIndices = &imageIndex;
-        var result = VulkanApi.vkQueuePresentKHR(_presentQueue, &presentInfo);
+        var nativeResult = VulkanApi.vkQueuePresentKHR(_presentQueue, &presentInfo);
+        VkResult result;
 
-        if (result is not (VkResult.VK_SUCCESS or VkResult.VK_SUBOPTIMAL_KHR))
+        try
+        {
+            result = _device.SurfacePresentResultOverride?.Invoke(nativeResult) ?? nativeResult;
+        }
+        catch
         {
             _device.MarkUncertainWsiOperation();
             _uncertainPresentFences.Add(presentFence);
-            EnsureSuccess(result, "vkQueuePresentKHR");
+            throw;
+        }
+
+        PresentationStatus status;
+
+        switch (result)
+        {
+            case VkResult.VK_SUCCESS:
+            {
+                status = PresentationStatus.Presented;
+                break;
+            }
+
+            case VkResult.VK_SUBOPTIMAL_KHR:
+            {
+                status = PresentationStatus.Presented;
+                _needsSwapchainRecreate = true;
+                break;
+            }
+
+            case VkResult.VK_ERROR_OUT_OF_DATE_KHR:
+            {
+                status = PresentationStatus.SwapchainLost;
+                _needsSwapchainRecreate = true;
+                break;
+            }
+
+            case VkResult.VK_ERROR_SURFACE_LOST_KHR:
+            {
+                status = PresentationStatus.SurfaceLost;
+                _isSurfaceLost = true;
+                break;
+            }
+
+            default:
+            {
+                _device.MarkUncertainWsiOperation();
+                _uncertainPresentFences.Add(presentFence);
+                EnsureSuccess(result, "vkQueuePresentKHR");
+                throw new InvalidOperationException("Vulkan presentation returned an unsupported terminal result.");
+            }
         }
 
         _nextPresentationSequence = sequence;
@@ -1253,15 +1364,11 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
                 deviceEpoch,
                 _binding.SurfaceEpoch,
                 _capabilities.SwapchainEpoch,
-                checked((int)imageIndex)));
+                checked((int)imageIndex),
+                status));
         _imagePresentationSequences[imageIndex] = sequence;
-        _imageHasPresented[imageIndex] = true;
+        _imageHasPresented[imageIndex] = status == PresentationStatus.Presented;
         _acquiredImages[imageIndex] = false;
-
-        if (result == VkResult.VK_SUBOPTIMAL_KHR)
-        {
-            _needsSwapchainRecreate = true;
-        }
 
         return sequence;
     }
@@ -1469,7 +1576,8 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
         uint DeviceEpoch,
         uint SurfaceEpoch,
         uint SwapchainEpoch,
-        int ImageIndex);
+        int ImageIndex,
+        PresentationStatus Status);
 
     private readonly record struct VulkanSurfaceNativeCapabilities(
         VkSurfaceCapabilitiesKHR Capabilities,

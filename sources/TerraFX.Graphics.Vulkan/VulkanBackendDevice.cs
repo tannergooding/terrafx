@@ -37,6 +37,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
     private readonly uint[] _queueFamilyIndices;
     private readonly VkQueue[] _queues;
     private readonly Action? _surfaceImageAcquiredObserver;
+    private readonly Func<VkResult, VkResult>? _surfacePresentResultOverride;
     private readonly string? _swapchainMaintenanceExtensionName;
     private readonly VkSemaphore _timelineSemaphore;
     private readonly VkCommandBuffer _transferCommandBuffer;
@@ -64,7 +65,8 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         Action<long>? graphFenceWaitObserver,
         Func<long, long>? completedGraphFenceValueOverride,
         Action<GraphicsGraphSubmission>? graphSubmissionObserver,
-        Action? surfaceImageAcquiredObserver)
+        Action? surfaceImageAcquiredObserver,
+        Func<VkResult, VkResult>? surfacePresentResultOverride)
     {
         ArgumentNullException.ThrowIfNull(enabledSpirvExtensions);
         ArgumentNullException.ThrowIfNull(commandBuffers);
@@ -102,6 +104,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         _completedGraphFenceValueOverride = completedGraphFenceValueOverride;
         _graphSubmissionObserver = graphSubmissionObserver;
         _surfaceImageAcquiredObserver = surfaceImageAcquiredObserver;
+        _surfacePresentResultOverride = surfacePresentResultOverride;
         _graphFrameSlotCount = graphFrameSlotCount;
         _graphFrameSlots = new VulkanGraphFrameSlot[graphFrameSlotCount];
 
@@ -195,7 +198,8 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         Func<long, long>? completedGraphFenceValueOverride = null,
         Action<GraphicsGraphSubmission>? graphSubmissionObserver = null,
         GraphicsNativeSurfaceBinding? presentationProbeBinding = null,
-        Action? surfaceImageAcquiredObserver = null)
+        Action? surfaceImageAcquiredObserver = null,
+        Func<VkResult, VkResult>? surfacePresentResultOverride = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(graphFrameSlotCount, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(graphFrameSlotCount, 4);
@@ -355,7 +359,8 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                     graphFenceWaitObserver,
                     completedGraphFenceValueOverride,
                     graphSubmissionObserver,
-                    surfaceImageAcquiredObserver);
+                    surfaceImageAcquiredObserver,
+                    surfacePresentResultOverride);
                 transferred = true;
                 hasInstance = false;
                 hasDevice = false;

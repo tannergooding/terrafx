@@ -28,6 +28,8 @@ internal sealed unsafe partial class VulkanBackendDevice
 
     internal uint QueueFamilyIndex => _queueFamilyIndex;
 
+    internal Func<VkResult, VkResult>? SurfacePresentResultOverride => _surfacePresentResultOverride;
+
     internal string? SwapchainMaintenanceExtensionName => _swapchainMaintenanceExtensionName;
 
     internal IGraphicsBackendSurface CreateSurface(GraphicsNativeSurfaceBinding binding, PixelSize clientPixelSize)
