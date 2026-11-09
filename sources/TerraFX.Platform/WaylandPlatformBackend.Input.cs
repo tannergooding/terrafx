@@ -863,6 +863,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
         var hasUsage = (_keyboardKeymap is WaylandKeyboardKeymap keymap)
             && keymap.TryGetUsage(key, out hidUsage);
         var committedText = _keyboardKeymap?.UpdateKey(key, isDown);
+        var monotonicTimestamp = timestamp;
         _ = _inputSamples.TryEnqueue(new PlatformInputSample(
             kind,
             window.Window,
@@ -874,8 +875,16 @@ internal sealed unsafe partial class WaylandPlatformBackend
             IsDown: isDown,
             NativeTimestamp: nativeTime.HasValue ? checked((long)nativeTime.Value) : null,
             NativeClockDomain: nativeTime.HasValue ? "WaylandMonotonicMilliseconds" : null,
-            MonotonicTimestamp: timestamp,
-            CommittedText: committedText));
+            MonotonicTimestamp: monotonicTimestamp));
+
+        if (committedText is { } text)
+        {
+            _ = _inputSamples.TryEnqueueTextInput(new PlatformTextInputSample(
+                window.Window,
+                [new TextInputChange(TextInputChangeKind.TextCommitted, text)],
+                monotonicTimestamp,
+                GroupWithOtherCommits: true));
+        }
     }
 
     private void QueuePointerPosition(WaylandWindowState window, int x, int y, uint? nativeTime)

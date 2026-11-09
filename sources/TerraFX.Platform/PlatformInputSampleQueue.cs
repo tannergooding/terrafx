@@ -1,8 +1,8 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.Text;
 using TerraFX;
 using TerraFX.Input;
 
@@ -11,12 +11,22 @@ namespace TerraFX.Platform;
 internal sealed class PlatformInputSampleQueue
 {
     internal const int DefaultCapacity = 4096;
+    private const int MaximumOverflowedTextWindows = 256;
 
+    private bool _allTextInputSamplesOverflowed;
+    private long _captureOrder;
     private int _count;
     private long _discardedSampleCount;
+    private long _discardedTextSampleCount;
     private int _head;
     private readonly int _ownerThreadId;
+    private int _pendingTextBytes;
+    private int _pendingTextChangeCount;
     private readonly PlatformInputSample[] _samples;
+    private int _textCount;
+    private int _textHead;
+    private readonly Dictionary<(WindowHandle Window, long? SessionId), long> _textOverflowsByWindow;
+    private readonly PlatformTextInputSample[] _textSamples;
 
     internal PlatformInputSampleQueue(int ownerThreadId, int capacity = DefaultCapacity)
     {
@@ -25,6 +35,8 @@ internal sealed class PlatformInputSampleQueue
 
         _ownerThreadId = ownerThreadId;
         _samples = new PlatformInputSample[capacity];
+        _textSamples = new PlatformTextInputSample[capacity];
+        _textOverflowsByWindow = [];
     }
 
     internal bool HasCapacity
@@ -40,6 +52,7 @@ internal sealed class PlatformInputSampleQueue
     {
         EnsureOwnerThread();
         var samples = ImmutableArray.CreateBuilder<PlatformInputSample>(_count);
+        var textSamples = ImmutableArray.CreateBuilder<PlatformTextInputSample>(_textCount);
 
         while (_count != 0)
         {
@@ -49,10 +62,40 @@ internal sealed class PlatformInputSampleQueue
             _count--;
         }
 
+        while (_textCount != 0)
+        {
+            textSamples.Add(_textSamples[_textHead]);
+            _textSamples[_textHead] = default;
+            _textHead = (_textHead + 1) % _textSamples.Length;
+            _textCount--;
+        }
+
         _head = 0;
+        _textHead = 0;
         var discardedSampleCount = _discardedSampleCount;
         _discardedSampleCount = 0;
-        return new PlatformInputSampleBatch(samples.MoveToImmutable(), discardedSampleCount);
+        var textOverflows = ImmutableArray.CreateBuilder<PlatformTextInputOverflow>(_textOverflowsByWindow.Count);
+
+        foreach (var (key, discardedTextCount) in _textOverflowsByWindow)
+        {
+            textOverflows.Add(new PlatformTextInputOverflow(key.Window, key.SessionId, discardedTextCount));
+        }
+
+        _textOverflowsByWindow.Clear();
+        var allTextInputSamplesOverflowed = _allTextInputSamplesOverflowed;
+        _allTextInputSamplesOverflowed = false;
+        var discardedTextSampleCount = _discardedTextSampleCount;
+        _discardedTextSampleCount = 0;
+        _pendingTextChangeCount = 0;
+        _pendingTextBytes = 0;
+
+        return new PlatformInputSampleBatch(
+            samples.MoveToImmutable(),
+            discardedSampleCount,
+            textSamples.MoveToImmutable(),
+            textOverflows.MoveToImmutable(),
+            allTextInputSamplesOverflowed,
+            discardedTextSampleCount);
     }
 
     internal bool TryEnqueue(in PlatformInputSample sample)
@@ -70,13 +113,7 @@ internal sealed class PlatformInputSampleQueue
                 && (sample.Kind is PhysicalInputEventKind.DeviceAdded or PhysicalInputEventKind.DeviceRemoved))
             || ((sample.UnmappedGamepadButtonMask != 0)
                 && ((sample.Kind != PhysicalInputEventKind.StateReconciliation)
-                    || (sample.DeviceKind != PlatformInputDeviceKind.Gamepad)))
-            || ((sample.CommittedText is not null)
-                && ((sample.Kind is not (PhysicalInputEventKind.KeyDown or PhysicalInputEventKind.KeyRepeat))
-                    || (sample.Window is null)
-                    || (sample.DeviceKind != PlatformInputDeviceKind.Keyboard)
-                    || (sample.CommittedText.Length == 0)
-                    || (Encoding.UTF8.GetByteCount(sample.CommittedText) > 4096))))
+                    || (sample.DeviceKind != PlatformInputDeviceKind.Gamepad))))
         {
             throw new ArgumentException("The platform input sample has an invalid source.", nameof(sample));
         }
@@ -88,8 +125,61 @@ internal sealed class PlatformInputSampleQueue
         }
 
         var tail = (_head + _count) % _samples.Length;
-        _samples[tail] = sample;
+        _samples[tail] = sample with { CaptureOrder = checked(++_captureOrder) };
         _count++;
+        return true;
+    }
+
+    internal bool TryEnqueueTextInput(in PlatformTextInputSample sample)
+    {
+        EnsureOwnerThread();
+
+        if (!sample.Window.IsValid || sample.Changes.IsDefaultOrEmpty
+            || (sample.SessionId is <= 0)
+            || (sample.BaseDocumentRevision is <= 0)
+            || (sample.GroupWithOtherCommits
+                && ((sample.SessionId is not null) || (sample.BaseDocumentRevision is not null))))
+        {
+            throw new ArgumentException("The platform text input sample has an invalid source or change array.", nameof(sample));
+        }
+
+        if (sample.Changes.Length > TextInputBatchBudget.MaximumPendingChanges)
+        {
+            RecordTextOverflow(sample.Window, sample.SessionId);
+            return false;
+        }
+
+        var textBytes = 0;
+
+        foreach (var change in sample.Changes)
+        {
+            if ((change.Kind == TextInputChangeKind.Invalid) || !Enum.IsDefined(change.Kind))
+            {
+                throw new ArgumentException("A platform text input sample cannot contain a default or undefined change.", nameof(sample));
+            }
+
+            textBytes = checked(textBytes + change.Utf8TextBytes);
+
+            if (textBytes > TextInputBatchBudget.MaximumPendingTextBytes)
+            {
+                RecordTextOverflow(sample.Window, sample.SessionId);
+                return false;
+            }
+        }
+
+        if ((_textCount == _textSamples.Length)
+            || (sample.Changes.Length > (TextInputBatchBudget.MaximumPendingChanges - _pendingTextChangeCount))
+            || (textBytes > (TextInputBatchBudget.MaximumPendingTextBytes - _pendingTextBytes)))
+        {
+            RecordTextOverflow(sample.Window, sample.SessionId);
+            return false;
+        }
+
+        var tail = (_textHead + _textCount) % _textSamples.Length;
+        _textSamples[tail] = sample with { CaptureOrder = checked(++_captureOrder) };
+        _textCount++;
+        _pendingTextChangeCount += sample.Changes.Length;
+        _pendingTextBytes += textBytes;
         return true;
     }
 
@@ -99,5 +189,30 @@ internal sealed class PlatformInputSampleQueue
         {
             throw new InvalidOperationException("The platform input sample queue is restricted to its owner thread.");
         }
+    }
+
+    private void RecordTextOverflow(WindowHandle window, long? sessionId)
+    {
+        _discardedTextSampleCount = checked(_discardedTextSampleCount + 1);
+        var key = (window, sessionId);
+
+        if (_allTextInputSamplesOverflowed || _textOverflowsByWindow.ContainsKey(key))
+        {
+            if (_textOverflowsByWindow.TryGetValue(key, out var discardedTextCount))
+            {
+                _textOverflowsByWindow[key] = checked(discardedTextCount + 1);
+            }
+
+            return;
+        }
+
+        if (_textOverflowsByWindow.Count == MaximumOverflowedTextWindows)
+        {
+            _textOverflowsByWindow.Clear();
+            _allTextInputSamplesOverflowed = true;
+            return;
+        }
+
+        _textOverflowsByWindow.Add(key, 1);
     }
 }

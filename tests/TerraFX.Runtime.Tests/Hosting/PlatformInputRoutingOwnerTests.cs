@@ -803,18 +803,39 @@ internal sealed partial class PlatformInputRoutingOwnerTests
                 DiscardedSampleCount: 0,
                 Diagnostics: [],
                 TextEvents: [
-                    new PlatformTextInputEvent(window, 11, textSequence, ["é", "ß"]),
+                    new PlatformTextInputEvent(window, 11, textSequence, [
+                        new TextInputChange(TextInputChangeKind.CompositionStarted),
+                        new TextInputChange(TextInputChangeKind.TextCommitted, "é"),
+                        new TextInputChange(TextInputChangeKind.TextCommitted, "ß"),
+                    ], session.SessionId, BaseDocumentRevision: 1),
                 ]));
 
             Assert.That(session.TryReadBatch(out var batch), Is.True);
             Assert.That(batch!.HostSequence, Is.EqualTo(textSequence));
             Assert.That(batch.BaseDocumentRevision, Is.EqualTo(1));
             Assert.That(batch.ResultDocumentRevision, Is.EqualTo(2));
-            Assert.That(batch.Changes, Has.Length.EqualTo(2));
-            Assert.That(batch.Changes[0].Kind, Is.EqualTo(TextInputChangeKind.TextCommitted));
-            Assert.That(batch.Changes[0].Text, Is.EqualTo("é"));
+            Assert.That(batch.Changes, Has.Length.EqualTo(3));
+            Assert.That(batch.Changes[0].Kind, Is.EqualTo(TextInputChangeKind.CompositionStarted));
             Assert.That(batch.Changes[1].Kind, Is.EqualTo(TextInputChangeKind.TextCommitted));
-            Assert.That(batch.Changes[1].Text, Is.EqualTo("ß"));
+            Assert.That(batch.Changes[1].Text, Is.EqualTo("é"));
+            Assert.That(batch.Changes[2].Kind, Is.EqualTo(TextInputChangeKind.TextCommitted));
+            Assert.That(batch.Changes[2].Text, Is.EqualTo("ß"));
+
+            var overflowSequence = sequenceLease.Allocate();
+            routingOwner.RouteCapturedInput(new PlatformInputCaptureBatch(
+                Events: [],
+                DiscardedSampleCount: 0,
+                Diagnostics: [],
+                TextOverflows: [
+                    new PlatformTextInputOverflowEvent(window, 12, overflowSequence, session.SessionId, 1),
+                ]));
+
+            Assert.That(session.IsActive, Is.False);
+            Assert.That(session.LastDiagnostic?.Code, Is.EqualTo("TextInput.Overflow"));
+            Assert.That(session.TryReadBatch(out var cancellationBatch), Is.True);
+            Assert.That(cancellationBatch!.Changes, Has.Length.EqualTo(1));
+            Assert.That(cancellationBatch.Changes[0].Kind, Is.EqualTo(TextInputChangeKind.CompositionCanceled));
+            Assert.That(cancellationBatch.Changes[0].CancellationReason, Is.EqualTo(TextCompositionCancelReason.Overflow));
         }
         finally
         {

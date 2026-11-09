@@ -552,6 +552,7 @@ internal sealed class PlatformInputRoutingOwner
         {
             if (!capturedInput.Events.IsEmpty
                 || !capturedInput.TextEvents.IsDefaultOrEmpty
+                || !capturedInput.TextOverflows.IsDefaultOrEmpty
                 || (capturedInput.DiscardedSampleCount != 0))
             {
                 throw new InvalidOperationException("The selected non-interactive platform unexpectedly produced physical input.");
@@ -644,6 +645,14 @@ internal sealed class PlatformInputRoutingOwner
             {
                 focusReconciliationRequests ??= [];
                 focusReconciliationRequests.Add((window, inputEvent.HostSequence));
+            }
+        }
+
+        if (!capturedInput.TextOverflows.IsDefaultOrEmpty)
+        {
+            foreach (var overflow in capturedInput.TextOverflows)
+            {
+                RouteTextInputOverflow(overflow);
             }
         }
 
@@ -1030,34 +1039,84 @@ internal sealed class PlatformInputRoutingOwner
             throw new InvalidOperationException("A platform text commit belongs to another host window.");
         }
 
+        if ((inputEvent.SessionId is <= 0) || (inputEvent.BaseDocumentRevision is <= 0))
+        {
+            throw new InvalidOperationException("A platform text transaction has an invalid session or document revision.");
+        }
+
         if (!_windowInputRoutes.TryGetValue(inputEvent.Window, out var route)
             || (route.HostLiveUiRouter?.ActiveTextSession is not TextInputSession session))
         {
             return;
         }
 
-        if (inputEvent.Commits.IsDefaultOrEmpty)
+        if ((inputEvent.SessionId is { } sessionId) && (sessionId != session.SessionId))
         {
-            throw new InvalidOperationException("A platform text transaction has no committed changes.");
+            return;
         }
 
-        var changes = ImmutableArray.CreateBuilder<TextInputChange>(inputEvent.Commits.Length);
-
-        foreach (var text in inputEvent.Commits)
+        if (inputEvent.Changes.IsDefaultOrEmpty)
         {
-            changes.Add(new TextInputChange(TextInputChangeKind.TextCommitted, text));
+            throw new InvalidOperationException("A platform text transaction has no initialized changes.");
         }
 
         var status = session.PublishNativeBatch(
             inputEvent.HostTimestamp,
             inputEvent.HostSequence,
-            session.DocumentRevision,
-            changes.MoveToImmutable());
+            inputEvent.BaseDocumentRevision ?? session.DocumentRevision,
+            inputEvent.Changes);
 
         if ((status != TextInputBatchPublishStatus.Published)
             && (session.LastDiagnostic is { } diagnostic))
         {
             _diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+        }
+    }
+
+    private void RouteTextInputOverflow(PlatformTextInputOverflowEvent overflow)
+    {
+        if ((overflow.SessionId is <= 0) || (overflow.DiscardedSampleCount <= 0))
+        {
+            throw new InvalidOperationException("A platform text overflow event has an invalid discarded sample count.");
+        }
+
+        if (overflow.Window is { } window)
+        {
+            if (!window.IsValid || (window.OwnerId != _platformOwner.OwnerId))
+            {
+                throw new InvalidOperationException("A platform text overflow belongs to another host window.");
+            }
+
+            if (_windowInputRoutes.TryGetValue(window, out var route)
+                && (route.HostLiveUiRouter?.ActiveTextSession is TextInputSession session)
+                && ((overflow.SessionId is null) || (overflow.SessionId == session.SessionId)))
+            {
+                TerminateTextSession(session);
+            }
+        }
+        else
+        {
+            foreach (var route in _windowInputRoutes.Values)
+            {
+                if ((route.HostLiveUiRouter?.ActiveTextSession is TextInputSession session)
+                    && ((overflow.SessionId is null) || (overflow.SessionId == session.SessionId)))
+                {
+                    TerminateTextSession(session);
+                }
+            }
+        }
+
+        void TerminateTextSession(TextInputSession session)
+        {
+            session.TerminateForNativeOverflow(
+                overflow.HostTimestamp,
+                overflow.HostSequence,
+                overflow.DiscardedSampleCount);
+
+            if (session.LastDiagnostic is { } diagnostic)
+            {
+                _diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+            }
         }
     }
 

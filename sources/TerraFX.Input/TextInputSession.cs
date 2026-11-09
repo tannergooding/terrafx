@@ -583,6 +583,36 @@ public sealed class TextInputSession : IDisposable
         return TextInputBatchPublishStatus.Published;
     }
 
+    internal void TerminateForNativeOverflow(long hostTimestamp, long hostSequence, long discardedSampleCount)
+    {
+        EnsureOwnerThread();
+        ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(hostSequence);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(discardedSampleCount);
+
+        if (!_isActive)
+        {
+            return;
+        }
+
+        if ((hostSequence <= _lastHostSequence) || (hostTimestamp < _lastHostTimestamp))
+        {
+            throw new InvalidOperationException("Native text overflow must retain increasing host sequence and nondecreasing host timestamp order.");
+        }
+
+        var router = _router
+            ?? throw new InvalidOperationException("The active text session has no owner router.");
+        _lastHostSequence = hostSequence;
+        _lastHostTimestamp = hostTimestamp;
+        EndSession(hostSequence, hostTimestamp, TextCompositionCancelReason.Overflow);
+        _lastDiagnostic = CreateDiagnostic(
+            "TextInput.Overflow",
+            "TextInputSession.PublishNativeBatch",
+            hostTimestamp,
+            $"The native text source discarded {discardedSampleCount} bounded text transaction(s).");
+        router.LatchTextInputOverflow(hostTimestamp, hostSequence);
+    }
+
     private TextInputChange CreateRejectedChange(long hostTimestamp, string code, string message)
     {
         var diagnostic = CreateDiagnostic(code, "TextInputSession.ApplyNativeBatch", hostTimestamp, message);

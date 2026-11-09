@@ -285,10 +285,13 @@ internal sealed partial class HeadlessPlatformBackendTests
                 Assert.That(inputSamples.Samples[0].NativeUsagePage, Is.EqualTo((ushort)0x0007));
                 Assert.That(inputSamples.Samples[0].NativeUsage, Is.EqualTo((ushort)0x0004));
                 Assert.That(inputSamples.Samples[0].NativeScanCode, Is.EqualTo(38u));
-                Assert.That(inputSamples.Samples[0].CommittedText, Is.Not.Null.And.Not.Empty);
                 Assert.That(inputSamples.Samples[1].Kind, Is.EqualTo(PhysicalInputEventKind.KeyRepeat));
-                Assert.That(inputSamples.Samples[1].CommittedText, Is.Not.Null.And.Not.Empty);
                 Assert.That(inputSamples.Samples[2].Kind, Is.EqualTo(PhysicalInputEventKind.KeyUp));
+                Assert.That(inputSamples.TextSamples, Has.Length.EqualTo(2));
+                Assert.That(inputSamples.TextSamples[0].Changes[0].Kind, Is.EqualTo(TextInputChangeKind.TextCommitted));
+                Assert.That(inputSamples.TextSamples[0].Changes[0].Text, Is.Not.Null.And.Not.Empty);
+                Assert.That(inputSamples.TextSamples[1].Changes[0].Kind, Is.EqualTo(TextInputChangeKind.TextCommitted));
+                Assert.That(inputSamples.TextSamples[1].Changes[0].Text, Is.Not.Null.And.Not.Empty);
                 Assert.That(inputSamples.Samples[3].Kind, Is.EqualTo(PhysicalInputEventKind.PointerButtonDown));
                 Assert.That(inputSamples.Samples[3].NativeDeviceIdentity, Is.EqualTo((nint)(-2)));
                 Assert.That(inputSamples.Samples[3].MouseButton, Is.EqualTo(MouseButtonValue.Primary));

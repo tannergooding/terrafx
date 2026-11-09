@@ -10,7 +10,8 @@ internal readonly record struct PlatformInputCaptureBatch(
     ImmutableArray<PhysicalInputEvent> Events,
     long DiscardedSampleCount,
     ImmutableArray<Diagnostic> Diagnostics,
-    ImmutableArray<PlatformTextInputEvent> TextEvents = default)
+    ImmutableArray<PlatformTextInputEvent> TextEvents = default,
+    ImmutableArray<PlatformTextInputOverflowEvent> TextOverflows = default)
 {
     internal bool Overflowed => DiscardedSampleCount != 0;
 }

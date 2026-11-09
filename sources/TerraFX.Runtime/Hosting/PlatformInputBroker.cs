@@ -5,7 +5,6 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Globalization;
 using System.Linq;
-using System.Text;
 using TerraFX;
 using TerraFX.Input;
 using TerraFX.Numerics;
@@ -269,20 +268,160 @@ internal sealed class PlatformInputBroker
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(isWindowActive);
 
-        if (sampleBatch.Samples.IsDefault || (sampleBatch.DiscardedSampleCount < 0))
+        if (sampleBatch.Samples.IsDefault
+            || (sampleBatch.DiscardedSampleCount < 0)
+            || (sampleBatch.DiscardedTextSampleCount < 0)
+            || (sampleBatch.AllTextInputSamplesOverflowed && (sampleBatch.DiscardedTextSampleCount == 0)))
         {
             throw new ArgumentException("The platform input sample batch is invalid.", nameof(sampleBatch));
         }
 
+        var textSamples = sampleBatch.TextSamples.IsDefault
+            ? []
+            : sampleBatch.TextSamples;
+        var hasExplicitPhysicalCaptureOrder = sampleBatch.Samples.Any(static sample => sample.CaptureOrder != 0);
+
+        if (sampleBatch.Samples.Any(sample => sample.CaptureOrder != 0 != hasExplicitPhysicalCaptureOrder)
+            || (textSamples.Length != 0
+                && sampleBatch.Samples.Length != 0
+                && !hasExplicitPhysicalCaptureOrder))
+        {
+            throw new ArgumentException("A platform capture batch must use either complete explicit capture order or the physical-only fallback order.", nameof(sampleBatch));
+        }
+
+        var captureRecords = new PlatformInputCaptureRecord[sampleBatch.Samples.Length + textSamples.Length];
+
+        for (var index = 0; index < sampleBatch.Samples.Length; index++)
+        {
+            var sample = sampleBatch.Samples[index];
+            var captureOrder = sample.CaptureOrder;
+
+            if (captureOrder < 0)
+            {
+                throw new ArgumentException("A physical input sample has a negative capture order.", nameof(sampleBatch));
+            }
+
+            if (textSamples.Length != 0 && (captureOrder <= 0))
+            {
+                throw new ArgumentException("Physical and text samples in one batch must have a shared capture order.", nameof(sampleBatch));
+            }
+
+            if (captureOrder == 0)
+            {
+                captureOrder = checked(index + 1);
+            }
+
+            captureRecords[index] = new PlatformInputCaptureRecord(captureOrder, sample, default, IsTextInput: false);
+        }
+
+        for (var index = 0; index < textSamples.Length; index++)
+        {
+            var sample = textSamples[index];
+
+            if (sample.CaptureOrder <= 0)
+            {
+                throw new ArgumentException("A native text sample must have a positive capture order.", nameof(sampleBatch));
+            }
+
+            captureRecords[sampleBatch.Samples.Length + index] = new PlatformInputCaptureRecord(sample.CaptureOrder, default, sample, IsTextInput: true);
+        }
+
+        Array.Sort(captureRecords, static (left, right) => left.CaptureOrder.CompareTo(right.CaptureOrder));
+
+        for (var index = 1; index < captureRecords.Length; index++)
+        {
+            if (captureRecords[index - 1].CaptureOrder == captureRecords[index].CaptureOrder)
+            {
+                throw new ArgumentException("Platform input and text samples must have unique capture orders.", nameof(sampleBatch));
+            }
+        }
+
         var events = ImmutableArray.CreateBuilder<PhysicalInputEvent>(sampleBatch.Samples.Length);
         var textEvents = ImmutableArray.CreateBuilder<PlatformTextInputEvent>();
-        var pendingTextCommits = new Dictionary<WindowHandle, ImmutableArray<string>.Builder>();
-        var pendingTextWindowOrder = new List<WindowHandle>();
+        var textOverflows = ImmutableArray.CreateBuilder<PlatformTextInputOverflowEvent>();
+        var pendingTextCommits = new Dictionary<WindowHandle, ImmutableArray<TextInputChange>.Builder>();
+        List<WindowHandle> pendingTextWindowOrder = [];
         var diagnostics = ImmutableArray.CreateBuilder<Diagnostic>();
         var discardedSampleCount = sampleBatch.DiscardedSampleCount;
 
-        foreach (var sample in sampleBatch.Samples)
+        foreach (var captureRecord in captureRecords)
         {
+            if (captureRecord.IsTextInput)
+            {
+                var textSample = captureRecord.TextInputSample;
+
+                if (!textSample.Window.IsValid || (textSample.Window.OwnerId != _ownerId))
+                {
+                    throw new InvalidOperationException("A platform text input sample belongs to another host window.");
+                }
+
+                if (textSample.Changes.IsDefaultOrEmpty
+                    || (textSample.Changes.Length > TextInputBatchBudget.MaximumPendingChanges)
+                    || (textSample.SessionId is <= 0)
+                    || (textSample.BaseDocumentRevision is <= 0)
+                    || (textSample.GroupWithOtherCommits
+                        && ((textSample.SessionId is not null) || (textSample.BaseDocumentRevision is not null))))
+                {
+                    throw new InvalidOperationException("A platform text input sample has an invalid change array.");
+                }
+
+                var textBytes = 0;
+
+                foreach (var change in textSample.Changes)
+                {
+                    if ((change.Kind == TextInputChangeKind.Invalid) || !Enum.IsDefined(change.Kind))
+                    {
+                        throw new InvalidOperationException("A platform text input sample contains an invalid change.");
+                    }
+
+                    textBytes = checked(textBytes + change.Utf8TextBytes);
+
+                    if (textBytes > TextInputBatchBudget.MaximumPendingTextBytes)
+                    {
+                        throw new InvalidOperationException("A platform text input sample exceeds its bounded payload.");
+                    }
+                }
+
+                var textTimestamp = GetHostTimestamp(textSample.MonotonicTimestamp);
+
+                if (!isWindowActive(textSample.Window))
+                {
+                    continue;
+                }
+
+                if (textSample.GroupWithOtherCommits)
+                {
+                    if (textSample.Changes.Any(static change => change.Kind != TextInputChangeKind.TextCommitted))
+                    {
+                        throw new InvalidOperationException("Only committed fallback text may be grouped across native samples.");
+                    }
+
+                    if (!pendingTextCommits.TryGetValue(textSample.Window, out var commits))
+                    {
+                        commits = ImmutableArray.CreateBuilder<TextInputChange>();
+                        pendingTextCommits.Add(textSample.Window, commits);
+                        pendingTextWindowOrder.Add(textSample.Window);
+                    }
+
+                    commits.AddRange(textSample.Changes);
+                }
+                else
+                {
+                    FlushTextEvents(textTimestamp);
+                    textEvents.Add(new PlatformTextInputEvent(
+                        textSample.Window,
+                        textTimestamp,
+                        _sequenceLease.Allocate(),
+                        textSample.Changes,
+                        textSample.SessionId,
+                        textSample.BaseDocumentRevision));
+                }
+
+                continue;
+            }
+
+            var sample = captureRecord.InputSample;
+
             if (!IsDeviceScoped(sample.Kind)
                 && (sample.Kind is not PhysicalInputEventKind.FocusGained
                     and not PhysicalInputEventKind.FocusLost
@@ -310,17 +449,6 @@ internal sealed class PlatformInputBroker
                 && (sample.DeviceKind != PlatformInputDeviceKind.Keyboard))
             {
                 throw new InvalidOperationException("A keyboard input sample has a non-keyboard device class.");
-            }
-
-            if (sample.CommittedText is { } committedText
-                && ((sample.Kind is not (PhysicalInputEventKind.KeyDown or PhysicalInputEventKind.KeyRepeat))
-                    || (sample.Window is null)
-                    || (sample.DeviceKind != PlatformInputDeviceKind.Keyboard)
-                    || string.IsNullOrEmpty(committedText)
-                    || (new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true)
-                        .GetByteCount(committedText) > 4096)))
-            {
-                throw new InvalidOperationException("A platform text commit has an invalid source or exceeds its bounded payload.");
             }
 
             if ((sample.Kind is PhysicalInputEventKind.PointerButtonDown
@@ -475,29 +603,83 @@ internal sealed class PlatformInputBroker
             var inputEvent = CreatePhysicalInputEvent(sample, device, hostTimestamp, gamepadValue);
             events.Add(inputEvent);
 
-            if (sample.CommittedText is { } text)
-            {
-                var textWindow = inputEvent.Window
-                    ?? throw new InvalidOperationException("A committed text sample has no source window.");
-
-                if (!pendingTextCommits.TryGetValue(textWindow, out var commits))
-                {
-                    commits = ImmutableArray.CreateBuilder<string>();
-                    pendingTextCommits.Add(textWindow, commits);
-                    pendingTextWindowOrder.Add(textWindow);
-                }
-
-                commits.Add(text);
-            }
         }
 
         FlushTextEvents(GetCurrentHostTimestamp());
+
+        if (sampleBatch.AllTextInputSamplesOverflowed)
+        {
+            textOverflows.Add(new PlatformTextInputOverflowEvent(
+                Window: null,
+                GetCurrentHostTimestamp(),
+                _sequenceLease.Allocate(),
+                SessionId: null,
+                sampleBatch.DiscardedTextSampleCount));
+        }
+        else
+        {
+            var recordedTextOverflows = sampleBatch.TextOverflows.IsDefault
+                ? []
+                : sampleBatch.TextOverflows;
+            var discardedTextSampleCount = 0L;
+
+            foreach (var textOverflow in recordedTextOverflows)
+            {
+                if (!textOverflow.Window.IsValid
+                    || (textOverflow.Window.OwnerId != _ownerId)
+                    || (textOverflow.SessionId is <= 0)
+                    || (textOverflow.DiscardedSampleCount <= 0))
+                {
+                    throw new ArgumentException("A platform text overflow record is invalid.", nameof(sampleBatch));
+                }
+
+                discardedTextSampleCount = checked(discardedTextSampleCount + textOverflow.DiscardedSampleCount);
+                textOverflows.Add(new PlatformTextInputOverflowEvent(
+                    textOverflow.Window,
+                    GetCurrentHostTimestamp(),
+                    _sequenceLease.Allocate(),
+                    textOverflow.SessionId,
+                    textOverflow.DiscardedSampleCount));
+            }
+
+            if (discardedTextSampleCount != sampleBatch.DiscardedTextSampleCount)
+            {
+                throw new ArgumentException("The platform text overflow records do not match their discarded sample count.", nameof(sampleBatch));
+            }
+        }
+
+        if (sampleBatch.DiscardedTextSampleCount != 0)
+        {
+            diagnostics.Add(new Diagnostic(
+                "platform-text-input-samples-discarded",
+                DiagnosticSeverity.Warning,
+                System.Diagnostics.Stopwatch.GetTimestamp(),
+                _ownerId,
+                worldGuid: null,
+                deviceId: null,
+                surfaceId: null,
+                deviceEpoch: null,
+                surfaceEpoch: null,
+                swapchainEpoch: null,
+                tick: null,
+                systemId: null,
+                passId: null,
+                assetId: null,
+                commandIdentity: null,
+                operation: "PlatformInputBroker.Capture",
+                nativeResult: null,
+                message: "Native text input samples were discarded before text-session routing.",
+                context: [new DiagnosticContextEntry(
+                    "discardedTextSampleCount",
+                    sampleBatch.DiscardedTextSampleCount.ToString(CultureInfo.InvariantCulture))]));
+        }
 
         return new PlatformInputCaptureBatch(
             events.ToImmutable(),
             discardedSampleCount,
             diagnostics.ToImmutable(),
-            textEvents.ToImmutable());
+            textEvents.ToImmutable(),
+            textOverflows.ToImmutable());
 
         void FlushTextEvents(long hostTimestamp)
         {

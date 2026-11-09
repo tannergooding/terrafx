@@ -3,6 +3,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <InternalsVisibleTo Include="TerraFX.Platform" Key="$(AssemblyOriginatorPublicKey)" />
+    <InternalsVisibleTo Include="TerraFX.Platform.Tests" Key="$(AssemblyOriginatorPublicKey)" />
     <InternalsVisibleTo Include="TerraFX.Runtime" Key="$(AssemblyOriginatorPublicKey)" />
     <InternalsVisibleTo Include="TerraFX.Runtime.Tests" Key="$(AssemblyOriginatorPublicKey)" />
   </ItemGroup>

@@ -128,7 +128,7 @@ internal sealed class PlatformInputBrokerTests
                 NativeUsage: 0x0008,
                 IsDown: true,
                 MonotonicTimestamp: 1,
-                CommittedText: "é"),
+                CaptureOrder: 1),
             new PlatformInputSample(
                 PhysicalInputEventKind.KeyDown,
                 window,
@@ -138,14 +138,34 @@ internal sealed class PlatformInputBrokerTests
                 NativeUsage: 0x0009,
                 IsDown: true,
                 MonotonicTimestamp: 2,
-                CommittedText: "ß"));
+                CaptureOrder: 3));
 
-        var captured = broker.Capture(new PlatformInputSampleBatch(samples, DiscardedSampleCount: 0), static _ => true);
+        var textSamples = ImmutableArray.Create(
+            new PlatformTextInputSample(
+                window,
+                [new TextInputChange(TextInputChangeKind.TextCommitted, "é")],
+                MonotonicTimestamp: 1,
+                CaptureOrder: 2,
+                GroupWithOtherCommits: true),
+            new PlatformTextInputSample(
+                window,
+                [new TextInputChange(TextInputChangeKind.TextCommitted, "ß")],
+                MonotonicTimestamp: 2,
+                CaptureOrder: 4,
+                GroupWithOtherCommits: true));
+
+        var captured = broker.Capture(
+            new PlatformInputSampleBatch(samples, DiscardedSampleCount: 0, TextSamples: textSamples),
+            static _ => true);
         var keyDowns = captured.Events.Where(inputEvent => inputEvent.Kind == PhysicalInputEventKind.KeyDown).ToArray();
 
         Assert.That(captured.TextEvents, Has.Length.EqualTo(1));
         Assert.That(captured.TextEvents[0].Window, Is.EqualTo(window));
-        Assert.That(captured.TextEvents[0].Commits, Is.EqualTo(ImmutableArray.Create("é", "ß")));
+        Assert.That(
+            captured.TextEvents[0].Changes,
+            Is.EqualTo(ImmutableArray.Create(
+                new TextInputChange(TextInputChangeKind.TextCommitted, "é"),
+                new TextInputChange(TextInputChangeKind.TextCommitted, "ß"))));
         Assert.That(captured.TextEvents[0].HostTimestamp, Is.GreaterThanOrEqualTo(keyDowns[^1].HostTimestamp));
         Assert.That(captured.TextEvents[0].HostSequence, Is.EqualTo(keyDowns[^1].HostSequence + 1));
         broker.Retire();
@@ -166,19 +186,21 @@ internal sealed class PlatformInputBrokerTests
                 NativeUsage: 0x0008,
                 IsDown: true,
                 MonotonicTimestamp: 1,
-                CommittedText: "é"),
+                CaptureOrder: 1),
             new PlatformInputSample(
                 PhysicalInputEventKind.FocusLost,
                 window,
                 NativeDeviceIdentity: 0,
                 PlatformInputDeviceKind.Unknown,
-                MonotonicTimestamp: 2),
+                MonotonicTimestamp: 2,
+                CaptureOrder: 3),
             new PlatformInputSample(
                 PhysicalInputEventKind.FocusGained,
                 window,
                 NativeDeviceIdentity: 0,
                 PlatformInputDeviceKind.Unknown,
-                MonotonicTimestamp: 3),
+                MonotonicTimestamp: 3,
+                CaptureOrder: 4),
             new PlatformInputSample(
                 PhysicalInputEventKind.KeyDown,
                 window,
@@ -188,17 +210,64 @@ internal sealed class PlatformInputBrokerTests
                 NativeUsage: 0x0009,
                 IsDown: true,
                 MonotonicTimestamp: 4,
-                CommittedText: "ß"));
+                CaptureOrder: 5));
 
-        var captured = broker.Capture(new PlatformInputSampleBatch(samples, DiscardedSampleCount: 0), static _ => true);
+        var textSamples = ImmutableArray.Create(
+            new PlatformTextInputSample(
+                window,
+                [new TextInputChange(TextInputChangeKind.TextCommitted, "é")],
+                MonotonicTimestamp: 1,
+                CaptureOrder: 2,
+                GroupWithOtherCommits: true),
+            new PlatformTextInputSample(
+                window,
+                [new TextInputChange(TextInputChangeKind.TextCommitted, "ß")],
+                MonotonicTimestamp: 4,
+                CaptureOrder: 6,
+                GroupWithOtherCommits: true));
+
+        var captured = broker.Capture(
+            new PlatformInputSampleBatch(samples, DiscardedSampleCount: 0, TextSamples: textSamples),
+            static _ => true);
         var focusLost = captured.Events.Single(inputEvent => inputEvent.Kind == PhysicalInputEventKind.FocusLost);
         var lastKeyDown = captured.Events.Last(inputEvent => inputEvent.Kind == PhysicalInputEventKind.KeyDown);
 
         Assert.That(captured.TextEvents, Has.Length.EqualTo(2));
-        Assert.That(captured.TextEvents[0].Commits, Is.EqualTo(ImmutableArray.Create("é")));
+        Assert.That(captured.TextEvents[0].Changes[0].Text, Is.EqualTo("é"));
         Assert.That(captured.TextEvents[0].HostSequence, Is.LessThan(focusLost.HostSequence));
-        Assert.That(captured.TextEvents[1].Commits, Is.EqualTo(ImmutableArray.Create("ß")));
+        Assert.That(captured.TextEvents[1].Changes[0].Text, Is.EqualTo("ß"));
         Assert.That(captured.TextEvents[1].HostSequence, Is.GreaterThan(lastKeyDown.HostSequence));
+        broker.Retire();
+    }
+
+    [Test]
+    public void PreservesNativeTextCompositionTransactionAndSessionRevision()
+    {
+        var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());
+        var window = new WindowHandle(17, 0, 1);
+        var changes = ImmutableArray.Create(
+            new TextInputChange(TextInputChangeKind.CompositionStarted),
+            new TextInputChange(
+                TextInputChangeKind.CompositionUpdated,
+                "かな",
+                selectionStart: 1,
+                selectionLength: 0));
+        var textSample = new PlatformTextInputSample(
+            window,
+            changes,
+            MonotonicTimestamp: 1,
+            CaptureOrder: 1,
+            SessionId: 42,
+            BaseDocumentRevision: 7);
+
+        var captured = broker.Capture(
+            new PlatformInputSampleBatch([], DiscardedSampleCount: 0, TextSamples: [textSample]),
+            static _ => true);
+
+        Assert.That(captured.TextEvents, Has.Length.EqualTo(1));
+        Assert.That(captured.TextEvents[0].Changes, Is.EqualTo(changes));
+        Assert.That(captured.TextEvents[0].SessionId, Is.EqualTo(42));
+        Assert.That(captured.TextEvents[0].BaseDocumentRevision, Is.EqualTo(7));
         broker.Retire();
     }
 
@@ -438,6 +507,27 @@ internal sealed class PlatformInputBrokerTests
         Assert.That(validCapture.Events[0].Kind, Is.EqualTo(PhysicalInputEventKind.DeviceAdded));
         Assert.That(validCapture.Events[1].Kind, Is.EqualTo(PhysicalInputEventKind.GamepadAxis));
         Assert.That(validCapture.Events[0].Device, Is.EqualTo(validCapture.Events[1].Device));
+        broker.Retire();
+    }
+
+    [Test]
+    public void ReportsNativeTextOverflowForItsSession()
+    {
+        var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());
+        var window = new WindowHandle(17, 0, 1);
+        var batch = new PlatformInputSampleBatch(
+            [],
+            DiscardedSampleCount: 0,
+            TextOverflows: [new PlatformTextInputOverflow(window, SessionId: 42, DiscardedSampleCount: 2)],
+            DiscardedTextSampleCount: 2);
+
+        var captured = broker.Capture(batch, static _ => true);
+
+        Assert.That(captured.TextOverflows, Has.Length.EqualTo(1));
+        Assert.That(captured.TextOverflows[0].Window, Is.EqualTo(window));
+        Assert.That(captured.TextOverflows[0].SessionId, Is.EqualTo(42));
+        Assert.That(captured.TextOverflows[0].DiscardedSampleCount, Is.EqualTo(2));
+        Assert.That(captured.Diagnostics, Has.Length.EqualTo(1));
         broker.Retire();
     }
 

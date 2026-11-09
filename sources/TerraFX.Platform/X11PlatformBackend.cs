@@ -1380,6 +1380,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             isDown,
             isRepeat);
         var committedText = _keyboardKeymap?.UpdateKey(xKeycode, isDown);
+        var monotonicTimestamp = TimeProvider.System.GetTimestamp();
         _ = _inputSamples.TryEnqueue(new PlatformInputSample(
             kind,
             state.Window,
@@ -1391,8 +1392,16 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             IsDown: isDown,
             NativeTimestamp: checked((long)nativeTime),
             NativeClockDomain: "X11ServerTime32Milliseconds",
-            MonotonicTimestamp: TimeProvider.System.GetTimestamp(),
-            CommittedText: committedText));
+            MonotonicTimestamp: monotonicTimestamp));
+
+        if (committedText is { } text)
+        {
+            _ = _inputSamples.TryEnqueueTextInput(new PlatformTextInputSample(
+                state.Window,
+                [new TextInputChange(TextInputChangeKind.TextCommitted, text)],
+                monotonicTimestamp,
+                GroupWithOtherCommits: true));
+        }
     }
 
     private (PhysicalInputEventKind Kind, ushort? NativeUsagePage, ushort? NativeUsage, uint NativeScanCode) CaptureKeyState(
