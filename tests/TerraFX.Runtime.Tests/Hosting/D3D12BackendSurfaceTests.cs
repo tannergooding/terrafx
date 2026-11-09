@@ -2,6 +2,7 @@
 
 using System;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Threading;
 using NUnit.Framework;
@@ -186,9 +187,10 @@ internal sealed partial class EngineHostOptionsTests
         }
     }
 
-    [TestCase(false, false)]
-    [TestCase(true, false)]
-    [TestCase(false, true)]
+    [TestCase(false, false, GraphicsFailurePolicy.StopHost)]
+    [TestCase(true, false, GraphicsFailurePolicy.StopHost)]
+    [TestCase(false, true, GraphicsFailurePolicy.StopHost)]
+    [TestCase(false, true, GraphicsFailurePolicy.SuspendPresentation)]
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
@@ -199,7 +201,8 @@ internal sealed partial class EngineHostOptionsTests
         Justification = "The EngineHost is disposed in the enclosing finally block after native window closure.")]
     public void EngineHostInteractiveStartupMapsSurfaceBeforeWindowReceipt(
         bool injectOcclusionResult,
-        bool injectDeviceRemovedResult)
+        bool injectDeviceRemovedResult,
+        GraphicsFailurePolicy graphicsFailurePolicy)
     {
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -248,6 +251,7 @@ internal sealed partial class EngineHostOptionsTests
             assetStoreOptions) {
             CpuWorkerCount = 0,
             GraphicsFrameSlotCount = 2,
+            GraphicsFailurePolicy = graphicsFailurePolicy,
             PersistenceMetadata = CreatePersistenceMetadata(),
         };
         EngineHost? host = null;
@@ -384,6 +388,24 @@ internal sealed partial class EngineHostOptionsTests
                 if (injectDeviceRemovedResult)
                 {
                     Assert.That(injectedPresentation.Diagnostic?.Code, Is.EqualTo("graphics.presentation.device-lost"));
+                    Assert.That(runningHost.GraphicsDevice?.Status, Is.EqualTo(GraphicsDeviceStatus.Lost));
+                    var diagnostics = runningHost.Diagnostics.GetSnapshot(
+                        new DiagnosticQuery(32, DiagnosticSeverity.Error, worldGuid: null, minimumTick: null));
+                    Assert.That(diagnostics.Records.Any(static diagnostic => diagnostic.Code == "graphics-device-lost"), Is.True);
+
+                    if (graphicsFailurePolicy is GraphicsFailurePolicy.StopHost)
+                    {
+                        runningHost.Completion.WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+                        return;
+                    }
+
+                    Assert.That(runningHost.Completion.IsCompleted, Is.False);
+                    _ = Assert.Throws<InvalidOperationException>(
+                        () => runningHost.Renderer.SubmitAsync(
+                            renderSnapshot,
+                            CreateSurfaceGraphPlan("interactive-surface-after-device-loss"))
+                            .GetAwaiter()
+                            .GetResult());
                 }
 
                 renderSnapshot.Dispose();

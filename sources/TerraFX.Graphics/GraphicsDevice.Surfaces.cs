@@ -552,9 +552,15 @@ public sealed partial class GraphicsDevice
                 device.DeviceEpoch,
                 out var completedReceipt))
             {
-                _ = _completion.TrySetResult(
-                    completedReceipt
-                        ?? throw new InvalidOperationException("The Surface presentation cache returned no receipt."));
+                var cachedReceipt = completedReceipt
+                    ?? throw new InvalidOperationException("The Surface presentation cache returned no receipt.");
+
+                if (cachedReceipt.Status is PresentationStatus.DeviceLost)
+                {
+                    device.MarkDeviceLost();
+                }
+
+                _ = _completion.TrySetResult(cachedReceipt);
                 return;
             }
 
@@ -562,6 +568,12 @@ public sealed partial class GraphicsDevice
                 _presentationSequence,
                 device.DeviceEpoch,
                 _cancellationToken);
+
+            if (receipt.Status is PresentationStatus.DeviceLost)
+            {
+                device.MarkDeviceLost();
+            }
+
             _ = _completion.TrySetResult(receipt);
         }
 

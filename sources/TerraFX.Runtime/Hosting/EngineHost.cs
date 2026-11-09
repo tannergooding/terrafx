@@ -74,6 +74,7 @@ public sealed partial class EngineHost : IAsyncDisposable
         _options = options;
         _assets = assets;
         _graphicsDevice = graphicsDevice;
+        graphicsDevice?.SetDeviceLostCallback(HandleGraphicsDeviceLost);
         _gpuResidency = (graphicsDevice is null) ? null : new GpuResidencyService(graphicsDevice);
         _persistence = new WorldPersistence(assets, options.PersistenceMetadata);
         _renderer = Renderer.Create(graphicsDevice, _gpuResidency);
@@ -596,6 +597,54 @@ public sealed partial class EngineHost : IAsyncDisposable
         }
     }
 
+    private void HandleGraphicsDeviceLost()
+    {
+        var graphicsDevice = Volatile.Read(ref _graphicsDevice);
+
+        if (graphicsDevice is null)
+        {
+            return;
+        }
+
+        var policy = _options.GraphicsFailurePolicy;
+        var diagnostic = new Diagnostic(
+            "graphics-device-lost",
+            DiagnosticSeverity.Error,
+            System.Diagnostics.Stopwatch.GetTimestamp(),
+            hostId: Volatile.Read(ref _platformOwner)?.OwnerId,
+            worldGuid: null,
+            deviceId: null,
+            surfaceId: null,
+            deviceEpoch: graphicsDevice.DeviceEpoch,
+            surfaceEpoch: null,
+            swapchainEpoch: null,
+            tick: null,
+            systemId: null,
+            passId: null,
+            assetId: null,
+            commandIdentity: null,
+            operation: "GraphicsDevice",
+            nativeResult: null,
+            message: policy is GraphicsFailurePolicy.StopHost
+                ? "The graphics device was lost; the host is stopping."
+                : "The graphics device was lost; simulation and audio continue while presentation is suspended.",
+            context: [
+                new DiagnosticContextEntry("AdapterName", graphicsDevice.Capabilities.AdapterName),
+                new DiagnosticContextEntry("GraphicsFailurePolicy", policy.ToString()),
+            ]);
+        Volatile.Read(ref _diagnostics)?.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+
+        if (policy is GraphicsFailurePolicy.StopHost)
+        {
+            var stopTask = StopAsync();
+            _ = stopTask.ContinueWith(
+                static task => _ = task.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+    }
+
     private bool HandleSimulationOverrun(
         HostedWorldSchedule schedule,
         long debtTicks,
@@ -823,6 +872,7 @@ public sealed partial class EngineHost : IAsyncDisposable
                     presentationProbeBinding,
                     CancellationToken.None).GetAwaiter().GetResult();
                 _graphicsDevice = graphicsDevice;
+                graphicsDevice.SetDeviceLostCallback(HandleGraphicsDeviceLost);
                 _gpuResidency = new GpuResidencyService(graphicsDevice);
                 _renderer = Renderer.Create(graphicsDevice, _gpuResidency);
 

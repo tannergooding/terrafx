@@ -37,6 +37,8 @@ public sealed partial class GraphicsDevice
     private readonly GraphicsCapabilities _capabilities;
     private long _completedQueueFence;
     private readonly HashSet<GraphicsResourceOwner> _deferredRetirements = [];
+    private Action? _deviceLostCallback;
+    private int _deviceLostCallbackNotified;
     private readonly SemaphoreSlim _graphFrameSlots;
     private bool _hasQuarantinedResources;
     private ulong _nextBufferIndex;
@@ -1022,6 +1024,21 @@ public sealed partial class GraphicsDevice
     internal void NotifyResourceUseReleased()
         => _ownerQueue.SignalOwnerWork();
 
+    internal void SetDeviceLostCallback(Action callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+
+        if (Interlocked.CompareExchange(ref _deviceLostCallback, callback, null) is not null)
+        {
+            throw new InvalidOperationException("The GraphicsDevice already has a device-loss callback.");
+        }
+
+        if (Status is GraphicsDeviceStatus.Lost)
+        {
+            NotifyDeviceLostCallback();
+        }
+    }
+
     internal Task ShutdownAsync()
     {
         while (true)
@@ -1351,8 +1368,20 @@ public sealed partial class GraphicsDevice
             {
                 _ownerQueue.CompleteRequests();
                 _ownerQueue.CompleteRetirementReservations();
+                NotifyDeviceLostCallback();
                 return;
             }
+        }
+    }
+
+    private void NotifyDeviceLostCallback()
+    {
+        var callback = Volatile.Read(ref _deviceLostCallback);
+
+        if ((callback is not null)
+            && (Interlocked.Exchange(ref _deviceLostCallbackNotified, 1) == 0))
+        {
+            callback();
         }
     }
 
