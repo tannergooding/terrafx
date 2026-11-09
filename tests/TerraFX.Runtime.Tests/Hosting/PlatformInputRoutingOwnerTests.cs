@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Runtime.InteropServices;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Entities;
@@ -15,7 +16,7 @@ using TerraFX.Platform;
 namespace TerraFX.Runtime.Tests.Hosting;
 
 [TestFixture]
-internal sealed class PlatformInputRoutingOwnerTests
+internal sealed partial class PlatformInputRoutingOwnerTests
 {
     private static PhysicalInputEvent CreateGamepadEvent(
         PhysicalInputEventKind kind,
@@ -739,6 +740,286 @@ internal sealed class PlatformInputRoutingOwnerTests
             _ = hostRouter.DisposeAndGetTransitions();
             _ = simulationRouter.DisposeAndGetTransitions();
         }
+    }
+
+    [Test]
+    public void RoutesNativeX11CaptureToHostLiveUiAndBoundGameplayTimeline()
+    {
+        if (!OperatingSystem.IsLinux()
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_ISOLATED_X11") != "1")
+            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
+        {
+            Assert.Ignore("The X11 input-fanout witness requires an isolated Linux X11 display.");
+            return;
+        }
+
+        if (!NativeLibrary.TryLoad("libXtst.so.6", out var xtstLibrary))
+        {
+            Assert.Ignore("The isolated X11 input-fanout witness requires libXtst.");
+            return;
+        }
+
+        NativeLibrary.Free(xtstLibrary);
+
+        var ownerThreadId = Environment.CurrentManagedThreadId;
+        var ownerId = OwnerIdAllocator.Allocate();
+        var sequenceLease = new HostEventSequenceLease();
+        var window = new WindowHandle(ownerId, 0, 1);
+        NativeX11InputRoutingHost? platformHost = null;
+        PlatformInputRoutingOwner? routingOwner = null;
+        World? world = null;
+        InputRouter? hostLiveUiRouter = null;
+        HashSet<InputRouter> inputRouters = [];
+        Dictionary<InputRouter, WorldInputTimelineAdapter> timelineRouters = [];
+
+        try
+        {
+            try
+            {
+                platformHost = new NativeX11InputRoutingHost(ownerId, sequenceLease);
+            }
+            catch (DllNotFoundException exception)
+            {
+                Assert.Ignore($"The X11/XTest input libraries are unavailable: {exception.Message}");
+                return;
+            }
+            catch (PlatformNotSupportedException exception)
+            {
+                Assert.Ignore($"The isolated X11 display is unavailable: {exception.Message}");
+                return;
+            }
+
+            platformHost.CreateWindow(window);
+            var diagnostics = new DiagnosticsService();
+            routingOwner = new PlatformInputRoutingOwner(
+                HostProfile.Interactive,
+                platformHost,
+                sequenceLease,
+                diagnostics,
+                ownerThreadId,
+                inputRouters,
+                timelineRouters,
+                recipientId => timelineRouters.Keys.FirstOrDefault(router => router.RecipientId == recipientId));
+            world = World.Create(new WorldOptions(
+                new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build()) {
+                CpuWorkerCount = 0,
+                InitialReplayLineageId = Guid.NewGuid(),
+                TickRate = 1,
+                WorldGuid = Guid.NewGuid(),
+            });
+
+            var binding = routingOwner.BindGameplayInput(window, world, worldIsHosted: true);
+            Assert.That(binding.Status, Is.EqualTo(InputBindingStatus.Bound));
+            var simulationRouter = binding.Router
+                ?? throw new InvalidOperationException("The native-window input binding omitted its SimulationTimeline router.");
+            var key = new KeyboardControl(usagePage: 0x0007, usage: 0x0004);
+            Assert.That(simulationRouter.RegisterMap(CreateKeyboardMap(key)).Status, Is.EqualTo(InputMapStatus.Registered));
+            hostLiveUiRouter = routingOwner.CreateInputRouter(InputRecipientKind.HostLiveUI, window);
+            var hostMapResponse = hostLiveUiRouter.RegisterMap(CreateKeyboardMap(key));
+            Assert.That(hostMapResponse.Status, Is.EqualTo(InputMapStatus.Registered));
+            var timelineAdapter = timelineRouters[simulationRouter];
+
+            IsolatedX11Input.SetInputFocus(platformHost.NativeDisplay, platformHost.NativeWindow);
+            routingOwner.RouteCapturedInput(platformHost.PumpAndCapture());
+
+            IsolatedX11Input.SetInputFocus(platformHost.NativeDisplay, IsolatedX11Input.GetRootWindow(platformHost.NativeDisplay));
+            var focusLostCapture = platformHost.PumpAndCapture();
+            Assert.That(
+                focusLostCapture.Events.Any(inputEvent => inputEvent.Kind == PhysicalInputEventKind.FocusLost),
+                Is.True);
+            routingOwner.RouteCapturedInput(focusLostCapture);
+
+            IsolatedX11Input.SetInputFocus(platformHost.NativeDisplay, platformHost.NativeWindow);
+            var focusRegainedCapture = platformHost.PumpAndCapture();
+            Assert.That(
+                focusRegainedCapture.Events.Any(inputEvent => inputEvent.Kind == PhysicalInputEventKind.FocusGained),
+                Is.True);
+            Assert.That(
+                focusRegainedCapture.Events.Any(inputEvent => inputEvent.Kind == PhysicalInputEventKind.StateReconciliation),
+                Is.True);
+            routingOwner.RouteCapturedInput(focusRegainedCapture);
+
+            IsolatedX11Input.SendKey(platformHost.NativeDisplay, keycode: 38, isDown: true);
+            var keyDownCapture = platformHost.PumpAndCapture();
+            var keyDown = keyDownCapture.Events.Single(inputEvent => inputEvent.Kind == PhysicalInputEventKind.KeyDown);
+            Assert.That(keyDown.Window, Is.EqualTo(window));
+            Assert.That(keyDown.Value?.DigitalControl?.Keyboard?.Kind, Is.EqualTo(KeyboardControlKind.KeyboardHid));
+            Assert.That(keyDown.Value?.DigitalControl?.Keyboard?.UsagePage, Is.EqualTo(key.UsagePage));
+            Assert.That(keyDown.Value?.DigitalControl?.Keyboard?.Usage, Is.EqualTo(key.Usage));
+            routingOwner.RouteCapturedInput(keyDownCapture);
+            routingOwner.ServiceWindowInputRoutes(platformHost.GetHostTimestamp());
+            routingOwner.ServiceSimulationInputRoutes(timelineAdapter);
+            var simulationSnapshot = timelineAdapter.PublishInputStage(world.NextTickIndex);
+            var hostSnapshot = hostLiveUiRouter.GetHostActionSnapshot();
+
+            Assert.Multiple(() => {
+                Assert.That(hostSnapshot.Actions, Has.Length.EqualTo(1));
+                Assert.That(hostSnapshot.Actions[0].IsDownAtEnd, Is.True);
+                Assert.That(hostSnapshot.Actions[0].Transitions, Has.Length.EqualTo(1));
+                Assert.That(hostSnapshot.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Pressed));
+                Assert.That(simulationSnapshot.Actions, Has.Length.EqualTo(1));
+                Assert.That(simulationSnapshot.Actions[0].IsDownAtEnd, Is.True);
+                Assert.That(simulationSnapshot.Actions[0].Transitions, Has.Length.EqualTo(1));
+                Assert.That(simulationSnapshot.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Pressed));
+            });
+        }
+        finally
+        {
+            routingOwner?.ClearRoutes();
+
+            foreach (var adapter in timelineRouters.Values)
+            {
+                _ = adapter.DisposeAndGetTransitions();
+            }
+
+            foreach (var router in inputRouters)
+            {
+                _ = router.DisposeAndGetTransitions();
+            }
+
+            _ = hostLiveUiRouter?.DisposeAndGetTransitions();
+            world?.Dispose();
+            platformHost?.Dispose();
+            sequenceLease.Revoke();
+        }
+    }
+
+    private static partial class IsolatedX11Input
+    {
+        internal static nint GetRootWindow(nint display)
+            => checked((nint)XRootWindow(display, XDefaultScreen(display)));
+
+        internal static void SendKey(nint display, uint keycode, bool isDown)
+        {
+            if (XTestFakeKeyEvent(display, keycode, isDown ? 1 : 0, delay: 0) == 0)
+            {
+                throw new InvalidOperationException("The isolated X11 server rejected a synthetic key transition.");
+            }
+
+            _ = XSync(display, discard: 0);
+        }
+
+        internal static void SetInputFocus(nint display, nint window)
+        {
+            if (XSetInputFocus(display, checked((nuint)window), revertTo: 2, time: 0) == 0)
+            {
+                throw new InvalidOperationException("The isolated X11 server rejected the input-focus request.");
+            }
+
+            _ = XSync(display, discard: 0);
+        }
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
+        [LibraryImport("libX11.so.6", EntryPoint = "XDefaultScreen")]
+        private static partial int XDefaultScreen(nint display);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
+        [LibraryImport("libX11.so.6", EntryPoint = "XRootWindow")]
+        private static partial nuint XRootWindow(nint display, int screen);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
+        [LibraryImport("libX11.so.6", EntryPoint = "XSetInputFocus")]
+        private static partial int XSetInputFocus(nint display, nuint focus, int revertTo, nuint time);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
+        [LibraryImport("libX11.so.6", EntryPoint = "XSync")]
+        private static partial int XSync(nint display, int discard);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
+        [LibraryImport("libXtst.so.6", EntryPoint = "XTestFakeKeyEvent")]
+        private static partial int XTestFakeKeyEvent(nint display, uint keycode, int isPress, nuint delay);
+    }
+
+    private sealed class NativeX11InputRoutingHost : IPlatformInputRoutingHost, IDisposable
+    {
+        private readonly IPlatformBackend _backend;
+        private readonly PlatformInputBroker _inputBroker;
+        private readonly HashSet<WindowHandle> _windows = [];
+
+        internal NativeX11InputRoutingHost(uint ownerId, HostEventSequenceLease sequenceLease)
+        {
+            ArgumentOutOfRangeException.ThrowIfZero(ownerId);
+            ArgumentNullException.ThrowIfNull(sequenceLease);
+            OwnerId = ownerId;
+            _backend = PlatformBackendFactory.Create(
+                PlatformBackend.X11Only,
+                ownerId,
+                ClipboardServicePolicy.NotRequested);
+            _inputBroker = new PlatformInputBroker(ownerId, sequenceLease: sequenceLease);
+        }
+
+        public uint OwnerId { get; }
+
+        internal nint NativeDisplay
+            => GetNativeWindowBinding(_windows.Single()).NativeDisplayOrInstance;
+
+        internal nint NativeWindow
+            => GetNativeWindowBinding(_windows.Single()).NativeWindowOrSurface;
+
+        public void Dispose()
+        {
+            foreach (var window in _windows)
+            {
+                _backend.CloseWindow(window);
+            }
+
+            _windows.Clear();
+            _backend.Dispose();
+        }
+
+        public long GetHostTimestamp()
+            => _inputBroker.GetCurrentHostTimestamp();
+
+        public PlatformNativeWindowBinding GetNativeWindowBinding(WindowHandle window)
+        {
+            if (!_backend.TryGetNativeWindowBinding(window, out var binding))
+            {
+                throw new InvalidOperationException("The isolated X11 host has no native binding for the window.");
+            }
+
+            return binding;
+        }
+
+        public bool IsActiveGamepadDevice(InputDeviceHandle device)
+            => false;
+
+        public PlatformInputCaptureBatch RequestGamepadStateReconciliation(InputDeviceHandle device)
+        {
+            _ = device;
+            throw new NotSupportedException("The isolated X11 input-fanout witness does not provide gamepad capture.");
+        }
+
+        public PlatformInputCaptureBatch RequestInputStateReconciliation(WindowHandle? window)
+        {
+            _backend.RequestInputStateReconciliation(window);
+            return CaptureDrainedSamples();
+        }
+
+        internal void CreateWindow(WindowHandle window)
+        {
+            _backend.CreateWindow(
+                window,
+                new WindowOptions("TerraFX isolated X11 input fanout") {
+                    Visible = true,
+                },
+                nativeMonitorHandle: 0);
+
+            if (!_windows.Add(window))
+            {
+                throw new InvalidOperationException("The isolated X11 host registered a duplicate window.");
+            }
+        }
+
+        internal PlatformInputCaptureBatch PumpAndCapture()
+        {
+            _backend.Pump();
+            return CaptureDrainedSamples();
+        }
+
+        private PlatformInputCaptureBatch CaptureDrainedSamples()
+            => _inputBroker.Capture(
+                _backend.DrainInputSamples(),
+                _windows.Contains);
     }
 
     private sealed class TestPlatformInputRoutingHost(uint ownerId) : IPlatformInputRoutingHost

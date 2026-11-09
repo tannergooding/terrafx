@@ -124,6 +124,92 @@ internal sealed class InputRouterTests
     }
 
     [Test]
+    public void AppliesHostLiveUiReconciliationAfterFocusLossBeforeAcceptingCurrentKeyEvents()
+    {
+        var window = new WindowHandle(1, 0, 1);
+        var sequenceLease = new HostEventSequenceLease();
+        var router = new InputRouter(
+            InputRecipientKind.HostLiveUI,
+            7,
+            Environment.CurrentManagedThreadId,
+            sequenceLease,
+            window);
+        var action = new ActionDefinition(Guid.NewGuid(), "Jump", InputActionKind.Digital);
+        var key = new KeyboardControl(7, 4);
+        var context = new ContextDefinition(Guid.NewGuid(), 0);
+        var binding = new BindingDefinition(Guid.NewGuid(), action.ActionId, 1, BindingKind.Button) {
+            Control = new DigitalControl(key),
+        };
+        var map = new InputActionMapV1(1, Guid.NewGuid(), 1, 1, [action], [context], [binding]);
+        Assert.That(router.RegisterMap(map).Status, Is.EqualTo(InputMapStatus.Registered));
+
+        var device = new InputDeviceHandle(window.OwnerId, index: 1, generation: 1);
+        var keyDown = CreatePhysicalDigitalEvent(
+            PhysicalInputEventKind.KeyDown,
+            hostTimestamp: 10,
+            hostSequence: sequenceLease.Allocate(),
+            device,
+            window,
+            new DigitalControl(key),
+            isDown: true);
+        Assert.That(router.EnqueueHostPhysicalEvent(keyDown, out _).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        _ = router.ServiceInputControlBoundary();
+        Assert.That(router.GetHostActionSnapshot().Actions[0].IsDownAtEnd, Is.True);
+
+        var focusLost = new PhysicalInputEvent(
+            PhysicalInputEventKind.FocusLost,
+            hostTimestamp: 11,
+            hostSequence: sequenceLease.Allocate(),
+            window: window);
+        Assert.That(router.EnqueueHostPhysicalEvent(focusLost, out _).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        _ = router.ServiceInputControlBoundary();
+        Assert.That(router.GetHostActionSnapshot().Actions[0].IsDownAtEnd, Is.False);
+
+        var reconciliation = new PhysicalInputEvent(
+            PhysicalInputEventKind.StateReconciliation,
+            hostTimestamp: 12,
+            hostSequence: sequenceLease.Allocate(),
+            window: window,
+            reconciliationState: [new PhysicalInputValue(new DigitalControl(key), isDown: true)]);
+        Assert.That(router.EnqueueHostPhysicalEvent(reconciliation, out _).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        _ = router.ServiceInputControlBoundary();
+        var heldReconciliationSnapshot = router.GetHostActionSnapshot();
+        Assert.That(heldReconciliationSnapshot.Actions[0].IsDownAtEnd, Is.False);
+        Assert.That(heldReconciliationSnapshot.Actions[0].Transitions, Is.Empty);
+
+        var keyUp = CreatePhysicalDigitalEvent(
+            PhysicalInputEventKind.KeyUp,
+            hostTimestamp: 13,
+            hostSequence: sequenceLease.Allocate(),
+            device,
+            window,
+            new DigitalControl(key),
+            isDown: false);
+        Assert.That(router.EnqueueHostPhysicalEvent(keyUp, out _).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        _ = router.ServiceInputControlBoundary();
+        var neutralSnapshot = router.GetHostActionSnapshot();
+        Assert.That(neutralSnapshot.Actions[0].IsDownAtEnd, Is.False);
+        Assert.That(neutralSnapshot.Actions[0].Transitions, Is.Empty);
+
+        var rearmedKeyDown = CreatePhysicalDigitalEvent(
+            PhysicalInputEventKind.KeyDown,
+            hostTimestamp: 14,
+            hostSequence: sequenceLease.Allocate(),
+            device,
+            window,
+            new DigitalControl(key),
+            isDown: true);
+        Assert.That(router.EnqueueHostPhysicalEvent(rearmedKeyDown, out _).Status, Is.EqualTo(InputRoutingStatus.Applied));
+        _ = router.ServiceInputControlBoundary();
+        var rearmedSnapshot = router.GetHostActionSnapshot();
+        Assert.That(rearmedSnapshot.Actions[0].IsDownAtEnd, Is.True);
+        Assert.That(rearmedSnapshot.Actions[0].Transitions, Has.Length.EqualTo(1));
+        Assert.That(rearmedSnapshot.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Pressed));
+
+        router.Dispose();
+    }
+
+    [Test]
     public void AppliesSharedHeadlessCaptureToEachRecipientAtItsOwnAssignedTick()
     {
         var firstRouter = CreateRouter(InputRecipientKind.SimulationTimeline, recipientId: 3);

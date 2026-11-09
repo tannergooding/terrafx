@@ -90,7 +90,8 @@ internal sealed class PlatformWindowInputRoute
             or PhysicalInputEventKind.KeyUp
             or PhysicalInputEventKind.PointerButtonDown
             or PhysicalInputEventKind.PointerButtonUp
-            or PhysicalInputEventKind.FocusLost;
+            or PhysicalInputEventKind.FocusLost
+            or PhysicalInputEventKind.StateReconciliation;
 
     private static bool IsSimulationActionInput(PhysicalInputEventKind kind)
         => IsHostActionInput(kind) || (kind == PhysicalInputEventKind.StateReconciliation);

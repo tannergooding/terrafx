@@ -965,6 +965,23 @@ public sealed partial class InputRouter
             return CreateInputRejection("Paused", "/Recipient");
         }
 
+        if (inputEvent.Kind is PhysicalInputEventKind.StateReconciliation)
+        {
+            if ((inputEvent.Device is not null) || inputEvent.ReconciliationState.IsDefault)
+            {
+                return CreateInputRejection("InvalidReconciliation", "/State");
+            }
+
+            return ReconcileInputState(
+                [],
+                InputClass.Keyboard | InputClass.Pointing,
+                playerSlot: null,
+                inputEvent.HostTimestamp,
+                inputEvent.HostSequence,
+                out discardedInputCount,
+                physicalInputs: inputEvent.ReconciliationState);
+        }
+
         if (inputEvent.Kind == PhysicalInputEventKind.FocusLost)
         {
             var cancellation = CancelInputState(
