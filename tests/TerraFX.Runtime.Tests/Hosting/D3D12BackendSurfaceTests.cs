@@ -187,11 +187,12 @@ internal sealed partial class EngineHostOptionsTests
         }
     }
 
-    [TestCase(false, false, GraphicsFailurePolicy.StopHost, true)]
-    [TestCase(true, false, GraphicsFailurePolicy.StopHost, true)]
-    [TestCase(false, true, GraphicsFailurePolicy.StopHost, true)]
-    [TestCase(false, true, GraphicsFailurePolicy.SuspendPresentation, true)]
-    [TestCase(false, false, GraphicsFailurePolicy.StopHost, false)]
+    [TestCase(false, false, GraphicsFailurePolicy.StopHost, true, false)]
+    [TestCase(true, false, GraphicsFailurePolicy.StopHost, true, false)]
+    [TestCase(false, true, GraphicsFailurePolicy.StopHost, true, false)]
+    [TestCase(false, true, GraphicsFailurePolicy.SuspendPresentation, true, false)]
+    [TestCase(false, false, GraphicsFailurePolicy.StopHost, false, false)]
+    [TestCase(false, false, GraphicsFailurePolicy.SuspendPresentation, true, true)]
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
@@ -204,7 +205,8 @@ internal sealed partial class EngineHostOptionsTests
         bool injectOcclusionResult,
         bool injectDeviceRemovedResult,
         GraphicsFailurePolicy graphicsFailurePolicy,
-        bool windowVisible)
+        bool windowVisible,
+        bool injectUnknownPresentResult)
     {
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -213,15 +215,22 @@ internal sealed partial class EngineHostOptionsTests
         }
 
         const int DxgiStatusOccludedForTesting = 0x087A0001;
-        var overrideNextPresent = injectOcclusionResult || injectDeviceRemovedResult;
+        const int DxgiErrorDriverInternalErrorForTesting = unchecked((int)0x887A0020);
+        var overrideNextPresent = injectOcclusionResult || injectDeviceRemovedResult || injectUnknownPresentResult;
 
         int? OverridePresentResult()
         {
             if (overrideNextPresent)
             {
                 overrideNextPresent = false;
-                return injectDeviceRemovedResult
-                    ? unchecked((int)0x887A0005)
+
+                if (injectDeviceRemovedResult)
+                {
+                    return unchecked((int)0x887A0005);
+                }
+
+                return injectUnknownPresentResult
+                    ? DxgiErrorDriverInternalErrorForTesting
                     : DxgiStatusOccludedForTesting;
             }
 
@@ -242,7 +251,7 @@ internal sealed partial class EngineHostOptionsTests
             packagePath,
             SHA256.HashData(packageBytes),
             assetStoreRegistration);
-        var registration = (injectOcclusionResult || injectDeviceRemovedResult)
+        var registration = (injectOcclusionResult || injectDeviceRemovedResult || injectUnknownPresentResult)
             ? new GraphicsBackendRegistration(new D3D12GraphicsBackend.D3D12BackendFactory(
                 surfacePresentResultOverride: OverridePresentResult))
             : D3D12GraphicsBackend.CreateRegistration();
@@ -379,6 +388,37 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(graphPlan.SurfaceEpoch, Is.EqualTo(surface.SurfaceEpoch));
                 Assert.That(graphPlan.SwapchainEpoch, Is.EqualTo(surface.SwapchainEpoch));
                 return graphPlan;
+            }
+
+            if (injectUnknownPresentResult)
+            {
+                var nativeFailure = Assert.Catch<Exception>(
+                    () => runningHost.Renderer.SubmitAsync(
+                        renderSnapshot,
+                        CreateSurfaceGraphPlan("interactive-surface-unknown-present"))
+                        .GetAwaiter()
+                        .GetResult());
+                Assert.That(nativeFailure?.HResult, Is.EqualTo(DxgiErrorDriverInternalErrorForTesting));
+                Assert.That(surface.IsQuarantined, Is.True);
+                Assert.That(runningHost.GraphicsDevice?.Status, Is.EqualTo(GraphicsDeviceStatus.Lost));
+                Assert.That(runningHost.Completion.IsCompleted, Is.False);
+                var diagnostics = runningHost.Diagnostics.GetSnapshot(
+                    new DiagnosticQuery(32, DiagnosticSeverity.Error, worldGuid: null, minimumTick: null));
+                var deviceLostDiagnostic = diagnostics.Records.Single(
+                    static diagnostic => diagnostic.Code == "graphics-device-lost");
+                Assert.That(deviceLostDiagnostic.NativeResult, Is.EqualTo(DxgiErrorDriverInternalErrorForTesting));
+                _ = Assert.Throws<ObjectDisposedException>(
+                    () => surface.ResizeAsync(new PixelSize(800, 600)).GetAwaiter().GetResult());
+                renderSnapshot.Dispose();
+                renderWorld.Dispose();
+                renderWorld = null;
+                var shutdownFailure = Assert.Catch<AggregateException>(
+                    () => runningHost.DisposeAsync().AsTask().GetAwaiter().GetResult());
+                host = null;
+                Assert.That(
+                    shutdownFailure?.Flatten().InnerExceptions.Select(static exception => exception.HResult),
+                    Does.Contain(DxgiErrorDriverInternalErrorForTesting));
+                return;
             }
 
             var firstSubmission = runningHost.Renderer.SubmitAsync(

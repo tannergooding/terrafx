@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -236,9 +237,11 @@ public sealed partial class GraphicsDevice
             QuarantineSurface(surface, exception);
         }
 
-        MarkDeviceLost(exception is GraphicsDeviceLostException deviceLostException
-            ? deviceLostException.NativeError
-            : null);
+        MarkDeviceLost(exception switch {
+            GraphicsDeviceLostException deviceLostException => deviceLostException.NativeError,
+            COMException nativeException => nativeException.ErrorCode,
+            _ => null,
+        });
     }
 
     internal sealed class GraphFrameSlotReservation : IDisposable
