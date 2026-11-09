@@ -217,9 +217,16 @@ internal sealed partial class EngineHostOptionsTests
         const int DxgiStatusOccludedForTesting = 0x087A0001;
         const int DxgiErrorDriverInternalErrorForTesting = unchecked((int)0x887A0020);
         var overrideNextPresent = injectOcclusionResult || injectDeviceRemovedResult || injectUnknownPresentResult;
+        var presentResultCallCount = 0;
 
         int? OverridePresentResult()
         {
+            if (injectUnknownPresentResult)
+            {
+                presentResultCallCount++;
+                return (presentResultCallCount == 1) ? null : DxgiErrorDriverInternalErrorForTesting;
+            }
+
             if (overrideNextPresent)
             {
                 overrideNextPresent = false;
@@ -390,14 +397,22 @@ internal sealed partial class EngineHostOptionsTests
                 return graphPlan;
             }
 
+            var firstSubmission = runningHost.Renderer.SubmitAsync(
+                renderSnapshot,
+                CreateSurfaceGraphPlan("interactive-surface-first-frame"))
+                .GetAwaiter()
+                .GetResult();
+            var firstSequence = firstSubmission.PresentationSequence
+                ?? throw new InvalidOperationException("The first Surface submission omitted its presentation sequence.");
+            using var canceledPresentationWait = new CancellationTokenSource();
+            canceledPresentationWait.Cancel();
+            _ = Assert.Throws<OperationCanceledException>(
+                () => surface.WaitForPresentationAsync(firstSequence, canceledPresentationWait.Token).GetAwaiter().GetResult());
+
             if (injectUnknownPresentResult)
             {
                 var nativeFailure = Assert.Catch<Exception>(
-                    () => runningHost.Renderer.SubmitAsync(
-                        renderSnapshot,
-                        CreateSurfaceGraphPlan("interactive-surface-unknown-present"))
-                        .GetAwaiter()
-                        .GetResult());
+                    () => surface.WaitForPresentationAsync(firstSequence).GetAwaiter().GetResult());
                 Assert.That(nativeFailure?.HResult, Is.EqualTo(DxgiErrorDriverInternalErrorForTesting));
                 Assert.That(surface.IsQuarantined, Is.True);
                 Assert.That(runningHost.GraphicsDevice?.Status, Is.EqualTo(GraphicsDeviceStatus.Lost));
@@ -420,18 +435,6 @@ internal sealed partial class EngineHostOptionsTests
                     Does.Contain(DxgiErrorDriverInternalErrorForTesting));
                 return;
             }
-
-            var firstSubmission = runningHost.Renderer.SubmitAsync(
-                renderSnapshot,
-                CreateSurfaceGraphPlan("interactive-surface-first-frame"))
-                .GetAwaiter()
-                .GetResult();
-            var firstSequence = firstSubmission.PresentationSequence
-                ?? throw new InvalidOperationException("The first Surface submission omitted its presentation sequence.");
-            using var canceledPresentationWait = new CancellationTokenSource();
-            canceledPresentationWait.Cancel();
-            _ = Assert.Throws<OperationCanceledException>(
-                () => surface.WaitForPresentationAsync(firstSequence, canceledPresentationWait.Token).GetAwaiter().GetResult());
 
             if (injectOcclusionResult || injectDeviceRemovedResult)
             {

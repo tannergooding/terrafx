@@ -1052,7 +1052,9 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
             throw new InvalidOperationException("The D3D12 Surface lost its swapchain before presentation completion.");
         }
 
-        var testResult = swapChain->Present(0, DxgiPresentTest);
+        var testResult = _surfacePresentResultOverride?.Invoke() is int injectedResult
+            ? new HRESULT(injectedResult)
+            : swapChain->Present(0, DxgiPresentTest);
 
         if (testResult.Value == DxgiStatusOccluded)
         {

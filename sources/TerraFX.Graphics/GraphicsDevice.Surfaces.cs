@@ -2,6 +2,7 @@
 
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX;
@@ -564,10 +565,21 @@ public sealed partial class GraphicsDevice
                 return;
             }
 
-            var receipt = _surface.BackendSurface.WaitForPresentation(
-                _presentationSequence,
-                device.DeviceEpoch,
-                _cancellationToken);
+            PresentationReceipt receipt;
+
+            try
+            {
+                receipt = _surface.BackendSurface.WaitForPresentation(
+                    _presentationSequence,
+                    device.DeviceEpoch,
+                    _cancellationToken);
+            }
+            catch (COMException exception)
+            {
+                device.QuarantineSurface(_surface, exception);
+                device.MarkDeviceLost(exception.ErrorCode);
+                throw;
+            }
 
             if (receipt.Status is PresentationStatus.DeviceLost)
             {
