@@ -120,7 +120,9 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
         {
             var presentQueue = device.SelectPresentQueue(surface, out var presentQueueFamilyIndex);
             var nativeCapabilities = QueryNativeCapabilities(device.PhysicalDeviceHandle, surface);
-            var (nativeFormat, colorSpace, colorFormat) = SelectFormat(device.Capabilities, nativeCapabilities.Formats);
+            var (nativeFormat, colorSpace, colorFormat) = VulkanSurfaceFormatSelector.SelectFormat(
+                device.Capabilities.Formats,
+                nativeCapabilities.Formats);
             var epoch = IsSuspended(clientPixelSize) ? 0u : 1u;
             var capabilities = CreateCapabilities(
                 binding.SurfaceEpoch,
@@ -273,7 +275,7 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
                 continue;
             }
 
-            if (TryGetTextureFormat(nativeFormat.format, out var format))
+            if (VulkanSurfaceFormatSelector.TryGetTextureFormat(nativeFormat.format, out var format))
             {
                 formats.Add(new SurfaceFormat(format, SurfaceColorSpace.SrgbNonlinear));
             }
@@ -773,82 +775,6 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
         return (VkCompositeAlphaFlagsKHR)selectedBit;
     }
 
-    private static (
-        VkFormat NativeFormat,
-        VkColorSpaceKHR ColorSpace,
-        TextureFormat ColorFormat) SelectFormat(
-            GraphicsCapabilities deviceCapabilities,
-            VkSurfaceFormatKHR[] formats)
-    {
-        var publicFormats = new List<(VkFormat NativeFormat, VkColorSpaceKHR ColorSpace, TextureFormat Format)>(formats.Length);
-        var hasUndefinedFormat = formats.Length == 1
-            && (formats[0].format == VkFormat.VK_FORMAT_UNDEFINED);
-
-        if (hasUndefinedFormat)
-        {
-            var colorSpace = formats[0].colorSpace;
-            AddFormat(VkFormat.VK_FORMAT_B8G8R8A8_SRGB, colorSpace);
-            AddFormat(VkFormat.VK_FORMAT_R8G8B8A8_SRGB, colorSpace);
-        }
-        else
-        {
-            foreach (var format in formats)
-            {
-                AddFormat(format.format, format.colorSpace);
-            }
-        }
-
-        var selected = publicFormats.Find(static entry =>
-            (entry.Format == TextureFormat.Bgra8Srgb)
-            && (entry.ColorSpace == VkColorSpaceKHR.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR));
-
-        if (selected.Format == TextureFormat.None)
-        {
-            selected = publicFormats.Find(static entry =>
-                (entry.Format == TextureFormat.Rgba8Srgb)
-                && (entry.ColorSpace == VkColorSpaceKHR.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR));
-        }
-
-        if (selected.Format == TextureFormat.None)
-        {
-            throw new NotSupportedException("The Vulkan surface has no sRGB format supported for color attachment and copy-source output.");
-        }
-
-        return (selected.NativeFormat, selected.ColorSpace, selected.Format);
-
-        void AddFormat(VkFormat nativeFormat, VkColorSpaceKHR colorSpace)
-        {
-            if (colorSpace != VkColorSpaceKHR.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
-                || !TryGetTextureFormat(nativeFormat, out var textureFormat))
-            {
-                return;
-            }
-
-            foreach (var capability in deviceCapabilities.Formats)
-            {
-                if ((capability.Format == textureFormat)
-                    && ((capability.SupportedUsages & (TextureUsage.ColorAttachment | TextureUsage.CopySource))
-                        == (TextureUsage.ColorAttachment | TextureUsage.CopySource)))
-                {
-                    publicFormats.Add((nativeFormat, colorSpace, textureFormat));
-                    break;
-                }
-            }
-        }
-    }
-
-    private static bool TryGetTextureFormat(VkFormat nativeFormat, out TextureFormat format)
-    {
-        format = nativeFormat switch {
-            VkFormat.VK_FORMAT_R8G8B8A8_UNORM => TextureFormat.Rgba8Unorm,
-            VkFormat.VK_FORMAT_R8G8B8A8_SRGB => TextureFormat.Rgba8Srgb,
-            VkFormat.VK_FORMAT_B8G8R8A8_UNORM => TextureFormat.Bgra8Unorm,
-            VkFormat.VK_FORMAT_B8G8R8A8_SRGB => TextureFormat.Bgra8Srgb,
-            _ => TextureFormat.None,
-        };
-        return format != TextureFormat.None;
-    }
-
     private static bool TryValidatePhysicalDeviceSurfaceCore(
         VkPhysicalDevice physicalDevice,
         VkSurfaceKHR surface,
@@ -917,7 +843,7 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
 
         try
         {
-            _ = SelectFormat(deviceCapabilities, nativeCapabilities.Formats);
+            _ = VulkanSurfaceFormatSelector.SelectFormat(deviceCapabilities.Formats, nativeCapabilities.Formats);
         }
         catch (NotSupportedException exception)
         {
@@ -977,7 +903,9 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
             nameof(clientPixelSize));
         _ = DrainPendingPresentations();
         var nativeCapabilities = QueryNativeCapabilities(_device.PhysicalDeviceHandle, _surface);
-        var (nativeFormat, colorSpace, colorFormat) = SelectFormat(_device.Capabilities, nativeCapabilities.Formats);
+        var (nativeFormat, colorSpace, colorFormat) = VulkanSurfaceFormatSelector.SelectFormat(
+            _device.Capabilities.Formats,
+            nativeCapabilities.Formats);
 
         if ((nativeFormat != _nativeFormat)
             || (colorSpace != _colorSpace)

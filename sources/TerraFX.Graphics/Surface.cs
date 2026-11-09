@@ -39,9 +39,13 @@ public sealed class Surface
     public PixelSize ClientPixelSize
         => Volatile.Read(ref _snapshot).ClientPixelSize;
 
-    /// <summary>Gets the selected color format for the active surface.</summary>
+    /// <summary>Gets the selected native color format for the active surface.</summary>
     public TextureFormat ColorFormat
         => Volatile.Read(ref _snapshot).ColorFormat;
+
+    /// <summary>Gets the matching sRGB texture format used to encode output for the selected surface color space.</summary>
+    public TextureFormat PresentationSourceFormat
+        => SurfaceFormatCompatibility.GetSrgbPresentationSourceFormat(Volatile.Read(ref _snapshot).ColorFormat);
 
     /// <summary>Gets the native surface generation.</summary>
     public uint SurfaceEpoch

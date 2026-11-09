@@ -334,15 +334,17 @@ public sealed class RenderGraph
                 throw new ArgumentException("The offscreen presentation source must be the selected color-attachment target.", nameof(version));
             }
         }
-        else if (_options.Surface.ColorFormat is not (TextureFormat.Rgba8Srgb or TextureFormat.Bgra8Srgb))
+        else if (!SurfaceFormatCompatibility.TryGetSrgbPresentationSourceFormat(
+            _options.Surface.ColorFormat,
+            out var presentationSourceFormat))
         {
-            throw new NotSupportedException("Surface output currently requires an sRGB color-attachment format.");
+            throw new NotSupportedException("Surface output requires an sRGB-compatible color-attachment format.");
         }
         else if (((version.Description.Usage & TextureUsage.CopySource) == 0)
-            || (version.Description.Format != _options.Surface.ColorFormat)
+            || (version.Description.Format != presentationSourceFormat)
             || !IsSurfaceTargetCurrent())
         {
-            throw new ArgumentException("A Surface presentation source must be copyable and match the captured surface format and active generation.", nameof(version));
+            throw new ArgumentException("A Surface presentation source must use the matching sRGB encoding format and active generation.", nameof(version));
         }
 
         _presentationSource = version;
@@ -627,9 +629,11 @@ public sealed class RenderGraph
 
         if (_options.Surface is not null)
         {
-            return (_options.Surface.ColorFormat is TextureFormat.Rgba8Srgb or TextureFormat.Bgra8Srgb)
+            return SurfaceFormatCompatibility.TryGetSrgbPresentationSourceFormat(
+                    _options.Surface.ColorFormat,
+                    out var presentationSourceFormat)
                 && ((version.Description.Usage & TextureUsage.CopySource) != 0)
-                && (version.Description.Format == _options.Surface.ColorFormat)
+                && (version.Description.Format == presentationSourceFormat)
                 && IsSurfaceTargetCurrent();
         }
 

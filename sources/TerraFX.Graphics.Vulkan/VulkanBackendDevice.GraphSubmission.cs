@@ -138,10 +138,12 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
 
         if (surface is not null
-            && ((target.Description.Format != surface.ColorFormat)
+            && (!SurfaceFormatCompatibility.IsSrgbPresentationSourceCompatible(
+                    target.Description.Format,
+                    surface.ColorFormat)
                 || ((target.Description.Usage & TextureUsage.CopySource) == 0)))
         {
-            throw new NotSupportedException("Vulkan Surface graph output requires the selected sRGB format and CopySource usage.");
+            throw new NotSupportedException("Vulkan Surface graph output requires a matching sRGB source format and CopySource usage.");
         }
 
         var descriptorSetCapacity = 0;

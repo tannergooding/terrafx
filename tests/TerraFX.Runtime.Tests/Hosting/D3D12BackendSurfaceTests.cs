@@ -87,6 +87,13 @@ internal sealed partial class EngineHostOptionsTests
                 Is.EqualTo(activeSurface.Capabilities.SupportsTearing));
             Assert.That(activeSurface.Capabilities.Formats, Has.Length.EqualTo(1));
             Assert.That(activeSurface.Capabilities.Formats[0].Format, Is.EqualTo(activeSurface.ColorFormat));
+            Assert.That(activeSurface.ColorFormat, Is.AnyOf(TextureFormat.Rgba8Unorm, TextureFormat.Bgra8Unorm));
+            Assert.That(activeSurface.PresentationSourceFormat, Is.AnyOf(TextureFormat.Rgba8Srgb, TextureFormat.Bgra8Srgb));
+            Assert.That(
+                SurfaceFormatCompatibility.IsSrgbPresentationSourceCompatible(
+                    activeSurface.PresentationSourceFormat,
+                    activeSurface.ColorFormat),
+                Is.True);
 
             RenderGraph CreateSurfaceGraph(string name)
             {
@@ -107,7 +114,7 @@ internal sealed partial class EngineHostOptionsTests
                     depth: 1,
                     arrayLayers: 1,
                     mipLevels: 1,
-                    format: activeSurface.ColorFormat,
+                    format: activeSurface.PresentationSourceFormat,
                     usage: TextureUsage.ColorAttachment | TextureUsage.CopySource,
                     debugName: name));
                 var pass = graph.AddRasterPass(new RenderPassDescription(
@@ -372,7 +379,7 @@ internal sealed partial class EngineHostOptionsTests
                     depth: 1,
                     arrayLayers: 1,
                     mipLevels: 1,
-                    format: surface.ColorFormat,
+                    format: surface.PresentationSourceFormat,
                     usage: TextureUsage.ColorAttachment | TextureUsage.CopySource,
                     debugName: name));
                 var graphPass = graph.AddRasterPass(new RenderPassDescription(

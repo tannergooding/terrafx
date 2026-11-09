@@ -136,7 +136,8 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
             throw new PlatformNotSupportedException("A D3D12 presentation surface requires a Win32 binding.");
         }
 
-        var colorFormat = SelectSurfaceColorFormat(graphicsCapabilities);
+        var presentationSourceFormat = SelectSurfacePresentationSourceFormat(graphicsCapabilities);
+        var colorFormat = SurfaceFormatCompatibility.GetSrgbSurfaceStorageFormat(presentationSourceFormat);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(clientPixelSize.Width, graphicsCapabilities.Limits.MaximumTextureDimension2D);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(clientPixelSize.Height, graphicsCapabilities.Limits.MaximumTextureDimension2D);
         var factoryId = typeof(IDXGIFactory4).GUID;
@@ -457,13 +458,11 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool IsWindowVisible(nint window);
 
-    private static TextureFormat SelectSurfaceColorFormat(GraphicsCapabilities capabilities)
+    private static TextureFormat SelectSurfacePresentationSourceFormat(GraphicsCapabilities capabilities)
     {
         ReadOnlySpan<TextureFormat> candidates = [
             TextureFormat.Bgra8Srgb,
             TextureFormat.Rgba8Srgb,
-            TextureFormat.Bgra8Unorm,
-            TextureFormat.Rgba8Unorm,
         ];
 
         foreach (var candidate in candidates)
@@ -471,14 +470,15 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
             foreach (var format in capabilities.Formats)
             {
                 if ((format.Format == candidate)
-                    && ((format.SupportedUsages & TextureUsage.ColorAttachment) != 0))
+                    && ((format.SupportedUsages & (TextureUsage.ColorAttachment | TextureUsage.CopySource))
+                        == (TextureUsage.ColorAttachment | TextureUsage.CopySource)))
                 {
                     return candidate;
                 }
             }
         }
 
-        throw new NotSupportedException("D3D12 does not support a color-attachment format for presentation.");
+        throw new NotSupportedException("D3D12 does not support an sRGB color-attachment source for presentation.");
     }
 
     private static void ThrowIfFailed(HRESULT result)

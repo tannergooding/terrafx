@@ -109,6 +109,19 @@ dotnet build .\sources\TerraFX.Graphics.D3D12\TerraFX.Graphics.D3D12.csproj --co
 dotnet build .\sources\TerraFX.Graphics.D3D12\TerraFX.Graphics.D3D12.csproj --configuration Release
 ```
 
+### Surface output format compatibility
+
+`Surface.ColorFormat` is the selected native format; `Surface.PresentationSourceFormat` is its same-channel sRGB graph-source format. The compatibility tests verify sRGB and UNorm mapping, Vulkan's sRGB-first selection and capability-checked UNorm fallback, and native D3D12 presentation:
+
+```powershell
+dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SurfaceFormatCompatibilityTests"
+dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Release --filter "FullyQualifiedName~SurfaceFormatCompatibilityTests"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~VulkanSurfaceFormatSelectorTests"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~VulkanSurfaceFormatSelectorTests"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~D3D12BackendCreatesAndCompilesWin32FlipDiscardSurface|FullyQualifiedName~EngineHostInteractiveStartupMapsSurfaceBeforeWindowReceipt"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~D3D12BackendCreatesAndCompilesWin32FlipDiscardSurface|FullyQualifiedName~EngineHostInteractiveStartupMapsSurfaceBeforeWindowReceipt"
+```
+
 ### D3D12 OffscreenNative startup and descriptor-set probes
 
 The focused Runtime tests exercise D3D12 startup and descriptor writes using a `PlatformHostOwner`-issued identity:
@@ -524,6 +537,8 @@ export LD_LIBRARY_PATH="$WORKTREE/artifacts/linux/native/extracted/usr/lib/x86_6
 export VK_LAYER_PATH="$WORKTREE/artifacts/linux/native/extracted/usr/share/vulkan/explicit_layer.d"
 export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
 export TERRAFX_M04_SHADER_FIXTURE_DIRECTORY=
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~VulkanSurfaceFormatSelectorTests|FullyQualifiedName~VulkanBackend" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~VulkanSurfaceFormatSelectorTests|FullyQualifiedName~VulkanBackend" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~SubmitsTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SubmitsTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~SubmitsPartialTextureCopyGraphAndReadsBackAsync" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"

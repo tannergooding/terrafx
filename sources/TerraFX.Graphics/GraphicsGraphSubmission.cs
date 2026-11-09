@@ -71,7 +71,9 @@ internal sealed class GraphicsGraphSubmission
                 || (surfaceSnapshot.Capabilities.SwapchainEpoch != swapchainEpoch)
                 || (surfaceSnapshot.ClientPixelSize.Width != outputColorTarget.Description.Width)
                 || (surfaceSnapshot.ClientPixelSize.Height != outputColorTarget.Description.Height)
-                || (surfaceSnapshot.ColorFormat != outputColorTarget.Description.Format))
+                || !SurfaceFormatCompatibility.IsSrgbPresentationSourceCompatible(
+                    outputColorTarget.Description.Format,
+                    surfaceSnapshot.ColorFormat))
             {
                 throw new ArgumentException("The Surface presentation target does not match the output texture and captured epochs.", nameof(surfaceTarget));
             }
@@ -323,8 +325,9 @@ internal sealed class GraphicsGraphSubmission
                 || (surfaceSnapshot.Capabilities.SwapchainEpoch != SwapchainEpoch)
                 || (surfaceSnapshot.ClientPixelSize.Width != sourceDescription.Width)
                 || (surfaceSnapshot.ClientPixelSize.Height != sourceDescription.Height)
-                || (surfaceSnapshot.ColorFormat != sourceDescription.Format)
-                || (sourceDescription.Format is not (TextureFormat.Rgba8Srgb or TextureFormat.Bgra8Srgb))
+                || !SurfaceFormatCompatibility.IsSrgbPresentationSourceCompatible(
+                    sourceDescription.Format,
+                    surfaceSnapshot.ColorFormat)
                 || ((sourceDescription.Usage & (TextureUsage.ColorAttachment | TextureUsage.CopySource))
                     != (TextureUsage.ColorAttachment | TextureUsage.CopySource)))
             {

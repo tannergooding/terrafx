@@ -148,7 +148,19 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(activeSurface.Capabilities.SurfaceEpoch, Is.EqualTo(1));
             Assert.That(activeSurface.Capabilities.SwapchainEpoch, Is.EqualTo(1));
             Assert.That(activeSurface.Capabilities.PresentModes, Does.Contain(GraphicsPresentMode.Fifo));
-            Assert.That(activeSurface.ColorFormat, Is.AnyOf(TextureFormat.Bgra8Srgb, TextureFormat.Rgba8Srgb));
+            Assert.That(
+                activeSurface.ColorFormat,
+                Is.AnyOf(
+                    TextureFormat.Bgra8Srgb,
+                    TextureFormat.Rgba8Srgb,
+                    TextureFormat.Bgra8Unorm,
+                    TextureFormat.Rgba8Unorm));
+            Assert.That(activeSurface.PresentationSourceFormat, Is.AnyOf(TextureFormat.Bgra8Srgb, TextureFormat.Rgba8Srgb));
+            Assert.That(
+                SurfaceFormatCompatibility.IsSrgbPresentationSourceCompatible(
+                    activeSurface.PresentationSourceFormat,
+                    activeSurface.ColorFormat),
+                Is.True);
             residencyService = new GpuResidencyService(graphicsDevice);
             var renderer = Renderer.Create(graphicsDevice, residencyService);
             var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
@@ -201,7 +213,7 @@ internal sealed partial class EngineHostOptionsTests
                     depth: 1,
                     arrayLayers: 1,
                     mipLevels: 1,
-                    format: activeSurface.ColorFormat,
+                    format: activeSurface.PresentationSourceFormat,
                     usage: TextureUsage.ColorAttachment | TextureUsage.CopySource,
                     debugName: name));
                 var pass = graph.AddRasterPass(new RenderPassDescription(
@@ -491,7 +503,19 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(activeSurface.Capabilities.SurfaceEpoch, Is.EqualTo(1));
             Assert.That(activeSurface.Capabilities.SwapchainEpoch, Is.EqualTo(1));
             Assert.That(activeSurface.Capabilities.PresentModes, Does.Contain(GraphicsPresentMode.Fifo));
-            Assert.That(activeSurface.ColorFormat, Is.AnyOf(TextureFormat.Bgra8Srgb, TextureFormat.Rgba8Srgb));
+            Assert.That(
+                activeSurface.ColorFormat,
+                Is.AnyOf(
+                    TextureFormat.Bgra8Srgb,
+                    TextureFormat.Rgba8Srgb,
+                    TextureFormat.Bgra8Unorm,
+                    TextureFormat.Rgba8Unorm));
+            Assert.That(activeSurface.PresentationSourceFormat, Is.AnyOf(TextureFormat.Bgra8Srgb, TextureFormat.Rgba8Srgb));
+            Assert.That(
+                SurfaceFormatCompatibility.IsSrgbPresentationSourceCompatible(
+                    activeSurface.PresentationSourceFormat,
+                    activeSurface.ColorFormat),
+                Is.True);
 
             var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
             _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
@@ -543,7 +567,7 @@ internal sealed partial class EngineHostOptionsTests
                     depth: 1,
                     arrayLayers: 1,
                     mipLevels: 1,
-                    format: activeSurface.ColorFormat,
+                    format: activeSurface.PresentationSourceFormat,
                     usage: TextureUsage.ColorAttachment | TextureUsage.CopySource,
                     debugName: name));
                 var pass = graph.AddRasterPass(new RenderPassDescription(
