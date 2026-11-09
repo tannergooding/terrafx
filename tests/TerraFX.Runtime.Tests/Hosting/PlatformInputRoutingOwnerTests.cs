@@ -252,6 +252,89 @@ internal sealed partial class PlatformInputRoutingOwnerTests
     }
 
     [Test]
+    public void ClosesTextSessionBeforeRetiringItsNativeWindowState()
+    {
+        var ownerThreadId = Environment.CurrentManagedThreadId;
+        var ownerId = OwnerIdAllocator.Allocate();
+        var sequenceLease = new HostEventSequenceLease();
+        var platformOwner = new TestPlatformInputRoutingHost(ownerId) {
+            HostTimestamp = 10,
+            SequenceLease = sequenceLease,
+        };
+        var window = new WindowHandle(ownerId, 0, 1);
+        var inputRouters = new HashSet<InputRouter>();
+        var routingOwner = new PlatformInputRoutingOwner(
+            HostProfile.Interactive,
+            platformOwner,
+            sequenceLease,
+            new DiagnosticsService(),
+            ownerThreadId,
+            inputRouters,
+            [],
+            static _ => null);
+        TextInputSession? session = null;
+
+        try
+        {
+            var hostRouter = routingOwner.CreateInputRouter(InputRecipientKind.HostLiveUI, window);
+            session = hostRouter.BeginTextSession(new TextInputSessionOptions(
+                window,
+                TextInputPurpose.FreeForm,
+                documentRevision: 1,
+                surroundingText: null,
+                selectionStart: 0,
+                selectionLength: 0,
+                caretPosition: default,
+                caretSize: default));
+            routingOwner.SynchronizeTextInputSessions();
+
+            var compositionSequence = sequenceLease.Allocate();
+            routingOwner.RouteCapturedInput(new PlatformInputCaptureBatch(
+                Events: [],
+                DiscardedSampleCount: 0,
+                Diagnostics: [],
+                TextEvents: [
+                    new PlatformTextInputEvent(
+                        window,
+                        10,
+                        compositionSequence,
+                        [new TextInputChange(TextInputChangeKind.CompositionStarted)],
+                        session.SessionId,
+                        BaseDocumentRevision: 1),
+                ]));
+            Assert.That(session.TryReadBatch(out var compositionBatch), Is.True);
+            Assert.That(compositionBatch!.Changes[0].Kind, Is.EqualTo(TextInputChangeKind.CompositionStarted));
+
+            platformOwner.HostTimestamp = 11;
+            routingOwner.CloseWindow(window);
+
+            Assert.That(session.IsActive, Is.False);
+            Assert.That(platformOwner.TextInputSessionUpdates, Has.Count.EqualTo(2));
+            Assert.That(platformOwner.TextInputSessionUpdates[1].Snapshot, Is.Null);
+            Assert.That(session.TryReadBatch(out var cancellationBatch), Is.True);
+            Assert.That(cancellationBatch!.Changes[0].Kind, Is.EqualTo(TextInputChangeKind.CompositionCanceled));
+            Assert.That(
+                cancellationBatch.Changes[0].CancellationReason,
+                Is.EqualTo(TextCompositionCancelReason.SessionDisposed));
+
+            routingOwner.SynchronizeTextInputSessions();
+            Assert.That(platformOwner.TextInputSessionUpdates, Has.Count.EqualTo(2));
+        }
+        finally
+        {
+            session?.Dispose();
+            routingOwner.ClearRoutes();
+
+            foreach (var router in inputRouters)
+            {
+                _ = router.DisposeAndGetTransitions();
+            }
+
+            sequenceLease.Revoke();
+        }
+    }
+
+    [Test]
     public void DisposesHostLiveUiRecipientWithoutDetachingGameplayTimeline()
     {
         var ownerThreadId = Environment.CurrentManagedThreadId;
@@ -778,6 +861,11 @@ internal sealed partial class PlatformInputRoutingOwnerTests
                 selectionLength: 0,
                 caretPosition: default,
                 caretSize: default));
+            routingOwner.SynchronizeTextInputSessions();
+            Assert.That(platformOwner.TextInputSessionUpdates, Has.Count.EqualTo(1));
+            Assert.That(platformOwner.TextInputSessionUpdates[0].Window, Is.EqualTo(window));
+            Assert.That(platformOwner.TextInputSessionUpdates[0].Snapshot?.SessionId, Is.EqualTo(session.SessionId));
+            Assert.That(platformOwner.TextInputSessionUpdates[0].Snapshot?.Options.DocumentRevision, Is.EqualTo(1));
             var device = new InputDeviceHandle(ownerId, 1, 1);
             var key = new KeyboardControl(usagePage: 0x0007, usage: 0x0008);
             var keyDown = CreateKeyboardEvent(
@@ -820,6 +908,18 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             Assert.That(batch.Changes[1].Text, Is.EqualTo("é"));
             Assert.That(batch.Changes[2].Kind, Is.EqualTo(TextInputChangeKind.TextCommitted));
             Assert.That(batch.Changes[2].Text, Is.EqualTo("ß"));
+            session.Update(new TextInputSessionOptions(
+                window,
+                TextInputPurpose.FreeForm,
+                documentRevision: 2,
+                surroundingText: null,
+                selectionStart: 0,
+                selectionLength: 0,
+                caretPosition: default,
+                caretSize: default));
+            routingOwner.SynchronizeTextInputSessions();
+            Assert.That(platformOwner.TextInputSessionUpdates, Has.Count.EqualTo(2));
+            Assert.That(platformOwner.TextInputSessionUpdates[1].Snapshot?.Options.DocumentRevision, Is.EqualTo(2));
 
             var overflowSequence = sequenceLease.Allocate();
             routingOwner.RouteCapturedInput(new PlatformInputCaptureBatch(
@@ -832,6 +932,9 @@ internal sealed partial class PlatformInputRoutingOwnerTests
 
             Assert.That(session.IsActive, Is.False);
             Assert.That(session.LastDiagnostic?.Code, Is.EqualTo("TextInput.Overflow"));
+            routingOwner.SynchronizeTextInputSessions();
+            Assert.That(platformOwner.TextInputSessionUpdates, Has.Count.EqualTo(3));
+            Assert.That(platformOwner.TextInputSessionUpdates[2].Snapshot, Is.Null);
             Assert.That(session.TryReadBatch(out var cancellationBatch), Is.True);
             Assert.That(cancellationBatch!.Changes, Has.Length.EqualTo(1));
             Assert.That(cancellationBatch.Changes[0].Kind, Is.EqualTo(TextInputChangeKind.CompositionCanceled));
@@ -1081,6 +1184,82 @@ internal sealed partial class PlatformInputRoutingOwnerTests
         }
     }
 
+    [Test]
+    public void RoutesTextSessionUnavailableOnNativeTsfSetupFailure()
+    {
+        var ownerThreadId = Environment.CurrentManagedThreadId;
+        var ownerId = OwnerIdAllocator.Allocate();
+        var sequenceLease = new HostEventSequenceLease();
+        var diagnostics = new DiagnosticsService();
+        var nativeResult = unchecked((int)0x80004005);
+        var platformOwner = new TestPlatformInputRoutingHost(ownerId) {
+            SequenceLease = sequenceLease,
+            TextInputUpdateException = new WindowsTextInputInteropException("document-context creation", nativeResult),
+        };
+        var window = new WindowHandle(ownerId, 0, 1);
+        var inputRouters = new HashSet<InputRouter>();
+        var routingOwner = new PlatformInputRoutingOwner(
+            HostProfile.Interactive,
+            platformOwner,
+            sequenceLease,
+            diagnostics,
+            ownerThreadId,
+            inputRouters,
+            [],
+            static _ => null);
+        TextInputSession? session = null;
+
+        try
+        {
+            var hostRouter = routingOwner.CreateInputRouter(InputRecipientKind.HostLiveUI, window);
+            session = hostRouter.BeginTextSession(new TextInputSessionOptions(
+                window,
+                TextInputPurpose.FreeForm,
+                documentRevision: 1,
+                surroundingText: null,
+                selectionStart: 0,
+                selectionLength: 0,
+                caretPosition: default,
+                caretSize: default));
+
+            routingOwner.SynchronizeTextInputSessions();
+
+            Assert.That(session.IsActive, Is.False);
+            Assert.That(session.LastDiagnostic?.Code, Is.EqualTo("TextCompositionUnavailable"));
+            Assert.That(session.LastDiagnostic?.NativeResult, Is.EqualTo(nativeResult));
+            Assert.That(platformOwner.TextInputSessionUpdates, Has.Count.EqualTo(1));
+            Assert.That(platformOwner.TextInputSessionUpdates[0].Snapshot, Is.Null);
+            var diagnosticRecords = diagnostics.GetSnapshot(new DiagnosticQuery(
+                16,
+                DiagnosticSeverity.Trace,
+                worldGuid: null,
+                minimumTick: null)).Records;
+            Assert.That(
+                diagnosticRecords.Select(diagnostic => diagnostic.Code),
+                Does.Contain("TextCompositionUnavailable"));
+            Assert.That(
+                diagnosticRecords.Select(diagnostic => diagnostic.Code),
+                Does.Contain("TextCommitUnavailable"));
+            Assert.That(
+                diagnosticRecords
+                    .Where(diagnostic => diagnostic.Code is "TextCompositionUnavailable" or "TextCommitUnavailable")
+                    .All(diagnostic => diagnostic.NativeResult == nativeResult),
+                Is.True);
+        }
+        finally
+        {
+            session?.Dispose();
+            routingOwner.ClearRoutes();
+
+            foreach (var router in inputRouters)
+            {
+                _ = router.DisposeAndGetTransitions();
+            }
+
+            sequenceLease.Revoke();
+        }
+    }
+
     private static partial class IsolatedX11Input
     {
         internal static nint GetRootWindow(nint display)
@@ -1192,6 +1371,12 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             return CaptureDrainedSamples();
         }
 
+        public void UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot)
+        {
+            _ = window;
+            _ = snapshot;
+        }
+
         internal void CreateWindow(WindowHandle window)
         {
             _backend.CreateWindow(
@@ -1230,6 +1415,10 @@ internal sealed partial class PlatformInputRoutingOwnerTests
         internal List<WindowHandle?> ReconciliationRequests { get; } = [];
 
         internal HostEventSequenceLease? SequenceLease { get; set; }
+
+        internal List<(WindowHandle Window, TextInputSessionSnapshot? Snapshot)> TextInputSessionUpdates { get; } = [];
+
+        internal Exception? TextInputUpdateException { get; set; }
 
         public long GetHostTimestamp() => HostTimestamp;
 
@@ -1281,6 +1470,16 @@ internal sealed partial class PlatformInputRoutingOwnerTests
                 ],
                 0,
                 []);
+        }
+
+        public void UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot)
+        {
+            if ((snapshot is not null) && (TextInputUpdateException is { } exception))
+            {
+                throw exception;
+            }
+
+            TextInputSessionUpdates.Add((window, snapshot));
         }
     }
 }

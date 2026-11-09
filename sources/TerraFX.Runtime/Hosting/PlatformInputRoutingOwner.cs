@@ -23,6 +23,7 @@ internal sealed class PlatformInputRoutingOwner
     private readonly Func<uint, InputRouter?> _findSimulationTimelineRouter;
     private readonly HashSet<InputRouter> _inputRouters;
     private readonly Dictionary<InputRouter, WorldInputTimelineAdapter> _inputTimelineByRouter;
+    private readonly Dictionary<WindowHandle, TextInputSessionSnapshot> _nativeTextInputSessions = [];
     private readonly int _ownerThreadId;
     private readonly IPlatformInputRoutingHost _platformOwner;
     private readonly HostProfile _profile;
@@ -391,12 +392,62 @@ internal sealed class PlatformInputRoutingOwner
         }
     }
 
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "Route clearing attempts every native text-session retirement before reporting cleanup failures.")]
     internal void ClearRoutes()
     {
         EnsureOwnerThread();
+
+        var failures = new List<Exception>();
+
+        foreach (var window in new List<WindowHandle>(_nativeTextInputSessions.Keys))
+        {
+            try
+            {
+                _platformOwner.UpdateTextInputSession(window, snapshot: null);
+            }
+            catch (Exception exception)
+            {
+                failures.Add(exception);
+            }
+        }
+
+        _nativeTextInputSessions.Clear();
         _windowInputRoutes.Clear();
         _deviceAssignments.Clear();
         _devicesByTimelinePlayer.Clear();
+
+        if (failures.Count > 0)
+        {
+            throw new AggregateException("One or more native text input sessions could not be retired.", failures);
+        }
+    }
+
+    internal void CloseWindow(WindowHandle window)
+    {
+        EnsureOwnerThread();
+
+        if (!window.IsValid || (window.OwnerId != _platformOwner.OwnerId))
+        {
+            throw new ArgumentException("The window handle belongs to another platform owner.", nameof(window));
+        }
+
+        if (_windowInputRoutes.TryGetValue(window, out var route)
+            && (route.HostLiveUiRouter?.ActiveTextSession is TextInputSession session))
+        {
+            session.EndForNativeControl(
+                _sequenceLease.Allocate(),
+                _platformOwner.GetHostTimestamp(),
+                TextCompositionCancelReason.SessionDisposed);
+        }
+
+        if (_nativeTextInputSessions.ContainsKey(window))
+        {
+            _platformOwner.UpdateTextInputSession(window, snapshot: null);
+            _ = _nativeTextInputSessions.Remove(window);
+        }
     }
 
     internal void ContinuePhysicalInputReconciliationAtBoundary(
@@ -707,6 +758,91 @@ internal sealed class PlatformInputRoutingOwner
             {
                 WriteInputOverflowDiagnostic(route.Window, hostLiveUiRouter.RecipientId, overflow);
                 ResetUiDispositionForWindow(route, hostTimestamp);
+            }
+        }
+    }
+
+    internal void SynchronizeTextInputSessions()
+    {
+        EnsureOwnerThread();
+        var activeWindows = new HashSet<WindowHandle>();
+
+        foreach (var route in _windowInputRoutes.Values)
+        {
+            var window = route.Window;
+            _ = activeWindows.Add(window);
+
+            if (route.HostLiveUiRouter?.ActiveTextSession is TextInputSession session)
+            {
+                var snapshot = session.Snapshot;
+
+                if (!_nativeTextInputSessions.TryGetValue(window, out var currentSnapshot)
+                    || (currentSnapshot != snapshot))
+                {
+                    try
+                    {
+                        _platformOwner.UpdateTextInputSession(window, snapshot);
+                        _nativeTextInputSessions[window] = snapshot;
+                    }
+                    catch (WindowsTextInputInteropException exception)
+                    {
+                        var hostTimestamp = _platformOwner.GetHostTimestamp();
+                        var hostSequence = _sequenceLease.Allocate();
+                        var diagnostic = session.TerminateForNativeUnavailable(
+                            hostSequence,
+                            hostTimestamp,
+                            exception.HResult,
+                            "PlatformInputRoutingOwner.SynchronizeTextInputSessions",
+                            exception.Message);
+                        _diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+                        _diagnostics.Write(
+                            new Diagnostic(
+                                "TextCommitUnavailable",
+                                DiagnosticSeverity.Error,
+                                hostTimestamp,
+                                hostId: null,
+                                worldGuid: null,
+                                deviceId: null,
+                                deviceEpoch: null,
+                                surfaceId: null,
+                                surfaceEpoch: null,
+                                swapchainEpoch: null,
+                                tick: null,
+                                systemId: null,
+                                passId: null,
+                                assetId: null,
+                                commandIdentity: null,
+                                operation: "PlatformInputRoutingOwner.SynchronizeTextInputSessions",
+                                nativeResult: exception.HResult,
+                                message: exception.Message,
+                                context: []),
+                            executionSessionId: null,
+                            worldOwnerId: null);
+
+                        try
+                        {
+                            _platformOwner.UpdateTextInputSession(window, snapshot: null);
+                        }
+                        finally
+                        {
+                            _ = _nativeTextInputSessions.Remove(window);
+                        }
+                    }
+                }
+            }
+            else if (_nativeTextInputSessions.ContainsKey(window))
+            {
+                _platformOwner.UpdateTextInputSession(window, snapshot: null);
+                _ = _nativeTextInputSessions.Remove(window);
+            }
+        }
+
+        foreach (var window in new List<WindowHandle>(_nativeTextInputSessions.Keys))
+        {
+            if (!activeWindows.Contains(window))
+            {
+                _platformOwner.UpdateTextInputSession(window, snapshot: null);
+                _ = _nativeTextInputSessions.Remove(window);
             }
         }
     }

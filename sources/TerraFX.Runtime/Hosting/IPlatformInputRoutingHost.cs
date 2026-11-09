@@ -18,4 +18,6 @@ internal interface IPlatformInputRoutingHost
     PlatformInputCaptureBatch RequestGamepadStateReconciliation(InputDeviceHandle device);
 
     PlatformInputCaptureBatch RequestInputStateReconciliation(WindowHandle? window);
+
+    void UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot);
 }

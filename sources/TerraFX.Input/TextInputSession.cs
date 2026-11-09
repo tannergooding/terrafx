@@ -112,7 +112,23 @@ public sealed class TextInputSession : IDisposable
     /// <summary>Gets the exact window route owned by this session.</summary>
     public WindowHandle Window => _window;
 
-    private static Diagnostic CreateDiagnostic(string code, string operation, long hostTimestamp, string message)
+    internal TextInputSessionSnapshot Snapshot
+    {
+        get
+        {
+            EnsureActiveOwnerThread();
+            return new TextInputSessionSnapshot(
+                _sessionId,
+                _options ?? throw new InvalidOperationException("The active text session has no current options."));
+        }
+    }
+
+    private static Diagnostic CreateDiagnostic(
+        string code,
+        string operation,
+        long hostTimestamp,
+        string message,
+        int? nativeResult = null)
         => new(
             code,
             DiagnosticSeverity.Error,
@@ -130,7 +146,7 @@ public sealed class TextInputSession : IDisposable
             null,
             null,
             operation,
-            null,
+            nativeResult,
             message,
             []);
 
@@ -611,6 +627,24 @@ public sealed class TextInputSession : IDisposable
             hostTimestamp,
             $"The native text source discarded {discardedSampleCount} bounded text transaction(s).");
         router.LatchTextInputOverflow(hostTimestamp, hostSequence);
+    }
+
+    internal Diagnostic TerminateForNativeUnavailable(
+        long hostSequence,
+        long hostTimestamp,
+        int nativeResult,
+        string operation,
+        string message)
+    {
+        EndForNativeControl(hostSequence, hostTimestamp, TextCompositionCancelReason.SessionDisposed);
+        var diagnostic = CreateDiagnostic(
+            "TextCompositionUnavailable",
+            operation,
+            hostTimestamp,
+            message,
+            nativeResult);
+        _lastDiagnostic = diagnostic;
+        return diagnostic;
     }
 
     private TextInputChange CreateRejectedChange(long hostTimestamp, string code, string message)

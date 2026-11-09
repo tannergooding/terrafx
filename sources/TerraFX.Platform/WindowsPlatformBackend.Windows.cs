@@ -545,6 +545,7 @@ internal sealed unsafe partial class WindowsPlatformBackend
         EnsureOwnerThread();
         var state = FindWindowState(window)
             ?? throw new InvalidOperationException("The window handle is stale or no longer active.");
+        _textInputManager?.RemoveSession(window);
         state.IsClosing = true;
 
         if (!DestroyWindowNative(state.NativeWindow))
@@ -1277,6 +1278,7 @@ internal sealed unsafe partial class WindowsPlatformBackend
     private void CaptureWindowFocus(WindowState state, PhysicalInputEventKind kind)
     {
         state.IsFocused = kind == PhysicalInputEventKind.FocusGained;
+        _textInputManager?.SetWindowFocus(state.Window, state.IsFocused);
         var monotonicTimestamp = _timeProvider.GetTimestamp();
         var (nativeTimestamp, diagnostics) = GetNativeMessageTimestamp();
         CaptureNativeInputSample(new PlatformInputSample(

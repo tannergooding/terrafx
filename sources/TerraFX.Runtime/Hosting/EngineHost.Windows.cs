@@ -126,6 +126,9 @@ public sealed partial class EngineHost
             _ = _surfacesByWindow.Remove(window);
         }
 
+        var inputRoutingOwner = _platformInputRouting
+            ?? throw new InvalidOperationException("The EngineHost platform input routing owner is not initialized.");
+        inputRoutingOwner.CloseWindow(window);
         return platformOwner.CloseWindowCommand(window);
     }
 

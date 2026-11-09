@@ -921,6 +921,9 @@ public sealed partial class EngineHost : IAsyncDisposable
                     request.Execute(this);
                 }
 
+                var inputRoutingOwner = _platformInputRouting
+                    ?? throw new InvalidOperationException("The EngineHost platform input routing owner is not initialized.");
+                inputRoutingOwner.SynchronizeTextInputSessions();
                 var capturedInput = _platformOwner.Pump();
                 RefreshWindowSurfaceMetricsOnOwner();
                 var modeDiagnostics = _platformOwner.DrainModeDiagnostics();
@@ -944,8 +947,6 @@ public sealed partial class EngineHost : IAsyncDisposable
                     }
                 }
 
-                var inputRoutingOwner = _platformInputRouting
-                    ?? throw new InvalidOperationException("The EngineHost platform input routing owner is not initialized.");
                 inputRoutingOwner.RouteCapturedInput(capturedInput);
                 var hostTimestamp = _platformOwner.GetHostTimestamp();
                 inputRoutingOwner.ServiceWindowInputRoutes(hostTimestamp);
@@ -1146,7 +1147,15 @@ public sealed partial class EngineHost : IAsyncDisposable
     private void ShutdownOwnerServices()
     {
         var inputFailures = new List<Exception>();
-        _platformInputRouting?.ClearRoutes();
+
+        try
+        {
+            _platformInputRouting?.ClearRoutes();
+        }
+        catch (Exception exception)
+        {
+            inputFailures.Add(exception);
+        }
 
         foreach (var router in _inputRouters)
         {

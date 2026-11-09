@@ -259,6 +259,8 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
 
         try
         {
+            _textInputManager?.Dispose();
+            _textInputManager = null;
             DisposeWindows();
             _gameInputCapture.Dispose();
             _rawInputRegistration.Dispose();
@@ -354,10 +356,16 @@ internal sealed unsafe partial class WindowsPlatformBackend : IPlatformBackend
                 throw new InvalidOperationException("The Windows Platform message queue received WM_QUIT before host shutdown.");
             }
 
-            _ = TranslateMessageNative(&message);
-            _ = DispatchMessageNative(&message);
+            if (_textInputManager?.ProcessKeyMessage(message.Window, message.Id, message.WParam, message.LParam) != true)
+            {
+                _ = TranslateMessageNative(&message);
+                _ = DispatchMessageNative(&message);
+            }
+
+            _textInputManager?.FlushPendingTextInput();
         }
 
+        _textInputManager?.FlushPendingTextInput();
         ApplyDeferredWindowUpdates();
         ThrowCallbackFailures();
         _gameInputCapture.Pump();

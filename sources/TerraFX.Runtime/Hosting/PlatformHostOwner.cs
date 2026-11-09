@@ -661,6 +661,24 @@ internal sealed class PlatformHostOwner
                 swapchainEpoch));
     }
 
+    internal void UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+
+        if (!window.IsValid || (window.OwnerId != _ownerId) || !_activeWindowHandles.Contains(window))
+        {
+            throw new ArgumentException("The text input session must target a live window from this host.", nameof(window));
+        }
+
+        if (snapshot is not null)
+        {
+            ThrowIfStopping();
+        }
+
+        _platform.UpdateTextInputSession(window, snapshot);
+    }
+
     private void CompleteObservedModeTransitions()
     {
         if (_pendingWindowModeTransitions.Count == 0)

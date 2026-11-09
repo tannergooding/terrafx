@@ -98,6 +98,19 @@ internal sealed class PlatformInputSampleQueue
             discardedTextSampleCount);
     }
 
+    internal void RecordTextInputOverflow(WindowHandle window, long sessionId)
+    {
+        EnsureOwnerThread();
+
+        if (!window.IsValid)
+        {
+            throw new ArgumentException("A text input overflow must identify a valid window.", nameof(window));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sessionId);
+        RecordTextOverflow(window, sessionId);
+    }
+
     internal bool TryEnqueue(in PlatformInputSample sample)
     {
         EnsureOwnerThread();

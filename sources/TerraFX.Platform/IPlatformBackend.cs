@@ -4,6 +4,7 @@ using System;
 using System.Collections.Immutable;
 using System.Threading;
 using TerraFX;
+using TerraFX.Input;
 using TerraFX.Numerics;
 using ClipboardTextResult = TerraFX.Platform.ClipboardStatus;
 
@@ -91,6 +92,10 @@ internal interface IPlatformBackend : IDisposable
     bool TakeMonitorTopologyChanged();
 
     bool TryGetNativeWindowBinding(WindowHandle window, out PlatformNativeWindowBinding binding);
+
+    void UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot)
+    {
+    }
 
     ClipboardWriteResponse WriteClipboardText(ClipboardWriteRequest request);
 }
