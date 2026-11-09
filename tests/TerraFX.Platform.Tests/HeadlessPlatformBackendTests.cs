@@ -369,6 +369,10 @@ internal sealed partial class HeadlessPlatformBackendTests
                     (sample.Window == firstWindow)
                     && (sample.Kind == PhysicalInputEventKind.FocusGained)),
                 Is.True);
+            var initialFocusReconciliation = initialFocusSamples.Single(sample =>
+                (sample.Window == firstWindow)
+                && (sample.Kind == PhysicalInputEventKind.StateReconciliation));
+            Assert.That(initialFocusReconciliation.ReconciliationState, Is.Empty);
 
             X11TestNative.SendTestKeyEvent(display, keycode: 38, isDown: true);
             X11TestNative.SendTestButtonEvent(display, button: 1, isDown: true);
