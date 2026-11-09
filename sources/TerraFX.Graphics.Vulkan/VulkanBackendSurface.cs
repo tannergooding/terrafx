@@ -18,7 +18,6 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
 {
     private const ulong AcquireTimeoutNanoseconds = 5_000_000_000;
     private const ulong FenceWaitSliceNanoseconds = 16_000_000;
-    private const ulong PresentationWaitTimeoutNanoseconds = 5_000_000_000;
 
     private readonly VkSemaphore[] _acquireSemaphores;
     private readonly GraphicsNativeSurfaceBinding _binding;
@@ -1566,6 +1565,7 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
                 &fence,
                 waitAll: 1,
                 FenceWaitSliceNanoseconds);
+            result = _device.SurfaceFenceWaitResultOverride?.Invoke(result) ?? result;
 
             if (result == VkResult.VK_SUCCESS)
             {
@@ -1578,7 +1578,8 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
                 EnsureSuccess(result, "vkWaitForFences(presentation)");
             }
 
-            if (timer.Elapsed.TotalMilliseconds >= PresentationWaitTimeoutNanoseconds / 1_000_000.0)
+            if (timer.Elapsed.TotalMilliseconds
+                >= _device.SurfaceFenceWaitTimeoutNanoseconds / 1_000_000.0)
             {
                 _device.MarkUncertainWsiOperation();
                 throw new TimeoutException("Vulkan did not signal the presentation fence within the retirement timeout.");

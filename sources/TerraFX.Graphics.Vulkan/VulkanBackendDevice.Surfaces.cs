@@ -30,6 +30,10 @@ internal sealed unsafe partial class VulkanBackendDevice
 
     internal Func<VkResult?>? SurfaceAcquireResultOverride => _surfaceAcquireResultOverride;
 
+    internal Func<VkResult, VkResult>? SurfaceFenceWaitResultOverride => _surfaceFenceWaitResultOverride;
+
+    internal ulong SurfaceFenceWaitTimeoutNanoseconds => _surfaceFenceWaitTimeoutNanoseconds;
+
     internal Func<VkResult, VkResult>? SurfacePresentResultOverride => _surfacePresentResultOverride;
 
     internal string? SwapchainMaintenanceExtensionName => _swapchainMaintenanceExtensionName;

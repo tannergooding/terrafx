@@ -28,7 +28,9 @@ internal sealed partial class EngineHostOptionsTests
             PlatformBackend platformBackend,
             Action? surfaceImageAcquiredObserver = null,
             Func<VkResult?>? surfaceAcquireResultOverride = null,
-            Func<VkResult, VkResult>? surfacePresentResultOverride = null)
+            Func<VkResult, VkResult>? surfacePresentResultOverride = null,
+            Func<VkResult, VkResult>? surfaceFenceWaitResultOverride = null,
+            ulong surfaceFenceWaitTimeoutNanoseconds = 5_000_000_000)
     {
         var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
         var packagePath = SceneAssetStoreTests.Package.WritePackage(packageBytes);
@@ -42,6 +44,7 @@ internal sealed partial class EngineHostOptionsTests
         var registration = (surfaceImageAcquiredObserver is null)
             && (surfaceAcquireResultOverride is null)
             && (surfacePresentResultOverride is null)
+            && (surfaceFenceWaitResultOverride is null)
             ? VulkanGraphicsBackend.CreateRegistration()
             : VulkanGraphicsBackend.CreateRegistrationForTesting(
                 graphFenceWaitObserver: null,
@@ -49,7 +52,9 @@ internal sealed partial class EngineHostOptionsTests
                 graphSubmissionObserver: null,
                 surfaceImageAcquiredObserver: surfaceImageAcquiredObserver,
                 surfaceAcquireResultOverride: surfaceAcquireResultOverride,
-                surfacePresentResultOverride: surfacePresentResultOverride);
+                surfacePresentResultOverride: surfacePresentResultOverride,
+                surfaceFenceWaitResultOverride: surfaceFenceWaitResultOverride,
+                surfaceFenceWaitTimeoutNanoseconds: surfaceFenceWaitTimeoutNanoseconds);
         var options = new EngineHostOptions(
             HostProfile.Interactive,
             platformBackend,
@@ -100,7 +105,8 @@ internal sealed partial class EngineHostOptionsTests
         bool expectAcquiredImageFailure = false,
         PresentationStatus expectedFirstPresentationStatus = PresentationStatus.Presented,
         VkResult? expectedFirstAcquireResult = null,
-        bool expectUncertainPresentFailure = false)
+        bool expectUncertainPresentFailure = false,
+        bool expectPresentationFenceTimeout = false)
     {
         var platformOwner = PlatformHostOwner.Create(options);
         GraphicsDevice? graphicsDevice = null;
@@ -265,6 +271,23 @@ internal sealed partial class EngineHostOptionsTests
                 return;
             }
 
+            if (expectPresentationFenceTimeout)
+            {
+                var timeoutSubmission = renderer.SubmitAsync(
+                    renderSnapshot,
+                    CreateSurfaceGraphPlan("vulkan-surface-present-fence-timeout"))
+                    .GetAwaiter()
+                    .GetResult();
+                var timeoutSequence = timeoutSubmission.PresentationSequence
+                    ?? throw new InvalidOperationException("The timeout Vulkan Surface submission omitted its presentation sequence.");
+                _ = Assert.Throws<TimeoutException>(
+                    () => activeSurface.WaitForPresentationAsync(timeoutSequence).GetAwaiter().GetResult());
+                _ = Assert.Throws<TimeoutException>(
+                    () => graphicsDevice.RetireSurfaceAsync(activeSurface).GetAwaiter().GetResult());
+                Assert.That(activeSurface.IsQuarantined, Is.True);
+                return;
+            }
+
             if (expectAcquiredImageFailure)
             {
                 _ = Assert.Throws<InvalidOperationException>(
@@ -338,7 +361,9 @@ internal sealed partial class EngineHostOptionsTests
             {
                 renderWorld?.Dispose();
 
-                if ((surface is not null) && !expectUncertainPresentFailure)
+                if ((surface is not null)
+                    && !expectUncertainPresentFailure
+                    && !expectPresentationFenceTimeout)
                 {
                     graphicsDevice?.RetireSurfaceAsync(surface).GetAwaiter().GetResult();
                 }
@@ -365,6 +390,11 @@ internal sealed partial class EngineHostOptionsTests
                             if (expectUncertainPresentFailure)
                             {
                                 _ = Assert.Throws<InvalidOperationException>(
+                                    () => graphicsDevice?.ShutdownAsync().GetAwaiter().GetResult());
+                            }
+                            else if (expectPresentationFenceTimeout)
+                            {
+                                _ = Assert.Throws<TimeoutException>(
                                     () => graphicsDevice?.ShutdownAsync().GetAwaiter().GetResult());
                             }
                             else
@@ -597,6 +627,40 @@ internal sealed partial class EngineHostOptionsTests
 
         var (options, registration, schemas) = CreateVulkanSurfaceTestSetup(PlatformBackend.X11Only);
         RunVulkanSurfaceWithDirectOwners(options, PlatformBackend.X11Only, registration, schemas);
+    }
+
+    [Test]
+    public void VulkanBackendQuarantinesPresentationFenceTimeout()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Ignore("The Vulkan present-fence timeout witness uses the Linux direct-owner path.");
+            return;
+        }
+
+        var platformBackend = GetInteractivePlatformBackend();
+
+        if (platformBackend is null)
+        {
+            Assert.Ignore("The Vulkan present-fence timeout witness requires a Linux interactive display.");
+            return;
+        }
+
+        static VkResult OverrideFenceWaitResult(VkResult nativeResult)
+        {
+            return nativeResult == VkResult.VK_SUCCESS ? VkResult.VK_TIMEOUT : nativeResult;
+        }
+
+        var (options, registration, schemas) = CreateVulkanSurfaceTestSetup(
+            platformBackend.Value,
+            surfaceFenceWaitResultOverride: OverrideFenceWaitResult,
+            surfaceFenceWaitTimeoutNanoseconds: 1_000_000);
+        RunVulkanSurfaceWithDirectOwners(
+            options,
+            platformBackend.Value,
+            registration,
+            schemas,
+            expectPresentationFenceTimeout: true);
     }
 
     [Test]
