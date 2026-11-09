@@ -11,7 +11,7 @@ namespace TerraFX.Platform;
     "Reliability",
     "CA2216:Disposable types should declare finalizer",
     Justification = "The compose state belongs to the Wayland keyboard owner thread.")]
-internal sealed unsafe partial class WaylandComposeState : IDisposable
+internal sealed unsafe partial class XkbComposeState : IDisposable
 {
     private const int XkbComposeFeedAccepted = 1;
     private const int XkbComposeStatusCancelled = 3;
@@ -23,14 +23,14 @@ internal sealed unsafe partial class WaylandComposeState : IDisposable
     private nint _context;
     private bool _isDisposed;
 
-    private WaylandComposeState(nint context, nint composeTable, nint composeState)
+    private XkbComposeState(nint context, nint composeTable, nint composeState)
     {
         _context = context;
         _composeTable = composeTable;
         _composeState = composeState;
     }
 
-    internal static WaylandComposeState? TryCreate()
+    internal static XkbComposeState? TryCreate()
     {
         var context = Native.XkbContextNew(flags: 0);
 
@@ -71,7 +71,7 @@ internal sealed unsafe partial class WaylandComposeState : IDisposable
                 return null;
             }
 
-            var result = new WaylandComposeState(context, composeTable, composeState);
+            var result = new XkbComposeState(context, composeTable, composeState);
             context = 0;
             composeTable = 0;
             composeState = 0;
@@ -142,39 +142,39 @@ internal sealed unsafe partial class WaylandComposeState : IDisposable
         _isDisposed = true;
     }
 
-    internal WaylandComposeStatus Feed(uint keysym, out string? committedText)
+    internal XkbComposeStatus Feed(uint keysym, out string? committedText)
     {
         ObjectDisposedException.ThrowIf(_isDisposed, this);
         committedText = null;
 
         if (Native.XkbComposeStateFeed(_composeState, keysym) != XkbComposeFeedAccepted)
         {
-            return WaylandComposeStatus.Ignored;
+            return XkbComposeStatus.Ignored;
         }
 
         switch (Native.XkbComposeStateGetStatus(_composeState))
         {
             case XkbComposeStatusComposing:
             {
-                return WaylandComposeStatus.Composing;
+                return XkbComposeStatus.Composing;
             }
 
             case XkbComposeStatusComposed:
             {
                 committedText = ReadComposeText();
                 Native.XkbComposeStateReset(_composeState);
-                return WaylandComposeStatus.Committed;
+                return XkbComposeStatus.Committed;
             }
 
             case XkbComposeStatusCancelled:
             {
                 Native.XkbComposeStateReset(_composeState);
-                return WaylandComposeStatus.Cancelled;
+                return XkbComposeStatus.Cancelled;
             }
 
             default:
             {
-                return WaylandComposeStatus.Ignored;
+                return XkbComposeStatus.Ignored;
             }
         }
     }

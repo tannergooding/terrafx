@@ -17,13 +17,13 @@ internal sealed unsafe partial class WaylandKeyboardKeymap : IDisposable
 {
     private const uint XkbKeymapFormatTextV1 = 1;
     private static readonly UTF8Encoding s_utf8Encoding = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
-    private readonly WaylandComposeState? _composeState;
+    private readonly XkbComposeState? _composeState;
     private readonly nint _context;
     private bool _isDisposed;
     private readonly nint _keymap;
     private readonly nint _state;
 
-    private WaylandKeyboardKeymap(nint context, nint keymap, nint state, WaylandComposeState? composeState)
+    private WaylandKeyboardKeymap(nint context, nint keymap, nint state, XkbComposeState? composeState)
     {
         _context = context;
         _keymap = keymap;
@@ -78,7 +78,7 @@ internal sealed unsafe partial class WaylandKeyboardKeymap : IDisposable
         nint context = 0;
         nint keymap = 0;
         nint state = 0;
-        WaylandComposeState? composeState = null;
+        XkbComposeState? composeState = null;
 
         try
         {
@@ -106,7 +106,7 @@ internal sealed unsafe partial class WaylandKeyboardKeymap : IDisposable
                 throw new InvalidOperationException("libxkbcommon could not create a Wayland keyboard state.");
             }
 
-            composeState = WaylandComposeState.TryCreate();
+            composeState = XkbComposeState.TryCreate();
             var result = new WaylandKeyboardKeymap(context, keymap, state, composeState);
             context = 0;
             keymap = 0;
@@ -208,7 +208,7 @@ internal sealed unsafe partial class WaylandKeyboardKeymap : IDisposable
 
         var keysym = Native.XkbStateKeyGetOneSym(_state, keycode);
 
-        if (_composeState is not WaylandComposeState composeState)
+        if (_composeState is not XkbComposeState composeState)
         {
             return ReadKeyText(keycode);
         }
@@ -216,9 +216,9 @@ internal sealed unsafe partial class WaylandKeyboardKeymap : IDisposable
         var status = composeState.Feed(keysym, out var committedText);
 
         return status switch {
-            WaylandComposeStatus.Composing => null,
-            WaylandComposeStatus.Committed => committedText,
-            WaylandComposeStatus.Cancelled => ReadKeyText(keycode),
+            XkbComposeStatus.Composing => null,
+            XkbComposeStatus.Committed => committedText,
+            XkbComposeStatus.Cancelled => ReadKeyText(keycode),
             _ => ReadKeyText(keycode),
         };
     }

@@ -2,7 +2,7 @@
 
 namespace TerraFX.Platform;
 
-internal enum WaylandComposeStatus
+internal enum XkbComposeStatus
 {
     Ignored,
     Composing,

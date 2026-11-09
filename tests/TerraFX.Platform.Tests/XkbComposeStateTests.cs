@@ -7,7 +7,7 @@ using TerraFX.Platform;
 
 namespace TerraFX.Platform.Tests;
 
-internal sealed class WaylandComposeStateTests
+internal sealed class XkbComposeStateTests
 {
     [Test]
     public void ComposesDeadAcuteAndLatinEIntoCommittedUnicode()
@@ -21,7 +21,7 @@ internal sealed class WaylandComposeStateTests
 
         NativeLibrary.Free(xkbcommonLibrary);
 
-        using var composeState = WaylandComposeState.TryCreate();
+        using var composeState = XkbComposeState.TryCreate();
 
         if (composeState is null)
         {
@@ -29,9 +29,9 @@ internal sealed class WaylandComposeStateTests
             return;
         }
 
-        Assert.That(composeState.Feed(0xFE51, out var deadKeyText), Is.EqualTo(WaylandComposeStatus.Composing));
+        Assert.That(composeState.Feed(0xFE51, out var deadKeyText), Is.EqualTo(XkbComposeStatus.Composing));
         Assert.That(deadKeyText, Is.Null);
-        Assert.That(composeState.Feed(0x0065, out var committedText), Is.EqualTo(WaylandComposeStatus.Committed));
+        Assert.That(composeState.Feed(0x0065, out var committedText), Is.EqualTo(XkbComposeStatus.Committed));
         Assert.That(committedText, Is.EqualTo("é"));
     }
 
@@ -47,7 +47,7 @@ internal sealed class WaylandComposeStateTests
 
         NativeLibrary.Free(xkbcommonLibrary);
 
-        using var composeState = WaylandComposeState.TryCreate();
+        using var composeState = XkbComposeState.TryCreate();
 
         if (composeState is null)
         {
@@ -55,9 +55,9 @@ internal sealed class WaylandComposeStateTests
             return;
         }
 
-        Assert.That(composeState.Feed(0xFE51, out _), Is.EqualTo(WaylandComposeStatus.Composing));
+        Assert.That(composeState.Feed(0xFE51, out _), Is.EqualTo(XkbComposeStatus.Composing));
         composeState.Reset();
-        Assert.That(composeState.Feed(0x0065, out var committedText), Is.EqualTo(WaylandComposeStatus.Ignored));
+        Assert.That(composeState.Feed(0x0065, out var committedText), Is.EqualTo(XkbComposeStatus.Ignored));
         Assert.That(committedText, Is.Null);
     }
 }
