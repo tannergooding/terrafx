@@ -2,6 +2,7 @@
 
 using System;
 using System.Globalization;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -317,6 +318,139 @@ internal sealed partial class HeadlessPlatformBackendTests
     }
 
     [Test]
+    public void X11OnlyReconcilesLiveKeyAndPointerStateAcrossFocusChangesOnIsolatedDisplay()
+    {
+        if (!OperatingSystem.IsLinux()
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_ISOLATED_X11") != "1")
+            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
+        {
+            Assert.Ignore("The live X11 reconciliation witness requires an isolated Linux X11 display.");
+            return;
+        }
+
+        using var backend = CreateX11Backend();
+        var firstWindow = new WindowHandle(ownerId: 7, index: 0, generation: 1);
+        var secondWindow = new WindowHandle(ownerId: 7, index: 1, generation: 1);
+        nint display = 0;
+        var firstWindowCreated = false;
+        var secondWindowCreated = false;
+
+        try
+        {
+            backend.CreateWindow(
+                firstWindow,
+                new WindowOptions("TerraFX X11 focus reconciliation first") {
+                    Visible = true,
+                },
+                nativeMonitorHandle: 0);
+            firstWindowCreated = true;
+            backend.CreateWindow(
+                secondWindow,
+                new WindowOptions("TerraFX X11 focus reconciliation second") {
+                    Visible = true,
+                },
+                nativeMonitorHandle: 0);
+            secondWindowCreated = true;
+
+            display = backend.TryGetNativeWindowBinding(firstWindow, out var firstBinding)
+                ? firstBinding.NativeDisplayOrInstance
+                : throw new InvalidOperationException("The first isolated X11 window has no native binding.");
+            var firstNativeWindow = firstBinding.NativeWindowOrSurface;
+            var secondNativeWindow = backend.TryGetNativeWindowBinding(secondWindow, out var secondBinding)
+                ? secondBinding.NativeWindowOrSurface
+                : throw new InvalidOperationException("The second isolated X11 window has no native binding.");
+            Assert.That(secondBinding.NativeDisplayOrInstance, Is.EqualTo(display));
+
+            X11TestNative.SetInputFocus(display, firstNativeWindow);
+            backend.Pump();
+            var initialFocusSamples = backend.DrainInputSamples().Samples;
+            Assert.That(
+                initialFocusSamples.Any(sample =>
+                    (sample.Window == firstWindow)
+                    && (sample.Kind == PhysicalInputEventKind.FocusGained)),
+                Is.True);
+
+            X11TestNative.SendTestKeyEvent(display, keycode: 38, isDown: true);
+            X11TestNative.SendTestButtonEvent(display, button: 1, isDown: true);
+            backend.Pump();
+            var firstWindowSamples = backend.DrainInputSamples().Samples;
+            Assert.That(
+                firstWindowSamples.Any(sample =>
+                    (sample.Window == firstWindow)
+                    && (sample.Kind == PhysicalInputEventKind.KeyDown)),
+                Is.True);
+            backend.RequestInputStateReconciliation(firstWindow);
+            var firstReconciliation = backend.DrainInputSamples().Samples
+                .Single(sample => sample.Kind == PhysicalInputEventKind.StateReconciliation);
+            Assert.That(firstReconciliation.Window, Is.EqualTo(firstWindow));
+            Assert.That(firstReconciliation.ReconciliationState.Any(static value =>
+                value.IsDown == true
+                && value.DigitalControl?.Keyboard is KeyboardControl {
+                    UsagePage: 0x0007,
+                    Usage: 0x0004,
+                }), Is.True);
+            Assert.That(firstReconciliation.ReconciliationState.Any(static value =>
+                value.IsDown == true
+                && value.DigitalControl?.MouseButton == MouseButtonValue.Primary), Is.True);
+
+            X11TestNative.SetInputFocus(display, secondNativeWindow);
+            backend.Pump();
+            var secondFocusSamples = backend.DrainInputSamples().Samples;
+            Assert.That(
+                secondFocusSamples.Any(sample =>
+                    (sample.Window == firstWindow)
+                    && (sample.Kind == PhysicalInputEventKind.FocusLost)),
+                Is.True);
+            Assert.That(
+                secondFocusSamples.Any(sample =>
+                    (sample.Window == secondWindow)
+                    && (sample.Kind == PhysicalInputEventKind.FocusGained)),
+                Is.True);
+            var secondFocusReconciliation = secondFocusSamples.Single(sample =>
+                (sample.Window == secondWindow)
+                && (sample.Kind == PhysicalInputEventKind.StateReconciliation));
+            Assert.That(secondFocusReconciliation.ReconciliationState.Any(static value =>
+                value.IsDown == true
+                && value.DigitalControl?.Keyboard is KeyboardControl {
+                    UsagePage: 0x0007,
+                    Usage: 0x0004,
+                }), Is.True);
+            Assert.That(secondFocusReconciliation.ReconciliationState.Any(static value =>
+                value.IsDown == true
+                && value.DigitalControl?.MouseButton == MouseButtonValue.Primary), Is.True);
+
+            X11TestNative.SendTestKeyEvent(display, keycode: 38, isDown: false);
+            X11TestNative.SendTestButtonEvent(display, button: 1, isDown: false);
+            backend.Pump();
+            _ = backend.DrainInputSamples();
+            backend.RequestInputStateReconciliation(secondWindow);
+            var releasedReconciliation = backend.DrainInputSamples().Samples
+                .Single(sample => sample.Kind == PhysicalInputEventKind.StateReconciliation);
+            Assert.That(releasedReconciliation.ReconciliationState, Is.Empty);
+        }
+        finally
+        {
+            if (display != 0)
+            {
+                X11TestNative.SendTestKeyEvent(display, keycode: 38, isDown: false);
+                X11TestNative.SendTestButtonEvent(display, button: 1, isDown: false);
+                backend.Pump();
+                _ = backend.DrainInputSamples();
+            }
+
+            if (secondWindowCreated)
+            {
+                backend.CloseWindow(secondWindow);
+            }
+
+            if (firstWindowCreated)
+            {
+                backend.CloseWindow(firstWindow);
+            }
+        }
+    }
+
+    [Test]
     public void X11OnlyReportsRandrMonitorSelectionWhenAvailable()
     {
         if (!OperatingSystem.IsLinux()
@@ -458,6 +592,36 @@ internal sealed partial class HeadlessPlatformBackendTests
             SendInputEvent(display, nativeWindow, PointerMotionMask, &nativeEvent);
         }
 
+        internal static void SendTestButtonEvent(nint display, uint button, bool isDown)
+        {
+            if (XTestFakeButtonEvent(display, button, isDown ? 1 : 0, delay: 0) == 0)
+            {
+                throw new InvalidOperationException("The X11 XTest extension rejected a synthetic button-state transition.");
+            }
+
+            _ = XSync(display, discard: 0);
+        }
+
+        internal static void SendTestKeyEvent(nint display, uint keycode, bool isDown)
+        {
+            if (XTestFakeKeyEvent(display, keycode, isDown ? 1 : 0, delay: 0) == 0)
+            {
+                throw new InvalidOperationException("The X11 XTest extension rejected a synthetic key-state transition.");
+            }
+
+            _ = XSync(display, discard: 0);
+        }
+
+        internal static void SetInputFocus(nint display, nint nativeWindow)
+        {
+            if (XSetInputFocus(display, checked((nuint)nativeWindow), revertTo: 2, time: 0) == 0)
+            {
+                throw new InvalidOperationException("The isolated X11 server rejected the input-focus request.");
+            }
+
+            _ = XSync(display, discard: 0);
+        }
+
         private static void SendInputEvent(nint display, nint nativeWindow, nint eventMask, NativeEvent* nativeEvent)
         {
             if (XSendEvent(display, checked((nuint)nativeWindow), propagate: 0, eventMask, nativeEvent) == 0)
@@ -477,8 +641,20 @@ internal sealed partial class HeadlessPlatformBackendTests
         private static partial int XSendEvent(nint display, nuint window, int propagate, nint eventMask, NativeEvent* nativeEvent);
 
         [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
+        [LibraryImport("libX11.so.6", EntryPoint = "XSetInputFocus")]
+        private static partial int XSetInputFocus(nint display, nuint focus, int revertTo, nuint time);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
         [LibraryImport("libX11.so.6", EntryPoint = "XSync")]
         private static partial int XSync(nint display, int discard);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
+        [LibraryImport("libXtst.so.6", EntryPoint = "XTestFakeButtonEvent")]
+        private static partial int XTestFakeButtonEvent(nint display, uint button, int isPress, nuint delay);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
+        [LibraryImport("libXtst.so.6", EntryPoint = "XTestFakeKeyEvent")]
+        private static partial int XTestFakeKeyEvent(nint display, uint keycode, int isPress, nuint delay);
 
         [StructLayout(LayoutKind.Sequential)]
         private struct ButtonEvent
