@@ -368,10 +368,8 @@ internal sealed unsafe partial class WaylandPlatformBackend
 
         if (window is { } windowHandle)
         {
-            _ = GetWindowState(windowHandle);
+            QueueWindowStateReconciliation(GetWindowState(windowHandle));
         }
-
-        throw new NotSupportedException("The Wayland backend does not provide keyboard or pointer state queries.");
     }
 
     public ClipboardWriteResponse WriteClipboardText(ClipboardWriteRequest request)
@@ -474,7 +472,9 @@ internal sealed unsafe partial class WaylandPlatformBackend
             throw new InvalidOperationException("The Wayland compositor returned an invalid keyboard-enter key array.");
         }
 
-        if ((_keyboardFocusedWindow is { } previousWindow) && (previousWindow != window))
+        var previousWindow = _keyboardFocusedWindow;
+
+        if ((previousWindow is not null) && (previousWindow != window))
         {
             QueueFocusEvent(previousWindow, PhysicalInputEventKind.FocusLost);
         }
@@ -489,9 +489,14 @@ internal sealed unsafe partial class WaylandPlatformBackend
             _ = _keyboardKeysDown.Add(key);
         }
 
+        if ((previousWindow is not null) && (previousWindow != window))
+        {
+            QueueWindowStateReconciliation(previousWindow);
+        }
+
         RescheduleKeyboardRepeats(_timeProvider.GetTimestamp());
         QueueFocusEvent(window, PhysicalInputEventKind.FocusGained);
-        QueueKeyboardReconciliation(window);
+        QueueWindowStateReconciliation(window);
     }
 
     private void HandleKeyboardKey(nint keyboard, uint time, uint key, uint state)
@@ -552,7 +557,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
 
         if (_keyboardFocusedWindow is WaylandWindowState window)
         {
-            QueueKeyboardReconciliation(window);
+            QueueWindowStateReconciliation(window);
         }
     }
 
@@ -566,6 +571,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
             _keyboardKeysDown.Clear();
             _keyboardRepeatSchedule.Reset();
             QueueFocusEvent(window, PhysicalInputEventKind.FocusLost);
+            QueueWindowStateReconciliation(window);
         }
     }
 
@@ -630,6 +636,16 @@ internal sealed unsafe partial class WaylandPlatformBackend
         }
 
         var isDown = state == 1;
+
+        if (isDown)
+        {
+            _ = _pointerButtonsDown.Add(button);
+        }
+        else
+        {
+            _ = _pointerButtonsDown.Remove(button);
+        }
+
         var scale = GetContentScale(window);
         _ = _inputSamples.TryEnqueue(new PlatformInputSample(
             isDown ? PhysicalInputEventKind.PointerButtonDown : PhysicalInputEventKind.PointerButtonUp,
@@ -656,11 +672,15 @@ internal sealed unsafe partial class WaylandPlatformBackend
         if ((_pointerFocusedWindow is { } previousWindow) && (previousWindow != window))
         {
             QueueWindowPointerEvent(previousWindow, PhysicalInputEventKind.WindowLeft);
+            _pointerFocusedWindow = null;
+            _pointerButtonsDown.Clear();
+            QueueWindowStateReconciliation(previousWindow);
         }
 
         _pointerFocusedWindow = window;
         QueueWindowPointerEvent(window, PhysicalInputEventKind.WindowEntered);
         QueuePointerPosition(window, x, y, nativeTime: null);
+        QueueWindowStateReconciliation(window);
     }
 
     private void HandlePointerLeave(nint pointer, nint surface)
@@ -670,7 +690,9 @@ internal sealed unsafe partial class WaylandPlatformBackend
             && (window.Surface == surface))
         {
             _pointerFocusedWindow = null;
+            _pointerButtonsDown.Clear();
             QueueWindowPointerEvent(window, PhysicalInputEventKind.WindowLeft);
+            QueueWindowStateReconciliation(window);
         }
     }
 
@@ -770,33 +792,6 @@ internal sealed unsafe partial class WaylandPlatformBackend
             PlatformInputDeviceKind.Unknown,
             MonotonicTimestamp: _timeProvider.GetTimestamp()));
 
-    private void QueueKeyboardReconciliation(WaylandWindowState window)
-    {
-        var reconciliationState = ImmutableArray.CreateBuilder<PlatformInputStateValue>();
-
-        if (_keyboardKeymap is WaylandKeyboardKeymap keymap)
-        {
-            foreach (var key in _keyboardKeysDown)
-            {
-                if (keymap.TryGetUsage(key, out var usage))
-                {
-                    reconciliationState.Add(new PlatformInputStateValue(
-                        PlatformInputStateValueKind.Digital,
-                        IsDown: true,
-                        DigitalControl: new DigitalControl(new KeyboardControl(0x0007, usage))));
-                }
-            }
-        }
-
-        _ = _inputSamples.TryEnqueue(new PlatformInputSample(
-            PhysicalInputEventKind.StateReconciliation,
-            window.Window,
-            NativeDeviceIdentity: _keyboard,
-            PlatformInputDeviceKind.Keyboard,
-            MonotonicTimestamp: _timeProvider.GetTimestamp(),
-            ReconciliationState: reconciliationState.ToImmutable()));
-    }
-
     private void QueueKeyboardSample(
         WaylandWindowState window,
         uint key,
@@ -846,6 +841,50 @@ internal sealed unsafe partial class WaylandPlatformBackend
             NativeDeviceIdentity: 0,
             PlatformInputDeviceKind.Unknown,
             MonotonicTimestamp: _timeProvider.GetTimestamp()));
+
+    private void QueueWindowStateReconciliation(WaylandWindowState window)
+    {
+        var keyboardFocus = _keyboardFocusedWindow;
+        var keyboardKeymap = _keyboardKeymap;
+        var isKeyboardFocused = keyboardFocus == window;
+        var reconciliationState = ImmutableArray.CreateBuilder<PlatformInputStateValue>();
+
+        if (isKeyboardFocused && (keyboardKeymap is not null))
+        {
+            foreach (var key in _keyboardKeysDown)
+            {
+                if (keyboardKeymap.TryGetUsage(key, out var usage))
+                {
+                    reconciliationState.Add(new PlatformInputStateValue(
+                        PlatformInputStateValueKind.Digital,
+                        IsDown: true,
+                        DigitalControl: new DigitalControl(new KeyboardControl(0x0007, usage))));
+                }
+            }
+        }
+
+        if (_pointerFocusedWindow == window)
+        {
+            foreach (var button in _pointerButtonsDown)
+            {
+                if (TryMapMouseButton(button, out var mouseButton))
+                {
+                    reconciliationState.Add(new PlatformInputStateValue(
+                        PlatformInputStateValueKind.Digital,
+                        IsDown: true,
+                        DigitalControl: new DigitalControl(mouseButton)));
+                }
+            }
+        }
+
+        _ = _inputSamples.TryEnqueue(new PlatformInputSample(
+            PhysicalInputEventKind.StateReconciliation,
+            window.Window,
+            NativeDeviceIdentity: 0,
+            PlatformInputDeviceKind.Unknown,
+            MonotonicTimestamp: _timeProvider.GetTimestamp(),
+            ReconciliationState: reconciliationState.ToImmutable()));
+    }
 
     private void RefreshSeatBinding()
     {
@@ -901,9 +940,11 @@ internal sealed unsafe partial class WaylandPlatformBackend
         Justification = "Keyboard proxy retirement attempts both protocol release and local destruction.")]
     private void RetireKeyboard(List<Exception> failures, bool notifyFocus)
     {
-        if (notifyFocus && (_keyboardFocusedWindow is WaylandWindowState focusedWindow))
+        var focusedWindow = _keyboardFocusedWindow;
+
+        if (notifyFocus && (focusedWindow is WaylandWindowState window))
         {
-            QueueFocusEvent(focusedWindow, PhysicalInputEventKind.FocusLost);
+            QueueFocusEvent(window, PhysicalInputEventKind.FocusLost);
         }
 
         _keyboardFocusedWindow = null;
@@ -911,6 +952,12 @@ internal sealed unsafe partial class WaylandPlatformBackend
         _keyboardRepeatSchedule.Reset();
         _keyboardKeymap?.Dispose();
         _keyboardKeymap = null;
+
+        if (focusedWindow is not null)
+        {
+            QueueWindowStateReconciliation(focusedWindow);
+        }
+
         var keyboard = _keyboard;
         _keyboard = 0;
 
@@ -947,12 +994,21 @@ internal sealed unsafe partial class WaylandPlatformBackend
         Justification = "Pointer proxy retirement attempts both protocol release and local destruction.")]
     private void RetirePointer(List<Exception> failures, bool notifyLeave)
     {
-        if (notifyLeave && (_pointerFocusedWindow is WaylandWindowState focusedWindow))
+        var focusedWindow = _pointerFocusedWindow;
+
+        if (notifyLeave && (focusedWindow is WaylandWindowState window))
         {
-            QueueWindowPointerEvent(focusedWindow, PhysicalInputEventKind.WindowLeft);
+            QueueWindowPointerEvent(window, PhysicalInputEventKind.WindowLeft);
         }
 
         _pointerFocusedWindow = null;
+        _pointerButtonsDown.Clear();
+
+        if (focusedWindow is not null)
+        {
+            QueueWindowStateReconciliation(focusedWindow);
+        }
+
         var pointer = _pointer;
         _pointer = 0;
 

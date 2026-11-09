@@ -3,6 +3,7 @@
 using System;
 using NUnit.Framework;
 using TerraFX;
+using TerraFX.Input;
 using TerraFX.Numerics;
 
 namespace TerraFX.Platform.Tests;
@@ -103,6 +104,15 @@ internal sealed class WaylandDisplayConnectionTests
             Assert.That(backend.SetWindowTitle(window, "TerraFX Wayland configured"), Is.EqualTo(WindowCommandStatus.Applied));
             Assert.That(backend.SetWindowClientSize(window, new Vector2(640.0f, 360.0f)), Is.EqualTo(WindowCommandStatus.Unsupported));
             backend.Pump();
+            _ = backend.DrainInputSamples();
+            backend.RequestInputStateReconciliation(window);
+            var reconciliation = backend.DrainInputSamples().Samples;
+            Assert.That(reconciliation, Has.Length.EqualTo(1));
+            Assert.That(reconciliation[0].Kind, Is.EqualTo(PhysicalInputEventKind.StateReconciliation));
+            Assert.That(reconciliation[0].Window, Is.EqualTo(window));
+            Assert.That(reconciliation[0].NativeDeviceIdentity, Is.EqualTo((nint)0));
+            Assert.That(reconciliation[0].DeviceKind, Is.EqualTo(PlatformInputDeviceKind.Unknown));
+            Assert.That(reconciliation[0].ReconciliationState.IsDefault, Is.False);
         }
         finally
         {

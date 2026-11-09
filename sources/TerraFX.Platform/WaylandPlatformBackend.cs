@@ -46,6 +46,7 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
     private readonly uint _ownerId;
     private readonly int _ownerThreadId;
     private nint _pointer;
+    private readonly HashSet<uint> _pointerButtonsDown;
     private WaylandWindowState? _pointerFocusedWindow;
     private nint _pointerListener;
     private WaylandProtocolMetadata? _protocolMetadata;
@@ -88,6 +89,7 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
         _monitorHandles = [];
         _outputsByGlobalName = [];
         _outputsByProxy = [];
+        _pointerButtonsDown = [];
         _windowsBySurface = [];
         _windowsByToplevel = [];
         _windowsByXdgSurface = [];
