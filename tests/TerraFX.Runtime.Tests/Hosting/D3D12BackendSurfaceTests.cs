@@ -187,10 +187,11 @@ internal sealed partial class EngineHostOptionsTests
         }
     }
 
-    [TestCase(false, false, GraphicsFailurePolicy.StopHost)]
-    [TestCase(true, false, GraphicsFailurePolicy.StopHost)]
-    [TestCase(false, true, GraphicsFailurePolicy.StopHost)]
-    [TestCase(false, true, GraphicsFailurePolicy.SuspendPresentation)]
+    [TestCase(false, false, GraphicsFailurePolicy.StopHost, true)]
+    [TestCase(true, false, GraphicsFailurePolicy.StopHost, true)]
+    [TestCase(false, true, GraphicsFailurePolicy.StopHost, true)]
+    [TestCase(false, true, GraphicsFailurePolicy.SuspendPresentation, true)]
+    [TestCase(false, false, GraphicsFailurePolicy.StopHost, false)]
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
@@ -202,7 +203,8 @@ internal sealed partial class EngineHostOptionsTests
     public void EngineHostInteractiveStartupMapsSurfaceBeforeWindowReceipt(
         bool injectOcclusionResult,
         bool injectDeviceRemovedResult,
-        GraphicsFailurePolicy graphicsFailurePolicy)
+        GraphicsFailurePolicy graphicsFailurePolicy,
+        bool windowVisible)
     {
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -276,7 +278,7 @@ internal sealed partial class EngineHostOptionsTests
                 ?? throw new InvalidOperationException("Interactive EngineHost startup returned no host.");
             var receipt = runningHost.CreateWindowAsync(new WindowOptions("Interactive surface witness") {
                 ClientSize = new Vector2(640, 360),
-                Visible = true,
+                Visible = windowVisible,
             }).GetAwaiter().GetResult();
             Assert.That(receipt.Status, Is.EqualTo(WindowCreationStatus.Created));
             var window = receipt.Window
@@ -471,6 +473,13 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(secondPresentation.PresentationSequence, Is.EqualTo(secondSubmission.PresentationSequence));
             Assert.That(firstPresentation.Status, Is.AnyOf(PresentationStatus.Presented, PresentationStatus.Occluded));
             Assert.That(secondPresentation.Status, Is.AnyOf(PresentationStatus.Presented, PresentationStatus.Occluded));
+
+            if (!windowVisible)
+            {
+                Assert.That(firstPresentation.Status, Is.EqualTo(PresentationStatus.Occluded));
+                Assert.That(secondPresentation.Status, Is.EqualTo(PresentationStatus.Occluded));
+            }
+
             renderSnapshot.Dispose();
             renderWorld.Dispose();
             renderWorld = null;
