@@ -16,6 +16,10 @@ internal sealed unsafe class WaylandProtocolMetadata : IDisposable
     private readonly List<nint> _allocations;
     private bool _isDisposed;
     private readonly List<nint> _strings;
+    private nint _wlDataDeviceInterface;
+    private nint _wlDataDeviceManagerInterface;
+    private nint _wlDataOfferInterface;
+    private nint _wlDataSourceInterface;
     private nint _wlKeyboardInterface;
     private nint _wlOutputInterface;
     private nint _wlPointerInterface;
@@ -32,6 +36,14 @@ internal sealed unsafe class WaylandProtocolMetadata : IDisposable
         _allocations = [];
         _strings = [];
     }
+
+    internal nint WlDataDeviceInterface => _wlDataDeviceInterface;
+
+    internal nint WlDataDeviceManagerInterface => _wlDataDeviceManagerInterface;
+
+    internal nint WlDataOfferInterface => _wlDataOfferInterface;
+
+    internal nint WlDataSourceInterface => _wlDataSourceInterface;
 
     internal nint WlKeyboardInterface => _wlKeyboardInterface;
 
@@ -168,6 +180,10 @@ internal sealed unsafe class WaylandProtocolMetadata : IDisposable
 
     private void Initialize(WaylandDisplayConnection connection)
     {
+        _wlDataDeviceInterface = connection.GetInterface("wl_data_device_interface");
+        _wlDataDeviceManagerInterface = connection.GetInterface("wl_data_device_manager_interface");
+        _wlDataOfferInterface = connection.GetInterface("wl_data_offer_interface");
+        _wlDataSourceInterface = connection.GetInterface("wl_data_source_interface");
         _wlKeyboardInterface = connection.GetInterface("wl_keyboard_interface");
         _wlOutputInterface = connection.GetInterface("wl_output_interface");
         _wlPointerInterface = connection.GetInterface("wl_pointer_interface");

@@ -161,6 +161,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
     public void CloseWindow(WindowHandle window)
     {
         EnsureActiveOwnerThread();
+        CancelClipboardReads(window, TerraFX.Platform.ClipboardStatus.Canceled);
         DestroyWindowState(GetWindowState(window), sendDestroyRequests: true);
     }
 

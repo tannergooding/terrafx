@@ -8,7 +8,6 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
-using ClipboardTextResult = TerraFX.Platform.ClipboardStatus;
 using TerraFX;
 using TerraFX.Input;
 using TerraFX.Numerics;
@@ -336,21 +335,6 @@ internal sealed unsafe partial class WaylandPlatformBackend
         return _inputSamples.Drain();
     }
 
-    public ClipboardReadResponse ReadClipboardText(ClipboardReadRequest request)
-    {
-        EnsureActiveOwnerThread();
-        ArgumentNullException.ThrowIfNull(request);
-        return new ClipboardReadResponse(
-            ClipboardTextResult.Unsupported,
-            text: null,
-            ClipboardTextService.CreateDiagnostic(
-                "ClipboardUnsupported",
-                request.Window,
-                "ClipboardText.ReadTextAsync",
-                nativeResult: null,
-                "The Wayland backend does not provide clipboard transfers yet."));
-    }
-
     public void RequestGamepadStateReconciliation(nint nativeDeviceIdentity)
     {
         EnsureActiveOwnerThread();
@@ -372,20 +356,6 @@ internal sealed unsafe partial class WaylandPlatformBackend
         {
             QueueWindowStateReconciliation(GetWindowState(windowHandle));
         }
-    }
-
-    public ClipboardWriteResponse WriteClipboardText(ClipboardWriteRequest request)
-    {
-        EnsureActiveOwnerThread();
-        ArgumentNullException.ThrowIfNull(request);
-        return new ClipboardWriteResponse(
-            ClipboardTextResult.Unsupported,
-            ClipboardTextService.CreateDiagnostic(
-                "ClipboardUnsupported",
-                request.Window,
-                "ClipboardText.WriteTextAsync",
-                nativeResult: null,
-                "The Wayland backend does not provide clipboard transfers yet."));
     }
 
     private void BindKeyboard()
@@ -454,6 +424,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
         _seat = seat;
         _seatGlobalName = global.Name;
         _seatVersion = checked((int)version);
+        BindClipboardDataDevice();
     }
 
     private void HandleKeyboardEnter(nint keyboard, nint surface, nint keys)
@@ -531,6 +502,11 @@ internal sealed unsafe partial class WaylandPlatformBackend
             return;
         }
 
+        if (serial != 0)
+        {
+            _lastClipboardGestureSerial = serial;
+        }
+
         var timestamp = _timeProvider.GetTimestamp();
         var isDown = state == 1;
         PhysicalInputEventKind kind;
@@ -603,6 +579,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
                 keymap.ResetComposeState();
             }
 
+            _lastClipboardGestureSerial = 0;
             _keyboardFocusedWindow = null;
             _keyboardKeysDown.Clear();
             _keyboardRepeatSchedule.Reset();
@@ -688,6 +665,11 @@ internal sealed unsafe partial class WaylandPlatformBackend
             || !TryMapMouseButton(button, out var mouseButton))
         {
             return;
+        }
+
+        if (serial != 0)
+        {
+            _lastClipboardGestureSerial = serial;
         }
 
         var isDown = state == 1;
@@ -1012,6 +994,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
     private void RetireKeyboard(List<Exception> failures, bool notifyFocus)
     {
         var focusedWindow = _keyboardFocusedWindow;
+        _lastClipboardGestureSerial = 0;
 
         if (notifyFocus && (focusedWindow is WaylandWindowState window))
         {
@@ -1116,6 +1099,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
         Justification = "Seat proxy retirement attempts release and local destruction after child cleanup.")]
     private void RetireSeat(List<Exception> failures, bool notifyFocus)
     {
+        RetireClipboardDataDevice(failures);
         RetireKeyboard(failures, notifyFocus);
         RetirePointer(failures, notifyLeave: notifyFocus);
         var seat = _seat;

@@ -232,6 +232,17 @@ internal sealed unsafe partial class WaylandDisplayConnection : IDisposable
         WaylandNative.ProxyDestroy(proxy);
     }
 
+    internal void FlushRequests()
+    {
+        EnsureActiveOwnerThread();
+
+        if ((WaylandNative.DisplayFlush(_display) < 0)
+            && (Marshal.GetLastPInvokeError() != ErrorTryAgain))
+        {
+            throw CreateDisplayException("flush requests");
+        }
+    }
+
     internal ImmutableArray<WaylandGlobal> GetGlobals(string interfaceName)
     {
         ArgumentNullException.ThrowIfNull(interfaceName);

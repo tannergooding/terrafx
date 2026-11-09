@@ -59,6 +59,32 @@ internal sealed class WaylandDisplayConnectionTests
     }
 
     [Test]
+    public void WaylandBackendAdmitsRequiredClipboardWhenDataDeviceIsAdvertised()
+    {
+        if (!OperatingSystem.IsLinux()
+            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY")))
+        {
+            Assert.Ignore("The Wayland clipboard admission witness requires a configured Linux Wayland display.");
+            return;
+        }
+
+        using var connection = WaylandDisplayConnection.Connect();
+
+        if (!connection.HasGlobal("wl_data_device_manager") || !connection.HasGlobal("wl_seat"))
+        {
+            Assert.Ignore("The compositor does not advertise both the clipboard data-device manager and a seat.");
+            return;
+        }
+
+        using var backend = PlatformBackendFactory.Create(
+            PlatformBackend.WaylandOnly,
+            ownerId: 2,
+            ClipboardServicePolicy.Required);
+
+        Assert.That(backend.ClipboardStatus, Is.EqualTo(ClipboardServiceStatus.Ready));
+    }
+
+    [Test]
     public void WaylandBackendCreatesConfiguresAndDestroysWindow()
     {
         if (!OperatingSystem.IsLinux()

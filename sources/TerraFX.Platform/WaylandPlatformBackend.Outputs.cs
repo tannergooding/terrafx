@@ -137,10 +137,13 @@ internal sealed unsafe partial class WaylandPlatformBackend
         EnsureActiveOwnerThread();
         Connection.Pump();
         RefreshOutputBindings();
+        RefreshClipboardManager();
         RefreshSeatBinding();
         _gamepadCapture?.Pump();
         ThrowIfCallbackFailed();
         Connection.Pump();
+        ExpireClipboardSelectionIfUnfocused();
+        PumpClipboardTransfers();
         ThrowIfCallbackFailed();
         PumpKeyboardRepeats();
     }

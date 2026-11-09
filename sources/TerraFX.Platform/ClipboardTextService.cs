@@ -97,7 +97,7 @@ public sealed class ClipboardTextService
             return Task.FromCanceled<ClipboardReadResponse>(cancellationToken);
         }
 
-        if (_serviceStatus is not ClipboardServiceStatus.Ready)
+        if (GetCurrentStatus() is not ClipboardServiceStatus.Ready)
         {
             return Task.FromResult(new ClipboardReadResponse(
                 ClipboardStatus.Unsupported,
@@ -144,6 +144,10 @@ public sealed class ClipboardTextService
                                 _ = completion.TrySetResult(response);
                             }
                         },
+                        exception => {
+                            cancellationRegistration.Dispose();
+                            _ = completion.TrySetException(exception);
+                        },
                         cancellationToken);
                 }
                 catch
@@ -178,7 +182,7 @@ public sealed class ClipboardTextService
         ArgumentNullException.ThrowIfNull(inputEvent);
         gestureToken = default;
 
-        if ((_serviceStatus is not ClipboardServiceStatus.Ready)
+        if ((GetCurrentStatus() is not ClipboardServiceStatus.Ready)
             || !_backend.RequiresClipboardGesture
             || (inputEvent.NativeInputSerial is not { } nativeInputSerial)
             || (inputEvent.Window is not { } window)
@@ -251,7 +255,7 @@ public sealed class ClipboardTextService
                     "The complete clipboard text exceeds the request byte limit.")));
         }
 
-        if (_serviceStatus is not ClipboardServiceStatus.Ready)
+        if (GetCurrentStatus() is not ClipboardServiceStatus.Ready)
         {
             return Task.FromResult(new ClipboardWriteResponse(
                 ClipboardStatus.Unsupported,
@@ -386,6 +390,20 @@ public sealed class ClipboardTextService
         {
             throw new InvalidOperationException("Clipboard native access is restricted to the platform owner thread.");
         }
+    }
+
+    private ClipboardServiceStatus GetCurrentStatus()
+    {
+        var backendStatus = _backend.ClipboardStatus;
+
+        if (_serviceStatus is ClipboardServiceStatus.NotRequested)
+        {
+            return _serviceStatus;
+        }
+
+        return (backendStatus is ClipboardServiceStatus.NotRequested)
+            ? ClipboardServiceStatus.Unsupported
+            : backendStatus;
     }
 
     private bool TryConsumeGestureTokenNoLock(UserGestureToken? gestureToken)

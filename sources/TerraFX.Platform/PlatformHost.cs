@@ -88,7 +88,21 @@ public sealed class PlatformHost
     }
 
     /// <summary>Gets the owner's clipboard capability state.</summary>
-    public ClipboardServiceStatus ClipboardStatus => _clipboardStatus;
+    public ClipboardServiceStatus ClipboardStatus
+    {
+        get
+        {
+            if (_clipboardStatus is ClipboardServiceStatus.NotRequested)
+            {
+                return _clipboardStatus;
+            }
+
+            var backendStatus = _backend.ClipboardStatus;
+            return (backendStatus is ClipboardServiceStatus.NotRequested)
+                ? ClipboardServiceStatus.Unsupported
+                : backendStatus;
+        }
+    }
 
     /// <summary>Gets the optional asynchronous clipboard text service.</summary>
     public ClipboardTextService? ClipboardText => _clipboardText;

@@ -30,6 +30,18 @@ internal interface IPlatformBackend : IDisposable
     void BeginReadClipboardText(
         ClipboardReadRequest request,
         Action<ClipboardReadResponse> complete,
+        Action<Exception> fail,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(complete);
+        ArgumentNullException.ThrowIfNull(fail);
+        BeginReadClipboardText(request, complete, cancellationToken);
+    }
+
+    void BeginReadClipboardText(
+        ClipboardReadRequest request,
+        Action<ClipboardReadResponse> complete,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);

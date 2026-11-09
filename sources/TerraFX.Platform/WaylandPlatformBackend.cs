@@ -23,7 +23,8 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
     private const uint XdgWmBaseVersion = 1;
     private Exception? _callbackFailure;
     private GCHandle _callbackHandle;
-    private readonly ClipboardServiceStatus _clipboardStatus;
+    private readonly ClipboardServicePolicy _clipboardPolicy;
+    private volatile ClipboardServiceStatus _clipboardStatus;
     private readonly List<WindowHandle> _closeRequests;
     private nint _compositor;
     private WaylandDisplayConnection? _connection;
@@ -75,16 +76,12 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
         ArgumentOutOfRangeException.ThrowIfNegative((int)clipboardPolicy);
         ArgumentOutOfRangeException.ThrowIfGreaterThan((int)clipboardPolicy, (int)ClipboardServicePolicy.Required);
 
-        if (clipboardPolicy is ClipboardServicePolicy.Required)
-        {
-            throw new NotSupportedException("The Wayland backend does not provide clipboard transfers yet.");
-        }
-
         _ownerId = ownerId;
         _ownerThreadId = Environment.CurrentManagedThreadId;
-        _clipboardStatus = (clipboardPolicy is ClipboardServicePolicy.Optional)
-            ? ClipboardServiceStatus.Unsupported
-            : ClipboardServiceStatus.NotRequested;
+        _clipboardPolicy = clipboardPolicy;
+        _clipboardStatus = (clipboardPolicy is ClipboardServicePolicy.NotRequested)
+            ? ClipboardServiceStatus.NotRequested
+            : ClipboardServiceStatus.Unsupported;
         _closeRequests = [];
         _gamepadStatus = PlatformServiceStatus.Unsupported;
         _inputSamples = new PlatformInputSampleQueue(_ownerThreadId);
@@ -279,6 +276,7 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
         }
 
         RetireSeat(failures, notifyFocus: false);
+        RetireClipboardManager(failures);
 
         if ((_xdgWmBase != 0) && (_connection is WaylandDisplayConnection connection))
         {
@@ -399,6 +397,7 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
         }
 
         InitializeOutputListeners();
+        InitializeClipboard();
         RefreshSeatBinding();
         RefreshOutputBindings();
         connection.Roundtrip();
@@ -409,6 +408,12 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
         {
             connection.Roundtrip();
             ThrowIfCallbackFailed();
+        }
+
+        if ((_clipboardPolicy is ClipboardServicePolicy.Required)
+            && (_clipboardStatus is not ClipboardServiceStatus.Ready))
+        {
+            throw new PlatformNotSupportedException("The Wayland compositor does not provide a usable data-device clipboard for its selected seat.");
         }
 
         InitializeGamepadCapture();

@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Text;
 using TerraFX;
 
 namespace TerraFX.Platform;
@@ -73,6 +74,32 @@ internal static class ClipboardTextPayload
             ClipboardStatus.Completed,
             new string(characters[..textCharacterCount]),
             diagnostic: null);
+    }
+
+    internal static ClipboardReadResponse ReadUtf8(
+        WindowHandle window,
+        byte[] bytes,
+        int maximumUtf8Bytes)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumUtf8Bytes);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumUtf8Bytes, ClipboardTextService.MaximumUtf8Bytes);
+
+        if (bytes.Length > maximumUtf8Bytes)
+        {
+            return CreateTooLargeResponse(window);
+        }
+
+        try
+        {
+            var text = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true)
+                .GetString(bytes);
+            return new ClipboardReadResponse(ClipboardStatus.Completed, text, diagnostic: null);
+        }
+        catch (DecoderFallbackException)
+        {
+            return CreateInvalidDataResponse(window, "The clipboard text contains invalid UTF-8.");
+        }
     }
 
     private static ClipboardReadResponse CreateInvalidDataResponse(WindowHandle window, string message)

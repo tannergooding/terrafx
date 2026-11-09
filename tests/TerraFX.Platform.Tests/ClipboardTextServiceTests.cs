@@ -2,6 +2,8 @@
 
 using System;
 using System.Collections.Immutable;
+using System.IO;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -240,6 +242,40 @@ internal sealed class ClipboardTextServiceTests
         Assert.That(invalid.GetAwaiter().GetResult().Status, Is.EqualTo(ClipboardStatus.InvalidData));
         Assert.That(backend.WriteCount, Is.Zero);
         service.DisposeFromOwner();
+    }
+
+    [Test]
+    public void Utf8PayloadRejectsInvalidAndOversizedDataAndReturnsCompleteText()
+    {
+        var window = new WindowHandle(12, index: 0, generation: 1);
+        var valid = ClipboardTextPayload.ReadUtf8(window, Encoding.UTF8.GetBytes("A\u00E9\uD83D\uDE00"), 7);
+        var empty = ClipboardTextPayload.ReadUtf8(window, [], 1);
+        var invalid = ClipboardTextPayload.ReadUtf8(window, [0xC3, 0x28], 16);
+        var oversized = ClipboardTextPayload.ReadUtf8(window, [0x61, 0x62, 0x63], 2);
+
+        Assert.That(valid.Status, Is.EqualTo(ClipboardStatus.Completed));
+        Assert.That(valid.Text, Is.EqualTo("A\u00E9\uD83D\uDE00"));
+        Assert.That(empty.Status, Is.EqualTo(ClipboardStatus.Completed));
+        Assert.That(empty.Text, Is.Empty);
+        Assert.That(invalid.Status, Is.EqualTo(ClipboardStatus.InvalidData));
+        Assert.That(oversized.Status, Is.EqualTo(ClipboardStatus.TooLarge));
+    }
+
+    [Test]
+    public async Task WaylandClipboardSourceTransferWritesTheCompletePayload()
+    {
+        var stream = new MemoryStream();
+        using var cancellationSource = new CancellationTokenSource();
+        var payload = Encoding.UTF8.GetBytes("private Wayland selection");
+
+        var failure = await WaylandPlatformBackend.WriteClipboardPayloadAsync(
+            stream,
+            payload,
+            cancellationSource).ConfigureAwait(false);
+
+        Assert.That(failure, Is.Null);
+        Assert.That(stream.ToArray(), Is.EqualTo(payload));
+        Assert.That(stream.CanWrite, Is.False);
     }
 
     private class FakeClipboardBackend : IPlatformBackend

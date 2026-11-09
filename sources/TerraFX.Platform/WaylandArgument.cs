@@ -8,6 +8,9 @@ namespace TerraFX.Platform;
 internal struct WaylandArgument
 {
     [FieldOffset(0)]
+    internal int FileDescriptor;
+
+    [FieldOffset(0)]
     internal nint Pointer;
 
     [FieldOffset(0)]
