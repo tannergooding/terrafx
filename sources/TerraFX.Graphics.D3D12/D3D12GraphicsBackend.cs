@@ -36,7 +36,7 @@ public static unsafe class D3D12GraphicsBackend
         private readonly Func<long, long>? _completedFenceValueOverride;
         private readonly Action<GraphicsGraphSubmission>? _graphSubmissionObserver;
         private readonly Func<nint, uint, uint>? _graphWaitForSingleObject;
-        private readonly Func<int, int>? _surfacePresentResultOverride;
+        private readonly Func<int?>? _surfacePresentResultOverride;
         private readonly Func<nint, uint, uint>? _waitForSingleObject;
 
         internal D3D12BackendFactory(
@@ -44,7 +44,7 @@ public static unsafe class D3D12GraphicsBackend
             Func<nint, uint, uint>? graphWaitForSingleObject = null,
             Func<long, long>? completedFenceValueOverride = null,
             Action<GraphicsGraphSubmission>? graphSubmissionObserver = null,
-            Func<int, int>? surfacePresentResultOverride = null)
+            Func<int?>? surfacePresentResultOverride = null)
         {
             _waitForSingleObject = waitForSingleObject;
             _graphWaitForSingleObject = graphWaitForSingleObject;
@@ -825,7 +825,7 @@ public static unsafe class D3D12GraphicsBackend
             private D3D12DescriptorRangeAllocator? _samplerDescriptorAllocator;
             private ID3D12DescriptorHeap* _samplerDescriptorHeap;
             private uint _samplerDescriptorIncrementSize;
-            private readonly Func<int, int>? _surfacePresentResultOverride;
+            private readonly Func<int?>? _surfacePresentResultOverride;
             private D3D12BackendFactory.D3D12TransferQueue? _transferQueue;
             private readonly List<D3D12BackendDescriptorSet> _uncertainGraphDescriptorSets = [];
             private readonly List<nint> _uncertainGraphRenderTargetHeaps = [];
@@ -842,7 +842,7 @@ public static unsafe class D3D12GraphicsBackend
                 Func<nint, uint, uint>? graphWaitForSingleObject,
                 Func<long, long>? completedFenceValueOverride,
                 Action<GraphicsGraphSubmission>? graphSubmissionObserver,
-                Func<int, int>? surfacePresentResultOverride)
+                Func<int?>? surfacePresentResultOverride)
             {
                 ArgumentNullException.ThrowIfNull(capabilities);
 

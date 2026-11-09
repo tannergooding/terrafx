@@ -60,7 +60,7 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
         uint SwapchainEpoch,
         PresentationStatus Status)> _presentationHistory = [];
     private readonly bool _supportsTearing;
-    private readonly Func<int, int>? _surfacePresentResultOverride;
+    private readonly Func<int?>? _surfacePresentResultOverride;
     private IDXGISwapChain3* _swapChain;
     private readonly uint _swapChainFlags;
 
@@ -81,7 +81,7 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
         SurfaceCapabilities capabilities,
         PixelSize clientPixelSize,
         TextureFormat colorFormat,
-        Func<int, int>? surfacePresentResultOverride)
+        Func<int?>? surfacePresentResultOverride)
     {
         _binding = binding;
         _device = device;
@@ -115,7 +115,7 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
         GraphicsNativeSurfaceBinding binding,
         PixelSize clientPixelSize,
         GraphicsCapabilities graphicsCapabilities,
-        Func<int, int>? surfacePresentResultOverride = null)
+        Func<int?>? surfacePresentResultOverride = null)
     {
         if (device is null)
         {
@@ -768,8 +768,21 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
 
         var presentationSequence = checked(_nextPresentationSequence + 1);
         _nextPresentationSequence = presentationSequence;
-        var nativePresentResult = swapChain->Present(1, 0).Value;
-        var presentResult = _surfacePresentResultOverride?.Invoke(nativePresentResult) ?? nativePresentResult;
+        int presentResult;
+
+        if (_surfacePresentResultOverride?.Invoke() is int overrideResult)
+        {
+            if (overrideResult is 0 or (> 0 and not DxgiStatusOccluded))
+            {
+                throw new InvalidOperationException("The D3D12 Surface present-result override must report a failure or occlusion.");
+            }
+
+            presentResult = overrideResult;
+        }
+        else
+        {
+            presentResult = swapChain->Present(1, 0).Value;
+        }
 
         if (presentResult == DxgiStatusOccluded)
         {

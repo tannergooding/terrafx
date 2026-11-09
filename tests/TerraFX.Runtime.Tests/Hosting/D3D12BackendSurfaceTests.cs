@@ -186,8 +186,9 @@ internal sealed partial class EngineHostOptionsTests
         }
     }
 
-    [TestCase(false)]
-    [TestCase(true)]
+    [TestCase(false, false)]
+    [TestCase(true, false)]
+    [TestCase(false, true)]
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
@@ -196,7 +197,9 @@ internal sealed partial class EngineHostOptionsTests
         "Reliability",
         "CA2000:Dispose objects before losing scope",
         Justification = "The EngineHost is disposed in the enclosing finally block after native window closure.")]
-    public void EngineHostInteractiveStartupMapsSurfaceBeforeWindowReceipt(bool injectOcclusionResult)
+    public void EngineHostInteractiveStartupMapsSurfaceBeforeWindowReceipt(
+        bool injectOcclusionResult,
+        bool injectDeviceRemovedResult)
     {
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -205,17 +208,19 @@ internal sealed partial class EngineHostOptionsTests
         }
 
         const int DxgiStatusOccludedForTesting = 0x087A0001;
-        var overrideNextPresent = injectOcclusionResult;
+        var overrideNextPresent = injectOcclusionResult || injectDeviceRemovedResult;
 
-        int OverridePresentResult(int nativePresentResult)
+        int? OverridePresentResult()
         {
-            if (overrideNextPresent && (nativePresentResult == 0))
+            if (overrideNextPresent)
             {
                 overrideNextPresent = false;
-                return DxgiStatusOccludedForTesting;
+                return injectDeviceRemovedResult
+                    ? unchecked((int)0x887A0005)
+                    : DxgiStatusOccludedForTesting;
             }
 
-            return nativePresentResult;
+            return null;
         }
 
         var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
@@ -231,7 +236,7 @@ internal sealed partial class EngineHostOptionsTests
             packagePath,
             SHA256.HashData(packageBytes),
             CreateAssetStoreOptions().Registration);
-        var registration = injectOcclusionResult
+        var registration = (injectOcclusionResult || injectDeviceRemovedResult)
             ? new GraphicsBackendRegistration(new D3D12GraphicsBackend.D3D12BackendFactory(
                 surfacePresentResultOverride: OverridePresentResult))
             : D3D12GraphicsBackend.CreateRegistration();
@@ -367,6 +372,31 @@ internal sealed partial class EngineHostOptionsTests
             canceledPresentationWait.Cancel();
             _ = Assert.Throws<OperationCanceledException>(
                 () => surface.WaitForPresentationAsync(firstSequence, canceledPresentationWait.Token).GetAwaiter().GetResult());
+
+            if (injectOcclusionResult || injectDeviceRemovedResult)
+            {
+                var injectedPresentation = surface.WaitForPresentationAsync(firstSequence).GetAwaiter().GetResult();
+                var expectedStatus = injectDeviceRemovedResult
+                    ? PresentationStatus.DeviceLost
+                    : PresentationStatus.Occluded;
+                Assert.That(injectedPresentation.Status, Is.EqualTo(expectedStatus));
+
+                if (injectDeviceRemovedResult)
+                {
+                    Assert.That(injectedPresentation.Diagnostic?.Code, Is.EqualTo("graphics.presentation.device-lost"));
+                }
+
+                renderSnapshot.Dispose();
+                renderWorld.Dispose();
+                renderWorld = null;
+                var closeAfterTerminalPresentation = runningHost.Platform.CloseWindowAsync(window).GetAwaiter().GetResult();
+                Assert.That(closeAfterTerminalPresentation.Status, Is.EqualTo(WindowCommandStatus.Applied));
+                var terminalPresentationHistory = surface.WaitForPresentationAsync(firstSequence).GetAwaiter().GetResult();
+                Assert.That(terminalPresentationHistory.Status, Is.EqualTo(expectedStatus));
+                runningHost.StopAsync().GetAwaiter().GetResult();
+                return;
+            }
+
             var secondSubmission = runningHost.Renderer.SubmitAsync(
                 renderSnapshot,
                 CreateSurfaceGraphPlan("interactive-surface-second-frame"))
@@ -378,21 +408,17 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(secondSubmission.SurfaceEpoch, Is.EqualTo(surface.SurfaceEpoch));
             Assert.That(secondSubmission.SwapchainEpoch, Is.EqualTo(surface.SwapchainEpoch));
 
-            var firstPresentation = surface.WaitForPresentationAsync(
-                firstSequence)
-                .GetAwaiter()
-                .GetResult();
             var secondPresentation = surface.WaitForPresentationAsync(
                 secondSequence)
                 .GetAwaiter()
                 .GetResult();
+            var firstPresentation = surface.WaitForPresentationAsync(
+                firstSequence)
+                .GetAwaiter()
+                .GetResult();
             Assert.That(firstPresentation.PresentationSequence, Is.EqualTo(firstSubmission.PresentationSequence));
             Assert.That(secondPresentation.PresentationSequence, Is.EqualTo(secondSubmission.PresentationSequence));
-            Assert.That(
-                firstPresentation.Status,
-                injectOcclusionResult
-                    ? Is.EqualTo(PresentationStatus.Occluded)
-                    : Is.AnyOf(PresentationStatus.Presented, PresentationStatus.Occluded));
+            Assert.That(firstPresentation.Status, Is.AnyOf(PresentationStatus.Presented, PresentationStatus.Occluded));
             Assert.That(secondPresentation.Status, Is.AnyOf(PresentationStatus.Presented, PresentationStatus.Occluded));
             renderSnapshot.Dispose();
             renderWorld.Dispose();
