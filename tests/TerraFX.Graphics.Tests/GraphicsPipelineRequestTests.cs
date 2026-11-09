@@ -323,6 +323,12 @@ internal sealed class GraphicsPipelineRequestTests
             GraphicsDeviceProfile.OffscreenNative,
             GraphicsPlatformKind.None,
             CancellationToken.None).ConfigureAwait(false);
+        int? callbackNativeError = null;
+        var callbackCount = 0;
+        graphicsDevice.SetDeviceLostCallback(nativeResult => {
+            callbackNativeError = nativeResult;
+            callbackCount++;
+        });
         var bufferOwner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
         var callerBytecodeLease = bufferOwner.AcquireRead(0, 4);
 
@@ -334,6 +340,8 @@ internal sealed class GraphicsPipelineRequestTests
                     .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
 
             Assert.That(graphicsDevice.Status, Is.EqualTo(GraphicsDeviceStatus.Lost));
+            Assert.That(callbackNativeError, Is.EqualTo(nativeError));
+            Assert.That(callbackCount, Is.EqualTo(1));
             Assert.That(backendDevice.PipelineCreationCount, Is.EqualTo(1));
             _ = Assert.ThrowsAsync<InvalidOperationException>(
                 async () => await graphicsDevice.CreatePipelineAsync(description)
