@@ -146,6 +146,8 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
         }
     }
 
+    public bool RequiresClipboardGesture => true;
+
     private WaylandDisplayConnection Connection
         => _connection ?? throw new InvalidOperationException("The Wayland display connection is not initialized.");
 

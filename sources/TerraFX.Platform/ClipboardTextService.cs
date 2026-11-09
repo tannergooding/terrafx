@@ -9,6 +9,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX;
+using TerraFX.Input;
 
 namespace TerraFX.Platform;
 
@@ -22,6 +23,8 @@ public sealed class ClipboardTextService
 
     private readonly IPlatformBackend _backend;
     private bool _isDisposed;
+    private UserGestureToken? _issuedGestureToken;
+    private long _lastIssuedGestureSequence;
     private readonly int _ownerThreadId;
     private readonly Lock _requestGate = new();
     private readonly Queue<PendingRequest> _requests = [];
@@ -70,7 +73,7 @@ public sealed class ClipboardTextService
     internal static void ValidateGestureWindow(WindowHandle window, UserGestureToken? gestureToken)
     {
         if (gestureToken is UserGestureToken token
-            && ((token.EventSequence <= 0) || (token.Window != window)))
+            && ((token.EventSequence <= 0) || (token.NativeInputSerial == 0) || (token.Window != window)))
         {
             throw new ArgumentException("A clipboard gesture token must name the exact request window.", nameof(gestureToken));
         }
@@ -150,7 +153,54 @@ public sealed class ClipboardTextService
                 }
             },
             cancellationToken);
-        return Enqueue(pendingRequest, completion.Task);
+        return Enqueue(
+            pendingRequest,
+            completion.Task,
+            request.GestureToken,
+            () => new ClipboardReadResponse(
+                ClipboardStatus.PermissionDenied,
+                text: null,
+                CreateDiagnostic(
+                    "ClipboardPermissionDenied",
+                    request.Window,
+                    "ClipboardText.ReadTextAsync",
+                    nativeResult: null,
+                    "A valid one-use native input gesture is required for this clipboard read.")));
+    }
+
+    /// <summary>Attempts to issue a one-use clipboard token from an eligible native input event.</summary>
+    /// <param name="inputEvent">The immutable event captured for the focused native window.</param>
+    /// <param name="gestureToken">Receives the token when the event can authorize a clipboard operation.</param>
+    /// <returns><see langword="true"/> when a token was issued; otherwise, <see langword="false"/>. Issuing another token expires a prior token that has not been consumed by queue admission.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="inputEvent"/> is null.</exception>
+    public bool TryCreateUserGestureToken(PhysicalInputEvent inputEvent, out UserGestureToken gestureToken)
+    {
+        ArgumentNullException.ThrowIfNull(inputEvent);
+        gestureToken = default;
+
+        if ((_serviceStatus is not ClipboardServiceStatus.Ready)
+            || !_backend.RequiresClipboardGesture
+            || (inputEvent.NativeInputSerial is not { } nativeInputSerial)
+            || (inputEvent.Window is not { } window)
+            || (window.OwnerId != _backend.OwnerId))
+        {
+            return false;
+        }
+
+        lock (_requestGate)
+        {
+            if (_isDisposed
+                || (inputEvent.HostSequence <= _lastIssuedGestureSequence))
+            {
+                return false;
+            }
+
+            var token = new UserGestureToken(inputEvent.HostSequence, window, nativeInputSerial);
+            _issuedGestureToken = token;
+            _lastIssuedGestureSequence = token.EventSequence;
+            gestureToken = token;
+            return true;
+        }
     }
 
     /// <summary>Queues a bounded clipboard write on the platform owner.</summary>
@@ -227,7 +277,18 @@ public sealed class ClipboardTextService
             exception => completion.TrySetException(exception),
             () => completion.TrySetResult(_backend.WriteClipboardText(request)),
             cancellationToken);
-        return Enqueue(pendingRequest, completion.Task);
+        return Enqueue(
+            pendingRequest,
+            completion.Task,
+            request.GestureToken,
+            () => new ClipboardWriteResponse(
+                ClipboardStatus.PermissionDenied,
+                CreateDiagnostic(
+                    "ClipboardPermissionDenied",
+                    request.Window,
+                    "ClipboardText.WriteTextAsync",
+                    nativeResult: null,
+                    "A valid one-use native input gesture is required for this clipboard write.")));
     }
 
     internal void DisposeFromOwner()
@@ -247,6 +308,8 @@ public sealed class ClipboardTextService
             {
                 request.CancelForDisposal();
             }
+
+            _issuedGestureToken = null;
         }
     }
 
@@ -291,7 +354,9 @@ public sealed class ClipboardTextService
 
     private Task<TResponse> Enqueue<TResponse>(
         PendingRequest request,
-        Task<TResponse> task)
+        Task<TResponse> task,
+        UserGestureToken? gestureToken,
+        Func<TResponse> createGestureDeniedResponse)
     {
         lock (_requestGate)
         {
@@ -305,6 +370,11 @@ public sealed class ClipboardTextService
                 return Task.FromException<TResponse>(new InvalidOperationException("The bounded clipboard request queue is full."));
             }
 
+            if (_backend.RequiresClipboardGesture && !TryConsumeGestureTokenNoLock(gestureToken))
+            {
+                return Task.FromResult(createGestureDeniedResponse());
+            }
+
             _requests.Enqueue(request);
             return task;
         }
@@ -316,6 +386,19 @@ public sealed class ClipboardTextService
         {
             throw new InvalidOperationException("Clipboard native access is restricted to the platform owner thread.");
         }
+    }
+
+    private bool TryConsumeGestureTokenNoLock(UserGestureToken? gestureToken)
+    {
+        if (gestureToken is not UserGestureToken token
+            || _issuedGestureToken is not UserGestureToken issuedToken
+            || (issuedToken != token))
+        {
+            return false;
+        }
+
+        _issuedGestureToken = null;
+        return true;
     }
 
     private void ValidateRequestWindow(WindowHandle window)

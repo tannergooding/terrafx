@@ -7,14 +7,18 @@ namespace TerraFX.Platform;
 /// <summary>Identifies one input event that may authorize a platform operation.</summary>
 public readonly record struct UserGestureToken
 {
+    private readonly uint _nativeInputSerial;
+
     /// <summary>Initializes an event-scoped token issued by the platform owner.</summary>
     /// <param name="eventSequence">The positive sequence of the originating input event.</param>
     /// <param name="window">The exact window that received the originating input event.</param>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="eventSequence"/> is not positive.</exception>
+    /// <param name="nativeInputSerial">The nonzero native input serial for the originating event.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="eventSequence"/> is not positive or <paramref name="nativeInputSerial"/> is zero.</exception>
     /// <exception cref="ArgumentException"><paramref name="window"/> is invalid.</exception>
-    internal UserGestureToken(long eventSequence, WindowHandle window)
+    internal UserGestureToken(long eventSequence, WindowHandle window, uint nativeInputSerial)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(eventSequence);
+        ArgumentOutOfRangeException.ThrowIfZero(nativeInputSerial);
 
         if (!window.IsValid)
         {
@@ -23,6 +27,7 @@ public readonly record struct UserGestureToken
 
         EventSequence = eventSequence;
         Window = window;
+        _nativeInputSerial = nativeInputSerial;
     }
 
     /// <summary>Gets the sequence of the originating input event.</summary>
@@ -30,4 +35,6 @@ public readonly record struct UserGestureToken
 
     /// <summary>Gets the exact window that received the originating input event.</summary>
     public WindowHandle Window { get; }
+
+    internal uint NativeInputSerial => _nativeInputSerial;
 }

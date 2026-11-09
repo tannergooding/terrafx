@@ -25,6 +25,8 @@ internal interface IPlatformBackend : IDisposable
 
     PlatformServiceStatus PhysicalInputStatus { get; }
 
+    bool RequiresClipboardGesture => false;
+
     void BeginReadClipboardText(
         ClipboardReadRequest request,
         Action<ClipboardReadResponse> complete,

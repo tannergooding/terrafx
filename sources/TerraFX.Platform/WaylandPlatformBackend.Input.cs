@@ -55,14 +55,12 @@ internal sealed unsafe partial class WaylandPlatformBackend
 
         try
         {
-            backend.HandleKeyboardKey(keyboard, time, key, state);
+            backend.HandleKeyboardKey(keyboard, serial, time, key, state);
         }
         catch (Exception exception)
         {
             backend._callbackFailure ??= exception;
         }
-
-        _ = serial;
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
@@ -204,14 +202,12 @@ internal sealed unsafe partial class WaylandPlatformBackend
 
         try
         {
-            backend.HandlePointerButton(pointer, time, button, state);
+            backend.HandlePointerButton(pointer, serial, time, button, state);
         }
         catch (Exception exception)
         {
             backend._callbackFailure ??= exception;
         }
-
-        _ = serial;
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
@@ -518,7 +514,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
         QueueWindowStateReconciliation(window);
     }
 
-    private void HandleKeyboardKey(nint keyboard, uint time, uint key, uint state)
+    private void HandleKeyboardKey(nint keyboard, uint serial, uint time, uint key, uint state)
     {
         if (keyboard != _keyboard)
         {
@@ -558,7 +554,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
             kind = PhysicalInputEventKind.KeyUp;
         }
 
-        QueueKeyboardSample(window, key, kind, isDown, timestamp, time);
+        QueueKeyboardSample(window, key, kind, isDown, timestamp, time, serial);
     }
 
     private void HandleKeyboardKeymap(nint keyboard, uint format, int fileDescriptor, uint size)
@@ -676,7 +672,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
             MonotonicTimestamp: _timeProvider.GetTimestamp()));
     }
 
-    private void HandlePointerButton(nint pointer, uint time, uint button, uint state)
+    private void HandlePointerButton(nint pointer, uint serial, uint time, uint button, uint state)
     {
         if (pointer != _pointer)
         {
@@ -717,7 +713,8 @@ internal sealed unsafe partial class WaylandPlatformBackend
             PointerContentScale: new Vector2(scale, scale),
             NativeTimestamp: checked((long)time),
             NativeClockDomain: "WaylandMonotonicMilliseconds",
-            MonotonicTimestamp: _timeProvider.GetTimestamp()));
+            MonotonicTimestamp: _timeProvider.GetTimestamp(),
+            NativeInputSerial: (isDown && (serial != 0)) ? serial : null));
     }
 
     private void HandlePointerEnter(nint pointer, nint surface, int x, int y)
@@ -857,7 +854,8 @@ internal sealed unsafe partial class WaylandPlatformBackend
         PhysicalInputEventKind kind,
         bool isDown,
         long timestamp,
-        uint? nativeTime)
+        uint? nativeTime,
+        uint nativeInputSerial = 0)
     {
         ushort hidUsage = 0;
         var hasUsage = (_keyboardKeymap is WaylandKeyboardKeymap keymap)
@@ -875,7 +873,10 @@ internal sealed unsafe partial class WaylandPlatformBackend
             IsDown: isDown,
             NativeTimestamp: nativeTime.HasValue ? checked((long)nativeTime.Value) : null,
             NativeClockDomain: nativeTime.HasValue ? "WaylandMonotonicMilliseconds" : null,
-            MonotonicTimestamp: monotonicTimestamp));
+            MonotonicTimestamp: monotonicTimestamp,
+            NativeInputSerial: ((kind == PhysicalInputEventKind.KeyDown) && (nativeInputSerial != 0))
+                ? nativeInputSerial
+                : null));
 
         if (committedText is { } text)
         {

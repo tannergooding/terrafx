@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
+using TerraFX.Input;
 using ClipboardTextResult = TerraFX.Platform.ClipboardStatus;
 
 namespace TerraFX.Platform.Tests;
@@ -13,6 +14,21 @@ namespace TerraFX.Platform.Tests;
 [TestFixture]
 internal sealed class ClipboardTextServiceTests
 {
+    private static PhysicalInputEvent CreateKeyDownEvent(
+        WindowHandle window,
+        long eventSequence,
+        uint? nativeInputSerial)
+        => new(
+            PhysicalInputEventKind.KeyDown,
+            hostTimestamp: eventSequence,
+            hostSequence: eventSequence,
+            new InputDeviceHandle(window.OwnerId, index: 0, generation: 1),
+            window,
+            new PhysicalInputValue(new DigitalControl(new KeyboardControl(7, 4)), isDown: true),
+            nativeUsagePage: 7,
+            nativeUsage: 4,
+            nativeInputSerial: nativeInputSerial);
+
     [Test]
     public void CancellationAfterPumpCancelsAnInFlightReadAndRetainsOwnerCleanup()
     {
@@ -63,6 +79,77 @@ internal sealed class ClipboardTextServiceTests
 
         Assert.That(pending.GetAwaiter().GetResult().Status, Is.EqualTo(ClipboardStatus.Canceled));
         Assert.That(backend.ReadCount, Is.Zero);
+    }
+
+    [Test]
+    public void GestureTokensRequireNativeWaylandInputAndAreConsumedOnce()
+    {
+        using var backend = new FakeClipboardBackend(ownerId: 10, requiresClipboardGesture: true);
+        var service = new ClipboardTextService(backend, ClipboardServiceStatus.Ready);
+        var syntheticEvent = CreateKeyDownEvent(backend.Window, eventSequence: 1, nativeInputSerial: null);
+        var keyEvent = CreateKeyDownEvent(backend.Window, eventSequence: 2, nativeInputSerial: 73);
+
+        Assert.That(service.TryCreateUserGestureToken(syntheticEvent, out _), Is.False);
+        Assert.That(service.TryCreateUserGestureToken(keyEvent, out var readToken), Is.True);
+        Assert.That(readToken.EventSequence, Is.EqualTo(keyEvent.HostSequence));
+        Assert.That(readToken.Window, Is.EqualTo(backend.Window));
+        Assert.That(service.TryCreateUserGestureToken(keyEvent, out _), Is.False);
+
+        var missingToken = service.ReadTextAsync(new ClipboardReadRequest(backend.Window, 16, gestureToken: null));
+        var read = service.ReadTextAsync(new ClipboardReadRequest(backend.Window, 16, readToken));
+        var replay = service.ReadTextAsync(new ClipboardReadRequest(backend.Window, 16, readToken));
+        Assert.That(missingToken.GetAwaiter().GetResult().Status, Is.EqualTo(ClipboardStatus.PermissionDenied));
+        Assert.That(replay.GetAwaiter().GetResult().Status, Is.EqualTo(ClipboardStatus.PermissionDenied));
+
+        var pointerEvent = new PhysicalInputEvent(
+            PhysicalInputEventKind.PointerButtonDown,
+            hostTimestamp: 12,
+            hostSequence: 3,
+            new InputDeviceHandle(backend.OwnerId, index: 1, generation: 1),
+            backend.Window,
+            new PhysicalInputValue(new DigitalControl(MouseButtonValue.Primary), isDown: true),
+            nativeInputSerial: 91);
+        Assert.That(service.TryCreateUserGestureToken(pointerEvent, out var writeToken), Is.True);
+        var write = service.WriteTextAsync(new ClipboardWriteRequest(backend.Window, "copy", 16, writeToken));
+
+        service.Pump();
+
+        Assert.That(read.GetAwaiter().GetResult().Status, Is.EqualTo(ClipboardStatus.Completed));
+        Assert.That(write.GetAwaiter().GetResult().Status, Is.EqualTo(ClipboardStatus.Completed));
+        Assert.That(backend.LastReadGestureSerial, Is.EqualTo(73));
+        Assert.That(backend.LastWriteGestureSerial, Is.EqualTo(91));
+        Assert.That(backend.ReadCount, Is.EqualTo(1));
+        Assert.That(backend.WriteCount, Is.EqualTo(1));
+        service.DisposeFromOwner();
+    }
+
+    [Test]
+    public void NewGestureTokenExpiresAnUnconsumedPredecessor()
+    {
+        using var backend = new FakeClipboardBackend(ownerId: 11, requiresClipboardGesture: true);
+        var service = new ClipboardTextService(backend, ClipboardServiceStatus.Ready);
+        var keyEvent = CreateKeyDownEvent(backend.Window, eventSequence: 1, nativeInputSerial: 73);
+        var pointerEvent = new PhysicalInputEvent(
+            PhysicalInputEventKind.PointerButtonDown,
+            hostTimestamp: 12,
+            hostSequence: 2,
+            new InputDeviceHandle(backend.OwnerId, index: 1, generation: 1),
+            backend.Window,
+            new PhysicalInputValue(new DigitalControl(MouseButtonValue.Primary), isDown: true),
+            nativeInputSerial: 91);
+
+        Assert.That(service.TryCreateUserGestureToken(keyEvent, out var oldToken), Is.True);
+        Assert.That(service.TryCreateUserGestureToken(pointerEvent, out var currentToken), Is.True);
+        var expired = service.WriteTextAsync(new ClipboardWriteRequest(backend.Window, "expired", 16, oldToken));
+        var current = service.WriteTextAsync(new ClipboardWriteRequest(backend.Window, "current", 16, currentToken));
+
+        Assert.That(expired.GetAwaiter().GetResult().Status, Is.EqualTo(ClipboardStatus.PermissionDenied));
+        service.Pump();
+
+        Assert.That(current.GetAwaiter().GetResult().Status, Is.EqualTo(ClipboardStatus.Completed));
+        Assert.That(backend.LastWriteGestureSerial, Is.EqualTo(91));
+        Assert.That(backend.WriteCount, Is.EqualTo(1));
+        service.DisposeFromOwner();
     }
 
     [Test]
@@ -160,18 +247,20 @@ internal sealed class ClipboardTextServiceTests
         private readonly uint _ownerId;
         private readonly int _ownerThreadId;
         private int _readCount;
+        private readonly bool _requiresClipboardGesture;
         private int _writeCount;
 
-        internal FakeClipboardBackend(uint ownerId)
+        internal FakeClipboardBackend(uint ownerId, bool requiresClipboardGesture = false)
         {
             _ownerId = ownerId;
             _ownerThreadId = Environment.CurrentManagedThreadId;
+            _requiresClipboardGesture = requiresClipboardGesture;
             Window = new WindowHandle(ownerId, index: 0, generation: 1);
         }
 
         public PlatformServiceStatus AudioStatus => PlatformServiceStatus.NotRequested;
 
-        public PlatformBackend Backend => PlatformBackend.Headless;
+        public PlatformBackend Backend => _requiresClipboardGesture ? PlatformBackend.WaylandOnly : PlatformBackend.Headless;
 
         public ClipboardServiceStatus ClipboardStatus => ClipboardServiceStatus.Ready;
 
@@ -182,6 +271,12 @@ internal sealed class ClipboardTextServiceTests
         public uint OwnerId => _ownerId;
 
         public PlatformServiceStatus PhysicalInputStatus => PlatformServiceStatus.NotRequested;
+
+        public bool RequiresClipboardGesture => _requiresClipboardGesture;
+
+        internal uint? LastReadGestureSerial { get; private set; }
+
+        internal uint? LastWriteGestureSerial { get; private set; }
 
         internal int ReadCount => _readCount;
 
@@ -234,7 +329,7 @@ internal sealed class ClipboardTextServiceTests
         public ClipboardReadResponse ReadClipboardText(ClipboardReadRequest request)
         {
             EnsureOwnerThread();
-            _ = request;
+            LastReadGestureSerial = request.GestureToken?.NativeInputSerial;
             _readCount++;
             return new ClipboardReadResponse(ClipboardTextResult.Completed, "clipboard", diagnostic: null);
         }
@@ -282,7 +377,7 @@ internal sealed class ClipboardTextServiceTests
         public ClipboardWriteResponse WriteClipboardText(ClipboardWriteRequest request)
         {
             EnsureOwnerThread();
-            _ = request;
+            LastWriteGestureSerial = request.GestureToken?.NativeInputSerial;
             _writeCount++;
             return new ClipboardWriteResponse(ClipboardTextResult.Completed, diagnostic: null);
         }

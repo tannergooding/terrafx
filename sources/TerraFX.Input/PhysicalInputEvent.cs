@@ -31,7 +31,8 @@ public sealed class PhysicalInputEvent
         long? nativeTimestamp = null,
         string? nativeClockDomain = null,
         PhysicalInputEventDiagnostic flags = PhysicalInputEventDiagnostic.None,
-        ImmutableArray<PhysicalInputValue> reconciliationState = default)
+        ImmutableArray<PhysicalInputValue> reconciliationState = default,
+        uint? nativeInputSerial = null)
     {
         if (!Enum.IsDefined(kind) || (kind == PhysicalInputEventKind.None))
         {
@@ -71,6 +72,14 @@ public sealed class PhysicalInputEvent
             throw new ArgumentException("A native HID usage requires both a usage page and usage.", nameof(nativeUsage));
         }
 
+        if ((nativeInputSerial is 0)
+            || ((nativeInputSerial is not null)
+                && ((kind is not (PhysicalInputEventKind.KeyDown or PhysicalInputEventKind.PointerButtonDown))
+                    || (window is null))))
+        {
+            throw new ArgumentException("A native input serial is valid only for a window-scoped key or pointer-button down event.", nameof(nativeInputSerial));
+        }
+
         ValidatePayload(
             kind,
             device,
@@ -104,6 +113,7 @@ public sealed class PhysicalInputEvent
         NativeUsage = nativeUsage;
         NativeScanCode = nativeScanCode;
         NativeVirtualKey = nativeVirtualKey;
+        NativeInputSerial = nativeInputSerial;
         NativeTimestamp = nativeTimestamp;
         NativeClockDomain = nativeClockDomain;
         Flags = flags;
@@ -169,6 +179,8 @@ public sealed class PhysicalInputEvent
 
     /// <summary>Gets the window identity, when the event is window-scoped.</summary>
     public WindowHandle? Window { get; }
+
+    internal uint? NativeInputSerial { get; }
 
     private static void ValidatePayload(
         PhysicalInputEventKind kind,

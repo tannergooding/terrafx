@@ -36,4 +36,5 @@ internal readonly record struct PlatformInputSample(
     long MonotonicTimestamp = 0,
     ImmutableArray<PlatformInputStateValue> ReconciliationState = default,
     uint UnmappedGamepadButtonMask = 0,
-    long CaptureOrder = 0);
+    long CaptureOrder = 0,
+    uint? NativeInputSerial = null);

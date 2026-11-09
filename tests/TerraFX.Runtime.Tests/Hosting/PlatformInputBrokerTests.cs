@@ -272,6 +272,29 @@ internal sealed class PlatformInputBrokerTests
     }
 
     [Test]
+    public void PreservesNativeWaylandGestureSerialOnCapturedKeyEvents()
+    {
+        var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());
+        var window = new WindowHandle(17, 0, 1);
+        var sample = new PlatformInputSample(
+            PhysicalInputEventKind.KeyDown,
+            window,
+            (nint)(-1),
+            PlatformInputDeviceKind.Keyboard,
+            NativeUsagePage: 0x0007,
+            NativeUsage: 0x0004,
+            IsDown: true,
+            MonotonicTimestamp: 1,
+            NativeInputSerial: 81);
+
+        var captured = broker.Capture(new PlatformInputSampleBatch([sample], DiscardedSampleCount: 0), static _ => true);
+        var keyEvent = captured.Events.Single(static inputEvent => inputEvent.Kind is PhysicalInputEventKind.KeyDown);
+
+        Assert.That(keyEvent.NativeInputSerial, Is.EqualTo(81));
+        broker.Retire();
+    }
+
+    [Test]
     public void PreservesNormalizedGamepadValuesWithoutWindowOrPlayerAssignment()
     {
         var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());

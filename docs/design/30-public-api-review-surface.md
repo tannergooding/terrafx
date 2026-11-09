@@ -7278,7 +7278,7 @@ public sealed class WindowCommandReceipt
 
 public readonly struct UserGestureToken
 {
-    internal UserGestureToken(long eventSequence, WindowHandle window);
+    internal UserGestureToken(long eventSequence, WindowHandle window, uint nativeInputSerial);
     public long EventSequence { get; }
     public WindowHandle Window { get; }
 }
@@ -7332,6 +7332,7 @@ public sealed class ClipboardTextService
 {
     internal ClipboardTextService();
     public Task<ClipboardReadResponse> ReadTextAsync(ClipboardReadRequest request, CancellationToken cancellationToken = default);
+    public bool TryCreateUserGestureToken(PhysicalInputEvent inputEvent, out UserGestureToken gestureToken);
     public Task<ClipboardWriteResponse> WriteTextAsync(ClipboardWriteRequest request, CancellationToken cancellationToken = default);
 }
 }

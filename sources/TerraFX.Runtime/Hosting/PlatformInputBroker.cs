@@ -885,6 +885,7 @@ internal sealed class PlatformInputBroker
             nativeUsage: sample.NativeUsage,
             nativeScanCode: sample.NativeScanCode,
             nativeVirtualKey: sample.NativeVirtualKey,
+            nativeInputSerial: sample.NativeInputSerial,
             nativeTimestamp: sample.NativeTimestamp,
             nativeClockDomain: sample.NativeClockDomain,
             flags: sample.Diagnostics,
