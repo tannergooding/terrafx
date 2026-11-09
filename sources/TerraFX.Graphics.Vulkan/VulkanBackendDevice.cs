@@ -36,6 +36,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
     private readonly uint _queueFamilyIndex;
     private readonly uint[] _queueFamilyIndices;
     private readonly VkQueue[] _queues;
+    private readonly Func<VkResult?>? _surfaceAcquireResultOverride;
     private readonly Action? _surfaceImageAcquiredObserver;
     private readonly Func<VkResult, VkResult>? _surfacePresentResultOverride;
     private readonly string? _swapchainMaintenanceExtensionName;
@@ -65,6 +66,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         Action<long>? graphFenceWaitObserver,
         Func<long, long>? completedGraphFenceValueOverride,
         Action<GraphicsGraphSubmission>? graphSubmissionObserver,
+        Func<VkResult?>? surfaceAcquireResultOverride,
         Action? surfaceImageAcquiredObserver,
         Func<VkResult, VkResult>? surfacePresentResultOverride)
     {
@@ -103,6 +105,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         _graphFenceWaitObserver = graphFenceWaitObserver;
         _completedGraphFenceValueOverride = completedGraphFenceValueOverride;
         _graphSubmissionObserver = graphSubmissionObserver;
+        _surfaceAcquireResultOverride = surfaceAcquireResultOverride;
         _surfaceImageAcquiredObserver = surfaceImageAcquiredObserver;
         _surfacePresentResultOverride = surfacePresentResultOverride;
         _graphFrameSlotCount = graphFrameSlotCount;
@@ -198,6 +201,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         Func<long, long>? completedGraphFenceValueOverride = null,
         Action<GraphicsGraphSubmission>? graphSubmissionObserver = null,
         GraphicsNativeSurfaceBinding? presentationProbeBinding = null,
+        Func<VkResult?>? surfaceAcquireResultOverride = null,
         Action? surfaceImageAcquiredObserver = null,
         Func<VkResult, VkResult>? surfacePresentResultOverride = null)
     {
@@ -359,6 +363,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                     graphFenceWaitObserver,
                     completedGraphFenceValueOverride,
                     graphSubmissionObserver,
+                    surfaceAcquireResultOverride,
                     surfaceImageAcquiredObserver,
                     surfacePresentResultOverride);
                 transferred = true;

@@ -19,12 +19,14 @@ public static class VulkanGraphicsBackend
         Func<long, long>? completedGraphFenceValueOverride,
         Action<GraphicsGraphSubmission>? graphSubmissionObserver,
         Action? surfaceImageAcquiredObserver = null,
+        Func<VkResult?>? surfaceAcquireResultOverride = null,
         Func<VkResult, VkResult>? surfacePresentResultOverride = null)
         => new(new VulkanBackendFactory(
             graphFenceWaitObserver,
             completedGraphFenceValueOverride,
             graphSubmissionObserver,
             surfaceImageAcquiredObserver,
+            surfaceAcquireResultOverride,
             surfacePresentResultOverride));
 
     internal sealed class VulkanBackendFactory : IGraphicsBackendFactory
@@ -32,6 +34,7 @@ public static class VulkanGraphicsBackend
         private readonly Func<long, long>? _completedGraphFenceValueOverride;
         private readonly Action<long>? _graphFenceWaitObserver;
         private readonly Action<GraphicsGraphSubmission>? _graphSubmissionObserver;
+        private readonly Func<VkResult?>? _surfaceAcquireResultOverride;
         private readonly Action? _surfaceImageAcquiredObserver;
         private readonly Func<VkResult, VkResult>? _surfacePresentResultOverride;
 
@@ -40,12 +43,14 @@ public static class VulkanGraphicsBackend
             Func<long, long>? completedGraphFenceValueOverride = null,
             Action<GraphicsGraphSubmission>? graphSubmissionObserver = null,
             Action? surfaceImageAcquiredObserver = null,
+            Func<VkResult?>? surfaceAcquireResultOverride = null,
             Func<VkResult, VkResult>? surfacePresentResultOverride = null)
         {
             _graphFenceWaitObserver = graphFenceWaitObserver;
             _completedGraphFenceValueOverride = completedGraphFenceValueOverride;
             _graphSubmissionObserver = graphSubmissionObserver;
             _surfaceImageAcquiredObserver = surfaceImageAcquiredObserver;
+            _surfaceAcquireResultOverride = surfaceAcquireResultOverride;
             _surfacePresentResultOverride = surfacePresentResultOverride;
         }
 
@@ -87,6 +92,7 @@ public static class VulkanGraphicsBackend
                 completedGraphFenceValueOverride: _completedGraphFenceValueOverride,
                 graphSubmissionObserver: _graphSubmissionObserver,
                 presentationProbeBinding: presentationProbeBinding,
+                surfaceAcquireResultOverride: _surfaceAcquireResultOverride,
                 surfaceImageAcquiredObserver: _surfaceImageAcquiredObserver,
                 surfacePresentResultOverride: _surfacePresentResultOverride);
         }

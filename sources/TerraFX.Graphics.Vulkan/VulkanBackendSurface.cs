@@ -1168,13 +1168,28 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
         for (var attempt = 0; attempt < 2; attempt++)
         {
             var nativeImageIndex = 0u;
-            var result = VulkanApi.vkAcquireNextImageKHR(
-                _device.DeviceHandle,
-                _swapchain,
-                AcquireTimeoutNanoseconds,
-                _acquireSemaphores[frameSlotIndex],
-                default,
-                &nativeImageIndex);
+            VkResult result;
+            var acquireResultOverride = _device.SurfaceAcquireResultOverride?.Invoke();
+
+            if (acquireResultOverride is VkResult overriddenResult)
+            {
+                if (overriddenResult is VkResult.VK_SUCCESS or VkResult.VK_SUBOPTIMAL_KHR)
+                {
+                    throw new InvalidOperationException("The Vulkan acquire-result override must report a non-success result.");
+                }
+
+                result = overriddenResult;
+            }
+            else
+            {
+                result = VulkanApi.vkAcquireNextImageKHR(
+                    _device.DeviceHandle,
+                    _swapchain,
+                    AcquireTimeoutNanoseconds,
+                    _acquireSemaphores[frameSlotIndex],
+                    default,
+                    &nativeImageIndex);
+            }
 
             if (result == VkResult.VK_ERROR_OUT_OF_DATE_KHR)
             {
