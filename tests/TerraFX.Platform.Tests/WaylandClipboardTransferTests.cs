@@ -15,20 +15,36 @@ internal sealed class WaylandClipboardTransferTests
 {
     private static async Task<WaylandPlatformBackend.WaylandClipboardReadCompletion> ReadAsync(
         WindowHandle window,
-        byte[] payload,
-        int maximumUtf8Bytes)
+        Stream stream,
+        int maximumUtf8Bytes,
+        TimeSpan timeout,
+        CancellationToken callerCancellationToken)
     {
         var request = new ClipboardReadRequest(window, maximumUtf8Bytes, gestureToken: null);
         var offer = new WaylandPlatformBackend.WaylandClipboardDataOfferState((nint)1);
-        using var timeoutSource = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var timeoutSource = new CancellationTokenSource(timeout);
         var transfer = new WaylandPlatformBackend.WaylandClipboardReadTransfer(
             request,
             offer,
             static _ => { },
             static _ => { },
             timeoutSource,
-            CancellationToken.None);
-        return await WaylandPlatformBackend.ReadClipboardTransferAsync(transfer, new MemoryStream(payload)).ConfigureAwait(false);
+            callerCancellationToken);
+        return await WaylandPlatformBackend.ReadClipboardTransferAsync(transfer, stream).ConfigureAwait(false);
+    }
+
+    private static async Task<WaylandPlatformBackend.WaylandClipboardReadCompletion> ReadAsync(
+        WindowHandle window,
+        byte[] payload,
+        int maximumUtf8Bytes)
+    {
+        using var stream = new MemoryStream(payload);
+        return await ReadAsync(
+            window,
+            stream,
+            maximumUtf8Bytes,
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None).ConfigureAwait(false);
     }
 
     [Test]
@@ -62,5 +78,125 @@ internal sealed class WaylandClipboardTransferTests
 
         Assert.That(completion.Failure, Is.Null);
         Assert.That(completion.Response?.Status, Is.EqualTo(ClipboardStatus.TooLarge));
+    }
+
+    [Test]
+    public async Task ReportsCallerCancellationAndDisposesTheStream()
+    {
+        var window = new WindowHandle(4, index: 0, generation: 1);
+        using var cancellationSource = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+        using var stream = new WaylandClipboardReadTestStream(failOnRead: false);
+
+        var completion = await ReadAsync(
+            window,
+            stream,
+            maximumUtf8Bytes: 16,
+            timeout: TimeSpan.FromSeconds(5),
+            callerCancellationToken: cancellationSource.Token).ConfigureAwait(false);
+
+        Assert.That(completion.Failure, Is.Null);
+        Assert.That(completion.Response?.Status, Is.EqualTo(ClipboardStatus.Canceled));
+        Assert.That(stream.IsDisposed, Is.True);
+    }
+
+    [Test]
+    public async Task ReportsSelectionExpirationWhenTheStreamFails()
+    {
+        var window = new WindowHandle(6, index: 0, generation: 1);
+        using var stream = new WaylandClipboardReadTestStream(failOnRead: true);
+
+        var completion = await ReadAsync(
+            window,
+            stream,
+            maximumUtf8Bytes: 16,
+            timeout: TimeSpan.FromSeconds(5),
+            callerCancellationToken: CancellationToken.None).ConfigureAwait(false);
+
+        Assert.That(completion.Failure, Is.Null);
+        Assert.That(completion.Response?.Status, Is.EqualTo(ClipboardStatus.SelectionExpired));
+        Assert.That(stream.IsDisposed, Is.True);
+    }
+
+    [Test]
+    public async Task ReportsTimeoutAndDisposesTheStream()
+    {
+        var window = new WindowHandle(5, index: 0, generation: 1);
+        using var stream = new WaylandClipboardReadTestStream(failOnRead: false);
+
+        var completion = await ReadAsync(
+            window,
+            stream,
+            maximumUtf8Bytes: 16,
+            timeout: TimeSpan.FromMilliseconds(50),
+            callerCancellationToken: CancellationToken.None).ConfigureAwait(false);
+
+        Assert.That(completion.Failure, Is.Null);
+        Assert.That(completion.Response?.Status, Is.EqualTo(ClipboardStatus.TimedOut));
+        Assert.That(stream.IsDisposed, Is.True);
+    }
+
+    private sealed class WaylandClipboardReadTestStream(bool failOnRead) : Stream
+    {
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public bool IsDisposed { get; private set; }
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get
+            {
+                throw new NotSupportedException();
+            }
+
+            set
+            {
+                throw new NotSupportedException();
+            }
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (failOnRead)
+            {
+                throw new IOException("The clipboard data source closed before completing the transfer.");
+            }
+
+            await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+            return 0;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+            => throw new NotSupportedException();
+
+        public override void SetLength(long value)
+            => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                IsDisposed = true;
+            }
+
+            base.Dispose(disposing);
+        }
     }
 }

@@ -222,6 +222,13 @@ The X11 owner witness also verifies that a synthetic printable key produces comm
 
 The standard Platform.Tests selection also exercises `WaylandDisplayConnectionTests` when `WAYLAND_DISPLAY` is available. On WSLg, the Wayland adapter binds compositor/output/seat globals, initializes the compositor keyboard keymap, modifier state, compose table, and repeat schedule, creates an xdg-shell toplevel, acknowledges its configure, applies minimum/resizability size hints and a title, reports logical/pixel metrics and a Wayland surface binding, and retires the window. The compositor-window selection passes 3/3, and the hardware-independent repeat-schedule tests pass 5/5 in Debug and Release. This does not observe physical keyboard/pointer events, text-input-v3, clipboard, a mapped/presented buffer, or WSI.
 
+`WaylandClipboardTransferTests` uses in-memory streams to verify bounded UTF-8 decoding, malformed/oversized payloads, caller cancellation, timeout, and early source failure. It does not open a Wayland clipboard or touch WSLg's shared selection:
+
+```bash
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~WaylandClipboardTransferTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release --filter "FullyQualifiedName~WaylandClipboardTransferTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
 Wayland fallback tests require an available X11 display and an intentionally unavailable Wayland socket. Run them with the WSLg environment configured above:
 
 ```bash
