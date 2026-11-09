@@ -849,6 +849,14 @@ internal sealed partial class PlatformInputRoutingOwnerTests
 
         NativeLibrary.Free(xtstLibrary);
 
+        if (!NativeLibrary.TryLoad("libxkbcommon-x11.so.0", out var xkbX11Library))
+        {
+            Assert.Ignore("The isolated X11 text witness requires libxkbcommon-x11.");
+            return;
+        }
+
+        NativeLibrary.Free(xkbX11Library);
+
         var ownerThreadId = Environment.CurrentManagedThreadId;
         var ownerId = OwnerIdAllocator.Allocate();
         var sequenceLease = new HostEventSequenceLease();
@@ -857,6 +865,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
         PlatformInputRoutingOwner? routingOwner = null;
         World? world = null;
         InputRouter? hostLiveUiRouter = null;
+        TextInputSession? textSession = null;
         HashSet<InputRouter> inputRouters = [];
         Dictionary<InputRouter, WorldInputTimelineAdapter> timelineRouters = [];
 
@@ -909,6 +918,15 @@ internal sealed partial class PlatformInputRoutingOwnerTests
 
             IsolatedX11Input.SetInputFocus(platformHost.NativeDisplay, platformHost.NativeWindow);
             routingOwner.RouteCapturedInput(platformHost.PumpAndCapture());
+            textSession = hostLiveUiRouter.BeginTextSession(new TextInputSessionOptions(
+                window,
+                TextInputPurpose.FreeForm,
+                documentRevision: 1,
+                surroundingText: null,
+                selectionStart: 0,
+                selectionLength: 0,
+                caretPosition: default,
+                caretSize: default));
 
             IsolatedX11Input.SendKey(platformHost.NativeDisplay, keycode: 38, isDown: true);
             var initialKeyDownCapture = platformHost.PumpAndCapture();
@@ -921,6 +939,22 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             routingOwner.ServiceWindowInputRoutes(platformHost.GetHostTimestamp());
             var initialHostSnapshot = hostLiveUiRouter.GetHostActionSnapshot();
             Assert.That(initialHostSnapshot.Actions[0].IsDownAtEnd, Is.True);
+            Assert.That(textSession.TryReadBatch(out var initialTextBatch), Is.True);
+            var initialBatch = initialTextBatch
+                ?? throw new InvalidOperationException("The X11 text-session witness omitted its initial commit batch.");
+            Assert.That(initialBatch.Changes, Has.Length.EqualTo(1));
+            Assert.That(initialBatch.Changes[0].Kind, Is.EqualTo(TextInputChangeKind.TextCommitted));
+            Assert.That(initialBatch.Changes[0].Text, Is.Not.Null.And.Not.Empty);
+            var initialDocumentRevision = initialBatch.ResultDocumentRevision;
+            textSession.Update(new TextInputSessionOptions(
+                window,
+                TextInputPurpose.FreeForm,
+                initialDocumentRevision,
+                surroundingText: null,
+                selectionStart: 0,
+                selectionLength: 0,
+                caretPosition: default,
+                caretSize: default));
 
             IsolatedX11Input.SetInputFocus(platformHost.NativeDisplay, IsolatedX11Input.GetRootWindow(platformHost.NativeDisplay));
             var focusLostCapture = platformHost.PumpAndCapture();
@@ -931,6 +965,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             routingOwner.ServiceWindowInputRoutes(platformHost.GetHostTimestamp());
             var focusLostHostSnapshot = hostLiveUiRouter.GetHostActionSnapshot();
             Assert.That(focusLostHostSnapshot.Actions[0].IsDownAtEnd, Is.False);
+            Assert.That(textSession.IsActive, Is.False);
             Assert.That(
                 focusLostHostSnapshot.Actions[0].Transitions.Any(transition => transition.Kind == InputTransitionKind.Canceled),
                 Is.True);
@@ -956,6 +991,15 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             var heldReconciliationHostSnapshot = hostLiveUiRouter.GetHostActionSnapshot();
             Assert.That(heldReconciliationHostSnapshot.Actions[0].IsDownAtEnd, Is.False);
             Assert.That(heldReconciliationHostSnapshot.Actions[0].Transitions, Is.Empty);
+            textSession = hostLiveUiRouter.BeginTextSession(new TextInputSessionOptions(
+                window,
+                TextInputPurpose.FreeForm,
+                initialDocumentRevision,
+                surroundingText: null,
+                selectionStart: 0,
+                selectionLength: 0,
+                caretPosition: default,
+                caretSize: default));
 
             IsolatedX11Input.SendKey(platformHost.NativeDisplay, keycode: 38, isDown: false);
             var keyUpCapture = platformHost.PumpAndCapture();
@@ -973,6 +1017,12 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             routingOwner.ServiceSimulationInputRoutes(timelineAdapter);
             var simulationSnapshot = timelineAdapter.PublishInputStage(world.NextTickIndex);
             var hostSnapshot = hostLiveUiRouter.GetHostActionSnapshot();
+            Assert.That(textSession.TryReadBatch(out var rearmedTextBatch), Is.True);
+            var rearmedBatch = rearmedTextBatch
+                ?? throw new InvalidOperationException("The X11 text-session witness omitted its rearmed commit batch.");
+            Assert.That(rearmedBatch.Changes, Has.Length.EqualTo(1));
+            Assert.That(rearmedBatch.Changes[0].Kind, Is.EqualTo(TextInputChangeKind.TextCommitted));
+            Assert.That(rearmedBatch.Changes[0].Text, Is.Not.Null.And.Not.Empty);
 
             Assert.Multiple(() => {
                 Assert.That(hostSnapshot.Actions, Has.Length.EqualTo(1));
@@ -990,6 +1040,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
         }
         finally
         {
+            textSession?.Dispose();
             routingOwner?.ClearRoutes();
 
             foreach (var adapter in timelineRouters.Values)

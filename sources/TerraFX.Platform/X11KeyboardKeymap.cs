@@ -2,29 +2,42 @@
 
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace TerraFX.Platform;
 
 internal sealed unsafe partial class X11KeyboardKeymap : IDisposable
 {
+    private readonly XkbComposeState? _composeState;
     private readonly nint _connection;
     private readonly nint _context;
     private readonly int _deviceId;
     private bool _isDisposed;
     private nint _keymap;
+    private nint _state;
 
-    private X11KeyboardKeymap(nint connection, nint context, int deviceId, nint keymap)
+    private X11KeyboardKeymap(
+        nint connection,
+        nint context,
+        int deviceId,
+        nint keymap,
+        nint state,
+        XkbComposeState? composeState)
     {
         _connection = connection;
         _context = context;
         _deviceId = deviceId;
         _keymap = keymap;
+        _state = state;
+        _composeState = composeState;
     }
 
     internal static X11KeyboardKeymap? TryCreate(nint display)
     {
         nint context = 0;
         nint keymap = 0;
+        nint state = 0;
+        XkbComposeState? composeState = null;
 
         try
         {
@@ -78,8 +91,16 @@ internal sealed unsafe partial class X11KeyboardKeymap : IDisposable
                 return null;
             }
 
-            var keyboardKeymap = new X11KeyboardKeymap(connection, context, deviceId, keymap);
-            (context, keymap) = (0, 0);
+            state = XkbCommonX11Native.XkbX11StateNewFromDevice(keymap, connection, deviceId);
+
+            if (state == 0)
+            {
+                return null;
+            }
+
+            composeState = XkbComposeState.TryCreate();
+            var keyboardKeymap = new X11KeyboardKeymap(connection, context, deviceId, keymap, state, composeState);
+            (context, keymap, state, composeState) = (0, 0, 0, null);
             return keyboardKeymap;
         }
         catch (DllNotFoundException)
@@ -97,6 +118,13 @@ internal sealed unsafe partial class X11KeyboardKeymap : IDisposable
                 XkbCommonNative.XkbKeymapUnref(keymap);
             }
 
+            if (state != 0)
+            {
+                XkbCommonNative.XkbStateUnref(state);
+            }
+
+            composeState?.Dispose();
+
             if (context != 0)
             {
                 XkbCommonNative.XkbContextUnref(context);
@@ -113,10 +141,13 @@ internal sealed unsafe partial class X11KeyboardKeymap : IDisposable
 
         if (_keymap != 0)
         {
+            XkbCommonNative.XkbStateUnref(_state);
+            _state = 0;
             XkbCommonNative.XkbKeymapUnref(_keymap);
             _keymap = 0;
         }
 
+        _composeState?.Dispose();
         XkbCommonNative.XkbContextUnref(_context);
         _isDisposed = true;
     }
@@ -135,10 +166,46 @@ internal sealed unsafe partial class X11KeyboardKeymap : IDisposable
             return false;
         }
 
-        var previousKeymap = _keymap;
-        _keymap = keymap;
-        XkbCommonNative.XkbKeymapUnref(previousKeymap);
-        return true;
+        nint state = 0;
+
+        try
+        {
+            state = XkbCommonX11Native.XkbX11StateNewFromDevice(keymap, _connection, _deviceId);
+
+            if (state == 0)
+            {
+                return false;
+            }
+
+            _composeState?.Reset();
+            var previousKeymap = _keymap;
+            var previousState = _state;
+            _keymap = keymap;
+            _state = state;
+            keymap = 0;
+            state = 0;
+            XkbCommonNative.XkbStateUnref(previousState);
+            XkbCommonNative.XkbKeymapUnref(previousKeymap);
+            return true;
+        }
+        finally
+        {
+            if (state != 0)
+            {
+                XkbCommonNative.XkbStateUnref(state);
+            }
+
+            if (keymap != 0)
+            {
+                XkbCommonNative.XkbKeymapUnref(keymap);
+            }
+        }
+    }
+
+    internal void ResetComposeState()
+    {
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+        _composeState?.Reset();
     }
 
     internal bool TryGetUsage(uint xKeycode, out ushort hidUsage)
@@ -146,6 +213,60 @@ internal sealed unsafe partial class X11KeyboardKeymap : IDisposable
         ObjectDisposedException.ThrowIf(_isDisposed, this);
         var keyName = XkbCommonNative.XkbKeymapKeyGetName(_keymap, xKeycode);
         return XkbKeyNameMapper.TryMap(Marshal.PtrToStringUTF8(keyName), out hidUsage);
+    }
+
+    internal string? UpdateKey(uint xKeycode, bool isDown)
+    {
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+        _ = XkbCommonNative.XkbStateUpdateKey(_state, xKeycode, isDown ? 1u : 0u);
+
+        if (!isDown)
+        {
+            return null;
+        }
+
+        var keysym = XkbCommonNative.XkbStateKeyGetOneSym(_state, xKeycode);
+
+        if (_composeState is not XkbComposeState composeState)
+        {
+            return ReadKeyText(xKeycode);
+        }
+
+        var status = composeState.Feed(keysym, out var committedText);
+
+        return status switch {
+            XkbComposeStatus.Composing => null,
+            XkbComposeStatus.Committed => committedText,
+            XkbComposeStatus.Cancelled => ReadKeyText(xKeycode),
+            _ => ReadKeyText(xKeycode),
+        };
+    }
+
+    private string? ReadKeyText(uint keycode)
+    {
+        var byteCount = XkbCommonNative.XkbStateKeyGetUtf8(_state, keycode, buffer: null, size: 0);
+
+        if (byteCount <= 0)
+        {
+            return null;
+        }
+
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(byteCount, 4096);
+        Span<byte> bytes = stackalloc byte[byteCount + 1];
+        int written;
+
+        fixed (byte* text = bytes)
+        {
+            written = XkbCommonNative.XkbStateKeyGetUtf8(_state, keycode, text, checked((nuint)bytes.Length));
+        }
+
+        if (written != byteCount)
+        {
+            throw new InvalidOperationException("libxkbcommon returned an inconsistent keyboard string length.");
+        }
+
+        return new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true)
+            .GetString(bytes[..written]);
     }
 
     private static partial class X11XcbNative
@@ -167,6 +288,18 @@ internal sealed unsafe partial class X11KeyboardKeymap : IDisposable
 
         [LibraryImport("libxkbcommon.so.0", EntryPoint = "xkb_keymap_unref")]
         internal static partial void XkbKeymapUnref(nint keymap);
+
+        [LibraryImport("libxkbcommon.so.0", EntryPoint = "xkb_state_key_get_one_sym")]
+        internal static partial uint XkbStateKeyGetOneSym(nint state, uint key);
+
+        [LibraryImport("libxkbcommon.so.0", EntryPoint = "xkb_state_key_get_utf8")]
+        internal static partial int XkbStateKeyGetUtf8(nint state, uint key, byte* buffer, nuint size);
+
+        [LibraryImport("libxkbcommon.so.0", EntryPoint = "xkb_state_unref")]
+        internal static partial void XkbStateUnref(nint state);
+
+        [LibraryImport("libxkbcommon.so.0", EntryPoint = "xkb_state_update_key")]
+        internal static partial uint XkbStateUpdateKey(nint state, uint key, uint direction);
     }
 
     private static unsafe partial class XkbCommonX11Native
@@ -191,5 +324,8 @@ internal sealed unsafe partial class X11KeyboardKeymap : IDisposable
             ushort* minorXkbVersionOut,
             byte* baseEventOut,
             byte* baseErrorOut);
+
+        [LibraryImport("libxkbcommon-x11.so.0", EntryPoint = "xkb_x11_state_new_from_device")]
+        internal static partial nint XkbX11StateNewFromDevice(nint keymap, nint connection, int deviceId);
     }
 }

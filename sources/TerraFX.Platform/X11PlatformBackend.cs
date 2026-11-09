@@ -1318,6 +1318,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         if (!state.IsFocused)
         {
             state.KeysDown.Clear();
+            _keyboardKeymap?.ResetComposeState();
         }
 
         _ = _inputSamples.TryEnqueue(new PlatformInputSample(
@@ -1347,6 +1348,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             xKeycode,
             isDown,
             isRepeat);
+        var committedText = _keyboardKeymap?.UpdateKey(xKeycode, isDown);
         _ = _inputSamples.TryEnqueue(new PlatformInputSample(
             kind,
             state.Window,
@@ -1358,7 +1360,8 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             IsDown: isDown,
             NativeTimestamp: checked((long)nativeTime),
             NativeClockDomain: "X11ServerTime32Milliseconds",
-            MonotonicTimestamp: TimeProvider.System.GetTimestamp()));
+            MonotonicTimestamp: TimeProvider.System.GetTimestamp(),
+            CommittedText: committedText));
     }
 
     private (PhysicalInputEventKind Kind, ushort? NativeUsagePage, ushort? NativeUsage, uint NativeScanCode) CaptureKeyState(
