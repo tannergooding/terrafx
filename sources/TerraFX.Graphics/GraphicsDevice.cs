@@ -37,8 +37,9 @@ public sealed partial class GraphicsDevice
     private readonly GraphicsCapabilities _capabilities;
     private long _completedQueueFence;
     private readonly HashSet<GraphicsResourceOwner> _deferredRetirements = [];
-    private Action? _deviceLostCallback;
+    private Action<int?>? _deviceLostCallback;
     private int _deviceLostCallbackNotified;
+    private long _deviceLostNativeResult = long.MinValue;
     private readonly SemaphoreSlim _graphFrameSlots;
     private bool _hasQuarantinedResources;
     private ulong _nextBufferIndex;
@@ -1024,7 +1025,7 @@ public sealed partial class GraphicsDevice
     internal void NotifyResourceUseReleased()
         => _ownerQueue.SignalOwnerWork();
 
-    internal void SetDeviceLostCallback(Action callback)
+    internal void SetDeviceLostCallback(Action<int?> callback)
     {
         ArgumentNullException.ThrowIfNull(callback);
 
@@ -1035,7 +1036,7 @@ public sealed partial class GraphicsDevice
 
         if (Status is GraphicsDeviceStatus.Lost)
         {
-            NotifyDeviceLostCallback();
+            NotifyDeviceLostCallback(GetDeviceLostNativeResult());
         }
     }
 
@@ -1313,6 +1314,12 @@ public sealed partial class GraphicsDevice
         }
     }
 
+    private int? GetDeviceLostNativeResult()
+    {
+        var nativeResult = Volatile.Read(ref _deviceLostNativeResult);
+        return (nativeResult == long.MinValue) ? null : checked((int)nativeResult);
+    }
+
     private uint GetNextBufferIndex()
     {
         if (_nextBufferIndex > uint.MaxValue)
@@ -1353,8 +1360,13 @@ public sealed partial class GraphicsDevice
         return (uint)_nextTextureIndex++;
     }
 
-    private void MarkDeviceLost()
+    private void MarkDeviceLost(int? nativeResult = null)
     {
+        if (nativeResult is int result)
+        {
+            _ = Interlocked.CompareExchange(ref _deviceLostNativeResult, result, long.MinValue);
+        }
+
         while (true)
         {
             var currentStatus = Volatile.Read(ref _status);
@@ -1368,20 +1380,20 @@ public sealed partial class GraphicsDevice
             {
                 _ownerQueue.CompleteRequests();
                 _ownerQueue.CompleteRetirementReservations();
-                NotifyDeviceLostCallback();
+                NotifyDeviceLostCallback(GetDeviceLostNativeResult());
                 return;
             }
         }
     }
 
-    private void NotifyDeviceLostCallback()
+    private void NotifyDeviceLostCallback(int? nativeResult)
     {
         var callback = Volatile.Read(ref _deviceLostCallback);
 
         if ((callback is not null)
             && (Interlocked.Exchange(ref _deviceLostCallbackNotified, 1) == 0))
         {
-            callback();
+            callback(nativeResult);
         }
     }
 
@@ -2496,9 +2508,9 @@ public sealed partial class GraphicsDevice
 
         public void Fail(Exception exception)
         {
-            if (exception is GraphicsDeviceLostException)
+            if (exception is GraphicsDeviceLostException deviceLostException)
             {
-                _device.MarkDeviceLost();
+                _device.MarkDeviceLost(deviceLostException.NativeError);
             }
 
             if (_createdBuffer is not null)
@@ -2625,9 +2637,9 @@ public sealed partial class GraphicsDevice
 
         public void Fail(Exception exception)
         {
-            if (exception is GraphicsDeviceLostException)
+            if (exception is GraphicsDeviceLostException deviceLostException)
             {
-                _device.MarkDeviceLost();
+                _device.MarkDeviceLost(deviceLostException.NativeError);
             }
 
             if (_createdPipeline is not null)
@@ -2755,9 +2767,9 @@ public sealed partial class GraphicsDevice
 
         public void Fail(Exception exception)
         {
-            if (exception is GraphicsDeviceLostException)
+            if (exception is GraphicsDeviceLostException deviceLostException)
             {
-                _device.MarkDeviceLost();
+                _device.MarkDeviceLost(deviceLostException.NativeError);
             }
 
             if (_createdSampler is not null)
@@ -2860,9 +2872,9 @@ public sealed partial class GraphicsDevice
 
         public void Fail(Exception exception)
         {
-            if (exception is GraphicsDeviceLostException)
+            if (exception is GraphicsDeviceLostException deviceLostException)
             {
-                _device.MarkDeviceLost();
+                _device.MarkDeviceLost(deviceLostException.NativeError);
             }
 
             if (_createdTexture is not null)
@@ -3104,9 +3116,9 @@ public sealed partial class GraphicsDevice
 
         public void Fail(Exception exception)
         {
-            if (exception is GraphicsDeviceLostException)
+            if (exception is GraphicsDeviceLostException deviceLostException)
             {
-                _device.MarkDeviceLost();
+                _device.MarkDeviceLost(deviceLostException.NativeError);
             }
 
             var previousState = Interlocked.Exchange(ref _state, 2);
@@ -3238,9 +3250,9 @@ public sealed partial class GraphicsDevice
 
         public void Fail(Exception exception)
         {
-            if (exception is GraphicsDeviceLostException)
+            if (exception is GraphicsDeviceLostException deviceLostException)
             {
-                _device.MarkDeviceLost();
+                _device.MarkDeviceLost(deviceLostException.NativeError);
             }
 
             var previousState = Interlocked.Exchange(ref _state, 2);
@@ -3407,9 +3419,9 @@ public sealed partial class GraphicsDevice
 
         public void Fail(Exception exception)
         {
-            if (exception is GraphicsDeviceLostException)
+            if (exception is GraphicsDeviceLostException deviceLostException)
             {
-                _device.MarkDeviceLost();
+                _device.MarkDeviceLost(deviceLostException.NativeError);
             }
 
             var previousState = Interlocked.Exchange(ref _state, 2);
@@ -3555,9 +3567,9 @@ public sealed partial class GraphicsDevice
 
         public void Fail(Exception exception)
         {
-            if (exception is GraphicsDeviceLostException)
+            if (exception is GraphicsDeviceLostException deviceLostException)
             {
-                _device.MarkDeviceLost();
+                _device.MarkDeviceLost(deviceLostException.NativeError);
             }
 
             var previousState = Interlocked.Exchange(ref _state, 2);
@@ -3682,9 +3694,9 @@ public sealed partial class GraphicsDevice
 
         public void Fail(Exception exception)
         {
-            if (exception is GraphicsDeviceLostException)
+            if (exception is GraphicsDeviceLostException deviceLostException)
             {
-                _device.MarkDeviceLost();
+                _device.MarkDeviceLost(deviceLostException.NativeError);
             }
 
             var previousState = Interlocked.Exchange(ref _state, 2);

@@ -106,7 +106,8 @@ internal sealed partial class EngineHostOptionsTests
         PresentationStatus expectedFirstPresentationStatus = PresentationStatus.Presented,
         VkResult? expectedFirstAcquireResult = null,
         bool expectUncertainPresentFailure = false,
-        bool expectPresentationFenceTimeout = false)
+        bool expectPresentationFenceTimeout = false,
+        VkResult? expectedFirstPresentationNativeResult = null)
     {
         var platformOwner = PlatformHostOwner.Create(options);
         GraphicsDevice? graphicsDevice = null;
@@ -306,6 +307,11 @@ internal sealed partial class EngineHostOptionsTests
             var firstSequence = firstSubmission.PresentationSequence
                 ?? throw new InvalidOperationException("The first Vulkan Surface submission omitted its presentation sequence.");
             var firstPresentation = activeSurface.WaitForPresentationAsync(firstSequence).GetAwaiter().GetResult();
+
+            if (expectedFirstPresentationNativeResult is VkResult expectedNativeResult)
+            {
+                Assert.That(firstPresentation.Diagnostic?.NativeResult, Is.EqualTo((int)expectedNativeResult));
+            }
 
             if (expectedFirstPresentationStatus is PresentationStatus.SurfaceLost)
             {
@@ -791,7 +797,8 @@ internal sealed partial class EngineHostOptionsTests
             platformBackend.Value,
             registration,
             schemas,
-            expectedFirstPresentationStatus: expectedStatus);
+            expectedFirstPresentationStatus: expectedStatus,
+            expectedFirstPresentationNativeResult: injectedResult);
     }
 
     [Test]

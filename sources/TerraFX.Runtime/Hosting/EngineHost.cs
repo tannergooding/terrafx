@@ -597,7 +597,7 @@ public sealed partial class EngineHost : IAsyncDisposable
         }
     }
 
-    private void HandleGraphicsDeviceLost()
+    private void HandleGraphicsDeviceLost(int? nativeResult)
     {
         var graphicsDevice = Volatile.Read(ref _graphicsDevice);
 
@@ -624,7 +624,7 @@ public sealed partial class EngineHost : IAsyncDisposable
             assetId: null,
             commandIdentity: null,
             operation: "GraphicsDevice",
-            nativeResult: null,
+            nativeResult,
             message: policy is GraphicsFailurePolicy.StopHost
                 ? "The graphics device was lost; the host is stopping."
                 : "The graphics device was lost; simulation and audio continue while presentation is suspended.",

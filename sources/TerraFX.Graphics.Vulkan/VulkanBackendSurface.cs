@@ -39,7 +39,8 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
         long LastSequence,
         uint SurfaceEpoch,
         uint SwapchainEpoch,
-        PresentationStatus Status)> _presentationHistory = [];
+        PresentationStatus Status,
+        int? NativeResult)> _presentationHistory = [];
     private bool[] _acquiredImages = [];
     private VkImage[] _images = [];
     private bool[] _imageHasPresented = [];
@@ -409,7 +410,8 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
         PresentationStatus status,
         uint deviceEpoch,
         uint surfaceEpoch,
-        uint swapchainEpoch)
+        uint swapchainEpoch,
+        int? nativeResult)
     {
         if (status is PresentationStatus.Presented or PresentationStatus.Occluded or PresentationStatus.Suspended)
         {
@@ -439,7 +441,7 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
             assetId: null,
             commandIdentity: null,
             operation: "Surface.WaitForPresentation",
-            nativeResult: null,
+            nativeResult,
             message: $"Vulkan presentation ended with {status}.",
             context: []);
     }
@@ -1071,7 +1073,7 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
 
         lock (_presentationGate)
         {
-            foreach (var (firstSequence, lastSequence, surfaceEpoch, swapchainEpoch, status) in _presentationHistory)
+            foreach (var (firstSequence, lastSequence, surfaceEpoch, swapchainEpoch, status, nativeResult) in _presentationHistory)
             {
                 if ((presentationSequence < firstSequence)
                     || (presentationSequence > lastSequence))
@@ -1085,7 +1087,7 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
                     deviceEpoch,
                     surfaceEpoch,
                     swapchainEpoch,
-                    CreatePresentationDiagnostic(status, deviceEpoch, surfaceEpoch, swapchainEpoch));
+                    CreatePresentationDiagnostic(status, deviceEpoch, surfaceEpoch, swapchainEpoch, nativeResult));
                 return true;
             }
         }
@@ -1133,7 +1135,8 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
                 presentation.Status,
                 deviceEpoch,
                 presentation.SurfaceEpoch,
-                presentation.SwapchainEpoch));
+                presentation.SwapchainEpoch,
+                presentation.NativeResult));
         AddPresentationHistory(receipt);
         return receipt;
     }
@@ -1379,7 +1382,8 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
                 _binding.SurfaceEpoch,
                 _capabilities.SwapchainEpoch,
                 checked((int)imageIndex),
-                status));
+                status,
+                checked((int)result)));
         _imagePresentationSequences[imageIndex] = sequence;
         _imageHasPresented[imageIndex] = status == PresentationStatus.Presented;
         _acquiredImages[imageIndex] = false;
@@ -1479,19 +1483,22 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
             if (_presentationHistory.Count != 0)
             {
                 var lastIndex = _presentationHistory.Count - 1;
-                var (firstSequence, lastSequence, surfaceEpoch, swapchainEpoch, status) = _presentationHistory[lastIndex];
+                var (firstSequence, lastSequence, surfaceEpoch, swapchainEpoch, status, nativeResult)
+                    = _presentationHistory[lastIndex];
 
                 if ((lastSequence == receipt.PresentationSequence - 1)
                     && (surfaceEpoch == receipt.SurfaceEpoch)
                     && (swapchainEpoch == receipt.SwapchainEpoch)
-                    && (status == receipt.Status))
+                    && (status == receipt.Status)
+                    && (nativeResult == receipt.Diagnostic?.NativeResult))
                 {
                     _presentationHistory[lastIndex] = (
                         firstSequence,
                         receipt.PresentationSequence,
                         surfaceEpoch,
                         swapchainEpoch,
-                        status);
+                        status,
+                        nativeResult);
                     return;
                 }
             }
@@ -1501,7 +1508,8 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
                 receipt.PresentationSequence,
                 receipt.SurfaceEpoch,
                 receipt.SwapchainEpoch,
-                receipt.Status));
+                receipt.Status,
+                receipt.Diagnostic?.NativeResult));
         }
     }
 
@@ -1593,7 +1601,8 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
         uint SurfaceEpoch,
         uint SwapchainEpoch,
         int ImageIndex,
-        PresentationStatus Status);
+        PresentationStatus Status,
+        int NativeResult);
 
     private readonly record struct VulkanSurfaceNativeCapabilities(
         VkSurfaceCapabilitiesKHR Capabilities,

@@ -557,7 +557,7 @@ public sealed partial class GraphicsDevice
 
                 if (cachedReceipt.Status is PresentationStatus.DeviceLost)
                 {
-                    device.MarkDeviceLost();
+                    device.MarkDeviceLost(cachedReceipt.Diagnostic?.NativeResult);
                 }
 
                 _ = _completion.TrySetResult(cachedReceipt);
@@ -571,7 +571,7 @@ public sealed partial class GraphicsDevice
 
             if (receipt.Status is PresentationStatus.DeviceLost)
             {
-                device.MarkDeviceLost();
+                device.MarkDeviceLost(receipt.Diagnostic?.NativeResult);
             }
 
             _ = _completion.TrySetResult(receipt);

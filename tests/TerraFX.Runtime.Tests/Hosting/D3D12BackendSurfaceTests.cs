@@ -235,10 +235,11 @@ internal sealed partial class EngineHostOptionsTests
             .. SceneSchemaCatalogue.Schemas,
             .. RenderingSchemaCatalogue.Schemas,
         ]);
+        var assetStoreRegistration = CreateAssetStoreOptions().Registration;
         var assetStoreOptions = new AssetStoreOptions(
             packagePath,
             SHA256.HashData(packageBytes),
-            CreateAssetStoreOptions().Registration);
+            assetStoreRegistration);
         var registration = (injectOcclusionResult || injectDeviceRemovedResult)
             ? new GraphicsBackendRegistration(new D3D12GraphicsBackend.D3D12BackendFactory(
                 surfacePresentResultOverride: OverridePresentResult))
@@ -255,6 +256,7 @@ internal sealed partial class EngineHostOptionsTests
             PersistenceMetadata = CreatePersistenceMetadata(),
         };
         EngineHost? host = null;
+        World? hostedPolicyWorld = null;
         World? renderWorld = null;
         Exception? testFailure = null;
 
@@ -293,6 +295,18 @@ internal sealed partial class EngineHostOptionsTests
             _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
             _ = worldRegistrationBuilder.RegisterCpuExtractionSupport(Renderer.CreateCpuExtractionSupportRegistration());
             var worldRegistration = worldRegistrationBuilder.Build();
+
+            if (graphicsFailurePolicy is GraphicsFailurePolicy.SuspendPresentation)
+            {
+                var hostedWorldRegistration = new WorldRegistrationBuilder(assetStoreRegistration.Schemas).Build();
+                runningHost.InvokeAsync(context =>
+                    hostedPolicyWorld = context.CreateWorld(new WorldOptions(hostedWorldRegistration) {
+                        CpuWorkerCount = 0,
+                        InitialReplayLineageId = Guid.NewGuid(),
+                        WorldGuid = Guid.NewGuid(),
+                    })).GetAwaiter().GetResult();
+            }
+
             renderWorld = World.Create(new WorldOptions(worldRegistration) {
                 CpuWorkerCount = 0,
                 InitialReplayLineageId = Guid.NewGuid(),
@@ -388,10 +402,13 @@ internal sealed partial class EngineHostOptionsTests
                 if (injectDeviceRemovedResult)
                 {
                     Assert.That(injectedPresentation.Diagnostic?.Code, Is.EqualTo("graphics.presentation.device-lost"));
+                    Assert.That(injectedPresentation.Diagnostic?.NativeResult, Is.EqualTo(unchecked((int)0x887A0005)));
                     Assert.That(runningHost.GraphicsDevice?.Status, Is.EqualTo(GraphicsDeviceStatus.Lost));
                     var diagnostics = runningHost.Diagnostics.GetSnapshot(
                         new DiagnosticQuery(32, DiagnosticSeverity.Error, worldGuid: null, minimumTick: null));
-                    Assert.That(diagnostics.Records.Any(static diagnostic => diagnostic.Code == "graphics-device-lost"), Is.True);
+                    var deviceLostDiagnostic = diagnostics.Records.Single(
+                        static diagnostic => diagnostic.Code == "graphics-device-lost");
+                    Assert.That(deviceLostDiagnostic.NativeResult, Is.EqualTo(unchecked((int)0x887A0005)));
 
                     if (graphicsFailurePolicy is GraphicsFailurePolicy.StopHost)
                     {
@@ -400,6 +417,18 @@ internal sealed partial class EngineHostOptionsTests
                     }
 
                     Assert.That(runningHost.Completion.IsCompleted, Is.False);
+                    long tickBeforeWait = 0;
+                    runningHost.InvokeAsync(_ => tickBeforeWait = hostedPolicyWorld?.NextTickIndex
+                        ?? throw new InvalidOperationException("The suspended-presentation witness has no hosted World."))
+                        .GetAwaiter()
+                        .GetResult();
+                    Thread.Sleep(100);
+                    long tickAfterWait = 0;
+                    runningHost.InvokeAsync(_ => tickAfterWait = hostedPolicyWorld?.NextTickIndex
+                        ?? throw new InvalidOperationException("The suspended-presentation witness has no hosted World."))
+                        .GetAwaiter()
+                        .GetResult();
+                    Assert.That(tickAfterWait, Is.GreaterThan(tickBeforeWait));
                     _ = Assert.Throws<InvalidOperationException>(
                         () => runningHost.Renderer.SubmitAsync(
                             renderSnapshot,

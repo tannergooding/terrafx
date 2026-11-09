@@ -51,14 +51,16 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
         uint NativePresentCount,
         uint SurfaceEpoch,
         uint SwapchainEpoch,
-        PresentationStatus? TerminalStatus)> _pendingPresentations = [];
+        PresentationStatus? TerminalStatus,
+        int? NativeResult)> _pendingPresentations = [];
     private readonly Lock _presentationGate = new();
     private readonly List<(
         long FirstSequence,
         long LastSequence,
         uint SurfaceEpoch,
         uint SwapchainEpoch,
-        PresentationStatus Status)> _presentationHistory = [];
+        PresentationStatus Status,
+        int? NativeResult)> _presentationHistory = [];
     private readonly bool _supportsTearing;
     private readonly Func<int?>? _surfacePresentResultOverride;
     private IDXGISwapChain3* _swapChain;
@@ -377,7 +379,8 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
         PresentationStatus status,
         uint deviceEpoch,
         uint surfaceEpoch,
-        uint swapchainEpoch)
+        uint swapchainEpoch,
+        int? nativeResult)
     {
         if (status is PresentationStatus.Presented or PresentationStatus.Occluded or PresentationStatus.Suspended)
         {
@@ -407,7 +410,7 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
             assetId: null,
             commandIdentity: null,
             operation: "Surface.WaitForPresentation",
-            nativeResult: null,
+            nativeResult,
             message: $"D3D12 presentation ended with {status}.",
             context: []);
     }
@@ -597,7 +600,7 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
 
         lock (_presentationGate)
         {
-            foreach (var (firstSequence, lastSequence, surfaceEpoch, swapchainEpoch, status) in _presentationHistory)
+            foreach (var (firstSequence, lastSequence, surfaceEpoch, swapchainEpoch, status, nativeResult) in _presentationHistory)
             {
                 if ((presentationSequence < firstSequence)
                     || (presentationSequence > lastSequence))
@@ -615,7 +618,8 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
                         status,
                         deviceEpoch,
                         surfaceEpoch,
-                        swapchainEpoch));
+                        swapchainEpoch,
+                        nativeResult));
                 return true;
             }
         }
@@ -692,7 +696,11 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
             {
                 if (GetPresentationFailureStatus(testResult.Value) is PresentationStatus testFailureStatus)
                 {
-                    return CompletePresentation(presentationSequence, deviceEpoch, testFailureStatus);
+                    return CompletePresentation(
+                        presentationSequence,
+                        deviceEpoch,
+                        testFailureStatus,
+                        testResult.Value);
                 }
 
                 ThrowIfFailed(testResult);
@@ -707,7 +715,11 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
             {
                 if (GetPresentationFailureStatus(statisticsResult.Value) is PresentationStatus failedStatus)
                 {
-                    return CompletePresentation(presentationSequence, deviceEpoch, failedStatus);
+                    return CompletePresentation(
+                        presentationSequence,
+                        deviceEpoch,
+                        failedStatus,
+                        statisticsResult.Value);
                 }
 
                 ThrowIfFailed(statisticsResult);
@@ -790,7 +802,8 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
                 0,
                 _capabilities.SurfaceEpoch,
                 _capabilities.SwapchainEpoch,
-                PresentationStatus.Occluded));
+                PresentationStatus.Occluded,
+                presentResult));
             return presentationSequence;
         }
 
@@ -802,7 +815,8 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
                     0,
                     _capabilities.SurfaceEpoch,
                     _capabilities.SwapchainEpoch,
-                    status));
+                    status,
+                    presentResult));
                 return presentationSequence;
             }
 
@@ -821,6 +835,7 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
             nativePresentCount,
             _capabilities.SurfaceEpoch,
             _capabilities.SwapchainEpoch,
+            null,
             null));
         return presentationSequence;
     }
@@ -916,8 +931,8 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
 
         foreach (var sequence in sequences)
         {
-            var status = GetPresentationStatusAfterLatencySignal(sequence);
-            receipts.Add(CompletePresentation(sequence, deviceEpoch, status));
+            var status = GetPresentationStatusAfterLatencySignal(sequence, out var nativeResult);
+            receipts.Add(CompletePresentation(sequence, deviceEpoch, status, nativeResult));
         }
 
         return receipts.MoveToImmutable();
@@ -926,7 +941,8 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
     private PresentationReceipt CompletePresentation(
         long presentationSequence,
         uint deviceEpoch,
-        PresentationStatus status)
+        PresentationStatus status,
+        int? nativeResult = null)
     {
         if (!_pendingPresentations.TryGetValue(presentationSequence, out var presentation))
         {
@@ -939,6 +955,7 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
             throw new ArgumentOutOfRangeException(nameof(presentationSequence));
         }
 
+        var presentationNativeResult = nativeResult ?? presentation.NativeResult;
         var receipt = new PresentationReceipt(
             status,
             presentationSequence,
@@ -949,28 +966,31 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
                 status,
                 deviceEpoch,
                 presentation.SurfaceEpoch,
-                presentation.SwapchainEpoch));
+                presentation.SwapchainEpoch,
+                presentationNativeResult));
         _ = _pendingPresentations.Remove(presentationSequence);
 
         lock (_presentationGate)
         {
             if (_presentationHistory.Count != 0)
             {
-                var (previousFirstSequence, previousLastSequence, previousSurfaceEpoch, previousSwapchainEpoch, previousStatus)
+                var (previousFirstSequence, previousLastSequence, previousSurfaceEpoch, previousSwapchainEpoch, previousStatus, previousNativeResult)
                     = _presentationHistory[^1];
 
                 if ((previousLastSequence < long.MaxValue)
                     && ((previousLastSequence + 1) == presentationSequence)
                     && (previousSurfaceEpoch == presentation.SurfaceEpoch)
                     && (previousSwapchainEpoch == presentation.SwapchainEpoch)
-                    && (previousStatus == status))
+                    && (previousStatus == status)
+                    && (previousNativeResult == presentationNativeResult))
                 {
                     _presentationHistory[^1] = (
                         previousFirstSequence,
                         presentationSequence,
                         previousSurfaceEpoch,
                         previousSwapchainEpoch,
-                        previousStatus);
+                        previousStatus,
+                        previousNativeResult);
                     return receipt;
                 }
             }
@@ -980,7 +1000,8 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
                 presentationSequence,
                 presentation.SurfaceEpoch,
                 presentation.SwapchainEpoch,
-                status));
+                status,
+                presentationNativeResult));
         }
 
         return receipt;
@@ -989,10 +1010,10 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
     private PresentationReceipt CompletePresentationAfterLatencySignal(
         long presentationSequence,
         uint deviceEpoch)
-        => CompletePresentation(
-            presentationSequence,
-            deviceEpoch,
-            GetPresentationStatusAfterLatencySignal(presentationSequence));
+    {
+        var status = GetPresentationStatusAfterLatencySignal(presentationSequence, out var nativeResult);
+        return CompletePresentation(presentationSequence, deviceEpoch, status, nativeResult);
+    }
 
     private void EnsureOwnerThread()
     {
@@ -1002,8 +1023,12 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
         }
     }
 
-    private PresentationStatus GetPresentationStatusAfterLatencySignal(long presentationSequence)
+    private PresentationStatus GetPresentationStatusAfterLatencySignal(
+        long presentationSequence,
+        out int? nativeResult)
     {
+        nativeResult = null;
+
         if (!_pendingPresentations.TryGetValue(presentationSequence, out var presentation))
         {
             throw new ArgumentOutOfRangeException(nameof(presentationSequence));
@@ -1011,6 +1036,7 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
 
         if (presentation.TerminalStatus is PresentationStatus terminalStatus)
         {
+            nativeResult = presentation.NativeResult;
             return terminalStatus;
         }
 
@@ -1037,6 +1063,7 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
         {
             if (GetPresentationFailureStatus(testResult.Value) is PresentationStatus status)
             {
+                nativeResult = testResult.Value;
                 return status;
             }
 

@@ -236,7 +236,9 @@ public sealed partial class GraphicsDevice
             QuarantineSurface(surface, exception);
         }
 
-        MarkDeviceLost();
+        MarkDeviceLost(exception is GraphicsDeviceLostException deviceLostException
+            ? deviceLostException.NativeError
+            : null);
     }
 
     internal sealed class GraphFrameSlotReservation : IDisposable

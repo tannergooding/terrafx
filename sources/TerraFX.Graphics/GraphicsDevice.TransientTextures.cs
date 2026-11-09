@@ -462,9 +462,9 @@ public sealed partial class GraphicsDevice
 
         public void Fail(Exception exception)
         {
-            if (exception is GraphicsDeviceLostException)
+            if (exception is GraphicsDeviceLostException deviceLostException)
             {
-                _device.MarkDeviceLost();
+                _device.MarkDeviceLost(deviceLostException.NativeError);
             }
 
             if (_createdGroup is GraphicsTransientTextureGroup group)
