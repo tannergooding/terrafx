@@ -305,8 +305,12 @@ internal sealed unsafe partial class X11PlatformBackend
 
         foreach (var key in keys)
         {
-            ClipboardRemoveWrite(key, deleteProperty: true);
+            ClipboardRemoveWrite(key, releaseRequestorEvents: false);
         }
+
+        _clipboard.PendingRequestorReleases.Clear();
+        _clipboard.PendingWriteAdvances.Clear();
+        _clipboard.SelectedRequestors.Clear();
     }
 
     private void CancelClipboardWritesForWindow(nuint window)
@@ -323,7 +327,27 @@ internal sealed unsafe partial class X11PlatformBackend
 
         foreach (var key in keys)
         {
-            ClipboardRemoveWrite(key, deleteProperty: true);
+            ClipboardRemoveWrite(key, releaseRequestorEvents: false);
+        }
+    }
+
+    private void ClipboardAdvanceWrites()
+    {
+        if (_clipboard.PendingWriteAdvances.Count == 0)
+        {
+            return;
+        }
+
+        var keys = new (nuint Requestor, nuint Property)[_clipboard.PendingWriteAdvances.Count];
+        _clipboard.PendingWriteAdvances.CopyTo(keys);
+        _clipboard.PendingWriteAdvances.Clear();
+
+        foreach (var key in keys)
+        {
+            if (_clipboard.PendingWrites.TryGetValue(key, out var transfer))
+            {
+                ClipboardWriteNextChunk(key.Requestor, key.Property, transfer);
+            }
         }
     }
 
@@ -404,7 +428,7 @@ internal sealed unsafe partial class X11PlatformBackend
 
         foreach (var key in expired)
         {
-            ClipboardRemoveWrite(key, deleteProperty: true);
+            ClipboardRemoveWrite(key, releaseRequestorEvents: false);
         }
     }
 
@@ -449,9 +473,13 @@ internal sealed unsafe partial class X11PlatformBackend
         {
             if (_clipboard.PendingWrites.TryGetValue(
                 (propertyEvent.Window, propertyEvent.Atom),
-                out var writeTransfer))
+                out _))
             {
-                ClipboardWriteNextChunk(propertyEvent.Window, propertyEvent.Atom, writeTransfer);
+                _ = _clipboard.PendingWriteAdvances.Add((propertyEvent.Window, propertyEvent.Atom));
+            }
+            else if (_clipboard.SelectedRequestors.Contains(propertyEvent.Window))
+            {
+                _ = _clipboard.PendingRequestorReleases.Add(propertyEvent.Window);
             }
 
             return;
@@ -533,8 +561,7 @@ internal sealed unsafe partial class X11PlatformBackend
 
             if ((actualType != transfer.Target)
                 || (actualFormat != 8)
-                || (propertyValue == 0)
-                || (bytesAfter != 0))
+                || (propertyValue == 0))
             {
                 if (!transfer.ResponseCompleted)
                 {
@@ -544,6 +571,22 @@ internal sealed unsafe partial class X11PlatformBackend
                         ClipboardTextResult.InvalidData,
                         text: null,
                         "The X11 clipboard owner returned an invalid UTF-8 transfer chunk."));
+                }
+
+                _ = X11Native.XDeleteProperty(_display, transfer.Requestor, transfer.Property);
+                return;
+            }
+
+            if (bytesAfter != 0)
+            {
+                if (!transfer.ResponseCompleted)
+                {
+                    transfer.ResponseCompleted = true;
+                    transfer.Complete(ClipboardCreateReadResponse(
+                        transfer.Request.Window,
+                        ClipboardTextResult.TooLarge,
+                        text: null,
+                        "The complete X11 clipboard transfer exceeds the request byte limit."));
                 }
 
                 _ = X11Native.XDeleteProperty(_display, transfer.Requestor, transfer.Property);
@@ -576,21 +619,62 @@ internal sealed unsafe partial class X11PlatformBackend
         }
     }
 
+    private void ClipboardReleaseRequestorEvents()
+    {
+        if (_clipboard.PendingRequestorReleases.Count == 0)
+        {
+            return;
+        }
+
+        var requestors = new nuint[_clipboard.PendingRequestorReleases.Count];
+        _clipboard.PendingRequestorReleases.CopyTo(requestors);
+        _clipboard.PendingRequestorReleases.Clear();
+
+        foreach (var requestor in requestors)
+        {
+            if (!_clipboard.SelectedRequestors.Contains(requestor)
+                || _windowsByNativeId.ContainsKey(requestor))
+            {
+                continue;
+            }
+
+            var hasPendingWrites = false;
+
+            foreach (var (pendingRequestor, _) in _clipboard.PendingWrites.Keys)
+            {
+                if (pendingRequestor == requestor)
+                {
+                    hasPendingWrites = true;
+                    break;
+                }
+            }
+
+            if (hasPendingWrites)
+            {
+                continue;
+            }
+
+            if (X11Native.XSelectInput(_display, requestor, eventMask: 0) == 0)
+            {
+                throw new InvalidOperationException("X11 failed to release clipboard events from a live requestor.");
+            }
+
+            _ = _clipboard.SelectedRequestors.Remove(requestor);
+        }
+    }
+
     private void ClipboardRemoveWrite(
         (nuint Requestor, nuint Property) key,
-        bool deleteProperty)
+        bool releaseRequestorEvents)
     {
         if (!_clipboard.PendingWrites.Remove(key))
         {
             return;
         }
 
-        if (deleteProperty)
-        {
-            _ = X11Native.XDeleteProperty(_display, key.Requestor, key.Property);
-        }
+        _ = _clipboard.PendingWriteAdvances.Remove(key);
 
-        if (_windowsByNativeId.ContainsKey(key.Requestor))
+        if (!releaseRequestorEvents || _windowsByNativeId.ContainsKey(key.Requestor))
         {
             return;
         }
@@ -603,7 +687,27 @@ internal sealed unsafe partial class X11PlatformBackend
             }
         }
 
-        _ = X11Native.XSelectInput(_display, key.Requestor, eventMask: 0);
+        _ = _clipboard.PendingRequestorReleases.Add(key.Requestor);
+    }
+
+    private void ClipboardRequestorDestroyed(nuint requestor)
+    {
+        _ = _clipboard.SelectedRequestors.Remove(requestor);
+        _ = _clipboard.PendingRequestorReleases.Remove(requestor);
+        var keys = new List<(nuint Requestor, nuint Property)>();
+
+        foreach (var key in _clipboard.PendingWrites.Keys)
+        {
+            if (key.Requestor == requestor)
+            {
+                keys.Add(key);
+            }
+        }
+
+        foreach (var key in keys)
+        {
+            ClipboardRemoveWrite(key, releaseRequestorEvents: false);
+        }
     }
 
     private bool ClipboardRetryTextPlain(X11ClipboardState.ReadTransfer transfer)
@@ -850,17 +954,24 @@ internal sealed unsafe partial class X11PlatformBackend
             {
                 var requestor = selectionRequest.Requestor;
                 var requestorIsOwned = _windowsByNativeId.ContainsKey(selectionRequest.Requestor);
+                var requestorAlreadySelected = _clipboard.SelectedRequestors.Contains(requestor);
                 propertyWritten = !_clipboard.PendingWrites.ContainsKey((requestor, property))
-                    && (_clipboard.PendingWrites.Count < X11ClipboardState.MaximumPendingReads);
-                var selectedPropertyEvents = false;
+                    && (_clipboard.PendingWrites.Count < X11ClipboardState.MaximumPendingReads)
+                    && (requestorIsOwned
+                        || requestorAlreadySelected
+                        || (_clipboard.SelectedRequestors.Count < X11ClipboardState.MaximumSelectedRequestors));
 
-                if (propertyWritten && !requestorIsOwned)
+                if (propertyWritten && !requestorIsOwned && !requestorAlreadySelected)
                 {
                     propertyWritten = X11Native.XSelectInput(
                         _display,
                         requestor,
-                        checked((nint)PropertyChangeMask)) != 0;
-                    selectedPropertyEvents = propertyWritten;
+                        checked((nint)(PropertyChangeMask | StructureNotifyMask))) != 0;
+
+                    if (propertyWritten)
+                    {
+                        _ = _clipboard.SelectedRequestors.Add(requestor);
+                    }
                 }
 
                 if (propertyWritten)
@@ -887,9 +998,9 @@ internal sealed unsafe partial class X11PlatformBackend
                             textBytes,
                             Stopwatch.GetTimestamp()));
                 }
-                else if (selectedPropertyEvents)
+                else if (!requestorIsOwned && _clipboard.SelectedRequestors.Contains(requestor))
                 {
-                    _ = X11Native.XSelectInput(_display, requestor, eventMask: 0);
+                    _ = _clipboard.PendingRequestorReleases.Add(requestor);
                 }
             }
         }
@@ -937,11 +1048,11 @@ internal sealed unsafe partial class X11PlatformBackend
                 data: null,
                 elementCount: 0) == 0)
             {
-                ClipboardRemoveWrite((requestor, property), deleteProperty: true);
+                ClipboardRemoveWrite((requestor, property), releaseRequestorEvents: false);
                 return;
             }
 
-            ClipboardRemoveWrite((requestor, property), deleteProperty: false);
+            ClipboardRemoveWrite((requestor, property), releaseRequestorEvents: true);
             _ = X11Native.XFlush(_display);
             return;
         }
@@ -960,7 +1071,7 @@ internal sealed unsafe partial class X11PlatformBackend
                 bytes + transfer.Offset,
                 chunkLength) == 0)
             {
-                ClipboardRemoveWrite((requestor, property), deleteProperty: true);
+                ClipboardRemoveWrite((requestor, property), releaseRequestorEvents: false);
                 return;
             }
         }

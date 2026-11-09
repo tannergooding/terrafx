@@ -12,6 +12,7 @@ namespace TerraFX.Platform;
 internal sealed class X11ClipboardState
 {
     internal const int MaximumPendingReads = 64;
+    internal const int MaximumSelectedRequestors = 64;
     internal const int TransferChunkBytes = 16 * 1024;
     internal const long TransferTimeoutMilliseconds = 5000;
 
@@ -44,7 +45,13 @@ internal sealed class X11ClipboardState
 
     internal Dictionary<nuint, ReadTransfer> PendingReads { get; } = [];
 
+    internal HashSet<nuint> PendingRequestorReleases { get; } = [];
+
+    internal HashSet<(nuint Requestor, nuint Property)> PendingWriteAdvances { get; } = [];
+
     internal Dictionary<(nuint Requestor, nuint Property), WriteTransfer> PendingWrites { get; } = [];
+
+    internal HashSet<nuint> SelectedRequestors { get; } = [];
 
     internal nuint SelectionAtom { get; }
 

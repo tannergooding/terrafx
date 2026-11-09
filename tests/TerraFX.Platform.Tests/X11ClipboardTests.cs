@@ -133,7 +133,7 @@ internal sealed class X11ClipboardTests
                 Assert.That(response.Type, Is.EqualTo(atomAtom));
                 Assert.That(response.Format, Is.EqualTo(32));
                 Assert.That(response.ItemCount, Is.EqualTo((nuint)3));
-                Assert.That(response.BytesAfter, Is.Zero);
+                Assert.That(response.BytesAfter, Is.EqualTo((nuint)0));
                 Assert.That(
                     X11ClipboardTestNative.GetUnsignedLongs(response.Value, checked((int)response.ItemCount)),
                     Is.EqualTo([targetsAtom, utf8StringAtom, textPlainUtf8Atom]));
@@ -241,6 +241,8 @@ internal sealed class X11ClipboardTests
         {
             CreateWindow(requestor, requestorWindow);
             requestorWindowCreated = true;
+            Assert.That(requestor.TryGetNativeWindowBinding(requestorWindow, out var requestorBinding), Is.True);
+            var nativeRequestorWindow = checked((nuint)requestorBinding.NativeWindowOrSurface);
             ownerDisplay = X11ClipboardTestNative.OpenDisplay(displayName: null);
 
             if (ownerDisplay == 0)
@@ -261,7 +263,10 @@ internal sealed class X11ClipboardTests
             requestorClipboard.Pump();
 
             Assert.That(X11ClipboardTestNative.NextSelectionRequest(ownerDisplay, out var selectionRequest), Is.True);
+            Assert.That(selectionRequest.Requestor, Is.EqualTo(nativeRequestorWindow));
+            Assert.That(selectionRequest.Selection, Is.EqualTo(selectionAtom));
             Assert.That(selectionRequest.Target, Is.EqualTo(utf8StringAtom));
+            Assert.That(selectionRequest.Property, Is.Not.Zero);
             X11ClipboardTestNative.SetMalformedProperty(
                 ownerDisplay,
                 selectionRequest,
@@ -271,8 +276,13 @@ internal sealed class X11ClipboardTests
                 X11ClipboardTestNative.SendSelectionNotify(ownerDisplay, selectionRequest, selectionRequest.Property),
                 Is.True);
 
-            requestor.Pump();
-            requestorClipboard.Pump();
+            for (var index = 0; index < 256 && !read.IsCompleted; index++)
+            {
+                requestor.Pump();
+                requestorClipboard.Pump();
+                Thread.Sleep(1);
+            }
+
             Assert.That(read.IsCompleted, Is.True);
             Assert.That(read.GetAwaiter().GetResult().Status, Is.EqualTo(ClipboardStatus.InvalidData));
         }

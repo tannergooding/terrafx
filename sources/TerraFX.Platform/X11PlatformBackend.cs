@@ -982,11 +982,18 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
                     RefreshDpiSettings();
                 }
             }
-            else if ((nativeEvent.Type == DestroyNotifyEvent)
-                && _windowsByNativeId.TryGetValue(nativeEvent.Destroy.Window, out var destroyedState))
+            else if (nativeEvent.Type == DestroyNotifyEvent)
             {
-                destroyedState.NativeDestroyed = true;
-                QueueCloseRequest(destroyedState);
+                if (_windowsByNativeId.TryGetValue(nativeEvent.Destroy.Window, out var destroyedState))
+                {
+                    destroyedState.NativeDestroyed = true;
+                    QueueCloseRequest(destroyedState);
+                    ClipboardRequestorDestroyed(nativeEvent.Destroy.Window);
+                }
+                else
+                {
+                    ClipboardRequestorDestroyed(nativeEvent.Destroy.Window);
+                }
             }
             else if ((nativeEvent.Type == KeyPressEvent)
                 && (!_xinput2Available || (nativeEvent.Key.SendEvent != 0))
@@ -1068,6 +1075,8 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             }
         }
 
+        ClipboardAdvanceWrites();
+        ClipboardReleaseRequestorEvents();
         _gamepadCapture?.Pump();
         ClipboardExpireReads();
         ClipboardExpireWrites();

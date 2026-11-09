@@ -149,7 +149,7 @@ internal static unsafe partial class X11ClipboardTestNative
             },
         };
         var sent = XSendEvent(display, selectionRequest.Requestor, propagate: 0, eventMask: 0, &nativeEvent) != 0;
-        _ = XFlush(display);
+        _ = XSync(display, discard: 0);
         return sent;
     }
 
