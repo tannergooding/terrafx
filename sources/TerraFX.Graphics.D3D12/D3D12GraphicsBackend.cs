@@ -36,18 +36,21 @@ public static unsafe class D3D12GraphicsBackend
         private readonly Func<long, long>? _completedFenceValueOverride;
         private readonly Action<GraphicsGraphSubmission>? _graphSubmissionObserver;
         private readonly Func<nint, uint, uint>? _graphWaitForSingleObject;
+        private readonly Func<int, int>? _surfacePresentResultOverride;
         private readonly Func<nint, uint, uint>? _waitForSingleObject;
 
         internal D3D12BackendFactory(
             Func<nint, uint, uint>? waitForSingleObject = null,
             Func<nint, uint, uint>? graphWaitForSingleObject = null,
             Func<long, long>? completedFenceValueOverride = null,
-            Action<GraphicsGraphSubmission>? graphSubmissionObserver = null)
+            Action<GraphicsGraphSubmission>? graphSubmissionObserver = null,
+            Func<int, int>? surfacePresentResultOverride = null)
         {
             _waitForSingleObject = waitForSingleObject;
             _graphWaitForSingleObject = graphWaitForSingleObject;
             _completedFenceValueOverride = completedFenceValueOverride;
             _graphSubmissionObserver = graphSubmissionObserver;
+            _surfacePresentResultOverride = surfacePresentResultOverride;
         }
 
         public GraphicsBackend Backend => GraphicsBackend.D3D12;
@@ -753,7 +756,8 @@ public static unsafe class D3D12GraphicsBackend
                                 _waitForSingleObject,
                                 _graphWaitForSingleObject,
                                 _completedFenceValueOverride,
-                                _graphSubmissionObserver);
+                                _graphSubmissionObserver,
+                                _surfacePresentResultOverride);
                             device = null;
                             adapter3 = null;
                             return backendDevice;
@@ -821,6 +825,7 @@ public static unsafe class D3D12GraphicsBackend
             private D3D12DescriptorRangeAllocator? _samplerDescriptorAllocator;
             private ID3D12DescriptorHeap* _samplerDescriptorHeap;
             private uint _samplerDescriptorIncrementSize;
+            private readonly Func<int, int>? _surfacePresentResultOverride;
             private D3D12BackendFactory.D3D12TransferQueue? _transferQueue;
             private readonly List<D3D12BackendDescriptorSet> _uncertainGraphDescriptorSets = [];
             private readonly List<nint> _uncertainGraphRenderTargetHeaps = [];
@@ -836,7 +841,8 @@ public static unsafe class D3D12GraphicsBackend
                 Func<nint, uint, uint>? waitForSingleObject,
                 Func<nint, uint, uint>? graphWaitForSingleObject,
                 Func<long, long>? completedFenceValueOverride,
-                Action<GraphicsGraphSubmission>? graphSubmissionObserver)
+                Action<GraphicsGraphSubmission>? graphSubmissionObserver,
+                Func<int, int>? surfacePresentResultOverride)
             {
                 ArgumentNullException.ThrowIfNull(capabilities);
 
@@ -856,6 +862,7 @@ public static unsafe class D3D12GraphicsBackend
                 _graphSubmissionObserver = graphSubmissionObserver;
                 _graphWaitForSingleObject = graphWaitForSingleObject;
                 _waitForSingleObject = waitForSingleObject;
+                _surfacePresentResultOverride = surfacePresentResultOverride;
             }
 
             public GraphicsCapabilities Capabilities { get; }
@@ -1288,7 +1295,8 @@ public static unsafe class D3D12GraphicsBackend
                     transferQueue.CommandQueue,
                     binding,
                     clientPixelSize,
-                    Capabilities);
+                    Capabilities,
+                    _surfacePresentResultOverride);
             }
 
             public IGraphicsBackendTexture CreateTexture(

@@ -186,7 +186,8 @@ internal sealed partial class EngineHostOptionsTests
         }
     }
 
-    [Test]
+    [TestCase(false)]
+    [TestCase(true)]
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
@@ -195,12 +196,26 @@ internal sealed partial class EngineHostOptionsTests
         "Reliability",
         "CA2000:Dispose objects before losing scope",
         Justification = "The EngineHost is disposed in the enclosing finally block after native window closure.")]
-    public void EngineHostInteractiveStartupMapsSurfaceBeforeWindowReceipt()
+    public void EngineHostInteractiveStartupMapsSurfaceBeforeWindowReceipt(bool injectOcclusionResult)
     {
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
             Assert.Ignore("The Interactive EngineHost witness requires Windows 11.");
             return;
+        }
+
+        const int DxgiStatusOccludedForTesting = 0x087A0001;
+        var overrideNextPresent = injectOcclusionResult;
+
+        int OverridePresentResult(int nativePresentResult)
+        {
+            if (overrideNextPresent && (nativePresentResult == 0))
+            {
+                overrideNextPresent = false;
+                return DxgiStatusOccludedForTesting;
+            }
+
+            return nativePresentResult;
         }
 
         var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
@@ -216,11 +231,15 @@ internal sealed partial class EngineHostOptionsTests
             packagePath,
             SHA256.HashData(packageBytes),
             CreateAssetStoreOptions().Registration);
+        var registration = injectOcclusionResult
+            ? new GraphicsBackendRegistration(new D3D12GraphicsBackend.D3D12BackendFactory(
+                surfacePresentResultOverride: OverridePresentResult))
+            : D3D12GraphicsBackend.CreateRegistration();
         var options = new EngineHostOptions(
             HostProfile.Interactive,
             PlatformBackend.WindowsNative,
             GraphicsBackend.D3D12,
-            D3D12GraphicsBackend.CreateRegistration(),
+            registration,
             assetStoreOptions) {
             CpuWorkerCount = 0,
             GraphicsFrameSlotCount = 2,
@@ -369,7 +388,11 @@ internal sealed partial class EngineHostOptionsTests
                 .GetResult();
             Assert.That(firstPresentation.PresentationSequence, Is.EqualTo(firstSubmission.PresentationSequence));
             Assert.That(secondPresentation.PresentationSequence, Is.EqualTo(secondSubmission.PresentationSequence));
-            Assert.That(firstPresentation.Status, Is.AnyOf(PresentationStatus.Presented, PresentationStatus.Occluded));
+            Assert.That(
+                firstPresentation.Status,
+                injectOcclusionResult
+                    ? Is.EqualTo(PresentationStatus.Occluded)
+                    : Is.AnyOf(PresentationStatus.Presented, PresentationStatus.Occluded));
             Assert.That(secondPresentation.Status, Is.AnyOf(PresentationStatus.Presented, PresentationStatus.Occluded));
             renderSnapshot.Dispose();
             renderWorld.Dispose();

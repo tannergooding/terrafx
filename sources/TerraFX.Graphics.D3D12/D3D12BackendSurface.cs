@@ -60,6 +60,7 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
         uint SwapchainEpoch,
         PresentationStatus Status)> _presentationHistory = [];
     private readonly bool _supportsTearing;
+    private readonly Func<int, int>? _surfacePresentResultOverride;
     private IDXGISwapChain3* _swapChain;
     private readonly uint _swapChainFlags;
 
@@ -79,7 +80,8 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
         GraphicsCapabilities graphicsCapabilities,
         SurfaceCapabilities capabilities,
         PixelSize clientPixelSize,
-        TextureFormat colorFormat)
+        TextureFormat colorFormat,
+        Func<int, int>? surfacePresentResultOverride)
     {
         _binding = binding;
         _device = device;
@@ -93,6 +95,7 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
         _capabilities = capabilities;
         _clientPixelSize = clientPixelSize;
         _colorFormat = colorFormat;
+        _surfacePresentResultOverride = surfacePresentResultOverride;
         _lastSwapchainEpoch = capabilities.SwapchainEpoch;
     }
 
@@ -111,7 +114,8 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
         ID3D12CommandQueue* commandQueue,
         GraphicsNativeSurfaceBinding binding,
         PixelSize clientPixelSize,
-        GraphicsCapabilities graphicsCapabilities)
+        GraphicsCapabilities graphicsCapabilities,
+        Func<int, int>? surfacePresentResultOverride = null)
     {
         if (device is null)
         {
@@ -186,7 +190,8 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
                 graphicsCapabilities,
                 surfaceCapabilities,
                 clientPixelSize,
-                colorFormat);
+                colorFormat,
+                surfacePresentResultOverride);
             factory = null;
             swapChain3 = null;
             frameLatencyWaitableObject = default;
@@ -763,9 +768,10 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
 
         var presentationSequence = checked(_nextPresentationSequence + 1);
         _nextPresentationSequence = presentationSequence;
-        var presentResult = swapChain->Present(1, 0);
+        var nativePresentResult = swapChain->Present(1, 0).Value;
+        var presentResult = _surfacePresentResultOverride?.Invoke(nativePresentResult) ?? nativePresentResult;
 
-        if (presentResult.Value == DxgiStatusOccluded)
+        if (presentResult == DxgiStatusOccluded)
         {
             _pendingPresentations.Add(presentationSequence, (
                 0,
@@ -775,9 +781,9 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
             return presentationSequence;
         }
 
-        if (presentResult.FAILED)
+        if (presentResult < 0)
         {
-            if (GetPresentationFailureStatus(presentResult.Value) is PresentationStatus status)
+            if (GetPresentationFailureStatus(presentResult) is PresentationStatus status)
             {
                 _pendingPresentations.Add(presentationSequence, (
                     0,
@@ -787,7 +793,7 @@ internal sealed unsafe partial class D3D12BackendSurface : IGraphicsBackendSurfa
                 return presentationSequence;
             }
 
-            ThrowIfFailed(presentResult);
+            Marshal.ThrowExceptionForHR(presentResult);
         }
 
         uint nativePresentCount = 0;
