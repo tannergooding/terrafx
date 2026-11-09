@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
@@ -70,6 +71,70 @@ internal sealed class X11ClipboardTests
         Assert.That(malformed.Text, Is.Null);
         Assert.That(oversized.Status, Is.EqualTo(ClipboardStatus.TooLarge));
         Assert.That(oversized.Text, Is.Null);
+    }
+
+    [Test]
+    public void X11SelectionReadTimesOutWhenIncrementalOwnerStopsResponding()
+    {
+        if (!OperatingSystem.IsLinux()
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_ISOLATED_X11") != "1")
+            || (Environment.GetEnvironmentVariable("DISPLAY") != ":99"))
+        {
+            Assert.Ignore("The X11 clipboard timeout witness requires the test-owned :99 display.");
+            return;
+        }
+
+        using var owner = CreateBackend(ownerId: 84);
+        using var requestor = CreateBackend(ownerId: 85);
+        var ownerClipboard = new ClipboardTextService(owner, ClipboardServiceStatus.Ready);
+        var requestorClipboard = new ClipboardTextService(requestor, ClipboardServiceStatus.Ready);
+        var ownerWindow = new WindowHandle(ownerId: 84, index: 0, generation: 1);
+        var requestorWindow = new WindowHandle(ownerId: 85, index: 0, generation: 1);
+        var ownerWindowCreated = false;
+        var requestorWindowCreated = false;
+
+        try
+        {
+            CreateWindow(owner, ownerWindow);
+            ownerWindowCreated = true;
+            CreateWindow(requestor, requestorWindow);
+            requestorWindowCreated = true;
+
+            var largeText = new string('x', X11ClipboardState.TransferChunkBytes + 1);
+            var write = ownerClipboard.WriteTextAsync(
+                new ClipboardWriteRequest(ownerWindow, largeText, 1_048_576, gestureToken: null));
+            ownerClipboard.Pump();
+            Assert.That(write.GetAwaiter().GetResult().Status, Is.EqualTo(ClipboardStatus.Completed));
+
+            var read = requestorClipboard.ReadTextAsync(
+                new ClipboardReadRequest(requestorWindow, largeText.Length, gestureToken: null));
+            requestor.Pump();
+            requestorClipboard.Pump();
+            owner.Pump();
+            requestor.Pump();
+
+            Thread.Sleep(TimeSpan.FromMilliseconds(X11ClipboardState.TransferTimeoutMilliseconds + 100));
+            requestor.Pump();
+            Assert.That(read.GetAwaiter().GetResult().Status, Is.EqualTo(ClipboardStatus.TimedOut));
+
+            owner.Pump();
+            requestor.Pump();
+        }
+        finally
+        {
+            requestorClipboard.DisposeFromOwner();
+            ownerClipboard.DisposeFromOwner();
+
+            if (requestorWindowCreated)
+            {
+                requestor.CloseWindow(requestorWindow);
+            }
+
+            if (ownerWindowCreated)
+            {
+                owner.CloseWindow(ownerWindow);
+            }
+        }
     }
 
     [Test]
