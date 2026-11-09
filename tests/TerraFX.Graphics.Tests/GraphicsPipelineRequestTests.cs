@@ -306,6 +306,38 @@ internal sealed class GraphicsPipelineRequestTests
     }
 
     [Test]
+    public async Task CreateAsyncPreservesOwnerIdAndRequestedDeviceEpoch()
+    {
+        using var continuePipelineCreation = new ManualResetEventSlim(initialState: true);
+        using var pipelineCreationEntered = new ManualResetEventSlim(initialState: false);
+        var backendDevice = new FakeBackendDevice(
+            CreateCapabilities(),
+            pipelineCreationEntered,
+            continuePipelineCreation);
+        var registration = new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice));
+        var graphicsDevice = await GraphicsDevice.CreateAsync(
+            ownerId: 50,
+            registration: registration,
+            profile: GraphicsDeviceProfile.OffscreenNative,
+            frameSlotCount: 3,
+            platformKind: GraphicsPlatformKind.None,
+            presentationProbeBinding: null,
+            deviceEpoch: 4,
+            cancellationToken: CancellationToken.None).ConfigureAwait(false);
+
+        try
+        {
+            Assert.That(graphicsDevice.OwnerId, Is.EqualTo(50));
+            Assert.That(graphicsDevice.DeviceEpoch, Is.EqualTo(4));
+            Assert.That(graphicsDevice.Status, Is.EqualTo(GraphicsDeviceStatus.Ready));
+        }
+        finally
+        {
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task DeviceLossResponseMarksOwnerLostAndRejectsFuturePipelineRequests()
     {
         using var continuePipelineCreation = new ManualResetEventSlim(initialState: true);

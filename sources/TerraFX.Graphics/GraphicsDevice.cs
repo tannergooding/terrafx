@@ -63,7 +63,8 @@ public sealed partial class GraphicsDevice
         uint ownerId,
         IGraphicsBackendDevice backendDevice,
         int frameSlotCount,
-        GraphicsPlatformKind platformKind)
+        GraphicsPlatformKind platformKind,
+        uint deviceEpoch)
     {
         _ownerId = ownerId;
         _backendDevice = backendDevice;
@@ -72,7 +73,7 @@ public sealed partial class GraphicsDevice
         _platformKind = platformKind;
         _ = _pendingGraphSubmissions.EnsureCapacity(frameSlotCount);
         _graphFrameSlots = new SemaphoreSlim(frameSlotCount, frameSlotCount);
-        DeviceEpoch = 1;
+        DeviceEpoch = deviceEpoch;
         _status = (int)GraphicsDeviceStatus.Ready;
         _shutdownTask = WaitForShutdownAndOwnerExitAsync(_shutdownCompletion.Task, _ownerThread);
     }
@@ -80,7 +81,7 @@ public sealed partial class GraphicsDevice
     /// <summary>Gets the immutable capabilities reported by the selected backend.</summary>
     public GraphicsCapabilities Capabilities => _capabilities;
 
-    /// <summary>Gets the device epoch, initially one for this host-issued owner.</summary>
+    /// <summary>Gets the graphics-device generation within this host-issued owner identity.</summary>
     public uint DeviceEpoch { get; }
 
     /// <summary>Gets the current lifecycle state.</summary>
@@ -130,8 +131,28 @@ public sealed partial class GraphicsDevice
         GraphicsPlatformKind platformKind,
         GraphicsNativeSurfaceBinding? presentationProbeBinding,
         CancellationToken cancellationToken)
+        => CreateAsync(
+            ownerId,
+            registration,
+            profile,
+            frameSlotCount,
+            platformKind,
+            presentationProbeBinding,
+            deviceEpoch: 1,
+            cancellationToken);
+
+    internal static Task<GraphicsDevice> CreateAsync(
+        uint ownerId,
+        GraphicsBackendRegistration registration,
+        GraphicsDeviceProfile profile,
+        int frameSlotCount,
+        GraphicsPlatformKind platformKind,
+        GraphicsNativeSurfaceBinding? presentationProbeBinding,
+        uint deviceEpoch,
+        CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfZero(ownerId);
+        ArgumentOutOfRangeException.ThrowIfZero(deviceEpoch);
         ArgumentNullException.ThrowIfNull(registration);
         ArgumentOutOfRangeException.ThrowIfLessThan(frameSlotCount, MinimumGraphFrameSlotCount);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(frameSlotCount, MaximumGraphFrameSlotCount);
@@ -162,6 +183,7 @@ public sealed partial class GraphicsDevice
             frameSlotCount,
             platformKind,
             presentationProbeBinding,
+            deviceEpoch,
             cancellationToken).Start();
     }
 
@@ -2918,6 +2940,7 @@ public sealed partial class GraphicsDevice
     {
         private readonly CancellationToken _cancellationToken;
         private readonly TaskCompletionSource<GraphicsDevice> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly uint _deviceEpoch;
         private readonly int _frameSlotCount;
         private readonly uint _ownerId;
         private readonly GraphicsPlatformKind _platformKind;
@@ -2932,9 +2955,11 @@ public sealed partial class GraphicsDevice
             int frameSlotCount,
             GraphicsPlatformKind platformKind,
             GraphicsNativeSurfaceBinding? presentationProbeBinding,
+            uint deviceEpoch,
             CancellationToken cancellationToken)
         {
             _ownerId = ownerId;
+            _deviceEpoch = deviceEpoch;
             _frameSlotCount = frameSlotCount;
             _registration = registration;
             _profile = profile;
@@ -2991,7 +3016,7 @@ public sealed partial class GraphicsDevice
 
                 _cancellationToken.ThrowIfCancellationRequested();
 
-                var device = new GraphicsDevice(_ownerId, backendDevice, _frameSlotCount, _platformKind);
+                var device = new GraphicsDevice(_ownerId, backendDevice, _frameSlotCount, _platformKind, _deviceEpoch);
                 backendDevice = null;
                 _completion.SetResult(device);
                 device.RunOwnerLoop();
