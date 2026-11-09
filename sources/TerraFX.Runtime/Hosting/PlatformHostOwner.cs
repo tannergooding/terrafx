@@ -661,7 +661,7 @@ internal sealed class PlatformHostOwner
                 swapchainEpoch));
     }
 
-    internal void UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot)
+    internal PlatformTextInputCapabilities UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot)
     {
         EnsureOwnerThread();
         ThrowIfDisposed();
@@ -676,7 +676,7 @@ internal sealed class PlatformHostOwner
             ThrowIfStopping();
         }
 
-        _platform.UpdateTextInputSession(window, snapshot);
+        return _platform.UpdateTextInputSession(window, snapshot);
     }
 
     private void CompleteObservedModeTransitions()

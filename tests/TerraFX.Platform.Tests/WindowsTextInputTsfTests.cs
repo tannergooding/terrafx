@@ -41,7 +41,7 @@ internal sealed class WindowsTextInputTsfTests
             },
             nativeMonitorHandle: 0);
 
-        backend.UpdateTextInputSession(window, new TextInputSessionSnapshot(
+        _ = backend.UpdateTextInputSession(window, new TextInputSessionSnapshot(
             1,
             new TextInputSessionOptions(
                 window,
@@ -53,7 +53,7 @@ internal sealed class WindowsTextInputTsfTests
                 caretPosition: new Vector2(8.0f, 4.0f),
                 caretSize: new Vector2(1.0f, 16.0f))));
 
-        backend.UpdateTextInputSession(window, new TextInputSessionSnapshot(
+        _ = backend.UpdateTextInputSession(window, new TextInputSessionSnapshot(
             1,
             new TextInputSessionOptions(
                 window,
@@ -65,7 +65,7 @@ internal sealed class WindowsTextInputTsfTests
                 caretPosition: new Vector2(12.0f, 4.0f),
                 caretSize: new Vector2(1.0f, 16.0f))));
 
-        backend.UpdateTextInputSession(window, snapshot: null);
+        _ = backend.UpdateTextInputSession(window, snapshot: null);
         backend.CloseWindow(window);
     }
 }

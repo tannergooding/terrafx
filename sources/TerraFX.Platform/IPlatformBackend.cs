@@ -93,9 +93,7 @@ internal interface IPlatformBackend : IDisposable
 
     bool TryGetNativeWindowBinding(WindowHandle window, out PlatformNativeWindowBinding binding);
 
-    void UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot)
-    {
-    }
+    PlatformTextInputCapabilities UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot);
 
     ClipboardWriteResponse WriteClipboardText(ClipboardWriteRequest request);
 }

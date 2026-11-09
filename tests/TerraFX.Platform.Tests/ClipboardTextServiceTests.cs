@@ -410,6 +410,13 @@ internal sealed class ClipboardTextServiceTests
             return false;
         }
 
+        public PlatformTextInputCapabilities UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot)
+        {
+            _ = window;
+            _ = snapshot;
+            return PlatformTextInputCapabilities.None;
+        }
+
         public ClipboardWriteResponse WriteClipboardText(ClipboardWriteRequest request)
         {
             EnsureOwnerThread();

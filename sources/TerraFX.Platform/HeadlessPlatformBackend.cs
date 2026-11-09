@@ -4,6 +4,7 @@ using System;
 using System.Collections.Immutable;
 using System.Threading;
 using TerraFX;
+using TerraFX.Input;
 using ClipboardTextResult = TerraFX.Platform.ClipboardStatus;
 
 namespace TerraFX.Platform;
@@ -239,6 +240,14 @@ internal sealed class HeadlessPlatformBackend : IPlatformBackend
         _ = window;
         binding = default;
         return false;
+    }
+
+    public PlatformTextInputCapabilities UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot)
+    {
+        EnsureOwnerThread();
+        _ = window;
+        _ = snapshot;
+        return PlatformTextInputCapabilities.None;
     }
 
     public ClipboardWriteResponse WriteClipboardText(ClipboardWriteRequest request)

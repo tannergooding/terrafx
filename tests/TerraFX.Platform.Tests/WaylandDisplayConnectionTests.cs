@@ -130,6 +130,19 @@ internal sealed class WaylandDisplayConnectionTests
             Assert.That(backend.SetWindowTitle(window, "TerraFX Wayland configured"), Is.EqualTo(WindowCommandStatus.Applied));
             Assert.That(backend.SetWindowClientSize(window, new Vector2(640.0f, 360.0f)), Is.EqualTo(WindowCommandStatus.Unsupported));
             backend.Pump();
+            var textCapabilities = backend.UpdateTextInputSession(window, new TextInputSessionSnapshot(
+                1,
+                new TextInputSessionOptions(
+                    window,
+                    TextInputPurpose.FreeForm,
+                    documentRevision: 1,
+                    surroundingText: null,
+                    selectionStart: 0,
+                    selectionLength: 0,
+                    caretPosition: default,
+                    caretSize: default)));
+            Assert.That(textCapabilities, Is.EqualTo(PlatformTextInputCapabilities.CommittedText));
+            _ = backend.UpdateTextInputSession(window, snapshot: null);
             _ = backend.DrainInputSamples();
             backend.RequestInputStateReconciliation(window);
             var reconciliation = backend.DrainInputSamples().Samples;

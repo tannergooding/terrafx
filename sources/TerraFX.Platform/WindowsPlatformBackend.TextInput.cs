@@ -10,7 +10,7 @@ internal sealed unsafe partial class WindowsPlatformBackend
 {
     private WindowsTextInputManager? _textInputManager;
 
-    public void UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot)
+    public PlatformTextInputCapabilities UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot)
     {
         EnsureOwnerThread();
 
@@ -20,7 +20,7 @@ internal sealed unsafe partial class WindowsPlatformBackend
         if (snapshot is not { } session)
         {
             _textInputManager?.RemoveSession(window);
-            return;
+            return PlatformTextInputCapabilities.None;
         }
 
         if ((session.SessionId <= 0) || (session.Window != window))
@@ -36,5 +36,6 @@ internal sealed unsafe partial class WindowsPlatformBackend
         var stateSnapshot = WindowsTextInputSessionState.Create(session);
         _textInputManager ??= new WindowsTextInputManager(_inputSamples, _timeProvider);
         _textInputManager.UpdateSession(window, state.NativeWindow, stateSnapshot, state.IsFocused);
+        return PlatformTextInputCapabilities.CommittedText | PlatformTextInputCapabilities.Composition;
     }
 }

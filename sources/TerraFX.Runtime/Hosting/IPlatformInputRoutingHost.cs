@@ -19,5 +19,5 @@ internal interface IPlatformInputRoutingHost
 
     PlatformInputCaptureBatch RequestInputStateReconciliation(WindowHandle? window);
 
-    void UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot);
+    PlatformTextInputCapabilities UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot);
 }

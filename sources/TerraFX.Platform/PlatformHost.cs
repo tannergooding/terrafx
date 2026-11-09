@@ -496,7 +496,7 @@ public sealed class PlatformHost
     internal bool TryGetNativeWindowBinding(WindowHandle window, out PlatformNativeWindowBinding binding)
         => _backend.TryGetNativeWindowBinding(window, out binding);
 
-    internal void UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot)
+    internal PlatformTextInputCapabilities UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot)
     {
         if (!window.IsValid || (window.OwnerId != _backend.OwnerId))
         {
@@ -509,6 +509,6 @@ public sealed class PlatformHost
             throw new ArgumentException("The text input snapshot must name its exact session and window.", nameof(snapshot));
         }
 
-        _backend.UpdateTextInputSession(window, snapshot);
+        return _backend.UpdateTextInputSession(window, snapshot);
     }
 }

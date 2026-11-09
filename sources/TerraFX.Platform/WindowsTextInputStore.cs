@@ -93,6 +93,8 @@ internal sealed unsafe partial class WindowsTextInputStore :
         _selectionLength = state.SelectionLength;
     }
 
+    internal long DocumentRevision => _state.DocumentRevision;
+
     internal long SessionId => _state.SessionId;
 
     private bool HasReadLock => (_lockFlags & TextStoreReadLock) != 0;

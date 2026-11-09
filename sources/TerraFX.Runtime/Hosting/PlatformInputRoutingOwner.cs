@@ -406,7 +406,7 @@ internal sealed class PlatformInputRoutingOwner
         {
             try
             {
-                _platformOwner.UpdateTextInputSession(window, snapshot: null);
+                _ = _platformOwner.UpdateTextInputSession(window, snapshot: null);
             }
             catch (Exception exception)
             {
@@ -445,7 +445,7 @@ internal sealed class PlatformInputRoutingOwner
 
         if (_nativeTextInputSessions.ContainsKey(window))
         {
-            _platformOwner.UpdateTextInputSession(window, snapshot: null);
+            _ = _platformOwner.UpdateTextInputSession(window, snapshot: null);
             _ = _nativeTextInputSessions.Remove(window);
         }
     }
@@ -776,63 +776,102 @@ internal sealed class PlatformInputRoutingOwner
             {
                 var snapshot = session.Snapshot;
 
-                if (!_nativeTextInputSessions.TryGetValue(window, out var currentSnapshot)
-                    || (currentSnapshot != snapshot))
+                try
                 {
+                    var capabilities = _platformOwner.UpdateTextInputSession(window, snapshot);
+
+                    if ((capabilities & ~(PlatformTextInputCapabilities.CommittedText | PlatformTextInputCapabilities.Composition)) != 0)
+                    {
+                        throw new InvalidOperationException("The Platform owner returned unknown text-input capability bits.");
+                    }
+
+                    _nativeTextInputSessions[window] = snapshot;
+                    var capabilityTimestamp = _platformOwner.GetHostTimestamp();
+
+                    if ((capabilities & PlatformTextInputCapabilities.Composition) == 0)
+                    {
+                        var diagnostic = session.ReportNativeCapabilityUnavailable(
+                            "TextCompositionUnavailable",
+                            capabilityTimestamp,
+                            "PlatformInputRoutingOwner.SynchronizeTextInputSessions",
+                            "The native platform provides no text composition capability for this session.");
+
+                        if (diagnostic is not null)
+                        {
+                            _diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+                        }
+                    }
+                    else
+                    {
+                        session.ClearNativeCapabilityUnavailable("TextCompositionUnavailable");
+                    }
+
+                    if ((capabilities & PlatformTextInputCapabilities.CommittedText) == 0)
+                    {
+                        var diagnostic = session.ReportNativeCapabilityUnavailable(
+                            "TextCommitUnavailable",
+                            capabilityTimestamp,
+                            "PlatformInputRoutingOwner.SynchronizeTextInputSessions",
+                            "The native platform provides no committed-text capability for this session.");
+
+                        if (diagnostic is not null)
+                        {
+                            _diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+                        }
+                    }
+                    else
+                    {
+                        session.ClearNativeCapabilityUnavailable("TextCommitUnavailable");
+                    }
+                }
+                catch (WindowsTextInputInteropException exception)
+                {
+                    var hostTimestamp = _platformOwner.GetHostTimestamp();
+                    var hostSequence = _sequenceLease.Allocate();
+                    var diagnostic = session.TerminateForNativeUnavailable(
+                        hostSequence,
+                        hostTimestamp,
+                        exception.HResult,
+                        "PlatformInputRoutingOwner.SynchronizeTextInputSessions",
+                        exception.Message);
+                    _diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+                    _diagnostics.Write(
+                        new Diagnostic(
+                            "TextCommitUnavailable",
+                            DiagnosticSeverity.Error,
+                            hostTimestamp,
+                            hostId: null,
+                            worldGuid: null,
+                            deviceId: null,
+                            deviceEpoch: null,
+                            surfaceId: null,
+                            surfaceEpoch: null,
+                            swapchainEpoch: null,
+                            tick: null,
+                            systemId: null,
+                            passId: null,
+                            assetId: null,
+                            commandIdentity: null,
+                            operation: "PlatformInputRoutingOwner.SynchronizeTextInputSessions",
+                            nativeResult: exception.HResult,
+                            message: exception.Message,
+                            context: []),
+                        executionSessionId: null,
+                        worldOwnerId: null);
+
                     try
                     {
-                        _platformOwner.UpdateTextInputSession(window, snapshot);
-                        _nativeTextInputSessions[window] = snapshot;
+                        _ = _platformOwner.UpdateTextInputSession(window, snapshot: null);
                     }
-                    catch (WindowsTextInputInteropException exception)
+                    finally
                     {
-                        var hostTimestamp = _platformOwner.GetHostTimestamp();
-                        var hostSequence = _sequenceLease.Allocate();
-                        var diagnostic = session.TerminateForNativeUnavailable(
-                            hostSequence,
-                            hostTimestamp,
-                            exception.HResult,
-                            "PlatformInputRoutingOwner.SynchronizeTextInputSessions",
-                            exception.Message);
-                        _diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
-                        _diagnostics.Write(
-                            new Diagnostic(
-                                "TextCommitUnavailable",
-                                DiagnosticSeverity.Error,
-                                hostTimestamp,
-                                hostId: null,
-                                worldGuid: null,
-                                deviceId: null,
-                                deviceEpoch: null,
-                                surfaceId: null,
-                                surfaceEpoch: null,
-                                swapchainEpoch: null,
-                                tick: null,
-                                systemId: null,
-                                passId: null,
-                                assetId: null,
-                                commandIdentity: null,
-                                operation: "PlatformInputRoutingOwner.SynchronizeTextInputSessions",
-                                nativeResult: exception.HResult,
-                                message: exception.Message,
-                                context: []),
-                            executionSessionId: null,
-                            worldOwnerId: null);
-
-                        try
-                        {
-                            _platformOwner.UpdateTextInputSession(window, snapshot: null);
-                        }
-                        finally
-                        {
-                            _ = _nativeTextInputSessions.Remove(window);
-                        }
+                        _ = _nativeTextInputSessions.Remove(window);
                     }
                 }
             }
             else if (_nativeTextInputSessions.ContainsKey(window))
             {
-                _platformOwner.UpdateTextInputSession(window, snapshot: null);
+                _ = _platformOwner.UpdateTextInputSession(window, snapshot: null);
                 _ = _nativeTextInputSessions.Remove(window);
             }
         }
@@ -841,7 +880,7 @@ internal sealed class PlatformInputRoutingOwner
         {
             if (!activeWindows.Contains(window))
             {
-                _platformOwner.UpdateTextInputSession(window, snapshot: null);
+                _ = _platformOwner.UpdateTextInputSession(window, snapshot: null);
                 _ = _nativeTextInputSessions.Remove(window);
             }
         }

@@ -14,7 +14,9 @@ public sealed class TextInputSession : IDisposable
     private bool _awaitingSnapshot;
     private readonly Queue<TextInputBatch> _batches = [];
     private readonly TextInputBatchBudget _budget;
+    private bool _commitUnavailableReported;
     private bool _compositionActive;
+    private bool _compositionUnavailableReported;
     private long _documentRevision;
     private bool _isActive = true;
     private Diagnostic? _lastDiagnostic;
@@ -128,10 +130,11 @@ public sealed class TextInputSession : IDisposable
         string operation,
         long hostTimestamp,
         string message,
-        int? nativeResult = null)
+        int? nativeResult = null,
+        DiagnosticSeverity severity = DiagnosticSeverity.Error)
         => new(
             code,
-            DiagnosticSeverity.Error,
+            severity,
             hostTimestamp,
             null,
             null,
@@ -281,6 +284,29 @@ public sealed class TextInputSession : IDisposable
         _lastHostTimestamp = Math.Max(_lastHostTimestamp, router.CurrentHostControlTimestamp);
         _awaitingSnapshot = false;
         _lastDiagnostic = null;
+    }
+
+    internal void ClearNativeCapabilityUnavailable(string code)
+    {
+        EnsureActiveOwnerThread();
+
+        if (code is "TextCompositionUnavailable")
+        {
+            _compositionUnavailableReported = false;
+        }
+        else if (code is "TextCommitUnavailable")
+        {
+            _commitUnavailableReported = false;
+        }
+        else
+        {
+            throw new ArgumentOutOfRangeException(nameof(code));
+        }
+
+        if (_lastDiagnostic?.Code == code)
+        {
+            _lastDiagnostic = null;
+        }
     }
 
     internal void EndForNativeControl(
@@ -597,6 +623,44 @@ public sealed class TextInputSession : IDisposable
         _compositionActive = compositionActive;
         _mirrorRevision = resultRevision;
         return TextInputBatchPublishStatus.Published;
+    }
+
+    internal Diagnostic? ReportNativeCapabilityUnavailable(
+        string code,
+        long hostTimestamp,
+        string operation,
+        string message)
+    {
+        EnsureActiveOwnerThread();
+        ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
+        ArgumentException.ThrowIfNullOrEmpty(operation);
+        ArgumentException.ThrowIfNullOrEmpty(message);
+
+        var shouldReport = code switch {
+            "TextCompositionUnavailable" when !_compositionUnavailableReported => true,
+            "TextCompositionUnavailable" => false,
+            "TextCommitUnavailable" when !_commitUnavailableReported => true,
+            "TextCommitUnavailable" => false,
+            _ => throw new ArgumentOutOfRangeException(nameof(code)),
+        };
+
+        if (code is "TextCompositionUnavailable")
+        {
+            _compositionUnavailableReported = true;
+        }
+        else
+        {
+            _commitUnavailableReported = true;
+        }
+
+        var diagnostic = CreateDiagnostic(
+            code,
+            operation,
+            hostTimestamp,
+            message,
+            severity: DiagnosticSeverity.Warning);
+        _lastDiagnostic = diagnostic;
+        return shouldReport ? diagnostic : null;
     }
 
     internal void TerminateForNativeOverflow(long hostTimestamp, long hostSequence, long discardedSampleCount)

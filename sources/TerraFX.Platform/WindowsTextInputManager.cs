@@ -327,10 +327,14 @@ internal sealed unsafe class WindowsTextInputManager : IDisposable
         if (_sessions.TryGetValue(window, out var existingSession)
             && (existingSession.Store.SessionId == state.SessionId))
         {
-            existingSession.Store.UpdateSnapshot(state);
+            if (existingSession.Store.DocumentRevision != state.DocumentRevision)
+            {
+                existingSession.Store.UpdateSnapshot(state);
+            }
+
             existingSession.NativeWindow = nativeWindow;
 
-            if (isFocused || (_focusedWindow == window))
+            if (isFocused != (_focusedWindow == window))
             {
                 SetWindowFocus(window, isFocused);
             }

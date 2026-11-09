@@ -33,6 +33,6 @@ internal sealed class PlatformInputRoutingHostAdapter : IPlatformInputRoutingHos
     public PlatformInputCaptureBatch RequestInputStateReconciliation(WindowHandle? window)
         => _platformOwner.RequestInputStateReconciliation(window);
 
-    public void UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot)
+    public PlatformTextInputCapabilities UpdateTextInputSession(WindowHandle window, TextInputSessionSnapshot? snapshot)
         => _platformOwner.UpdateTextInputSession(window, snapshot);
 }
