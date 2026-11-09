@@ -179,6 +179,13 @@ done
 export LD_LIBRARY_PATH="$WORKTREE/artifacts/linux/native/extracted/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 ```
 
+The X11 owner witness also verifies that a synthetic printable key produces committed text from the live XKB keymap/state and compose path. This exercises XSendEvent normalization, not physical typing or XInput2 delivery:
+
+```bash
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Debug --filter "FullyQualifiedName=TerraFX.Platform.Tests.HeadlessPlatformBackendTests.X11OnlyCreatesAndRetiresAnInvisibleNativeWindowWhenDisplayIsAvailable" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release --filter "FullyQualifiedName=TerraFX.Platform.Tests.HeadlessPlatformBackendTests.X11OnlyCreatesAndRetiresAnInvisibleNativeWindowWhenDisplayIsAvailable" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
 ```bash
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Debug "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
