@@ -110,12 +110,42 @@ public sealed partial class GraphicsDevice
         int frameSlotCount,
         GraphicsPlatformKind platformKind,
         CancellationToken cancellationToken)
+        => CreateAsync(
+            ownerId,
+            registration,
+            profile,
+            frameSlotCount,
+            platformKind,
+            presentationProbeBinding: null,
+            cancellationToken);
+
+    internal static Task<GraphicsDevice> CreateAsync(
+        uint ownerId,
+        GraphicsBackendRegistration registration,
+        GraphicsDeviceProfile profile,
+        int frameSlotCount,
+        GraphicsPlatformKind platformKind,
+        GraphicsNativeSurfaceBinding? presentationProbeBinding,
+        CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfZero(ownerId);
         ArgumentNullException.ThrowIfNull(registration);
         ArgumentOutOfRangeException.ThrowIfLessThan(frameSlotCount, MinimumGraphFrameSlotCount);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(frameSlotCount, MaximumGraphFrameSlotCount);
         ValidateStartupProfile(registration.Backend, profile, platformKind);
+
+        if (presentationProbeBinding is GraphicsNativeSurfaceBinding binding)
+        {
+            if (profile != GraphicsDeviceProfile.Interactive)
+            {
+                throw new ArgumentException("Only Interactive devices can receive a native presentation-probe binding.", nameof(presentationProbeBinding));
+            }
+
+            if (binding.PlatformKind != platformKind)
+            {
+                throw new ArgumentException("The presentation-probe binding does not match the initialized platform.", nameof(presentationProbeBinding));
+            }
+        }
 
         if (cancellationToken.IsCancellationRequested)
         {
@@ -128,6 +158,7 @@ public sealed partial class GraphicsDevice
             profile,
             frameSlotCount,
             platformKind,
+            presentationProbeBinding,
             cancellationToken).Start();
     }
 
@@ -2849,6 +2880,7 @@ public sealed partial class GraphicsDevice
         private readonly int _frameSlotCount;
         private readonly uint _ownerId;
         private readonly GraphicsPlatformKind _platformKind;
+        private readonly GraphicsNativeSurfaceBinding? _presentationProbeBinding;
         private readonly GraphicsDeviceProfile _profile;
         private readonly GraphicsBackendRegistration _registration;
 
@@ -2858,6 +2890,7 @@ public sealed partial class GraphicsDevice
             GraphicsDeviceProfile profile,
             int frameSlotCount,
             GraphicsPlatformKind platformKind,
+            GraphicsNativeSurfaceBinding? presentationProbeBinding,
             CancellationToken cancellationToken)
         {
             _ownerId = ownerId;
@@ -2865,6 +2898,7 @@ public sealed partial class GraphicsDevice
             _registration = registration;
             _profile = profile;
             _platformKind = platformKind;
+            _presentationProbeBinding = presentationProbeBinding;
             _cancellationToken = cancellationToken;
         }
 
@@ -2894,6 +2928,7 @@ public sealed partial class GraphicsDevice
                     _profile,
                     _platformKind,
                     _frameSlotCount,
+                    _presentationProbeBinding,
                     _cancellationToken);
                 ArgumentNullException.ThrowIfNull(backendDevice);
                 _cancellationToken.ThrowIfCancellationRequested();

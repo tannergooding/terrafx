@@ -14,4 +14,13 @@ internal interface IGraphicsBackendFactory
         GraphicsPlatformKind platformKind,
         int frameSlotCount,
         CancellationToken cancellationToken);
+
+    IGraphicsBackendDevice Create(
+        uint ownerId,
+        GraphicsDeviceProfile profile,
+        GraphicsPlatformKind platformKind,
+        int frameSlotCount,
+        GraphicsNativeSurfaceBinding? presentationProbeBinding,
+        CancellationToken cancellationToken)
+        => Create(ownerId, profile, platformKind, frameSlotCount, cancellationToken);
 }

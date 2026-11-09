@@ -144,7 +144,10 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
     }
 
-    internal long SubmitGraphWithoutWait()
+    internal long SubmitGraphWithoutWait(
+        VkSemaphore waitSemaphore,
+        VkPipelineStageFlags2 waitStageMask,
+        VkSemaphore signalSemaphore)
     {
         EnsureActive();
 
@@ -170,18 +173,56 @@ internal sealed unsafe partial class VulkanBackendDevice
         signalInfo.semaphore = _timelineSemaphore;
         signalInfo.value = signalValue;
         signalInfo.stageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        var waitInfo = default(VkSemaphoreSubmitInfo);
+
+        if (waitSemaphore.Value == 0 != (signalSemaphore.Value == 0))
+        {
+            throw new ArgumentException("Presentation submissions must provide both an acquire wait and a render-finished signal.");
+        }
+
+        if (waitSemaphore.Value != 0)
+        {
+            if ((waitStageMask == VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE)
+                || (signalSemaphore.Value == 0))
+            {
+                throw new ArgumentException("A presentation submission requires acquire and render-finished semaphores.");
+            }
+
+            waitInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+            waitInfo.semaphore = waitSemaphore;
+            waitInfo.stageMask = waitStageMask;
+        }
+
+        var signalInfos = stackalloc VkSemaphoreSubmitInfo[2];
+        signalInfos[0] = signalInfo;
+        var signalCount = 1u;
+
+        if (signalSemaphore.Value != 0)
+        {
+            var renderFinishedInfo = default(VkSemaphoreSubmitInfo);
+            renderFinishedInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+            renderFinishedInfo.semaphore = signalSemaphore;
+            renderFinishedInfo.stageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            signalInfos[signalCount++] = renderFinishedInfo;
+        }
+
         var submitInfo = default(VkSubmitInfo2);
         submitInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
         submitInfo.commandBufferInfoCount = 1;
         submitInfo.pCommandBufferInfos = &commandBufferInfo;
-        submitInfo.signalSemaphoreInfoCount = 1;
-        submitInfo.pSignalSemaphoreInfos = &signalInfo;
+        submitInfo.waitSemaphoreInfoCount = (waitSemaphore.Value == 0) ? 0u : 1u;
+        submitInfo.pWaitSemaphoreInfos = (waitSemaphore.Value == 0) ? null : &waitInfo;
+        submitInfo.signalSemaphoreInfoCount = signalCount;
+        submitInfo.pSignalSemaphoreInfos = signalInfos;
         _hasUncertainSubmission = true;
         ThrowIfFailed(VulkanApi.vkQueueSubmit2(_queue, 1, &submitInfo, default), "vkQueueSubmit2");
         _timelineValue = signalValue;
         _hasUncertainSubmission = false;
         return checked((long)signalValue);
     }
+
+    internal long SubmitGraphWithoutWait()
+        => SubmitGraphWithoutWait(default, VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE, default);
 
     [SuppressMessage(
         "Reliability",

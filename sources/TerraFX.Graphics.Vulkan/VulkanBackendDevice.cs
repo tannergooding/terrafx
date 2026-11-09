@@ -31,8 +31,13 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
     private readonly int _ownerThreadId = Environment.CurrentManagedThreadId;
     private readonly VkPhysicalDevice _physicalDevice;
     private readonly VkPhysicalDeviceMemoryProperties _physicalDeviceMemoryProperties;
+    private readonly GraphicsPlatformKind _platformKind;
     private readonly VkQueue _queue;
     private readonly uint _queueFamilyIndex;
+    private readonly uint[] _queueFamilyIndices;
+    private readonly VkQueue[] _queues;
+    private readonly Action? _surfaceImageAcquiredObserver;
+    private readonly string? _swapchainMaintenanceExtensionName;
     private readonly VkSemaphore _timelineSemaphore;
     private readonly VkCommandBuffer _transferCommandBuffer;
     private readonly Func<VkResult, VkResult>? _transferWaitResultOverride;
@@ -43,6 +48,8 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         VkDevice device,
         VkQueue queue,
         uint queueFamilyIndex,
+        uint[] queueFamilyIndices,
+        VkQueue[] queues,
         VkPhysicalDeviceMemoryProperties physicalDeviceMemoryProperties,
         VkCommandPool commandPool,
         VkCommandBuffer[] commandBuffers,
@@ -50,18 +57,28 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         GraphicsCapabilities capabilities,
         ImmutableHashSet<string> enabledSpirvExtensions,
         bool fragmentStoresAndAtomicsEnabled,
+        string? swapchainMaintenanceExtensionName,
+        GraphicsPlatformKind platformKind,
         Func<VkResult, VkResult>? transferWaitResultOverride,
         int graphFrameSlotCount,
         Action<long>? graphFenceWaitObserver,
         Func<long, long>? completedGraphFenceValueOverride,
-        Action<GraphicsGraphSubmission>? graphSubmissionObserver)
+        Action<GraphicsGraphSubmission>? graphSubmissionObserver,
+        Action? surfaceImageAcquiredObserver)
     {
         ArgumentNullException.ThrowIfNull(enabledSpirvExtensions);
         ArgumentNullException.ThrowIfNull(commandBuffers);
+        ArgumentNullException.ThrowIfNull(queueFamilyIndices);
+        ArgumentNullException.ThrowIfNull(queues);
 
         if (commandBuffers.Length != checked(graphFrameSlotCount + 1))
         {
             throw new ArgumentException("Vulkan command-buffer storage does not match the configured graph frame-slot count.", nameof(commandBuffers));
+        }
+
+        if (queueFamilyIndices.Length != queues.Length)
+        {
+            throw new ArgumentException("Vulkan queue handles do not match the enabled queue families.", nameof(queues));
         }
 
         _instance = instance;
@@ -71,6 +88,10 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         _fragmentStoresAndAtomicsEnabled = fragmentStoresAndAtomicsEnabled;
         _queue = queue;
         _queueFamilyIndex = queueFamilyIndex;
+        _queueFamilyIndices = queueFamilyIndices;
+        _queues = queues;
+        _swapchainMaintenanceExtensionName = swapchainMaintenanceExtensionName;
+        _platformKind = platformKind;
         _physicalDeviceMemoryProperties = physicalDeviceMemoryProperties;
         _commandPool = commandPool;
         _commandBuffer = commandBuffers[0];
@@ -80,6 +101,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         _graphFenceWaitObserver = graphFenceWaitObserver;
         _completedGraphFenceValueOverride = completedGraphFenceValueOverride;
         _graphSubmissionObserver = graphSubmissionObserver;
+        _surfaceImageAcquiredObserver = surfaceImageAcquiredObserver;
         _graphFrameSlotCount = graphFrameSlotCount;
         _graphFrameSlots = new VulkanGraphFrameSlot[graphFrameSlotCount];
 
@@ -171,20 +193,40 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         int graphFrameSlotCount = 3,
         Action<long>? graphFenceWaitObserver = null,
         Func<long, long>? completedGraphFenceValueOverride = null,
-        Action<GraphicsGraphSubmission>? graphSubmissionObserver = null)
+        Action<GraphicsGraphSubmission>? graphSubmissionObserver = null,
+        GraphicsNativeSurfaceBinding? presentationProbeBinding = null,
+        Action? surfaceImageAcquiredObserver = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(graphFrameSlotCount, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(graphFrameSlotCount, 4);
         GraphicsDevice.ValidateStartupProfile(GraphicsBackend.Vulkan, profile, platformKind);
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (profile != GraphicsDeviceProfile.OffscreenNative)
+        var interactiveProbeBinding = default(GraphicsNativeSurfaceBinding);
+
+        if (profile == GraphicsDeviceProfile.Interactive)
         {
-            throw new PlatformNotSupportedException("Interactive Vulkan requires the unimplemented surface and WSI ownership path.");
+            if (presentationProbeBinding is not GraphicsNativeSurfaceBinding binding)
+            {
+                throw new ArgumentNullException(nameof(presentationProbeBinding));
+            }
+
+            if (binding.PlatformKind != platformKind)
+            {
+                throw new ArgumentException("The startup presentation surface does not match the initialized platform.", nameof(presentationProbeBinding));
+            }
+
+            interactiveProbeBinding = binding;
+        }
+        else if (presentationProbeBinding is not null)
+        {
+            throw new ArgumentException("OffscreenNative Vulkan devices cannot receive a native presentation surface.", nameof(presentationProbeBinding));
         }
 
-        var instance = CreateInstance(cancellationToken);
+        var instance = CreateInstance(profile, platformKind, cancellationToken);
         var hasInstance = true;
+        var probeSurface = default(VkSurfaceKHR);
+        var hasProbeSurface = false;
         var device = default(VkDevice);
         var hasDevice = false;
         var commandPool = default(VkCommandPool);
@@ -195,6 +237,14 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
 
         try
         {
+            if (profile == GraphicsDeviceProfile.Interactive)
+            {
+                probeSurface = VulkanBackendSurface.CreateNativeSurface(
+                    instance,
+                    interactiveProbeBinding);
+                hasProbeSurface = true;
+            }
+
             afterNativeObjectAcquired?.Invoke(VulkanBackendStartupStage.InstanceCreated);
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -214,9 +264,12 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                 if (!TryCreateCandidate(
                     physicalDevice,
                     profile,
+                    probeSurface,
                     out var capabilities,
                     out var memoryProperties,
                     out var queueFamilyIndex,
+                    out var presentQueueFamilyIndex,
+                    out var swapchainMaintenanceExtensionName,
                     out var rejection))
                 {
                     failures.Add(rejection);
@@ -231,17 +284,31 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                     continue;
                 }
 
-                var (logicalDevice, enabledSpirvExtensions, fragmentStoresAndAtomicsEnabled) = CreateLogicalDevice(
+                var (
+                    logicalDevice,
+                    enabledSpirvExtensions,
+                    fragmentStoresAndAtomicsEnabled,
+                    queueFamilyIndices,
+                    queues) = CreateLogicalDevice(
                     physicalDevice,
                     queueFamilyIndex,
+                    presentQueueFamilyIndex,
+                    profile,
+                    swapchainMaintenanceExtensionName,
                     cancellationToken);
                 device = logicalDevice;
                 hasDevice = true;
                 afterNativeObjectAcquired?.Invoke(VulkanBackendStartupStage.LogicalDeviceCreated);
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var queue = default(VkQueue);
-                VulkanApi.vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
+                var queueIndex = Array.IndexOf(queueFamilyIndices, queueFamilyIndex);
+
+                if (queueIndex < 0)
+                {
+                    throw new InvalidOperationException("Vulkan device creation omitted its graphics/compute queue family.");
+                }
+
+                var queue = queues[queueIndex];
                 var commandBuffers = CreateCommandBuffers(
                     device,
                     queueFamilyIndex,
@@ -259,12 +326,21 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                 afterNativeObjectAcquired?.Invoke(VulkanBackendStartupStage.TimelineSemaphoreCreated);
                 cancellationToken.ThrowIfCancellationRequested();
 
+                if (hasProbeSurface)
+                {
+                    VulkanApi.vkDestroySurfaceKHR(instance, probeSurface, null);
+                    probeSurface = default;
+                    hasProbeSurface = false;
+                }
+
                 var backend = new VulkanBackendDevice(
                     instance,
                     physicalDevice,
                     device,
                     queue,
                     queueFamilyIndex,
+                    queueFamilyIndices,
+                    queues,
                     memoryProperties,
                     commandPool,
                     commandBuffers,
@@ -272,11 +348,14 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                     capabilities,
                     enabledSpirvExtensions,
                     fragmentStoresAndAtomicsEnabled,
+                    swapchainMaintenanceExtensionName,
+                    platformKind,
                     transferWaitResultOverride,
                     graphFrameSlotCount,
                     graphFenceWaitObserver,
                     completedGraphFenceValueOverride,
-                    graphSubmissionObserver);
+                    graphSubmissionObserver,
+                    surfaceImageAcquiredObserver);
                 transferred = true;
                 hasInstance = false;
                 hasDevice = false;
@@ -294,6 +373,11 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         {
             if (!transferred)
             {
+                if (hasProbeSurface)
+                {
+                    VulkanApi.vkDestroySurfaceKHR(instance, probeSurface, null);
+                }
+
                 if (hasDevice)
                 {
                     if (hasTimelineSemaphore)
@@ -413,7 +497,10 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         }
     }
 
-    private static VkInstance CreateInstance(CancellationToken cancellationToken)
+    private static VkInstance CreateInstance(
+        GraphicsDeviceProfile profile,
+        GraphicsPlatformKind platformKind,
+        CancellationToken cancellationToken)
     {
         uint loaderVersion = 0;
         ThrowIfFailed(VulkanApi.vkEnumerateInstanceVersion(&loaderVersion), "vkEnumerateInstanceVersion");
@@ -426,6 +513,54 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         }
 
         cancellationToken.ThrowIfCancellationRequested();
+        var supportedExtensions = EnumerateInstanceExtensions();
+        var enabledExtensions = new List<string>(4);
+
+        if (profile == GraphicsDeviceProfile.Interactive)
+        {
+            var platformExtensionName = platformKind switch {
+                GraphicsPlatformKind.Win32 => "VK_KHR_win32_surface",
+                GraphicsPlatformKind.Wayland => "VK_KHR_wayland_surface",
+                GraphicsPlatformKind.X11 => "VK_KHR_xlib_surface",
+                _ => throw new PlatformNotSupportedException("The selected platform has no Vulkan WSI integration."),
+            };
+            var missingExtensions = new List<string>(4);
+            AddRequiredInstanceExtension("VK_KHR_surface");
+            AddRequiredInstanceExtension(platformExtensionName);
+            AddRequiredInstanceExtension("VK_KHR_get_surface_capabilities2");
+            var surfaceMaintenanceExtensionName = SelectExtensionAlias(
+                supportedExtensions,
+                "VK_KHR_surface_maintenance1",
+                "VK_EXT_surface_maintenance1");
+
+            if (surfaceMaintenanceExtensionName is null)
+            {
+                missingExtensions.Add("VK_KHR_surface_maintenance1 or VK_EXT_surface_maintenance1");
+            }
+            else
+            {
+                enabledExtensions.Add(surfaceMaintenanceExtensionName);
+            }
+
+            if (missingExtensions.Count != 0)
+            {
+                throw new NotSupportedException(
+                    $"The Vulkan loader is missing required interactive instance extensions: {string.Join(", ", missingExtensions)}.");
+            }
+
+            void AddRequiredInstanceExtension(string extensionName)
+            {
+                if (!supportedExtensions.Contains(extensionName))
+                {
+                    missingExtensions.Add(extensionName);
+                }
+                else
+                {
+                    enabledExtensions.Add(extensionName);
+                }
+            }
+        }
+
         VkInstance instance = default;
         var applicationName = "TerraFX.Graphics.Vulkan\0"u8;
         var engineName = "TerraFX\0"u8;
@@ -443,7 +578,49 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
             var createInfo = default(VkInstanceCreateInfo);
             createInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
             createInfo.pApplicationInfo = &applicationInfo;
+
+            if (enabledExtensions.Count != 0)
+            {
+                var nameStorageLength = 0;
+
+                foreach (var extensionName in enabledExtensions)
+                {
+                    nameStorageLength = checked(nameStorageLength + Encoding.UTF8.GetByteCount(extensionName) + 1);
+                }
+
+                var nameStorage = stackalloc byte[nameStorageLength];
+                var extensionNamePointers = stackalloc sbyte*[enabledExtensions.Count];
+                var nameOffset = 0;
+
+                for (var index = 0; index < enabledExtensions.Count; index++)
+                {
+                    var extensionName = enabledExtensions[index];
+                    var written = Encoding.UTF8.GetBytes(
+                        extensionName.AsSpan(),
+                        new Span<byte>(nameStorage + nameOffset, nameStorageLength - nameOffset));
+                    extensionNamePointers[index] = (sbyte*)(nameStorage + nameOffset);
+                    nameOffset = checked(nameOffset + written);
+                    nameStorage[nameOffset++] = 0;
+                }
+
+                createInfo.enabledExtensionCount = checked((uint)enabledExtensions.Count);
+                createInfo.ppEnabledExtensionNames = extensionNamePointers;
+            }
+
             ThrowIfFailed(VulkanApi.vkCreateInstance(&createInfo, null, &instance), "vkCreateInstance");
+        }
+
+        if (profile == GraphicsDeviceProfile.Interactive)
+        {
+            try
+            {
+                VulkanBackendSurface.ValidateInstanceWsiEntrypoints(instance, platformKind);
+            }
+            catch
+            {
+                VulkanApi.vkDestroyInstance(instance, null);
+                throw;
+            }
         }
 
         return instance;
@@ -452,22 +629,52 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
     private static (
         VkDevice Device,
         ImmutableHashSet<string> EnabledSpirvExtensions,
-        bool FragmentStoresAndAtomicsEnabled) CreateLogicalDevice(
+        bool FragmentStoresAndAtomicsEnabled,
+        uint[] QueueFamilyIndices,
+        VkQueue[] Queues) CreateLogicalDevice(
         VkPhysicalDevice physicalDevice,
         uint queueFamilyIndex,
+        uint presentQueueFamilyIndex,
+        GraphicsDeviceProfile profile,
+        string? swapchainMaintenanceExtensionName,
         CancellationToken cancellationToken)
     {
+        var queueFamilyIndices = GetEnabledQueueFamilyIndices(
+            profile,
+            queueFamilyIndex,
+            presentQueueFamilyIndex);
+
+        if (Array.IndexOf(queueFamilyIndices, queueFamilyIndex) < 0)
+        {
+            throw new InvalidOperationException("Vulkan logical-device queue families omitted the graphics/compute family.");
+        }
+
         var priority = 1.0f;
-        var queueCreateInfo = default(VkDeviceQueueCreateInfo);
-        queueCreateInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queueCreateInfo.queueFamilyIndex = queueFamilyIndex;
-        queueCreateInfo.queueCount = 1;
-        queueCreateInfo.pQueuePriorities = &priority;
+        var queueCreateInfos = new VkDeviceQueueCreateInfo[queueFamilyIndices.Length];
+
+        for (var index = 0; index < queueCreateInfos.Length; index++)
+        {
+            queueCreateInfos[index].sType = VkStructureType.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+            queueCreateInfos[index].queueFamilyIndex = queueFamilyIndices[index];
+            queueCreateInfos[index].queueCount = 1;
+            queueCreateInfos[index].pQueuePriorities = &priority;
+        }
 
         var features13 = default(VkPhysicalDeviceVulkan13Features);
         features13.sType = VkStructureType.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
         features13.synchronization2 = 1;
         features13.dynamicRendering = 1;
+        var swapchainMaintenanceFeatures = default(VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR);
+
+        if (profile == GraphicsDeviceProfile.Interactive)
+        {
+            swapchainMaintenanceFeatures.sType = (swapchainMaintenanceExtensionName == "VK_KHR_swapchain_maintenance1")
+                ? VkStructureType.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR
+                : VkStructureType.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT;
+            swapchainMaintenanceFeatures.swapchainMaintenance1 = 1;
+            features13.pNext = &swapchainMaintenanceFeatures;
+        }
+
         var features12 = default(VkPhysicalDeviceVulkan12Features);
         features12.sType = VkStructureType.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
         features12.pNext = &features13;
@@ -478,43 +685,98 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         enabledFeatures.fragmentStoresAndAtomics = supportedFeatures.fragmentStoresAndAtomics;
         var supportedExtensions = EnumerateDeviceExtensions(physicalDevice);
         var enabledSpirvExtensions = ImmutableHashSet.CreateBuilder<string>(StringComparer.Ordinal);
-        var enabledExtensionNamePointers = stackalloc sbyte*[2];
-        var enabledExtensionCount = 0;
-        var hlslFunctionalityExtensionName = "VK_GOOGLE_hlsl_functionality1\0"u8;
-        var userTypeExtensionName = "VK_GOOGLE_user_type\0"u8;
+        var enabledExtensionNames = new List<string>(4);
         VkDevice device = default;
         cancellationToken.ThrowIfCancellationRequested();
 
-        fixed (byte* hlslFunctionalityExtensionNamePointer = hlslFunctionalityExtensionName)
-        fixed (byte* userTypeExtensionNamePointer = userTypeExtensionName)
+        if (profile == GraphicsDeviceProfile.Interactive)
         {
-            if (supportedExtensions.Contains("VK_GOOGLE_hlsl_functionality1"))
-            {
-                enabledExtensionNamePointers[enabledExtensionCount++] = (sbyte*)hlslFunctionalityExtensionNamePointer;
-                _ = enabledSpirvExtensions.Add("SPV_GOOGLE_hlsl_functionality1");
-            }
+            enabledExtensionNames.Add("VK_KHR_swapchain");
+            enabledExtensionNames.Add(
+                swapchainMaintenanceExtensionName
+                    ?? throw new InvalidOperationException("Interactive Vulkan device admission has no maintenance extension."));
+        }
 
-            if (supportedExtensions.Contains("VK_GOOGLE_user_type"))
-            {
-                enabledExtensionNamePointers[enabledExtensionCount++] = (sbyte*)userTypeExtensionNamePointer;
-                _ = enabledSpirvExtensions.Add("SPV_GOOGLE_user_type");
-            }
+        if (supportedExtensions.Contains("VK_GOOGLE_hlsl_functionality1"))
+        {
+            enabledExtensionNames.Add("VK_GOOGLE_hlsl_functionality1");
+            _ = enabledSpirvExtensions.Add("SPV_GOOGLE_hlsl_functionality1");
+        }
 
-            var createInfo = default(VkDeviceCreateInfo);
-            createInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-            createInfo.pNext = &features12;
-            createInfo.pEnabledFeatures = &enabledFeatures;
-            createInfo.queueCreateInfoCount = 1;
-            createInfo.pQueueCreateInfos = &queueCreateInfo;
-            createInfo.enabledExtensionCount = checked((uint)enabledExtensionCount);
-            createInfo.ppEnabledExtensionNames = (enabledExtensionCount == 0) ? null : enabledExtensionNamePointers;
+        if (supportedExtensions.Contains("VK_GOOGLE_user_type"))
+        {
+            enabledExtensionNames.Add("VK_GOOGLE_user_type");
+            _ = enabledSpirvExtensions.Add("SPV_GOOGLE_user_type");
+        }
+
+        var extensionNameStorageLength = 0;
+
+        foreach (var extensionName in enabledExtensionNames)
+        {
+            extensionNameStorageLength = checked(extensionNameStorageLength + Encoding.UTF8.GetByteCount(extensionName) + 1);
+        }
+
+        var extensionNameStorage = stackalloc byte[Math.Max(1, extensionNameStorageLength)];
+        var extensionNamePointerStorage = stackalloc nint[Math.Max(1, enabledExtensionNames.Count)];
+        var extensionNamePointers = (sbyte**)extensionNamePointerStorage;
+        var extensionNameOffset = 0;
+
+        for (var index = 0; index < enabledExtensionNames.Count; index++)
+        {
+            var extensionName = enabledExtensionNames[index];
+            var written = Encoding.UTF8.GetBytes(
+                extensionName.AsSpan(),
+                new Span<byte>(extensionNameStorage + extensionNameOffset, extensionNameStorageLength - extensionNameOffset));
+            extensionNamePointers[index] = (sbyte*)(extensionNameStorage + extensionNameOffset);
+            extensionNameOffset = checked(extensionNameOffset + written);
+            extensionNameStorage[extensionNameOffset++] = 0;
+        }
+
+        VkDeviceCreateInfo createInfo = default;
+        createInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+        createInfo.pNext = &features12;
+        createInfo.pEnabledFeatures = &enabledFeatures;
+        createInfo.queueCreateInfoCount = checked((uint)queueCreateInfos.Length);
+        createInfo.enabledExtensionCount = checked((uint)enabledExtensionNames.Count);
+        createInfo.ppEnabledExtensionNames = (enabledExtensionNames.Count == 0) ? null : extensionNamePointers;
+        VkQueue[] queues;
+
+        fixed (VkDeviceQueueCreateInfo* queueCreateInfosPointer = queueCreateInfos)
+        {
+            createInfo.pQueueCreateInfos = queueCreateInfosPointer;
             ThrowIfFailed(VulkanApi.vkCreateDevice(physicalDevice, &createInfo, null, &device), "vkCreateDevice");
+        }
+
+        if (profile == GraphicsDeviceProfile.Interactive)
+        {
+            try
+            {
+                VulkanBackendSurface.ValidateDeviceWsiEntrypoints(device, swapchainMaintenanceExtensionName);
+            }
+            catch
+            {
+                VulkanApi.vkDestroyDevice(device, null);
+                throw;
+            }
+        }
+
+        queues = new VkQueue[queueFamilyIndices.Length];
+
+        fixed (VkQueue* queuePointers = queues)
+        {
+            for (var index = 0; index < queues.Length; index++)
+            {
+                VulkanApi.vkGetDeviceQueue(device, queueFamilyIndices[index], 0, &queuePointers[index]);
+
+            }
         }
 
         return (
             device,
             enabledSpirvExtensions.ToImmutable(),
-            enabledFeatures.fragmentStoresAndAtomics != 0);
+            enabledFeatures.fragmentStoresAndAtomics != 0,
+            queueFamilyIndices,
+            queues);
     }
 
     private static VkSemaphore CreateTimelineSemaphore(VkDevice device)
@@ -572,6 +834,51 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                 if (!extensionNames.Add(extensionName))
                 {
                     throw new InvalidOperationException("Vulkan returned a duplicate device-extension name.");
+                }
+            }
+        }
+
+        return extensionNames;
+    }
+
+    private static HashSet<string> EnumerateInstanceExtensions()
+    {
+        uint count = 0;
+        ThrowIfFailed(
+            VulkanApi.vkEnumerateInstanceExtensionProperties(null, &count, null),
+            "vkEnumerateInstanceExtensionProperties");
+
+        if (count == 0)
+        {
+            return [];
+        }
+
+        var properties = new VkExtensionProperties[checked((int)count)];
+        var extensionNames = new HashSet<string>(StringComparer.Ordinal);
+
+        fixed (VkExtensionProperties* propertiesPointer = properties)
+        {
+            ThrowIfFailed(
+                VulkanApi.vkEnumerateInstanceExtensionProperties(null, &count, propertiesPointer),
+                "vkEnumerateInstanceExtensionProperties");
+
+            for (var index = 0; index < checked((int)count); index++)
+            {
+                var extensionNamePointer = (byte*)&propertiesPointer[index]
+                    + checked((int)Marshal.OffsetOf<VkExtensionProperties>("extensionName"));
+                var extensionNameBytes = new ReadOnlySpan<byte>(extensionNamePointer, 256);
+                var terminator = extensionNameBytes.IndexOf((byte)0);
+
+                if (terminator < 0)
+                {
+                    throw new InvalidOperationException("Vulkan returned an instance-extension name without a null terminator.");
+                }
+
+                var extensionName = Encoding.UTF8.GetString(extensionNameBytes[..terminator]);
+
+                if (!extensionNames.Add(extensionName))
+                {
+                    throw new InvalidOperationException("Vulkan returned a duplicate instance-extension name.");
                 }
             }
         }
@@ -665,6 +972,20 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         return hasSupportedUsage
             ? VulkanGraphicsCapabilityMapper.GetFormatSampleCounts(commonSampleCounts)
             : [];
+    }
+
+    private static uint[] GetEnabledQueueFamilyIndices(
+        GraphicsDeviceProfile profile,
+        uint graphicsQueueFamilyIndex,
+        uint presentQueueFamilyIndex)
+    {
+        if ((profile == GraphicsDeviceProfile.Interactive)
+            && (presentQueueFamilyIndex != graphicsQueueFamilyIndex))
+        {
+            return [graphicsQueueFamilyIndex, presentQueueFamilyIndex];
+        }
+
+        return [graphicsQueueFamilyIndex];
     }
 
     private static ImmutableArray<GraphicsFormatCapabilities> GetFormatCapabilities(VkPhysicalDevice physicalDevice)
@@ -842,6 +1163,16 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         return Encoding.UTF8.GetString(new ReadOnlySpan<byte>(bytes, length));
     }
 
+    private static string? SelectExtensionAlias(
+        HashSet<string> supportedExtensions,
+        string preferredExtension,
+        string fallbackExtension)
+        => supportedExtensions.Contains(preferredExtension)
+            ? preferredExtension
+            : supportedExtensions.Contains(fallbackExtension)
+                ? fallbackExtension
+                : null;
+
     private static void ThrowIfFailed(VkResult result, string operation)
     {
         if (result != VkResult.VK_SUCCESS)
@@ -858,11 +1189,16 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
     private static bool TryCreateCandidate(
         VkPhysicalDevice physicalDevice,
         GraphicsDeviceProfile profile,
+        VkSurfaceKHR presentationSurface,
         out GraphicsCapabilities capabilities,
         out VkPhysicalDeviceMemoryProperties memoryProperties,
         out uint queueFamilyIndex,
+        out uint presentQueueFamilyIndex,
+        out string? swapchainMaintenanceExtensionName,
         out string rejection)
     {
+        presentQueueFamilyIndex = 0;
+        swapchainMaintenanceExtensionName = null;
         var properties13 = default(VkPhysicalDeviceVulkan13Properties);
         properties13.sType = VkStructureType.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES;
         var driverProperties = default(VkPhysicalDeviceDriverProperties);
@@ -886,11 +1222,49 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
             return false;
         }
 
+        if (profile == GraphicsDeviceProfile.Interactive)
+        {
+            var supportedExtensions = EnumerateDeviceExtensions(physicalDevice);
+
+            if (!supportedExtensions.Contains("VK_KHR_swapchain"))
+            {
+                capabilities = null!;
+                memoryProperties = default;
+                queueFamilyIndex = 0;
+                rejection = $"{ReadDeviceName(properties2.properties)}: VK_KHR_swapchain device extension";
+                return false;
+            }
+
+            swapchainMaintenanceExtensionName = SelectExtensionAlias(
+                supportedExtensions,
+                "VK_KHR_swapchain_maintenance1",
+                "VK_EXT_swapchain_maintenance1");
+
+            if (swapchainMaintenanceExtensionName is null)
+            {
+                capabilities = null!;
+                memoryProperties = default;
+                queueFamilyIndex = 0;
+                rejection = $"{ReadDeviceName(properties2.properties)}: VK_KHR_swapchain_maintenance1 or VK_EXT_swapchain_maintenance1 device extension";
+                return false;
+            }
+        }
+
         var features13 = default(VkPhysicalDeviceVulkan13Features);
         features13.sType = VkStructureType.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
         var features12 = default(VkPhysicalDeviceVulkan12Features);
         features12.sType = VkStructureType.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
         features12.pNext = &features13;
+        var swapchainMaintenanceFeatures = default(VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR);
+
+        if (swapchainMaintenanceExtensionName is not null)
+        {
+            swapchainMaintenanceFeatures.sType = (swapchainMaintenanceExtensionName == "VK_KHR_swapchain_maintenance1")
+                ? VkStructureType.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR
+                : VkStructureType.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT;
+            features13.pNext = &swapchainMaintenanceFeatures;
+        }
+
         var features2 = default(VkPhysicalDeviceFeatures2);
         features2.sType = VkStructureType.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
         features2.pNext = &features12;
@@ -907,6 +1281,16 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
             return false;
         }
 
+        if ((profile == GraphicsDeviceProfile.Interactive)
+            && (swapchainMaintenanceFeatures.swapchainMaintenance1 == 0))
+        {
+            capabilities = null!;
+            memoryProperties = default;
+            queueFamilyIndex = 0;
+            rejection = $"{ReadDeviceName(properties2.properties)}: swapchain maintenance1 feature";
+            return false;
+        }
+
         if (!TryGetGraphicsComputeQueueFamily(physicalDevice, out queueFamilyIndex))
         {
             capabilities = null!;
@@ -915,6 +1299,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
             return false;
         }
 
+        presentQueueFamilyIndex = queueFamilyIndex;
         var physicalDeviceMemoryProperties = default(VkPhysicalDeviceMemoryProperties);
         VulkanApi.vkGetPhysicalDeviceMemoryProperties(physicalDevice, &physicalDeviceMemoryProperties);
         memoryProperties = physicalDeviceMemoryProperties;
@@ -927,6 +1312,12 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         implementedFeatures.Add(GraphicsFeature.TimelineSemaphore);
         implementedFeatures.Add(GraphicsFeature.Synchronization2);
         implementedFeatures.Add(GraphicsFeature.DynamicRendering);
+
+        if (profile == GraphicsDeviceProfile.Interactive)
+        {
+            hardwareFeatures.Add(GraphicsFeature.SwapchainMaintenance1);
+            implementedFeatures.Add(GraphicsFeature.SwapchainMaintenance1);
+        }
 
         if (features2.features.samplerAnisotropy != 0)
         {
@@ -958,6 +1349,23 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
             limits,
             GetFormatCapabilities(physicalDevice),
             GetMemoryHeapCapabilities(memoryProperties));
+
+        if ((profile == GraphicsDeviceProfile.Interactive)
+            && !VulkanBackendSurface.TryValidatePhysicalDeviceSurface(
+                physicalDevice,
+                presentationSurface,
+                capabilities,
+                queueFamilyIndex,
+                out presentQueueFamilyIndex,
+                out var surfaceRejection))
+        {
+            capabilities = null!;
+            memoryProperties = default;
+            queueFamilyIndex = 0;
+            rejection = $"{ReadDeviceName(properties2.properties)}: {surfaceRejection}";
+            return false;
+        }
+
         rejection = string.Empty;
         return true;
     }
@@ -1009,6 +1417,11 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         if (_hasUncertainSubmission)
         {
             throw new InvalidOperationException("The Vulkan device cannot release storage while submission completion is uncertain.");
+        }
+
+        if (_liveSurfaceCount != 0)
+        {
+            throw new InvalidOperationException("The Vulkan device still has live presentation surfaces.");
         }
 
         if (_liveDescriptorSetCount != 0)

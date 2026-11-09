@@ -104,16 +104,27 @@ internal sealed unsafe partial class VulkanBackendDevice
     internal long SubmitGraph(GraphicsGraphSubmission submission)
     {
         ArgumentNullException.ThrowIfNull(submission);
-
-        if (submission.SurfaceTarget is not null)
-        {
-            throw new PlatformNotSupportedException("Vulkan Surface-target graph submission requires the pending WSI implementation.");
-        }
-
         submission.ValidateNativeRasterSubmission();
         EnsureOwnerThread();
         EnsureActive();
         _graphSubmissionObserver?.Invoke(submission);
+        var surfaceTarget = submission.SurfaceTarget;
+        VulkanBackendSurface? surface = null;
+
+        if (surfaceTarget is not null)
+        {
+            surface = surfaceTarget.BackendSurface as VulkanBackendSurface
+                ?? throw new NotSupportedException("Vulkan graph submission requires a Vulkan-backed Surface.");
+            var surfaceSnapshot = surfaceTarget.CaptureSnapshot();
+
+            if (!surfaceTarget.IsLive
+                || (surfaceSnapshot.Capabilities.SurfaceEpoch != submission.SurfaceEpoch)
+                || (surfaceSnapshot.Capabilities.SwapchainEpoch != submission.SwapchainEpoch)
+                || (surfaceSnapshot.ColorFormat != submission.OutputColorTarget.Description.Format))
+            {
+                throw new InvalidOperationException("The compiled graph targets a stale Vulkan Surface generation.");
+            }
+        }
 
         var target = submission.GetTexture(submission.TextureImports[0].Version.ResourceId) as VulkanBackendTexture
             ?? throw new ArgumentException("The graph output target is not a Vulkan texture.", nameof(submission));
@@ -124,6 +135,13 @@ internal sealed unsafe partial class VulkanBackendDevice
             || (target.Description.Usage & TextureUsage.ColorAttachment) == 0)
         {
             throw new NotSupportedException("Vulkan graph submission requires a 2D color-attachment texture.");
+        }
+
+        if (surface is not null
+            && ((target.Description.Format != surface.ColorFormat)
+                || ((target.Description.Usage & TextureUsage.CopySource) == 0)))
+        {
+            throw new NotSupportedException("Vulkan Surface graph output requires the selected sRGB format and CopySource usage.");
         }
 
         var descriptorSetCapacity = 0;
@@ -337,19 +355,24 @@ internal sealed unsafe partial class VulkanBackendDevice
 
         _ = GetCompletedGraphFence();
         VulkanGraphFrameSlot? availableGraphFrameSlot = null;
+        var availableGraphFrameSlotIndex = -1;
 
-        foreach (var graphFrameSlot in _graphFrameSlots)
+        for (var index = 0; index < _graphFrameSlots.Length; index++)
         {
+            var graphFrameSlot = _graphFrameSlots[index];
+
             if (graphFrameSlot.FenceValue == 0)
             {
                 availableGraphFrameSlot = graphFrameSlot;
+                availableGraphFrameSlotIndex = index;
                 break;
             }
         }
 
         var selectedGraphFrameSlot = availableGraphFrameSlot
             ?? throw new InvalidOperationException("Vulkan graph command frame slots are exhausted before graphics admission.");
-        var imageView = CreateGraphColorImageView(_device, target);
+        var imageView = default(VkImageView);
+        var acquiredImageIndex = 0u;
         var subresource = new TextureSubresource(0, 0, TextureAspect.Color);
         var currentLayout = target.GetLayout(subresource);
         var currentStageMask = target.GetLastStageMask(subresource);
@@ -366,7 +389,9 @@ internal sealed unsafe partial class VulkanBackendDevice
             ?? VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
         var storageCurrentAccessMask = storageTexture?.GetLastAccessMask(storageSubresource)
             ?? VkAccessFlags2.VK_ACCESS_2_NONE;
-        var ownsImageView = true;
+        var ownsImageView = false;
+        var hasAcquiredImage = false;
+        var hasStartedRecording = false;
         var graphSubmissionAccepted = false;
         _commandBuffer = selectedGraphFrameSlot.CommandBuffer;
 
@@ -374,7 +399,29 @@ internal sealed unsafe partial class VulkanBackendDevice
         {
             _ = _uncertainGraphImageViews.EnsureCapacity(checked(_uncertainGraphImageViews.Count + 1));
             _ = _uncertainTextureOwners.EnsureCapacity(checked(_uncertainTextureOwners.Count + 1));
+            _ = descriptorSets.EnsureCapacity(descriptorSetCapacity);
+
+            if (surface is not null)
+            {
+                surface.AcquireNextImage(availableGraphFrameSlotIndex, out acquiredImageIndex);
+                hasAcquiredImage = true;
+
+                if ((surface.Capabilities.SurfaceEpoch != submission.SurfaceEpoch)
+                    || (surface.Capabilities.SwapchainEpoch != submission.SwapchainEpoch))
+                {
+                    surface.ReleaseAcquiredImage(availableGraphFrameSlotIndex, acquiredImageIndex);
+                    hasAcquiredImage = false;
+                    surfaceTarget?.PublishBackendState();
+                    throw new InvalidOperationException("Vulkan recreated a stale swapchain while acquiring a graph image.");
+                }
+
+                _surfaceImageAcquiredObserver?.Invoke();
+            }
+
+            imageView = CreateGraphColorImageView(_device, target);
+            ownsImageView = true;
             BeginOneTimeCommands();
+            hasStartedRecording = true;
 
             foreach (var pass in submission.Passes)
             {
@@ -1037,9 +1084,18 @@ internal sealed unsafe partial class VulkanBackendDevice
                 VulkanApi.vkCmdEndRendering(_commandBuffer);
             }
 
-            if (currentLayout != VkImageLayout.VK_IMAGE_LAYOUT_GENERAL)
+            var expectedOutputLayout = (surface is null)
+                ? VkImageLayout.VK_IMAGE_LAYOUT_GENERAL
+                : VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+
+            if (currentLayout != expectedOutputLayout)
             {
-                throw new InvalidOperationException("The compiled graph did not transition its offscreen target to the output layout.");
+                throw new InvalidOperationException("The compiled graph did not transition its output target to the required terminal layout.");
+            }
+
+            if (surface is not null)
+            {
+                RecordSurfacePresentationCopy(surface, acquiredImageIndex, target);
             }
 
             if (sampledTexture is not null
@@ -1071,7 +1127,12 @@ internal sealed unsafe partial class VulkanBackendDevice
                 }
             }
 
-            var submittedFence = SubmitGraphWithoutWait();
+            var submittedFence = (surface is null)
+                ? SubmitGraphWithoutWait()
+                : SubmitGraphWithoutWait(
+                    surface.GetAcquireSemaphore(availableGraphFrameSlotIndex),
+                    VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
+                    surface.GetRenderFinishedSemaphore(acquiredImageIndex));
             selectedGraphFrameSlot.FenceValue = checked((ulong)submittedFence);
             selectedGraphFrameSlot.ImageView = imageView;
             selectedGraphFrameSlot.DescriptorSets = descriptorSets;
@@ -1127,22 +1188,67 @@ internal sealed unsafe partial class VulkanBackendDevice
                     graphBufferScope.AccessMask);
             }
 
+            if (surface is not null)
+            {
+                var presentationSequence = surface.Present(
+                    checked((uint)availableGraphFrameSlotIndex),
+                    acquiredImageIndex,
+                    submission.DeviceEpoch);
+                submission.SetPresentationSequence(presentationSequence);
+                hasAcquiredImage = false;
+            }
+
             return submittedFence;
         }
         catch (Exception exception)
         {
-            if (_hasUncertainSubmission || graphSubmissionAccepted)
+            if (graphSubmissionAccepted)
+            {
+                if (hasAcquiredImage)
+                {
+                    MarkUncertainWsiOperation();
+                }
+
+                throw;
+            }
+
+            if (_hasUncertainSubmission)
             {
                 throw;
             }
 
-            try
+            var cleanupExceptions = new List<Exception>(2);
+
+            if (hasStartedRecording)
             {
-                StopRecording();
+                try
+                {
+                    StopRecording();
+                }
+                catch (Exception stopException)
+                {
+                    MarkUncertainWsiOperation();
+                    cleanupExceptions.Add(stopException);
+                }
             }
-            catch (Exception stopException)
+
+            if (hasAcquiredImage && (surface is not null))
             {
-                throw new AggregateException(exception, stopException);
+                try
+                {
+                    surface.ReleaseAcquiredImage(availableGraphFrameSlotIndex, acquiredImageIndex);
+                    hasAcquiredImage = false;
+                }
+                catch (Exception releaseException)
+                {
+                    cleanupExceptions.Add(releaseException);
+                }
+            }
+
+            if (cleanupExceptions.Count != 0)
+            {
+                cleanupExceptions.Insert(0, exception);
+                throw new AggregateException(cleanupExceptions);
             }
 
             throw;
@@ -1154,8 +1260,12 @@ internal sealed unsafe partial class VulkanBackendDevice
                 if (_hasUncertainSubmission)
                 {
                     RetainUncertainTexture(target);
-                    _uncertainGraphImageViews.Add(imageView);
-                    ownsImageView = false;
+
+                    if (imageView.Value != 0)
+                    {
+                        _uncertainGraphImageViews.Add(imageView);
+                        ownsImageView = false;
+                    }
 
                     foreach (var descriptorSet in descriptorSets)
                     {
@@ -1443,6 +1553,73 @@ internal sealed unsafe partial class VulkanBackendDevice
         imageDependencyInfo.imageMemoryBarrierCount = 1;
         imageDependencyInfo.pImageMemoryBarriers = &imageBarrier;
         VulkanApi.vkCmdPipelineBarrier2(_commandBuffer, &imageDependencyInfo);
+    }
+
+    private void RecordSurfacePresentationCopy(
+        VulkanBackendSurface surface,
+        uint imageIndex,
+        VulkanBackendTexture source)
+    {
+        var image = surface.GetSwapchainImage(imageIndex);
+        var oldLayout = surface.HasImageBeenPresented(imageIndex)
+            ? VkImageLayout.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+            : VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED;
+        var toCopy = default(VkImageMemoryBarrier2);
+        toCopy.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        toCopy.srcStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
+        toCopy.srcAccessMask = VkAccessFlags2.VK_ACCESS_2_NONE;
+        toCopy.dstStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT;
+        toCopy.dstAccessMask = VkAccessFlags2.VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        toCopy.oldLayout = oldLayout;
+        toCopy.newLayout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toCopy.srcQueueFamilyIndex = uint.MaxValue;
+        toCopy.dstQueueFamilyIndex = uint.MaxValue;
+        toCopy.image = image;
+        toCopy.subresourceRange.aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT;
+        toCopy.subresourceRange.levelCount = 1;
+        toCopy.subresourceRange.layerCount = 1;
+        var acquireDependency = default(VkDependencyInfo);
+        acquireDependency.sType = VkStructureType.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        acquireDependency.imageMemoryBarrierCount = 1;
+        acquireDependency.pImageMemoryBarriers = &toCopy;
+        VulkanApi.vkCmdPipelineBarrier2(_commandBuffer, &acquireDependency);
+
+        var copy = default(VkImageCopy);
+        copy.srcSubresource.aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.srcSubresource.layerCount = 1;
+        copy.dstSubresource.aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.dstSubresource.layerCount = 1;
+        copy.extent.width = checked((uint)source.Description.Width);
+        copy.extent.height = checked((uint)source.Description.Height);
+        copy.extent.depth = 1;
+        VulkanApi.vkCmdCopyImage(
+            _commandBuffer,
+            source.Image,
+            VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            image,
+            VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1,
+            &copy);
+
+        var toPresent = default(VkImageMemoryBarrier2);
+        toPresent.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        toPresent.srcStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT;
+        toPresent.srcAccessMask = VkAccessFlags2.VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        toPresent.dstStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
+        toPresent.dstAccessMask = VkAccessFlags2.VK_ACCESS_2_NONE;
+        toPresent.oldLayout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toPresent.newLayout = VkImageLayout.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        toPresent.srcQueueFamilyIndex = uint.MaxValue;
+        toPresent.dstQueueFamilyIndex = uint.MaxValue;
+        toPresent.image = image;
+        toPresent.subresourceRange.aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT;
+        toPresent.subresourceRange.levelCount = 1;
+        toPresent.subresourceRange.layerCount = 1;
+        var presentDependency = default(VkDependencyInfo);
+        presentDependency.sType = VkStructureType.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        presentDependency.imageMemoryBarrierCount = 1;
+        presentDependency.pImageMemoryBarriers = &toPresent;
+        VulkanApi.vkCmdPipelineBarrier2(_commandBuffer, &presentDependency);
     }
 
     private void RetireCompletedGraphFrameSlots(ulong completedValue)

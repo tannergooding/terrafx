@@ -16,26 +16,31 @@ public static class VulkanGraphicsBackend
     internal static GraphicsBackendRegistration CreateRegistrationForTesting(
         Action<long>? graphFenceWaitObserver,
         Func<long, long>? completedGraphFenceValueOverride,
-        Action<GraphicsGraphSubmission>? graphSubmissionObserver)
+        Action<GraphicsGraphSubmission>? graphSubmissionObserver,
+        Action? surfaceImageAcquiredObserver = null)
         => new(new VulkanBackendFactory(
             graphFenceWaitObserver,
             completedGraphFenceValueOverride,
-            graphSubmissionObserver));
+            graphSubmissionObserver,
+            surfaceImageAcquiredObserver));
 
     internal sealed class VulkanBackendFactory : IGraphicsBackendFactory
     {
         private readonly Func<long, long>? _completedGraphFenceValueOverride;
         private readonly Action<long>? _graphFenceWaitObserver;
         private readonly Action<GraphicsGraphSubmission>? _graphSubmissionObserver;
+        private readonly Action? _surfaceImageAcquiredObserver;
 
         internal VulkanBackendFactory(
             Action<long>? graphFenceWaitObserver = null,
             Func<long, long>? completedGraphFenceValueOverride = null,
-            Action<GraphicsGraphSubmission>? graphSubmissionObserver = null)
+            Action<GraphicsGraphSubmission>? graphSubmissionObserver = null,
+            Action? surfaceImageAcquiredObserver = null)
         {
             _graphFenceWaitObserver = graphFenceWaitObserver;
             _completedGraphFenceValueOverride = completedGraphFenceValueOverride;
             _graphSubmissionObserver = graphSubmissionObserver;
+            _surfaceImageAcquiredObserver = surfaceImageAcquiredObserver;
         }
 
         public GraphicsBackend Backend => GraphicsBackend.Vulkan;
@@ -45,6 +50,21 @@ public static class VulkanGraphicsBackend
             GraphicsDeviceProfile profile,
             GraphicsPlatformKind platformKind,
             int frameSlotCount,
+            CancellationToken cancellationToken)
+            => Create(
+                ownerId,
+                profile,
+                platformKind,
+                frameSlotCount,
+                presentationProbeBinding: null,
+                cancellationToken);
+
+        public IGraphicsBackendDevice Create(
+            uint ownerId,
+            GraphicsDeviceProfile profile,
+            GraphicsPlatformKind platformKind,
+            int frameSlotCount,
+            GraphicsNativeSurfaceBinding? presentationProbeBinding,
             CancellationToken cancellationToken)
         {
             ArgumentOutOfRangeException.ThrowIfZero(ownerId);
@@ -59,7 +79,9 @@ public static class VulkanGraphicsBackend
                 graphFrameSlotCount: frameSlotCount,
                 graphFenceWaitObserver: _graphFenceWaitObserver,
                 completedGraphFenceValueOverride: _completedGraphFenceValueOverride,
-                graphSubmissionObserver: _graphSubmissionObserver);
+                graphSubmissionObserver: _graphSubmissionObserver,
+                presentationProbeBinding: presentationProbeBinding,
+                surfaceImageAcquiredObserver: _surfaceImageAcquiredObserver);
         }
     }
 }

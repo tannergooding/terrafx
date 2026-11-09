@@ -15,6 +15,7 @@ using TerraFX.Entities;
 using TerraFX.Graphics;
 using TerraFX.Input;
 using TerraFX.Integration;
+using TerraFX.Numerics;
 using TerraFX.Platform;
 using TerraFX.Rendering;
 
@@ -799,16 +800,36 @@ public sealed partial class EngineHost : IAsyncDisposable
             {
                 var registration = _options.GraphicsBackendRegistration
                     ?? throw new InvalidOperationException("Interactive startup has no admitted graphics registration.");
+                GraphicsNativeSurfaceBinding? presentationProbeBinding = null;
+                WindowHandle? presentationProbeWindow = null;
+
+                if (registration.Backend == GraphicsBackend.Vulkan)
+                {
+                    presentationProbeWindow = platformOwner.CreateWindow(new WindowOptions("Vulkan surface capability probe") {
+                        ClientSize = new Vector2(64.0f, 64.0f),
+                        Visible = false,
+                    });
+                    presentationProbeBinding = platformOwner.GetGraphicsNativeSurfaceBinding(
+                        presentationProbeWindow.Value,
+                        surfaceEpoch: 1);
+                }
+
                 var graphicsDevice = GraphicsDevice.CreateAsync(
                     platformOwner.OwnerId,
                     registration,
                     GraphicsDeviceProfile.Interactive,
                     _options.GraphicsFrameSlotCount,
                     platformOwner.GraphicsPlatformKind,
+                    presentationProbeBinding,
                     CancellationToken.None).GetAwaiter().GetResult();
                 _graphicsDevice = graphicsDevice;
                 _gpuResidency = new GpuResidencyService(graphicsDevice);
                 _renderer = Renderer.Create(graphicsDevice, _gpuResidency);
+
+                if (presentationProbeWindow is WindowHandle probeWindow)
+                {
+                    platformOwner.CloseWindow(probeWindow);
+                }
             }
 
             foreach (var diagnostic in platformOwner.DrainStartupDiagnostics())
