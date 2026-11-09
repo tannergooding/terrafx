@@ -14,6 +14,27 @@ namespace TerraFX.Platform.Tests;
 internal sealed class ClipboardTextServiceTests
 {
     [Test]
+    public void CancellationAfterPumpCancelsAnInFlightReadAndRetainsOwnerCleanup()
+    {
+        using var backend = new FakeDeferredClipboardBackend(ownerId: 9);
+        var service = new ClipboardTextService(backend, ClipboardServiceStatus.Ready);
+        using var cancellationSource = new CancellationTokenSource();
+        var pending = service.ReadTextAsync(
+            new ClipboardReadRequest(backend.Window, 16, gestureToken: null),
+            cancellationSource.Token);
+
+        service.Pump();
+
+        Assert.That(pending.IsCompleted, Is.False);
+        Assert.That(backend.PendingReadCancellationToken, Is.EqualTo(cancellationSource.Token));
+        cancellationSource.Cancel();
+        Assert.That(pending.IsCanceled, Is.True);
+
+        backend.CompletePendingRead();
+        service.DisposeFromOwner();
+    }
+
+    [Test]
     public void CancellationBeforePumpDoesNotCallBackend()
     {
         using var backend = new FakeClipboardBackend(ownerId: 1);
@@ -134,7 +155,7 @@ internal sealed class ClipboardTextServiceTests
         service.DisposeFromOwner();
     }
 
-    private sealed class FakeClipboardBackend : IPlatformBackend
+    private class FakeClipboardBackend : IPlatformBackend
     {
         private readonly uint _ownerId;
         private readonly int _ownerThreadId;
@@ -266,12 +287,48 @@ internal sealed class ClipboardTextServiceTests
             return new ClipboardWriteResponse(ClipboardTextResult.Completed, diagnostic: null);
         }
 
-        private void EnsureOwnerThread()
+        protected void EnsureOwnerThread()
         {
             if (_ownerThreadId != Environment.CurrentManagedThreadId)
             {
                 throw new InvalidOperationException("The fake backend must be accessed on its owner thread.");
             }
+        }
+
+        protected void RecordRead()
+            => _readCount++;
+    }
+
+    private sealed class FakeDeferredClipboardBackend : FakeClipboardBackend, IPlatformBackend
+    {
+        private CancellationToken _pendingReadCancellationToken;
+        private Action<ClipboardReadResponse>? _pendingReadComplete;
+
+        internal FakeDeferredClipboardBackend(uint ownerId)
+            : base(ownerId)
+        {
+        }
+
+        internal CancellationToken PendingReadCancellationToken => _pendingReadCancellationToken;
+
+        public void BeginReadClipboardText(
+            ClipboardReadRequest request,
+            Action<ClipboardReadResponse> complete,
+            CancellationToken cancellationToken)
+        {
+            EnsureOwnerThread();
+            RecordRead();
+            _pendingReadCancellationToken = cancellationToken;
+            _pendingReadComplete = complete;
+        }
+
+        internal void CompletePendingRead()
+        {
+            EnsureOwnerThread();
+            var complete = _pendingReadComplete
+                ?? throw new InvalidOperationException("The fake backend has no pending clipboard read.");
+            _pendingReadComplete = null;
+            complete(new ClipboardReadResponse(ClipboardTextResult.Completed, "clipboard", diagnostic: null));
         }
     }
 }

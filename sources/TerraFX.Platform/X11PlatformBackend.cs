@@ -3,7 +3,9 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using TerraFX;
@@ -44,12 +46,16 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     private const int PropertyNotifyEvent = 28;
     private const int RandrNotifyEventOffset = 1;
     private const int RandrScreenChangeEventOffset = 0;
+    private const int SelectionClearEvent = 29;
+    private const int SelectionNotifyEvent = 31;
+    private const int SelectionRequestEvent = 30;
     private const long StructureNotifyMask = 1L << 17;
     private const long SubstructureNotifyMask = 1L << 19;
     private const long SubstructureRedirectMask = 1L << 20;
     private const int WindowedDpi = 96;
 
     private readonly nuint _atomAtom;
+    private readonly X11ClipboardState _clipboard;
     private readonly ClipboardServiceStatus _clipboardStatus;
     private readonly List<WindowHandle> _closeRequests = [];
     private readonly nint _display;
@@ -83,11 +89,6 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         ArgumentOutOfRangeException.ThrowIfGreaterThan((int)clipboardPolicy, (int)ClipboardServicePolicy.Required);
         ArgumentOutOfRangeException.ThrowIfNegative((int)clipboardPolicy);
 
-        if (clipboardPolicy is ClipboardServicePolicy.Required)
-        {
-            throw new NotSupportedException("The X11 backend does not provide clipboard transfers yet.");
-        }
-
         var display = X11Native.XOpenDisplay(null);
 
         if (display == 0)
@@ -103,9 +104,14 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             var wmDeleteWindowAtom = X11Native.XInternAtom(display, "WM_DELETE_WINDOW", onlyIfExists: 0);
             var resourceManagerAtom = X11Native.XInternAtom(display, "RESOURCE_MANAGER", onlyIfExists: 0);
             var atomAtom = X11Native.XInternAtom(display, "ATOM", onlyIfExists: 0);
+            var clipboardAtom = X11Native.XInternAtom(display, "CLIPBOARD", onlyIfExists: 0);
+            var incrAtom = X11Native.XInternAtom(display, "INCR", onlyIfExists: 0);
             var netSupportedAtom = X11Native.XInternAtom(display, "_NET_SUPPORTED", onlyIfExists: 0);
             var netWmStateAtom = X11Native.XInternAtom(display, "_NET_WM_STATE", onlyIfExists: 0);
             var netWmStateFullscreenAtom = X11Native.XInternAtom(display, "_NET_WM_STATE_FULLSCREEN", onlyIfExists: 0);
+            var targetsAtom = X11Native.XInternAtom(display, "TARGETS", onlyIfExists: 0);
+            var textPlainUtf8Atom = X11Native.XInternAtom(display, "text/plain;charset=utf-8", onlyIfExists: 0);
+            var utf8StringAtom = X11Native.XInternAtom(display, "UTF8_STRING", onlyIfExists: 0);
             var randrEventBase = -1;
             var randrErrorBase = 0;
             var randrMajorVersion = 1;
@@ -122,11 +128,15 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
                 || (wmDeleteWindowAtom == 0)
                 || (resourceManagerAtom == 0)
                 || (atomAtom == 0)
+                || (clipboardAtom == 0)
+                || (incrAtom == 0)
                 || (netSupportedAtom == 0)
                 || (netWmStateAtom == 0)
-                || (netWmStateFullscreenAtom == 0))
+                || (netWmStateFullscreenAtom == 0)
+                || (targetsAtom == 0)
+                || (utf8StringAtom == 0))
             {
-                throw new InvalidOperationException("X11 did not provide the required default-screen, window-manager, or EWMH atoms.");
+                throw new InvalidOperationException("X11 did not provide the required default-screen, window-manager, EWMH, or clipboard atoms.");
             }
 
             var ewmhFullscreenAvailable = IsEwmhFullscreenSupported(
@@ -199,6 +209,12 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             _display = display;
             _rootWindow = rootWindow;
             _atomAtom = atomAtom;
+            _clipboard = new X11ClipboardState(
+                clipboardAtom,
+                targetsAtom,
+                utf8StringAtom,
+                textPlainUtf8Atom,
+                incrAtom);
             _ewmhFullscreenAvailable = ewmhFullscreenAvailable;
             _netWmStateAtom = netWmStateAtom;
             _netWmStateFullscreenAtom = netWmStateFullscreenAtom;
@@ -220,9 +236,9 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         _ownerThreadId = Environment.CurrentManagedThreadId;
         _inputSamples = new PlatformInputSampleQueue(_ownerThreadId);
         _keyboardKeymap = X11KeyboardKeymap.TryCreate(display);
-        _clipboardStatus = (clipboardPolicy is ClipboardServicePolicy.Optional)
-            ? ClipboardServiceStatus.Unsupported
-            : ClipboardServiceStatus.NotRequested;
+        _clipboardStatus = clipboardPolicy is ClipboardServicePolicy.NotRequested
+            ? ClipboardServiceStatus.NotRequested
+            : ClipboardServiceStatus.Ready;
 
         try
         {
@@ -567,7 +583,15 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             throw new InvalidOperationException("The X11 window handle is stale or no longer active.");
         }
 
+        CancelClipboardWritesForWindow(state.NativeWindow);
         _ = _windowsByNativeId.Remove(state.NativeWindow);
+        CancelClipboardReadsForWindow(window, ClipboardTextResult.SelectionExpired);
+
+        if (_clipboard.OwnedWindow == state.NativeWindow)
+        {
+            _clipboard.OwnedWindow = 0;
+            _clipboard.OwnedTextBytes = null;
+        }
 
         if (!state.NativeDestroyed)
         {
@@ -646,7 +670,8 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
                 | ButtonPressMask
                 | ButtonReleaseMask
                 | PointerMotionMask
-                | FocusChangeMask;
+                | FocusChangeMask
+                | PropertyChangeMask;
 
             if (X11Native.XSelectInput(_display, nativeWindow, checked((nint)eventMask)) == 0)
             {
@@ -717,6 +742,8 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         }
 
         EnsureOwnerThread();
+        CancelClipboardReads(ClipboardTextResult.Canceled);
+        CancelClipboardWrites();
 
         foreach (var state in _windowsByHandle.Values)
         {
@@ -910,12 +937,6 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
                 }
             }
 
-            else if ((nativeEvent.Type == PropertyNotifyEvent)
-                && (nativeEvent.Property.Window == _rootWindow)
-                && (nativeEvent.Property.Atom == _resourceManagerAtom))
-            {
-                RefreshDpiSettings();
-            }
             else if ((_randrEventBase >= 0)
                 && ((nativeEvent.Type == (_randrEventBase + RandrScreenChangeEventOffset))
                     || (nativeEvent.Type == (_randrEventBase + RandrNotifyEventOffset))))
@@ -937,6 +958,28 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
                     && _windowsByNativeId.TryGetValue(clientMessage.Window, out var state))
                 {
                     QueueCloseRequest(state);
+                }
+            }
+            else if (nativeEvent.Type == SelectionClearEvent)
+            {
+                ClipboardSelectionCleared(nativeEvent.SelectionClear);
+            }
+            else if (nativeEvent.Type == SelectionNotifyEvent)
+            {
+                ClipboardSelectionNotified(nativeEvent.SelectionNotify);
+            }
+            else if (nativeEvent.Type == SelectionRequestEvent)
+            {
+                ClipboardSelectionRequested(nativeEvent.SelectionRequest);
+            }
+            else if (nativeEvent.Type == PropertyNotifyEvent)
+            {
+                ClipboardPropertyChanged(nativeEvent.Property);
+
+                if ((nativeEvent.Property.Window == _rootWindow)
+                    && (nativeEvent.Property.Atom == _resourceManagerAtom))
+                {
+                    RefreshDpiSettings();
                 }
             }
             else if ((nativeEvent.Type == DestroyNotifyEvent)
@@ -1026,6 +1069,8 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         }
 
         _gamepadCapture?.Pump();
+        ClipboardExpireReads();
+        ClipboardExpireWrites();
     }
 
     public ClipboardReadResponse ReadClipboardText(ClipboardReadRequest request)
@@ -1040,7 +1085,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
                 request.Window,
                 "ClipboardText.ReadTextAsync",
                 nativeResult: null,
-                "The X11 backend does not provide clipboard transfers yet."));
+                "X11 clipboard reads require the asynchronous selection-transfer path."));
     }
 
     public void RequestGamepadStateReconciliation(nint nativeDeviceIdentity)
@@ -1192,20 +1237,6 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 
         binding = default;
         return false;
-    }
-
-    public ClipboardWriteResponse WriteClipboardText(ClipboardWriteRequest request)
-    {
-        EnsureActiveOwnerThread();
-        ArgumentNullException.ThrowIfNull(request);
-        return new ClipboardWriteResponse(
-            ClipboardTextResult.Unsupported,
-            ClipboardTextService.CreateDiagnostic(
-                "ClipboardUnsupported",
-                request.Window,
-                "ClipboardText.WriteTextAsync",
-                nativeResult: null,
-                "The X11 backend does not provide clipboard transfers yet."));
     }
 
     private void CaptureButton(
@@ -1796,6 +1827,8 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     {
         internal const nint PMaxSize = 0x0020;
         internal const nint PMinSize = 0x0010;
+        internal const int PropertyDelete = 1;
+        internal const int PropertyNewValue = 0;
         internal const int RandrCrtcChangeNotifyMask = 1 << 1;
         internal const int RandrLeaseNotifyMask = 1 << 7;
         internal const int RandrOutputChangeNotifyMask = 1 << 2;
@@ -1805,8 +1838,28 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         internal const int RandrResourceChangeNotifyMask = 1 << 6;
         internal const int RandrScreenChangeNotifyMask = 1 << 0;
 
+        [LibraryImport("libX11.so.6", EntryPoint = "XChangeProperty")]
+        internal static partial int XChangeProperty(
+            nint display,
+            nuint window,
+            nuint property,
+            nuint propertyType,
+            int format,
+            int mode,
+            byte* data,
+            int elementCount);
+
         [LibraryImport("libX11.so.6", EntryPoint = "XCloseDisplay")]
         internal static partial int XCloseDisplay(nint display);
+
+        [LibraryImport("libX11.so.6", EntryPoint = "XConvertSelection")]
+        internal static partial int XConvertSelection(
+            nint display,
+            nuint selection,
+            nuint target,
+            nuint property,
+            nuint requestor,
+            nuint time);
 
         [LibraryImport("libX11.so.6", EntryPoint = "XCreateSimpleWindow")]
         internal static partial nuint XCreateSimpleWindow(
@@ -1822,6 +1875,9 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 
         [LibraryImport("libX11.so.6", EntryPoint = "XDefaultScreen")]
         internal static partial int XDefaultScreen(nint display);
+
+        [LibraryImport("libX11.so.6", EntryPoint = "XDeleteProperty")]
+        internal static partial int XDeleteProperty(nint display, nuint window, nuint property);
 
         [LibraryImport("libX11.so.6", EntryPoint = "XDestroyWindow")]
         internal static partial int XDestroyWindow(nint display, nuint window);
@@ -1852,6 +1908,9 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             uint* height,
             uint* borderWidth,
             uint* depth);
+
+        [LibraryImport("libX11.so.6", EntryPoint = "XGetSelectionOwner")]
+        internal static partial nuint XGetSelectionOwner(nint display, nuint selection);
 
         [LibraryImport("libX11.so.6", EntryPoint = "XGetWindowProperty")]
         internal static partial int XGetWindowProperty(
@@ -1946,6 +2005,9 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             int propagate,
             long eventMask,
             NativeEvent* eventSend);
+
+        [LibraryImport("libX11.so.6", EntryPoint = "XSetSelectionOwner")]
+        internal static partial int XSetSelectionOwner(nint display, nuint selection, nuint owner, nuint time);
 
         [LibraryImport("libX11.so.6", EntryPoint = "XSetWMNormalHints")]
         internal static partial void XSetWMNormalHints(nint display, nuint window, SizeHints* hints);
@@ -2144,6 +2206,15 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 
             [FieldOffset(0)]
             internal PropertyEvent Property;
+
+            [FieldOffset(0)]
+            internal SelectionClearEvent SelectionClear;
+
+            [FieldOffset(0)]
+            internal SelectionNotifyEvent SelectionNotify;
+
+            [FieldOffset(0)]
+            internal SelectionRequestEvent SelectionRequest;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -2173,6 +2244,47 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             internal int WidthMillimeters;
             internal int HeightMillimeters;
             internal nint Outputs;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct SelectionClearEvent
+        {
+            internal int Type;
+            internal nuint Serial;
+            internal int SendEvent;
+            internal nint Display;
+            internal nuint Window;
+            internal nuint Selection;
+            internal nuint Time;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct SelectionNotifyEvent
+        {
+            internal int Type;
+            internal nuint Serial;
+            internal int SendEvent;
+            internal nint Display;
+            internal nuint Requestor;
+            internal nuint Selection;
+            internal nuint Target;
+            internal nuint Property;
+            internal nuint Time;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct SelectionRequestEvent
+        {
+            internal int Type;
+            internal nuint Serial;
+            internal int SendEvent;
+            internal nint Display;
+            internal nuint Owner;
+            internal nuint Requestor;
+            internal nuint Selection;
+            internal nuint Target;
+            internal nuint Property;
+            internal nuint Time;
         }
 
         [StructLayout(LayoutKind.Sequential)]

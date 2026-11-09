@@ -2,8 +2,10 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Threading;
 using TerraFX;
 using TerraFX.Numerics;
+using ClipboardTextResult = TerraFX.Platform.ClipboardStatus;
 
 namespace TerraFX.Platform;
 
@@ -22,6 +24,23 @@ internal interface IPlatformBackend : IDisposable
     uint OwnerId { get; }
 
     PlatformServiceStatus PhysicalInputStatus { get; }
+
+    void BeginReadClipboardText(
+        ClipboardReadRequest request,
+        Action<ClipboardReadResponse> complete,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(complete);
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            complete(new ClipboardReadResponse(ClipboardTextResult.Canceled, text: null, diagnostic: null));
+            return;
+        }
+
+        complete(ReadClipboardText(request));
+    }
 
     void CloseWindow(WindowHandle window);
 

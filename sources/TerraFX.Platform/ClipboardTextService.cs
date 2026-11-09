@@ -108,6 +108,7 @@ public sealed class ClipboardTextService
         }
 
         var completion = new TaskCompletionSource<ClipboardReadResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationRegistration = default(CancellationTokenRegistration);
         var pendingRequest = new PendingRequest(
             () => completion.TrySetCanceled(cancellationToken),
             () => completion.TrySetResult(new ClipboardReadResponse(
@@ -120,7 +121,34 @@ public sealed class ClipboardTextService
                     nativeResult: null,
                     "The platform owner stopped before the clipboard read began."))),
             exception => completion.TrySetException(exception),
-            () => completion.TrySetResult(_backend.ReadClipboardText(request)),
+            () => {
+                cancellationRegistration = cancellationToken.Register(
+                    () => _ = completion.TrySetCanceled(cancellationToken));
+
+                try
+                {
+                    _backend.BeginReadClipboardText(
+                        request,
+                        response => {
+                            cancellationRegistration.Dispose();
+
+                            if (cancellationToken.IsCancellationRequested)
+                            {
+                                _ = completion.TrySetCanceled(cancellationToken);
+                            }
+                            else
+                            {
+                                _ = completion.TrySetResult(response);
+                            }
+                        },
+                        cancellationToken);
+                }
+                catch
+                {
+                    cancellationRegistration.Dispose();
+                    throw;
+                }
+            },
             cancellationToken);
         return Enqueue(pendingRequest, completion.Task);
     }
