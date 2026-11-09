@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Linq;
 using System.Threading;
 using NUnit.Framework;
 using TerraFX;
@@ -109,6 +110,95 @@ internal sealed class PlatformInputBrokerTests
         Assert.That(captured.Events[0].Device, Is.EqualTo(captured.Events[1].Device));
         Assert.That(captured.Events[2].Device, Is.EqualTo(captured.Events[3].Device));
         Assert.That(captured.Events[0].Device, Is.Not.EqualTo(captured.Events[2].Device));
+        broker.Retire();
+    }
+
+    [Test]
+    public void PreservesCommittedWaylandTextAfterItsPhysicalKeySequence()
+    {
+        var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());
+        var window = new WindowHandle(17, 0, 1);
+        var samples = ImmutableArray.Create(
+            new PlatformInputSample(
+                PhysicalInputEventKind.KeyDown,
+                window,
+                NativeDeviceIdentity: -1,
+                PlatformInputDeviceKind.Keyboard,
+                NativeUsagePage: 0x0007,
+                NativeUsage: 0x0008,
+                IsDown: true,
+                MonotonicTimestamp: 1,
+                CommittedText: "é"),
+            new PlatformInputSample(
+                PhysicalInputEventKind.KeyDown,
+                window,
+                NativeDeviceIdentity: -1,
+                PlatformInputDeviceKind.Keyboard,
+                NativeUsagePage: 0x0007,
+                NativeUsage: 0x0009,
+                IsDown: true,
+                MonotonicTimestamp: 2,
+                CommittedText: "ß"));
+
+        var captured = broker.Capture(new PlatformInputSampleBatch(samples, DiscardedSampleCount: 0), static _ => true);
+        var keyDowns = captured.Events.Where(inputEvent => inputEvent.Kind == PhysicalInputEventKind.KeyDown).ToArray();
+
+        Assert.That(captured.TextEvents, Has.Length.EqualTo(1));
+        Assert.That(captured.TextEvents[0].Window, Is.EqualTo(window));
+        Assert.That(captured.TextEvents[0].Commits, Is.EqualTo(ImmutableArray.Create("é", "ß")));
+        Assert.That(captured.TextEvents[0].HostTimestamp, Is.GreaterThanOrEqualTo(keyDowns[^1].HostTimestamp));
+        Assert.That(captured.TextEvents[0].HostSequence, Is.EqualTo(keyDowns[^1].HostSequence + 1));
+        broker.Retire();
+    }
+
+    [Test]
+    public void PreservesCommittedWaylandTextBeforeFocusTransitionsWithinCaptureDrain()
+    {
+        var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());
+        var window = new WindowHandle(17, 0, 1);
+        var samples = ImmutableArray.Create(
+            new PlatformInputSample(
+                PhysicalInputEventKind.KeyDown,
+                window,
+                NativeDeviceIdentity: -1,
+                PlatformInputDeviceKind.Keyboard,
+                NativeUsagePage: 0x0007,
+                NativeUsage: 0x0008,
+                IsDown: true,
+                MonotonicTimestamp: 1,
+                CommittedText: "é"),
+            new PlatformInputSample(
+                PhysicalInputEventKind.FocusLost,
+                window,
+                NativeDeviceIdentity: 0,
+                PlatformInputDeviceKind.Unknown,
+                MonotonicTimestamp: 2),
+            new PlatformInputSample(
+                PhysicalInputEventKind.FocusGained,
+                window,
+                NativeDeviceIdentity: 0,
+                PlatformInputDeviceKind.Unknown,
+                MonotonicTimestamp: 3),
+            new PlatformInputSample(
+                PhysicalInputEventKind.KeyDown,
+                window,
+                NativeDeviceIdentity: -1,
+                PlatformInputDeviceKind.Keyboard,
+                NativeUsagePage: 0x0007,
+                NativeUsage: 0x0009,
+                IsDown: true,
+                MonotonicTimestamp: 4,
+                CommittedText: "ß"));
+
+        var captured = broker.Capture(new PlatformInputSampleBatch(samples, DiscardedSampleCount: 0), static _ => true);
+        var focusLost = captured.Events.Single(inputEvent => inputEvent.Kind == PhysicalInputEventKind.FocusLost);
+        var lastKeyDown = captured.Events.Last(inputEvent => inputEvent.Kind == PhysicalInputEventKind.KeyDown);
+
+        Assert.That(captured.TextEvents, Has.Length.EqualTo(2));
+        Assert.That(captured.TextEvents[0].Commits, Is.EqualTo(ImmutableArray.Create("é")));
+        Assert.That(captured.TextEvents[0].HostSequence, Is.LessThan(focusLost.HostSequence));
+        Assert.That(captured.TextEvents[1].Commits, Is.EqualTo(ImmutableArray.Create("ß")));
+        Assert.That(captured.TextEvents[1].HostSequence, Is.GreaterThan(lastKeyDown.HostSequence));
         broker.Retire();
     }
 

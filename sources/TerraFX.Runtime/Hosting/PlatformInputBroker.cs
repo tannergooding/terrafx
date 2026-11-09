@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Globalization;
 using System.Linq;
+using System.Text;
 using TerraFX;
 using TerraFX.Input;
 using TerraFX.Numerics;
@@ -274,6 +275,9 @@ internal sealed class PlatformInputBroker
         }
 
         var events = ImmutableArray.CreateBuilder<PhysicalInputEvent>(sampleBatch.Samples.Length);
+        var textEvents = ImmutableArray.CreateBuilder<PlatformTextInputEvent>();
+        var pendingTextCommits = new Dictionary<WindowHandle, ImmutableArray<string>.Builder>();
+        var pendingTextWindowOrder = new List<WindowHandle>();
         var diagnostics = ImmutableArray.CreateBuilder<Diagnostic>();
         var discardedSampleCount = sampleBatch.DiscardedSampleCount;
 
@@ -306,6 +310,17 @@ internal sealed class PlatformInputBroker
                 && (sample.DeviceKind != PlatformInputDeviceKind.Keyboard))
             {
                 throw new InvalidOperationException("A keyboard input sample has a non-keyboard device class.");
+            }
+
+            if (sample.CommittedText is { } committedText
+                && ((sample.Kind is not (PhysicalInputEventKind.KeyDown or PhysicalInputEventKind.KeyRepeat))
+                    || (sample.Window is null)
+                    || (sample.DeviceKind != PlatformInputDeviceKind.Keyboard)
+                    || string.IsNullOrEmpty(committedText)
+                    || (new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true)
+                        .GetByteCount(committedText) > 4096)))
+            {
+                throw new InvalidOperationException("A platform text commit has an invalid source or exceeds its bounded payload.");
             }
 
             if ((sample.Kind is PhysicalInputEventKind.PointerButtonDown
@@ -370,6 +385,11 @@ internal sealed class PlatformInputBroker
             }
 
             var hostTimestamp = GetHostTimestamp(sample.MonotonicTimestamp);
+
+            if (sample.Kind is PhysicalInputEventKind.FocusLost or PhysicalInputEventKind.FocusGained)
+            {
+                FlushTextEvents(hostTimestamp);
+            }
 
             if (sample.Window is { } window)
             {
@@ -452,13 +472,47 @@ internal sealed class PlatformInputBroker
                     hostTimestamp));
             }
 
-            events.Add(CreatePhysicalInputEvent(sample, device, hostTimestamp, gamepadValue));
+            var inputEvent = CreatePhysicalInputEvent(sample, device, hostTimestamp, gamepadValue);
+            events.Add(inputEvent);
+
+            if (sample.CommittedText is { } text)
+            {
+                var textWindow = inputEvent.Window
+                    ?? throw new InvalidOperationException("A committed text sample has no source window.");
+
+                if (!pendingTextCommits.TryGetValue(textWindow, out var commits))
+                {
+                    commits = ImmutableArray.CreateBuilder<string>();
+                    pendingTextCommits.Add(textWindow, commits);
+                    pendingTextWindowOrder.Add(textWindow);
+                }
+
+                commits.Add(text);
+            }
         }
+
+        FlushTextEvents(GetCurrentHostTimestamp());
 
         return new PlatformInputCaptureBatch(
             events.ToImmutable(),
             discardedSampleCount,
-            diagnostics.ToImmutable());
+            diagnostics.ToImmutable(),
+            textEvents.ToImmutable());
+
+        void FlushTextEvents(long hostTimestamp)
+        {
+            foreach (var window in pendingTextWindowOrder)
+            {
+                textEvents.Add(new PlatformTextInputEvent(
+                    window,
+                    hostTimestamp,
+                    _sequenceLease.Allocate(),
+                    pendingTextCommits[window].ToImmutable()));
+            }
+
+            pendingTextCommits.Clear();
+            pendingTextWindowOrder.Clear();
+        }
     }
 
     internal long GetCurrentHostTimestamp()

@@ -11,6 +11,7 @@ using TerraFX.Entities;
 using TerraFX.Hosting;
 using TerraFX.Integration;
 using TerraFX.Input;
+using TerraFX.Numerics;
 using TerraFX.Platform;
 
 namespace TerraFX.Runtime.Tests.Hosting;
@@ -739,6 +740,93 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             routingOwner.ClearRoutes();
             _ = hostRouter.DisposeAndGetTransitions();
             _ = simulationRouter.DisposeAndGetTransitions();
+        }
+    }
+
+    [Test]
+    public void RoutesCommittedPlatformTextToActiveHostLiveUiSession()
+    {
+        var ownerThreadId = Environment.CurrentManagedThreadId;
+        var ownerId = OwnerIdAllocator.Allocate();
+        var sequenceLease = new HostEventSequenceLease();
+        var platformOwner = new TestPlatformInputRoutingHost(ownerId) {
+            SequenceLease = sequenceLease,
+        };
+        var window = new WindowHandle(ownerId, 0, 1);
+        var inputRouters = new HashSet<InputRouter>();
+        var timelineRouters = new Dictionary<InputRouter, WorldInputTimelineAdapter>();
+        var routingOwner = new PlatformInputRoutingOwner(
+            HostProfile.Interactive,
+            platformOwner,
+            sequenceLease,
+            new DiagnosticsService(),
+            ownerThreadId,
+            inputRouters,
+            timelineRouters,
+            recipientId => timelineRouters.Keys.FirstOrDefault(router => router.RecipientId == recipientId));
+        TextInputSession? session = null;
+
+        try
+        {
+            var hostRouter = routingOwner.CreateInputRouter(InputRecipientKind.HostLiveUI, window);
+            session = hostRouter.BeginTextSession(new TextInputSessionOptions(
+                window,
+                TextInputPurpose.FreeForm,
+                documentRevision: 1,
+                surroundingText: null,
+                selectionStart: 0,
+                selectionLength: 0,
+                caretPosition: default,
+                caretSize: default));
+            var device = new InputDeviceHandle(ownerId, 1, 1);
+            var key = new KeyboardControl(usagePage: 0x0007, usage: 0x0008);
+            var keyDown = CreateKeyboardEvent(
+                PhysicalInputEventKind.KeyDown,
+                hostTimestamp: 10,
+                hostSequence: sequenceLease.Allocate(),
+                device,
+                window,
+                key,
+                isDown: true);
+            var keyRepeat = CreateKeyboardEvent(
+                PhysicalInputEventKind.KeyRepeat,
+                hostTimestamp: 11,
+                hostSequence: sequenceLease.Allocate(),
+                device,
+                window,
+                key,
+                isDown: true);
+            var textSequence = sequenceLease.Allocate();
+
+            routingOwner.RouteCapturedInput(new PlatformInputCaptureBatch(
+                [keyDown, keyRepeat],
+                DiscardedSampleCount: 0,
+                Diagnostics: [],
+                TextEvents: [
+                    new PlatformTextInputEvent(window, 11, textSequence, ["é", "ß"]),
+                ]));
+
+            Assert.That(session.TryReadBatch(out var batch), Is.True);
+            Assert.That(batch!.HostSequence, Is.EqualTo(textSequence));
+            Assert.That(batch.BaseDocumentRevision, Is.EqualTo(1));
+            Assert.That(batch.ResultDocumentRevision, Is.EqualTo(2));
+            Assert.That(batch.Changes, Has.Length.EqualTo(2));
+            Assert.That(batch.Changes[0].Kind, Is.EqualTo(TextInputChangeKind.TextCommitted));
+            Assert.That(batch.Changes[0].Text, Is.EqualTo("é"));
+            Assert.That(batch.Changes[1].Kind, Is.EqualTo(TextInputChangeKind.TextCommitted));
+            Assert.That(batch.Changes[1].Text, Is.EqualTo("ß"));
+        }
+        finally
+        {
+            session?.Dispose();
+            routingOwner.ClearRoutes();
+
+            foreach (var router in inputRouters)
+            {
+                _ = router.DisposeAndGetTransitions();
+            }
+
+            sequenceLease.Revoke();
         }
     }
 

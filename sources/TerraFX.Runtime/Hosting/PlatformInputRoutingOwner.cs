@@ -550,7 +550,9 @@ internal sealed class PlatformInputRoutingOwner
 
         if (_profile != HostProfile.Interactive)
         {
-            if (!capturedInput.Events.IsEmpty || (capturedInput.DiscardedSampleCount != 0))
+            if (!capturedInput.Events.IsEmpty
+                || !capturedInput.TextEvents.IsDefaultOrEmpty
+                || (capturedInput.DiscardedSampleCount != 0))
             {
                 throw new InvalidOperationException("The selected non-interactive platform unexpectedly produced physical input.");
             }
@@ -565,9 +567,24 @@ internal sealed class PlatformInputRoutingOwner
 
         List<(WindowHandle Window, long HostSequence)>? focusReconciliationRequests = null;
         Dictionary<WindowHandle, long>? reconciledWindowSequences = null;
+        var physicalEventIndex = 0;
+        var textEventIndex = 0;
+        var textEvents = capturedInput.TextEvents.IsDefault
+            ? []
+            : capturedInput.TextEvents;
 
-        foreach (var inputEvent in capturedInput.Events)
+        while ((physicalEventIndex < capturedInput.Events.Length) || (textEventIndex < textEvents.Length))
         {
+            if ((textEventIndex < textEvents.Length)
+                && ((physicalEventIndex == capturedInput.Events.Length)
+                    || (textEvents[textEventIndex].HostSequence < capturedInput.Events[physicalEventIndex].HostSequence)))
+            {
+                RouteTextInput(textEvents[textEventIndex++]);
+                continue;
+            }
+
+            var inputEvent = capturedInput.Events[physicalEventIndex++];
+
             if (RouteDeviceInput(inputEvent))
             {
                 continue;
@@ -1004,6 +1021,44 @@ internal sealed class PlatformInputRoutingOwner
         }
 
         return true;
+    }
+
+    private void RouteTextInput(PlatformTextInputEvent inputEvent)
+    {
+        if (!inputEvent.Window.IsValid || (inputEvent.Window.OwnerId != _platformOwner.OwnerId))
+        {
+            throw new InvalidOperationException("A platform text commit belongs to another host window.");
+        }
+
+        if (!_windowInputRoutes.TryGetValue(inputEvent.Window, out var route)
+            || (route.HostLiveUiRouter?.ActiveTextSession is not TextInputSession session))
+        {
+            return;
+        }
+
+        if (inputEvent.Commits.IsDefaultOrEmpty)
+        {
+            throw new InvalidOperationException("A platform text transaction has no committed changes.");
+        }
+
+        var changes = ImmutableArray.CreateBuilder<TextInputChange>(inputEvent.Commits.Length);
+
+        foreach (var text in inputEvent.Commits)
+        {
+            changes.Add(new TextInputChange(TextInputChangeKind.TextCommitted, text));
+        }
+
+        var status = session.PublishNativeBatch(
+            inputEvent.HostTimestamp,
+            inputEvent.HostSequence,
+            session.DocumentRevision,
+            changes.MoveToImmutable());
+
+        if ((status != TextInputBatchPublishStatus.Published)
+            && (session.LastDiagnostic is { } diagnostic))
+        {
+            _diagnostics.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
+        }
     }
 
     private void ServiceSimulationInputRoute(WorldInputTimelineAdapter adapter)

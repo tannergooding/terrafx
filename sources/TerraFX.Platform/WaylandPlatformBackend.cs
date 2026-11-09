@@ -32,10 +32,14 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
     private readonly PlatformInputSampleQueue _inputSamples;
     private bool _isDisposed;
     private nint _keyboard;
+    private uint _keyboardDepressedModifiers;
     private WaylandWindowState? _keyboardFocusedWindow;
+    private uint _keyboardGroup;
     private WaylandKeyboardKeymap? _keyboardKeymap;
     private readonly HashSet<uint> _keyboardKeysDown;
+    private uint _keyboardLatchedModifiers;
     private nint _keyboardListener;
+    private uint _keyboardLockedModifiers;
     private readonly WaylandKeyboardRepeatSchedule _keyboardRepeatSchedule;
     private readonly List<nint> _listenerTables;
     private ImmutableArray<MonitorHandle> _monitorHandles;

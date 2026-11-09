@@ -125,13 +125,19 @@ internal sealed unsafe partial class WaylandPlatformBackend
         uint locked,
         uint group)
     {
-        _ = data;
-        _ = keyboard;
+        if (GCHandle.FromIntPtr(data).Target is WaylandPlatformBackend backend)
+        {
+            try
+            {
+                backend.HandleKeyboardModifiers(keyboard, depressed, latched, locked, group);
+            }
+            catch (Exception exception)
+            {
+                backend._callbackFailure ??= exception;
+            }
+        }
+
         _ = serial;
-        _ = depressed;
-        _ = latched;
-        _ = locked;
-        _ = group;
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
@@ -479,6 +485,16 @@ internal sealed unsafe partial class WaylandPlatformBackend
             QueueFocusEvent(previousWindow, PhysicalInputEventKind.FocusLost);
         }
 
+        if (_keyboardKeymap is WaylandKeyboardKeymap priorKeymap)
+        {
+            foreach (var key in _keyboardKeysDown)
+            {
+                _ = priorKeymap.UpdateKey(key, isDown: false);
+            }
+
+            priorKeymap.ResetComposeState();
+        }
+
         _keyboardFocusedWindow = window;
         _keyboardKeysDown.Clear();
         var keyCount = checked((int)(nativeKeys->Size / sizeof(uint)));
@@ -487,7 +503,10 @@ internal sealed unsafe partial class WaylandPlatformBackend
         foreach (var key in keyValues)
         {
             _ = _keyboardKeysDown.Add(key);
+            _ = _keyboardKeymap?.UpdateKey(key, isDown: true);
         }
+
+        UpdateKeyboardModifiers();
 
         if ((previousWindow is not null) && (previousWindow != window))
         {
@@ -553,6 +572,17 @@ internal sealed unsafe partial class WaylandPlatformBackend
         var keymap = WaylandKeyboardKeymap.TryCreate(format, fileDescriptor, size);
         _keyboardKeymap?.Dispose();
         _keyboardKeymap = keymap;
+
+        if (keymap is not null)
+        {
+            UpdateKeyboardModifiers();
+
+            foreach (var key in _keyboardKeysDown)
+            {
+                _ = keymap.UpdateKey(key, isDown: true);
+            }
+        }
+
         RescheduleKeyboardRepeats(_timeProvider.GetTimestamp());
 
         if (_keyboardFocusedWindow is WaylandWindowState window)
@@ -567,12 +597,41 @@ internal sealed unsafe partial class WaylandPlatformBackend
             && (_keyboardFocusedWindow is WaylandWindowState window)
             && (window.Surface == surface))
         {
+            if (_keyboardKeymap is WaylandKeyboardKeymap keymap)
+            {
+                foreach (var key in _keyboardKeysDown)
+                {
+                    _ = keymap.UpdateKey(key, isDown: false);
+                }
+
+                keymap.ResetComposeState();
+            }
+
             _keyboardFocusedWindow = null;
             _keyboardKeysDown.Clear();
             _keyboardRepeatSchedule.Reset();
             QueueFocusEvent(window, PhysicalInputEventKind.FocusLost);
             QueueWindowStateReconciliation(window);
         }
+    }
+
+    private void HandleKeyboardModifiers(
+        nint keyboard,
+        uint depressed,
+        uint latched,
+        uint locked,
+        uint group)
+    {
+        if (keyboard != _keyboard)
+        {
+            return;
+        }
+
+        _keyboardDepressedModifiers = depressed;
+        _keyboardLatchedModifiers = latched;
+        _keyboardLockedModifiers = locked;
+        _keyboardGroup = group;
+        UpdateKeyboardModifiers();
     }
 
     private void HandleKeyboardRepeatInfo(nint keyboard, int rate, int delay)
@@ -803,6 +862,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
         ushort hidUsage = 0;
         var hasUsage = (_keyboardKeymap is WaylandKeyboardKeymap keymap)
             && keymap.TryGetUsage(key, out hidUsage);
+        var committedText = _keyboardKeymap?.UpdateKey(key, isDown);
         _ = _inputSamples.TryEnqueue(new PlatformInputSample(
             kind,
             window.Window,
@@ -814,7 +874,8 @@ internal sealed unsafe partial class WaylandPlatformBackend
             IsDown: isDown,
             NativeTimestamp: nativeTime.HasValue ? checked((long)nativeTime.Value) : null,
             NativeClockDomain: nativeTime.HasValue ? "WaylandMonotonicMilliseconds" : null,
-            MonotonicTimestamp: timestamp));
+            MonotonicTimestamp: timestamp,
+            CommittedText: committedText));
     }
 
     private void QueuePointerPosition(WaylandWindowState window, int x, int y, uint? nativeTime)
@@ -1077,5 +1138,14 @@ internal sealed unsafe partial class WaylandPlatformBackend
         {
             failures.Add(exception);
         }
+    }
+
+    private void UpdateKeyboardModifiers()
+    {
+        _keyboardKeymap?.UpdateModifiers(
+            _keyboardDepressedModifiers,
+            _keyboardLatchedModifiers,
+            _keyboardLockedModifiers,
+            _keyboardGroup);
     }
 }

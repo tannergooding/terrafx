@@ -4,6 +4,7 @@ using System;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using Microsoft.Win32.SafeHandles;
 
 namespace TerraFX.Platform;
@@ -15,14 +16,19 @@ namespace TerraFX.Platform;
 internal sealed unsafe partial class WaylandKeyboardKeymap : IDisposable
 {
     private const uint XkbKeymapFormatTextV1 = 1;
+    private static readonly UTF8Encoding s_utf8Encoding = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+    private readonly WaylandComposeState? _composeState;
     private readonly nint _context;
     private bool _isDisposed;
     private readonly nint _keymap;
+    private readonly nint _state;
 
-    private WaylandKeyboardKeymap(nint context, nint keymap)
+    private WaylandKeyboardKeymap(nint context, nint keymap, nint state, WaylandComposeState? composeState)
     {
         _context = context;
         _keymap = keymap;
+        _state = state;
+        _composeState = composeState;
     }
 
     internal static WaylandKeyboardKeymap? TryCreate(uint format, int fileDescriptor, uint size)
@@ -71,6 +77,8 @@ internal sealed unsafe partial class WaylandKeyboardKeymap : IDisposable
 
         nint context = 0;
         nint keymap = 0;
+        nint state = 0;
+        WaylandComposeState? composeState = null;
 
         try
         {
@@ -91,9 +99,19 @@ internal sealed unsafe partial class WaylandKeyboardKeymap : IDisposable
                 throw new InvalidOperationException("libxkbcommon rejected the Wayland keyboard keymap.");
             }
 
-            var result = new WaylandKeyboardKeymap(context, keymap);
+            state = Native.XkbStateNew(keymap);
+
+            if (state == 0)
+            {
+                throw new InvalidOperationException("libxkbcommon could not create a Wayland keyboard state.");
+            }
+
+            composeState = WaylandComposeState.TryCreate();
+            var result = new WaylandKeyboardKeymap(context, keymap, state, composeState);
             context = 0;
             keymap = 0;
+            state = 0;
+            composeState = null;
             return result;
         }
         catch (DllNotFoundException)
@@ -111,6 +129,13 @@ internal sealed unsafe partial class WaylandKeyboardKeymap : IDisposable
                 Native.XkbKeymapUnref(keymap);
             }
 
+            if (state != 0)
+            {
+                Native.XkbStateUnref(state);
+            }
+
+            composeState?.Dispose();
+
             if (context != 0)
             {
                 Native.XkbContextUnref(context);
@@ -125,6 +150,8 @@ internal sealed unsafe partial class WaylandKeyboardKeymap : IDisposable
             return;
         }
 
+        _composeState?.Dispose();
+        Native.XkbStateUnref(_state);
         Native.XkbKeymapUnref(_keymap);
         Native.XkbContextUnref(_context);
         _isDisposed = true;
@@ -142,6 +169,12 @@ internal sealed unsafe partial class WaylandKeyboardKeymap : IDisposable
         return Native.XkbKeymapKeyRepeats(_keymap, checked(evdevKeycode + 8)) != 0;
     }
 
+    internal void ResetComposeState()
+    {
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+        _composeState?.Reset();
+    }
+
     internal bool TryGetUsage(uint evdevKeycode, out ushort hidUsage)
     {
         ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -154,6 +187,72 @@ internal sealed unsafe partial class WaylandKeyboardKeymap : IDisposable
 
         var keyName = Native.XkbKeymapKeyGetName(_keymap, checked(evdevKeycode + 8));
         return XkbKeyNameMapper.TryMap(Marshal.PtrToStringUTF8(keyName), out hidUsage);
+    }
+
+    internal string? UpdateKey(uint evdevKeycode, bool isDown)
+    {
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+        if (evdevKeycode is > 0x2FF)
+        {
+            return null;
+        }
+
+        var keycode = checked(evdevKeycode + 8);
+        _ = Native.XkbStateUpdateKey(_state, keycode, isDown ? 1u : 0u);
+
+        if (!isDown)
+        {
+            return null;
+        }
+
+        var keysym = Native.XkbStateKeyGetOneSym(_state, keycode);
+
+        if (_composeState is not WaylandComposeState composeState)
+        {
+            return ReadKeyText(keycode);
+        }
+
+        var status = composeState.Feed(keysym, out var committedText);
+
+        return status switch {
+            WaylandComposeStatus.Composing => null,
+            WaylandComposeStatus.Committed => committedText,
+            WaylandComposeStatus.Cancelled => ReadKeyText(keycode),
+            _ => ReadKeyText(keycode),
+        };
+    }
+
+    internal void UpdateModifiers(uint depressed, uint latched, uint locked, uint group)
+    {
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+        _ = Native.XkbStateUpdateMask(_state, depressed, latched, locked, group, 0, 0);
+    }
+
+    private string? ReadKeyText(uint keycode)
+    {
+        var byteCount = Native.XkbStateKeyGetUtf8(_state, keycode, buffer: null, size: 0);
+
+        if (byteCount <= 0)
+        {
+            return null;
+        }
+
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(byteCount, 4096);
+        Span<byte> bytes = stackalloc byte[byteCount + 1];
+        int written;
+
+        fixed (byte* text = bytes)
+        {
+            written = Native.XkbStateKeyGetUtf8(_state, keycode, text, checked((nuint)bytes.Length));
+        }
+
+        if (written != byteCount)
+        {
+            throw new InvalidOperationException("libxkbcommon returned an inconsistent keyboard string length.");
+        }
+
+        return s_utf8Encoding.GetString(bytes[..written]);
     }
 
     private static partial class Native
@@ -175,5 +274,30 @@ internal sealed unsafe partial class WaylandKeyboardKeymap : IDisposable
 
         [LibraryImport("libxkbcommon.so.0", EntryPoint = "xkb_keymap_unref")]
         internal static partial void XkbKeymapUnref(nint keymap);
+
+        [LibraryImport("libxkbcommon.so.0", EntryPoint = "xkb_state_key_get_one_sym")]
+        internal static partial uint XkbStateKeyGetOneSym(nint state, uint key);
+
+        [LibraryImport("libxkbcommon.so.0", EntryPoint = "xkb_state_key_get_utf8")]
+        internal static partial int XkbStateKeyGetUtf8(nint state, uint key, byte* buffer, nuint size);
+
+        [LibraryImport("libxkbcommon.so.0", EntryPoint = "xkb_state_new")]
+        internal static partial nint XkbStateNew(nint keymap);
+
+        [LibraryImport("libxkbcommon.so.0", EntryPoint = "xkb_state_unref")]
+        internal static partial void XkbStateUnref(nint state);
+
+        [LibraryImport("libxkbcommon.so.0", EntryPoint = "xkb_state_update_key")]
+        internal static partial uint XkbStateUpdateKey(nint state, uint key, uint direction);
+
+        [LibraryImport("libxkbcommon.so.0", EntryPoint = "xkb_state_update_mask")]
+        internal static partial uint XkbStateUpdateMask(
+            nint state,
+            uint depressedModifiers,
+            uint latchedModifiers,
+            uint lockedModifiers,
+            uint depressedLayout,
+            uint latchedLayout,
+            uint lockedLayout);
     }
 }

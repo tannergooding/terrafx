@@ -35,4 +35,5 @@ internal readonly record struct PlatformInputSample(
     PhysicalInputEventDiagnostic Diagnostics = PhysicalInputEventDiagnostic.None,
     long MonotonicTimestamp = 0,
     ImmutableArray<PlatformInputStateValue> ReconciliationState = default,
-    uint UnmappedGamepadButtonMask = 0);
+    uint UnmappedGamepadButtonMask = 0,
+    string? CommittedText = null);

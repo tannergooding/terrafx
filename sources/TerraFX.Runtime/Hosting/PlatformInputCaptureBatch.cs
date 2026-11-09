@@ -9,7 +9,8 @@ namespace TerraFX.Hosting;
 internal readonly record struct PlatformInputCaptureBatch(
     ImmutableArray<PhysicalInputEvent> Events,
     long DiscardedSampleCount,
-    ImmutableArray<Diagnostic> Diagnostics)
+    ImmutableArray<Diagnostic> Diagnostics,
+    ImmutableArray<PlatformTextInputEvent> TextEvents = default)
 {
     internal bool Overflowed => DiscardedSampleCount != 0;
 }

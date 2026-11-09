@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Text;
 using TerraFX;
 using TerraFX.Input;
 
@@ -69,7 +70,13 @@ internal sealed class PlatformInputSampleQueue
                 && (sample.Kind is PhysicalInputEventKind.DeviceAdded or PhysicalInputEventKind.DeviceRemoved))
             || ((sample.UnmappedGamepadButtonMask != 0)
                 && ((sample.Kind != PhysicalInputEventKind.StateReconciliation)
-                    || (sample.DeviceKind != PlatformInputDeviceKind.Gamepad))))
+                    || (sample.DeviceKind != PlatformInputDeviceKind.Gamepad)))
+            || ((sample.CommittedText is not null)
+                && ((sample.Kind is not (PhysicalInputEventKind.KeyDown or PhysicalInputEventKind.KeyRepeat))
+                    || (sample.Window is null)
+                    || (sample.DeviceKind != PlatformInputDeviceKind.Keyboard)
+                    || (sample.CommittedText.Length == 0)
+                    || (Encoding.UTF8.GetByteCount(sample.CommittedText) > 4096))))
         {
             throw new ArgumentException("The platform input sample has an invalid source.", nameof(sample));
         }
