@@ -822,12 +822,30 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             IsolatedX11Input.SetInputFocus(platformHost.NativeDisplay, platformHost.NativeWindow);
             routingOwner.RouteCapturedInput(platformHost.PumpAndCapture());
 
+            IsolatedX11Input.SendKey(platformHost.NativeDisplay, keycode: 38, isDown: true);
+            var initialKeyDownCapture = platformHost.PumpAndCapture();
+            var initialKeyDown = initialKeyDownCapture.Events.Single(inputEvent => inputEvent.Kind == PhysicalInputEventKind.KeyDown);
+            Assert.That(initialKeyDown.Window, Is.EqualTo(window));
+            Assert.That(initialKeyDown.Value?.DigitalControl?.Keyboard?.Kind, Is.EqualTo(KeyboardControlKind.KeyboardHid));
+            Assert.That(initialKeyDown.Value?.DigitalControl?.Keyboard?.UsagePage, Is.EqualTo(key.UsagePage));
+            Assert.That(initialKeyDown.Value?.DigitalControl?.Keyboard?.Usage, Is.EqualTo(key.Usage));
+            routingOwner.RouteCapturedInput(initialKeyDownCapture);
+            routingOwner.ServiceWindowInputRoutes(platformHost.GetHostTimestamp());
+            var initialHostSnapshot = hostLiveUiRouter.GetHostActionSnapshot();
+            Assert.That(initialHostSnapshot.Actions[0].IsDownAtEnd, Is.True);
+
             IsolatedX11Input.SetInputFocus(platformHost.NativeDisplay, IsolatedX11Input.GetRootWindow(platformHost.NativeDisplay));
             var focusLostCapture = platformHost.PumpAndCapture();
             Assert.That(
                 focusLostCapture.Events.Any(inputEvent => inputEvent.Kind == PhysicalInputEventKind.FocusLost),
                 Is.True);
             routingOwner.RouteCapturedInput(focusLostCapture);
+            routingOwner.ServiceWindowInputRoutes(platformHost.GetHostTimestamp());
+            var focusLostHostSnapshot = hostLiveUiRouter.GetHostActionSnapshot();
+            Assert.That(focusLostHostSnapshot.Actions[0].IsDownAtEnd, Is.False);
+            Assert.That(
+                focusLostHostSnapshot.Actions[0].Transitions.Any(transition => transition.Kind == InputTransitionKind.Canceled),
+                Is.True);
 
             IsolatedX11Input.SetInputFocus(platformHost.NativeDisplay, platformHost.NativeWindow);
             var focusRegainedCapture = platformHost.PumpAndCapture();
@@ -837,15 +855,31 @@ internal sealed partial class PlatformInputRoutingOwnerTests
             Assert.That(
                 focusRegainedCapture.Events.Any(inputEvent => inputEvent.Kind == PhysicalInputEventKind.StateReconciliation),
                 Is.True);
+            var reconciliation = focusRegainedCapture.Events.Single(
+                inputEvent => inputEvent.Kind == PhysicalInputEventKind.StateReconciliation);
+            Assert.That(
+                reconciliation.ReconciliationState.Any(value =>
+                    (value.IsDown == true)
+                    && (value.DigitalControl?.Keyboard?.UsagePage == key.UsagePage)
+                    && (value.DigitalControl.Keyboard.Usage == key.Usage)),
+                Is.True);
             routingOwner.RouteCapturedInput(focusRegainedCapture);
+            routingOwner.ServiceWindowInputRoutes(platformHost.GetHostTimestamp());
+            var heldReconciliationHostSnapshot = hostLiveUiRouter.GetHostActionSnapshot();
+            Assert.That(heldReconciliationHostSnapshot.Actions[0].IsDownAtEnd, Is.False);
+            Assert.That(heldReconciliationHostSnapshot.Actions[0].Transitions, Is.Empty);
+
+            IsolatedX11Input.SendKey(platformHost.NativeDisplay, keycode: 38, isDown: false);
+            var keyUpCapture = platformHost.PumpAndCapture();
+            Assert.That(keyUpCapture.Events.Any(inputEvent => inputEvent.Kind == PhysicalInputEventKind.KeyUp), Is.True);
+            routingOwner.RouteCapturedInput(keyUpCapture);
+            routingOwner.ServiceWindowInputRoutes(platformHost.GetHostTimestamp());
+            Assert.That(hostLiveUiRouter.GetHostActionSnapshot().Actions[0].IsDownAtEnd, Is.False);
 
             IsolatedX11Input.SendKey(platformHost.NativeDisplay, keycode: 38, isDown: true);
             var keyDownCapture = platformHost.PumpAndCapture();
             var keyDown = keyDownCapture.Events.Single(inputEvent => inputEvent.Kind == PhysicalInputEventKind.KeyDown);
             Assert.That(keyDown.Window, Is.EqualTo(window));
-            Assert.That(keyDown.Value?.DigitalControl?.Keyboard?.Kind, Is.EqualTo(KeyboardControlKind.KeyboardHid));
-            Assert.That(keyDown.Value?.DigitalControl?.Keyboard?.UsagePage, Is.EqualTo(key.UsagePage));
-            Assert.That(keyDown.Value?.DigitalControl?.Keyboard?.Usage, Is.EqualTo(key.Usage));
             routingOwner.RouteCapturedInput(keyDownCapture);
             routingOwner.ServiceWindowInputRoutes(platformHost.GetHostTimestamp());
             routingOwner.ServiceSimulationInputRoutes(timelineAdapter);
@@ -862,6 +896,9 @@ internal sealed partial class PlatformInputRoutingOwnerTests
                 Assert.That(simulationSnapshot.Actions[0].Transitions, Has.Length.EqualTo(1));
                 Assert.That(simulationSnapshot.Actions[0].Transitions[0].Kind, Is.EqualTo(InputTransitionKind.Pressed));
             });
+
+            IsolatedX11Input.SendKey(platformHost.NativeDisplay, keycode: 38, isDown: false);
+            _ = platformHost.PumpAndCapture();
         }
         finally
         {
