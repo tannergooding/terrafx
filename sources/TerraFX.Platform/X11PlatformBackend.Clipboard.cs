@@ -674,7 +674,13 @@ internal sealed unsafe partial class X11PlatformBackend
 
         _ = _clipboard.PendingWriteAdvances.Remove(key);
 
-        if (!releaseRequestorEvents || _windowsByNativeId.ContainsKey(key.Requestor))
+        if (!releaseRequestorEvents)
+        {
+            _ = _clipboard.PendingRequestorReleases.Remove(key.Requestor);
+            return;
+        }
+
+        if (_windowsByNativeId.ContainsKey(key.Requestor))
         {
             return;
         }
