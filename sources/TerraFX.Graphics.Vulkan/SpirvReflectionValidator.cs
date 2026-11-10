@@ -45,6 +45,7 @@ internal static class SpirvReflectionValidator
     private const uint ImageFormatR32Float = 3;
     private const uint ImageFormatR32SInt = 24;
     private const uint ImageFormatR32UInt = 33;
+    private const uint ImageFormatRgba16Float = 2;
     private const uint ImageSampled = 1;
     private const uint ImageStorage = 2;
     private const uint MagicNumber = 0x07230203;
@@ -878,6 +879,7 @@ internal static class SpirvReflectionValidator
             if (kind == ShaderResourceKind.StorageImage)
             {
                 storageImageFormat = type.Operands[7] switch {
+                    ImageFormatRgba16Float => ShaderStorageImageFormat.Rgba16Float,
                     ImageFormatR32Float => ShaderStorageImageFormat.R32Float,
                     ImageFormatR32SInt => ShaderStorageImageFormat.R32SInt,
                     ImageFormatR32UInt => ShaderStorageImageFormat.R32UInt,

@@ -4085,7 +4085,8 @@ public enum ShaderStorageImageFormat
     None = 0,
     R32Float = 1,
     R32SInt = 2,
-    R32UInt = 3
+    R32UInt = 3,
+    Rgba16Float = 4
 }
 
 public enum ShaderCapability

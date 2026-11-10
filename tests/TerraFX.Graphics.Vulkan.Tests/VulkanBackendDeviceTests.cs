@@ -1613,7 +1613,7 @@ internal sealed class VulkanBackendDeviceTests
     }
 
     [Test]
-    public void SpirvPreflightAcceptsR32FloatAndR32SintStorageImagesWithoutCreatingDevice()
+    public void SpirvPreflightAcceptsTypedStorageImageFormatsWithoutCreatingDevice()
     {
         var fixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
 
@@ -1623,7 +1623,11 @@ internal sealed class VulkanBackendDeviceTests
             return;
         }
 
-        foreach (var stageName in new[] { "compute-storage-float-image", "compute-storage-signed-image" })
+        foreach (var stageName in new[] {
+            "compute-storage-float-image",
+            "compute-storage-rgba16-image",
+            "compute-storage-signed-image",
+        })
         {
             var reflection = M04ShaderFixtureCompiler.ReadTypedReflection(fixtureDirectory, stageName);
             using var storage = CreateBytecodeStorage(Path.Combine(

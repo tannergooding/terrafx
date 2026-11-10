@@ -343,6 +343,13 @@ internal sealed class ShaderReflectionTests
             1,
             ShaderResourceAccess.ReadWrite,
             ShaderStorageImageFormat.R32SInt);
+        var rgba16FloatStorageImage = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            3,
+            ShaderResourceKind.StorageImage,
+            1,
+            ShaderResourceAccess.ReadWrite,
+            ShaderStorageImageFormat.Rgba16Float);
         var nonStorageResource = new ShaderResourceSignature(
             ShaderBindingGroup.Frame,
             0,
@@ -352,6 +359,7 @@ internal sealed class ShaderReflectionTests
         Assert.That(storageImage.StorageImageFormat, Is.EqualTo(ShaderStorageImageFormat.R32UInt));
         Assert.That(floatStorageImage.StorageImageFormat, Is.EqualTo(ShaderStorageImageFormat.R32Float));
         Assert.That(signedStorageImage.StorageImageFormat, Is.EqualTo(ShaderStorageImageFormat.R32SInt));
+        Assert.That(rgba16FloatStorageImage.StorageImageFormat, Is.EqualTo(ShaderStorageImageFormat.Rgba16Float));
         Assert.That(floatStorageImage, Is.Not.EqualTo(storageImage));
         Assert.That(nonStorageResource.StorageImageFormat, Is.EqualTo(ShaderStorageImageFormat.None));
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => new ShaderResourceSignature(

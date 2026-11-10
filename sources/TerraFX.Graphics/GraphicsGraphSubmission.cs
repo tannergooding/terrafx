@@ -1366,6 +1366,7 @@ internal sealed class GraphicsGraphSubmission
                                 case ShaderResourceKind.StorageImage:
                                 {
                                     var expectedStorageImageTextureFormat = currentPipelineStorageImageFormat switch {
+                                        ShaderStorageImageFormat.Rgba16Float => TextureFormat.Rgba16Float,
                                         ShaderStorageImageFormat.R32Float => TextureFormat.R32Float,
                                         ShaderStorageImageFormat.R32UInt => TextureFormat.R32UInt,
                                         ShaderStorageImageFormat.R32SInt

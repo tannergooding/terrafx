@@ -16,4 +16,7 @@ public enum ShaderStorageImageFormat
 
     /// <summary>One 32-bit unsigned-integer component.</summary>
     R32UInt = 3,
+
+    /// <summary>Four 16-bit floating-point components.</summary>
+    Rgba16Float = 4,
 }

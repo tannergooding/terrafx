@@ -208,6 +208,7 @@ internal static class M04ShaderReflectionReader
 
             var storageImageFormat = kind == ShaderResourceKind.StorageImage
                 ? format switch {
+                    "rgba16f" => ShaderStorageImageFormat.Rgba16Float,
                     "r32f" => ShaderStorageImageFormat.R32Float,
                     "r32i" => ShaderStorageImageFormat.R32SInt,
                     "r32ui" => ShaderStorageImageFormat.R32UInt,
@@ -829,6 +830,7 @@ internal static class M04ShaderReflectionReader
         static string GetDxilStorageImageFormat(string? format)
         {
             return format switch {
+                "rgba16f" => "f32",
                 "r32f" => "f32",
                 "r32i" => "i32",
                 "r32ui" => "u32",
@@ -1391,6 +1393,7 @@ internal static class M04ShaderReflectionReader
         private const uint ImageFormatR32f = 3;
         private const uint ImageFormatR32i = 24;
         private const uint ImageFormatR32ui = 33;
+        private const uint ImageFormatRgba16f = 2;
         private const uint ImageFormatUnknown = 0;
         private const ushort OpConstant = 43;
         private const ushort OpDecorate = 71;
@@ -1860,6 +1863,7 @@ internal static class M04ShaderReflectionReader
                 };
                 var format = imageType.Format switch {
                     ImageFormatUnknown => null,
+                    ImageFormatRgba16f => "rgba16f",
                     ImageFormatR32f => "r32f",
                     ImageFormatR32i => "r32i",
                     ImageFormatR32ui => "r32ui",
