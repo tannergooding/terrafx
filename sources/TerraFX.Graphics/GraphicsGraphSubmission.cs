@@ -335,7 +335,7 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
-        GraphBufferImportRecord? uniformBufferImport = null;
+        var uniformBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
         var vertexBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
         var indexBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
         var storageBufferImports = new Dictionary<ulong, GraphBufferImportRecord>();
@@ -407,12 +407,10 @@ internal sealed class GraphicsGraphSubmission
 
                 if (hasUniformUsage)
                 {
-                    if (uniformBufferImport is not null)
+                    if (!uniformBufferImports.TryAdd(import.Version.ResourceId, import))
                     {
-                        throw new NotSupportedException("Native graph submission supports one Frame uniform buffer.");
+                        throw new InvalidOperationException("The graph imported a duplicate Frame uniform-buffer resource identity.");
                     }
-
-                    uniformBufferImport = import;
                 }
                 else
                 {
@@ -536,11 +534,13 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
-        if (uniformBufferImport is not null
-            && (!uniformBufferImport.InitialContentsValid
-                || (uniformBufferImport.InitialState is not (GraphResourceState.General or GraphResourceState.UniformRead))))
+        foreach (var import in uniformBufferImports.Values)
         {
-            throw new NotSupportedException("Native graph submission requires an initialized Frame uniform buffer in a supported state.");
+            if (!import.InitialContentsValid
+                || (import.InitialState is not (GraphResourceState.General or GraphResourceState.UniformRead)))
+            {
+                throw new NotSupportedException("Native graph submission requires initialized Frame uniform buffers in a supported state.");
+            }
         }
 
         var sampledTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
@@ -825,7 +825,8 @@ internal sealed class GraphicsGraphSubmission
         var vertexBufferResourcesUsed = new HashSet<ulong>();
         var indexBufferBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var indexBufferResourcesUsed = new HashSet<ulong>();
-        var uniformBufferPasses = new HashSet<RenderPassId>();
+        var uniformBufferBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
+        var uniformBufferResourcesUsed = new HashSet<ulong>();
         var sampledTextureBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var sampledTextureResourcesUsed = new HashSet<ulong>();
         var storageBufferBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
@@ -913,6 +914,7 @@ internal sealed class GraphicsGraphSubmission
             GraphBufferImportRecord? currentIndexBufferImport = null;
             var currentPipelineRequiresVertexBuffer = false;
             var currentPipelineRequiresUniformBuffer = false;
+            var currentPipelineUniformBufferBindings = new HashSet<int>();
             var currentPipelineRequiresSampledImage = false;
             var currentPipelineRequiresSampler = false;
             var currentPipelineSampledImageBindings = new HashSet<int>();
@@ -967,6 +969,7 @@ internal sealed class GraphicsGraphSubmission
                         currentPipelineRequiresVertexBuffer = !isComputePass && (layout.VertexStride != 0);
                         currentVertexBufferImport = null;
                         currentIndexBufferImport = null;
+                        currentPipelineUniformBufferBindings.Clear();
                         currentPipelineStorageBufferBindingCount = 0;
                         currentPipelineStorageBufferWriteOnlyBindings.Clear();
                         currentPipelineSampledImageBindings.Clear();
@@ -995,8 +998,6 @@ internal sealed class GraphicsGraphSubmission
 
                                 if ((resource.Group != ShaderBindingGroup.Frame)
                                     || !supportedKind
-                                    || ((resource.Kind == ShaderResourceKind.UniformBuffer)
-                                        && (resource.Binding != 0))
                                     || (resource.ArrayCount != 1)
                                     || ((resource.Kind is ShaderResourceKind.UniformBuffer
                                             or ShaderResourceKind.SampledImage
@@ -1022,6 +1023,12 @@ internal sealed class GraphicsGraphSubmission
                                 case ShaderResourceKind.UniformBuffer:
                                 {
                                     currentPipelineRequiresUniformBuffer = true;
+
+                                    if (!currentPipelineUniformBufferBindings.Add(resource.Binding))
+                                    {
+                                        throw new NotSupportedException("A graphics pipeline cannot declare conflicting uniform-buffer signatures at one binding.");
+                                    }
+
                                     break;
                                 }
 
@@ -1211,7 +1218,7 @@ internal sealed class GraphicsGraphSubmission
                         var bindings = command.Bindings
                             ?? throw new InvalidOperationException("A recorded binding command lost its binding set.");
 
-                        var expectedBufferBindingCount = (currentPipelineRequiresUniformBuffer ? 1 : 0)
+                        var expectedBufferBindingCount = currentPipelineUniformBufferBindings.Count
                             + currentPipelineStorageBufferBindingCount;
                         var expectedTextureBindingCount = currentPipelineSampledImageBindings.Count
                             + currentPipelineStorageImageBindingCount;
@@ -1229,10 +1236,9 @@ internal sealed class GraphicsGraphSubmission
                             {
                                 case ShaderResourceKind.UniformBuffer:
                                 {
-                                    if ((uniformBufferImport is null)
+                                    if (!currentPipelineUniformBufferBindings.Contains(binding.Binding)
+                                        || !uniformBufferImports.TryGetValue(binding.Resource.ResourceId, out var uniformBufferImport)
                                         || (binding.Group != ShaderBindingGroup.Frame)
-                                        || (binding.Binding != 0)
-                                        || (binding.Resource.ResourceId != uniformBufferImport.Version.ResourceId)
                                         || !binding.Range.IsWithin(uniformBufferImport.Version.Range))
                                     {
                                         throw new NotSupportedException("The Frame uniform-buffer binding must fit the imported graph buffer range.");
@@ -1260,7 +1266,7 @@ internal sealed class GraphicsGraphSubmission
                                     }
 
                                     hasUniformBufferBinding = true;
-                                    _ = uniformBufferPasses.Add(pass.PassId);
+                                    _ = uniformBufferBindingPairs.Add((pass.PassId, binding.Resource.ResourceId));
                                     break;
                                 }
 
@@ -1833,17 +1839,17 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!access.IsTexture
-                && (uniformBufferImport is not null)
-                && (access.ResourceId == uniformBufferImport.Version.ResourceId)
+                && uniformBufferImports.ContainsKey(access.ResourceId)
                 && (access.RequiredState == GraphResourceState.UniformRead)
                 && !access.IsWrite)
             {
-                if (!uniformBufferPasses.Contains(access.PassId))
+                if (!uniformBufferBindingPairs.Contains((access.PassId, access.ResourceId)))
                 {
                     throw new InvalidOperationException("The imported Frame uniform buffer is declared by a pass without a matching binding set.");
                 }
 
                 hasUniformBufferAccess = true;
+                _ = uniformBufferResourcesUsed.Add(access.ResourceId);
                 continue;
             }
 
@@ -1935,7 +1941,7 @@ internal sealed class GraphicsGraphSubmission
                 continue;
             }
 
-            if (access.IsTexture || (uniformBufferImport is null) || (access.ResourceId != uniformBufferImport.Version.ResourceId))
+            if (access.IsTexture || !uniformBufferImports.ContainsKey(access.ResourceId))
             {
                 throw new NotSupportedException("Native graph submission does not support imported resources outside its Frame resource set.");
             }
@@ -1951,11 +1957,10 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (!transition.IsTexture
-                && (uniformBufferImport is not null)
-                && (transition.ResourceId == uniformBufferImport.Version.ResourceId)
+                && uniformBufferImports.ContainsKey(transition.ResourceId)
                 && (transition.AfterState == GraphResourceState.UniformRead)
                 && (transition.BeforeState == GraphResourceState.General)
-                && uniformBufferPasses.Contains(transition.PassId))
+                && uniformBufferBindingPairs.Contains((transition.PassId, transition.ResourceId)))
             {
                 continue;
             }
@@ -2091,7 +2096,7 @@ internal sealed class GraphicsGraphSubmission
                 continue;
             }
 
-            if ((uniformBufferImport is null || transition.ResourceId != uniformBufferImport.Version.ResourceId)
+            if (!uniformBufferImports.ContainsKey(transition.ResourceId)
                 && !vertexBufferImports.ContainsKey(transition.ResourceId)
                 && !indexBufferImports.ContainsKey(transition.ResourceId)
                 && !storageBufferImports.ContainsKey(transition.ResourceId)
@@ -2106,10 +2111,13 @@ internal sealed class GraphicsGraphSubmission
             throw new NotSupportedException("Native graph submission supports only declared Frame resource transitions.");
         }
 
-        if ((uniformBufferImport is not null)
-            && (!hasUniformBufferPipeline || !hasUniformBufferBinding || !hasUniformBufferAccess))
+        if ((uniformBufferImports.Count != 0)
+            && (!hasUniformBufferPipeline
+                || !hasUniformBufferBinding
+                || !hasUniformBufferAccess
+                || (uniformBufferResourcesUsed.Count != uniformBufferImports.Count)))
         {
-            throw new NotSupportedException("An imported Frame uniform buffer must be reflected, bound, and declared by a graph pass.");
+            throw new NotSupportedException("Every imported Frame uniform buffer must be reflected, bound, and declared by a graph pass.");
         }
 
         if ((vertexBufferImports.Count != 0)

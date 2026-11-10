@@ -22,6 +22,7 @@ internal static class M04ShaderFixtureCompiler
     private const string ShaderEntryPointComputeStorageWrite = "CSStorageWriteMain";
     private const string ShaderEntryPointGraphPixel = "PSGraphMain";
     private const string ShaderEntryPointPixel = "PSMain";
+    private const string ShaderEntryPointPixelMultipleFrame = "PSMultipleFrameMain";
     private const string ShaderEntryPointSampledFramePixel = "PSSampledFrameMain";
     private const string ShaderEntryPointSampledFrameStoragePixel = "PSSampledFrameStorageMain";
     private const string ShaderEntryPointSampledMultiplePixel = "PSSampledMultipleMain";
@@ -42,6 +43,7 @@ internal static class M04ShaderFixtureCompiler
         "vertex-sprite",
         "pixel",
         "pixel-graph",
+        "pixel-multiple-frame-uniforms",
         "pixel-sampled",
         "pixel-sampled-multiple",
         "pixel-sprite",
@@ -207,6 +209,17 @@ internal static class M04ShaderFixtureCompiler
                 ShaderEntryPointGraphPixel,
                 "ps_6_0",
                 "pixel-graph",
+                cancellationToken).ConfigureAwait(false);
+            await CompileStageAsync(
+                manifest,
+                dxcExecutable,
+                spirvCrossExecutable,
+                spirvValidationExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointPixelMultipleFrame,
+                "ps_6_0",
+                "pixel-multiple-frame-uniforms",
                 cancellationToken).ConfigureAwait(false);
             await CompileStageAsync(
                 manifest,
@@ -427,6 +440,15 @@ internal static class M04ShaderFixtureCompiler
                 dxcExecutable,
                 shaderPath,
                 stagingDirectory,
+                ShaderEntryPointPixelMultipleFrame,
+                "ps_6_0",
+                "pixel-multiple-frame-uniforms",
+                cancellationToken).ConfigureAwait(false);
+            await CompileDxilStageAsync(
+                manifest,
+                dxcExecutable,
+                shaderPath,
+                stagingDirectory,
                 ShaderEntryPointPixel,
                 "ps_6_0",
                 "pixel",
@@ -506,6 +528,7 @@ internal static class M04ShaderFixtureCompiler
             "compute-storage-write" => ShaderEntryPointComputeStorageWrite,
             "pixel" => ShaderEntryPointPixel,
             "pixel-graph" => ShaderEntryPointGraphPixel,
+            "pixel-multiple-frame-uniforms" => ShaderEntryPointPixelMultipleFrame,
             "pixel-sampled" => ShaderEntryPointSampledPixel,
             "pixel-sampled-multiple" => ShaderEntryPointSampledMultiplePixel,
             "pixel-sprite" => ShaderEntryPointSpritePixel,
@@ -843,7 +866,7 @@ internal static class M04ShaderFixtureCompiler
 
         var expectedOutputSemantic = stageName switch {
             "vertex" or "vertex-sprite" => "SV_Position",
-            "pixel" or "pixel-graph" or "pixel-sampled" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => "SV_Target",
+            "pixel" or "pixel-graph" or "pixel-multiple-frame-uniforms" or "pixel-sampled" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => "SV_Target",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
         };
 
@@ -861,12 +884,19 @@ internal static class M04ShaderFixtureCompiler
             throw new InvalidDataException("DXC reflection from the Sprite vertex DXIL omitted position or texture-coordinate inputs.");
         }
 
-        if ((stageName is "pixel" or "pixel-sampled-frame" or "pixel-sampled-frame-storage")
+        if ((stageName is "pixel" or "pixel-multiple-frame-uniforms" or "pixel-sampled-frame" or "pixel-sampled-frame-storage")
             && (!text.Contains("cbuffer FrameData", StringComparison.Ordinal)
                 || !text.Contains("float4 color", StringComparison.Ordinal)
                 || !text.Contains("FrameData                         cbuffer", StringComparison.Ordinal)))
         {
             throw new InvalidDataException("DXC reflection from the compiled pixel DXIL does not contain the FrameData uniform buffer.");
+        }
+
+        if ((stageName == "pixel-multiple-frame-uniforms")
+            && (!text.Contains("FrameSecondData", StringComparison.Ordinal)
+                || !text.Contains("secondColor", StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException("DXC reflection from the compiled multi-UBO pixel DXIL does not contain its second uniform buffer.");
         }
 
         if ((stageName is "pixel-sampled" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage")
@@ -937,13 +967,13 @@ internal static class M04ShaderFixtureCompiler
         }
     }
 
-    private static void ValidatePixelUniformBufferReflection(JsonElement root)
+    private static void ValidatePixelUniformBufferReflection(JsonElement root, int expectedCount = 1)
     {
         if (!root.TryGetProperty("ubos", out var uniformBuffers)
             || (uniformBuffers.ValueKind != JsonValueKind.Array)
-            || (uniformBuffers.GetArrayLength() != 1))
+            || (uniformBuffers.GetArrayLength() != expectedCount))
         {
-            throw new InvalidDataException("SPIRV-Cross reflection must report exactly one FrameData uniform buffer.");
+            throw new InvalidDataException($"SPIRV-Cross reflection must report exactly {expectedCount} Frame uniform buffers.");
         }
 
         var uniformBuffer = uniformBuffers[0];
@@ -993,6 +1023,57 @@ internal static class M04ShaderFixtureCompiler
         {
             throw new InvalidDataException("SPIRV-Cross reflection does not match the FrameData color field layout.");
         }
+
+        if (expectedCount > 1)
+        {
+            var secondUniformBuffer = uniformBuffers[1];
+
+            if (!secondUniformBuffer.TryGetProperty("type", out var secondTypeIdentifierElement)
+                || (secondTypeIdentifierElement.ValueKind != JsonValueKind.String)
+                || !secondUniformBuffer.TryGetProperty("name", out var secondNameElement)
+                || (secondNameElement.ValueKind != JsonValueKind.String)
+                || !StringComparer.Ordinal.Equals(secondNameElement.GetString(), "type.FrameSecondData")
+                || !secondUniformBuffer.TryGetProperty("block_size", out var secondBlockSizeElement)
+                || (secondBlockSizeElement.ValueKind != JsonValueKind.Number)
+                || (secondBlockSizeElement.GetInt32() != 16)
+                || !secondUniformBuffer.TryGetProperty("set", out var secondSetElement)
+                || (secondSetElement.ValueKind != JsonValueKind.Number)
+                || (secondSetElement.GetInt32() != 0)
+                || !secondUniformBuffer.TryGetProperty("binding", out var secondBindingElement)
+                || (secondBindingElement.ValueKind != JsonValueKind.Number)
+                || (secondBindingElement.GetInt32() != 1))
+            {
+                throw new InvalidDataException("SPIRV-Cross reflection does not match the FrameSecondData set, binding, or block-size contract.");
+            }
+
+            var secondTypeIdentifier = secondTypeIdentifierElement.GetString()
+                ?? throw new InvalidDataException("SPIRV-Cross omitted the FrameSecondData type identifier.");
+
+            if (!root.TryGetProperty("types", out var secondTypes)
+                || (secondTypes.ValueKind != JsonValueKind.Object)
+                || !secondTypes.TryGetProperty(secondTypeIdentifier, out var secondType)
+                || !secondType.TryGetProperty("members", out var secondMembers)
+                || (secondMembers.ValueKind != JsonValueKind.Array)
+                || (secondMembers.GetArrayLength() != 1))
+            {
+                throw new InvalidDataException("SPIRV-Cross reflection does not contain the FrameSecondData member layout.");
+            }
+
+            var secondMember = secondMembers[0];
+
+            if (!secondMember.TryGetProperty("name", out var secondMemberName)
+                || (secondMemberName.ValueKind != JsonValueKind.String)
+                || !StringComparer.Ordinal.Equals(secondMemberName.GetString(), "secondColor")
+                || !secondMember.TryGetProperty("type", out var secondMemberType)
+                || (secondMemberType.ValueKind != JsonValueKind.String)
+                || !StringComparer.Ordinal.Equals(secondMemberType.GetString(), "vec4")
+                || !secondMember.TryGetProperty("offset", out var secondMemberOffset)
+                || (secondMemberOffset.ValueKind != JsonValueKind.Number)
+                || (secondMemberOffset.GetInt32() != 0))
+            {
+                throw new InvalidDataException("SPIRV-Cross reflection does not match the FrameSecondData color field layout.");
+            }
+        }
     }
 
     private static void ValidateReflection(string json, string entryPoint, string stageName)
@@ -1022,7 +1103,7 @@ internal static class M04ShaderFixtureCompiler
         var expectedMode = stageName switch {
             "compute-storage" or "compute-storage-buffers" or "compute-storage-float-image" or "compute-storage-images" or "compute-storage-rgba16-image" or "compute-storage-signed-image" or "compute-storage-write" => mode is "comp" or "compute",
             "vertex" or "vertex-sprite" => mode is "vert" or "vertex",
-            "pixel" or "pixel-graph" or "pixel-sampled" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => mode is "frag" or "fragment",
+            "pixel" or "pixel-graph" or "pixel-multiple-frame-uniforms" or "pixel-sampled" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => mode is "frag" or "fragment",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
         };
 
@@ -1034,6 +1115,11 @@ internal static class M04ShaderFixtureCompiler
         if (stageName is "pixel" or "pixel-sampled-frame" or "pixel-sampled-frame-storage")
         {
             ValidatePixelUniformBufferReflection(root);
+        }
+
+        if (stageName == "pixel-multiple-frame-uniforms")
+        {
+            ValidatePixelUniformBufferReflection(root, expectedCount: 2);
         }
 
         if (stageName == "pixel-sampled-multiple")

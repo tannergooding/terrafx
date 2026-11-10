@@ -21,6 +21,12 @@ cbuffer FrameData : register(b0, space0)
     float4 color;
 };
 
+[[vk::binding(1, 0)]]
+cbuffer FrameSecondData : register(b1, space0)
+{
+    float4 secondColor;
+};
+
 [[vk::binding(16, 0)]]
 Texture2D<float4> FrameTexture : register(t0, space0);
 
@@ -79,6 +85,11 @@ SpriteVertexOutput VSSpriteMain(SpriteVertexInput input)
 float4 PSMain(VertexOutput input) : SV_Target0
 {
     return color;
+}
+
+float4 PSMultipleFrameMain(VertexOutput input) : SV_Target0
+{
+    return (color + secondColor) * 0.5;
 }
 
 float4 PSGraphMain(VertexOutput input) : SV_Target0
