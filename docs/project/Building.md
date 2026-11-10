@@ -826,7 +826,7 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 Remove-Item Env:\TERRAFX_VULKAN_NATIVEAOT_CONSUMER
 ```
 
-On Windows, Win32 Interactive and OffscreenNative pass 2/2; Linux Wayland/X11 are skipped as OS-inapplicable. The Win32 path covers two windows, one committed World tick, peer-window close, presentation on the surviving Surface, and callback exception recovery. OffscreenNative verifies both the graph-clear pixel and a padded 3D R8 upload/readback. GameInput remains unavailable under NativeAOT as described above.
+On Windows, Win32 Interactive and OffscreenNative pass 2/2; Linux Wayland/X11 are skipped as OS-inapplicable. The Win32 path covers two windows, one committed World tick, peer-window close, presentation on the surviving Surface, and callback exception recovery. OffscreenNative verifies both the graph-clear pixel and a padded 3D R8 upload/readback. The Windows Vulkan selection passes 2/2 in Debug JIT, Release JIT, and Release NativeAOT. GameInput remains unavailable under NativeAOT as described above.
 
 The Windows direct-Surface stress runs 100 resize/minimize/restore requests against D3D12 and Vulkan Win32:
 
@@ -886,7 +886,7 @@ The unsafe-disabled Vulkan consumer exercises a package-backed camera Scene thro
 TERRAFX_VULKAN_NATIVEAOT_CONSUMER="$WORKTREE/artifacts/linux/bin/tests/TerraFX.Runtime.Vulkan.Consumer/Release/net11.0/linux-x64/publish/TerraFX.Runtime.Vulkan.Consumer" "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~PublishedVulkanConsumerExecutesScenario" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/" -m:1 -nr:false
 ```
 
-This selection passes the three Linux scenarios in Debug JIT and Release NativeAOT; the Windows-only Win32 case is skipped on WSLg. The passing paths are Vulkan OffscreenNative readback plus Wayland and explicit X11 Interactive presentation, each Interactive path covering two windows, one committed World tick, peer-window close, presentation on the surviving Surface, and callback exception recovery. It qualifies WSLg on the observed llvmpipe software adapter, not hardware GPU behavior.
+This selection passes the three Linux scenarios in Debug JIT, Release JIT, and Release NativeAOT; the Windows-only Win32 case is skipped on WSLg. The passing paths are Vulkan OffscreenNative readback plus Wayland and explicit X11 Interactive presentation, each Interactive path covering two windows, one committed World tick, peer-window close, presentation on the surviving Surface, and callback exception recovery. It qualifies WSLg on the observed llvmpipe software adapter, not hardware GPU behavior.
 
 The WSLg Surface stress runs 100 resize/minimize/restore requests on Wayland and X11. Positive requests use the compositor-observed client extent:
 
