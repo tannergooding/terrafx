@@ -200,10 +200,10 @@ internal sealed partial class EngineHostOptionsTests
         }
 
         if (!StringComparer.Ordinal.Equals(
-            Environment.GetEnvironmentVariable("TERRAFX_D3D12_QUARANTINE_CHILD"),
+            Environment.GetEnvironmentVariable("TERRAFX_NATIVE_QUARANTINE_CHILD"),
             "1"))
         {
-            D3D12QuarantineTestProcess.Run("TestCategory=ProcessIsolatedGraphQuarantine");
+            NativeQuarantineTestProcess.Run("TestCategory=ProcessIsolatedGraphQuarantine");
             return Task.CompletedTask;
         }
 

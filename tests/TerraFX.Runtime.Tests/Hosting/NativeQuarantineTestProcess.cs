@@ -10,7 +10,7 @@ using NUnit.Framework;
 
 namespace TerraFX.Runtime.Tests.Hosting;
 
-internal static class D3D12QuarantineTestProcess
+internal static class NativeQuarantineTestProcess
 {
     internal static void Run(string testFilter = "TestCategory=ProcessIsolatedQuarantine")
     {
@@ -26,7 +26,7 @@ internal static class D3D12QuarantineTestProcess
         }
 
         var repositoryRoot = repositoryDirectory?.FullName
-            ?? throw new DirectoryNotFoundException("The repository root could not be resolved for the isolated D3D12 witness.");
+            ?? throw new DirectoryNotFoundException("The repository root could not be resolved for the isolated native quarantine witness.");
         var projectPath = Path.Combine(
             repositoryRoot,
             "tests",
@@ -35,7 +35,7 @@ internal static class D3D12QuarantineTestProcess
         var resultsDirectory = Path.Combine(
             Path.GetTempPath(),
             "TerraFX.Runtime.Tests",
-            $"D3D12Quarantine-{Guid.NewGuid():N}");
+            $"NativeQuarantine-{Guid.NewGuid():N}");
         _ = Directory.CreateDirectory(resultsDirectory);
 
         try
@@ -60,10 +60,10 @@ internal static class D3D12QuarantineTestProcess
             startInfo.ArgumentList.Add("trx;LogFileName=quarantine.trx");
             startInfo.ArgumentList.Add("--results-directory");
             startInfo.ArgumentList.Add(resultsDirectory);
-            startInfo.Environment["TERRAFX_D3D12_QUARANTINE_CHILD"] = "1";
+            startInfo.Environment["TERRAFX_NATIVE_QUARANTINE_CHILD"] = "1";
 
             using var process = Process.Start(startInfo)
-                ?? throw new InvalidOperationException("The isolated D3D12 quarantine test process did not start.");
+                ?? throw new InvalidOperationException("The isolated native quarantine test process did not start.");
             var standardOutput = process.StandardOutput.ReadToEndAsync();
             var standardError = process.StandardError.ReadToEndAsync();
 
@@ -71,7 +71,7 @@ internal static class D3D12QuarantineTestProcess
             {
                 process.Kill(entireProcessTree: true);
                 process.WaitForExit();
-                throw new TimeoutException("The isolated D3D12 quarantine test process did not exit within two minutes.");
+                throw new TimeoutException("The isolated native quarantine test process did not exit within two minutes.");
             }
 
             var output = Task.WhenAll(standardOutput, standardError).GetAwaiter().GetResult();
@@ -83,18 +83,18 @@ internal static class D3D12QuarantineTestProcess
 
             if (!File.Exists(resultPath))
             {
-                throw new InvalidOperationException($"The isolated D3D12 quarantine test produced no TRX file.{Environment.NewLine}{processOutput}");
+                throw new InvalidOperationException($"The isolated native quarantine test produced no TRX file.{Environment.NewLine}{processOutput}");
             }
 
             var document = new XmlDocument();
             document.Load(resultPath);
             var counters = document.SelectSingleNode("//*[local-name()='ResultSummary']/*[local-name()='Counters']")
-                ?? throw new InvalidOperationException($"The isolated D3D12 quarantine TRX has no result counters.{Environment.NewLine}{processOutput}");
+                ?? throw new InvalidOperationException($"The isolated native quarantine TRX has no result counters.{Environment.NewLine}{processOutput}");
             var total = ParseCounter("total");
             var passed = ParseCounter("passed");
             var failed = ParseCounter("failed");
             var testResults = document.SelectNodes("//*[local-name()='UnitTestResult']")
-                ?? throw new InvalidOperationException($"The isolated D3D12 quarantine TRX has no test results.{Environment.NewLine}{processOutput}");
+                ?? throw new InvalidOperationException($"The isolated native quarantine TRX has no test results.{Environment.NewLine}{processOutput}");
             var skipped = testResults.Cast<XmlNode>()
                 .Count(static result => StringComparer.OrdinalIgnoreCase.Equals(result.Attributes?["outcome"]?.Value, "NotExecuted"));
 
@@ -112,7 +112,7 @@ internal static class D3D12QuarantineTestProcess
             int ParseCounter(string name)
             {
                 var value = counters.Attributes?[name]?.Value
-                    ?? throw new InvalidOperationException($"The isolated D3D12 quarantine TRX omitted the {name} counter.");
+                    ?? throw new InvalidOperationException($"The isolated native quarantine TRX omitted the {name} counter.");
                 return int.Parse(value, System.Globalization.CultureInfo.InvariantCulture);
             }
         }
