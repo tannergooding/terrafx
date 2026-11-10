@@ -447,8 +447,6 @@ For every resource in the supported SPIRV-Cross descriptor collections, the conv
 
 `ShaderResourceSignature` carries the reflected storage-image format through Vulkan preflight and graph binding. Vulkan R32Float and RGBA16Float compute graphs read back `1.0` and the four exact half-float values; an R32Float shader bound to an R32UInt texture and an R32SInt shader without a portable signed R32 texture format both reject before dispatch. These four Vulkan cases pass 4/4, and the existing Vulkan R32UInt graph selection passes 11/11, on Windows and WSLg in Debug/Release; WSLg uses llvmpipe and is not hardware-GPU evidence.
 
-The full Runtime totals documented below predate these four cases; they remain the latest full-suite run.
-
 After compiling the complete M04 fixture to `artifacts\shader-fixtures\m04-offscreen-triangle`, run the Windows selection:
 
 ```powershell
