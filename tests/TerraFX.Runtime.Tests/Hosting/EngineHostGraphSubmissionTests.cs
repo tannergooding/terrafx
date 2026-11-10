@@ -553,6 +553,23 @@ internal sealed partial class EngineHostOptionsTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsMultipleComputeStorageBufferSubranges(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: true,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useStorageBufferSubrange: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SubmitsMultipleComputeStorageImages(GraphicsBackend backend)
         => RunOffscreenGraphAsync(
             backend,
@@ -1296,6 +1313,8 @@ internal sealed partial class EngineHostOptionsTests
         GpuBuffer? storageBuffer = null;
         long storageBufferImportOffset = 0;
         long storageBufferBindingOffset = 0;
+        long secondStorageBufferImportOffset = 0;
+        long secondStorageBufferBindingOffset = 0;
         long copyDestinationRangeOffset = 0;
         GpuBuffer? secondStorageBuffer = null;
         GpuBuffer? copySourceBuffer = null;
@@ -1900,6 +1919,14 @@ internal sealed partial class EngineHostOptionsTests
                     storageBufferImportOffset = checked(
                         graphicsDevice.Capabilities.Limits.StorageBufferOffsetAlignment * sizeof(uint));
                     storageBufferBindingOffset = checked(storageBufferImportOffset * 2);
+
+                    if (useMultipleComputeStorageBuffers)
+                    {
+                        secondStorageBufferImportOffset = checked(
+                            storageBufferBindingOffset + graphicsDevice.Capabilities.Limits.StorageBufferOffsetAlignment);
+                        secondStorageBufferBindingOffset = checked(
+                            secondStorageBufferImportOffset + graphicsDevice.Capabilities.Limits.StorageBufferOffsetAlignment);
+                    }
                 }
 
                 var storageBufferByteLength = checked(storageBufferBindingOffset + sizeof(uint));
@@ -1932,15 +1959,29 @@ internal sealed partial class EngineHostOptionsTests
 
             if (useMultipleComputeStorageBuffers)
             {
+                var secondStorageBufferByteLength = useStorageBufferSubrange
+                    ? checked(secondStorageBufferBindingOffset + sizeof(uint))
+                    : sizeof(uint);
                 secondStorageBuffer = await graphicsDevice.CreateBufferAsync(
                     new BufferDescription(
-                        sizeof(uint),
+                        secondStorageBufferByteLength,
                         BufferUsage.Storage | BufferUsage.CopySource | BufferUsage.CopyDestination,
                         GpuMemoryKind.DeviceLocal,
                         structuredStride: sizeof(uint),
                         debugName: $"m04-{backend}-frame-second-storage-buffer"))
                     .ConfigureAwait(false);
-                var secondStorageBufferInitialBytes = new byte[sizeof(uint)];
+
+                var secondStorageBufferInitialBytes = new byte[checked((int)secondStorageBufferByteLength)];
+
+                if (useStorageBufferSubrange)
+                {
+                    _ = BitConverter.TryWriteBytes(secondStorageBufferInitialBytes.AsSpan(0, sizeof(uint)), 0x6B7C8D9Eu);
+                    var secondStorageBufferPrefixOffset = checked(secondStorageBufferBindingOffset - sizeof(uint));
+                    _ = BitConverter.TryWriteBytes(
+                        secondStorageBufferInitialBytes.AsSpan(checked((int)secondStorageBufferPrefixOffset), sizeof(uint)),
+                        0x8394A5B6u);
+                }
+
                 var secondStorageBufferUploadReceipt = await graphicsDevice.UploadBufferAsync(
                     secondStorageBuffer,
                     0,
@@ -2286,6 +2327,7 @@ internal sealed partial class EngineHostOptionsTests
             GraphBufferVersion? copySourceVersion = null;
             GraphBufferRange? copySourceBufferRange = null;
             GraphBufferVersion? secondCopySourceVersion = null;
+            GraphBufferRange? secondCopySourceBufferRange = null;
             GraphBufferVersion? copyDestinationInitialVersion = null;
             GraphBufferVersion? copyDestinationWriteVersion = null;
             GraphBufferVersion? secondCopyDestinationInitialVersion = null;
@@ -2397,7 +2439,11 @@ internal sealed partial class EngineHostOptionsTests
 
             if (secondStorageBuffer is GpuBuffer selectedSecondStorageBuffer)
             {
-                var range = new GraphBufferRange(0, selectedSecondStorageBuffer.ByteLength);
+                var range = useStorageBufferSubrange
+                    ? new GraphBufferRange(
+                        secondStorageBufferImportOffset,
+                        checked(secondStorageBufferBindingOffset - secondStorageBufferImportOffset + sizeof(uint)))
+                    : new GraphBufferRange(0, selectedSecondStorageBuffer.ByteLength);
                 secondStorageBufferInitialVersion = graph.ImportBuffer(
                     selectedSecondStorageBuffer,
                     range,
@@ -2640,12 +2686,13 @@ internal sealed partial class EngineHostOptionsTests
                     && (secondCopySourceVersion is GraphBufferVersion selectedSecondSource)
                     && (secondCopyDestinationWriteVersion is GraphBufferVersion selectedSecondDestination))
                 {
+                    var sourceRange = secondCopySourceBufferRange ?? selectedSecondSource.Range;
                     recorder.CopyBuffer(
                         selectedSecondSource,
-                        selectedSecondSource.Range.ByteOffset,
+                        sourceRange.ByteOffset,
                         selectedSecondDestination,
                         selectedSecondDestination.Range.ByteOffset,
-                        selectedSecondSource.Range.ByteLength);
+                        sourceRange.ByteLength);
                 }
 
                 if ((useTransientTextureCopy || useTransientTextureAliasing)
@@ -2921,16 +2968,24 @@ internal sealed partial class EngineHostOptionsTests
                         ?? throw new InvalidOperationException("The graph multi-buffer compute test has no first imported storage buffer.");
                     var initialSecondStorageBuffer = secondStorageBufferInitialVersion
                         ?? throw new InvalidOperationException("The graph multi-buffer compute test has no second imported storage buffer.");
+                    var firstBindingRange = useStorageBufferSubrange
+                        ? new GraphBufferRange(storageBufferBindingOffset, sizeof(uint))
+                        : initialStorageBuffer.Range;
+                    var secondBindingRange = useStorageBufferSubrange
+                        ? new GraphBufferRange(secondStorageBufferBindingOffset, sizeof(uint))
+                        : initialSecondStorageBuffer.Range;
                     computeStorageWriteVersion = graph.ReadWriteBuffer(
                         computePass,
                         initialStorageBuffer,
-                        initialStorageBuffer.Range);
+                        firstBindingRange);
                     secondComputeStorageWriteVersion = graph.ReadWriteBuffer(
                         computePass,
                         initialSecondStorageBuffer,
-                        initialSecondStorageBuffer.Range);
+                        secondBindingRange);
                     copySourceVersion = computeStorageWriteVersion;
+                    copySourceBufferRange = firstBindingRange;
                     secondCopySourceVersion = secondComputeStorageWriteVersion;
+                    secondCopySourceBufferRange = secondBindingRange;
                     computeBindingSet = new BindingSet(
                         [
                             new BufferBinding(
@@ -2938,13 +2993,13 @@ internal sealed partial class EngineHostOptionsTests
                                 0,
                                 ShaderResourceKind.StorageBuffer,
                                 computeStorageWriteVersion,
-                                initialStorageBuffer.Range),
+                                firstBindingRange),
                             new BufferBinding(
                                 ShaderBindingGroup.Frame,
                                 2,
                                 ShaderResourceKind.StorageBuffer,
                                 secondComputeStorageWriteVersion,
-                                initialSecondStorageBuffer.Range),
+                                secondBindingRange),
                         ],
                         [],
                         []);
@@ -3354,11 +3409,12 @@ internal sealed partial class EngineHostOptionsTests
                         ?? throw new InvalidOperationException("The graph multi-buffer compute test has no second copy-source version.");
                     var selectedSecondCopyDestination = secondCopyDestinationInitialVersion
                         ?? throw new InvalidOperationException("The graph multi-buffer compute test has no second copy-destination version.");
+                    var sourceRange = secondCopySourceBufferRange ?? selectedSecondCopySource.Range;
                     graph.ReadBuffer(
                         copyPass,
                         selectedSecondCopySource,
                         GraphBufferUsage.CopySource,
-                        selectedSecondCopySource.Range);
+                        sourceRange);
                     secondCopyDestinationWriteVersion = graph.WriteBuffer(
                         copyPass,
                         selectedSecondCopyDestination,
@@ -4689,7 +4745,7 @@ internal sealed partial class EngineHostOptionsTests
                     ?? throw new InvalidOperationException("The graph multi-buffer compute test has no first storage buffer.");
                 using var firstComputeReadback = await graphicsDevice.ReadbackBufferAsync(
                     computeStorageBuffer,
-                    0,
+                    useStorageBufferSubrange ? storageBufferBindingOffset : 0,
                     sizeof(uint))
                     .ConfigureAwait(false);
                 var firstComputeBytes = new byte[sizeof(uint)];
@@ -4706,7 +4762,7 @@ internal sealed partial class EngineHostOptionsTests
                     ?? throw new InvalidOperationException("The graph multi-buffer compute test has no second storage buffer.");
                 using var secondComputeReadback = await graphicsDevice.ReadbackBufferAsync(
                     secondComputeStorageBuffer,
-                    0,
+                    useStorageBufferSubrange ? secondStorageBufferBindingOffset : 0,
                     sizeof(uint))
                     .ConfigureAwait(false);
                 var secondComputeBytes = new byte[sizeof(uint)];
@@ -4780,6 +4836,52 @@ internal sealed partial class EngineHostOptionsTests
                     }
 
                     Assert.That(BitConverter.ToUInt32(storageBindingPrefixBytes, 0), Is.EqualTo(0xA6B7C8D9u));
+
+                    if (useMultipleComputeStorageBuffers)
+                    {
+                        var secondStorageBufferForReadback = secondStorageBuffer
+                            ?? throw new InvalidOperationException("The multi-buffer subrange graph has no second storage buffer.");
+                        using var secondStoragePrefixReadback = await graphicsDevice.ReadbackBufferAsync(
+                            secondStorageBufferForReadback,
+                            0,
+                            sizeof(uint))
+                            .ConfigureAwait(false);
+                        var secondStoragePrefixBytes = new byte[sizeof(uint)];
+
+                        using (var secondStoragePrefixReadLease = secondStoragePrefixReadback.AcquireReadLease(
+                            0,
+                            secondStoragePrefixBytes.Length))
+                        {
+                            var copyAction = new ReadbackCopyAction(secondStoragePrefixBytes);
+                            secondStoragePrefixReadLease.UseWindow(
+                                0,
+                                secondStoragePrefixBytes.Length,
+                                ref copyAction);
+                        }
+
+                        Assert.That(BitConverter.ToUInt32(secondStoragePrefixBytes, 0), Is.EqualTo(0x6B7C8D9Eu));
+
+                        var secondStorageBufferPrefixOffset = checked(secondStorageBufferBindingOffset - sizeof(uint));
+                        using var secondStorageBindingPrefixReadback = await graphicsDevice.ReadbackBufferAsync(
+                            secondStorageBufferForReadback,
+                            secondStorageBufferPrefixOffset,
+                            sizeof(uint))
+                            .ConfigureAwait(false);
+                        var secondStorageBindingPrefixBytes = new byte[sizeof(uint)];
+
+                        using (var secondStorageBindingPrefixReadLease = secondStorageBindingPrefixReadback.AcquireReadLease(
+                            0,
+                            secondStorageBindingPrefixBytes.Length))
+                        {
+                            var copyAction = new ReadbackCopyAction(secondStorageBindingPrefixBytes);
+                            secondStorageBindingPrefixReadLease.UseWindow(
+                                0,
+                                secondStorageBindingPrefixBytes.Length,
+                                ref copyAction);
+                        }
+
+                        Assert.That(BitConverter.ToUInt32(secondStorageBindingPrefixBytes, 0), Is.EqualTo(0x8394A5B6u));
+                    }
 
                     using var destinationPrefixReadback = await graphicsDevice.ReadbackBufferAsync(
                         destinationBufferForReadback,
