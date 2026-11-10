@@ -1514,11 +1514,11 @@ internal sealed class VulkanBackendDeviceTests
             using var texture = device.CreateTexture(
                 new TextureDescription(
                     TextureDimension.Dimension3D,
-                    width: 2,
-                    height: 2,
-                    depth: 2,
+                    width: 4,
+                    height: 4,
+                    depth: 4,
                     arrayLayers: 1,
-                    mipLevels: 1,
+                    mipLevels: 2,
                     format: TextureFormat.R8Unorm,
                     usage: TextureUsage.CopySource | TextureUsage.CopyDestination,
                     debugName: "volume-texture-transfer"));
@@ -1539,7 +1539,7 @@ internal sealed class VulkanBackendDeviceTests
 
             using var ownedSource = sourceStorage.TransferToOwnedBuffer();
             using var sourceLease = ownedSource.AcquireReadLease(0, sourceBytes.Length);
-            var subresource = new TextureSubresource(0, 0, TextureAspect.Color);
+            var subresource = new TextureSubresource(1, 0, TextureAspect.Color);
             Assert.That(
                 device.UploadTexture(
                     texture,

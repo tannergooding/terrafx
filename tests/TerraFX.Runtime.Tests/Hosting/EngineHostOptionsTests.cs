@@ -403,11 +403,11 @@ internal sealed partial class EngineHostOptionsTests
 
             var volumeDescription = new TextureDescription(
                 TextureDimension.Dimension3D,
-                4,
-                4,
-                depth: 2,
+                8,
+                8,
+                depth: 4,
                 arrayLayers: 1,
-                mipLevels: 1,
+                mipLevels: 2,
                 TextureFormat.Rgba8Unorm,
                 TextureUsage.CopySource | TextureUsage.CopyDestination,
                 "volume-copy-footprint");
@@ -426,7 +426,7 @@ internal sealed partial class EngineHostOptionsTests
 
             using var ownedVolumeSource = volumeSourceStorage.TransferToOwnedBuffer();
             using var volumeSourceLease = ownedVolumeSource.AcquireReadLease(0, volumeExpected.Length);
-            var volumeSubresource = new TextureSubresource(0, 0, TextureAspect.Color);
+            var volumeSubresource = new TextureSubresource(1, 0, TextureAspect.Color);
             var volumeUpload = graphicsDevice.UploadTextureAsync(
                 volumeTexture,
                 volumeSubresource,
