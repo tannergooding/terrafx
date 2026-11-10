@@ -1091,6 +1091,7 @@ internal sealed partial class EngineHostOptionsTests
         GpuTexture? storageImage = null;
         GpuBuffer? frameUniformBuffer = null;
         GpuBuffer? storageBuffer = null;
+        long storageBufferImportOffset = 0;
         long storageBufferBindingOffset = 0;
         long copyDestinationRangeOffset = 0;
         GpuBuffer? secondStorageBuffer = null;
@@ -1565,9 +1566,13 @@ internal sealed partial class EngineHostOptionsTests
                 || useConstantWriteComputeBuffer
                 || useStorageBufferSubrange)
             {
-                storageBufferBindingOffset = useStorageBufferSubrange
-                    ? checked(graphicsDevice.Capabilities.Limits.StorageBufferOffsetAlignment * sizeof(uint))
-                    : 0;
+                if (useStorageBufferSubrange)
+                {
+                    storageBufferImportOffset = checked(
+                        graphicsDevice.Capabilities.Limits.StorageBufferOffsetAlignment * sizeof(uint));
+                    storageBufferBindingOffset = checked(storageBufferImportOffset * 2);
+                }
+
                 var storageBufferByteLength = checked(storageBufferBindingOffset + sizeof(uint));
                 storageBuffer = await graphicsDevice.CreateBufferAsync(
                     new BufferDescription(
@@ -1582,6 +1587,10 @@ internal sealed partial class EngineHostOptionsTests
                 if (useStorageBufferSubrange)
                 {
                     _ = BitConverter.TryWriteBytes(storageBufferInitialBytes.AsSpan(0, sizeof(uint)), 0x56473829u);
+                    var storageBufferPrefixOffset = checked(storageBufferBindingOffset - sizeof(uint));
+                    _ = BitConverter.TryWriteBytes(
+                        storageBufferInitialBytes.AsSpan(checked((int)storageBufferPrefixOffset), sizeof(uint)),
+                        0xA6B7C8D9u);
                 }
 
                 var storageBufferUploadReceipt = await graphicsDevice.UploadBufferAsync(
@@ -1751,6 +1760,10 @@ internal sealed partial class EngineHostOptionsTests
                 {
                     var initialBytes = new byte[copyDestinationByteLength];
                     _ = BitConverter.TryWriteBytes(initialBytes.AsSpan(0, sizeof(uint)), 0x29384756u);
+                    var copyDestinationPrefixOffset = checked(copyDestinationRangeOffset - sizeof(uint));
+                    _ = BitConverter.TryWriteBytes(
+                        initialBytes.AsSpan(checked((int)copyDestinationPrefixOffset), sizeof(uint)),
+                        0xD9C8B7A6u);
                     var uploadReceipt = await graphicsDevice.UploadBufferAsync(
                         copyDestinationBuffer,
                         0,
@@ -1918,7 +1931,11 @@ internal sealed partial class EngineHostOptionsTests
 
             if (storageBuffer is GpuBuffer selectedStorageBuffer)
             {
-                var range = new GraphBufferRange(0, selectedStorageBuffer.ByteLength);
+                var range = useStorageBufferSubrange
+                    ? new GraphBufferRange(
+                        storageBufferImportOffset,
+                        checked(storageBufferBindingOffset - storageBufferImportOffset + sizeof(uint)))
+                    : new GraphBufferRange(0, selectedStorageBuffer.ByteLength);
                 storageBufferInitialVersion = graph.ImportBuffer(
                     selectedStorageBuffer,
                     range,
@@ -4034,6 +4051,22 @@ internal sealed partial class EngineHostOptionsTests
 
                     Assert.That(BitConverter.ToUInt32(prefixBytes, 0), Is.EqualTo(0x56473829u));
 
+                    var storageBufferPrefixOffset = checked(storageBufferBindingOffset - sizeof(uint));
+                    using var storageBindingPrefixReadback = await graphicsDevice.ReadbackBufferAsync(
+                        storageBufferForReadback,
+                        storageBufferPrefixOffset,
+                        sizeof(uint))
+                        .ConfigureAwait(false);
+                    var storageBindingPrefixBytes = new byte[sizeof(uint)];
+
+                    using (var storageBindingPrefixReadLease = storageBindingPrefixReadback.AcquireReadLease(0, storageBindingPrefixBytes.Length))
+                    {
+                        var copyAction = new ReadbackCopyAction(storageBindingPrefixBytes);
+                        storageBindingPrefixReadLease.UseWindow(0, storageBindingPrefixBytes.Length, ref copyAction);
+                    }
+
+                    Assert.That(BitConverter.ToUInt32(storageBindingPrefixBytes, 0), Is.EqualTo(0xA6B7C8D9u));
+
                     using var destinationPrefixReadback = await graphicsDevice.ReadbackBufferAsync(
                         destinationBufferForReadback,
                         0,
@@ -4048,6 +4081,27 @@ internal sealed partial class EngineHostOptionsTests
                     }
 
                     Assert.That(BitConverter.ToUInt32(destinationPrefixBytes, 0), Is.EqualTo(0x29384756u));
+
+                    var copyDestinationPrefixOffset = checked(copyDestinationRangeOffset - sizeof(uint));
+                    using var copyDestinationRangePrefixReadback = await graphicsDevice.ReadbackBufferAsync(
+                        destinationBufferForReadback,
+                        copyDestinationPrefixOffset,
+                        sizeof(uint))
+                        .ConfigureAwait(false);
+                    var copyDestinationRangePrefixBytes = new byte[sizeof(uint)];
+
+                    using (var copyDestinationRangePrefixReadLease = copyDestinationRangePrefixReadback.AcquireReadLease(
+                        0,
+                        copyDestinationRangePrefixBytes.Length))
+                    {
+                        var copyAction = new ReadbackCopyAction(copyDestinationRangePrefixBytes);
+                        copyDestinationRangePrefixReadLease.UseWindow(
+                            0,
+                            copyDestinationRangePrefixBytes.Length,
+                            ref copyAction);
+                    }
+
+                    Assert.That(BitConverter.ToUInt32(copyDestinationRangePrefixBytes, 0), Is.EqualTo(0xD9C8B7A6u));
                 }
 
                 if (useMultipleComputeStorageBuffers || useTransientBufferAliasing)
