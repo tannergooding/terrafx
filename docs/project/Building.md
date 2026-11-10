@@ -515,6 +515,16 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 
 `SubmitsUniformBufferSubrangeGraph` binds a device-aligned 256-byte Frame uniform range at a nonzero offset within the imported buffer and verifies rendered pixels. It passes 2/2 on Windows D3D12/Vulkan and 1/1 on WSLg Vulkan in Debug/Release; WSLg skips D3D12.
 
+`SubmitsMultipleFrameUniformBufferSubranges` binds both Frame UBOs through distinct device-aligned nonzero ranges within larger imports and verifies their combined pixel output. It passes 2/2 on Windows D3D12/Vulkan and 1/1 on WSLg Vulkan in Debug/Release; WSLg skips D3D12. Compile a fresh fixture for this selection:
+
+```powershell
+$env:VULKAN_SDK = 'C:\VulkanSDK\1.4.328.1'
+dotnet .\artifacts\bin\sources\TerraFX.Content.Tools\Debug\net11.0\TerraFX.Content.Tools.dll compile-m04-shader .\artifacts\shader-fixtures\m04-offscreen-multi-ubo-subranges
+$env:TERRAFX_M04_SHADER_FIXTURE_DIRECTORY = (Resolve-Path .\artifacts\shader-fixtures\m04-offscreen-multi-ubo-subranges).Path
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SubmitsMultipleFrameUniformBufferSubranges"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SubmitsMultipleFrameUniformBufferSubranges"
+```
+
 `SubmitsSampledTextureMipSubrangeGraph` imports a two-mip sampled texture, binds mip 1 only, and verifies pixels from that mip rather than the contrasting mip-0 contents. It passes on Windows D3D12/Vulkan and WSLg Vulkan in Debug/Release; WSLg skips D3D12.
 
 `SubmitsStorageImageMipSubrangeGraph` writes and reads back mip 1 of a two-mip RGBA16Float storage image and verifies the mip-0 sentinel remains untouched. It passes 2/2 on Windows D3D12/Vulkan and 1/1 on WSLg Vulkan in Debug/Release; WSLg skips D3D12 and has no validation errors.
@@ -687,6 +697,14 @@ For the two-image sampled-mip subrange witness, use the compiled multi-sampled f
 export TERRAFX_M04_SHADER_FIXTURE_DIRECTORY="$WORKTREE/artifacts/shader-fixtures/m04-offscreen-multi-sampled-subranges"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~SubmitsMultipleSampledImageMipSubranges" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SubmitsMultipleSampledImageMipSubranges" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
+For the two-Frame-UBO subrange witness, use the compiled multi-UBO fixture:
+
+```bash
+export TERRAFX_M04_SHADER_FIXTURE_DIRECTORY="$WORKTREE/artifacts/shader-fixtures/m04-offscreen-multi-ubo-subranges"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~SubmitsMultipleFrameUniformBufferSubranges" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SubmitsMultipleFrameUniformBufferSubranges" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
 Run the four-slot Vulkan Sprite graph and graph-failure lease-release witnesses in WSLg with the cooked Sprite shader fixture:

@@ -605,6 +605,24 @@ internal sealed partial class EngineHostOptionsTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsMultipleFrameUniformBufferSubranges(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: true,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useMultipleFrameUniformBuffers: true,
+            useUniformBufferSubrange: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SubmitsMultipleFrameUniformBuffers(GraphicsBackend backend)
         => RunOffscreenGraphAsync(
             backend,
@@ -1346,6 +1364,7 @@ internal sealed partial class EngineHostOptionsTests
         GpuBuffer? frameUniformBuffer = null;
         GpuBuffer? additionalFrameUniformBuffer = null;
         long uniformBufferBindingOffset = 0;
+        long additionalFrameUniformBindingOffset = 0;
         GpuBuffer? storageBuffer = null;
         long storageBufferImportOffset = 0;
         long storageBufferBindingOffset = 0;
@@ -1952,11 +1971,30 @@ internal sealed partial class EngineHostOptionsTests
 
                 if (useMultipleFrameUniformBuffers)
                 {
-                    var secondUniformBytes = new byte[256];
-                    _ = BitConverter.TryWriteBytes(secondUniformBytes.AsSpan(0, sizeof(float)), 1.0f);
-                    _ = BitConverter.TryWriteBytes(secondUniformBytes.AsSpan(sizeof(float), sizeof(float)), 0.0f);
-                    _ = BitConverter.TryWriteBytes(secondUniformBytes.AsSpan(sizeof(float) * 2, sizeof(float)), 1.0f);
-                    _ = BitConverter.TryWriteBytes(secondUniformBytes.AsSpan(sizeof(float) * 3, sizeof(float)), 1.0f);
+                    additionalFrameUniformBindingOffset = useUniformBufferSubrange
+                        ? checked(uniformBufferBindingOffset * 2)
+                        : 0;
+                    var secondUniformBytes = new byte[checked(
+                        (int)(additionalFrameUniformBindingOffset + 256))];
+
+                    if (useUniformBufferSubrange)
+                    {
+                        Array.Fill(secondUniformBytes, (byte)0xA5);
+                    }
+
+                    var secondUniformDataOffset = checked((int)additionalFrameUniformBindingOffset);
+                    _ = BitConverter.TryWriteBytes(
+                        secondUniformBytes.AsSpan(secondUniformDataOffset, sizeof(float)),
+                        1.0f);
+                    _ = BitConverter.TryWriteBytes(
+                        secondUniformBytes.AsSpan(secondUniformDataOffset + sizeof(float), sizeof(float)),
+                        0.0f);
+                    _ = BitConverter.TryWriteBytes(
+                        secondUniformBytes.AsSpan(secondUniformDataOffset + (sizeof(float) * 2), sizeof(float)),
+                        1.0f);
+                    _ = BitConverter.TryWriteBytes(
+                        secondUniformBytes.AsSpan(secondUniformDataOffset + (sizeof(float) * 3), sizeof(float)),
+                        1.0f);
                     additionalFrameUniformBuffer = await graphicsDevice.CreateBufferAsync(
                         new BufferDescription(
                             secondUniformBytes.Length,
@@ -2417,6 +2455,7 @@ internal sealed partial class EngineHostOptionsTests
             GraphBufferVersion? frameUniformVersion = null;
             GraphBufferVersion? additionalFrameUniformVersion = null;
             GraphBufferRange? frameUniformBindingRange = null;
+            GraphBufferRange? additionalFrameUniformBindingRange = null;
             GraphBufferVersion? storageBufferInitialVersion = null;
             GraphBufferVersion? secondStorageBufferInitialVersion = null;
             GraphBufferVersion? storageBufferWriteVersion = null;
@@ -2500,12 +2539,16 @@ internal sealed partial class EngineHostOptionsTests
                         GraphResourceState.General,
                         contentsValid: true,
                         completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                var bindingRange = useUniformBufferSubrange
+                    ? new GraphBufferRange(additionalFrameUniformBindingOffset, 256)
+                    : importRange;
+                additionalFrameUniformBindingRange = bindingRange;
                 bufferBindings.Add(new BufferBinding(
                     ShaderBindingGroup.Frame,
                     1,
                     ShaderResourceKind.UniformBuffer,
                     additionalFrameUniformVersion,
-                    importRange));
+                    bindingRange));
             }
 
             if (storageBuffer is GpuBuffer selectedStorageBuffer)
@@ -4406,12 +4449,13 @@ internal sealed partial class EngineHostOptionsTests
                             GraphResourceState.UniformRead,
                             contentsValid: true,
                             completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                    var bindingRange = additionalFrameUniformBindingRange ?? importRange;
                     secondBufferBindings.Add(new BufferBinding(
                         ShaderBindingGroup.Frame,
                         1,
                         ShaderResourceKind.UniformBuffer,
                         secondAdditionalFrameUniformVersion,
-                        importRange));
+                        bindingRange));
                 }
 
                 if (sampledTexture is GpuTexture secondSampledTexture)

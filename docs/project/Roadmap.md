@@ -131,6 +131,8 @@ M04 render-graph progress: selected D3D12/Vulkan raster, storage, copy, compute,
 
 A compute graph now binds both R32UInt storage images to strict nonzero mip-1 ranges inside two-mip imports, reads back both written values, and preserves both mip-0 sentinels. A raster graph likewise binds both sampled-image/sampler pairs to mip 1 in separate two-mip imports and verifies the combined output from the contrasting mip-1 texels. Both witnesses pass on Windows D3D12/Vulkan and WSLg Vulkan in Debug/Release; WSLg validation has no VUID or Validation Error matches.
 
+A raster graph also binds both Frame UBOs through distinct device-aligned nonzero subranges and renders their combined output on Windows D3D12/Vulkan and WSLg Vulkan in Debug/Release.
+
 The package-backed Sprite graph now binds nonzero vertex and UInt16 index ranges on Windows D3D12/Vulkan and WSLg Vulkan in Debug/Release. This exercises the D3D12 vertex/index views in addition to the existing Vulkan witness; WSLg's validation-enabled TRXs are clean.
 
 The native raster graph now binds two Frame uniform buffers at bindings 0 and 1 and renders their combined color on Windows D3D12/Vulkan and WSLg Vulkan in Debug/Release.
