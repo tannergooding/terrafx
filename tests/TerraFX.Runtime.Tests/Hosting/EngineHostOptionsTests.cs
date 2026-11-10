@@ -468,6 +468,87 @@ internal sealed partial class EngineHostOptionsTests
 
             Assert.That(volumeActual, Is.EqualTo(volumeExpected));
 
+            using var arrayTexture = graphicsDevice.CreateTextureAsync(
+                new TextureDescription(
+                    TextureDimension.Dimension2D,
+                    width: 8,
+                    height: 8,
+                    depth: 1,
+                    arrayLayers: 2,
+                    mipLevels: 2,
+                    TextureFormat.Rgba8Unorm,
+                    TextureUsage.CopySource | TextureUsage.CopyDestination,
+                    "array-layer-copy-footprint"))
+                .GetAwaiter()
+                .GetResult();
+            var arraySubresource = new TextureSubresource(1, 1, TextureAspect.Color);
+            const int arrayWidth = 4;
+            const int arrayHeight = 4;
+            const int arrayRowByteLength = arrayWidth * 4;
+            const int arraySourceRowPitch = arrayRowByteLength + 8;
+            const int arraySourceSlicePitch = arraySourceRowPitch * arrayHeight;
+            var arraySourceByteLength = (arraySourceRowPitch * (arrayHeight - 1)) + arrayRowByteLength;
+            var arrayExpected = new byte[arrayRowByteLength * arrayHeight];
+
+            for (var index = 0; index < arrayExpected.Length; index++)
+            {
+                arrayExpected[index] = unchecked((byte)((index * 29) + 7));
+            }
+
+            var arraySourceBytes = new byte[arraySourceByteLength];
+            Array.Fill(arraySourceBytes, (byte)0xCD);
+
+            for (var row = 0; row < arrayHeight; row++)
+            {
+                Array.Copy(arrayExpected, row * arrayRowByteLength, arraySourceBytes, row * arraySourceRowPitch, arrayRowByteLength);
+            }
+
+            var arraySourceStorage = UnmanagedBuffer<byte>.Allocate(
+                arraySourceByteLength,
+                new BufferAllocationOptions(arraySourceByteLength, alignment: 1));
+            arraySourceStorage.CopyFrom(arraySourceBytes.AsSpan(), 0);
+
+            using var ownedArraySource = arraySourceStorage.TransferToOwnedBuffer();
+            using var arraySourceLease = ownedArraySource.AcquireReadLease(0, arraySourceByteLength);
+            var arrayUpload = graphicsDevice.UploadTextureAsync(
+                arrayTexture,
+                arraySubresource,
+                arraySourceLease,
+                0,
+                new TextureDataLayout(arraySourceRowPitch, arraySourceSlicePitch),
+                CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            Assert.That(arrayUpload.Status, Is.EqualTo(UploadStatus.Ready));
+
+            using var arrayReadback = graphicsDevice.ReadbackTextureAsync(
+                arrayTexture,
+                arraySubresource,
+                CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            var arrayPadded = new byte[checked((int)arrayReadback.ByteLength)];
+
+            using (var arrayReadLease = arrayReadback.AcquireReadLease())
+            {
+                var copyAction = new ReadbackCopyAction(arrayPadded);
+                arrayReadLease.UseWindow(0, arrayPadded.Length, ref copyAction);
+            }
+
+            var arrayActual = new byte[arrayExpected.Length];
+
+            for (var row = 0; row < arrayReadback.Height; row++)
+            {
+                arrayPadded.AsSpan(
+                    checked(row * (int)arrayReadback.RowPitch),
+                    arrayRowByteLength)
+                    .CopyTo(arrayActual.AsSpan(row * arrayRowByteLength, arrayRowByteLength));
+            }
+
+            Assert.That(arrayReadback.Width, Is.EqualTo(arrayWidth));
+            Assert.That(arrayReadback.Height, Is.EqualTo(arrayHeight));
+            Assert.That(arrayActual, Is.EqualTo(arrayExpected));
+
             const int stagingRingByteLength = 64 * 1024 * 1024;
             const int dedicatedStagingByteLength = stagingRingByteLength + 1;
 
