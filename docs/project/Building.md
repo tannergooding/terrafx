@@ -504,6 +504,8 @@ Run the public offscreen submission witness after compiling the fixture. It cove
 
 `D3D12SubmitsBufferCopyGraphFromUploadBuffer` verifies an exact buffer-copy/readback using a host-visible Upload source, so it avoids allocating a staged copy-source buffer. It passes in Windows Debug/Release.
 
+`SubmitsUniformBufferSubrangeGraph` binds a device-aligned 256-byte Frame uniform range at a nonzero offset within the imported buffer and verifies rendered pixels. It passes 2/2 on Windows D3D12/Vulkan and 1/1 on WSLg Vulkan in Debug/Release; WSLg skips D3D12.
+
 `RenderSpriteGeometryTests` verifies the documented pivoted local-quad positions, fixed clockwise indices, normalized Atlas-frame UVs, and horizontal/vertical UV flips. `SpriteSnapshotsOrderDrawsAndRetainAssetsAfterSceneUnload` verifies extraction stores geometry composed from the exact pinned Atlas frame and copied Sprite component values.
 
 `Renderer.SubmitAsync` retains an independent shared asset-pin reference through GPU completion; the Sprite snapshot test disposes its snapshot and verifies the retained Atlas page and Material remain available.
@@ -535,8 +537,8 @@ dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --confi
 $env:TERRAFX_M04_SHADER_FIXTURE_DIRECTORY = (Resolve-Path .\artifacts\shader-fixtures\m04-offscreen-triangle).Path
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SubmitsOffscreenClearGraphAndReadsBackAsync"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SubmitsOffscreenClearGraphAndReadsBackAsync"
-dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~D3D12SubmitsTransientStorageBufferComputeGraph|FullyQualifiedName~VulkanSubmitsTransientStorageBufferComputeGraph|FullyQualifiedName~D3D12SubmitsConstantWriteComputeStorageBufferGraph|FullyQualifiedName~VulkanSubmitsConstantWriteComputeStorageBufferGraph|FullyQualifiedName~SubmitsConstantWriteComputeStorageBufferSubrangeGraph"
-dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~D3D12SubmitsTransientStorageBufferComputeGraph|FullyQualifiedName~VulkanSubmitsTransientStorageBufferComputeGraph|FullyQualifiedName~D3D12SubmitsConstantWriteComputeStorageBufferGraph|FullyQualifiedName~VulkanSubmitsConstantWriteComputeStorageBufferGraph|FullyQualifiedName~SubmitsConstantWriteComputeStorageBufferSubrangeGraph"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~D3D12SubmitsTransientStorageBufferComputeGraph|FullyQualifiedName~VulkanSubmitsTransientStorageBufferComputeGraph|FullyQualifiedName~D3D12SubmitsConstantWriteComputeStorageBufferGraph|FullyQualifiedName~VulkanSubmitsConstantWriteComputeStorageBufferGraph|FullyQualifiedName~SubmitsConstantWriteComputeStorageBufferSubrangeGraph|FullyQualifiedName~SubmitsUniformBufferSubrangeGraph"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~D3D12SubmitsTransientStorageBufferComputeGraph|FullyQualifiedName~VulkanSubmitsTransientStorageBufferComputeGraph|FullyQualifiedName~D3D12SubmitsConstantWriteComputeStorageBufferGraph|FullyQualifiedName~VulkanSubmitsConstantWriteComputeStorageBufferGraph|FullyQualifiedName~SubmitsConstantWriteComputeStorageBufferSubrangeGraph|FullyQualifiedName~SubmitsUniformBufferSubrangeGraph"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~D3D12SubmitsBufferCopyGraphFromUploadBuffer"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~D3D12SubmitsBufferCopyGraphFromUploadBuffer"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SubmitsPackageBackedTextureGraphOnVulkan"
@@ -624,8 +626,8 @@ The transient storage-buffer/image graph verifies both the buffer and texel outp
 
 ```bash
 export TERRAFX_M04_SHADER_FIXTURE_DIRECTORY="$WORKTREE/artifacts/shader-fixtures/m04-offscreen-triangle"
-"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~VulkanSubmitsTransientStorageBufferComputeGraph|FullyQualifiedName~VulkanSubmitsConstantWriteComputeStorageBufferGraph|FullyQualifiedName~SubmitsConstantWriteComputeStorageBufferSubrangeGraph" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
-"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~VulkanSubmitsTransientStorageBufferComputeGraph|FullyQualifiedName~VulkanSubmitsConstantWriteComputeStorageBufferGraph|FullyQualifiedName~SubmitsConstantWriteComputeStorageBufferSubrangeGraph" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~VulkanSubmitsTransientStorageBufferComputeGraph|FullyQualifiedName~VulkanSubmitsConstantWriteComputeStorageBufferGraph|FullyQualifiedName~SubmitsConstantWriteComputeStorageBufferSubrangeGraph|FullyQualifiedName~SubmitsUniformBufferSubrangeGraph" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~VulkanSubmitsTransientStorageBufferComputeGraph|FullyQualifiedName~VulkanSubmitsConstantWriteComputeStorageBufferGraph|FullyQualifiedName~SubmitsConstantWriteComputeStorageBufferSubrangeGraph|FullyQualifiedName~SubmitsUniformBufferSubrangeGraph" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
 Run the four-slot Vulkan Sprite graph and graph-failure lease-release witnesses in WSLg with the cooked Sprite shader fixture:

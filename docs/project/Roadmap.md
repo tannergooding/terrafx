@@ -99,6 +99,8 @@ The manifest-pinned DXC package `Microsoft.Direct3D.DXC` 1.8.2505.32 validates i
 
 Shared Vertex/Pixel resource identities must also agree on access and, for storage images, reflected format; mismatches reject before backend pipeline creation.
 
+Native graph Frame uniform buffers now bind aligned strict subranges within larger imported buffers. The offscreen UBO graph reads back the shader-drawn result on Windows D3D12/Vulkan (2/2) and WSLg Vulkan (1/1; D3D12 skipped) in Debug/Release.
+
 ### Current D3D12 public consumer NativeAOT status
 
 The unsafe-disabled, nonfriend D3D12 consumer retains its no-argument public-registration checks. Its `offscreen headless` mode starts `HostProfile.OffscreenNative`, activates a camera Scene, commits a World tick, clears a graph target, and verifies the center pixel by native texture readback without WSI metadata. Its Interactive mode creates two hidden Win32 Surfaces, activates a camera Scene, presents to both, advances one committed World tick, closes one window, and presents the newer snapshot on the survivor; it also verifies a throwing owner callback is returned and a follow-up can access both Surfaces. The Windows x64 NativeAOT selection passes 2/2 (OffscreenNative and Interactive); JIT Debug/Release also pass 2/2. NativeAOT reports GameInput unavailable because GameInputSharp's `[ComImport]` adapter needs runtime-generated COM stubs, with no XInput fallback. These witnesses qualify public D3D12 OffscreenNative graph readback and the two-window presentation lifecycle, not driver-generated loss/recovery, WSI timeout behavior, shader-bytecode reflection, or physical gamepad input.

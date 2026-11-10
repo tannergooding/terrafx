@@ -537,11 +537,10 @@ internal sealed class GraphicsGraphSubmission
         }
 
         if (uniformBufferImport is not null
-            && ((uniformBufferImport.Version.Range != new GraphBufferRange(0, uniformBufferImport.Buffer.ByteLength))
-                || !uniformBufferImport.InitialContentsValid
+            && (!uniformBufferImport.InitialContentsValid
                 || (uniformBufferImport.InitialState is not (GraphResourceState.General or GraphResourceState.UniformRead))))
         {
-            throw new NotSupportedException("Native graph submission requires an initialized full-range Frame uniform buffer.");
+            throw new NotSupportedException("Native graph submission requires an initialized Frame uniform buffer in a supported state.");
         }
 
         GraphTextureImportRecord? sampledTextureImport = null;
@@ -1208,9 +1207,9 @@ internal sealed class GraphicsGraphSubmission
                                         || (binding.Group != ShaderBindingGroup.Frame)
                                         || (binding.Binding != 0)
                                         || (binding.Resource.ResourceId != uniformBufferImport.Version.ResourceId)
-                                        || (binding.Range != uniformBufferImport.Version.Range))
+                                        || !binding.Range.IsWithin(uniformBufferImport.Version.Range))
                                     {
-                                        throw new NotSupportedException("The Frame uniform-buffer binding must exactly match the imported graph buffer range.");
+                                        throw new NotSupportedException("The Frame uniform-buffer binding must fit the imported graph buffer range.");
                                     }
 
                                     var accessDeclared = false;
