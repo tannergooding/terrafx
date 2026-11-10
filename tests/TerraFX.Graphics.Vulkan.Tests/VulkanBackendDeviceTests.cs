@@ -7,7 +7,6 @@ using System.Collections.Immutable;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
-using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX.Buffers;
 using TerraFX.Content.Tools;
@@ -1614,52 +1613,34 @@ internal sealed class VulkanBackendDeviceTests
     }
 
     [Test]
-    public async Task SpirvPreflightAcceptsR32FloatAndR32SintStorageImagesWithoutCreatingDevice()
+    public void SpirvPreflightAcceptsR32FloatAndR32SintStorageImagesWithoutCreatingDevice()
     {
-        if (!OperatingSystem.IsWindows() || (RuntimeInformation.ProcessArchitecture != Architecture.X64))
+        var fixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
+
+        if (string.IsNullOrWhiteSpace(fixtureDirectory))
         {
-            Assert.Ignore("The pinned M04 shader fixture compiler is licensed for Windows x64 use only.");
+            Assert.Ignore("The compiled M04 shader fixture is not selected through TERRAFX_M04_SHADER_FIXTURE_DIRECTORY.");
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("VULKAN_SDK")))
+        foreach (var stageName in new[] { "compute-storage-float-image", "compute-storage-signed-image" })
         {
-            Assert.Ignore("The pinned Vulkan SDK is not selected through VULKAN_SDK.");
-            return;
-        }
+            var reflection = M04ShaderFixtureCompiler.ReadTypedReflection(fixtureDirectory, stageName);
+            using var storage = CreateBytecodeStorage(Path.Combine(
+                fixtureDirectory,
+                $"M04OffscreenTriangle.{stageName}.spv"));
+            using var lease = storage.AcquireReadLease(0, storage.Length);
+            var shader = new ShaderBytecodeInput(
+                ShaderStage.Compute,
+                ShaderBinaryFormat.SpirV,
+                lease,
+                reflection);
 
-        var fixtureDirectory = Path.Combine(Path.GetTempPath(), $"TerraFX.Vulkan.Tests-{Guid.NewGuid():N}");
-
-        try
-        {
-            await M04ShaderFixtureCompiler.CompileAsync(fixtureDirectory, CancellationToken.None).ConfigureAwait(false);
-
-            foreach (var stageName in new[] { "compute-storage-float-image", "compute-storage-signed-image" })
-            {
-                var reflection = M04ShaderFixtureCompiler.ReadTypedReflection(fixtureDirectory, stageName);
-                using var storage = CreateBytecodeStorage(Path.Combine(
-                    fixtureDirectory,
-                    $"M04OffscreenTriangle.{stageName}.spv"));
-                using var lease = storage.AcquireReadLease(0, storage.Length);
-                var shader = new ShaderBytecodeInput(
-                    ShaderStage.Compute,
-                    ShaderBinaryFormat.SpirV,
-                    lease,
-                    reflection);
-
-                Assert.DoesNotThrow(() => SpirvReflectionValidator.Validate(
-                    shader,
-                    lease,
-                    index: 0,
-                    enabledSpirvExtensions: s_enabledFixtureSpirvExtensions));
-            }
-        }
-        finally
-        {
-            if (Directory.Exists(fixtureDirectory))
-            {
-                Directory.Delete(fixtureDirectory, recursive: true);
-            }
+            Assert.DoesNotThrow(() => SpirvReflectionValidator.Validate(
+                shader,
+                lease,
+                index: 0,
+                enabledSpirvExtensions: s_enabledFixtureSpirvExtensions));
         }
     }
 
