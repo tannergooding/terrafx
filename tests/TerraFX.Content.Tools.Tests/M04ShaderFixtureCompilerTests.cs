@@ -280,10 +280,11 @@ internal sealed class M04ShaderFixtureCompilerTests
             await M04ShaderFixtureCompiler.CompileAsync(outputDirectory, CancellationToken.None).ConfigureAwait(false);
 
             var files = Directory.GetFiles(outputDirectory);
-            Assert.That(files.Length, Is.EqualTo(56));
+            Assert.That(files.Length, Is.EqualTo(60));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-buffers.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-float-image.dxil")).Length, Is.GreaterThan(0));
+            Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-images.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-rgba16-image.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-signed-image.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-write.dxil")).Length, Is.GreaterThan(0));
@@ -300,6 +301,7 @@ internal sealed class M04ShaderFixtureCompilerTests
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage.spv")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-buffers.spv")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-float-image.spv")).Length, Is.GreaterThan(0));
+            Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-images.spv")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-rgba16-image.spv")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-signed-image.spv")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-write.spv")).Length, Is.GreaterThan(0));
@@ -320,6 +322,8 @@ internal sealed class M04ShaderFixtureCompilerTests
                 await File.ReadAllTextAsync(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-buffers.reflection.json")).ConfigureAwait(false));
             using var computeStorageFloatImageReflection = JsonDocument.Parse(
                 await File.ReadAllTextAsync(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-float-image.reflection.json")).ConfigureAwait(false));
+            using var computeStorageImagesReflection = JsonDocument.Parse(
+                await File.ReadAllTextAsync(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-images.reflection.json")).ConfigureAwait(false));
             using var computeStorageRgba16ImageReflection = JsonDocument.Parse(
                 await File.ReadAllTextAsync(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-rgba16-image.reflection.json")).ConfigureAwait(false));
             using var computeStorageSignedImageReflection = JsonDocument.Parse(
@@ -344,6 +348,13 @@ internal sealed class M04ShaderFixtureCompilerTests
             AssertReflectedEntryPoint(computeStorageBuffersReflection, "CSStorageBuffersMain", "comp");
             AssertReflectedEntryPoint(computeStorageFloatImageReflection, "CSStorageFloatImageMain", "comp");
             AssertReflectedFloatStorageResources(computeStorageFloatImageReflection);
+            AssertReflectedEntryPoint(computeStorageImagesReflection, "CSStorageImagesMain", "comp");
+            var computeStorageImages = computeStorageImagesReflection.RootElement.GetProperty("images");
+            Assert.That(computeStorageImages.GetArrayLength(), Is.EqualTo(2));
+            Assert.That(computeStorageImages[0].GetProperty("name").GetString(), Is.EqualTo("FrameStorageImage"));
+            Assert.That(computeStorageImages[0].GetProperty("binding").GetInt32(), Is.EqualTo(33));
+            Assert.That(computeStorageImages[1].GetProperty("name").GetString(), Is.EqualTo("FrameSecondStorageImage"));
+            Assert.That(computeStorageImages[1].GetProperty("binding").GetInt32(), Is.EqualTo(38));
             AssertReflectedEntryPoint(computeStorageRgba16ImageReflection, "CSStorageRgba16ImageMain", "comp");
             Assert.That(computeStorageRgba16ImageReflection.RootElement.GetProperty("ssbos").GetArrayLength(), Is.EqualTo(1));
             AssertReflectedResourceBinding(
@@ -393,6 +404,7 @@ internal sealed class M04ShaderFixtureCompilerTests
             var typedComputeReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "compute-storage");
             var typedComputeStorageBuffersReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "compute-storage-buffers");
             var typedComputeStorageFloatImageReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "compute-storage-float-image");
+            var typedComputeStorageImagesReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "compute-storage-images");
             var typedComputeStorageRgba16ImageReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "compute-storage-rgba16-image");
             var typedComputeStorageSignedImageReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "compute-storage-signed-image");
             var typedComputeStorageWriteReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "compute-storage-write");
@@ -486,6 +498,33 @@ internal sealed class M04ShaderFixtureCompilerTests
                     1,
                     ShaderResourceAccess.ReadWrite,
                     ShaderStorageImageFormat.R32Float)));
+
+            Assert.That(typedComputeStorageImagesReflection.Stage, Is.EqualTo(ShaderStage.Compute));
+            Assert.That(typedComputeStorageImagesReflection.EntryPoint, Is.EqualTo("CSStorageImagesMain"));
+            Assert.That(typedComputeStorageImagesReflection.Resources, Has.Length.EqualTo(3));
+            Assert.That(typedComputeStorageImagesReflection.Resources, Does.Contain(
+                new ShaderResourceSignature(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    ShaderResourceKind.StorageBuffer,
+                    1,
+                    ShaderResourceAccess.ReadWrite)));
+            Assert.That(typedComputeStorageImagesReflection.Resources, Does.Contain(
+                new ShaderResourceSignature(
+                    ShaderBindingGroup.Frame,
+                    1,
+                    ShaderResourceKind.StorageImage,
+                    1,
+                    ShaderResourceAccess.ReadWrite,
+                    ShaderStorageImageFormat.R32UInt)));
+            Assert.That(typedComputeStorageImagesReflection.Resources, Does.Contain(
+                new ShaderResourceSignature(
+                    ShaderBindingGroup.Frame,
+                    6,
+                    ShaderResourceKind.StorageImage,
+                    1,
+                    ShaderResourceAccess.ReadWrite,
+                    ShaderStorageImageFormat.R32UInt)));
 
             Assert.That(typedComputeStorageRgba16ImageReflection.Stage, Is.EqualTo(ShaderStage.Compute));
             Assert.That(typedComputeStorageRgba16ImageReflection.EntryPoint, Is.EqualTo("CSStorageRgba16ImageMain"));
@@ -722,10 +761,11 @@ internal sealed class M04ShaderFixtureCompilerTests
             await M04ShaderFixtureCompiler.CompileDxilAsync(outputDirectory, CancellationToken.None).ConfigureAwait(false);
 
             var files = Directory.GetFiles(outputDirectory);
-            Assert.That(files.Length, Is.EqualTo(28));
+            Assert.That(files.Length, Is.EqualTo(30));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-buffers.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-float-image.dxil")).Length, Is.GreaterThan(0));
+            Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-images.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-rgba16-image.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-signed-image.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-write.dxil")).Length, Is.GreaterThan(0));
@@ -746,6 +786,8 @@ internal sealed class M04ShaderFixtureCompilerTests
                 Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-buffers.dxil-reflection.txt")).ConfigureAwait(false);
             var computeStorageFloatImageReflection = await File.ReadAllTextAsync(
                 Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-float-image.dxil-reflection.txt")).ConfigureAwait(false);
+            var computeStorageImagesReflection = await File.ReadAllTextAsync(
+                Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-images.dxil-reflection.txt")).ConfigureAwait(false);
             var computeStorageRgba16ImageReflection = await File.ReadAllTextAsync(
                 Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-rgba16-image.dxil-reflection.txt")).ConfigureAwait(false);
             var computeStorageSignedImageReflection = await File.ReadAllTextAsync(
@@ -771,6 +813,9 @@ internal sealed class M04ShaderFixtureCompilerTests
             Assert.That(computeStorageBuffersReflection.Contains("FrameSecondStorageBuffer", StringComparison.Ordinal), Is.True);
             Assert.That(computeStorageFloatImageReflection.Contains("EntryFunctionName: CSStorageFloatImageMain", StringComparison.Ordinal), Is.True);
             Assert.That(computeStorageFloatImageReflection.Contains("FrameFloatStorageImage", StringComparison.Ordinal), Is.True);
+            Assert.That(computeStorageImagesReflection.Contains("EntryFunctionName: CSStorageImagesMain", StringComparison.Ordinal), Is.True);
+            Assert.That(computeStorageImagesReflection.Contains("FrameStorageImage", StringComparison.Ordinal), Is.True);
+            Assert.That(computeStorageImagesReflection.Contains("FrameSecondStorageImage", StringComparison.Ordinal), Is.True);
             Assert.That(computeStorageRgba16ImageReflection.Contains("EntryFunctionName: CSStorageRgba16ImageMain", StringComparison.Ordinal), Is.True);
             Assert.That(computeStorageRgba16ImageReflection.Contains("FrameRgba16FloatStorageImage", StringComparison.Ordinal), Is.True);
             Assert.That(computeStorageSignedImageReflection.Contains("EntryFunctionName: CSStorageSignedImageMain", StringComparison.Ordinal), Is.True);

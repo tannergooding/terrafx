@@ -164,7 +164,14 @@ internal sealed unsafe partial class VulkanBackendDevice
             checked(_uncertainGraphDescriptorSets.Count + descriptorSetCapacity));
         var targetResourceId = submission.TextureImports[0].Version.ResourceId;
         ulong sampledTextureResourceId = 0;
-        ulong storageTextureResourceId = 0;
+        var storageTextureScopes = new Dictionary<ulong, (
+            VulkanBackendTexture Texture,
+            TextureSubresource Subresource,
+            VkImageLayout Layout,
+            VkPipelineStageFlags2 LastStageMask,
+            VkAccessFlags2 LastAccessMask,
+            VkPipelineStageFlags2 StageMask,
+            VkAccessFlags2 AccessMask)>(submission.TextureImports.Length - 1);
 
         for (var index = 1; index < submission.TextureImports.Length; index++)
         {
@@ -176,16 +183,29 @@ internal sealed unsafe partial class VulkanBackendDevice
             }
             else if ((import.Version.Description.Usage & TextureUsage.Storage) != 0)
             {
-                storageTextureResourceId = import.Version.ResourceId;
+                var resourceId = import.Version.ResourceId;
+                var texture = submission.GetTexture(resourceId) as VulkanBackendTexture
+                    ?? throw new InvalidOperationException("The graph storage image is not a Vulkan texture.");
+                var storageSubresource = new TextureSubresource(
+                    import.Version.Range.FirstMip,
+                    import.Version.Range.FirstLayer,
+                    import.Version.Range.Aspect);
+                storageTextureScopes.Add(
+                    resourceId,
+                    (
+                        texture,
+                        storageSubresource,
+                        texture.GetLayout(storageSubresource),
+                        texture.GetLastStageMask(storageSubresource),
+                        texture.GetLastAccessMask(storageSubresource),
+                        VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE,
+                        VkAccessFlags2.VK_ACCESS_2_NONE));
             }
         }
 
         VulkanBackendTexture? sampledTexture = null;
         var sampledTextureStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
         var sampledTextureAccessMask = VkAccessFlags2.VK_ACCESS_2_NONE;
-        VulkanBackendTexture? storageTexture = null;
-        var storageTextureStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
-        var storageTextureAccessMask = VkAccessFlags2.VK_ACCESS_2_NONE;
         var graphBufferScopes = new List<(
             VulkanBackendBuffer Buffer,
             VkPipelineStageFlags2 StageMask,
@@ -314,12 +334,11 @@ internal sealed unsafe partial class VulkanBackendDevice
                         sampledTextureStageMask |= VulkanGraphResourceStateMapper.GetStageMask(access.RequiredState, shaderStages);
                         sampledTextureAccessMask |= VulkanGraphResourceStateMapper.GetAccessMask(access.RequiredState);
                     }
-                    else if (access.ResourceId == storageTextureResourceId)
+                    else if (storageTextureScopes.TryGetValue(access.ResourceId, out var storageTextureScope))
                     {
-                        storageTexture = submission.GetTexture(access.ResourceId) as VulkanBackendTexture
-                            ?? throw new InvalidOperationException("The Frame storage image is not a Vulkan texture.");
-                        storageTextureStageMask |= VulkanGraphResourceStateMapper.GetStageMask(access.RequiredState, shaderStages);
-                        storageTextureAccessMask |= VulkanGraphResourceStateMapper.GetAccessMask(access.RequiredState);
+                        storageTextureScope.StageMask |= VulkanGraphResourceStateMapper.GetStageMask(access.RequiredState, shaderStages);
+                        storageTextureScope.AccessMask |= VulkanGraphResourceStateMapper.GetAccessMask(access.RequiredState);
+                        storageTextureScopes[access.ResourceId] = storageTextureScope;
                     }
 
                     continue;
@@ -384,12 +403,6 @@ internal sealed unsafe partial class VulkanBackendDevice
         var sampledCurrentStageMask = sampledTexture?.GetLastStageMask(sampledSubresource)
             ?? VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
         var sampledCurrentAccessMask = sampledTexture?.GetLastAccessMask(sampledSubresource)
-            ?? VkAccessFlags2.VK_ACCESS_2_NONE;
-        var storageSubresource = new TextureSubresource(0, 0, TextureAspect.Color);
-        var storageCurrentLayout = storageTexture?.GetLayout(storageSubresource) ?? default;
-        var storageCurrentStageMask = storageTexture?.GetLastStageMask(storageSubresource)
-            ?? VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
-        var storageCurrentAccessMask = storageTexture?.GetLastAccessMask(storageSubresource)
             ?? VkAccessFlags2.VK_ACCESS_2_NONE;
         var ownsImageView = false;
         var hasAcquiredImage = false;
@@ -528,10 +541,12 @@ internal sealed unsafe partial class VulkanBackendDevice
                         ?? throw new InvalidOperationException("The graph storage hazard lost its Vulkan texture.");
                     var shaderStages = GetShaderStageMask(pass, resourceId);
                     var storageAccess = VulkanGraphResourceStateMapper.GetAccessMask(GraphResourceState.StorageReadWrite);
-                    var sourceStage = initialUseNeedsBarrier ? storageCurrentStageMask : shaderStages;
-                    var sourceAccess = initialUseNeedsBarrier ? storageCurrentAccessMask : storageAccess;
+                    var (_, _, storageLayout, storageLastStageMask, storageLastAccessMask, _, _)
+                        = storageTextureScopes[resourceId];
+                    var sourceStage = initialUseNeedsBarrier ? storageLastStageMask : shaderStages;
+                    var sourceAccess = initialUseNeedsBarrier ? storageLastAccessMask : storageAccess;
 
-                    if (storageCurrentLayout != VulkanGraphResourceStateMapper.GetImageLayout(import.InitialState))
+                    if (storageLayout != VulkanGraphResourceStateMapper.GetImageLayout(import.InitialState))
                     {
                         throw new InvalidOperationException("The storage barrier does not match the Vulkan texture's tracked image layout.");
                     }
@@ -600,16 +615,31 @@ internal sealed unsafe partial class VulkanBackendDevice
                                 ref sampledCurrentStageMask,
                                 ref sampledCurrentAccessMask);
                         }
-                        else if ((storageTexture is not null)
-                            && (transition.ResourceId == storageTextureResourceId))
+                        else if (storageTextureScopes.TryGetValue(transition.ResourceId, out var storageTextureScope))
                         {
+                            var (
+                                storageTexture,
+                                storageSubresource,
+                                storageLayout,
+                                storageLastStageMask,
+                                storageLastAccessMask,
+                                storageStageMask,
+                                storageAccessMask) = storageTextureScope;
                             RecordGraphImageBarrier(
                                 pass,
                                 storageTexture,
                                 transition,
-                                ref storageCurrentLayout,
-                                ref storageCurrentStageMask,
-                                ref storageCurrentAccessMask);
+                                ref storageLayout,
+                                ref storageLastStageMask,
+                                ref storageLastAccessMask);
+                            storageTextureScopes[transition.ResourceId] = (
+                                storageTexture,
+                                storageSubresource,
+                                storageLayout,
+                                storageLastStageMask,
+                                storageLastAccessMask,
+                                storageStageMask,
+                                storageAccessMask);
                         }
                         else if (copyTextureScopes.TryGetValue(transition.ResourceId, out var copyTextureScope))
                         {
@@ -1109,10 +1139,12 @@ internal sealed unsafe partial class VulkanBackendDevice
                 throw new InvalidOperationException("The compiled graph did not transition its Frame sampled image to the shader-read layout.");
             }
 
-            if (storageTexture is not null
-                && (storageCurrentLayout != VulkanGraphResourceStateMapper.GetImageLayout(GraphResourceState.StorageReadWrite)))
+            foreach (var (_, _, storageLayout, _, _, _, _) in storageTextureScopes.Values)
             {
-                throw new InvalidOperationException("The compiled graph did not transition its Frame storage image to GENERAL.");
+                if (storageLayout != VulkanGraphResourceStateMapper.GetImageLayout(GraphResourceState.StorageReadWrite))
+                {
+                    throw new InvalidOperationException("The compiled graph did not transition every Frame storage image to GENERAL.");
+                }
             }
 
             foreach (var (resourceId, copyTextureScope) in copyTextureScopes)
@@ -1156,13 +1188,20 @@ internal sealed unsafe partial class VulkanBackendDevice
                     sampledTextureAccessMask);
             }
 
-            if (storageTexture is not null)
+            foreach (var (
+                storageTexture,
+                storageSubresource,
+                storageLayout,
+                _,
+                _,
+                storageStageMask,
+                storageAccessMask) in storageTextureScopes.Values)
             {
-                storageTexture.SetLayout(storageSubresource, storageCurrentLayout);
+                storageTexture.SetLayout(storageSubresource, storageLayout);
                 storageTexture.SetLastAccessScope(
                     storageSubresource,
-                    storageTextureStageMask,
-                    storageTextureAccessMask);
+                    storageStageMask,
+                    storageAccessMask);
                 storageTexture.MarkInitialized(storageSubresource);
             }
 

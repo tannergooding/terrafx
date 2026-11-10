@@ -553,6 +553,23 @@ internal sealed partial class EngineHostOptionsTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsMultipleComputeStorageImages(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: true,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useMultipleComputeStorageImages: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SubmitsMultipleTextureCopyGraphAndReadsBackAsync(GraphicsBackend backend)
         => RunOffscreenGraphAsync(
             backend,
@@ -981,7 +998,8 @@ internal sealed partial class EngineHostOptionsTests
         bool useSampledTextureSubrange = false,
         bool simulateGraphFenceTimeout = false,
         bool useStorageImageSubrange = false,
-        bool simulateVulkanGraphFenceTimeout = false)
+        bool simulateVulkanGraphFenceTimeout = false,
+        bool useMultipleComputeStorageImages = false)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -999,6 +1017,7 @@ internal sealed partial class EngineHostOptionsTests
                 || useMultipleComputeStorageBuffers
                 || useConstantWriteComputeBuffer
                 || useStorageBufferSubrange
+                || useMultipleComputeStorageImages
                 || useFloatStorageImage
                 || useSignedStorageImage
                 || useRgba16FloatStorageImage)
@@ -1231,6 +1250,7 @@ internal sealed partial class EngineHostOptionsTests
         GpuTexture? sampledTexture = null;
         GpuResidencyLease? sampledTextureResidencyLease = null;
         GpuTexture? storageImage = null;
+        GpuTexture? additionalStorageImage = null;
         GpuBuffer? frameUniformBuffer = null;
         long uniformBufferBindingOffset = 0;
         GpuBuffer? storageBuffer = null;
@@ -1694,7 +1714,9 @@ internal sealed partial class EngineHostOptionsTests
                 {
                     var computeStage = useConstantWriteComputeBuffer
                         ? "compute-storage-write"
-                        : useFloatStorageImage
+                        : useMultipleComputeStorageImages
+                            ? "compute-storage-images"
+                            : useFloatStorageImage
                             ? "compute-storage-float-image"
                             : useRgba16FloatStorageImage
                                 ? "compute-storage-rgba16-image"
@@ -1882,6 +1904,41 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(storageImageUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
             }
 
+            if (useMultipleComputeStorageImages)
+            {
+                additionalStorageImage = await graphicsDevice.CreateTextureAsync(
+                    new TextureDescription(
+                        TextureDimension.Dimension2D,
+                        1,
+                        1,
+                        depth: 1,
+                        arrayLayers: 1,
+                        mipLevels: 1,
+                        TextureFormat.R32UInt,
+                        TextureUsage.Storage | TextureUsage.CopySource | TextureUsage.CopyDestination,
+                        $"m04-{backend}-frame-second-storage-image"))
+                    .ConfigureAwait(false);
+
+                var additionalStorageImageInitialBytes = new byte[sizeof(uint)];
+                var additionalStorageImageInitialStorage = UnmanagedBuffer<byte>.Allocate(
+                    additionalStorageImageInitialBytes.Length,
+                    new BufferAllocationOptions(additionalStorageImageInitialBytes.Length, alignment: 1));
+                additionalStorageImageInitialStorage.CopyFrom(additionalStorageImageInitialBytes.AsSpan(), 0);
+
+                using var ownedAdditionalStorageImageInitialBytes = additionalStorageImageInitialStorage.TransferToOwnedBuffer();
+                using var additionalStorageImageInitialLease = ownedAdditionalStorageImageInitialBytes.AcquireReadLease(
+                    0,
+                    additionalStorageImageInitialBytes.Length);
+                var additionalStorageImageUploadReceipt = await graphicsDevice.UploadTextureAsync(
+                    additionalStorageImage,
+                    new TextureSubresource(0, 0, TextureAspect.Color),
+                    additionalStorageImageInitialLease,
+                    0,
+                    new TextureDataLayout(rowPitch: sizeof(uint), slicePitch: sizeof(uint)))
+                    .ConfigureAwait(false);
+                Assert.That(additionalStorageImageUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+            }
+
             if (useBufferCopy
                 || useCompute
                 || useTransientStorage
@@ -1889,7 +1946,9 @@ internal sealed partial class EngineHostOptionsTests
                 || useTransientBufferAliasing
                 || useConstantWriteComputeBuffer)
             {
-                expectedCopiedBytes = useConstantWriteComputeBuffer
+                expectedCopiedBytes = useMultipleComputeStorageImages
+                    ? [0x40, 0x30, 0x20, 0x10]
+                    : useConstantWriteComputeBuffer
                     ? [0x40, 0x30, 0x20, 0x10]
                     : useFloatStorageImage || useSignedStorageImage || useRgba16FloatStorageImage
                         ? [0x00, 0x00, 0x00, 0x00]
@@ -2139,6 +2198,8 @@ internal sealed partial class EngineHostOptionsTests
             GraphTextureVersion? storageImageInitialVersion = null;
             GraphTextureVersion? storageImageWriteVersion = null;
             GraphTextureVersion? computeStorageImageWriteVersion = null;
+            GraphTextureVersion? additionalStorageImageInitialVersion = null;
+            GraphTextureVersion? additionalComputeStorageImageWriteVersion = null;
             BindingSet? frameBindingSet = null;
             BindingSet? computeBindingSet = null;
             var bufferBindings = ImmutableArray.CreateBuilder<BufferBinding>(useUniformBuffer ? 1 : 0);
@@ -2181,6 +2242,17 @@ internal sealed partial class EngineHostOptionsTests
                 storageBufferInitialVersion = graph.ImportBuffer(
                     selectedStorageBuffer,
                     range,
+                    new GraphImportOptions(
+                        GraphResourceState.General,
+                        contentsValid: true,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+            }
+
+            if (additionalStorageImage is GpuTexture selectedAdditionalStorageImage)
+            {
+                additionalStorageImageInitialVersion = graph.ImportTexture(
+                    selectedAdditionalStorageImage,
+                    sampleRange,
                     new GraphImportOptions(
                         GraphResourceState.General,
                         contentsValid: true,
@@ -2633,6 +2705,52 @@ internal sealed partial class EngineHostOptionsTests
                                 storageBufferRange),
                         ],
                         [],
+                        []);
+                }
+                else if (useMultipleComputeStorageImages)
+                {
+                    var initialStorageBuffer = storageBufferInitialVersion
+                        ?? throw new InvalidOperationException("The graph multi-image compute test has no imported storage buffer.");
+                    computeStorageWriteVersion = graph.ReadWriteBuffer(
+                        computePass,
+                        initialStorageBuffer,
+                        initialStorageBuffer.Range);
+                    copySourceVersion = computeStorageWriteVersion;
+                    var initialStorageImage = storageImageInitialVersion
+                        ?? throw new InvalidOperationException("The graph multi-image compute test has no first storage image.");
+                    computeStorageImageWriteVersion = graph.ReadWriteTexture(
+                        computePass,
+                        initialStorageImage,
+                        storageImageBindingRange);
+                    var initialAdditionalStorageImage = additionalStorageImageInitialVersion
+                        ?? throw new InvalidOperationException("The graph multi-image compute test has no second storage image.");
+                    additionalComputeStorageImageWriteVersion = graph.ReadWriteTexture(
+                        computePass,
+                        initialAdditionalStorageImage,
+                        sampleRange);
+                    computeBindingSet = new BindingSet(
+                        [
+                            new BufferBinding(
+                                ShaderBindingGroup.Frame,
+                                0,
+                                ShaderResourceKind.StorageBuffer,
+                                computeStorageWriteVersion,
+                                initialStorageBuffer.Range),
+                        ],
+                        [
+                            new TextureBinding(
+                                ShaderBindingGroup.Frame,
+                                1,
+                                ShaderResourceKind.StorageImage,
+                                computeStorageImageWriteVersion,
+                                storageImageBindingRange),
+                            new TextureBinding(
+                                ShaderBindingGroup.Frame,
+                                6,
+                                ShaderResourceKind.StorageImage,
+                                additionalComputeStorageImageWriteVersion,
+                                sampleRange),
+                        ],
                         []);
                 }
                 else if (useMultipleComputeStorageBuffers)
@@ -4200,7 +4318,11 @@ internal sealed partial class EngineHostOptionsTests
 
                 Assert.That(
                     BitConverter.ToUInt32(computeStorageBytes, 0),
-                    Is.EqualTo(useFloatStorageImage || useRgba16FloatStorageImage ? 0u : 2u));
+                    Is.EqualTo(useMultipleComputeStorageImages
+                        ? 0x10203040u
+                        : useFloatStorageImage || useRgba16FloatStorageImage
+                            ? 0u
+                            : 2u));
 
                 var computeStorageImage = storageImage
                     ?? throw new InvalidOperationException("The graph compute test has no storage image.");
@@ -4229,7 +4351,28 @@ internal sealed partial class EngineHostOptionsTests
                 }
                 else
                 {
-                    Assert.That(BitConverter.ToUInt32(computeStorageImageBytes, 0), Is.EqualTo(2u));
+                    Assert.That(
+                        BitConverter.ToUInt32(computeStorageImageBytes, 0),
+                        Is.EqualTo(useMultipleComputeStorageImages ? 0x11223344u : 2u));
+                }
+
+                if (useMultipleComputeStorageImages)
+                {
+                    var secondComputeStorageImage = additionalStorageImage
+                        ?? throw new InvalidOperationException("The graph multi-image compute test has no second storage image.");
+                    using var secondComputeImageReadback = await graphicsDevice.ReadbackTextureAsync(
+                        secondComputeStorageImage,
+                        new TextureSubresource(0, 0, TextureAspect.Color))
+                        .ConfigureAwait(false);
+                    var secondComputeStorageImageBytes = new byte[checked((int)secondComputeImageReadback.ByteLength)];
+
+                    using (var secondComputeImageReadLease = secondComputeImageReadback.AcquireReadLease())
+                    {
+                        var copyAction = new ReadbackCopyAction(secondComputeStorageImageBytes);
+                        secondComputeImageReadLease.UseWindow(0, secondComputeStorageImageBytes.Length, ref copyAction);
+                    }
+
+                    Assert.That(BitConverter.ToUInt32(secondComputeStorageImageBytes, 0), Is.EqualTo(0x55667788u));
                 }
 
                 if (useStorageImageSubrange)
@@ -4493,6 +4636,7 @@ internal sealed partial class EngineHostOptionsTests
             }
 
             storageImage?.Dispose();
+            additionalStorageImage?.Dispose();
             target?.Dispose();
             delayedGraphTarget?.Dispose();
             delayedGraphDestination?.Dispose();

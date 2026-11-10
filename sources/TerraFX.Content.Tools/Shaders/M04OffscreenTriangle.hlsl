@@ -46,6 +46,9 @@ RWTexture2D<int> FrameSignedStorageImage : register(u4, space0);
 [[vk::binding(37, 0)]]
 RWTexture2D<float4> FrameRgba16FloatStorageImage : register(u5, space0);
 
+[[vk::binding(38, 0)]]
+RWTexture2D<uint> FrameSecondStorageImage : register(u6, space0);
+
 VertexOutput VSMain(uint vertexId : SV_VertexID)
 {
     float2 positions[3] = {
@@ -161,6 +164,19 @@ void CSStorageRgba16ImageMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     FrameStorageBuffer[0] = 0;
     FrameRgba16FloatStorageImage[uint2(0, 0)] = float4(1.0, 2.0, 3.0, 4.0);
+}
+
+[numthreads(1, 1, 1)]
+void CSStorageImagesMain(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    if (any(dispatchThreadId != uint3(0, 0, 0)))
+    {
+        return;
+    }
+
+    FrameStorageBuffer[0] = 0x10203040;
+    FrameStorageImage[uint2(0, 0)] = 0x11223344;
+    FrameSecondStorageImage[uint2(0, 0)] = 0x55667788;
 }
 
 [numthreads(1, 1, 1)]

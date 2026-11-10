@@ -544,7 +544,7 @@ internal sealed class GraphicsGraphSubmission
         }
 
         GraphTextureImportRecord? sampledTextureImport = null;
-        GraphTextureImportRecord? storageTextureImport = null;
+        var storageTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
 
         for (var index = 1; index < TextureImports.Length; index++)
         {
@@ -609,18 +609,20 @@ internal sealed class GraphicsGraphSubmission
                 }
                 else
                 {
-                    if ((storageTextureImport is not null)
-                        || (import.InitialContentsValid && import.InitialState == GraphResourceState.Undefined)
+                    if ((import.InitialContentsValid && import.InitialState == GraphResourceState.Undefined)
                         || (import.InitialState is not (
                             GraphResourceState.Undefined
                             or GraphResourceState.General
                             or GraphResourceState.StorageWrite
                             or GraphResourceState.StorageReadWrite)))
                     {
-                        throw new NotSupportedException("Native graph submission supports one Frame storage image in an initialized or undefined state.");
+                        throw new NotSupportedException("Native graph submission supports Frame storage images in an initialized or undefined state.");
                     }
 
-                    storageTextureImport = import;
+                    if (!storageTextureImports.TryAdd(import.Version.ResourceId, import))
+                    {
+                        throw new InvalidOperationException("The graph imported a duplicate Frame storage-image resource identity.");
+                    }
                 }
             }
             else
@@ -825,7 +827,8 @@ internal sealed class GraphicsGraphSubmission
         var sampledTexturePasses = new HashSet<RenderPassId>();
         var storageBufferBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var storageBufferResourcesUsed = new HashSet<ulong>();
-        var storageTexturePasses = new HashSet<RenderPassId>();
+        var storageTextureBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
+        var storageTextureResourcesUsed = new HashSet<ulong>();
         var copySourcePasses = new HashSet<RenderPassId>();
         var copyDestinationPasses = new HashSet<RenderPassId>();
         var copySourceTexturePasses = new HashSet<RenderPassId>();
@@ -913,8 +916,8 @@ internal sealed class GraphicsGraphSubmission
             var currentPipelineStorageBufferBindingCount = 0;
             var currentPipelineStorageBufferWriteOnlyBindings = new HashSet<int>();
             var currentPipelineRequiresStorageImage = false;
-            var currentPipelineStorageImageBinding = -1;
-            var currentPipelineStorageImageFormat = ShaderStorageImageFormat.None;
+            var currentPipelineStorageImageBindingCount = 0;
+            var currentPipelineStorageImageFormats = new Dictionary<int, ShaderStorageImageFormat>();
             var currentPipelineBindingsSet = false;
             var hasDraw = false;
             var hasDispatch = false;
@@ -961,8 +964,8 @@ internal sealed class GraphicsGraphSubmission
                         currentIndexBufferImport = null;
                         currentPipelineStorageBufferBindingCount = 0;
                         currentPipelineStorageBufferWriteOnlyBindings.Clear();
-                        currentPipelineStorageImageBinding = -1;
-                        currentPipelineStorageImageFormat = ShaderStorageImageFormat.None;
+                        currentPipelineStorageImageBindingCount = 0;
+                        currentPipelineStorageImageFormats.Clear();
 
                         foreach (var reflection in layout.ShaderReflections)
                         {
@@ -1007,8 +1010,6 @@ internal sealed class GraphicsGraphSubmission
                             }
                         }
 
-                        var storageImageBindingCount = 0;
-
                         foreach (var resource in reflectedResources)
                         {
                             switch (resource.Kind)
@@ -1047,17 +1048,16 @@ internal sealed class GraphicsGraphSubmission
                                 case ShaderResourceKind.StorageImage:
                                 {
                                     currentPipelineRequiresStorageImage = true;
-                                    storageImageBindingCount++;
-                                    currentPipelineStorageImageBinding = resource.Binding;
-                                    currentPipelineStorageImageFormat = resource.StorageImageFormat;
+                                    currentPipelineStorageImageBindingCount++;
+
+                                    if (!currentPipelineStorageImageFormats.TryAdd(resource.Binding, resource.StorageImageFormat))
+                                    {
+                                        throw new NotSupportedException("A compute pipeline cannot declare conflicting storage-image signatures at one binding.");
+                                    }
+
                                     break;
                                 }
                             }
-                        }
-
-                        if (storageImageBindingCount > 1)
-                        {
-                            throw new NotSupportedException("Native graph submission supports one storage-image binding per pipeline.");
                         }
 
                         if (currentPipelineRequiresSampledImage != currentPipelineRequiresSampler)
@@ -1196,9 +1196,10 @@ internal sealed class GraphicsGraphSubmission
 
                         var expectedBufferBindingCount = (currentPipelineRequiresUniformBuffer ? 1 : 0)
                             + currentPipelineStorageBufferBindingCount;
+                        var expectedTextureBindingCount = (currentPipelineRequiresSampledImage ? 1 : 0)
+                            + currentPipelineStorageImageBindingCount;
 
-                        if ((bindings.Textures.Length != ((currentPipelineRequiresSampledImage ? 1 : 0)
-                                + (currentPipelineRequiresStorageImage ? 1 : 0)))
+                        if ((bindings.Textures.Length != expectedTextureBindingCount)
                             || (bindings.Buffers.Length != expectedBufferBindingCount)
                             || (bindings.Samplers.Length != (currentPipelineRequiresSampler ? 1 : 0)))
                         {
@@ -1371,7 +1372,12 @@ internal sealed class GraphicsGraphSubmission
 
                                 case ShaderResourceKind.StorageImage:
                                 {
-                                    var expectedStorageImageTextureFormat = currentPipelineStorageImageFormat switch {
+                                    if (!currentPipelineStorageImageFormats.TryGetValue(binding.Binding, out var storageImageFormat))
+                                    {
+                                        throw new NotSupportedException("The Frame storage-image binding has no matching reflected pipeline signature.");
+                                    }
+
+                                    var expectedStorageImageTextureFormat = storageImageFormat switch {
                                         ShaderStorageImageFormat.Rgba16Float => TextureFormat.Rgba16Float,
                                         ShaderStorageImageFormat.R32Float => TextureFormat.R32Float,
                                         ShaderStorageImageFormat.R32UInt => TextureFormat.R32UInt,
@@ -1380,10 +1386,8 @@ internal sealed class GraphicsGraphSubmission
                                         _ => throw new InvalidOperationException("The storage-image pipeline omitted its reflected format."),
                                     };
 
-                                    if ((storageTextureImport is null)
+                                    if (!storageTextureImports.TryGetValue(binding.Resource.ResourceId, out var storageTextureImport)
                                         || (binding.Group != ShaderBindingGroup.Frame)
-                                        || (binding.Binding != currentPipelineStorageImageBinding)
-                                        || (binding.Resource.ResourceId != storageTextureImport.Version.ResourceId)
                                         || !binding.Range.IsWithin(storageTextureImport.Version.Range)
                                         || (binding.Range.MipCount != 1)
                                         || (binding.Range.LayerCount != 1)
@@ -1426,7 +1430,7 @@ internal sealed class GraphicsGraphSubmission
                                     }
 
                                     hasStorageImageBinding = true;
-                                    _ = storageTexturePasses.Add(pass.PassId);
+                                    _ = storageTextureBindingPairs.Add((pass.PassId, binding.Resource.ResourceId));
                                     break;
                                 }
 
@@ -1478,10 +1482,9 @@ internal sealed class GraphicsGraphSubmission
                         }
                         else if (command.StorageBarrierTexture is GraphTextureVersion barrierTexture)
                         {
-                            if ((storageTextureImport is null)
-                                || (barrierTexture.ResourceId != storageTextureImport.Version.ResourceId)
+                            if (!storageTextureImports.TryGetValue(barrierTexture.ResourceId, out var storageTextureImport)
                                 || !command.StorageBarrierTextureRange.IsWithin(storageTextureImport.Version.Range)
-                                || !storageTexturePasses.Contains(pass.PassId))
+                                || !storageTextureBindingPairs.Contains((pass.PassId, barrierTexture.ResourceId)))
                             {
                                 throw new NotSupportedException("A storage-image barrier must target the bound Frame storage image range.");
                             }
@@ -1904,17 +1907,17 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (access.IsTexture
-                && (storageTextureImport is not null)
-                && (access.ResourceId == storageTextureImport.Version.ResourceId)
+                && storageTextureImports.ContainsKey(access.ResourceId)
                 && (access.RequiredState == GraphResourceState.StorageReadWrite)
                 && access.IsStorageReadWritePair)
             {
-                if (!storageTexturePasses.Contains(access.PassId))
+                if (!storageTextureBindingPairs.Contains((access.PassId, access.ResourceId)))
                 {
                     throw new InvalidOperationException("The imported Frame storage image is declared by a pass without a matching binding set.");
                 }
 
                 hasStorageImageAccess = true;
+                _ = storageTextureResourcesUsed.Add(access.ResourceId);
                 continue;
             }
 
@@ -2063,15 +2066,14 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (transition.IsTexture
-                && (storageTextureImport is not null)
-                && (transition.ResourceId == storageTextureImport.Version.ResourceId)
+                && storageTextureImports.ContainsKey(transition.ResourceId)
                 && (transition.AfterState == GraphResourceState.StorageReadWrite)
                 && (transition.BeforeState is
                     GraphResourceState.General
                     or GraphResourceState.StorageRead
                     or GraphResourceState.StorageWrite
                     or GraphResourceState.StorageReadWrite)
-                && storageTexturePasses.Contains(transition.PassId))
+                && storageTextureBindingPairs.Contains((transition.PassId, transition.ResourceId)))
             {
                 continue;
             }
@@ -2083,7 +2085,7 @@ internal sealed class GraphicsGraphSubmission
                 && !copySourceTextureImports.ContainsKey(transition.ResourceId)
                 && !copyDestinationTextureImports.ContainsKey(transition.ResourceId)
                 && (sampledTextureImport is null || transition.ResourceId != sampledTextureImport.Version.ResourceId)
-                && (storageTextureImport is null || transition.ResourceId != storageTextureImport.Version.ResourceId))
+                && !storageTextureImports.ContainsKey(transition.ResourceId))
             {
                 throw new NotSupportedException("Native graph submission does not support state transitions for other imported resources.");
             }
@@ -2152,10 +2154,13 @@ internal sealed class GraphicsGraphSubmission
             throw new NotSupportedException("Every imported Frame storage buffer must be reflected, bound, and declared by a graph pass.");
         }
 
-        if ((storageTextureImport is not null)
-            && (!hasStorageImagePipeline || !hasStorageImageBinding || !hasStorageImageAccess))
+        if ((storageTextureImports.Count != 0)
+            && (!hasStorageImagePipeline
+                || !hasStorageImageBinding
+                || !hasStorageImageAccess
+                || (storageTextureResourcesUsed.Count != storageTextureImports.Count)))
         {
-            throw new NotSupportedException("An imported Frame storage image must be reflected, bound, and declared by a graph pass.");
+            throw new NotSupportedException("Every imported Frame storage image must be reflected, bound, and declared by a graph pass.");
         }
 
         if (!hasColorClear)

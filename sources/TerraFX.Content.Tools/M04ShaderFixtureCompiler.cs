@@ -16,6 +16,7 @@ internal static class M04ShaderFixtureCompiler
     private const string ShaderEntryPointComputeStorage = "CSStorageMain";
     private const string ShaderEntryPointComputeStorageBuffers = "CSStorageBuffersMain";
     private const string ShaderEntryPointComputeStorageFloatImage = "CSStorageFloatImageMain";
+    private const string ShaderEntryPointComputeStorageImages = "CSStorageImagesMain";
     private const string ShaderEntryPointComputeStorageRgba16Image = "CSStorageRgba16ImageMain";
     private const string ShaderEntryPointComputeStorageSignedImage = "CSStorageSignedImageMain";
     private const string ShaderEntryPointComputeStorageWrite = "CSStorageWriteMain";
@@ -32,6 +33,7 @@ internal static class M04ShaderFixtureCompiler
         "compute-storage",
         "compute-storage-buffers",
         "compute-storage-float-image",
+        "compute-storage-images",
         "compute-storage-rgba16-image",
         "compute-storage-signed-image",
         "compute-storage-write",
@@ -148,6 +150,17 @@ internal static class M04ShaderFixtureCompiler
                 ShaderEntryPointComputeStorageRgba16Image,
                 "cs_6_0",
                 "compute-storage-rgba16-image",
+                cancellationToken).ConfigureAwait(false);
+            await CompileStageAsync(
+                manifest,
+                dxcExecutable,
+                spirvCrossExecutable,
+                spirvValidationExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointComputeStorageImages,
+                "cs_6_0",
+                "compute-storage-images",
                 cancellationToken).ConfigureAwait(false);
             await CompileStageAsync(
                 manifest,
@@ -356,6 +369,15 @@ internal static class M04ShaderFixtureCompiler
                 dxcExecutable,
                 shaderPath,
                 stagingDirectory,
+                ShaderEntryPointComputeStorageImages,
+                "cs_6_0",
+                "compute-storage-images",
+                cancellationToken).ConfigureAwait(false);
+            await CompileDxilStageAsync(
+                manifest,
+                dxcExecutable,
+                shaderPath,
+                stagingDirectory,
                 ShaderEntryPointComputeStorageSignedImage,
                 "cs_6_0",
                 "compute-storage-signed-image",
@@ -456,6 +478,7 @@ internal static class M04ShaderFixtureCompiler
             "compute-storage" => ShaderEntryPointComputeStorage,
             "compute-storage-buffers" => ShaderEntryPointComputeStorageBuffers,
             "compute-storage-float-image" => ShaderEntryPointComputeStorageFloatImage,
+            "compute-storage-images" => ShaderEntryPointComputeStorageImages,
             "compute-storage-rgba16-image" => ShaderEntryPointComputeStorageRgba16Image,
             "compute-storage-signed-image" => ShaderEntryPointComputeStorageSignedImage,
             "compute-storage-write" => ShaderEntryPointComputeStorageWrite,
@@ -686,6 +709,29 @@ internal static class M04ShaderFixtureCompiler
         }
     }
 
+    private static void ValidateComputeStorageImageResourcesReflection(JsonElement root)
+    {
+        if (!root.TryGetProperty("images", out var storageImages)
+            || (storageImages.ValueKind != JsonValueKind.Array)
+            || (storageImages.GetArrayLength() != 2))
+        {
+            throw new InvalidDataException("SPIRV-Cross reflection must report both compute storage images.");
+        }
+
+        ValidateResourceDescriptor(storageImages[0], "FrameStorageImage", 33);
+        ValidateResourceDescriptor(storageImages[1], "FrameSecondStorageImage", 38);
+
+        foreach (var storageImage in storageImages.EnumerateArray())
+        {
+            if (!storageImage.TryGetProperty("format", out var formatElement)
+                || (formatElement.ValueKind != JsonValueKind.String)
+                || !StringComparer.Ordinal.Equals(formatElement.GetString(), "r32ui"))
+            {
+                throw new InvalidDataException("SPIRV-Cross reflection does not match the compute R32UInt storage-image format.");
+            }
+        }
+    }
+
     private static void ValidateComputeStorageRgba16ImageResourcesReflection(JsonElement root)
     {
         if (!root.TryGetProperty("images", out var storageImages)
@@ -744,6 +790,7 @@ internal static class M04ShaderFixtureCompiler
         if (stageName is "compute-storage"
             or "compute-storage-buffers"
             or "compute-storage-float-image"
+            or "compute-storage-images"
             or "compute-storage-rgba16-image"
             or "compute-storage-signed-image"
             or "compute-storage-write")
@@ -759,6 +806,9 @@ internal static class M04ShaderFixtureCompiler
                     && !text.Contains("FrameSignedStorageImage", StringComparison.Ordinal))
                 || ((stageName == "compute-storage")
                     && !text.Contains("FrameStorageImage", StringComparison.Ordinal))
+                || ((stageName == "compute-storage-images")
+                    && (!text.Contains("FrameStorageImage", StringComparison.Ordinal)
+                        || !text.Contains("FrameSecondStorageImage", StringComparison.Ordinal)))
                 || ((stageName == "compute-storage-buffers")
                     && !text.Contains("FrameSecondStorageBuffer", StringComparison.Ordinal)))
             {
@@ -922,7 +972,7 @@ internal static class M04ShaderFixtureCompiler
 
         var mode = modeElement.GetString();
         var expectedMode = stageName switch {
-            "compute-storage" or "compute-storage-buffers" or "compute-storage-float-image" or "compute-storage-rgba16-image" or "compute-storage-signed-image" or "compute-storage-write" => mode is "comp" or "compute",
+            "compute-storage" or "compute-storage-buffers" or "compute-storage-float-image" or "compute-storage-images" or "compute-storage-rgba16-image" or "compute-storage-signed-image" or "compute-storage-write" => mode is "comp" or "compute",
             "vertex" or "vertex-sprite" => mode is "vert" or "vertex",
             "pixel" or "pixel-graph" or "pixel-sampled" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => mode is "frag" or "fragment",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
@@ -959,6 +1009,7 @@ internal static class M04ShaderFixtureCompiler
         }
 
         if (stageName is "compute-storage-write"
+            or "compute-storage-images"
             or "compute-storage-float-image"
             or "compute-storage-rgba16-image"
             or "compute-storage-signed-image")
@@ -979,6 +1030,11 @@ internal static class M04ShaderFixtureCompiler
         if (stageName == "compute-storage-rgba16-image")
         {
             ValidateComputeStorageRgba16ImageResourcesReflection(root);
+        }
+
+        if (stageName == "compute-storage-images")
+        {
+            ValidateComputeStorageImageResourcesReflection(root);
         }
     }
 
