@@ -1504,6 +1504,77 @@ internal sealed class VulkanBackendDeviceTests
     }
 
     [Test]
+    public void OffscreenNativeDeviceUploadsAndReadsBackVolumeTextureSlices()
+    {
+        try
+        {
+            using var device = VulkanBackendDevice.Create(
+                GraphicsDeviceProfile.OffscreenNative,
+                CancellationToken.None);
+            using var texture = device.CreateTexture(
+                new TextureDescription(
+                    TextureDimension.Dimension3D,
+                    width: 2,
+                    height: 2,
+                    depth: 2,
+                    arrayLayers: 1,
+                    mipLevels: 1,
+                    format: TextureFormat.R8Unorm,
+                    usage: TextureUsage.CopySource | TextureUsage.CopyDestination,
+                    debugName: "volume-texture-transfer"));
+            var sourceBytes = new byte[16];
+            Array.Fill(sourceBytes, (byte)0xEE);
+            sourceBytes[1] = 1;
+            sourceBytes[2] = 2;
+            sourceBytes[5] = 3;
+            sourceBytes[6] = 4;
+            sourceBytes[9] = 5;
+            sourceBytes[10] = 6;
+            sourceBytes[13] = 7;
+            sourceBytes[14] = 8;
+            var sourceStorage = UnmanagedBuffer<byte>.Allocate(
+                sourceBytes.Length,
+                new BufferAllocationOptions(sourceBytes.Length, alignment: 1));
+            sourceStorage.CopyFrom(sourceBytes.AsSpan(), 0);
+
+            using var ownedSource = sourceStorage.TransferToOwnedBuffer();
+            using var sourceLease = ownedSource.AcquireReadLease(0, sourceBytes.Length);
+            var subresource = new TextureSubresource(0, 0, TextureAspect.Color);
+            Assert.That(
+                device.UploadTexture(
+                    texture,
+                    subresource,
+                    sourceLease,
+                    sourceOffset: 1,
+                    new TextureDataLayout(rowPitch: 4, slicePitch: 8)),
+                Is.GreaterThan(0));
+            Assert.That(texture.GetLayout(subresource), Is.EqualTo(VkImageLayout.VK_IMAGE_LAYOUT_GENERAL));
+            Assert.That(texture.IsInitialized(subresource), Is.True);
+
+            using var readback = device.ReadbackTexture(texture, subresource);
+            Assert.That(readback.Width, Is.EqualTo(2));
+            Assert.That(readback.Height, Is.EqualTo(2));
+            Assert.That(readback.Depth, Is.EqualTo(2));
+            Assert.That(readback.RowPitch, Is.EqualTo((nint)2));
+            Assert.That(readback.SlicePitch, Is.EqualTo((nint)4));
+            Assert.That(readback.ByteLength, Is.EqualTo((nint)8));
+            AssertTextureReadback(readback, [1, 2, 3, 4, 5, 6, 7, 8]);
+        }
+        catch (DllNotFoundException exception)
+        {
+            Assert.Ignore($"No Vulkan loader is installed: {exception.Message}");
+        }
+        catch (EntryPointNotFoundException exception)
+        {
+            Assert.Ignore($"The installed Vulkan loader lacks a required entry point: {exception.Message}");
+        }
+        catch (NotSupportedException exception)
+        {
+            Assert.Ignore($"No available Vulkan device supports the volume texture transfer: {exception.Message}");
+        }
+    }
+
+    [Test]
     public void RegistrationSelectsVulkanWithoutCreatingDevice()
         => Assert.That(VulkanGraphicsBackend.CreateRegistration().Backend, Is.EqualTo(GraphicsBackend.Vulkan));
 
