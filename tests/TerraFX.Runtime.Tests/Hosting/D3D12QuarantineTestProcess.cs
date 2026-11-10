@@ -12,8 +12,9 @@ namespace TerraFX.Runtime.Tests.Hosting;
 
 internal static class D3D12QuarantineTestProcess
 {
-    internal static void Run()
+    internal static void Run(string testFilter = "TestCategory=ProcessIsolatedQuarantine")
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(testFilter);
         var configuration = new DirectoryInfo(AppContext.BaseDirectory).Parent?.Name
             ?? throw new InvalidOperationException("The Runtime test configuration could not be resolved.");
         DirectoryInfo? repositoryDirectory = new(AppContext.BaseDirectory);
@@ -54,7 +55,7 @@ internal static class D3D12QuarantineTestProcess
             startInfo.ArgumentList.Add("--no-build");
             startInfo.ArgumentList.Add("--no-restore");
             startInfo.ArgumentList.Add("--filter");
-            startInfo.ArgumentList.Add("TestCategory=ProcessIsolatedQuarantine");
+            startInfo.ArgumentList.Add(testFilter);
             startInfo.ArgumentList.Add("--logger");
             startInfo.ArgumentList.Add("trx;LogFileName=quarantine.trx");
             startInfo.ArgumentList.Add("--results-directory");

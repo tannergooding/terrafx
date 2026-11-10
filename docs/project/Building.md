@@ -504,6 +504,13 @@ Run the public offscreen submission witness after compiling the fixture. It cove
 
 `D3D12SubmitsBufferCopyGraphFromUploadBuffer` verifies an exact buffer-copy/readback using a host-visible Upload source, so it avoids allocating a staged copy-source buffer. It passes in Windows Debug/Release.
 
+`D3D12GraphFenceTimeoutQuarantinesGraphResources` process-isolates an offscreen graph, observes the native fence signal, then injects `WAIT_TIMEOUT`. It verifies `Renderer.SubmitAsync` fails, the target remains in active use after disposal is requested, and host shutdown reports the mapped timeout. This validates quarantine behavior for an injected result, not a driver-generated hang or timeout.
+
+```powershell
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~D3D12GraphFenceTimeoutQuarantinesGraphResources"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~D3D12GraphFenceTimeoutQuarantinesGraphResources"
+```
+
 `SubmitsUniformBufferSubrangeGraph` binds a device-aligned 256-byte Frame uniform range at a nonzero offset within the imported buffer and verifies rendered pixels. It passes 2/2 on Windows D3D12/Vulkan and 1/1 on WSLg Vulkan in Debug/Release; WSLg skips D3D12.
 
 `SubmitsSampledTextureMipSubrangeGraph` imports a two-mip sampled texture, binds mip 1 only, and verifies pixels from that mip rather than the contrasting mip-0 contents. It passes on Windows D3D12/Vulkan and WSLg Vulkan in Debug/Release; WSLg skips D3D12.

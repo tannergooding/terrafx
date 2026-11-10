@@ -190,6 +190,39 @@ internal sealed partial class EngineHostOptionsTests
     }
 
     [Test]
+    [Category("ProcessIsolatedGraphQuarantine")]
+    public Task D3D12GraphFenceTimeoutQuarantinesGraphResources()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            Assert.Ignore("The D3D12 graph timeout witness targets Windows 11.");
+            return Task.CompletedTask;
+        }
+
+        if (!StringComparer.Ordinal.Equals(
+            Environment.GetEnvironmentVariable("TERRAFX_D3D12_QUARANTINE_CHILD"),
+            "1"))
+        {
+            D3D12QuarantineTestProcess.Run("TestCategory=ProcessIsolatedGraphQuarantine");
+            return Task.CompletedTask;
+        }
+
+        return RunOffscreenGraphAsync(
+            GraphicsBackend.D3D12,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            simulateGraphFenceTimeout: true);
+    }
+
+    [Test]
     public Task D3D12GraphSubmissionRetainsTargetUntilFenceCompletion()
         => RunOffscreenGraphAsync(
             GraphicsBackend.D3D12,
@@ -899,7 +932,8 @@ internal sealed partial class EngineHostOptionsTests
         bool useConstantWriteComputeBuffer = false,
         bool useStorageBufferSubrange = false,
         bool useUniformBufferSubrange = false,
-        bool useSampledTextureSubrange = false)
+        bool useSampledTextureSubrange = false,
+        bool simulateGraphFenceTimeout = false)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -985,6 +1019,7 @@ internal sealed partial class EngineHostOptionsTests
         var holdCompletedGraphFenceValue = 0;
         var enteredFenceWaitCount = 0;
         var completedGraphFenceWaitCount = 0;
+        var nativeGraphFenceWaitResult = -1;
         var transientGraphAllocationLeases = new ConcurrentQueue<ImmutableArray<GraphicsResourceAllocationLease>>();
         var transientBufferGraphAllocationLeases = new ConcurrentQueue<ImmutableArray<GraphicsResourceAllocationLease>>();
 
@@ -1013,6 +1048,12 @@ internal sealed partial class EngineHostOptionsTests
             if (result == 0)
             {
                 _ = Interlocked.Increment(ref completedGraphFenceWaitCount);
+            }
+
+            if (simulateGraphFenceTimeout && (result == 0))
+            {
+                Volatile.Write(ref nativeGraphFenceWaitResult, unchecked((int)result));
+                return 0x00000102;
             }
 
             return result;
@@ -1085,7 +1126,7 @@ internal sealed partial class EngineHostOptionsTests
         }
 
         var graphicsRegistration = backend switch {
-            GraphicsBackend.D3D12 when holdGraphCompletion => new GraphicsBackendRegistration(
+            GraphicsBackend.D3D12 when holdGraphCompletion || simulateGraphFenceTimeout => new GraphicsBackendRegistration(
                 new D3D12GraphicsBackend.D3D12BackendFactory(
                     graphWaitForSingleObject: WaitForGraphFence,
                     completedFenceValueOverride: OverrideCompletedFence,
@@ -3574,6 +3615,33 @@ internal sealed partial class EngineHostOptionsTests
                         }, TimeSpan.FromSeconds(5)),
                         Is.True);
                 }
+            }
+            else if (simulateGraphFenceTimeout)
+            {
+                var submittedTarget = target
+                    ?? throw new InvalidOperationException("The graph-timeout test has no imported color target.");
+                var submittedTargetOwner = submittedTarget.ResourceOwner;
+                var submissionTask = renderer.SubmitAsync(renderSnapshot, plan);
+                _ = Assert.ThrowsAsync<GraphicsDeviceLostException>(async () =>
+                    await submissionTask.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false));
+
+                Assert.That(Volatile.Read(ref nativeGraphFenceWaitResult), Is.EqualTo(0));
+                Assert.That(
+                    graphicsDevice.Status is GraphicsDeviceStatus.Lost or GraphicsDeviceStatus.Stopping,
+                    Is.True);
+                Assert.That(submittedTargetOwner.HasActiveUses, Is.True);
+                target = null;
+                submittedTarget.Dispose();
+                Assert.That(submittedTargetOwner.HasActiveUses, Is.True);
+
+                var selectedHost = host
+                    ?? throw new InvalidOperationException("The graph-timeout test lost its EngineHost.");
+                host = null;
+                var shutdownException = Assert.ThrowsAsync<AggregateException>(async () =>
+                    await selectedHost.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false));
+                Assert.That(shutdownException?.ToString(), Does.Contain("0x800705B4"));
+                Assert.That(graphicsDevice.Status, Is.EqualTo(GraphicsDeviceStatus.Stopping));
+                return;
             }
             else
             {
