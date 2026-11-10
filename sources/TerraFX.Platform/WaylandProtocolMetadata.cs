@@ -30,6 +30,8 @@ internal sealed unsafe class WaylandProtocolMetadata : IDisposable
     private nint _xdgSurfaceInterface;
     private nint _xdgToplevelInterface;
     private nint _xdgWmBaseInterface;
+    private nint _zwpTextInputManagerV3Interface;
+    private nint _zwpTextInputV3Interface;
 
     private WaylandProtocolMetadata()
     {
@@ -60,6 +62,10 @@ internal sealed unsafe class WaylandProtocolMetadata : IDisposable
     internal nint XdgToplevelInterface => _xdgToplevelInterface;
 
     internal nint XdgWmBaseInterface => _xdgWmBaseInterface;
+
+    internal nint ZwpTextInputManagerV3Interface => _zwpTextInputManagerV3Interface;
+
+    internal nint ZwpTextInputV3Interface => _zwpTextInputV3Interface;
 
     [SuppressMessage(
         "Usage",
@@ -189,12 +195,41 @@ internal sealed unsafe class WaylandProtocolMetadata : IDisposable
         _wlPointerInterface = connection.GetInterface("wl_pointer_interface");
         _wlSeatInterface = connection.GetInterface("wl_seat_interface");
         _wlSurfaceInterface = connection.GetInterface("wl_surface_interface");
+        _zwpTextInputV3Interface = AllocateInterface("zwp_text_input_v3", version: 1);
+        _zwpTextInputManagerV3Interface = AllocateInterface("zwp_text_input_manager_v3", version: 1);
         _xdgPositionerInterface = AllocateInterface("xdg_positioner", version: 1);
         _xdgPopupInterface = AllocateInterface("xdg_popup", version: 1);
         _xdgSurfaceInterface = AllocateInterface("xdg_surface", version: 1);
         _xdgToplevelInterface = AllocateInterface("xdg_toplevel", version: 1);
         _xdgWmBaseInterface = AllocateInterface("xdg_wm_base", version: 1);
 
+        InitializeInterface(
+            _zwpTextInputV3Interface,
+            [
+                new("destroy", ""),
+                new("enable", ""),
+                new("disable", ""),
+                new("set_surrounding_text", "sii"),
+                new("set_text_change_cause", "u"),
+                new("set_content_type", "uu"),
+                new("set_cursor_rectangle", "iiii"),
+                new("commit", ""),
+            ],
+            [
+                new("enter", "o", [_wlSurfaceInterface]),
+                new("leave", "o", [_wlSurfaceInterface]),
+                new("preedit_string", "?sii"),
+                new("commit_string", "?s"),
+                new("delete_surrounding_text", "uu"),
+                new("done", "u"),
+            ]);
+        InitializeInterface(
+            _zwpTextInputManagerV3Interface,
+            [
+                new("destroy", ""),
+                new("get_text_input", "no", [_zwpTextInputV3Interface, _wlSeatInterface]),
+            ],
+            []);
         InitializeInterface(
             _xdgPositionerInterface,
             [

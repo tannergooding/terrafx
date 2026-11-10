@@ -94,6 +94,7 @@ internal sealed class WaylandDisplayConnectionTests
             return;
         }
 
+        using var connection = WaylandDisplayConnection.Connect();
         using var backend = PlatformBackendFactory.Create(
             PlatformBackend.WaylandOnly,
             ownerId: 1,
@@ -130,6 +131,12 @@ internal sealed class WaylandDisplayConnectionTests
             Assert.That(backend.SetWindowTitle(window, "TerraFX Wayland configured"), Is.EqualTo(WindowCommandStatus.Applied));
             Assert.That(backend.SetWindowClientSize(window, new Vector2(640.0f, 360.0f)), Is.EqualTo(WindowCommandStatus.Unsupported));
             backend.Pump();
+            var hasTextInputV3 = connection.HasGlobal("zwp_text_input_manager_v3");
+            TestContext.Progress.WriteLine($"Wayland text-input-v3 advertised: {hasTextInputV3}");
+            var expectedTextCapabilities = PlatformTextInputCapabilities.CommittedText
+                | (hasTextInputV3
+                    ? PlatformTextInputCapabilities.Composition
+                    : PlatformTextInputCapabilities.None);
             var textCapabilities = backend.UpdateTextInputSession(window, new TextInputSessionSnapshot(
                 1,
                 new TextInputSessionOptions(
@@ -141,7 +148,7 @@ internal sealed class WaylandDisplayConnectionTests
                     selectionLength: 0,
                     caretPosition: default,
                     caretSize: default)));
-            Assert.That(textCapabilities, Is.EqualTo(PlatformTextInputCapabilities.CommittedText));
+            Assert.That(textCapabilities, Is.EqualTo(expectedTextCapabilities));
             _ = backend.UpdateTextInputSession(window, snapshot: null);
             _ = backend.DrainInputSamples();
             backend.RequestInputStateReconciliation(window);

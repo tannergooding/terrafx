@@ -30,6 +30,9 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
     private WaylandDisplayConnection? _connection;
     private LinuxEvdevGamepadCapture? _gamepadCapture;
     private PlatformServiceStatus _gamepadStatus;
+    private bool _hasPendingTextInputCommit;
+    private bool _hasPendingTextInputDelete;
+    private bool _hasPendingTextInputPreedit;
     private readonly PlatformInputSampleQueue _inputSamples;
     private bool _isDisposed;
     private nint _keyboard;
@@ -50,6 +53,12 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
     private readonly Dictionary<nint, WaylandOutputState> _outputsByProxy;
     private readonly uint _ownerId;
     private readonly int _ownerThreadId;
+    private string? _pendingTextInputCommit;
+    private uint _pendingTextInputDeleteAfter;
+    private uint _pendingTextInputDeleteBefore;
+    private string? _pendingTextInputPreedit;
+    private int _pendingTextInputPreeditCursorBegin;
+    private int _pendingTextInputPreeditCursorEnd;
     private nint _pointer;
     private readonly HashSet<uint> _pointerButtonsDown;
     private WaylandWindowState? _pointerFocusedWindow;
@@ -60,6 +69,20 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
     private nint _seatListener;
     private int _seatVersion;
     private nint _surfaceListener;
+    private nint _textInput;
+    private uint _textInputCommitSerial;
+    private readonly SortedDictionary<uint, WaylandTextInputCommitState> _textInputCommits;
+    private bool _textInputCompositionActive;
+    private long _textInputEnabledSessionId;
+    private WaylandWindowState? _textInputEnabledWindow;
+    private long _textInputExpectedDocumentRevision;
+    private long _textInputExpectedDocumentSessionId;
+    private WaylandWindowState? _textInputFocusedWindow;
+    private nint _textInputManager;
+    private uint _textInputManagerGlobalName;
+    private bool _textInputStateDirty;
+    private bool _textInputStateRequiresResync;
+    private WaylandTextInputSurroundingText? _textInputSurroundingText;
     private readonly TimeProvider _timeProvider;
     private readonly Dictionary<WindowHandle, WaylandWindowState> _windowsByHandle;
     private readonly Dictionary<nint, WaylandWindowState> _windowsBySurface;
@@ -97,6 +120,7 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
         _windowsByHandle = [];
         _timeProvider = timeProvider ?? TimeProvider.System;
         _keyboardRepeatSchedule = new WaylandKeyboardRepeatSchedule(_timeProvider.TimestampFrequency);
+        _textInputCommits = [];
     }
 
     public PlatformServiceStatus AudioStatus
@@ -276,6 +300,7 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
         }
 
         RetireSeat(failures, notifyFocus: false);
+        RetireTextInputManager(failures);
         RetireClipboardManager(failures);
 
         if ((_xdgWmBase != 0) && (_connection is WaylandDisplayConnection connection))
@@ -388,6 +413,7 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
 
         InitializeWindowListeners();
         InitializeInputListeners();
+        RefreshTextInputManager();
         _xdgWmBaseListener = AllocateListenerTable(
             (nint)(delegate* unmanaged[Cdecl]<nint, nint, uint, void>)&OnXdgWmBasePing);
 

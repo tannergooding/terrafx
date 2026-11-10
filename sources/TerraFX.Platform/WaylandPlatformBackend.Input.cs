@@ -426,6 +426,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
         _seatGlobalName = global.Name;
         _seatVersion = checked((int)version);
         BindClipboardDataDevice();
+        BindTextInput();
     }
 
     private void HandleKeyboardEnter(nint keyboard, nint surface, nint keys)
@@ -450,6 +451,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
 
         if ((previousWindow is not null) && (previousWindow != window))
         {
+            DeactivateTextInput(previousWindow, TextCompositionCancelReason.FocusLost, sendDisableRequest: false);
             QueueFocusEvent(previousWindow, PhysicalInputEventKind.FocusLost);
         }
 
@@ -484,6 +486,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
         RescheduleKeyboardRepeats(_timeProvider.GetTimestamp());
         QueueFocusEvent(window, PhysicalInputEventKind.FocusGained);
         QueueWindowStateReconciliation(window);
+        _textInputStateDirty = true;
     }
 
     private void HandleKeyboardKey(nint keyboard, uint serial, uint time, uint key, uint state)
@@ -570,6 +573,8 @@ internal sealed unsafe partial class WaylandPlatformBackend
             && (_keyboardFocusedWindow is WaylandWindowState window)
             && (window.Surface == surface))
         {
+            DeactivateTextInput(window, TextCompositionCancelReason.FocusLost, sendDisableRequest: false);
+
             if (_keyboardKeymap is WaylandKeyboardKeymap keymap)
             {
                 foreach (var key in _keyboardKeysDown)
@@ -994,6 +999,11 @@ internal sealed unsafe partial class WaylandPlatformBackend
         var focusedWindow = _keyboardFocusedWindow;
         _lastClipboardGestureSerial = 0;
 
+        if (focusedWindow is not null)
+        {
+            DeactivateTextInput(focusedWindow, TextCompositionCancelReason.FocusLost, sendDisableRequest: false);
+        }
+
         if (notifyFocus && (focusedWindow is WaylandWindowState window))
         {
             QueueFocusEvent(window, PhysicalInputEventKind.FocusLost);
@@ -1098,6 +1108,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
     private void RetireSeat(List<Exception> failures, bool notifyFocus)
     {
         RetireClipboardDataDevice(failures);
+        RetireTextInput(failures);
         RetireKeyboard(failures, notifyFocus);
         RetirePointer(failures, notifyLeave: notifyFocus);
         var seat = _seat;

@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using TerraFX;
+using TerraFX.Input;
 using TerraFX.Numerics;
 
 namespace TerraFX.Platform;
@@ -97,6 +98,8 @@ internal sealed unsafe partial class WaylandPlatformBackend
             Surface = surface;
             XdgSurface = xdgSurface;
             Toplevel = toplevel;
+            TextInputChangeCause = 1;
+            TextInputSession = null;
             Window = window;
         }
 
@@ -126,7 +129,11 @@ internal sealed unsafe partial class WaylandPlatformBackend
 
         internal nint Surface { get; }
 
+        internal TextInputSessionSnapshot? TextInputSession { get; set; }
+
         internal nint Toplevel { get; }
+
+        internal uint TextInputChangeCause { get; set; }
 
         internal WindowHandle Window { get; }
 

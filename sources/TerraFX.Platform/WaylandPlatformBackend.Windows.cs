@@ -474,6 +474,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
 
     private void DestroyWindowState(WaylandWindowState state, bool sendDestroyRequests)
     {
+        RetireTextInputWindow(state, sendDestroyRequests);
         _ = _windowsByHandle.Remove(state.Window);
         _ = _windowsBySurface.Remove(state.Surface);
         _ = _windowsByXdgSurface.Remove(state.XdgSurface);

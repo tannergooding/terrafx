@@ -137,6 +137,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
         EnsureActiveOwnerThread();
         Connection.Pump();
         RefreshOutputBindings();
+        RefreshTextInputManager();
         RefreshClipboardManager();
         RefreshSeatBinding();
         _gamepadCapture?.Pump();
@@ -145,6 +146,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
         ExpireClipboardSelectionIfUnfocused();
         PumpClipboardTransfers();
         ThrowIfCallbackFailed();
+        FlushTextInputState();
         PumpKeyboardRepeats();
     }
 
