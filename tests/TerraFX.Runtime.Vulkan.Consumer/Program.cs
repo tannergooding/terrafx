@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Threading.Tasks;
 using TerraFX;
 using TerraFX.Assets;
+using TerraFX.Buffers;
 using TerraFX.Entities;
 using TerraFX.Graphics;
 using TerraFX.Graphics.Vulkan;
@@ -564,7 +565,74 @@ internal static class Program
             throw new InvalidOperationException("Vulkan Offscreen readback did not contain the expected cleared pixel.");
         }
 
-        Console.WriteLine($"Vulkan {args[0]} graph readback passed.");
+        using var volumeTexture = await graphicsDevice.CreateTextureAsync(new TextureDescription(
+            TextureDimension.Dimension3D,
+            width: 2,
+            height: 2,
+            depth: 2,
+            arrayLayers: 1,
+            mipLevels: 1,
+            TextureFormat.R8Unorm,
+            TextureUsage.CopySource | TextureUsage.CopyDestination,
+            "vulkan-nativeaot-volume-texture")).ConfigureAwait(false);
+        var volumeSourceBytes = new byte[16];
+        Array.Fill(volumeSourceBytes, (byte)0xEE);
+        volumeSourceBytes[1] = 1;
+        volumeSourceBytes[2] = 2;
+        volumeSourceBytes[5] = 3;
+        volumeSourceBytes[6] = 4;
+        volumeSourceBytes[9] = 5;
+        volumeSourceBytes[10] = 6;
+        volumeSourceBytes[13] = 7;
+        volumeSourceBytes[14] = 8;
+        var volumeSourceStorage = UnmanagedBuffer<byte>.Allocate(
+            volumeSourceBytes.Length,
+            new BufferAllocationOptions(volumeSourceBytes.Length, alignment: 1));
+        volumeSourceStorage.CopyFrom(volumeSourceBytes.AsSpan(), 0);
+
+        using var volumeSource = volumeSourceStorage.TransferToOwnedBuffer();
+        using var volumeSourceLease = volumeSource.AcquireReadLease(0, volumeSourceBytes.Length);
+        var volumeSubresource = new TextureSubresource(0, 0, TextureAspect.Color);
+        var volumeUpload = await graphicsDevice.UploadTextureAsync(
+            volumeTexture,
+            volumeSubresource,
+            volumeSourceLease,
+            sourceOffset: 1,
+            new TextureDataLayout(rowPitch: 4, slicePitch: 8))
+            .WaitAsync(TimeSpan.FromSeconds(15))
+            .ConfigureAwait(false);
+
+        if (volumeUpload.Status is not UploadStatus.Ready)
+        {
+            throw new InvalidOperationException($"Vulkan volume texture upload returned {volumeUpload.Status}.");
+        }
+
+        using var volumeReadback = await graphicsDevice.ReadbackTextureAsync(
+            volumeTexture,
+            volumeSubresource)
+            .WaitAsync(TimeSpan.FromSeconds(15))
+            .ConfigureAwait(false);
+        var volumeReadbackBytes = new byte[checked((int)volumeReadback.ByteLength)];
+
+        using (var readLease = volumeReadback.AcquireReadLease())
+        {
+            var copyAction = new ReadbackCopyAction(volumeReadbackBytes);
+            readLease.UseWindow(0, volumeReadbackBytes.Length, ref copyAction);
+        }
+
+        byte[] expectedVolumeBytes = [1, 2, 3, 4, 5, 6, 7, 8];
+
+        if ((volumeReadback.Width != 2)
+            || (volumeReadback.Height != 2)
+            || (volumeReadback.Depth != 2)
+            || (volumeReadback.RowPitch != (nint)2)
+            || (volumeReadback.SlicePitch != (nint)4)
+            || !volumeReadbackBytes.AsSpan().SequenceEqual(expectedVolumeBytes))
+        {
+            throw new InvalidOperationException("Vulkan Offscreen volume texture readback did not match the uploaded slices.");
+        }
+
+        Console.WriteLine($"Vulkan {args[0]} graph readback and volume texture transfer passed.");
         return 0;
     }
 

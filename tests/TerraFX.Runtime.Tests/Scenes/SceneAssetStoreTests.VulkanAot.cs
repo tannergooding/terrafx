@@ -19,7 +19,8 @@ internal sealed partial class SceneAssetStoreTests
     {
         var supportedPlatform = platform switch {
             "win32" => OperatingSystem.IsWindows(),
-            "wayland" or "x11" or "headless" => OperatingSystem.IsLinux(),
+            "headless" => OperatingSystem.IsWindows() || OperatingSystem.IsLinux(),
+            "wayland" or "x11" => OperatingSystem.IsLinux(),
             _ => false,
         };
 
@@ -86,7 +87,7 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(process.ExitCode, Is.Zero, processOutput);
             var completionMarker = mode switch {
                 "interactive" => $"Vulkan {platform} Interactive graph presented",
-                "offscreen" => "Vulkan offscreen graph readback passed",
+                "offscreen" => "Vulkan offscreen graph readback and volume texture transfer passed",
                 _ => throw new ArgumentOutOfRangeException(nameof(mode)),
             };
             Assert.That(processOutput, Does.Contain(completionMarker));

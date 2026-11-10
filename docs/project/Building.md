@@ -826,7 +826,7 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 Remove-Item Env:\TERRAFX_VULKAN_NATIVEAOT_CONSUMER
 ```
 
-On Windows, the Win32 Interactive scenario passes 1/1; Linux Wayland/X11 and Offscreen cases are skipped as OS-inapplicable. The Win32 path covers two windows, one committed World tick, peer-window close, presentation on the surviving Surface, and callback exception recovery. GameInput remains unavailable under NativeAOT as described above.
+On Windows, Win32 Interactive and OffscreenNative pass 2/2; Linux Wayland/X11 are skipped as OS-inapplicable. The Win32 path covers two windows, one committed World tick, peer-window close, presentation on the surviving Surface, and callback exception recovery. OffscreenNative verifies both the graph-clear pixel and a padded 3D R8 upload/readback. GameInput remains unavailable under NativeAOT as described above.
 
 The no-argument handwritten Runtime consumer verifies that `PhysicalInputEvent` and `PhysicalInputValue` expose no public constructors and that event/value/diagnostic/scroll-unit enum values are stable. Its JIT and Windows x64 NativeAOT executions validate that nonfriend surface only; they do not activate native input or create a platform window.
 
@@ -872,7 +872,7 @@ TERRAFX_SCENE_ACTIVATION_CONSUMER="$WORKTREE/artifacts/linux/bin/tests/TerraFX.R
 
 Both Linux x64 NativeAOT consumers execute successfully; the Headless Scene activation selection passes 4/4 with the exact published executable. This does not qualify Interactive hosting, graphics presentation/WSI, physical input, or Linux GPU hardware. JIT or Windows NativeAOT execution does not qualify the Linux target.
 
-The unsafe-disabled Vulkan consumer exercises a package-backed camera Scene through OffscreenNative readback and Interactive Surface presentation. It verifies a graph-clear pixel through the OffscreenNative texture readback path. Each Wayland-only and explicit X11 Interactive scenario opens two hidden windows, presents to both, advances the hosted World by one committed tick, closes one window, presents the new snapshot on the survivor, and closes both windows. With the WSLg SDK/Vulkan environment configured above, publish it and run all three paths:
+The unsafe-disabled Vulkan consumer exercises a package-backed camera Scene through OffscreenNative readback and Interactive Surface presentation. OffscreenNative verifies a graph-clear pixel and a padded 3D R8 upload/readback. Each Wayland-only and explicit X11 Interactive scenario opens two hidden windows, presents to both, advances the hosted World by one committed tick, closes one window, presents the new snapshot on the survivor, and closes both windows. With the WSLg SDK/Vulkan environment configured above, publish it and run all three paths:
 
 ```bash
 "$DOTNET_ROOT/dotnet" publish "$WORKTREE/tests/TerraFX.Runtime.Vulkan.Consumer/TerraFX.Runtime.Vulkan.Consumer.csproj" --configuration Release --runtime linux-x64 --self-contained true -p:TerraFXPublishAot=true "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/" -m:1 -nr:false
