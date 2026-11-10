@@ -817,21 +817,21 @@ dotnet publish .\tests\TerraFX.Graphics.D3D12.Consumer\TerraFX.Graphics.D3D12.Co
 dotnet publish .\tests\TerraFX.Runtime.Vulkan.Consumer\TerraFX.Runtime.Vulkan.Consumer.csproj --configuration Release --runtime win-x64 --self-contained true -p:TerraFXPublishAot=true
 ```
 
-The D3D12 consumer enables NativeAOT locally through `TerraFXPublishAot`; do not pass `PublishAot=true` as a global MSBuild property, which would also apply AOT to build-time analyzer/generator projects. Its no-argument mode verifies the nonfriend public registration and transfer/pipeline/sampler signatures, constructs canonical `ShaderReflection` resource/layout/capability values, and proves the reflected value independently copies caller-owned arrays and compiler digest. Its `interactive` mode starts WindowsNative and D3D12, creates two hidden Win32 windows and Surfaces, activates the supplied camera Scene, presents to both, advances the hosted World by one committed tick, closes one window, and presents the new snapshot on the surviving Surface. It also verifies that a throwing `EngineHost.InvokeAsync` callback returns its exception and a later callback can access both Surfaces. Windows JIT consumers and both Windows Platform/Runtime test hosts enable built-in COM interop for GameInputSharp. Under NativeAOT, GameInputSharp's `[ComImport]` adapter requires runtime-generated COM stubs, so gamepad capture is reported unavailable with a diagnostic and no XInput fallback; this does not qualify physical gamepad input.
+The D3D12 consumer enables NativeAOT locally through `TerraFXPublishAot`; do not pass `PublishAot=true` as a global MSBuild property, which would also apply AOT to build-time analyzer/generator projects. Its no-argument mode verifies the nonfriend public registration and transfer/pipeline/sampler signatures, constructs canonical `ShaderReflection` resource/layout/capability values, and proves the reflected value independently copies caller-owned arrays and compiler digest. Its `offscreen headless <absolute-package-path> <root-entity-guid-N>` mode starts `HostProfile.OffscreenNative`, activates the supplied camera Scene, commits a World tick, clears a graph target, and verifies the center pixel by native texture readback without WSI metadata. Its `interactive <absolute-package-path> <root-entity-guid-N>` mode starts WindowsNative and D3D12, creates two hidden Win32 windows and Surfaces, activates the supplied camera Scene, presents to both, advances the hosted World by one committed tick, closes one window, and presents the new snapshot on the surviving Surface. It also verifies that a throwing `EngineHost.InvokeAsync` callback returns its exception and a later callback can access both Surfaces. Windows JIT consumers and both Windows Platform/Runtime test hosts enable built-in COM interop for GameInputSharp. Under NativeAOT, GameInputSharp's `[ComImport]` adapter requires runtime-generated COM stubs, so gamepad capture is reported unavailable with a diagnostic and no XInput fallback; this does not qualify physical gamepad input.
 
 ```powershell
 & .\artifacts\bin\tests\TerraFX.Graphics.D3D12.Consumer\Release\net11.0\win-x64\publish\TerraFX.Graphics.D3D12.Consumer.exe
 ```
 
-Run the published D3D12 Interactive presentation witness:
+Run the published D3D12 OffscreenNative and Interactive witnesses:
 
 ```powershell
 $env:TERRAFX_D3D12_NATIVEAOT_CONSUMER = (Resolve-Path .\artifacts\bin\tests\TerraFX.Graphics.D3D12.Consumer\Release\net11.0\win-x64\publish\TerraFX.Graphics.D3D12.Consumer.exe).Path
-dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~PublishedD3D12InteractiveConsumerPresentsAcrossTwoWindows"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~PublishedD3D12ConsumerExecutesScenario"
 Remove-Item Env:\TERRAFX_D3D12_NATIVEAOT_CONSUMER
 ```
 
-The Windows x64 NativeAOT Interactive selection passes 1/1 on the current D3D12 device. It advances the hosted World, presents across two windows, closes one, and verifies that the other presents a newer snapshot. It does not qualify driver-generated loss/recovery, WSI timeout behavior, or physical gamepad input.
+The Windows x64 NativeAOT selection passes 2/2 on the current D3D12 device. OffscreenNative verifies a cleared pixel through graph submission and texture readback without presentation metadata. Interactive advances the hosted World, presents across two windows, closes one, and verifies that the other presents a newer snapshot. These witnesses do not qualify driver-generated loss/recovery, WSI timeout behavior, or physical gamepad input.
 
 The Vulkan consumer also supports Windows Win32 Interactive presentation. Run the exact published NativeAOT executable through the scenario driver:
 

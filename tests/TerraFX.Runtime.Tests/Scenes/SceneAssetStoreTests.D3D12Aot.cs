@@ -11,8 +11,9 @@ namespace TerraFX.Runtime.Tests.Scenes;
 
 internal sealed partial class SceneAssetStoreTests
 {
-    [Test]
-    public void PublishedD3D12InteractiveConsumerPresentsAcrossTwoWindows()
+    [TestCase("interactive")]
+    [TestCase("offscreen")]
+    public void PublishedD3D12ConsumerExecutesScenario(string mode)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -55,7 +56,13 @@ internal sealed partial class SceneAssetStoreTests
                 startInfo.ArgumentList.Add(consumerPath);
             }
 
-            startInfo.ArgumentList.Add("interactive");
+            startInfo.ArgumentList.Add(mode);
+
+            if (mode is "offscreen")
+            {
+                startInfo.ArgumentList.Add("headless");
+            }
+
             startInfo.ArgumentList.Add(packagePath);
             startInfo.ArgumentList.Add(SceneAssetReaderTests.Fixtures.RootEntityId.ToString("N"));
 
@@ -74,7 +81,12 @@ internal sealed partial class SceneAssetStoreTests
             var output = Task.WhenAll(standardOutput, standardError).GetAwaiter().GetResult();
             var processOutput = $"{output[0]}{Environment.NewLine}{output[1]}";
             Assert.That(process.ExitCode, Is.Zero, processOutput);
-            Assert.That(processOutput, Does.Contain("D3D12 Interactive graph presented"));
+            var completionMarker = mode switch {
+                "interactive" => "D3D12 Interactive graph presented",
+                "offscreen" => "D3D12 Offscreen graph readback passed",
+                _ => throw new ArgumentOutOfRangeException(nameof(mode)),
+            };
+            Assert.That(processOutput, Does.Contain(completionMarker));
         }
         finally
         {

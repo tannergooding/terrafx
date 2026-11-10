@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.Versioning;
@@ -381,6 +382,169 @@ internal static partial class Program
             $"D3D12 Interactive graph presented with {firstPresentation}, {secondPresentation}, and {remainingWindowPresentation} receipts across two windows.");
     }
 
+    [SupportedOSPlatform("windows10.0.22000.0")]
+    [SuppressMessage("Globalization", "CA1303", Justification = "The output is a machine-checked consumer witness marker.")]
+    private static async Task RunOffscreenD3D12Async(string[] args)
+    {
+        if ((args.Length != 4)
+            || (args[0] is not "offscreen")
+            || (args[1] is not "headless")
+            || !Path.IsPathFullyQualified(args[2])
+            || !Guid.TryParseExact(args[3], "N", out var rootEntityId))
+        {
+            throw new ArgumentException("Expected: offscreen headless <absolute-package-path> <root-entity-guid-N>.", nameof(args));
+        }
+
+        var schemas = CreateSchemaRegistry();
+        var assetStoreRegistrationBuilder = new AssetStoreRegistrationBuilder(schemas);
+        _ = SceneSupport.RegisterAssetCodecs(assetStoreRegistrationBuilder);
+        _ = Renderer.RegisterAssetCodecs(assetStoreRegistrationBuilder);
+        var packageBytes = await File.ReadAllBytesAsync(args[2]).ConfigureAwait(false);
+        var assetStoreOptions = new AssetStoreOptions(
+            args[2],
+            SHA256.HashData(packageBytes),
+            assetStoreRegistrationBuilder.Build());
+        var options = new EngineHostOptions(
+            HostProfile.OffscreenNative,
+            PlatformBackend.Headless,
+            GraphicsBackend.D3D12,
+            D3D12GraphicsBackend.CreateRegistration(),
+            assetStoreOptions) {
+            CpuWorkerCount = 0,
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
+        var host = await EngineHost.StartAsync(options).ConfigureAwait(false);
+        await using var hostDisposal = host.ConfigureAwait(false);
+
+        var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
+        _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
+        _ = worldRegistrationBuilder.RegisterCpuExtractionSupport(Renderer.CreateCpuExtractionSupportRegistration());
+        var worldRegistration = worldRegistrationBuilder.Build();
+        World? world = null;
+        SceneLoader? loader = null;
+
+        await host.InvokeAsync(context => {
+            world = context.CreateWorld(new WorldOptions(worldRegistration) {
+                CpuWorkerCount = 0,
+                InitialReplayLineageId = Guid.NewGuid(),
+                WorldGuid = Guid.NewGuid(),
+            });
+            loader = new SceneLoader(world, host.Assets);
+        }).ConfigureAwait(false);
+
+        using var prepared = await loader!.PrepareAsync(
+            new AssetId(3),
+            new SceneLoadOptions()).ConfigureAwait(false);
+        var activation = await loader.ActivateAsync(prepared)
+            .WaitAsync(TimeSpan.FromSeconds(10))
+            .ConfigureAwait(false);
+        var sceneInstance = activation.Instance
+            ?? throw new InvalidOperationException("D3D12 Offscreen Scene activation returned no SceneInstance.");
+
+        if (activation.Status is not SceneActivationStatus.Activated)
+        {
+            throw new InvalidOperationException($"D3D12 Offscreen Scene activation returned {activation.Status}.");
+        }
+
+        await host.InvokeAsync(_ => world!.Step()).ConfigureAwait(false);
+
+        var targetExtent = new PixelSize(32, 32);
+        RenderSnapshot? snapshot = null;
+        await host.InvokeAsync(_ => {
+            if (!sceneInstance.TryGetEntity(rootEntityId, out var cameraEntity))
+            {
+                throw new InvalidOperationException("The activated Scene did not contain the expected camera Entity.");
+            }
+
+            var cameraId = world!.GetEntityId(cameraEntity);
+            var extraction = host.Renderer.Extract(
+                world,
+                new RenderExtractionOptions3D(world.CurrentFrame3, targetExtent, [cameraId]));
+
+            if (extraction.Status is not RenderExtractionStatus.Extracted)
+            {
+                throw new InvalidOperationException(
+                    $"D3D12 Offscreen snapshot extraction returned {extraction.Status}: {string.Join("; ", extraction.Diagnostics)}");
+            }
+
+            snapshot = extraction.Snapshot
+                ?? throw new InvalidOperationException("D3D12 Offscreen snapshot extraction omitted its RenderSnapshot.");
+        }).ConfigureAwait(false);
+
+        using var renderSnapshot = snapshot
+            ?? throw new InvalidOperationException("D3D12 Offscreen host produced no RenderSnapshot.");
+        var graphicsDevice = host.GraphicsDevice
+            ?? throw new InvalidOperationException("D3D12 OffscreenNative host returned no GraphicsDevice.");
+        using var target = await graphicsDevice.CreateTextureAsync(new TextureDescription(
+            TextureDimension.Dimension2D,
+            targetExtent.Width,
+            targetExtent.Height,
+            depth: 1,
+            arrayLayers: 1,
+            mipLevels: 1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.ColorAttachment | TextureUsage.CopySource | TextureUsage.CopyDestination,
+            "d3d12-nativeaot-offscreen-target")).ConfigureAwait(false);
+        var graph = host.Renderer.BuildGraph(renderSnapshot, target);
+        var pass = graph.AddRasterPass(new RenderPassDescription(
+            "d3d12-nativeaot-offscreen-clear",
+            order: 0,
+            predecessors: [],
+            hasExternalSideEffects: false));
+        var output = graph.WriteColorAttachment(
+            pass,
+            graph.OffscreenColorTargetVersion,
+            new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
+            AttachmentLoadAction.Clear,
+            AttachmentStoreAction.Store,
+            new Vector4(1.0f, 0.0f, 1.0f, 1.0f));
+        graph.SetPresentationSource(output);
+        var compile = graph.Compile();
+
+        if (compile.Status is not RenderGraphCompileStatus.Compiled)
+        {
+            throw new InvalidOperationException(
+                $"D3D12 Offscreen graph compilation returned {compile.Status}: {string.Join("; ", compile.Diagnostics)}");
+        }
+
+        var plan = compile.Plan
+            ?? throw new InvalidOperationException("D3D12 Offscreen graph compilation omitted its plan.");
+        var submission = await host.Renderer.SubmitAsync(renderSnapshot, plan)
+            .WaitAsync(TimeSpan.FromSeconds(15))
+            .ConfigureAwait(false);
+
+        if ((submission.PresentationSequence is not null)
+            || (submission.SurfaceEpoch != 0)
+            || (submission.SwapchainEpoch != 0))
+        {
+            throw new InvalidOperationException("D3D12 Offscreen submission reported WSI presentation metadata.");
+        }
+
+        using var readback = await graphicsDevice.ReadbackTextureAsync(
+            target,
+            new TextureSubresource(0, 0, TextureAspect.Color)).ConfigureAwait(false);
+        var readbackBytes = new byte[checked((int)readback.ByteLength)];
+
+        using (var readLease = readback.AcquireReadLease())
+        {
+            var copyAction = new ReadbackCopyAction(readbackBytes);
+            readLease.UseWindow(0, readbackBytes.Length, ref copyAction);
+        }
+
+        var centerPixelOffset = checked(
+            (int)((readback.RowPitch * (readback.Height / 2)) + (readback.Width / 2 * 4)));
+
+        if ((readbackBytes[centerPixelOffset] != byte.MaxValue)
+            || (readbackBytes[centerPixelOffset + 1] != 0)
+            || (readbackBytes[centerPixelOffset + 2] != byte.MaxValue)
+            || (readbackBytes[centerPixelOffset + 3] != byte.MaxValue))
+        {
+            throw new InvalidOperationException("D3D12 Offscreen readback did not contain the expected cleared pixel.");
+        }
+
+        Console.WriteLine("D3D12 Offscreen graph readback passed.");
+    }
+
     private static void VerifyGameInputUnavailableDiagnostic(EngineHost host)
     {
         var diagnostics = host.Diagnostics.GetSnapshot(new DiagnosticQuery(
@@ -400,5 +564,18 @@ internal static partial class Program
 
         throw new InvalidOperationException(
             "NativeAOT Windows startup did not diagnose the unavailable GameInput COM adapter.");
+    }
+
+    private readonly struct ReadbackCopyAction : IAction<ReadOnlySpan<byte>>
+    {
+        private readonly byte[] _destination;
+
+        internal ReadbackCopyAction(byte[] destination)
+        {
+            _destination = destination;
+        }
+
+        public readonly void Invoke(scoped ReadOnlySpan<byte> argument)
+            => argument.CopyTo(_destination);
     }
 }

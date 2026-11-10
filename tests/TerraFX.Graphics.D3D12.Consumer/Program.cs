@@ -22,7 +22,15 @@ internal static partial class Program
     {
         if (args.Length != 0)
         {
-            RunInteractiveD3D12Async(args).GetAwaiter().GetResult();
+            if (args[0] is "offscreen")
+            {
+                RunOffscreenD3D12Async(args).GetAwaiter().GetResult();
+            }
+            else
+            {
+                RunInteractiveD3D12Async(args).GetAwaiter().GetResult();
+            }
+
             return;
         }
 
