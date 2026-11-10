@@ -286,24 +286,38 @@ internal sealed partial class SceneAssetStoreTests
                     quad.Vertex3,
                 };
                 var vertexBytes = MemoryMarshal.AsBytes(spriteVertices.AsSpan()).ToArray();
+                var sentinelVertices = new float[checked(spriteVertices.Length * 5)];
+
+                for (var vertexIndex = 0; vertexIndex < spriteVertices.Length; vertexIndex++)
+                {
+                    var vertexOffset = checked(vertexIndex * 5);
+                    sentinelVertices[vertexOffset] = 2.0f;
+                    sentinelVertices[vertexOffset + 1] = 2.0f;
+                }
+
+                var vertexUploadBytes = new byte[checked(vertexBytes.Length * 2)];
+                MemoryMarshal.AsBytes(sentinelVertices.AsSpan()).CopyTo(vertexUploadBytes);
+                vertexBytes.CopyTo(vertexUploadBytes.AsSpan(vertexBytes.Length));
                 vertexBuffer = await graphicsDevice.CreateBufferAsync(
                     new BufferDescription(
-                        vertexBytes.Length,
+                        vertexUploadBytes.Length,
                         BufferUsage.Vertex | BufferUsage.CopyDestination,
                         GpuMemoryKind.DeviceLocal,
                         structuredStride: null,
                         "snapshot-atlas-sprite-vertices")).ConfigureAwait(false);
-                var vertexUpload = await graphicsDevice.UploadBufferAsync(vertexBuffer, 0, vertexBytes).ConfigureAwait(false);
+                var vertexUpload = await graphicsDevice.UploadBufferAsync(vertexBuffer, 0, vertexUploadBytes).ConfigureAwait(false);
                 Assert.That(vertexUpload.Status, Is.EqualTo(UploadStatus.Ready));
                 var indexBytes = MemoryMarshal.AsBytes(RenderSpriteGeometry.Indices.AsSpan()).ToArray();
+                var indexUploadBytes = new byte[checked(indexBytes.Length * 2)];
+                indexBytes.CopyTo(indexUploadBytes.AsSpan(indexBytes.Length));
                 indexBuffer = await graphicsDevice.CreateBufferAsync(
                     new BufferDescription(
-                        indexBytes.Length,
+                        indexUploadBytes.Length,
                         BufferUsage.Index | BufferUsage.CopyDestination,
                         GpuMemoryKind.DeviceLocal,
                         structuredStride: null,
                         "snapshot-atlas-sprite-indices")).ConfigureAwait(false);
-                var indexUpload = await graphicsDevice.UploadBufferAsync(indexBuffer, 0, indexBytes).ConfigureAwait(false);
+                var indexUpload = await graphicsDevice.UploadBufferAsync(indexBuffer, 0, indexUploadBytes).ConfigureAwait(false);
                 Assert.That(indexUpload.Status, Is.EqualTo(UploadStatus.Ready));
                 targetTexture = await graphicsDevice.CreateTextureAsync(
                     new TextureDescription(
@@ -343,23 +357,25 @@ internal sealed partial class SceneAssetStoreTests
                             sampler
                                 ?? throw new InvalidOperationException("The snapshot-atlas graph has no sampler.")),
                     ]);
-                var vertexRange = new GraphBufferRange(0, vertexBuffer.ByteLength);
+                var vertexImportRange = new GraphBufferRange(0, vertexBuffer.ByteLength);
                 var vertexVersion = graph.ImportBuffer(
                     vertexBuffer,
-                    vertexRange,
+                    vertexImportRange,
                     new GraphImportOptions(
                         GraphResourceState.General,
                         contentsValid: true,
                         completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                var vertexRange = new GraphBufferRange(vertexBytes.Length, vertexBytes.Length);
                 var vertexBinding = new VertexBufferBinding(0, vertexVersion, vertexRange, 5 * sizeof(float));
-                var indexRange = new GraphBufferRange(0, indexBuffer.ByteLength);
+                var indexImportRange = new GraphBufferRange(0, indexBuffer.ByteLength);
                 var indexVersion = graph.ImportBuffer(
                     indexBuffer,
-                    indexRange,
+                    indexImportRange,
                     new GraphImportOptions(
                         GraphResourceState.General,
                         contentsValid: true,
                         completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                var indexRange = new GraphBufferRange(indexBytes.Length, indexBytes.Length);
                 var indexBinding = new IndexBufferBinding(indexVersion, indexRange, IndexFormat.UInt16);
                 var selectedPipeline = pipeline
                     ?? throw new InvalidOperationException("The snapshot-atlas graph has no graphics pipeline.");
