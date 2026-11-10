@@ -109,7 +109,9 @@ internal sealed partial class EngineHostOptionsTests
         VkResult? expectedFirstAcquireResult = null,
         bool expectUncertainPresentFailure = false,
         bool expectPresentationFenceTimeout = false,
-        VkResult? expectedFirstPresentationNativeResult = null)
+        VkResult? expectedFirstPresentationNativeResult = null,
+        Action<PlatformHostOwner, WindowHandle>? beforeFirstPresentation = null,
+        bool exerciseNativeWindowReplacement = false)
     {
         var platformOwner = PlatformHostOwner.Create(options);
         GraphicsDevice? graphicsDevice = null;
@@ -205,17 +207,22 @@ internal sealed partial class EngineHostOptionsTests
             using var renderSnapshot = extraction.Snapshot
                 ?? throw new InvalidOperationException("Successful Vulkan extraction omitted its render snapshot.");
 
-            RenderGraphPlan CreateSurfaceGraphPlan(string name)
+            RenderGraphPlan CreateSurfaceGraphPlan(
+                string name,
+                Surface? targetSurface = null,
+                PixelSize? targetPixelSize = null)
             {
-                var graph = renderer.BuildGraph(renderSnapshot, activeSurface);
+                var selectedSurface = targetSurface ?? activeSurface;
+                var selectedPixelSize = targetPixelSize ?? clientPixelSize;
+                var graph = renderer.BuildGraph(renderSnapshot, selectedSurface);
                 var source = graph.CreateTransientTexture(new TextureDescription(
                     TextureDimension.Dimension2D,
-                    clientPixelSize.Width,
-                    clientPixelSize.Height,
+                    selectedPixelSize.Width,
+                    selectedPixelSize.Height,
                     depth: 1,
                     arrayLayers: 1,
                     mipLevels: 1,
-                    format: activeSurface.PresentationSourceFormat,
+                    format: selectedSurface.PresentationSourceFormat,
                     usage: TextureUsage.ColorAttachment | TextureUsage.CopySource,
                     debugName: name));
                 var pass = graph.AddRasterPass(new RenderPassDescription(
@@ -235,6 +242,102 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(response.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
                 return response.Plan
                     ?? throw new InvalidOperationException("The compiled Vulkan Surface graph omitted its plan.");
+            }
+
+            beforeFirstPresentation?.Invoke(platformOwner, window.Value);
+
+            if (exerciseNativeWindowReplacement)
+            {
+                var surfaceLost = false;
+                PresentationStatus? nativePresentationStatus = null;
+
+                try
+                {
+                    var lostSubmission = renderer.SubmitAsync(
+                        renderSnapshot,
+                        CreateSurfaceGraphPlan("vulkan-native-xlib-surface-loss"))
+                        .GetAwaiter()
+                        .GetResult();
+                    var lostSequence = lostSubmission.PresentationSequence
+                        ?? throw new InvalidOperationException("The native Xlib surface-loss submission omitted its presentation sequence.");
+                    nativePresentationStatus = activeSurface.WaitForPresentationAsync(lostSequence).GetAwaiter().GetResult().Status;
+                    surfaceLost = nativePresentationStatus is PresentationStatus.SurfaceLost;
+                }
+                catch (InvalidOperationException exception) when (
+                    exception.Message.Contains("native surface was lost", StringComparison.Ordinal)
+                    || exception.Message.Contains("VK_ERROR_SURFACE_LOST_KHR", StringComparison.Ordinal))
+                {
+                    surfaceLost = true;
+                }
+
+                TestContext.WriteLine(
+                    $"Native Xlib window destruction produced SurfaceLost={surfaceLost}; "
+                    + $"presentation status={nativePresentationStatus?.ToString() ?? "lost during acquire"}.");
+                Assert.That(surfaceLost || nativePresentationStatus is not null, Is.True);
+
+                if (nativePresentationStatus is PresentationStatus presentationStatus)
+                {
+                    Assert.That(
+                        presentationStatus,
+                        Is.AnyOf(PresentationStatus.Presented, PresentationStatus.SurfaceLost, PresentationStatus.SwapchainLost));
+                }
+
+                if (surfaceLost)
+                {
+                    _ = Assert.Throws<InvalidOperationException>(
+                        () => activeSurface.ResizeAsync(clientPixelSize).GetAwaiter().GetResult());
+                }
+
+                graphicsDevice.RetireSurfaceAsync(activeSurface).GetAwaiter().GetResult();
+                surface = null;
+                platformOwner.CloseWindow(window.Value);
+                window = null;
+
+                var replacementWindow = platformOwner.CreateWindow(new WindowOptions("Vulkan replacement Xlib surface") {
+                    ClientSize = new Vector2(640, 360),
+                    Visible = false,
+                });
+
+                try
+                {
+                    var replacementPixelSize = platformOwner.Platform.GetMetrics(replacementWindow).ClientPixelSize;
+                    var replacementBinding = platformOwner.GetGraphicsNativeSurfaceBinding(
+                        replacementWindow,
+                        surfaceEpoch: 1);
+                    var replacementSurface = graphicsDevice.CreateSurfaceAsync(
+                        replacementBinding,
+                        replacementPixelSize,
+                        default).GetAwaiter().GetResult();
+
+                    try
+                    {
+                        var replacementSubmission = renderer.SubmitAsync(
+                            renderSnapshot,
+                            CreateSurfaceGraphPlan(
+                                "vulkan-replacement-xlib-surface",
+                                replacementSurface,
+                                replacementPixelSize))
+                            .GetAwaiter()
+                            .GetResult();
+                        var replacementSequence = replacementSubmission.PresentationSequence
+                            ?? throw new InvalidOperationException("The replacement Xlib surface omitted its presentation sequence.");
+                        var replacementPresentation = replacementSurface
+                            .WaitForPresentationAsync(replacementSequence)
+                            .GetAwaiter()
+                            .GetResult();
+                        Assert.That(replacementPresentation.Status, Is.EqualTo(PresentationStatus.Presented));
+                    }
+                    finally
+                    {
+                        graphicsDevice.RetireSurfaceAsync(replacementSurface).GetAwaiter().GetResult();
+                    }
+                }
+                finally
+                {
+                    platformOwner.CloseWindow(replacementWindow);
+                }
+
+                return;
             }
 
             if (expectedFirstAcquireResult == VkResult.VK_ERROR_SURFACE_LOST_KHR)
@@ -861,5 +964,34 @@ internal sealed partial class EngineHostOptionsTests
         };
         var host = EngineHost.StartAsync(options).GetAwaiter().GetResult();
         host.DisposeAsync().AsTask().GetAwaiter().GetResult();
+    }
+
+    [Test]
+    public void VulkanReplacesXlibSurfaceAfterNativeWindowDestruction()
+    {
+        if (!OperatingSystem.IsLinux()
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_ISOLATED_X11") != "1")
+            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
+        {
+            Assert.Ignore("The native Xlib surface-loss witness requires an isolated Linux X11 display.");
+            return;
+        }
+
+        var (options, registration, schemas) = CreateVulkanSurfaceTestSetup(PlatformBackend.X11Only);
+        RunVulkanSurfaceWithDirectOwners(
+            options,
+            PlatformBackend.X11Only,
+            registration,
+            schemas,
+            beforeFirstPresentation: static (platformOwner, window) => {
+                var binding = platformOwner.GetNativeWindowBinding(window);
+                X11NativeSurfaceTest.DestroyWindowExternally(
+                    checked((nuint)binding.NativeWindowOrSurface));
+                platformOwner.Platform.Pump();
+                Assert.That(
+                    platformOwner.Platform.TryGetNativeWindowBinding(window, out _),
+                    Is.False);
+            },
+            exerciseNativeWindowReplacement: true);
     }
 }

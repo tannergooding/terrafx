@@ -298,7 +298,8 @@ public sealed class PlatformHost
 
     internal void CloseWindow(WindowHandle window)
     {
-        if (!_backend.TryGetNativeWindowBinding(window, out _))
+        // A native destroy event can invalidate the backend binding before the owner processes its close request.
+        if (!_windowMetrics.TryGetValue(window, out _))
         {
             throw new InvalidOperationException("The window handle is stale or no longer active.");
         }
