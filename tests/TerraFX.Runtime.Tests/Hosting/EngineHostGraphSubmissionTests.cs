@@ -668,6 +668,24 @@ internal sealed partial class EngineHostOptionsTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsStorageImageMipSubrangeGraph(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: true,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useRgba16FloatStorageImage: true,
+            useStorageImageSubrange: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SubmitsTextureCopyGraphAndReadsBackAsync(GraphicsBackend backend)
         => RunOffscreenGraphAsync(
             backend,
@@ -933,7 +951,8 @@ internal sealed partial class EngineHostOptionsTests
         bool useStorageBufferSubrange = false,
         bool useUniformBufferSubrange = false,
         bool useSampledTextureSubrange = false,
-        bool simulateGraphFenceTimeout = false)
+        bool simulateGraphFenceTimeout = false,
+        bool useStorageImageSubrange = false)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -1747,16 +1766,22 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(secondStorageBufferUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
             }
 
+            byte[]? storageImageBaseMipBytes = null;
+            var storageImageBytesPerTexel = useRgba16FloatStorageImage ? sizeof(ushort) * 4 : sizeof(uint);
+            var storageImageMipLevel = useStorageImageSubrange ? 1 : 0;
+
             if (useStorageResources || useCompute || useTransientStorage)
             {
+                var storageImageWidth = useStorageImageSubrange ? 2 : 1;
+                var storageImageMipLevels = useStorageImageSubrange ? 2 : 1;
                 storageImage = await graphicsDevice.CreateTextureAsync(
                     new TextureDescription(
                         TextureDimension.Dimension2D,
-                        1,
-                        1,
+                        storageImageWidth,
+                        storageImageWidth,
                         depth: 1,
                         arrayLayers: 1,
-                        mipLevels: 1,
+                        mipLevels: storageImageMipLevels,
                         useFloatStorageImage && !expectStorageImageFormatRejection
                             ? TextureFormat.R32Float
                             : useRgba16FloatStorageImage
@@ -1764,8 +1789,33 @@ internal sealed partial class EngineHostOptionsTests
                                 : TextureFormat.R32UInt,
                         TextureUsage.Storage | TextureUsage.CopySource | TextureUsage.CopyDestination,
                         $"m04-{backend}-frame-storage-image"))
-                    .ConfigureAwait(false);
-                var storageImageBytesPerTexel = useRgba16FloatStorageImage ? sizeof(ushort) * 4 : sizeof(uint);
+                        .ConfigureAwait(false);
+
+                if (useStorageImageSubrange)
+                {
+                    storageImageBaseMipBytes = new byte[checked(storageImageBytesPerTexel * 4)];
+                    Array.Fill(storageImageBaseMipBytes, (byte)0xA5);
+                    var storageImageBaseMipStorage = UnmanagedBuffer<byte>.Allocate(
+                        storageImageBaseMipBytes.Length,
+                        new BufferAllocationOptions(storageImageBaseMipBytes.Length, alignment: 1));
+                    storageImageBaseMipStorage.CopyFrom(storageImageBaseMipBytes.AsSpan(), 0);
+
+                    using var ownedStorageImageBaseMipBytes = storageImageBaseMipStorage.TransferToOwnedBuffer();
+                    using var storageImageBaseMipLease = ownedStorageImageBaseMipBytes.AcquireReadLease(
+                        0,
+                        storageImageBaseMipBytes.Length);
+                    var storageImageBaseMipUploadReceipt = await graphicsDevice.UploadTextureAsync(
+                        storageImage,
+                        new TextureSubresource(0, 0, TextureAspect.Color),
+                        storageImageBaseMipLease,
+                        0,
+                        new TextureDataLayout(
+                            rowPitch: checked(storageImageBytesPerTexel * 2),
+                            slicePitch: checked(storageImageBytesPerTexel * 4)))
+                        .ConfigureAwait(false);
+                    Assert.That(storageImageBaseMipUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+                }
+
                 var storageImageInitialBytes = new byte[storageImageBytesPerTexel];
                 var storageImageInitialStorage = UnmanagedBuffer<byte>.Allocate(
                     storageImageInitialBytes.Length,
@@ -1776,7 +1826,7 @@ internal sealed partial class EngineHostOptionsTests
                 using var storageImageInitialLease = ownedStorageImageInitialBytes.AcquireReadLease(0, storageImageInitialBytes.Length);
                 var storageImageUploadReceipt = await graphicsDevice.UploadTextureAsync(
                     storageImage,
-                    new TextureSubresource(0, 0, TextureAspect.Color),
+                    new TextureSubresource(storageImageMipLevel, 0, TextureAspect.Color),
                     storageImageInitialLease,
                     0,
                     new TextureDataLayout(
@@ -1990,6 +2040,12 @@ internal sealed partial class EngineHostOptionsTests
                 ? new GraphTextureRange(0, 2, 0, 1, TextureAspect.Color)
                 : sampleRange;
             var sampledTextureBindingRange = useSampledTextureSubrange
+                ? new GraphTextureRange(1, 1, 0, 1, TextureAspect.Color)
+                : sampleRange;
+            var storageImageImportRange = useStorageImageSubrange
+                ? new GraphTextureRange(0, 2, 0, 1, TextureAspect.Color)
+                : sampleRange;
+            var storageImageBindingRange = useStorageImageSubrange
                 ? new GraphTextureRange(1, 1, 0, 1, TextureAspect.Color)
                 : sampleRange;
             var copyTextureRange = (
@@ -2221,7 +2277,7 @@ internal sealed partial class EngineHostOptionsTests
             {
                 storageImageInitialVersion = graph.ImportTexture(
                     selectedStorageImage,
-                    sampleRange,
+                    storageImageImportRange,
                     new GraphImportOptions(
                         GraphResourceState.General,
                         contentsValid: true,
@@ -2581,7 +2637,7 @@ internal sealed partial class EngineHostOptionsTests
                     computeStorageImageWriteVersion = graph.ReadWriteTexture(
                         computePass,
                         initialStorageImage,
-                        sampleRange);
+                        storageImageBindingRange);
                     computeBindingSet = new BindingSet(
                         [
                             new BufferBinding(
@@ -2597,7 +2653,7 @@ internal sealed partial class EngineHostOptionsTests
                                 1,
                                 ShaderResourceKind.StorageImage,
                                 computeStorageImageWriteVersion,
-                                sampleRange),
+                                storageImageBindingRange),
                         ],
                         []);
                 }
@@ -2615,7 +2671,7 @@ internal sealed partial class EngineHostOptionsTests
                     computeStorageImageWriteVersion = graph.ReadWriteTexture(
                         computePass,
                         initialStorageImage,
-                        sampleRange);
+                        storageImageBindingRange);
                     computeBindingSet = new BindingSet(
                         [
                             new BufferBinding(
@@ -2637,7 +2693,7 @@ internal sealed partial class EngineHostOptionsTests
                                             : 1,
                                 ShaderResourceKind.StorageImage,
                                 computeStorageImageWriteVersion,
-                                sampleRange),
+                                storageImageBindingRange),
                         ],
                         []);
                 }
@@ -3045,13 +3101,13 @@ internal sealed partial class EngineHostOptionsTests
                 storageImageWriteVersion = graph.ReadWriteTexture(
                     pass,
                     storageImageInitialVersion,
-                    sampleRange);
+                    storageImageBindingRange);
                 textureBindings.Add(new TextureBinding(
                     ShaderBindingGroup.Frame,
                     1,
                     ShaderResourceKind.StorageImage,
                     storageImageWriteVersion,
-                    sampleRange));
+                    storageImageBindingRange));
             }
 
             if (useUniformBuffer || useSampledTexture || useStorageResources)
@@ -3233,13 +3289,13 @@ internal sealed partial class EngineHostOptionsTests
                 var secondStorageImageVersion = graph.ReadWriteTexture(
                     secondPass,
                     previousStorageImageVersion,
-                    sampleRange);
+                    storageImageBindingRange);
                 secondTextureBindings.Add(new TextureBinding(
                     ShaderBindingGroup.Frame,
                     1,
                     ShaderResourceKind.StorageImage,
                     secondStorageImageVersion,
-                    sampleRange));
+                    storageImageBindingRange));
                 secondFrameBindingSet = new BindingSet(
                     secondBufferBindings.MoveToImmutable(),
                     secondTextureBindings.MoveToImmutable(),
@@ -3866,7 +3922,7 @@ internal sealed partial class EngineHostOptionsTests
                 {
                     secondStorageImageInitialVersion = secondGraph.ImportTexture(
                         secondStorageImage,
-                        sampleRange,
+                        storageImageBindingRange,
                         new GraphImportOptions(
                             GraphResourceState.StorageReadWrite,
                             contentsValid: true,
@@ -3915,13 +3971,13 @@ internal sealed partial class EngineHostOptionsTests
                     var secondStorageImageWriteVersion = secondGraph.ReadWriteTexture(
                         secondPass,
                         storageImageVersion,
-                        sampleRange);
+                        storageImageBindingRange);
                     secondTextureBindings.Add(new TextureBinding(
                         ShaderBindingGroup.Frame,
                         1,
                         ShaderResourceKind.StorageImage,
                         secondStorageImageWriteVersion,
-                        sampleRange));
+                        storageImageBindingRange));
                 }
 
                 if (useUniformBuffer || useSampledTexture || useStorageResources)
@@ -4053,7 +4109,7 @@ internal sealed partial class EngineHostOptionsTests
                     ?? throw new InvalidOperationException("The graph storage test has no storage image.");
                 using var storageImageReadback = await graphicsDevice.ReadbackTextureAsync(
                     storageImageForReadback,
-                    new TextureSubresource(0, 0, TextureAspect.Color))
+                    new TextureSubresource(storageImageMipLevel, 0, TextureAspect.Color))
                     .ConfigureAwait(false);
                 var storageImageBytes = new byte[checked((int)storageImageReadback.ByteLength)];
 
@@ -4093,7 +4149,7 @@ internal sealed partial class EngineHostOptionsTests
                     ?? throw new InvalidOperationException("The graph compute test has no storage image.");
                 using var computeImageReadback = await graphicsDevice.ReadbackTextureAsync(
                     computeStorageImage,
-                    new TextureSubresource(0, 0, TextureAspect.Color))
+                    new TextureSubresource(storageImageMipLevel, 0, TextureAspect.Color))
                     .ConfigureAwait(false);
                 var computeStorageImageBytes = new byte[checked((int)computeImageReadback.ByteLength)];
 
@@ -4117,6 +4173,37 @@ internal sealed partial class EngineHostOptionsTests
                 else
                 {
                     Assert.That(BitConverter.ToUInt32(computeStorageImageBytes, 0), Is.EqualTo(2u));
+                }
+
+                if (useStorageImageSubrange)
+                {
+                    var expectedBaseMipBytes = storageImageBaseMipBytes
+                        ?? throw new InvalidOperationException("The storage-image subrange test has no mip-0 sentinel.");
+                    using var baseMipReadback = await graphicsDevice.ReadbackTextureAsync(
+                        computeStorageImage,
+                        new TextureSubresource(0, 0, TextureAspect.Color))
+                        .ConfigureAwait(false);
+                    var baseMipReadbackBytes = new byte[checked((int)baseMipReadback.ByteLength)];
+                    var expectedBaseMipReadbackBytes = new byte[baseMipReadbackBytes.Length];
+                    var baseMipRowByteLength = checked((int)(baseMipReadback.Width * storageImageBytesPerTexel));
+
+                    for (var row = 0; row < baseMipReadback.Height; row++)
+                    {
+                        expectedBaseMipBytes.AsSpan(
+                            checked(row * baseMipRowByteLength),
+                            baseMipRowByteLength)
+                            .CopyTo(expectedBaseMipReadbackBytes.AsSpan(
+                                checked((int)(baseMipReadback.RowPitch * row)),
+                                baseMipRowByteLength));
+                    }
+
+                    using (var baseMipReadLease = baseMipReadback.AcquireReadLease())
+                    {
+                        var copyAction = new ReadbackCopyAction(baseMipReadbackBytes);
+                        baseMipReadLease.UseWindow(0, baseMipReadbackBytes.Length, ref copyAction);
+                    }
+
+                    Assert.That(baseMipReadbackBytes, Is.EqualTo(expectedBaseMipReadbackBytes));
                 }
             }
 

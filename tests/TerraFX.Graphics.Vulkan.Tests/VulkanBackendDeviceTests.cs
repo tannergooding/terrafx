@@ -563,19 +563,31 @@ internal sealed class VulkanBackendDeviceTests
         Assert.That(
             () => device.CreateSampledImageSamplerDescriptorSet(
                 pipeline,
-                [new VulkanBackendSampledImageBinding(ShaderBindingGroup.Frame, 1, texture)],
+                [new VulkanBackendSampledImageBinding(
+                    ShaderBindingGroup.Frame,
+                    1,
+                    texture,
+                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color))],
                 [new VulkanBackendSamplerBinding(ShaderBindingGroup.Frame, 0, sampler)]),
             Throws.ArgumentException);
         Assert.That(
             () => device.CreateSampledImageSamplerDescriptorSet(
                 pipeline,
-                [new VulkanBackendSampledImageBinding(ShaderBindingGroup.Frame, 0, texture)],
+                [new VulkanBackendSampledImageBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    texture,
+                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color))],
                 []),
             Throws.ArgumentException);
 
         using var descriptorSet = device.CreateSampledImageSamplerDescriptorSet(
             pipeline,
-            [new VulkanBackendSampledImageBinding(ShaderBindingGroup.Frame, 0, texture)],
+            [new VulkanBackendSampledImageBinding(
+                ShaderBindingGroup.Frame,
+                0,
+                texture,
+                new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color))],
             [new VulkanBackendSamplerBinding(ShaderBindingGroup.Frame, 0, sampler)]);
         Assert.That(descriptorSet.IsDisposed, Is.False);
         Assert.That(
@@ -673,7 +685,8 @@ internal sealed class VulkanBackendDeviceTests
         var imageBindings = ImmutableArray.Create(new VulkanBackendSampledImageBinding(
             ShaderBindingGroup.Frame,
             0,
-            texture));
+            texture,
+            new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)));
         var samplerBindings = ImmutableArray.Create(new VulkanBackendSamplerBinding(
             ShaderBindingGroup.Frame,
             0,
@@ -829,11 +842,13 @@ internal sealed class VulkanBackendDeviceTests
         var imageBindings = ImmutableArray.Create(new VulkanBackendSampledImageBinding(
             ShaderBindingGroup.Frame,
             0,
-            sampledTexture));
+            sampledTexture,
+            new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)));
         var storageImageBindings = ImmutableArray.Create(new VulkanBackendStorageImageBinding(
             ShaderBindingGroup.Frame,
             1,
-            storageTexture));
+            storageTexture,
+            new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)));
         var samplerBindings = ImmutableArray.Create(new VulkanBackendSamplerBinding(
             ShaderBindingGroup.Frame,
             0,

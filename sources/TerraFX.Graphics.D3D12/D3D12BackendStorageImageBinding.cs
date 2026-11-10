@@ -7,4 +7,5 @@ namespace TerraFX.Graphics.D3D12;
 internal readonly record struct D3D12BackendStorageImageBinding(
     ShaderBindingGroup Group,
     int Binding,
-    IGraphicsBackendTexture Texture);
+    IGraphicsBackendTexture Texture,
+    GraphTextureRange Range);

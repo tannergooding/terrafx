@@ -2173,7 +2173,8 @@ public static unsafe class D3D12GraphicsBackend
                                             storageImageBindings.Add(new D3D12BackendStorageImageBinding(
                                                 binding.Group,
                                                 binding.Binding,
-                                                submission.GetTexture(binding.Resource.ResourceId)));
+                                                submission.GetTexture(binding.Resource.ResourceId),
+                                                binding.Range));
                                         }
 
                                         var descriptorSet = CreateDescriptorSet(
@@ -2345,7 +2346,8 @@ public static unsafe class D3D12GraphicsBackend
                                                 storageImageBindings.Add(new D3D12BackendStorageImageBinding(
                                                     binding.Group,
                                                     binding.Binding,
-                                                    texture));
+                                                    texture,
+                                                    binding.Range));
                                             }
                                         }
 
@@ -3513,6 +3515,7 @@ public static unsafe class D3D12GraphicsBackend
                         {
                             CreateStorageImageView(
                                 retainedStorageTextures[storageImageIndex],
+                                sortedStorageImageBindings[storageImageIndex].Range,
                                 storageCpuHandle);
                             storageImageIndex++;
                         }
@@ -3793,14 +3796,17 @@ public static unsafe class D3D12GraphicsBackend
                 _device->CreateUnorderedAccessView(buffer.GetResource(), null, &viewDescription, cpuHandle);
             }
 
-            private void CreateStorageImageView(D3D12BackendTexture texture, D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle)
+            private void CreateStorageImageView(
+                D3D12BackendTexture texture,
+                GraphTextureRange range,
+                D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle)
             {
                 var viewDescription = default(D3D12_UNORDERED_ACCESS_VIEW_DESC);
                 viewDescription.Format = GetNativeFormat(texture.Description.Format);
                 viewDescription.ViewDimension = D3D12_UAV_DIMENSION.D3D12_UAV_DIMENSION_TEXTURE2D;
                 var anonymous = viewDescription.Anonymous;
                 var textureView = anonymous.Texture2D;
-                textureView.MipSlice = 0;
+                textureView.MipSlice = checked((uint)range.FirstMip);
                 textureView.PlaneSlice = 0;
                 anonymous.Texture2D = textureView;
                 viewDescription.Anonymous = anonymous;

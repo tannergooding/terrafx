@@ -352,7 +352,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                 throw new ArgumentException("A bound texture does not declare storage-image usage.", nameof(storageImageBindings));
             }
 
-            storageImageInfos[index].imageLayout = GetStorageImageLayout(binding.Texture, binding.ImageLayout);
+            storageImageInfos[index].imageLayout = GetStorageImageLayout(binding.Texture, binding.Range, binding.ImageLayout);
             retainedStorageTextures[index] = binding.Texture;
 
             var write = default(VkWriteDescriptorSet);
@@ -498,7 +498,7 @@ internal sealed unsafe partial class VulkanBackendDevice
 
             for (var index = 0; index < retainedStorageTextures.Length; index++)
             {
-                var imageView = CreateDescriptorImageView(_device, retainedStorageTextures[index]);
+                var imageView = CreateDescriptorImageView(_device, retainedStorageTextures[index], sortedStorageImageBindings[index].Range);
                 imageViews[createdImageViewCount++] = imageView;
                 storageImageInfos[index].imageView = imageView;
             }

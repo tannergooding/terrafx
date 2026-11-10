@@ -558,7 +558,7 @@ internal sealed class GraphicsGraphSubmission
             if (ReferenceEquals(import.Texture, OutputColorTarget)
                 || (import.Version.ResourceId == targetResourceId)
                 || (import.Version.Description.Dimension != TextureDimension.Dimension2D)
-                || ((import.Version.Range.MipCount != 1) && !hasSampledUsage)
+                || ((import.Version.Range.MipCount != 1) && !(hasSampledUsage || hasStorageUsage))
                 || (import.Version.Range.LayerCount != 1)
                 || (import.Version.Range.Aspect != TextureAspect.Color))
             {
@@ -583,16 +583,17 @@ internal sealed class GraphicsGraphSubmission
                         && (import.Version.Description.ArrayLayers == 1)
                         && (import.Version.Range.Aspect == TextureAspect.Color)
                         && (import.Version.Range.LayerCount == 1)
-                    : (import.Version.Description.MipLevels == 1)
+                    : (import.Version.Description.Dimension == TextureDimension.Dimension2D)
                         && (import.Version.Description.ArrayLayers == 1)
-                        && (import.Version.Range == new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
+                        && (import.Version.Range.Aspect == TextureAspect.Color)
+                        && (import.Version.Range.LayerCount == 1);
 
                 if (hasSampledUsage == hasStorageUsage
                     || !supportedSubresourceRange
                     || hasCopySourceImportAccess
                     || hasCopyDestinationImportAccess)
                 {
-                    throw new NotSupportedException("Native graph submission supports sampled 2D color ranges and separate single-mip storage images.");
+                    throw new NotSupportedException("Native graph submission supports single-layer 2D color sampled/storage image ranges.");
                 }
 
                 if (hasSampledUsage)
@@ -1383,10 +1384,13 @@ internal sealed class GraphicsGraphSubmission
                                         || (binding.Group != ShaderBindingGroup.Frame)
                                         || (binding.Binding != currentPipelineStorageImageBinding)
                                         || (binding.Resource.ResourceId != storageTextureImport.Version.ResourceId)
-                                        || (binding.Range != storageTextureImport.Version.Range)
+                                        || !binding.Range.IsWithin(storageTextureImport.Version.Range)
+                                        || (binding.Range.MipCount != 1)
+                                        || (binding.Range.LayerCount != 1)
+                                        || (binding.Range.Aspect != TextureAspect.Color)
                                         || (binding.Resource.Description.Format != expectedStorageImageTextureFormat))
                                     {
-                                        throw new NotSupportedException("The Frame storage-image binding must match its reflected format and imported graph texture range.");
+                                        throw new NotSupportedException("The Frame storage-image binding must match its reflected format and fit one imported color mip.");
                                     }
 
                                     GraphResourceAccess? storageReadAccess = null;
@@ -1476,7 +1480,7 @@ internal sealed class GraphicsGraphSubmission
                         {
                             if ((storageTextureImport is null)
                                 || (barrierTexture.ResourceId != storageTextureImport.Version.ResourceId)
-                                || (command.StorageBarrierTextureRange != storageTextureImport.Version.Range)
+                                || !command.StorageBarrierTextureRange.IsWithin(storageTextureImport.Version.Range)
                                 || !storageTexturePasses.Contains(pass.PassId))
                             {
                                 throw new NotSupportedException("A storage-image barrier must target the bound Frame storage image range.");

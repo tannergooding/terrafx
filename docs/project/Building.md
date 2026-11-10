@@ -515,6 +515,8 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 
 `SubmitsSampledTextureMipSubrangeGraph` imports a two-mip sampled texture, binds mip 1 only, and verifies pixels from that mip rather than the contrasting mip-0 contents. It passes on Windows D3D12/Vulkan and WSLg Vulkan in Debug/Release; WSLg skips D3D12.
 
+`SubmitsStorageImageMipSubrangeGraph` writes and reads back mip 1 of a two-mip RGBA16Float storage image and verifies the mip-0 sentinel remains untouched. It passes 2/2 on Windows D3D12/Vulkan and 1/1 on WSLg Vulkan in Debug/Release; WSLg skips D3D12 and has no validation errors.
+
 `RenderSpriteGeometryTests` verifies the documented pivoted local-quad positions, fixed clockwise indices, normalized Atlas-frame UVs, and horizontal/vertical UV flips. `SpriteSnapshotsOrderDrawsAndRetainAssetsAfterSceneUnload` verifies extraction stores geometry composed from the exact pinned Atlas frame and copied Sprite component values.
 
 `Renderer.SubmitAsync` retains an independent shared asset-pin reference through GPU completion; the Sprite snapshot test disposes its snapshot and verifies the retained Atlas page and Material remain available.
@@ -554,6 +556,8 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SubmitsPackageBackedTextureGraphOnVulkan"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SubmitsSampledTextureMipSubrangeGraph"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SubmitsSampledTextureMipSubrangeGraph"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SubmitsStorageImageMipSubrangeGraph"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SubmitsStorageImageMipSubrangeGraph"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SnapshotPinnedAtlasPageBecomesResidentAfterSceneAndSnapshotRetireAsync"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SnapshotPinnedAtlasPageBecomesResidentAfterSceneAndSnapshotRetireAsync"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SnapshotPinnedAtlasPageSamplesThroughNativeGraphAsync"
@@ -641,6 +645,8 @@ export TERRAFX_M04_SHADER_FIXTURE_DIRECTORY="$WORKTREE/artifacts/shader-fixtures
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~VulkanSubmitsTransientStorageBufferComputeGraph|FullyQualifiedName~VulkanSubmitsConstantWriteComputeStorageBufferGraph|FullyQualifiedName~SubmitsConstantWriteComputeStorageBufferSubrangeGraph|FullyQualifiedName~SubmitsUniformBufferSubrangeGraph" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~SubmitsSampledTextureMipSubrangeGraph" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SubmitsSampledTextureMipSubrangeGraph" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~SubmitsStorageImageMipSubrangeGraph" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SubmitsStorageImageMipSubrangeGraph" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
 Run the four-slot Vulkan Sprite graph and graph-failure lease-release witnesses in WSLg with the cooked Sprite shader fixture:

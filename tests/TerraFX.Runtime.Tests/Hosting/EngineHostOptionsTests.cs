@@ -1543,7 +1543,8 @@ internal sealed partial class EngineHostOptionsTests
                 var storageImageBindings = ImmutableArray.Create(new D3D12BackendStorageImageBinding(
                     ShaderBindingGroup.Frame,
                     1,
-                    storageTexture));
+                    storageTexture,
+                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)));
                 var storageSamplerBindings = ImmutableArray.Create(new D3D12BackendSamplerBinding(
                     ShaderBindingGroup.Frame,
                     0,

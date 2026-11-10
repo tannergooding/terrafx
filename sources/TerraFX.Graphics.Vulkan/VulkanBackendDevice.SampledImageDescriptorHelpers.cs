@@ -88,12 +88,9 @@ internal sealed unsafe partial class VulkanBackendDevice
 
     private static VkImageLayout GetStorageImageLayout(
         VulkanBackendTexture texture,
+        GraphTextureRange range,
         VkImageLayout? descriptorLayout = null)
     {
-        var description = texture.Description;
-        var aspect = description.Format == TextureFormat.D32Float
-            ? TextureAspect.Depth
-            : TextureAspect.Color;
         var layout = descriptorLayout ?? VkImageLayout.VK_IMAGE_LAYOUT_GENERAL;
 
         if (layout != VkImageLayout.VK_IMAGE_LAYOUT_GENERAL)
@@ -101,11 +98,11 @@ internal sealed unsafe partial class VulkanBackendDevice
             throw new ArgumentOutOfRangeException(nameof(descriptorLayout));
         }
 
-        for (var arrayLayer = 0; arrayLayer < description.ArrayLayers; arrayLayer++)
+        for (var arrayLayer = range.FirstLayer; arrayLayer < checked(range.FirstLayer + range.LayerCount); arrayLayer++)
         {
-            for (var mipLevel = 0; mipLevel < description.MipLevels; mipLevel++)
+            for (var mipLevel = range.FirstMip; mipLevel < checked(range.FirstMip + range.MipCount); mipLevel++)
             {
-                var subresource = new TextureSubresource(mipLevel, arrayLayer, aspect);
+                var subresource = new TextureSubresource(mipLevel, arrayLayer, range.Aspect);
 
                 if (!descriptorLayout.HasValue && (texture.GetLayout(subresource) != layout))
                 {

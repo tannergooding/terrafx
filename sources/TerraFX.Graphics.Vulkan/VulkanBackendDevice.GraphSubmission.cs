@@ -800,6 +800,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                                         binding.Group,
                                         binding.Binding,
                                         texture,
+                                        binding.Range,
                                         VkImageLayout.VK_IMAGE_LAYOUT_GENERAL));
                                 }
 
@@ -969,6 +970,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                                         binding.Group,
                                         binding.Binding,
                                         texture,
+                                        binding.Range,
                                         VkImageLayout.VK_IMAGE_LAYOUT_GENERAL));
                                 }
                             }
