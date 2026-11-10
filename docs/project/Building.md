@@ -255,7 +255,7 @@ The standard Platform.Tests selection also exercises `WaylandDisplayConnectionTe
 
 An isolated nested-X11 Weston compositor on test-owned Xvfb exposes the Wayland seat/data-device and completes a `wl-copy`/`wl-paste` UTF-8 round trip. This is compositor-client protocol evidence only; it does not qualify `ClipboardTextService` gesture authorization or refusal/cancellation/timeout outcomes, and it does not use WSLg's shared `:0` selection.
 
-The private Weston/Xvfb runtime must use bubblewrap with a private `/tmp`, because WSLg mounts `/tmp/.X11-unix` read-only. The no-clipboard PlatformOwner startup witness passes, but an unmapped Wayland window receives no XTest pointer event. Attempts to map a test-owned shared-memory buffer and the earlier Vulkan Surface path abort the test host in `libwayland-client`/libffi event dispatch before clipboard operations; no service gesture/result is claimed. These tests never use WSLg `:0`, its clipboard, or `/dev/uinput`.
+The private Weston/Xvfb runtime must use bubblewrap with a private `/tmp`, because WSLg mounts `/tmp/.X11-unix` read-only. The no-clipboard PlatformOwner startup witness passes, but an unmapped Wayland window receives no XTest pointer event. The separate EngineHost/Vulkan integration witness aborts in `libwayland-client`/libffi event dispatch around WSI before clipboard operations; no service gesture/result is claimed. These tests never use WSLg `:0`, its clipboard, or `/dev/uinput`.
 
 Wayland fallback tests require an available X11 display and an intentionally unavailable Wayland socket. Run them with the WSLg environment configured above:
 
