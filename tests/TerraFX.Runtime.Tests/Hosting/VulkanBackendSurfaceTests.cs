@@ -30,7 +30,8 @@ internal sealed partial class EngineHostOptionsTests
             Func<VkResult?>? surfaceAcquireResultOverride = null,
             Func<VkResult, VkResult>? surfacePresentResultOverride = null,
             Func<ulong, VkResult, VkResult>? surfaceFenceWaitResultOverride = null,
-            ulong surfaceFenceWaitTimeoutNanoseconds = 5_000_000_000)
+            ulong surfaceFenceWaitTimeoutNanoseconds = 5_000_000_000,
+            ClipboardServicePolicy clipboardServicePolicy = ClipboardServicePolicy.NotRequested)
     {
         var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
         var packagePath = SceneAssetStoreTests.Package.WritePackage(packageBytes);
@@ -66,6 +67,7 @@ internal sealed partial class EngineHostOptionsTests
                 CreateAssetStoreOptions().Registration)) {
             CpuWorkerCount = 0,
             GraphicsFrameSlotCount = 2,
+            ClipboardServicePolicy = clipboardServicePolicy,
             PersistenceMetadata = CreatePersistenceMetadata(),
         };
         return (options, registration, schemas);
@@ -672,7 +674,7 @@ internal sealed partial class EngineHostOptionsTests
 
         if (platformBackend is null)
         {
-            Assert.Ignore("The Vulkan present-fence timeout witness requires a Linux interactive display.");
+            Assert.Ignore("The Vulkan present-fence timeout witness requires a Linux direct-owner display.");
             return;
         }
 
