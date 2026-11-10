@@ -1188,6 +1188,124 @@ internal sealed partial class PlatformInputRoutingOwnerTests
     }
 
     [Test]
+    public void RoutesTextInputFocusAcrossNativeX11XimFocusChangesOnIsolatedDisplay()
+    {
+        if (!OperatingSystem.IsLinux()
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_ISOLATED_X11") != "1")
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_X11_XIM") != "1")
+            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
+        {
+            Assert.Ignore("The X11 XIM focus witness requires an isolated Linux display and an explicitly enabled XIM server.");
+            return;
+        }
+
+        if (!NativeLibrary.TryLoad("libxkbcommon-x11.so.0", out var xkbX11Library))
+        {
+            Assert.Ignore("The isolated X11 XIM focus witness requires libxkbcommon-x11.");
+            return;
+        }
+
+        NativeLibrary.Free(xkbX11Library);
+
+        var ownerThreadId = Environment.CurrentManagedThreadId;
+        var ownerId = OwnerIdAllocator.Allocate();
+        var sequenceLease = new HostEventSequenceLease();
+        var window = new WindowHandle(ownerId, 0, 1);
+        NativeX11InputRoutingHost? platformHost = null;
+        PlatformInputRoutingOwner? routingOwner = null;
+        InputRouter? hostRouter = null;
+        TextInputSession? textSession = null;
+        HashSet<InputRouter> inputRouters = [];
+        Dictionary<InputRouter, WorldInputTimelineAdapter> timelineRouters = [];
+
+        try
+        {
+            NativeX11InputRoutingHost nativeHost;
+
+            try
+            {
+                nativeHost = new NativeX11InputRoutingHost(ownerId, sequenceLease);
+            }
+            catch (DllNotFoundException exception)
+            {
+                Assert.Ignore($"The isolated X11 input libraries are unavailable: {exception.Message}");
+                return;
+            }
+            catch (PlatformNotSupportedException exception)
+            {
+                Assert.Ignore($"The isolated X11 display is unavailable: {exception.Message}");
+                return;
+            }
+
+            platformHost = nativeHost;
+            nativeHost.CreateWindow(window);
+            var diagnostics = new DiagnosticsService();
+            var nativeRoutingOwner = new PlatformInputRoutingOwner(
+                HostProfile.Interactive,
+                nativeHost,
+                sequenceLease,
+                diagnostics,
+                ownerThreadId,
+                inputRouters,
+                timelineRouters,
+                recipientId => timelineRouters.Keys.FirstOrDefault(router => router.RecipientId == recipientId));
+            routingOwner = nativeRoutingOwner;
+            var nativeHostRouter = nativeRoutingOwner.CreateInputRouter(InputRecipientKind.HostLiveUI, window);
+            hostRouter = nativeHostRouter;
+
+            IsolatedX11Input.SetInputFocus(nativeHost.NativeDisplay, nativeHost.NativeWindow);
+            var focusCapture = nativeHost.PumpAndCapture();
+            Assert.That(
+                focusCapture.Events.Any(inputEvent => inputEvent.Kind == PhysicalInputEventKind.FocusGained),
+                Is.True);
+            nativeRoutingOwner.RouteCapturedInput(focusCapture);
+            nativeRoutingOwner.ServiceWindowInputRoutes(nativeHost.GetHostTimestamp());
+            var session = nativeHostRouter.BeginTextSession(new TextInputSessionOptions(
+                window,
+                TextInputPurpose.FreeForm,
+                documentRevision: 1,
+                surroundingText: null,
+                selectionStart: 0,
+                selectionLength: 0,
+                caretPosition: default,
+                caretSize: default));
+            textSession = session;
+            nativeRoutingOwner.SynchronizeTextInputSessions();
+            Assert.That(session.LastDiagnostic?.Code, Is.Null);
+
+            // Keep Runtime's session active while the native XIC receives FocusOut and FocusIn.
+            IsolatedX11Input.SetInputFocus(
+                nativeHost.NativeDisplay,
+                IsolatedX11Input.GetRootWindow(nativeHost.NativeDisplay));
+            var focusLostCapture = nativeHost.PumpAndCapture();
+            Assert.That(
+                focusLostCapture.Events.Any(inputEvent => inputEvent.Kind == PhysicalInputEventKind.FocusLost),
+                Is.True);
+
+            IsolatedX11Input.SetInputFocus(nativeHost.NativeDisplay, nativeHost.NativeWindow);
+            var focusGainedCapture = nativeHost.PumpAndCapture();
+            Assert.That(
+                focusGainedCapture.Events.Any(inputEvent => inputEvent.Kind == PhysicalInputEventKind.FocusGained),
+                Is.True);
+            Assert.That(session.IsActive, Is.True);
+        }
+        finally
+        {
+            textSession?.Dispose();
+            routingOwner?.ClearRoutes();
+
+            foreach (var router in inputRouters)
+            {
+                _ = router.DisposeAndGetTransitions();
+            }
+
+            _ = hostRouter?.DisposeAndGetTransitions();
+            platformHost?.Dispose();
+            sequenceLease.Revoke();
+        }
+    }
+
+    [Test]
     public void RoutesTextSessionCommitUnavailableWithoutNativeSource()
     {
         var ownerThreadId = Environment.CurrentManagedThreadId;

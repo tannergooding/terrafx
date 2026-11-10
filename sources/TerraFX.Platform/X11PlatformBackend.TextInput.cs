@@ -106,7 +106,7 @@ internal sealed partial class X11PlatformBackend
         internal static partial void XDestroyIC(nint inputContext);
 
         [LibraryImport("libX11.so.6", EntryPoint = "XFilterEvent")]
-        internal static partial int XFilterEvent(nint display, void* nativeEvent, nuint window);
+        internal static partial int XFilterEvent(void* nativeEvent, nuint window);
 
         [LibraryImport("libX11.so.6", EntryPoint = "XOpenIM")]
         internal static partial nint XOpenIM(nint display, nint database, nint resourceName, nint resourceClass);

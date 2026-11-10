@@ -943,7 +943,6 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
                 && (inputMethodState.TextInputContext is X11TextInputContext inputContext))
             {
                 inputMethodFiltered = X11InputMethodNative.XFilterEvent(
-                    _display,
                     &nativeEvent,
                     nativeEvent.Any.Window) != 0;
                 inputContext.ThrowCallbackFailure();
