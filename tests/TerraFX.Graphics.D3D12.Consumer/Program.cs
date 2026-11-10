@@ -14,12 +14,18 @@ using TerraFX.Graphics.D3D12;
 
 namespace TerraFX.Graphics.D3D12.Consumer;
 
-internal static class Program
+internal static partial class Program
 {
     [SupportedOSPlatform("windows10.0.22000.0")]
     [SuppressMessage("Globalization", "CA1303", Justification = "The output is a machine-checked consumer witness marker.")]
-    private static void Main()
+    private static void Main(string[] args)
     {
+        if (args.Length != 0)
+        {
+            RunInteractiveD3D12Async(args).GetAwaiter().GetResult();
+            return;
+        }
+
         var registration = D3D12GraphicsBackend.CreateRegistration();
 
         if (registration.Backend != GraphicsBackend.D3D12)

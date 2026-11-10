@@ -869,7 +869,9 @@ public sealed partial class EngineHost : IAsyncDisposable
                     commandIdentity: null,
                     operation: "PlatformHost.GameInput",
                     nativeResult: null,
-                    message: "The documented GameInput PC runtime is unavailable; gamepad capture is disabled and no XInput fallback is used.",
+                    message: System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported
+                        ? "The documented GameInput PC runtime is unavailable; gamepad capture is disabled and no XInput fallback is used."
+                        : "The GameInputSharp COM adapter requires runtime-generated COM stubs, which this process does not support; gamepad capture is disabled and no XInput fallback is used.",
                     context: []);
                 _diagnostics.Write(gamepadDiagnostic, executionSessionId: null, worldOwnerId: null);
             }

@@ -799,13 +799,34 @@ For Windows NativeAOT qualification, each executable project enables `PublishAot
 dotnet publish .\tests\TerraFX.Runtime.ComponentConsumer\TerraFX.Runtime.ComponentConsumer.csproj --configuration Release --runtime win-x64 --self-contained true -p:TerraFXPublishAot=true
 dotnet publish .\tests\TerraFX.Runtime.GeneratedComponentConsumer\TerraFX.Runtime.GeneratedComponentConsumer.csproj --configuration Release --runtime win-x64 --self-contained true -p:TerraFXPublishAot=true
 dotnet publish .\tests\TerraFX.Graphics.D3D12.Consumer\TerraFX.Graphics.D3D12.Consumer.csproj --configuration Release --runtime win-x64 --self-contained true -p:TerraFXPublishAot=true
+dotnet publish .\tests\TerraFX.Runtime.Vulkan.Consumer\TerraFX.Runtime.Vulkan.Consumer.csproj --configuration Release --runtime win-x64 --self-contained true -p:TerraFXPublishAot=true
 ```
 
-The D3D12 consumer enables NativeAOT locally through `TerraFXPublishAot`; do not pass `PublishAot=true` as a global MSBuild property, which would also apply AOT to build-time analyzer/generator projects. The published executable verifies the nonfriend public registration and transfer/pipeline/sampler signatures, constructs canonical `ShaderReflection` resource/layout/capability values, and mutates the caller-owned input arrays and compiler digest to prove the reflected value is independently copied. It does not activate a native device:
+The D3D12 consumer enables NativeAOT locally through `TerraFXPublishAot`; do not pass `PublishAot=true` as a global MSBuild property, which would also apply AOT to build-time analyzer/generator projects. Its no-argument mode verifies the nonfriend public registration and transfer/pipeline/sampler signatures, constructs canonical `ShaderReflection` resource/layout/capability values, and proves the reflected value independently copies caller-owned arrays and compiler digest. Its `interactive` mode starts WindowsNative and D3D12, creates two hidden Win32 windows and Surfaces, activates the supplied camera Scene, presents to both, advances the hosted World by one committed tick, closes one window, and presents the new snapshot on the surviving Surface. Windows JIT consumers enable built-in COM interop for GameInputSharp. Under NativeAOT, GameInputSharp's `[ComImport]` adapter requires runtime-generated COM stubs, so gamepad capture is reported unavailable with a diagnostic and no XInput fallback; this does not qualify physical gamepad input.
 
 ```powershell
 & .\artifacts\bin\tests\TerraFX.Graphics.D3D12.Consumer\Release\net11.0\win-x64\publish\TerraFX.Graphics.D3D12.Consumer.exe
 ```
+
+Run the published D3D12 Interactive presentation witness:
+
+```powershell
+$env:TERRAFX_D3D12_NATIVEAOT_CONSUMER = (Resolve-Path .\artifacts\bin\tests\TerraFX.Graphics.D3D12.Consumer\Release\net11.0\win-x64\publish\TerraFX.Graphics.D3D12.Consumer.exe).Path
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~PublishedD3D12InteractiveConsumerPresentsAcrossTwoWindows"
+Remove-Item Env:\TERRAFX_D3D12_NATIVEAOT_CONSUMER
+```
+
+The Windows x64 NativeAOT Interactive selection passes 1/1 on the current D3D12 device. It advances the hosted World, presents across two windows, closes one, and verifies that the other presents a newer snapshot. It does not qualify driver-generated loss/recovery, WSI timeout behavior, or physical gamepad input.
+
+The Vulkan consumer also supports Windows Win32 Interactive presentation. Run the exact published NativeAOT executable through the scenario driver:
+
+```powershell
+$env:TERRAFX_VULKAN_NATIVEAOT_CONSUMER = (Resolve-Path .\artifacts\bin\tests\TerraFX.Runtime.Vulkan.Consumer\Release\net11.0\win-x64\publish\TerraFX.Runtime.Vulkan.Consumer.exe).Path
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~PublishedVulkanConsumerExecutesScenario"
+Remove-Item Env:\TERRAFX_VULKAN_NATIVEAOT_CONSUMER
+```
+
+On Windows, the Win32 Interactive scenario passes 1/1; Linux Wayland/X11 and Offscreen cases are skipped as OS-inapplicable. The Win32 path covers two windows, one committed World tick, peer-window close, and presentation on the surviving Surface. GameInput remains unavailable under NativeAOT as described above.
 
 The no-argument handwritten Runtime consumer verifies that `PhysicalInputEvent` and `PhysicalInputValue` expose no public constructors and that event/value/diagnostic/scroll-unit enum values are stable. Its JIT and Windows x64 NativeAOT executions validate that nonfriend surface only; they do not activate native input or create a platform window.
 
@@ -850,3 +871,12 @@ TERRAFX_SCENE_ACTIVATION_CONSUMER="$WORKTREE/artifacts/linux/bin/tests/TerraFX.R
 ```
 
 Both Linux x64 NativeAOT consumers execute successfully; the Headless Scene activation selection passes 4/4 with the exact published executable. This does not qualify Interactive hosting, graphics presentation/WSI, physical input, or Linux GPU hardware. JIT or Windows NativeAOT execution does not qualify the Linux target.
+
+The unsafe-disabled Vulkan consumer exercises a package-backed camera Scene through OffscreenNative readback and Interactive Surface presentation. It verifies a graph-clear pixel through the OffscreenNative texture readback path. Each Wayland-only and explicit X11 Interactive scenario opens two hidden windows, presents to both, advances the hosted World by one committed tick, closes one window, presents the new snapshot on the survivor, and closes both windows. With the WSLg SDK/Vulkan environment configured above, publish it and run all three paths:
+
+```bash
+"$DOTNET_ROOT/dotnet" publish "$WORKTREE/tests/TerraFX.Runtime.Vulkan.Consumer/TerraFX.Runtime.Vulkan.Consumer.csproj" --configuration Release --runtime linux-x64 --self-contained true -p:TerraFXPublishAot=true "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/" -m:1 -nr:false
+TERRAFX_VULKAN_NATIVEAOT_CONSUMER="$WORKTREE/artifacts/linux/bin/tests/TerraFX.Runtime.Vulkan.Consumer/Release/net11.0/linux-x64/publish/TerraFX.Runtime.Vulkan.Consumer" "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~PublishedVulkanConsumerExecutesScenario" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/" -m:1 -nr:false
+```
+
+This selection passes the three Linux scenarios in Debug JIT and Release NativeAOT; the Windows-only Win32 case is skipped on WSLg. The passing paths are Vulkan OffscreenNative readback plus Wayland and explicit X11 Interactive presentation, each Interactive path covering two windows, one committed World tick, peer-window close, and presentation on the surviving Surface. It qualifies WSLg on the observed llvmpipe software adapter, not hardware GPU behavior.

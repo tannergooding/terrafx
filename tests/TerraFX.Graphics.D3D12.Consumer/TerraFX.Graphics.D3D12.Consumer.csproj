@@ -14,9 +14,16 @@
     <PublishDocumentationFile>false</PublishDocumentationFile>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(OS)' == 'Windows_NT' and '$(PublishAot)' != 'true'">
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Remove="Microsoft.NET.Test.Sdk;NUnit;NUnit3TestAdapter" />
+    <ProjectReference Include="..\..\sources\TerraFX.Assets\TerraFX.Assets.csproj" />
+    <ProjectReference Include="..\..\sources\TerraFX.Core\TerraFX.Core.csproj" />
     <ProjectReference Include="..\..\sources\TerraFX.Graphics.D3D12\TerraFX.Graphics.D3D12.csproj" />
+    <ProjectReference Include="..\..\sources\TerraFX.Runtime\TerraFX.Runtime.csproj" />
   </ItemGroup>
 
 </Project>

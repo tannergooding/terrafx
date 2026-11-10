@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.Versioning;
 using GameInputSharp.Abstractions;
@@ -43,6 +44,12 @@ internal sealed partial class WindowsGameInputCapture : IDisposable
         _timeProvider = timeProvider;
         _ownerThreadId = Environment.CurrentManagedThreadId;
         _manager = new GameInputManager(logger: null, loadOnlyFromSystem32: true);
+
+        if (!RuntimeFeature.IsDynamicCodeSupported)
+        {
+            GamepadStatus = PlatformServiceStatus.Unavailable;
+            return;
+        }
 
         try
         {

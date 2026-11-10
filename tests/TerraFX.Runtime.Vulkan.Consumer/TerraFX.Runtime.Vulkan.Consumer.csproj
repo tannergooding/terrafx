@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <OutputType>Exe</OutputType>
+    <IsTestProject>false</IsTestProject>
+    <RootNamespace>TerraFX.Runtime.Vulkan.Consumer</RootNamespace>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TerraFXPublishAot)' == 'true'">
+    <DocumentationFile>$(BaseOutputPath)$(Configuration)/$(TargetFramework)/$(RuntimeIdentifier)/$(AssemblyName).xml</DocumentationFile>
+    <PublishAot>true</PublishAot>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(OS)' == 'Windows_NT' and '$(PublishAot)' != 'true'">
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Remove="Microsoft.NET.Test.Sdk;NUnit;NUnit3TestAdapter" />
+    <ProjectReference Include="..\..\sources\TerraFX.Assets\TerraFX.Assets.csproj" />
+    <ProjectReference Include="..\..\sources\TerraFX.Core\TerraFX.Core.csproj" />
+    <ProjectReference Include="..\..\sources\TerraFX.Graphics\TerraFX.Graphics.csproj" />
+    <ProjectReference Include="..\..\sources\TerraFX.Graphics.Vulkan\TerraFX.Graphics.Vulkan.csproj" />
+    <ProjectReference Include="..\..\sources\TerraFX.Runtime\TerraFX.Runtime.csproj" />
+  </ItemGroup>
+
+</Project>
