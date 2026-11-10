@@ -452,7 +452,7 @@ To compile the M04 offscreen graphics fixture, set `VULKAN_SDK` to the exact Vul
 
 ```powershell
 $env:VULKAN_SDK = 'C:\VulkanSDK\1.4.328.1'
-dotnet .\artifacts\bin\sources\TerraFX.Content.Tools\Debug\net11.0\TerraFX.Content.Tools.dll compile-m04-shader .\artifacts\shader-fixtures\m04-offscreen-triangle
+dotnet .\artifacts\bin\sources\TerraFX.Content.Tools\Debug\net11.0\TerraFX.Content.Tools.dll compile-m04-shader .\artifacts\shader-fixtures\m04-offscreen-complete
 ```
 
 The command emits the vertex-ID and Sprite vertex-input stages, `compute-storage`, `compute-storage-buffers`, `compute-storage-float-image` (`r32f`), `compute-storage-signed-image` (`r32i`), `compute-storage-write`, baseline pixel, resource-free `pixel-graph`, resource-bearing `pixel-sampled` and `pixel-sprite`, combined `pixel-sampled-frame`, and storage-bearing `pixel-sampled-frame-storage` stages as DXIL with DXC reflection dumped from the binary and Vulkan 1.3 SPIR-V with SPIRV-Cross JSON reflection, then validates each SPIR-V module with `spirv-val`. The Sprite stages consume `POSITION` and `TEXCOORD` vertex inputs and sample `FrameTexture` with `FrameSampler`; their paired user locations are checked against both DXIL and SPIRV-Cross reflection. The baseline pixel reflection pins the FrameData UBO to set 0/binding 0; `pixel-graph` is a constant-color pixel stage for native graph draw/readback; `pixel-sampled` consumes `FrameTexture` and `FrameSampler` at set 0 bindings 16 and 40; `pixel-sampled-frame` reflects the UBO together with both sampled resources; `pixel-sampled-frame-storage` also reflects `FrameStorageBuffer` at binding 32 and `FrameStorageImage` at binding 33 with `r32ui` format. `compute-storage` increments one Frame storage-buffer element and one `r32ui` storage-image texel; `compute-storage-buffers` increments separate Frame storage-buffer bindings 0 and 2; `compute-storage-float-image` and `compute-storage-signed-image` write `r32f` and `r32i` storage-image texels, respectively; `compute-storage-write` writes a buffer constant. All compute stages pin their 1x1x1 workgroup size from SPIR-V `OpExecutionMode` and DXC `NumThreads` output. The output directory must not already exist. Microsoft DXC is licensed for Windows-only use; Linux Vulkan consumers use the cooked SPIR-V and do not execute the Linux DXC archive.
@@ -470,10 +470,10 @@ For every resource in the supported SPIRV-Cross descriptor collections, the conv
 
 `ShaderResourceSignature` carries the reflected storage-image format through Vulkan preflight and graph binding. Vulkan R32Float and RGBA16Float compute graphs read back `1.0` and the four exact half-float values; an R32Float shader bound to an R32UInt texture and an R32SInt shader without a portable signed R32 texture format both reject before dispatch. These four Vulkan cases pass 4/4, and the existing Vulkan R32UInt graph selection passes 11/11, on Windows and WSLg in Debug/Release; WSLg uses llvmpipe and is not hardware-GPU evidence.
 
-After compiling the complete M04 fixture to `artifacts\shader-fixtures\m04-offscreen-triangle`, run the Windows selection:
+After compiling the complete M04 fixture to `artifacts\shader-fixtures\m04-offscreen-complete`, run the Windows selection:
 
 ```powershell
-$env:TERRAFX_M04_SHADER_FIXTURE_DIRECTORY = (Resolve-Path .\artifacts\shader-fixtures\m04-offscreen-triangle).Path
+$env:TERRAFX_M04_SHADER_FIXTURE_DIRECTORY = (Resolve-Path .\artifacts\shader-fixtures\m04-offscreen-complete).Path
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~R32FloatComputeStorageImage|FullyQualifiedName~R32SIntComputeStorageImage|FullyQualifiedName~Rgba16FloatComputeStorageImage"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~R32FloatComputeStorageImage|FullyQualifiedName~R32SIntComputeStorageImage|FullyQualifiedName~Rgba16FloatComputeStorageImage"
 ```
@@ -485,7 +485,7 @@ In the configured WSLg shell below, set `TERRAFX_M04_SHADER_FIXTURE_DIRECTORY` t
 After compiling the M04 shader fixture, point the Vulkan tests at its output directory. To enable the installed Vulkan validation layer, set its manifest directory and layer name as shown:
 
 ```powershell
-$env:TERRAFX_M04_SHADER_FIXTURE_DIRECTORY = (Resolve-Path .\artifacts\shader-fixtures\m04-offscreen-triangle).Path
+$env:TERRAFX_M04_SHADER_FIXTURE_DIRECTORY = (Resolve-Path .\artifacts\shader-fixtures\m04-offscreen-complete).Path
 $env:VK_LAYER_PATH = 'C:\VulkanSDK\1.4.328.1\Bin'
 $env:VK_INSTANCE_LAYERS = 'VK_LAYER_KHRONOS_validation'
 dotnet test .\tests\TerraFX.Graphics.Vulkan.Tests\TerraFX.Graphics.Vulkan.Tests.csproj --configuration Debug
@@ -505,6 +505,8 @@ Run the public offscreen submission witness after compiling the fixture. It cove
 `D3D12SubmitsBufferCopyGraphFromUploadBuffer` verifies an exact buffer-copy/readback using a host-visible Upload source, so it avoids allocating a staged copy-source buffer. It passes in Windows Debug/Release.
 
 `SubmitsUniformBufferSubrangeGraph` binds a device-aligned 256-byte Frame uniform range at a nonzero offset within the imported buffer and verifies rendered pixels. It passes 2/2 on Windows D3D12/Vulkan and 1/1 on WSLg Vulkan in Debug/Release; WSLg skips D3D12.
+
+`SubmitsSampledTextureMipSubrangeGraph` imports a two-mip sampled texture, binds mip 1 only, and verifies pixels from that mip rather than the contrasting mip-0 contents. It passes on Windows D3D12/Vulkan and WSLg Vulkan in Debug/Release; WSLg skips D3D12.
 
 `RenderSpriteGeometryTests` verifies the documented pivoted local-quad positions, fixed clockwise indices, normalized Atlas-frame UVs, and horizontal/vertical UV flips. `SpriteSnapshotsOrderDrawsAndRetainAssetsAfterSceneUnload` verifies extraction stores geometry composed from the exact pinned Atlas frame and copied Sprite component values.
 
@@ -534,7 +536,7 @@ dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --confi
 ```
 
 ```powershell
-$env:TERRAFX_M04_SHADER_FIXTURE_DIRECTORY = (Resolve-Path .\artifacts\shader-fixtures\m04-offscreen-triangle).Path
+$env:TERRAFX_M04_SHADER_FIXTURE_DIRECTORY = (Resolve-Path .\artifacts\shader-fixtures\m04-offscreen-complete).Path
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SubmitsOffscreenClearGraphAndReadsBackAsync"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SubmitsOffscreenClearGraphAndReadsBackAsync"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~D3D12SubmitsTransientStorageBufferComputeGraph|FullyQualifiedName~VulkanSubmitsTransientStorageBufferComputeGraph|FullyQualifiedName~D3D12SubmitsConstantWriteComputeStorageBufferGraph|FullyQualifiedName~VulkanSubmitsConstantWriteComputeStorageBufferGraph|FullyQualifiedName~SubmitsConstantWriteComputeStorageBufferSubrangeGraph|FullyQualifiedName~SubmitsUniformBufferSubrangeGraph"
@@ -543,6 +545,8 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~D3D12SubmitsBufferCopyGraphFromUploadBuffer"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SubmitsPackageBackedTextureGraphOnVulkan"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SubmitsPackageBackedTextureGraphOnVulkan"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SubmitsSampledTextureMipSubrangeGraph"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SubmitsSampledTextureMipSubrangeGraph"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SnapshotPinnedAtlasPageBecomesResidentAfterSceneAndSnapshotRetireAsync"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SnapshotPinnedAtlasPageBecomesResidentAfterSceneAndSnapshotRetireAsync"
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SnapshotPinnedAtlasPageSamplesThroughNativeGraphAsync"
@@ -625,9 +629,11 @@ export TERRAFX_M04_SHADER_FIXTURE_DIRECTORY=
 The transient storage-buffer/image graph verifies both the buffer and texel output; the constant-write compute variant reads back `0x10203040` from its reflected `ReadWrite` `RWStructuredBuffer`. On WSLg, run the Vulkan cases with the cooked M04 fixture:
 
 ```bash
-export TERRAFX_M04_SHADER_FIXTURE_DIRECTORY="$WORKTREE/artifacts/shader-fixtures/m04-offscreen-triangle"
+export TERRAFX_M04_SHADER_FIXTURE_DIRECTORY="$WORKTREE/artifacts/shader-fixtures/m04-offscreen-complete"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~VulkanSubmitsTransientStorageBufferComputeGraph|FullyQualifiedName~VulkanSubmitsConstantWriteComputeStorageBufferGraph|FullyQualifiedName~SubmitsConstantWriteComputeStorageBufferSubrangeGraph|FullyQualifiedName~SubmitsUniformBufferSubrangeGraph" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~VulkanSubmitsTransientStorageBufferComputeGraph|FullyQualifiedName~VulkanSubmitsConstantWriteComputeStorageBufferGraph|FullyQualifiedName~SubmitsConstantWriteComputeStorageBufferSubrangeGraph|FullyQualifiedName~SubmitsUniformBufferSubrangeGraph" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~SubmitsSampledTextureMipSubrangeGraph" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SubmitsSampledTextureMipSubrangeGraph" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
 Run the four-slot Vulkan Sprite graph and graph-failure lease-release witnesses in WSLg with the cooked Sprite shader fixture:

@@ -10,7 +10,10 @@ namespace TerraFX.Graphics.Vulkan;
 
 internal sealed unsafe partial class VulkanBackendDevice
 {
-    private static VkImageView CreateDescriptorImageView(VkDevice device, VulkanBackendTexture texture)
+    private static VkImageView CreateDescriptorImageView(
+        VkDevice device,
+        VulkanBackendTexture texture,
+        GraphTextureRange range)
     {
         var description = texture.Description;
         var createInfo = default(VkImageViewCreateInfo);
@@ -21,13 +24,25 @@ internal sealed unsafe partial class VulkanBackendDevice
         createInfo.subresourceRange.aspectMask = description.Format == TextureFormat.D32Float
             ? VkImageAspectFlags.VK_IMAGE_ASPECT_DEPTH_BIT
             : VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT;
-        createInfo.subresourceRange.baseMipLevel = 0;
-        createInfo.subresourceRange.levelCount = checked((uint)description.MipLevels);
-        createInfo.subresourceRange.baseArrayLayer = 0;
-        createInfo.subresourceRange.layerCount = checked((uint)description.ArrayLayers);
+        createInfo.subresourceRange.baseMipLevel = checked((uint)range.FirstMip);
+        createInfo.subresourceRange.levelCount = checked((uint)range.MipCount);
+        createInfo.subresourceRange.baseArrayLayer = checked((uint)range.FirstLayer);
+        createInfo.subresourceRange.layerCount = checked((uint)range.LayerCount);
         VkImageView imageView = default;
         ThrowIfFailed(VulkanApi.vkCreateImageView(device, &createInfo, null, &imageView), "vkCreateImageView");
         return imageView;
+    }
+
+    private static VkImageView CreateDescriptorImageView(VkDevice device, VulkanBackendTexture texture)
+    {
+        var description = texture.Description;
+        var aspect = description.Format == TextureFormat.D32Float
+            ? TextureAspect.Depth
+            : TextureAspect.Color;
+        return CreateDescriptorImageView(
+            device,
+            texture,
+            new GraphTextureRange(0, description.MipLevels, 0, description.ArrayLayers, aspect));
     }
 
     private static VkImageViewType GetNativeDescriptorImageViewType(TextureDescription description)
@@ -40,12 +55,9 @@ internal sealed unsafe partial class VulkanBackendDevice
 
     private static VkImageLayout GetSampledImageLayout(
         VulkanBackendTexture texture,
+        GraphTextureRange range,
         VkImageLayout? descriptorLayout = null)
     {
-        var description = texture.Description;
-        var aspect = description.Format == TextureFormat.D32Float
-            ? TextureAspect.Depth
-            : TextureAspect.Color;
         var layout = descriptorLayout ?? VkImageLayout.VK_IMAGE_LAYOUT_GENERAL;
 
         if (layout is not (VkImageLayout.VK_IMAGE_LAYOUT_GENERAL or VkImageLayout.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
@@ -53,11 +65,11 @@ internal sealed unsafe partial class VulkanBackendDevice
             throw new ArgumentOutOfRangeException(nameof(descriptorLayout));
         }
 
-        for (var arrayLayer = 0; arrayLayer < description.ArrayLayers; arrayLayer++)
+        for (var arrayLayer = range.FirstLayer; arrayLayer < checked(range.FirstLayer + range.LayerCount); arrayLayer++)
         {
-            for (var mipLevel = 0; mipLevel < description.MipLevels; mipLevel++)
+            for (var mipLevel = range.FirstMip; mipLevel < checked(range.FirstMip + range.MipCount); mipLevel++)
             {
-                var subresource = new TextureSubresource(mipLevel, arrayLayer, aspect);
+                var subresource = new TextureSubresource(mipLevel, arrayLayer, range.Aspect);
 
                 if (!texture.IsInitialized(subresource))
                 {

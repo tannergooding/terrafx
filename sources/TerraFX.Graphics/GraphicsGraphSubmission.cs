@@ -558,11 +558,11 @@ internal sealed class GraphicsGraphSubmission
             if (ReferenceEquals(import.Texture, OutputColorTarget)
                 || (import.Version.ResourceId == targetResourceId)
                 || (import.Version.Description.Dimension != TextureDimension.Dimension2D)
-                || (import.Version.Range.MipCount != 1)
+                || ((import.Version.Range.MipCount != 1) && !hasSampledUsage)
                 || (import.Version.Range.LayerCount != 1)
                 || (import.Version.Range.Aspect != TextureAspect.Color))
             {
-                throw new NotSupportedException("Native graph submission requires distinct 2D color textures with single-subresource version ranges.");
+                throw new NotSupportedException("Native graph submission requires distinct non-target 2D color texture ranges with single-layer selections.");
             }
 
             foreach (var access in Accesses)
@@ -578,14 +578,21 @@ internal sealed class GraphicsGraphSubmission
 
             if (hasSampledUsage || hasStorageUsage)
             {
+                var supportedSubresourceRange = hasSampledUsage
+                    ? (import.Version.Description.Dimension == TextureDimension.Dimension2D)
+                        && (import.Version.Description.ArrayLayers == 1)
+                        && (import.Version.Range.Aspect == TextureAspect.Color)
+                        && (import.Version.Range.LayerCount == 1)
+                    : (import.Version.Description.MipLevels == 1)
+                        && (import.Version.Description.ArrayLayers == 1)
+                        && (import.Version.Range == new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
+
                 if (hasSampledUsage == hasStorageUsage
-                    || (import.Version.Description.MipLevels != 1)
-                    || (import.Version.Description.ArrayLayers != 1)
-                    || (import.Version.Range != new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color))
+                    || !supportedSubresourceRange
                     || hasCopySourceImportAccess
                     || hasCopyDestinationImportAccess)
                 {
-                    throw new NotSupportedException("Native graph submission supports separate single-mip sampled or storage textures.");
+                    throw new NotSupportedException("Native graph submission supports sampled 2D color ranges and separate single-mip storage images.");
                 }
 
                 if (hasSampledUsage)
@@ -1328,9 +1335,11 @@ internal sealed class GraphicsGraphSubmission
                                         || (binding.Group != ShaderBindingGroup.Frame)
                                         || (binding.Binding != 0)
                                         || (binding.Resource.ResourceId != sampledTextureImport.Version.ResourceId)
-                                        || (binding.Range != sampledTextureImport.Version.Range))
+                                        || !binding.Range.IsWithin(sampledTextureImport.Version.Range)
+                                        || (binding.Range.Aspect != TextureAspect.Color)
+                                        || (binding.Range.LayerCount != 1))
                                     {
-                                        throw new NotSupportedException("The Frame sampled-image binding must exactly match the imported graph texture range.");
+                                        throw new NotSupportedException("The Frame sampled-image binding must fit its imported single-layer color range.");
                                     }
 
                                     var accessDeclared = false;

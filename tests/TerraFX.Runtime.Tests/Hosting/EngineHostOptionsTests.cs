@@ -1407,7 +1407,8 @@ internal sealed partial class EngineHostOptionsTests
                 var sampledImageBindings = ImmutableArray.Create(new D3D12BackendSampledImageBinding(
                     ShaderBindingGroup.Frame,
                     0,
-                    sampledTexture));
+                    sampledTexture,
+                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)));
                 var samplerBindings = ImmutableArray.Create(new D3D12BackendSamplerBinding(
                     ShaderBindingGroup.Frame,
                     0,
@@ -1531,7 +1532,8 @@ internal sealed partial class EngineHostOptionsTests
                 var storageSampledImageBindings = ImmutableArray.Create(new D3D12BackendSampledImageBinding(
                     ShaderBindingGroup.Frame,
                     0,
-                    storageSampledTexture));
+                    storageSampledTexture,
+                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)));
                 var storageBufferBindings = ImmutableArray.Create(new D3D12BackendStorageBufferBinding(
                     ShaderBindingGroup.Frame,
                     0,

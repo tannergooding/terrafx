@@ -302,7 +302,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                 throw new ArgumentException("A bound texture does not declare sampled usage.", nameof(imageBindings));
             }
 
-            imageInfos[index].imageLayout = GetSampledImageLayout(binding.Texture, binding.ImageLayout);
+            imageInfos[index].imageLayout = GetSampledImageLayout(binding.Texture, binding.Range, binding.ImageLayout);
             retainedSampledTextures[index] = binding.Texture;
 
             var write = default(VkWriteDescriptorSet);
@@ -491,7 +491,7 @@ internal sealed unsafe partial class VulkanBackendDevice
         {
             for (var index = 0; index < retainedSampledTextures.Length; index++)
             {
-                var imageView = CreateDescriptorImageView(_device, retainedSampledTextures[index]);
+                var imageView = CreateDescriptorImageView(_device, retainedSampledTextures[index], sortedImageBindings[index].Range);
                 imageViews[createdImageViewCount++] = imageView;
                 imageInfos[index].imageView = imageView;
             }
