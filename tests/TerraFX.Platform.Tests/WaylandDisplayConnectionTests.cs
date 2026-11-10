@@ -149,7 +149,10 @@ internal sealed class WaylandDisplayConnectionTests
                     caretPosition: default,
                     caretSize: default)));
             Assert.That(textCapabilities, Is.EqualTo(expectedTextCapabilities));
+            backend.Pump();
+            _ = backend.DrainInputSamples();
             _ = backend.UpdateTextInputSession(window, snapshot: null);
+            backend.Pump();
             _ = backend.DrainInputSamples();
             backend.RequestInputStateReconciliation(window);
             var reconciliation = backend.DrainInputSamples().Samples;
