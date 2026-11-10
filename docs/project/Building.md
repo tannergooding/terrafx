@@ -519,6 +519,16 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 
 `SubmitsStorageImageMipSubrangeGraph` writes and reads back mip 1 of a two-mip RGBA16Float storage image and verifies the mip-0 sentinel remains untouched. It passes 2/2 on Windows D3D12/Vulkan and 1/1 on WSLg Vulkan in Debug/Release; WSLg skips D3D12 and has no validation errors.
 
+`SubmitsMultipleComputeStorageImageSubranges` binds both R32UInt images in the multi-image compute fixture to mip 1 inside separate two-mip imports, reads back both written values, and verifies both mip-0 sentinels remain untouched. It passes 2/2 on Windows D3D12/Vulkan and 1/1 on WSLg Vulkan in Debug/Release; WSLg skips D3D12 and has no VUID or Validation Error matches. Compile a fresh fixture for this selection:
+
+```powershell
+$env:VULKAN_SDK = 'C:\VulkanSDK\1.4.328.1'
+dotnet .\artifacts\bin\sources\TerraFX.Content.Tools\Debug\net11.0\TerraFX.Content.Tools.dll compile-m04-shader .\artifacts\shader-fixtures\m04-offscreen-multi-storage-subranges
+$env:TERRAFX_M04_SHADER_FIXTURE_DIRECTORY = (Resolve-Path .\artifacts\shader-fixtures\m04-offscreen-multi-storage-subranges).Path
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~SubmitsMultipleComputeStorageImageSubranges"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~SubmitsMultipleComputeStorageImageSubranges"
+```
+
 `RenderSpriteGeometryTests` verifies the documented pivoted local-quad positions, fixed clockwise indices, normalized Atlas-frame UVs, and horizontal/vertical UV flips. `SpriteSnapshotsOrderDrawsAndRetainAssetsAfterSceneUnload` verifies extraction stores geometry composed from the exact pinned Atlas frame and copied Sprite component values.
 
 `Renderer.SubmitAsync` retains an independent shared asset-pin reference through GPU completion; the Sprite snapshot test disposes its snapshot and verifies the retained Atlas page and Material remain available.
@@ -651,6 +661,14 @@ export TERRAFX_M04_SHADER_FIXTURE_DIRECTORY="$WORKTREE/artifacts/shader-fixtures
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SubmitsSampledTextureMipSubrangeGraph" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~SubmitsStorageImageMipSubrangeGraph" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SubmitsStorageImageMipSubrangeGraph" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
+For the two-image storage-mip subrange witness, use the compiled multi-storage fixture:
+
+```bash
+export TERRAFX_M04_SHADER_FIXTURE_DIRECTORY="$WORKTREE/artifacts/shader-fixtures/m04-offscreen-multi-storage-subranges"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~SubmitsMultipleComputeStorageImageSubranges" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~SubmitsMultipleComputeStorageImageSubranges" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
 Run the four-slot Vulkan Sprite graph and graph-failure lease-release witnesses in WSLg with the cooked Sprite shader fixture:

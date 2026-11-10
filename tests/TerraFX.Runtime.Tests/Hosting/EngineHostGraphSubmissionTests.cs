@@ -570,6 +570,24 @@ internal sealed partial class EngineHostOptionsTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsMultipleComputeStorageImageSubranges(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: true,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useMultipleComputeStorageImages: true,
+            useStorageImageSubrange: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SubmitsMultipleComputeStorageImages(GraphicsBackend backend)
         => RunOffscreenGraphAsync(
             backend,
@@ -1991,6 +2009,7 @@ internal sealed partial class EngineHostOptionsTests
             }
 
             byte[]? storageImageBaseMipBytes = null;
+            byte[]? additionalStorageImageBaseMipBytes = null;
             var storageImageBytesPerTexel = useRgba16FloatStorageImage ? sizeof(ushort) * 4 : sizeof(uint);
             var storageImageMipLevel = useStorageImageSubrange ? 1 : 0;
 
@@ -2062,18 +2081,43 @@ internal sealed partial class EngineHostOptionsTests
 
             if (useMultipleComputeStorageImages)
             {
+                var additionalStorageImageWidth = useStorageImageSubrange ? 2 : 1;
                 additionalStorageImage = await graphicsDevice.CreateTextureAsync(
                     new TextureDescription(
                         TextureDimension.Dimension2D,
-                        1,
-                        1,
+                        additionalStorageImageWidth,
+                        additionalStorageImageWidth,
                         depth: 1,
                         arrayLayers: 1,
-                        mipLevels: 1,
+                        mipLevels: useStorageImageSubrange ? 2 : 1,
                         TextureFormat.R32UInt,
                         TextureUsage.Storage | TextureUsage.CopySource | TextureUsage.CopyDestination,
                         $"m04-{backend}-frame-second-storage-image"))
                     .ConfigureAwait(false);
+
+                if (useStorageImageSubrange)
+                {
+                    additionalStorageImageBaseMipBytes = new byte[checked(sizeof(uint) * 4)];
+                    Array.Fill(additionalStorageImageBaseMipBytes, (byte)0x5A);
+                    var additionalStorageImageBaseMipStorage = UnmanagedBuffer<byte>.Allocate(
+                        additionalStorageImageBaseMipBytes.Length,
+                        new BufferAllocationOptions(additionalStorageImageBaseMipBytes.Length, alignment: 1));
+                    additionalStorageImageBaseMipStorage.CopyFrom(additionalStorageImageBaseMipBytes.AsSpan(), 0);
+
+                    using var ownedAdditionalStorageImageBaseMipBytes =
+                        additionalStorageImageBaseMipStorage.TransferToOwnedBuffer();
+                    using var additionalStorageImageBaseMipLease = ownedAdditionalStorageImageBaseMipBytes.AcquireReadLease(
+                        0,
+                        additionalStorageImageBaseMipBytes.Length);
+                    var additionalStorageImageBaseMipUploadReceipt = await graphicsDevice.UploadTextureAsync(
+                        additionalStorageImage,
+                        new TextureSubresource(0, 0, TextureAspect.Color),
+                        additionalStorageImageBaseMipLease,
+                        0,
+                        new TextureDataLayout(rowPitch: sizeof(uint) * 2, slicePitch: sizeof(uint) * 4))
+                        .ConfigureAwait(false);
+                    Assert.That(additionalStorageImageBaseMipUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+                }
 
                 var additionalStorageImageInitialBytes = new byte[sizeof(uint)];
                 var additionalStorageImageInitialStorage = UnmanagedBuffer<byte>.Allocate(
@@ -2087,7 +2131,7 @@ internal sealed partial class EngineHostOptionsTests
                     additionalStorageImageInitialBytes.Length);
                 var additionalStorageImageUploadReceipt = await graphicsDevice.UploadTextureAsync(
                     additionalStorageImage,
-                    new TextureSubresource(0, 0, TextureAspect.Color),
+                    new TextureSubresource(useStorageImageSubrange ? 1 : 0, 0, TextureAspect.Color),
                     additionalStorageImageInitialLease,
                     0,
                     new TextureDataLayout(rowPitch: sizeof(uint), slicePitch: sizeof(uint)))
@@ -2309,6 +2353,12 @@ internal sealed partial class EngineHostOptionsTests
             var storageImageBindingRange = useStorageImageSubrange
                 ? new GraphTextureRange(1, 1, 0, 1, TextureAspect.Color)
                 : sampleRange;
+            var additionalStorageImageImportRange = useStorageImageSubrange
+                ? new GraphTextureRange(0, 2, 0, 1, TextureAspect.Color)
+                : sampleRange;
+            var additionalStorageImageBindingRange = useStorageImageSubrange
+                ? new GraphTextureRange(1, 1, 0, 1, TextureAspect.Color)
+                : sampleRange;
             var copyTextureRange = (
                 useTransientTextureCopy
                 || useTransientTextureAliasing
@@ -2430,7 +2480,7 @@ internal sealed partial class EngineHostOptionsTests
             {
                 additionalStorageImageInitialVersion = graph.ImportTexture(
                     selectedAdditionalStorageImage,
-                    sampleRange,
+                    additionalStorageImageImportRange,
                     new GraphImportOptions(
                         GraphResourceState.General,
                         contentsValid: true,
@@ -2936,7 +2986,7 @@ internal sealed partial class EngineHostOptionsTests
                     additionalComputeStorageImageWriteVersion = graph.ReadWriteTexture(
                         computePass,
                         initialAdditionalStorageImage,
-                        sampleRange);
+                        additionalStorageImageBindingRange);
                     computeBindingSet = new BindingSet(
                         [
                             new BufferBinding(
@@ -2958,7 +3008,7 @@ internal sealed partial class EngineHostOptionsTests
                                 6,
                                 ShaderResourceKind.StorageImage,
                                 additionalComputeStorageImageWriteVersion,
-                                sampleRange),
+                                additionalStorageImageBindingRange),
                         ],
                         []);
                 }
@@ -4675,7 +4725,7 @@ internal sealed partial class EngineHostOptionsTests
                         ?? throw new InvalidOperationException("The graph multi-image compute test has no second storage image.");
                     using var secondComputeImageReadback = await graphicsDevice.ReadbackTextureAsync(
                         secondComputeStorageImage,
-                        new TextureSubresource(0, 0, TextureAspect.Color))
+                        new TextureSubresource(useStorageImageSubrange ? 1 : 0, 0, TextureAspect.Color))
                         .ConfigureAwait(false);
                     var secondComputeStorageImageBytes = new byte[checked((int)secondComputeImageReadback.ByteLength)];
 
@@ -4717,6 +4767,45 @@ internal sealed partial class EngineHostOptionsTests
                     }
 
                     Assert.That(baseMipReadbackBytes, Is.EqualTo(expectedBaseMipReadbackBytes));
+
+                    if (useMultipleComputeStorageImages)
+                    {
+                        var expectedAdditionalBaseMipBytes = additionalStorageImageBaseMipBytes
+                            ?? throw new InvalidOperationException("The multiple storage-image subrange test has no second mip-0 sentinel.");
+                        var additionalStorageImageForReadback = additionalStorageImage
+                            ?? throw new InvalidOperationException("The multiple storage-image subrange test has no second storage image.");
+                        using var additionalBaseMipReadback = await graphicsDevice.ReadbackTextureAsync(
+                            additionalStorageImageForReadback,
+                            new TextureSubresource(0, 0, TextureAspect.Color))
+                            .ConfigureAwait(false);
+                        var additionalBaseMipReadbackBytes = new byte[checked((int)additionalBaseMipReadback.ByteLength)];
+                        var expectedAdditionalBaseMipReadbackBytes = new byte[additionalBaseMipReadbackBytes.Length];
+                        var additionalBaseMipRowByteLength = checked(
+                            (int)(additionalBaseMipReadback.Width * sizeof(uint)));
+
+                        for (var row = 0; row < additionalBaseMipReadback.Height; row++)
+                        {
+                            expectedAdditionalBaseMipBytes.AsSpan(
+                                checked(row * additionalBaseMipRowByteLength),
+                                additionalBaseMipRowByteLength)
+                                .CopyTo(expectedAdditionalBaseMipReadbackBytes.AsSpan(
+                                    checked((int)(additionalBaseMipReadback.RowPitch * row)),
+                                    additionalBaseMipRowByteLength));
+                        }
+
+                        using (var additionalBaseMipReadLease = additionalBaseMipReadback.AcquireReadLease())
+                        {
+                            var copyAction = new ReadbackCopyAction(additionalBaseMipReadbackBytes);
+                            additionalBaseMipReadLease.UseWindow(
+                                0,
+                                additionalBaseMipReadbackBytes.Length,
+                                ref copyAction);
+                        }
+
+                        Assert.That(
+                            additionalBaseMipReadbackBytes,
+                            Is.EqualTo(expectedAdditionalBaseMipReadbackBytes));
+                    }
                 }
             }
 
