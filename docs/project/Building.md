@@ -828,6 +828,13 @@ Remove-Item Env:\TERRAFX_VULKAN_NATIVEAOT_CONSUMER
 
 On Windows, Win32 Interactive and OffscreenNative pass 2/2; Linux Wayland/X11 are skipped as OS-inapplicable. The Win32 path covers two windows, one committed World tick, peer-window close, presentation on the surviving Surface, and callback exception recovery. OffscreenNative verifies both the graph-clear pixel and a padded 3D R8 upload/readback. GameInput remains unavailable under NativeAOT as described above.
 
+The Windows direct-Surface stress runs 100 resize/minimize/restore requests against D3D12 and Vulkan Win32:
+
+```powershell
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~D3D12BackendCreatesAndCompilesWin32FlipDiscardSurface|FullyQualifiedName~VulkanBackendRunsOneHundredResizeMinimizeRestoreOperationsOnWindows"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~D3D12BackendCreatesAndCompilesWin32FlipDiscardSurface|FullyQualifiedName~VulkanBackendRunsOneHundredResizeMinimizeRestoreOperationsOnWindows"
+```
+
 The no-argument handwritten Runtime consumer verifies that `PhysicalInputEvent` and `PhysicalInputValue` expose no public constructors and that event/value/diagnostic/scroll-unit enum values are stable. Its JIT and Windows x64 NativeAOT executions validate that nonfriend surface only; they do not activate native input or create a platform window.
 
 The Scene activation public-consumer cases exercise both standalone World activation and the Headless `EngineHost`/hosted-World path. The hosted case uses the host-owned AssetStore, EngineContext World creation, the public frame/time-scale request APIs, owner pump, activation, and shutdown. Run the exact cases through the published handwritten NativeAOT executable:
@@ -880,3 +887,10 @@ TERRAFX_VULKAN_NATIVEAOT_CONSUMER="$WORKTREE/artifacts/linux/bin/tests/TerraFX.R
 ```
 
 This selection passes the three Linux scenarios in Debug JIT and Release NativeAOT; the Windows-only Win32 case is skipped on WSLg. The passing paths are Vulkan OffscreenNative readback plus Wayland and explicit X11 Interactive presentation, each Interactive path covering two windows, one committed World tick, peer-window close, presentation on the surviving Surface, and callback exception recovery. It qualifies WSLg on the observed llvmpipe software adapter, not hardware GPU behavior.
+
+The WSLg Surface stress runs 100 resize/minimize/restore requests on Wayland and X11. Positive requests use the compositor-observed client extent:
+
+```bash
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~VulkanBackendRunsOneHundredResizeMinimizeRestoreOperationsOnLinux" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/" -m:1 -nr:false
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~VulkanBackendRunsOneHundredResizeMinimizeRestoreOperationsOnLinux" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/" -m:1 -nr:false
+```

@@ -170,6 +170,40 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(restoredReceipt.Status, Is.EqualTo(SurfaceResizeStatus.Resized));
             Assert.That(restoredReceipt.SurfaceEpoch, Is.EqualTo(1));
             Assert.That(restoredReceipt.SwapchainEpoch, Is.EqualTo(3));
+
+            var expectedSwapchainEpoch = restoredReceipt.SwapchainEpoch;
+
+            for (var index = 0; index < 100; index++)
+            {
+                switch (index % 3)
+                {
+                    case 0:
+                    {
+                        var resizeReceipt = activeSurface.ResizeAsync(new PixelSize(640, 360)).GetAwaiter().GetResult();
+                        expectedSwapchainEpoch = checked(expectedSwapchainEpoch + 1);
+                        Assert.That(resizeReceipt.Status, Is.EqualTo(SurfaceResizeStatus.Resized));
+                        Assert.That(resizeReceipt.SwapchainEpoch, Is.EqualTo(expectedSwapchainEpoch));
+                        break;
+                    }
+
+                    case 1:
+                    {
+                        var minimizeReceipt = activeSurface.ResizeAsync(new PixelSize(0, 0)).GetAwaiter().GetResult();
+                        Assert.That(minimizeReceipt.Status, Is.EqualTo(SurfaceResizeStatus.Suspended));
+                        Assert.That(minimizeReceipt.SwapchainEpoch, Is.Zero);
+                        break;
+                    }
+
+                    default:
+                    {
+                        var restoreReceipt = activeSurface.ResizeAsync(new PixelSize(800, 600)).GetAwaiter().GetResult();
+                        expectedSwapchainEpoch = checked(expectedSwapchainEpoch + 1);
+                        Assert.That(restoreReceipt.Status, Is.EqualTo(SurfaceResizeStatus.Resized));
+                        Assert.That(restoreReceipt.SwapchainEpoch, Is.EqualTo(expectedSwapchainEpoch));
+                        break;
+                    }
+                }
+            }
         }
         finally
         {
