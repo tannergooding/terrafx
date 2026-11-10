@@ -133,6 +133,22 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~RecoversInteractiveGraphicsAndPublishesNewSurfaceEpoch|FullyQualifiedName~RecoversSuspendedOffscreenGraphicsWithNextDeviceEpoch"
 ```
 
+### Vulkan submitted-work timeout probes
+
+The native fence witnesses distinguish a never-submitted unsignaled fence from queue work blocked on a test-owned timeline semaphore. The submitted wait returns `VK_TIMEOUT`, then completes after the host signals the semaphore. This is controlled synchronization evidence, not a driver-generated hang or graph-resource quarantine:
+
+```powershell
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~VulkanDriverReturnsTimeoutForNeverSubmittedFence|FullyQualifiedName~VulkanSubmittedQueueWaitReturnsTimeoutUntilHostSignal"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~VulkanDriverReturnsTimeoutForNeverSubmittedFence|FullyQualifiedName~VulkanSubmittedQueueWaitReturnsTimeoutUntilHostSignal"
+```
+
+In the configured WSLg shell, run the same selection with isolated Linux outputs and Khronos validation:
+
+```bash
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~VulkanDriverReturnsTimeoutForNeverSubmittedFence|FullyQualifiedName~VulkanSubmittedQueueWaitReturnsTimeoutUntilHostSignal" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~VulkanDriverReturnsTimeoutForNeverSubmittedFence|FullyQualifiedName~VulkanSubmittedQueueWaitReturnsTimeoutUntilHostSignal" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
 ### D3D12 OffscreenNative startup and descriptor-set probes
 
 The focused Runtime tests exercise D3D12 startup and descriptor writes using a `PlatformHostOwner`-issued identity:
