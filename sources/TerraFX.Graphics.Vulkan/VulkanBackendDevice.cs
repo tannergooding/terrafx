@@ -23,6 +23,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
     private readonly ImmutableHashSet<string> _enabledSpirvExtensions;
     private readonly bool _fragmentStoresAndAtomicsEnabled;
     private readonly Action<long>? _graphFenceWaitObserver;
+    private readonly Func<long, VkResult, VkResult>? _graphFenceWaitResultOverride;
     private readonly int _graphFrameSlotCount;
     private readonly VulkanGraphFrameSlot[] _graphFrameSlots;
     private readonly Action<GraphicsGraphSubmission>? _graphSubmissionObserver;
@@ -72,7 +73,8 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         Action? surfaceImageAcquiredObserver,
         Func<VkResult, VkResult>? surfacePresentResultOverride,
         Func<ulong, VkResult, VkResult>? surfaceFenceWaitResultOverride,
-        ulong surfaceFenceWaitTimeoutNanoseconds)
+        ulong surfaceFenceWaitTimeoutNanoseconds,
+        Func<long, VkResult, VkResult>? graphFenceWaitResultOverride)
     {
         ArgumentNullException.ThrowIfNull(enabledSpirvExtensions);
         ArgumentNullException.ThrowIfNull(commandBuffers);
@@ -107,6 +109,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         _timelineSemaphore = timelineSemaphore;
         _transferWaitResultOverride = transferWaitResultOverride;
         _graphFenceWaitObserver = graphFenceWaitObserver;
+        _graphFenceWaitResultOverride = graphFenceWaitResultOverride;
         _completedGraphFenceValueOverride = completedGraphFenceValueOverride;
         _graphSubmissionObserver = graphSubmissionObserver;
         _surfaceAcquireResultOverride = surfaceAcquireResultOverride;
@@ -211,7 +214,8 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         Action? surfaceImageAcquiredObserver = null,
         Func<VkResult, VkResult>? surfacePresentResultOverride = null,
         Func<ulong, VkResult, VkResult>? surfaceFenceWaitResultOverride = null,
-        ulong surfaceFenceWaitTimeoutNanoseconds = 5_000_000_000)
+        ulong surfaceFenceWaitTimeoutNanoseconds = 5_000_000_000,
+        Func<long, VkResult, VkResult>? graphFenceWaitResultOverride = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(graphFrameSlotCount, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(graphFrameSlotCount, 4);
@@ -376,7 +380,8 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                     surfaceImageAcquiredObserver,
                     surfacePresentResultOverride,
                     surfaceFenceWaitResultOverride,
-                    surfaceFenceWaitTimeoutNanoseconds);
+                    surfaceFenceWaitTimeoutNanoseconds,
+                    graphFenceWaitResultOverride);
                 transferred = true;
                 hasInstance = false;
                 hasDevice = false;

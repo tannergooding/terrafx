@@ -504,11 +504,11 @@ Run the public offscreen submission witness after compiling the fixture. It cove
 
 `D3D12SubmitsBufferCopyGraphFromUploadBuffer` verifies an exact buffer-copy/readback using a host-visible Upload source, so it avoids allocating a staged copy-source buffer. It passes in Windows Debug/Release.
 
-`D3D12GraphFenceTimeoutQuarantinesGraphResources` process-isolates an offscreen graph, observes the native fence signal, then injects `WAIT_TIMEOUT`. It verifies `Renderer.SubmitAsync` fails, the target remains in active use after disposal is requested, and host shutdown reports the mapped timeout. This validates quarantine behavior for an injected result, not a driver-generated hang or timeout.
+`D3D12GraphFenceTimeoutQuarantinesGraphResources` process-isolates an offscreen graph, observes the native fence signal, then injects `WAIT_TIMEOUT`. `VulkanGraphFenceTimeoutQuarantinesGraphResources` similarly observes a successful timeline-semaphore wait and injects `VK_TIMEOUT`. Both verify `Renderer.SubmitAsync` fails, the target remains in active use after disposal is requested, and host shutdown reports the mapped result. The D3D12 witness passes on Windows; the Vulkan witness passes on Windows and WSLg Debug/Release, with no WSLg validation errors. These validate quarantine behavior for injected results, not driver-generated hangs or timeouts.
 
 ```powershell
-dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~D3D12GraphFenceTimeoutQuarantinesGraphResources"
-dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~D3D12GraphFenceTimeoutQuarantinesGraphResources"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~D3D12GraphFenceTimeoutQuarantinesGraphResources|FullyQualifiedName~VulkanGraphFenceTimeoutQuarantinesGraphResources"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~D3D12GraphFenceTimeoutQuarantinesGraphResources|FullyQualifiedName~VulkanGraphFenceTimeoutQuarantinesGraphResources"
 ```
 
 `SubmitsUniformBufferSubrangeGraph` binds a device-aligned 256-byte Frame uniform range at a nonzero offset within the imported buffer and verifies rendered pixels. It passes 2/2 on Windows D3D12/Vulkan and 1/1 on WSLg Vulkan in Debug/Release; WSLg skips D3D12.

@@ -22,7 +22,8 @@ public static class VulkanGraphicsBackend
         Func<VkResult?>? surfaceAcquireResultOverride = null,
         Func<VkResult, VkResult>? surfacePresentResultOverride = null,
         Func<ulong, VkResult, VkResult>? surfaceFenceWaitResultOverride = null,
-        ulong surfaceFenceWaitTimeoutNanoseconds = 5_000_000_000)
+        ulong surfaceFenceWaitTimeoutNanoseconds = 5_000_000_000,
+        Func<long, VkResult, VkResult>? graphFenceWaitResultOverride = null)
         => new(new VulkanBackendFactory(
             graphFenceWaitObserver,
             completedGraphFenceValueOverride,
@@ -31,12 +32,14 @@ public static class VulkanGraphicsBackend
             surfaceAcquireResultOverride,
             surfacePresentResultOverride,
             surfaceFenceWaitResultOverride,
-            surfaceFenceWaitTimeoutNanoseconds));
+            surfaceFenceWaitTimeoutNanoseconds,
+            graphFenceWaitResultOverride));
 
     internal sealed class VulkanBackendFactory : IGraphicsBackendFactory
     {
         private readonly Func<long, long>? _completedGraphFenceValueOverride;
         private readonly Action<long>? _graphFenceWaitObserver;
+        private readonly Func<long, VkResult, VkResult>? _graphFenceWaitResultOverride;
         private readonly Action<GraphicsGraphSubmission>? _graphSubmissionObserver;
         private readonly Func<VkResult?>? _surfaceAcquireResultOverride;
         private readonly Func<ulong, VkResult, VkResult>? _surfaceFenceWaitResultOverride;
@@ -52,7 +55,8 @@ public static class VulkanGraphicsBackend
             Func<VkResult?>? surfaceAcquireResultOverride = null,
             Func<VkResult, VkResult>? surfacePresentResultOverride = null,
             Func<ulong, VkResult, VkResult>? surfaceFenceWaitResultOverride = null,
-            ulong surfaceFenceWaitTimeoutNanoseconds = 5_000_000_000)
+            ulong surfaceFenceWaitTimeoutNanoseconds = 5_000_000_000,
+            Func<long, VkResult, VkResult>? graphFenceWaitResultOverride = null)
         {
             _graphFenceWaitObserver = graphFenceWaitObserver;
             _completedGraphFenceValueOverride = completedGraphFenceValueOverride;
@@ -62,6 +66,7 @@ public static class VulkanGraphicsBackend
             _surfacePresentResultOverride = surfacePresentResultOverride;
             _surfaceFenceWaitResultOverride = surfaceFenceWaitResultOverride;
             _surfaceFenceWaitTimeoutNanoseconds = surfaceFenceWaitTimeoutNanoseconds;
+            _graphFenceWaitResultOverride = graphFenceWaitResultOverride;
         }
 
         public GraphicsBackend Backend => GraphicsBackend.Vulkan;
@@ -106,7 +111,8 @@ public static class VulkanGraphicsBackend
                 surfaceImageAcquiredObserver: _surfaceImageAcquiredObserver,
                 surfacePresentResultOverride: _surfacePresentResultOverride,
                 surfaceFenceWaitResultOverride: _surfaceFenceWaitResultOverride,
-                surfaceFenceWaitTimeoutNanoseconds: _surfaceFenceWaitTimeoutNanoseconds);
+                surfaceFenceWaitTimeoutNanoseconds: _surfaceFenceWaitTimeoutNanoseconds,
+                graphFenceWaitResultOverride: _graphFenceWaitResultOverride);
         }
     }
 }

@@ -46,7 +46,9 @@ internal static class NativeQuarantineTestProcess
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
-                WorkingDirectory = repositoryRoot,
+                WorkingDirectory = OperatingSystem.IsLinux()
+                    ? Path.GetTempPath()
+                    : repositoryRoot,
             };
             startInfo.ArgumentList.Add("test");
             startInfo.ArgumentList.Add(projectPath);

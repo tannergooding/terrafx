@@ -382,9 +382,9 @@ internal sealed unsafe partial class VulkanBackendDevice
         waitInfo.semaphoreCount = 1;
         waitInfo.pSemaphores = &semaphore;
         waitInfo.pValues = &value;
-        ThrowIfFailed(
-            VulkanApi.vkWaitSemaphores(_device, &waitInfo, TransferWaitTimeoutNanoseconds),
-            "vkWaitSemaphores");
+        var result = VulkanApi.vkWaitSemaphores(_device, &waitInfo, TransferWaitTimeoutNanoseconds);
+        result = _graphFenceWaitResultOverride?.Invoke(fenceValue, result) ?? result;
+        ThrowIfFailed(result, "vkWaitSemaphores");
     }
 
     internal void WriteUploadBuffer(

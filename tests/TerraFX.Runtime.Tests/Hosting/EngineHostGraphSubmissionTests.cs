@@ -17,6 +17,7 @@ using TerraFX.Graphics;
 using TerraFX.Graphics.D3D12;
 using TerraFX.Graphics.Vulkan;
 using TerraFX.Hosting;
+using TerraFX.Interop.Vulkan;
 using TerraFX.Numerics;
 using TerraFX.Platform;
 using TerraFX.Rendering;
@@ -805,6 +806,33 @@ internal sealed partial class EngineHostOptionsTests
             useUniformBufferSubrange: true);
 
     [Test]
+    [Category("ProcessIsolatedVulkanGraphQuarantine")]
+    public Task VulkanGraphFenceTimeoutQuarantinesGraphResources()
+    {
+        if (!StringComparer.Ordinal.Equals(
+            Environment.GetEnvironmentVariable("TERRAFX_NATIVE_QUARANTINE_CHILD"),
+            "1"))
+        {
+            NativeQuarantineTestProcess.Run("TestCategory=ProcessIsolatedVulkanGraphQuarantine");
+            return Task.CompletedTask;
+        }
+
+        return RunOffscreenGraphAsync(
+            GraphicsBackend.Vulkan,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            simulateVulkanGraphFenceTimeout: true);
+    }
+
+    [Test]
     public Task VulkanRejectsR32FloatComputeStorageImageFormatMismatch()
         => RunOffscreenGraphAsync(
             GraphicsBackend.Vulkan,
@@ -952,7 +980,8 @@ internal sealed partial class EngineHostOptionsTests
         bool useUniformBufferSubrange = false,
         bool useSampledTextureSubrange = false,
         bool simulateGraphFenceTimeout = false,
-        bool useStorageImageSubrange = false)
+        bool useStorageImageSubrange = false,
+        bool simulateVulkanGraphFenceTimeout = false)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -1103,6 +1132,19 @@ internal sealed partial class EngineHostOptionsTests
             }
         }
 
+        VkResult OverrideVulkanGraphFenceWait(long fenceValue, VkResult nativeResult)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(fenceValue);
+
+            if (simulateVulkanGraphFenceTimeout && (nativeResult == VkResult.VK_SUCCESS))
+            {
+                Volatile.Write(ref nativeGraphFenceWaitResult, (int)nativeResult);
+                return VkResult.VK_TIMEOUT;
+            }
+
+            return nativeResult;
+        }
+
         void ObserveGraphSubmission(GraphicsGraphSubmission submission)
         {
             var allocationLeases = ImmutableArray.CreateBuilder<GraphicsResourceAllocationLease>();
@@ -1150,12 +1192,16 @@ internal sealed partial class EngineHostOptionsTests
                     graphWaitForSingleObject: WaitForGraphFence,
                     completedFenceValueOverride: OverrideCompletedFence,
                     graphSubmissionObserver: (useTransientCopyAliasing || useTransientBufferAliasing) ? ObserveGraphSubmission : null)),
-            GraphicsBackend.Vulkan when holdGraphCompletion => VulkanGraphicsBackend.CreateRegistrationForTesting(
-                WaitForVulkanGraphFence,
-                OverrideCompletedFence,
-                (useTransientBufferAliasing || useTransientCopyAliasing || useDelayedTransientTextureAliasing)
-                    ? ObserveGraphSubmission
-                    : null),
+            GraphicsBackend.Vulkan when holdGraphCompletion || simulateVulkanGraphFenceTimeout
+                => VulkanGraphicsBackend.CreateRegistrationForTesting(
+                    graphFenceWaitObserver: WaitForVulkanGraphFence,
+                    completedGraphFenceValueOverride: OverrideCompletedFence,
+                    graphSubmissionObserver: (useTransientBufferAliasing || useTransientCopyAliasing || useDelayedTransientTextureAliasing)
+                        ? ObserveGraphSubmission
+                        : null,
+                    graphFenceWaitResultOverride: simulateVulkanGraphFenceTimeout
+                        ? OverrideVulkanGraphFenceWait
+                        : null),
             GraphicsBackend.D3D12 => D3D12GraphicsBackend.CreateRegistration(),
             GraphicsBackend.Vulkan => VulkanGraphicsBackend.CreateRegistration(),
             _ => throw new ArgumentOutOfRangeException(nameof(backend)),
@@ -3672,14 +3718,23 @@ internal sealed partial class EngineHostOptionsTests
                         Is.True);
                 }
             }
-            else if (simulateGraphFenceTimeout)
+            else if (simulateGraphFenceTimeout || simulateVulkanGraphFenceTimeout)
             {
                 var submittedTarget = target
                     ?? throw new InvalidOperationException("The graph-timeout test has no imported color target.");
                 var submittedTargetOwner = submittedTarget.ResourceOwner;
                 var submissionTask = renderer.SubmitAsync(renderSnapshot, plan);
-                _ = Assert.ThrowsAsync<GraphicsDeviceLostException>(async () =>
-                    await submissionTask.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false));
+
+                if (backend == GraphicsBackend.D3D12)
+                {
+                    _ = Assert.ThrowsAsync<GraphicsDeviceLostException>(async () =>
+                        await submissionTask.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false));
+                }
+                else
+                {
+                    _ = Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                        await submissionTask.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false));
+                }
 
                 Assert.That(Volatile.Read(ref nativeGraphFenceWaitResult), Is.EqualTo(0));
                 Assert.That(
@@ -3695,7 +3750,9 @@ internal sealed partial class EngineHostOptionsTests
                 host = null;
                 var shutdownException = Assert.ThrowsAsync<AggregateException>(async () =>
                     await selectedHost.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false));
-                Assert.That(shutdownException?.ToString(), Does.Contain("0x800705B4"));
+                Assert.That(
+                    shutdownException?.ToString(),
+                    Does.Contain(backend == GraphicsBackend.D3D12 ? "0x800705B4" : "VK_TIMEOUT"));
                 Assert.That(graphicsDevice.Status, Is.EqualTo(GraphicsDeviceStatus.Stopping));
                 return;
             }
