@@ -331,14 +331,14 @@ internal sealed partial class EngineHostOptionsTests
             using var depthTexture = graphicsDevice.CreateTextureAsync(
                 new TextureDescription(
                     TextureDimension.Dimension2D,
-                    4,
-                    4,
+                    8,
+                    8,
                     depth: 1,
-                    arrayLayers: 1,
-                    mipLevels: 1,
+                    arrayLayers: 2,
+                    mipLevels: 2,
                     TextureFormat.D32Float,
                     TextureUsage.DepthAttachment | TextureUsage.Sampled | TextureUsage.CopySource | TextureUsage.CopyDestination,
-                    "d32-sampled-startup"))
+                    "d32-sampled-array-startup"))
                 .GetAwaiter()
                 .GetResult();
             Assert.That(depthTexture.Handle.IsValid, Is.True);
@@ -359,7 +359,7 @@ internal sealed partial class EngineHostOptionsTests
 
             using var ownedSource = sourceStorage.TransferToOwnedBuffer();
             using var sourceLease = ownedSource.AcquireReadLease(0, expected.Length);
-            var subresource = new TextureSubresource(0, 0, TextureAspect.Depth);
+            var subresource = new TextureSubresource(1, 1, TextureAspect.Depth);
             var upload = graphicsDevice.UploadTextureAsync(
                 depthTexture,
                 subresource,
@@ -382,6 +382,9 @@ internal sealed partial class EngineHostOptionsTests
                 .GetAwaiter()
                 .GetResult();
             Assert.That(readback.Format, Is.EqualTo(TextureFormat.D32Float));
+            Assert.That(readback.Subresource, Is.EqualTo(subresource));
+            Assert.That(readback.Width, Is.EqualTo(4));
+            Assert.That(readback.Height, Is.EqualTo(4));
             var padded = new byte[checked((int)readback.ByteLength)];
             using (var readLease = readback.AcquireReadLease())
             {
