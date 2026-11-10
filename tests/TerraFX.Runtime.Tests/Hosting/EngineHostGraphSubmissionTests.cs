@@ -756,6 +756,25 @@ internal sealed partial class EngineHostOptionsTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsPartialMultipleTextureCopyGraphAndReadsBackAsync(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useTextureCopy: true,
+            useMultipleTextureCopies: true,
+            usePartialTextureCopy: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SubmitsPartialTextureCopyGraphAndReadsBackAsync(GraphicsBackend backend)
         => RunOffscreenGraphAsync(
             backend,
@@ -1725,8 +1744,22 @@ internal sealed partial class EngineHostOptionsTests
                         0x2F, 0x84, 0x59, 0xB6,
                         0x0D, 0xFA, 0x73, 0x21,
                     ];
-                    secondCopySourceTexture = await graphicsDevice.CreateTextureAsync(copyTextureDescription).ConfigureAwait(false);
-                    secondCopyDestinationTexture = await graphicsDevice.CreateTextureAsync(copyTextureDescription).ConfigureAwait(false);
+                    var secondCopyTextureDescription = usePartialTextureCopy
+                        ? new TextureDescription(
+                            TextureDimension.Dimension2D,
+                            width: 2,
+                            height: 2,
+                            depth: 1,
+                            arrayLayers: 1,
+                            mipLevels: 1,
+                            TextureFormat.Rgba8Unorm,
+                            copyTextureUsage,
+                            $"m04-{backend}-graph-second-copy-texture")
+                        : copyTextureDescription;
+                    secondCopySourceTexture = await graphicsDevice.CreateTextureAsync(secondCopyTextureDescription)
+                        .ConfigureAwait(false);
+                    secondCopyDestinationTexture = await graphicsDevice.CreateTextureAsync(secondCopyTextureDescription)
+                        .ConfigureAwait(false);
                     var secondSourceStorage = UnmanagedBuffer<byte>.Allocate(
                         expectedSecondTextureCopyBytes.Length,
                         new BufferAllocationOptions(expectedSecondTextureCopyBytes.Length, alignment: 1));
@@ -1742,7 +1775,10 @@ internal sealed partial class EngineHostOptionsTests
                     {
                         secondSourceUploadReceipt = await graphicsDevice.UploadTextureAsync(
                             secondCopySourceTexture,
-                            new TextureSubresource(1, 1, TextureAspect.Color),
+                            new TextureSubresource(
+                                usePartialTextureCopy ? 0 : 1,
+                                usePartialTextureCopy ? 0 : 1,
+                                TextureAspect.Color),
                             secondSourceLease,
                             0,
                             new TextureDataLayout(rowPitch: 2 * 4, slicePitch: expectedSecondTextureCopyBytes.Length))
@@ -4360,7 +4396,10 @@ internal sealed partial class EngineHostOptionsTests
                         ?? throw new InvalidOperationException("The graph multi-texture-copy test has no second expected output.");
                     using var secondTextureReadback = await graphicsDevice.ReadbackTextureAsync(
                         secondCopiedTexture,
-                        new TextureSubresource(1, 1, TextureAspect.Color))
+                        new TextureSubresource(
+                            usePartialTextureCopy ? 0 : 1,
+                            usePartialTextureCopy ? 0 : 1,
+                            TextureAspect.Color))
                         .ConfigureAwait(false);
                     var secondPaddedBytes = new byte[checked((int)secondTextureReadback.ByteLength)];
 
