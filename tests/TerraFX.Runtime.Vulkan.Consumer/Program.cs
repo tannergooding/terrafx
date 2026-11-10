@@ -156,6 +156,42 @@ internal static class Program
             throw new InvalidOperationException("Vulkan Interactive window creation reused a live WindowHandle.");
         }
 
+        const string ExpectedCallbackFailure = "Vulkan Interactive callback unwind witness.";
+        var callbackFailureObserved = false;
+
+        try
+        {
+            await host.InvokeAsync(_ => throw new InvalidOperationException(ExpectedCallbackFailure)).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException exception)
+            when (StringComparer.Ordinal.Equals(exception.Message, ExpectedCallbackFailure))
+        {
+            callbackFailureObserved = true;
+        }
+
+        if (!callbackFailureObserved || host.Completion.IsCompleted)
+        {
+            throw new InvalidOperationException("Vulkan Interactive owner callback failure was not isolated from the host.");
+        }
+
+        var callbackRecovered = false;
+        await host.InvokeAsync(_ => {
+            var firstCallbackSurface = host.GetSurface(window);
+            var secondCallbackSurface = host.GetSurface(secondWindow);
+
+            if (ReferenceEquals(firstCallbackSurface, secondCallbackSurface))
+            {
+                throw new InvalidOperationException("Vulkan Interactive callback recovery reused one Surface across windows.");
+            }
+
+            callbackRecovered = true;
+        }).ConfigureAwait(false);
+
+        if (!callbackRecovered)
+        {
+            throw new InvalidOperationException("Vulkan Interactive owner callbacks did not resume after an exception.");
+        }
+
         var worldRegistration = CreateWorldRegistration(schemas);
         World? world = null;
         SceneLoader? loader = null;

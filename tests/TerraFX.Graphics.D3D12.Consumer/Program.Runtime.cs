@@ -121,6 +121,42 @@ internal static partial class Program
             throw new InvalidOperationException("D3D12 Interactive window creation reused a live WindowHandle.");
         }
 
+        const string ExpectedCallbackFailure = "D3D12 Interactive callback unwind witness.";
+        var callbackFailureObserved = false;
+
+        try
+        {
+            await host.InvokeAsync(_ => throw new InvalidOperationException(ExpectedCallbackFailure)).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException exception)
+            when (StringComparer.Ordinal.Equals(exception.Message, ExpectedCallbackFailure))
+        {
+            callbackFailureObserved = true;
+        }
+
+        if (!callbackFailureObserved || host.Completion.IsCompleted)
+        {
+            throw new InvalidOperationException("D3D12 Interactive owner callback failure was not isolated from the host.");
+        }
+
+        var callbackRecovered = false;
+        await host.InvokeAsync(_ => {
+            var firstCallbackSurface = host.GetSurface(window);
+            var secondCallbackSurface = host.GetSurface(secondWindow);
+
+            if (ReferenceEquals(firstCallbackSurface, secondCallbackSurface))
+            {
+                throw new InvalidOperationException("D3D12 Interactive callback recovery reused one Surface across windows.");
+            }
+
+            callbackRecovered = true;
+        }).ConfigureAwait(false);
+
+        if (!callbackRecovered)
+        {
+            throw new InvalidOperationException("D3D12 Interactive owner callbacks did not resume after an exception.");
+        }
+
         var worldRegistrationBuilder = new WorldRegistrationBuilder(schemas);
         _ = worldRegistrationBuilder.RegisterSceneSupport(SceneSupport.CreateRegistration());
         _ = worldRegistrationBuilder.RegisterCpuExtractionSupport(Renderer.CreateCpuExtractionSupportRegistration());
