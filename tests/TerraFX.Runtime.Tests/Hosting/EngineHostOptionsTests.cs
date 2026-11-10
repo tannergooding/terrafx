@@ -535,14 +535,22 @@ internal sealed partial class EngineHostOptionsTests
                 arrayReadLease.UseWindow(0, arrayPadded.Length, ref copyAction);
             }
 
+            var arrayReadbackRowPitch = checked((int)arrayReadback.RowPitch);
+            Assert.That(arrayReadbackRowPitch, Is.GreaterThan(arrayRowByteLength));
+            var zeroArrayRowPadding = new byte[arrayReadbackRowPitch - arrayRowByteLength];
             var arrayActual = new byte[arrayExpected.Length];
 
             for (var row = 0; row < arrayReadback.Height; row++)
             {
+                var rowOffset = checked(row * arrayReadbackRowPitch);
                 arrayPadded.AsSpan(
-                    checked(row * (int)arrayReadback.RowPitch),
+                    rowOffset,
                     arrayRowByteLength)
                     .CopyTo(arrayActual.AsSpan(row * arrayRowByteLength, arrayRowByteLength));
+                Assert.That(
+                    arrayPadded.AsSpan(rowOffset + arrayRowByteLength, zeroArrayRowPadding.Length)
+                        .SequenceEqual(zeroArrayRowPadding),
+                    Is.True);
             }
 
             Assert.That(arrayReadback.Width, Is.EqualTo(arrayWidth));
