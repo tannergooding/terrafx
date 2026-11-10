@@ -133,7 +133,7 @@ A compute graph now binds both R32UInt storage images to strict nonzero mip-1 ra
 
 A raster graph also binds both Frame UBOs through distinct device-aligned nonzero subranges and renders their combined output on Windows D3D12/Vulkan and WSLg Vulkan in Debug/Release.
 
-A copy graph now combines a 2x2 source crop with a second full texture copy in one pass and verifies both destinations on Windows D3D12/Vulkan and WSLg Vulkan in Debug/Release; WSLg validation has no VUID or Validation Error matches.
+A copy graph now combines a 2x2 source crop with a second full texture copy in one pass and verifies both destinations; another pass combines the crop with a buffer copy and verifies both outputs. Both selections pass on Windows D3D12/Vulkan and WSLg Vulkan in Debug/Release; WSLg validation has no VUID or Validation Error matches.
 
 The package-backed Sprite graph now binds nonzero vertex and UInt16 index ranges on Windows D3D12/Vulkan and WSLg Vulkan in Debug/Release. This exercises the D3D12 vertex/index views in addition to the existing Vulkan witness; WSLg's validation-enabled TRXs are clean.
 
