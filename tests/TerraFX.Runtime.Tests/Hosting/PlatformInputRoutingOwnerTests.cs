@@ -1599,8 +1599,150 @@ internal sealed partial class PlatformInputRoutingOwnerTests
         }
     }
 
+    [Test]
+    public void RoutesXkbComposeCommitFromX11KeyEventsOnIsolatedDisplay()
+    {
+        if (!OperatingSystem.IsLinux()
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_ISOLATED_X11") != "1")
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_X11_COMPOSE") != "1")
+            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
+        {
+            Assert.Ignore("The X11 compose witness requires an isolated Linux display with the XKB compose keymap.");
+            return;
+        }
+
+        var ownerThreadId = Environment.CurrentManagedThreadId;
+        var ownerId = OwnerIdAllocator.Allocate();
+        var sequenceLease = new HostEventSequenceLease();
+        var window = new WindowHandle(ownerId, 0, 1);
+        NativeX11InputRoutingHost? platformHost = null;
+        PlatformInputRoutingOwner? routingOwner = null;
+        InputRouter? hostRouter = null;
+        TextInputSession? textSession = null;
+        HashSet<InputRouter> inputRouters = [];
+        Dictionary<InputRouter, WorldInputTimelineAdapter> timelineRouters = [];
+
+        try
+        {
+            NativeX11InputRoutingHost nativeHost;
+
+            try
+            {
+                nativeHost = new NativeX11InputRoutingHost(ownerId, sequenceLease);
+            }
+            catch (DllNotFoundException exception)
+            {
+                Assert.Ignore($"The isolated X11 input libraries are unavailable: {exception.Message}");
+                return;
+            }
+            catch (PlatformNotSupportedException exception)
+            {
+                Assert.Ignore($"The isolated X11 display is unavailable: {exception.Message}");
+                return;
+            }
+
+            platformHost = nativeHost;
+            nativeHost.CreateWindow(window);
+            var diagnostics = new DiagnosticsService();
+            var nativeRoutingOwner = new PlatformInputRoutingOwner(
+                HostProfile.Interactive,
+                nativeHost,
+                sequenceLease,
+                diagnostics,
+                ownerThreadId,
+                inputRouters,
+                timelineRouters,
+                recipientId => timelineRouters.Keys.FirstOrDefault(router => router.RecipientId == recipientId));
+            routingOwner = nativeRoutingOwner;
+            var nativeHostRouter = nativeRoutingOwner.CreateInputRouter(InputRecipientKind.HostLiveUI, window);
+            hostRouter = nativeHostRouter;
+            IsolatedX11Input.SetInputFocus(nativeHost.NativeDisplay, nativeHost.NativeWindow);
+            var focusCapture = nativeHost.PumpAndCapture();
+            Assert.That(
+                focusCapture.Events.Any(inputEvent => inputEvent.Kind == PhysicalInputEventKind.FocusGained),
+                Is.True);
+            nativeRoutingOwner.RouteCapturedInput(focusCapture);
+            nativeRoutingOwner.ServiceWindowInputRoutes(nativeHost.GetHostTimestamp());
+            var sessionOptions = new TextInputSessionOptions(
+                window,
+                TextInputPurpose.FreeForm,
+                documentRevision: 1,
+                surroundingText: null,
+                selectionStart: 0,
+                selectionLength: 0,
+                caretPosition: default,
+                caretSize: default);
+            var session = nativeHostRouter.BeginTextSession(sessionOptions);
+            textSession = session;
+            nativeRoutingOwner.SynchronizeTextInputSessions();
+            var textCapabilities = nativeHost.UpdateTextInputSession(
+                window,
+                new TextInputSessionSnapshot(session.SessionId, sessionOptions));
+            Assert.That(textCapabilities, Is.EqualTo(PlatformTextInputCapabilities.CommittedText));
+
+            var deadAcuteKeycode = IsolatedX11Input.GetKeycode(nativeHost.NativeDisplay, "dead_acute");
+            var eKeycode = IsolatedX11Input.GetKeycode(nativeHost.NativeDisplay, "e");
+            var textEvents = ImmutableArray.CreateBuilder<PlatformTextInputEvent>();
+
+            void CaptureInput()
+            {
+                var capturedInput = nativeHost.PumpAndCapture();
+                nativeRoutingOwner.RouteCapturedInput(capturedInput);
+
+                if (!capturedInput.TextEvents.IsDefaultOrEmpty)
+                {
+                    textEvents.AddRange(capturedInput.TextEvents);
+                }
+            }
+
+            foreach (var keycode in new[] { deadAcuteKeycode, eKeycode })
+            {
+                IsolatedX11Input.SendKey(nativeHost.NativeDisplay, keycode, isDown: true);
+                CaptureInput();
+                IsolatedX11Input.SendKey(nativeHost.NativeDisplay, keycode, isDown: false);
+                CaptureInput();
+            }
+
+            Assert.That(
+                textEvents
+                    .SelectMany(static textEvent => textEvent.Changes)
+                    .Any(static change => (change.Kind == TextInputChangeKind.TextCommitted) && (change.Text == "é")),
+                Is.True);
+        }
+        finally
+        {
+            textSession?.Dispose();
+            routingOwner?.ClearRoutes();
+
+            foreach (var router in inputRouters)
+            {
+                _ = router.DisposeAndGetTransitions();
+            }
+
+            _ = hostRouter?.DisposeAndGetTransitions();
+            platformHost?.Dispose();
+            sequenceLease.Revoke();
+        }
+    }
+
     private static partial class IsolatedX11Input
     {
+        internal static uint GetKeycode(nint display, string keyName)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(keyName);
+            var keysym = XStringToKeysym(keyName);
+
+            if (keysym == 0)
+            {
+                throw new InvalidOperationException($"X11 did not recognize the keysym '{keyName}'.");
+            }
+
+            var keycode = XKeysymToKeycode(display, keysym);
+            return keycode == 0
+                ? throw new InvalidOperationException($"X11 has no keycode for the keysym '{keyName}'.")
+                : keycode;
+        }
+
         internal static nint GetRootWindow(nint display)
             => checked((nint)XRootWindow(display, XDefaultScreen(display)));
 
@@ -1629,12 +1771,20 @@ internal sealed partial class PlatformInputRoutingOwnerTests
         private static partial int XDefaultScreen(nint display);
 
         [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
+        [LibraryImport("libX11.so.6", EntryPoint = "XKeysymToKeycode")]
+        private static partial byte XKeysymToKeycode(nint display, nuint keysym);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
         [LibraryImport("libX11.so.6", EntryPoint = "XRootWindow")]
         private static partial nuint XRootWindow(nint display, int screen);
 
         [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
         [LibraryImport("libX11.so.6", EntryPoint = "XSetInputFocus")]
         private static partial int XSetInputFocus(nint display, nuint focus, int revertTo, nuint time);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
+        [LibraryImport("libX11.so.6", EntryPoint = "XStringToKeysym", StringMarshalling = StringMarshalling.Utf8)]
+        private static partial nuint XStringToKeysym(string name);
 
         [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
         [LibraryImport("libX11.so.6", EntryPoint = "XSync")]
