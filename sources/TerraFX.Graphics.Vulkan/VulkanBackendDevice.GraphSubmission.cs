@@ -163,7 +163,14 @@ internal sealed unsafe partial class VulkanBackendDevice
         _ = _uncertainGraphDescriptorSets.EnsureCapacity(
             checked(_uncertainGraphDescriptorSets.Count + descriptorSetCapacity));
         var targetResourceId = submission.TextureImports[0].Version.ResourceId;
-        ulong sampledTextureResourceId = 0;
+        var sampledTextureScopes = new Dictionary<ulong, (
+            VulkanBackendTexture Texture,
+            TextureSubresource Subresource,
+            VkImageLayout Layout,
+            VkPipelineStageFlags2 LastStageMask,
+            VkAccessFlags2 LastAccessMask,
+            VkPipelineStageFlags2 StageMask,
+            VkAccessFlags2 AccessMask)>(submission.TextureImports.Length - 1);
         var storageTextureScopes = new Dictionary<ulong, (
             VulkanBackendTexture Texture,
             TextureSubresource Subresource,
@@ -179,17 +186,61 @@ internal sealed unsafe partial class VulkanBackendDevice
 
             if ((import.Version.Description.Usage & TextureUsage.Sampled) != 0)
             {
-                sampledTextureResourceId = import.Version.ResourceId;
+                var resourceId = import.Version.ResourceId;
+                var texture = submission.GetTexture(resourceId) as VulkanBackendTexture
+                    ?? throw new InvalidOperationException("The graph sampled image is not a Vulkan texture.");
+                var sampledRange = import.Version.Range;
+
+                foreach (var access in submission.Accesses)
+                {
+                    if (access.IsTexture
+                        && (access.ResourceId == resourceId)
+                        && (access.RequiredState == GraphResourceState.ShaderSampledRead)
+                        && !access.IsWrite)
+                    {
+                        sampledRange = access.TextureRange;
+                        break;
+                    }
+                }
+
+                var sampledSubresource = new TextureSubresource(
+                    sampledRange.FirstMip,
+                    sampledRange.FirstLayer,
+                    sampledRange.Aspect);
+                sampledTextureScopes.Add(
+                    resourceId,
+                    (
+                        texture,
+                        sampledSubresource,
+                        texture.GetLayout(sampledSubresource),
+                        texture.GetLastStageMask(sampledSubresource),
+                        texture.GetLastAccessMask(sampledSubresource),
+                        VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE,
+                        VkAccessFlags2.VK_ACCESS_2_NONE));
             }
             else if ((import.Version.Description.Usage & TextureUsage.Storage) != 0)
             {
                 var resourceId = import.Version.ResourceId;
                 var texture = submission.GetTexture(resourceId) as VulkanBackendTexture
                     ?? throw new InvalidOperationException("The graph storage image is not a Vulkan texture.");
+                var storageRange = import.Version.Range;
+
+                foreach (var access in submission.Accesses)
+                {
+                    if (access.IsTexture
+                        && (access.ResourceId == resourceId)
+                        && (access.RequiredState == GraphResourceState.StorageReadWrite)
+                        && access.IsStorageReadWritePair)
+                    {
+                        storageRange = access.TextureRange;
+                        break;
+                    }
+                }
+
                 var storageSubresource = new TextureSubresource(
-                    import.Version.Range.FirstMip,
-                    import.Version.Range.FirstLayer,
-                    import.Version.Range.Aspect);
+                    storageRange.FirstMip,
+                    storageRange.FirstLayer,
+                    storageRange.Aspect);
                 storageTextureScopes.Add(
                     resourceId,
                     (
@@ -203,9 +254,6 @@ internal sealed unsafe partial class VulkanBackendDevice
             }
         }
 
-        VulkanBackendTexture? sampledTexture = null;
-        var sampledTextureStageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
-        var sampledTextureAccessMask = VkAccessFlags2.VK_ACCESS_2_NONE;
         var graphBufferScopes = new List<(
             VulkanBackendBuffer Buffer,
             VkPipelineStageFlags2 StageMask,
@@ -327,12 +375,11 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                 if (access.IsTexture)
                 {
-                    if (access.ResourceId == sampledTextureResourceId)
+                    if (sampledTextureScopes.TryGetValue(access.ResourceId, out var sampledTextureScope))
                     {
-                        sampledTexture = submission.GetTexture(access.ResourceId) as VulkanBackendTexture
-                            ?? throw new InvalidOperationException("The Frame sampled image is not a Vulkan texture.");
-                        sampledTextureStageMask |= VulkanGraphResourceStateMapper.GetStageMask(access.RequiredState, shaderStages);
-                        sampledTextureAccessMask |= VulkanGraphResourceStateMapper.GetAccessMask(access.RequiredState);
+                        sampledTextureScope.StageMask |= VulkanGraphResourceStateMapper.GetStageMask(access.RequiredState, shaderStages);
+                        sampledTextureScope.AccessMask |= VulkanGraphResourceStateMapper.GetAccessMask(access.RequiredState);
+                        sampledTextureScopes[access.ResourceId] = sampledTextureScope;
                     }
                     else if (storageTextureScopes.TryGetValue(access.ResourceId, out var storageTextureScope))
                     {
@@ -398,12 +445,6 @@ internal sealed unsafe partial class VulkanBackendDevice
         var currentLayout = target.GetLayout(subresource);
         var currentStageMask = target.GetLastStageMask(subresource);
         var currentAccessMask = target.GetLastAccessMask(subresource);
-        var sampledSubresource = new TextureSubresource(0, 0, TextureAspect.Color);
-        var sampledCurrentLayout = sampledTexture?.GetLayout(sampledSubresource) ?? default;
-        var sampledCurrentStageMask = sampledTexture?.GetLastStageMask(sampledSubresource)
-            ?? VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE;
-        var sampledCurrentAccessMask = sampledTexture?.GetLastAccessMask(sampledSubresource)
-            ?? VkAccessFlags2.VK_ACCESS_2_NONE;
         var ownsImageView = false;
         var hasAcquiredImage = false;
         var hasStartedRecording = false;
@@ -604,16 +645,31 @@ internal sealed unsafe partial class VulkanBackendDevice
                                     targetCopyTextureScope.IsDestination);
                             }
                         }
-                        else if ((sampledTexture is not null)
-                            && (transition.ResourceId == sampledTextureResourceId))
+                        else if (sampledTextureScopes.TryGetValue(transition.ResourceId, out var sampledTextureScope))
                         {
+                            var (
+                                sampledTexture,
+                                sampledSubresource,
+                                sampledLayout,
+                                sampledLastStageMask,
+                                sampledLastAccessMask,
+                                sampledStageMask,
+                                sampledAccessMask) = sampledTextureScope;
                             RecordGraphImageBarrier(
                                 pass,
                                 sampledTexture,
                                 transition,
-                                ref sampledCurrentLayout,
-                                ref sampledCurrentStageMask,
-                                ref sampledCurrentAccessMask);
+                                ref sampledLayout,
+                                ref sampledLastStageMask,
+                                ref sampledLastAccessMask);
+                            sampledTextureScopes[transition.ResourceId] = (
+                                sampledTexture,
+                                sampledSubresource,
+                                sampledLayout,
+                                sampledLastStageMask,
+                                sampledLastAccessMask,
+                                sampledStageMask,
+                                sampledAccessMask);
                         }
                         else if (storageTextureScopes.TryGetValue(transition.ResourceId, out var storageTextureScope))
                         {
@@ -1133,10 +1189,12 @@ internal sealed unsafe partial class VulkanBackendDevice
                 RecordSurfacePresentationCopy(surface, acquiredImageIndex, target);
             }
 
-            if (sampledTexture is not null
-                && (sampledCurrentLayout != VulkanGraphResourceStateMapper.GetImageLayout(GraphResourceState.ShaderSampledRead)))
+            foreach (var (_, _, sampledLayout, _, _, _, _) in sampledTextureScopes.Values)
             {
-                throw new InvalidOperationException("The compiled graph did not transition its Frame sampled image to the shader-read layout.");
+                if (sampledLayout != VulkanGraphResourceStateMapper.GetImageLayout(GraphResourceState.ShaderSampledRead))
+                {
+                    throw new InvalidOperationException("The compiled graph did not transition every Frame sampled image to the shader-read layout.");
+                }
             }
 
             foreach (var (_, _, storageLayout, _, _, _, _) in storageTextureScopes.Values)
@@ -1179,13 +1237,20 @@ internal sealed unsafe partial class VulkanBackendDevice
             target.SetLastAccessScope(subresource, currentStageMask, currentAccessMask);
             target.MarkInitialized(subresource);
 
-            if (sampledTexture is not null)
+            foreach (var (
+                sampledTexture,
+                sampledSubresource,
+                sampledLayout,
+                _,
+                _,
+                sampledStageMask,
+                sampledAccessMask) in sampledTextureScopes.Values)
             {
-                sampledTexture.SetLayout(sampledSubresource, sampledCurrentLayout);
+                sampledTexture.SetLayout(sampledSubresource, sampledLayout);
                 sampledTexture.SetLastAccessScope(
                     sampledSubresource,
-                    sampledTextureStageMask,
-                    sampledTextureAccessMask);
+                    sampledStageMask,
+                    sampledAccessMask);
             }
 
             foreach (var (

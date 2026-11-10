@@ -24,8 +24,14 @@ cbuffer FrameData : register(b0, space0)
 [[vk::binding(16, 0)]]
 Texture2D<float4> FrameTexture : register(t0, space0);
 
+[[vk::binding(17, 0)]]
+Texture2D<float4> FrameSecondTexture : register(t1, space0);
+
 [[vk::binding(40, 0)]]
 SamplerState FrameSampler : register(s0, space0);
+
+[[vk::binding(41, 0)]]
+SamplerState FrameSecondSampler : register(s1, space0);
 
 [[vk::binding(32, 0)]]
 RWStructuredBuffer<uint> FrameStorageBuffer : register(u0, space0);
@@ -83,6 +89,12 @@ float4 PSGraphMain(VertexOutput input) : SV_Target0
 float4 PSSampledMain(VertexOutput input) : SV_Target0
 {
     return FrameTexture.Sample(FrameSampler, float2(0.5, 0.5));
+}
+
+float4 PSSampledMultipleMain(VertexOutput input) : SV_Target0
+{
+    return (FrameTexture.Sample(FrameSampler, float2(0.5, 0.5))
+        + FrameSecondTexture.Sample(FrameSecondSampler, float2(0.5, 0.5))) * 0.5;
 }
 
 float4 PSSpriteMain(SpriteVertexOutput input) : SV_Target0
