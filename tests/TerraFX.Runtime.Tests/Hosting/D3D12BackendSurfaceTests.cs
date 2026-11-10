@@ -199,7 +199,7 @@ internal sealed partial class EngineHostOptionsTests
     [TestCase(false, true, GraphicsFailurePolicy.StopHost, true, false)]
     [TestCase(false, true, GraphicsFailurePolicy.SuspendPresentation, true, false)]
     [TestCase(false, false, GraphicsFailurePolicy.StopHost, false, false)]
-    [TestCase(false, false, GraphicsFailurePolicy.SuspendPresentation, true, true)]
+    [TestCase(false, false, GraphicsFailurePolicy.SuspendPresentation, true, true, Category = "ProcessIsolatedQuarantine")]
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
@@ -218,6 +218,15 @@ internal sealed partial class EngineHostOptionsTests
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
             Assert.Ignore("The Interactive EngineHost witness requires Windows 11.");
+            return;
+        }
+
+        if (injectUnknownPresentResult
+            && !StringComparer.Ordinal.Equals(
+                Environment.GetEnvironmentVariable("TERRAFX_D3D12_QUARANTINE_CHILD"),
+                "1"))
+        {
+            D3D12QuarantineTestProcess.Run();
             return;
         }
 

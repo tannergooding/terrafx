@@ -122,6 +122,17 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~D3D12BackendCreatesAndCompilesWin32FlipDiscardSurface|FullyQualifiedName~EngineHostInteractiveStartupMapsSurfaceBeforeWindowReceipt"
 ```
 
+The unknown-present quarantine case runs in a child testhost because safe shutdown intentionally retains process-global native ownership until process exit.
+
+### EngineHost graphics recovery
+
+These fake-backend tests cover retry after a failed OffscreenNative replacement, device-epoch advancement, and Interactive Surface-epoch/metrics republishing. Interactive coverage requires Windows; the OffscreenNative case also runs on WSLg and does not qualify native device-loss recovery:
+
+```powershell
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~RecoversInteractiveGraphicsAndPublishesNewSurfaceEpoch|FullyQualifiedName~RecoversSuspendedOffscreenGraphicsWithNextDeviceEpoch"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~RecoversInteractiveGraphicsAndPublishesNewSurfaceEpoch|FullyQualifiedName~RecoversSuspendedOffscreenGraphicsWithNextDeviceEpoch"
+```
+
 ### D3D12 OffscreenNative startup and descriptor-set probes
 
 The focused Runtime tests exercise D3D12 startup and descriptor writes using a `PlatformHostOwner`-issued identity:
@@ -241,6 +252,10 @@ The standard Platform.Tests selection also exercises `WaylandDisplayConnectionTe
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~WaylandClipboardTransferTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release --filter "FullyQualifiedName~WaylandClipboardTransferTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
+
+An isolated nested-X11 Weston compositor on test-owned Xvfb exposes the Wayland seat/data-device and completes a `wl-copy`/`wl-paste` UTF-8 round trip. This is compositor-client protocol evidence only; it does not qualify `ClipboardTextService` gesture authorization or refusal/cancellation/timeout outcomes, and it does not use WSLg's shared `:0` selection.
+
+The gated Runtime clipboard-service witness builds, but execution on the isolated compositor currently aborts the test host with a SIGSEGV during Wayland event dispatch. A no-clipboard variant reaches one visible presentation and then crashes during `EngineHost.DisposeAsync`; no service gesture/result is claimed.
 
 Wayland fallback tests require an available X11 display and an intentionally unavailable Wayland socket. Run them with the WSLg environment configured above:
 
@@ -803,6 +818,8 @@ Remove-Item Env:\TERRAFX_SCENE_ACTIVATION_CONSUMER
 ```
 
 When set, the test launches that exact executable and does not fall back to JIT if it fails.
+
+The public consumer binds `EngineHost.RecoverGraphicsAsync` to `Func<CancellationToken, Task>` to compile-check its public signature. It does not invoke recovery because Headless has no GraphicsDevice.
 
 NativeAOT does not support cross-OS compilation. On WSLg, the Linux GCC 15 toolchain is privately extracted under `artifacts/linux/native/gcc-toolchain`; no system packages are installed. For a fresh WSLg workspace, stage GCC and its development dependencies without system installation:
 

@@ -67,7 +67,7 @@ internal sealed partial class SceneAssetStoreTests
             var activation = await loader.ActivateAsync(prepared).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             Assert.That(activation.Status, Is.EqualTo(SceneActivationStatus.Activated));
             Assert.That(activation.Instance, Is.Not.Null);
-            await Task.Delay(100).ConfigureAwait(false);
+            await host.InvokeAsync(_ => world!.Step()).ConfigureAwait(false);
 
             RenderExtractionResponse? response = null;
             var cameraId = Guid.Empty;

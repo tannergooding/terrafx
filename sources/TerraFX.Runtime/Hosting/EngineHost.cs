@@ -601,47 +601,9 @@ public sealed partial class EngineHost : IAsyncDisposable
     {
         var graphicsDevice = Volatile.Read(ref _graphicsDevice);
 
-        if (graphicsDevice is null)
+        if (graphicsDevice is not null)
         {
-            return;
-        }
-
-        var policy = _options.GraphicsFailurePolicy;
-        var diagnostic = new Diagnostic(
-            "graphics-device-lost",
-            DiagnosticSeverity.Error,
-            System.Diagnostics.Stopwatch.GetTimestamp(),
-            hostId: Volatile.Read(ref _platformOwner)?.OwnerId,
-            worldGuid: null,
-            deviceId: null,
-            surfaceId: null,
-            deviceEpoch: graphicsDevice.DeviceEpoch,
-            surfaceEpoch: null,
-            swapchainEpoch: null,
-            tick: null,
-            systemId: null,
-            passId: null,
-            assetId: null,
-            commandIdentity: null,
-            operation: "GraphicsDevice",
-            nativeResult,
-            message: policy is GraphicsFailurePolicy.StopHost
-                ? "The graphics device was lost; the host is stopping."
-                : "The graphics device was lost; simulation and audio continue while presentation is suspended.",
-            context: [
-                new DiagnosticContextEntry("AdapterName", graphicsDevice.Capabilities.AdapterName),
-                new DiagnosticContextEntry("GraphicsFailurePolicy", policy.ToString()),
-            ]);
-        Volatile.Read(ref _diagnostics)?.Write(diagnostic, executionSessionId: null, worldOwnerId: null);
-
-        if (policy is GraphicsFailurePolicy.StopHost)
-        {
-            var stopTask = StopAsync();
-            _ = stopTask.ContinueWith(
-                static task => _ = task.Exception,
-                CancellationToken.None,
-                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
+            HandleGraphicsDeviceLost(graphicsDevice, nativeResult);
         }
     }
 
@@ -1207,6 +1169,7 @@ public sealed partial class EngineHost : IAsyncDisposable
 
         var failures = inputFailures;
         var surfaceRetirementFailed = false;
+        var graphicsRetirementFailed = false;
 
         try
         {
@@ -1218,7 +1181,30 @@ public sealed partial class EngineHost : IAsyncDisposable
             surfaceRetirementFailed = true;
         }
 
-        if ((_platformOwner is not null) && !surfaceRetirementFailed)
+        if (!surfaceRetirementFailed && (_graphicsDevice is GraphicsDevice graphicsDevice))
+        {
+            try
+            {
+                ShutdownGraphicsDeviceOnOwner(graphicsDevice);
+            }
+            catch (Exception exception)
+            {
+                failures.Add(exception);
+                graphicsRetirementFailed = true;
+            }
+        }
+
+        if (_graphicsRecoveryBlocked && !graphicsRetirementFailed)
+        {
+            failures.Add(new InvalidOperationException(
+                "The Platform owner remains retained because graphics recovery could not prove replacement-device retirement."));
+            graphicsRetirementFailed = true;
+        }
+
+        if ((_platformOwner is not null)
+            && !surfaceRetirementFailed
+            && !graphicsRetirementFailed
+            && !_graphicsRecoveryBlocked)
         {
             try
             {
@@ -1324,11 +1310,14 @@ public sealed partial class EngineHost : IAsyncDisposable
             failures.Add(exception);
         }
 
-        if (_graphicsDevice is not null)
+        if ((_graphicsDevice is GraphicsDevice graphicsDevice)
+            && !_graphicsShutdownAttempts.Contains(graphicsDevice)
+            && (_platformOwner is null))
         {
             try
             {
-                await _graphicsDevice.ShutdownAsync().ConfigureAwait(false);
+                _ = _graphicsShutdownAttempts.Add(graphicsDevice);
+                await graphicsDevice.ShutdownAsync().ConfigureAwait(false);
             }
             catch (Exception exception)
             {

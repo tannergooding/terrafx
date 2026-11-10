@@ -6,6 +6,7 @@ using System.Collections.Immutable;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -20,6 +21,7 @@ using TerraFX.Hosting;
 using TerraFX.Numerics;
 using TerraFX.Platform;
 using TerraFX.Rendering;
+using TerraFX.Runtime.Tests.Scenes;
 
 namespace TerraFX.Runtime.Tests.Hosting;
 
@@ -1935,6 +1937,235 @@ internal sealed partial class EngineHostOptionsTests
         Assert.That(CreateHeadlessOptions(assetStoreOptions, cpuWorkerCount: 0).CpuWorkerCount, Is.Zero);
         Assert.That(CreateHeadlessOptions(assetStoreOptions, graphicsFrameSlotCount: 1).GraphicsFrameSlotCount, Is.EqualTo(1));
         Assert.That(CreateHeadlessOptions(assetStoreOptions, graphicsFrameSlotCount: 4).GraphicsFrameSlotCount, Is.EqualTo(4));
+    }
+
+    [Test]
+    public async Task RecoversInteractiveGraphicsAndPublishesNewSurfaceEpoch()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Ignore("The Interactive fake-backend recovery witness requires WindowsNative windows.");
+            return;
+        }
+
+        var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
+        var packagePath = SceneAssetStoreTests.Package.WritePackage(packageBytes);
+        var assetStoreOptions = new AssetStoreOptions(
+            packagePath,
+            SHA256.HashData(packageBytes),
+            CreateAssetStoreOptions().Registration);
+        var options = new EngineHostOptions(
+            HostProfile.Interactive,
+            PlatformBackend.WindowsNative,
+            GraphicsBackend.D3D12,
+            GraphicsRecoveryTestBackend.CreateRegistration(
+                GraphicsDeviceProfile.Interactive,
+                GraphicsPlatformKind.Win32),
+            assetStoreOptions) {
+            CpuWorkerCount = 0,
+            GraphicsFailurePolicy = GraphicsFailurePolicy.SuspendPresentation,
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
+        EngineHost? host = null;
+        GpuBuffer? oldBuffer = null;
+        GpuBuffer? replacementBuffer = null;
+
+        try
+        {
+            host = await EngineHost.StartAsync(options).ConfigureAwait(false);
+            var engineHost = host;
+            var windowReceipt = await engineHost.CreateWindowAsync(new WindowOptions("Graphics recovery test") {
+                ClientSize = new Vector2(640.0f, 360.0f),
+                Visible = false,
+            }).ConfigureAwait(false);
+            Assert.That(windowReceipt.Status, Is.EqualTo(WindowCreationStatus.Created));
+            var window = windowReceipt.Window
+                ?? throw new InvalidOperationException("The recovery test window receipt omitted its handle.");
+            Surface? oldSurface = null;
+            await engineHost.InvokeAsync(_ => oldSurface = engineHost.GetSurface(window))
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            var initialSurface = oldSurface
+                ?? throw new InvalidOperationException("The recovery test window omitted its initial Surface.");
+            var oldDevice = engineHost.GraphicsDevice
+                ?? throw new InvalidOperationException("The Interactive host has no GraphicsDevice.");
+            var oldDeviceEpoch = oldDevice.DeviceEpoch;
+            var oldSurfaceEpoch = initialSurface.SurfaceEpoch;
+            var ownerId = oldDevice.OwnerId;
+            var bufferDescription = new BufferDescription(
+                64,
+                BufferUsage.CopySource,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: null,
+                debugName: "interactive-recovery-device-loss");
+
+            oldBuffer = await oldDevice.CreateBufferAsync(bufferDescription)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            _ = Assert.ThrowsAsync<GraphicsDeviceLostException>(
+                async () => _ = await oldDevice.CreateBufferAsync(bufferDescription)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+            Assert.That(oldDevice.Status, Is.EqualTo(GraphicsDeviceStatus.Lost));
+
+            await engineHost.RecoverGraphicsAsync()
+                .WaitAsync(TimeSpan.FromSeconds(10))
+                .ConfigureAwait(false);
+
+            var replacementDevice = engineHost.GraphicsDevice
+                ?? throw new InvalidOperationException("Graphics recovery published no GraphicsDevice.");
+            Surface? replacementSurface = null;
+            uint metricsSurfaceEpoch = 0;
+            uint metricsSwapchainEpoch = 0;
+            await engineHost.InvokeAsync(_ => {
+                replacementSurface = engineHost.GetSurface(window);
+                var metrics = engineHost.Platform.GetMetrics(window);
+                metricsSurfaceEpoch = metrics.SurfaceEpoch;
+                metricsSwapchainEpoch = metrics.SwapchainEpoch;
+            }).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var activeSurface = replacementSurface
+                ?? throw new InvalidOperationException("Graphics recovery published no replacement Surface.");
+            Assert.That(replacementDevice.OwnerId, Is.EqualTo(ownerId));
+            Assert.That(replacementDevice.DeviceEpoch, Is.EqualTo(oldDeviceEpoch + 1));
+            Assert.That(replacementDevice.Status, Is.EqualTo(GraphicsDeviceStatus.Ready));
+            Assert.That(activeSurface, Is.Not.SameAs(initialSurface));
+            Assert.That(activeSurface.SurfaceEpoch, Is.EqualTo(oldSurfaceEpoch + 1));
+            Assert.That(initialSurface.SurfaceEpoch, Is.EqualTo(oldSurfaceEpoch));
+            Assert.That(metricsSurfaceEpoch, Is.EqualTo(activeSurface.SurfaceEpoch));
+            Assert.That(metricsSwapchainEpoch, Is.EqualTo(activeSurface.SwapchainEpoch));
+            Assert.That(initialSurface.IsRetired, Is.True);
+
+            replacementBuffer = await replacementDevice.CreateBufferAsync(bufferDescription)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert.That(replacementBuffer.Handle.OwnerId, Is.EqualTo(ownerId));
+            Assert.That(replacementBuffer.Handle.DeviceEpoch, Is.EqualTo(replacementDevice.DeviceEpoch));
+            Assert.That(oldBuffer.Handle.DeviceEpoch, Is.EqualTo(oldDeviceEpoch));
+        }
+        finally
+        {
+            replacementBuffer?.Dispose();
+            oldBuffer?.Dispose();
+
+            try
+            {
+                if (host is not null)
+                {
+                    await host.DisposeAsync().AsTask()
+                        .WaitAsync(TimeSpan.FromSeconds(10))
+                        .ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                File.Delete(packagePath);
+            }
+        }
+    }
+
+    [Test]
+    public async Task RecoversSuspendedOffscreenGraphicsWithNextDeviceEpoch()
+    {
+        var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
+        var packagePath = SceneAssetStoreTests.Package.WritePackage(packageBytes);
+        var assetStoreOptions = new AssetStoreOptions(
+            packagePath,
+            SHA256.HashData(packageBytes),
+            CreateAssetStoreOptions().Registration);
+        var options = new EngineHostOptions(
+            HostProfile.OffscreenNative,
+            PlatformBackend.Headless,
+            GraphicsBackend.D3D12,
+            GraphicsRecoveryTestBackend.CreateRegistration(),
+            assetStoreOptions) {
+            CpuWorkerCount = 0,
+            GraphicsFailurePolicy = GraphicsFailurePolicy.SuspendPresentation,
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
+        EngineHost? host = null;
+        GpuBuffer? oldBuffer = null;
+        GpuBuffer? replacementBuffer = null;
+
+        try
+        {
+            host = await EngineHost.StartAsync(options).ConfigureAwait(false);
+            var oldDevice = host.GraphicsDevice
+                ?? throw new InvalidOperationException("The OffscreenNative host has no GraphicsDevice.");
+            var oldRenderer = host.Renderer;
+            var oldResidency = host.GpuResidency
+                ?? throw new InvalidOperationException("The OffscreenNative host has no residency service.");
+            var ownerId = oldDevice.OwnerId;
+            var oldEpoch = oldDevice.DeviceEpoch;
+            var bufferDescription = new BufferDescription(
+                64,
+                BufferUsage.CopySource,
+                GpuMemoryKind.DeviceLocal,
+                structuredStride: null,
+                debugName: "recovery-device-loss");
+
+            _ = Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await host.RecoverGraphicsAsync().ConfigureAwait(false));
+            Assert.That(host.GraphicsDevice, Is.SameAs(oldDevice));
+
+            oldBuffer = await oldDevice.CreateBufferAsync(bufferDescription)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            _ = Assert.ThrowsAsync<GraphicsDeviceLostException>(
+                async () => _ = await oldDevice.CreateBufferAsync(bufferDescription)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+            Assert.That(oldBuffer.Handle.DeviceEpoch, Is.EqualTo(oldEpoch));
+            Assert.That(oldDevice.Status, Is.EqualTo(GraphicsDeviceStatus.Lost));
+            Assert.That(host.Completion.IsCompleted, Is.False);
+
+            _ = Assert.ThrowsAsync<NotSupportedException>(
+                async () => await host.RecoverGraphicsAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+            Assert.That(host.GraphicsDevice, Is.SameAs(oldDevice));
+            Assert.That(oldDevice.Status, Is.EqualTo(GraphicsDeviceStatus.Disposed));
+            Assert.That(oldDevice.DeviceEpoch, Is.EqualTo(oldEpoch));
+
+            await host.RecoverGraphicsAsync()
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+
+            var replacementDevice = host.GraphicsDevice
+                ?? throw new InvalidOperationException("Graphics recovery published no GraphicsDevice.");
+            Assert.That(replacementDevice, Is.Not.SameAs(oldDevice));
+            Assert.That(replacementDevice.OwnerId, Is.EqualTo(ownerId));
+            Assert.That(replacementDevice.DeviceEpoch, Is.EqualTo(oldEpoch + 1));
+            Assert.That(oldBuffer.Handle.DeviceEpoch, Is.Not.EqualTo(replacementDevice.DeviceEpoch));
+            Assert.That(replacementDevice.Status, Is.EqualTo(GraphicsDeviceStatus.Ready));
+            Assert.That(oldDevice.Status, Is.EqualTo(GraphicsDeviceStatus.Disposed));
+            Assert.That(host.Renderer, Is.Not.SameAs(oldRenderer));
+            Assert.That(host.GpuResidency, Is.Not.SameAs(oldResidency));
+
+            replacementBuffer = await replacementDevice.CreateBufferAsync(bufferDescription)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert.That(replacementBuffer.Handle.OwnerId, Is.EqualTo(ownerId));
+            Assert.That(replacementBuffer.Handle.DeviceEpoch, Is.EqualTo(replacementDevice.DeviceEpoch));
+        }
+        finally
+        {
+            replacementBuffer?.Dispose();
+            oldBuffer?.Dispose();
+
+            try
+            {
+                if (host is not null)
+                {
+                    await host.DisposeAsync().AsTask()
+                        .WaitAsync(TimeSpan.FromSeconds(10))
+                        .ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                File.Delete(packagePath);
+            }
+        }
     }
 
     [Test]

@@ -3,6 +3,7 @@
 using System;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Threading.Tasks;
 using TerraFX.Assets;
 using TerraFX.Entities;
@@ -85,6 +86,8 @@ internal static partial class Program
             PersistenceMetadata = CreateHostPersistenceMetadata(),
         };
         var host = await EngineHost.StartAsync(options).ConfigureAwait(false);
+        Func<CancellationToken, Task> recoverGraphics = host.RecoverGraphicsAsync;
+        Check(ReferenceEquals(recoverGraphics.Target, host));
 
         try
         {

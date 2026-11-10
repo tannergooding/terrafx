@@ -187,6 +187,7 @@ internal sealed partial class SceneAssetStoreTests
 
             var activeSceneInstance = sceneInstance
                 ?? throw new InvalidOperationException("The activated Sprite Scene omitted its instance.");
+            await engineHost.InvokeAsync(_ => world!.Step()).ConfigureAwait(false);
             var cameraId = Guid.Empty;
             var targetExtent = new PixelSize(32, 32);
 
