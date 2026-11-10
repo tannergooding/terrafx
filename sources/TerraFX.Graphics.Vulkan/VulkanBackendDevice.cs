@@ -37,7 +37,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
     private readonly uint[] _queueFamilyIndices;
     private readonly VkQueue[] _queues;
     private readonly Func<VkResult?>? _surfaceAcquireResultOverride;
-    private readonly Func<VkResult, VkResult>? _surfaceFenceWaitResultOverride;
+    private readonly Func<ulong, VkResult, VkResult>? _surfaceFenceWaitResultOverride;
     private readonly ulong _surfaceFenceWaitTimeoutNanoseconds;
     private readonly Action? _surfaceImageAcquiredObserver;
     private readonly Func<VkResult, VkResult>? _surfacePresentResultOverride;
@@ -71,7 +71,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         Func<VkResult?>? surfaceAcquireResultOverride,
         Action? surfaceImageAcquiredObserver,
         Func<VkResult, VkResult>? surfacePresentResultOverride,
-        Func<VkResult, VkResult>? surfaceFenceWaitResultOverride,
+        Func<ulong, VkResult, VkResult>? surfaceFenceWaitResultOverride,
         ulong surfaceFenceWaitTimeoutNanoseconds)
     {
         ArgumentNullException.ThrowIfNull(enabledSpirvExtensions);
@@ -210,7 +210,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         Func<VkResult?>? surfaceAcquireResultOverride = null,
         Action? surfaceImageAcquiredObserver = null,
         Func<VkResult, VkResult>? surfacePresentResultOverride = null,
-        Func<VkResult, VkResult>? surfaceFenceWaitResultOverride = null,
+        Func<ulong, VkResult, VkResult>? surfaceFenceWaitResultOverride = null,
         ulong surfaceFenceWaitTimeoutNanoseconds = 5_000_000_000)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(graphFrameSlotCount, 1);

@@ -1499,13 +1499,14 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
             var remainingNanoseconds = elapsedNanoseconds < _device.SurfaceFenceWaitTimeoutNanoseconds
                 ? _device.SurfaceFenceWaitTimeoutNanoseconds - elapsedNanoseconds
                 : 0;
+            var waitTimeoutNanoseconds = Math.Min(FenceWaitSliceNanoseconds, remainingNanoseconds);
             var result = VulkanApi.vkWaitForFences(
                 _device.DeviceHandle,
                 1,
                 &fence,
                 waitAll: 1,
-                Math.Min(FenceWaitSliceNanoseconds, remainingNanoseconds));
-            result = _device.SurfaceFenceWaitResultOverride?.Invoke(result) ?? result;
+                waitTimeoutNanoseconds);
+            result = _device.SurfaceFenceWaitResultOverride?.Invoke(waitTimeoutNanoseconds, result) ?? result;
 
             if (result == VkResult.VK_SUCCESS)
             {

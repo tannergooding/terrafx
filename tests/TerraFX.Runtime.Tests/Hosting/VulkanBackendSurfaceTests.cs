@@ -29,7 +29,7 @@ internal sealed partial class EngineHostOptionsTests
             Action? surfaceImageAcquiredObserver = null,
             Func<VkResult?>? surfaceAcquireResultOverride = null,
             Func<VkResult, VkResult>? surfacePresentResultOverride = null,
-            Func<VkResult, VkResult>? surfaceFenceWaitResultOverride = null,
+            Func<ulong, VkResult, VkResult>? surfaceFenceWaitResultOverride = null,
             ulong surfaceFenceWaitTimeoutNanoseconds = 5_000_000_000)
     {
         var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
@@ -676,8 +676,13 @@ internal sealed partial class EngineHostOptionsTests
             return;
         }
 
-        static VkResult OverrideFenceWaitResult(VkResult nativeResult)
+        var maximumRequestedWaitNanoseconds = 0UL;
+        var didObserveFenceWait = false;
+
+        VkResult OverrideFenceWaitResult(ulong waitTimeoutNanoseconds, VkResult nativeResult)
         {
+            didObserveFenceWait = true;
+            maximumRequestedWaitNanoseconds = Math.Max(maximumRequestedWaitNanoseconds, waitTimeoutNanoseconds);
             return nativeResult == VkResult.VK_SUCCESS ? VkResult.VK_TIMEOUT : nativeResult;
         }
 
@@ -691,6 +696,8 @@ internal sealed partial class EngineHostOptionsTests
             registration,
             schemas,
             expectPresentationFenceTimeout: true);
+        Assert.That(didObserveFenceWait, Is.True);
+        Assert.That(maximumRequestedWaitNanoseconds, Is.LessThanOrEqualTo(1_000_000UL));
     }
 
     [Test]
