@@ -215,12 +215,12 @@ internal sealed unsafe partial class X11KeyboardKeymap : IDisposable
         return XkbKeyNameMapper.TryMap(Marshal.PtrToStringUTF8(keyName), out hidUsage);
     }
 
-    internal string? UpdateKey(uint xKeycode, bool isDown)
+    internal string? UpdateKey(uint xKeycode, bool isDown, bool allowCommittedText = true)
     {
         ObjectDisposedException.ThrowIf(_isDisposed, this);
         _ = XkbCommonNative.XkbStateUpdateKey(_state, xKeycode, isDown ? 1u : 0u);
 
-        if (!isDown)
+        if (!isDown || !allowCommittedText)
         {
             return null;
         }

@@ -63,6 +63,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     private readonly bool _ewmhFullscreenAvailable;
     private readonly LinuxEvdevGamepadCapture? _gamepadCapture;
     private readonly PlatformServiceStatus _gamepadStatus;
+    private nint _inputMethod;
     private readonly PlatformInputSampleQueue _inputSamples;
     private bool _isDisposed;
     private readonly X11KeyboardKeymap? _keyboardKeymap;
@@ -242,6 +243,8 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 
         try
         {
+            _inputMethod = X11TextInputContext.OpenInputMethod(_display);
+
             try
             {
                 _gamepadCapture = new LinuxEvdevGamepadCapture(_inputSamples, TimeProvider.System);
@@ -262,6 +265,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         {
             _gamepadCapture?.Dispose();
             _keyboardKeymap?.Dispose();
+            X11TextInputContext.CloseInputMethod(_inputMethod);
             _ = X11Native.XCloseDisplay(_display);
             throw;
         }
@@ -583,6 +587,8 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             throw new InvalidOperationException("The X11 window handle is stale or no longer active.");
         }
 
+        state.TextInputContext?.Dispose(TextCompositionCancelReason.SessionDisposed);
+        state.TextInputContext = null;
         CancelClipboardWritesForWindow(state.NativeWindow);
         _ = _windowsByNativeId.Remove(state.NativeWindow);
         CancelClipboardReadsForWindow(window, ClipboardTextResult.SelectionExpired);
@@ -747,6 +753,9 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 
         foreach (var state in _windowsByHandle.Values)
         {
+            state.TextInputContext?.Dispose(TextCompositionCancelReason.SessionDisposed);
+            state.TextInputContext = null;
+
             if (!state.NativeDestroyed)
             {
                 _ = X11Native.XDestroyWindow(_display, state.NativeWindow);
@@ -759,6 +768,8 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         _ = X11Native.XSync(_display, discard: 0);
         _gamepadCapture?.Dispose();
         _keyboardKeymap?.Dispose();
+        X11TextInputContext.CloseInputMethod(_inputMethod);
+        _inputMethod = 0;
         _ = X11Native.XCloseDisplay(_display);
         _isDisposed = true;
     }
@@ -924,6 +935,20 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
                 throw new InvalidOperationException("X11 failed while draining its owner event queue.");
             }
 
+            var inputMethodFiltered = false;
+
+            if ((_inputMethod != 0)
+                && (nativeEvent.Type != GenericEventType)
+                && _windowsByNativeId.TryGetValue(nativeEvent.Any.Window, out var inputMethodState)
+                && (inputMethodState.TextInputContext is X11TextInputContext inputContext))
+            {
+                inputMethodFiltered = X11InputMethodNative.XFilterEvent(
+                    _display,
+                    &nativeEvent,
+                    nativeEvent.Any.Window) != 0;
+                inputContext.ThrowCallbackFailure();
+            }
+
             if (nativeEvent.Type == MappingNotifyEvent)
             {
                 if (X11Native.XRefreshKeyboardMapping(&nativeEvent.Mapping) == 0)
@@ -949,7 +974,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 
                 _monitorTopologyChanged = true;
             }
-            else if (nativeEvent.Type == ClientMessageEvent)
+            else if ((nativeEvent.Type == ClientMessageEvent) && !inputMethodFiltered)
             {
                 var clientMessage = nativeEvent.ClientMessage;
 
@@ -1072,6 +1097,14 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             else if (nativeEvent.Type == GenericEventType)
             {
                 CaptureXInput2Event(&nativeEvent.Cookie);
+            }
+
+            if ((nativeEvent.Type == KeyPressEvent)
+                && !inputMethodFiltered
+                && _windowsByNativeId.TryGetValue(nativeEvent.Key.Window, out var textInputState)
+                && (textInputState.TextInputContext is X11TextInputContext textInputContext))
+            {
+                textInputContext.LookupString(&nativeEvent.Key);
             }
         }
 
@@ -1358,6 +1391,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         if (!state.IsFocused)
         {
             state.KeysDown.Clear();
+            state.TextInputContext?.UnsetFocus();
             _keyboardKeymap?.ResetComposeState();
         }
 
@@ -1370,6 +1404,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 
         if (state.IsFocused)
         {
+            state.TextInputContext?.SetFocus();
             QueueInputStateReconciliation(state);
         }
     }
@@ -1388,7 +1423,10 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             xKeycode,
             isDown,
             isRepeat);
-        var committedText = _keyboardKeymap?.UpdateKey(xKeycode, isDown);
+        var committedText = _keyboardKeymap?.UpdateKey(
+            xKeycode,
+            isDown,
+            allowCommittedText: state.TextInputContext is null);
         var monotonicTimestamp = TimeProvider.System.GetTimestamp();
         _ = _inputSamples.TryEnqueue(new PlatformInputSample(
             kind,
@@ -2052,6 +2090,16 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             nint classHints);
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct AnyEvent
+        {
+            internal int Type;
+            internal nuint Serial;
+            internal int SendEvent;
+            internal nint Display;
+            internal nuint Window;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct ButtonEvent
         {
             internal int Type;
@@ -2197,6 +2245,9 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         {
             [FieldOffset(0)]
             internal int Type;
+
+            [FieldOffset(0)]
+            internal AnyEvent Any;
 
             [FieldOffset(0)]
             internal KeyEvent Key;
@@ -2390,6 +2441,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         internal bool NativeDestroyed;
         internal WindowMode RequestedMode;
         internal bool Resizable;
+        internal X11TextInputContext? TextInputContext;
 
         internal WindowState(WindowHandle window, nuint nativeWindow, WindowOptions options)
         {

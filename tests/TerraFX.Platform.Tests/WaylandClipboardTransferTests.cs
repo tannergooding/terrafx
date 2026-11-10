@@ -29,6 +29,7 @@ internal sealed class WaylandClipboardTransferTests
             static _ => { },
             static _ => { },
             timeoutSource,
+            TimeProvider.System.GetTimestamp(),
             callerCancellationToken);
         return await WaylandPlatformBackend.ReadClipboardTransferAsync(transfer, stream).ConfigureAwait(false);
     }
