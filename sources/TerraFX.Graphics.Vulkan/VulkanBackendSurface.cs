@@ -1495,12 +1495,16 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var elapsedNanoseconds = checked((ulong)timer.Elapsed.Ticks * 100UL);
+            var remainingNanoseconds = elapsedNanoseconds < _device.SurfaceFenceWaitTimeoutNanoseconds
+                ? _device.SurfaceFenceWaitTimeoutNanoseconds - elapsedNanoseconds
+                : 0;
             var result = VulkanApi.vkWaitForFences(
                 _device.DeviceHandle,
                 1,
                 &fence,
                 waitAll: 1,
-                FenceWaitSliceNanoseconds);
+                Math.Min(FenceWaitSliceNanoseconds, remainingNanoseconds));
             result = _device.SurfaceFenceWaitResultOverride?.Invoke(result) ?? result;
 
             if (result == VkResult.VK_SUCCESS)
@@ -1514,8 +1518,9 @@ internal sealed unsafe class VulkanBackendSurface : IGraphicsBackendSurface
                 EnsureSuccess(result, "vkWaitForFences(presentation)");
             }
 
-            if (timer.Elapsed.TotalMilliseconds
-                >= _device.SurfaceFenceWaitTimeoutNanoseconds / 1_000_000.0)
+            elapsedNanoseconds = checked((ulong)timer.Elapsed.Ticks * 100UL);
+
+            if (elapsedNanoseconds >= _device.SurfaceFenceWaitTimeoutNanoseconds)
             {
                 _device.MarkUncertainWsiOperation();
                 throw new TimeoutException("Vulkan did not signal the presentation fence within the retirement timeout.");
