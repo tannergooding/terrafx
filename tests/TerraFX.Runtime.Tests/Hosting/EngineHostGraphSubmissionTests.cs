@@ -223,6 +223,21 @@ internal sealed partial class EngineHostOptionsTests
             useTransientCopyAliasing: true);
 
     [Test]
+    public Task D3D12SubmitsMultipleStorageBufferComputeGraph()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.D3D12,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: true,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false);
+
+    [Test]
     public Task D3D12SubmitsTransientBufferAliasGroupsAcrossLiveSlots()
         => RunOffscreenGraphAsync(
             GraphicsBackend.D3D12,
