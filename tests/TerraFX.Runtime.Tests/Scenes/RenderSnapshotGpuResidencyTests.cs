@@ -14,6 +14,7 @@ using TerraFX.Buffers;
 using TerraFX.Content.Tools;
 using TerraFX.Entities;
 using TerraFX.Graphics;
+using TerraFX.Graphics.D3D12;
 using TerraFX.Graphics.Vulkan;
 using TerraFX.Hosting;
 using TerraFX.Platform;
@@ -37,9 +38,12 @@ internal sealed partial class SceneAssetStoreTests
     public Task SnapshotPinnedAtlasPageBecomesResidentAfterSceneAndSnapshotRetireAsync()
         => RunSnapshotAtlasPageResidencyAsync(renderThroughNativeGraph: false);
 
-    [Test]
-    public Task SnapshotPinnedAtlasPageSamplesThroughNativeGraphAsync()
-        => RunSnapshotAtlasPageResidencyAsync(renderThroughNativeGraph: true);
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotPinnedAtlasPageSamplesThroughNativeGraphAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotAtlasPageResidencyAsync(
+            renderThroughNativeGraph: true,
+            graphicsBackend: graphicsBackend);
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Reliability",
@@ -52,7 +56,8 @@ internal sealed partial class SceneAssetStoreTests
     private async Task RunSnapshotAtlasPageResidencyAsync(
         bool renderThroughNativeGraph,
         bool failGraphRecording = false,
-        bool cancelGraphAdmission = false)
+        bool cancelGraphAdmission = false,
+        GraphicsBackend graphicsBackend = GraphicsBackend.Vulkan)
     {
         using var submissionCancellation = new CancellationTokenSource();
 
@@ -71,6 +76,12 @@ internal sealed partial class SceneAssetStoreTests
         if (renderThroughNativeGraph && string.IsNullOrWhiteSpace(shaderFixtureDirectory))
         {
             Assert.Ignore("The M04 shader fixture is required for package-backed Sprite graph submission.");
+            return;
+        }
+
+        if ((graphicsBackend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            Assert.Ignore("The D3D12 Sprite graph requires Windows 11.");
             return;
         }
 
@@ -109,11 +120,16 @@ internal sealed partial class SceneAssetStoreTests
         var assetRegistrationBuilder = new AssetStoreRegistrationBuilder(schemas);
         _ = SceneSupport.RegisterAssetCodecs(assetRegistrationBuilder);
         _ = Renderer.RegisterAssetCodecs(assetRegistrationBuilder);
+        var graphicsBackendRegistration = graphicsBackend switch {
+            GraphicsBackend.D3D12 => D3D12GraphicsBackend.CreateRegistration(),
+            GraphicsBackend.Vulkan => VulkanGraphicsBackend.CreateRegistration(),
+            _ => throw new ArgumentOutOfRangeException(nameof(graphicsBackend)),
+        };
         var hostOptions = new EngineHostOptions(
             HostProfile.OffscreenNative,
             PlatformBackend.Headless,
-            GraphicsBackend.Vulkan,
-            VulkanGraphicsBackend.CreateRegistration(),
+            graphicsBackend,
+            graphicsBackendRegistration,
             new AssetStoreOptions(
                 packagePath,
                 SHA256.HashData(packageBytes),
@@ -138,17 +154,17 @@ internal sealed partial class SceneAssetStoreTests
             }
             catch (DllNotFoundException exception)
             {
-                Assert.Ignore($"Vulkan system library is unavailable: {exception.Message}");
+                Assert.Ignore($"{graphicsBackend} system library is unavailable: {exception.Message}");
                 return;
             }
             catch (EntryPointNotFoundException exception)
             {
-                Assert.Ignore($"Vulkan system entry point is unavailable: {exception.Message}");
+                Assert.Ignore($"{graphicsBackend} system entry point is unavailable: {exception.Message}");
                 return;
             }
             catch (NotSupportedException exception)
             {
-                Assert.Ignore($"No Vulkan device satisfies OffscreenNative: {exception.Message}");
+                Assert.Ignore($"No {graphicsBackend} device satisfies OffscreenNative: {exception.Message}");
                 return;
             }
 
@@ -228,12 +244,16 @@ internal sealed partial class SceneAssetStoreTests
             {
                 var fixtureDirectory = shaderFixtureDirectory
                     ?? throw new InvalidOperationException("The package-backed Sprite graph has no shader fixture directory.");
+                var shaderExtension = graphicsBackend == GraphicsBackend.D3D12 ? "dxil" : "spv";
+                var shaderBinaryFormat = graphicsBackend == GraphicsBackend.D3D12
+                    ? ShaderBinaryFormat.Dxil
+                    : ShaderBinaryFormat.SpirV;
                 using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
                     fixtureDirectory,
-                    "M04OffscreenTriangle.vertex-sprite.spv"));
+                    $"M04OffscreenTriangle.vertex-sprite.{shaderExtension}"));
                 using var pixelBytecodeStorage = CreateBytecodeStorage(Path.Combine(
                     fixtureDirectory,
-                    "M04OffscreenTriangle.pixel-sprite.spv"));
+                    $"M04OffscreenTriangle.pixel-sprite.{shaderExtension}"));
                 using var vertexBytecode = vertexBytecodeStorage.AcquireReadLease(
                     0,
                     vertexBytecodeStorage.Length);
@@ -246,12 +266,12 @@ internal sealed partial class SceneAssetStoreTests
                     [
                         new ShaderBytecodeInput(
                             ShaderStage.Vertex,
-                            ShaderBinaryFormat.SpirV,
+                            shaderBinaryFormat,
                             vertexBytecode,
                             vertexReflection),
                         new ShaderBytecodeInput(
                             ShaderStage.Pixel,
-                            ShaderBinaryFormat.SpirV,
+                            shaderBinaryFormat,
                             pixelBytecode,
                             pixelReflection),
                     ],

@@ -523,6 +523,8 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 
 `SnapshotPinnedAtlasPageSamplesThroughNativeGraphAsync` uses a committed Scene/Sprite snapshot, resolves its exact Atlas frame page through `Renderer.EnsureSpritePageResidencyAsync`, uploads the four copied quad vertices and fixed six-element UInt16 index sequence with their captured Atlas UVs, and binds both through nonzero strict subranges of their full imported buffers. The prefix contains degenerate vertex/index data so reading from offset zero cannot produce the expected quad. The graph samples the page in an indexed custom draw and verifies both the rendered quad and an untouched clear pixel, then unloads the Scene and disposes the snapshot before verifying the retained texture readback. The lifetime regression also disposes the imported vertex and index buffers immediately after starting `Renderer.SubmitAsync`; submission pins the output target and imported resources before its first asynchronous wait. A bounded slot is reserved before transient materialization and callback recording, and remains held with the output/imported-resource use leases until the native fence is observed. Callback failure and cancellation during recording before graph admission both release their slot and resource-use leases. This is native graph use of the captured Sprite data, not a built-in Renderer Sprite pipeline or batching path.
 
+The package-backed Sprite range witness passes on Windows D3D12/Vulkan and WSLg Vulkan in Debug/Release; WSLg skips D3D12 and its validation-enabled TRXs contain no VUID or Validation Error.
+
 Run the hardware-independent Sprite quad and snapshot-copy cases without the shader fixture:
 
 ```powershell
