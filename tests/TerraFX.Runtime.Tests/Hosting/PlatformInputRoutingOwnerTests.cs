@@ -1260,7 +1260,7 @@ internal sealed partial class PlatformInputRoutingOwnerTests
                 Is.True);
             nativeRoutingOwner.RouteCapturedInput(focusCapture);
             nativeRoutingOwner.ServiceWindowInputRoutes(nativeHost.GetHostTimestamp());
-            var session = nativeHostRouter.BeginTextSession(new TextInputSessionOptions(
+            var sessionOptions = new TextInputSessionOptions(
                 window,
                 TextInputPurpose.FreeForm,
                 documentRevision: 1,
@@ -1268,9 +1268,16 @@ internal sealed partial class PlatformInputRoutingOwnerTests
                 selectionStart: 0,
                 selectionLength: 0,
                 caretPosition: default,
-                caretSize: default));
+                caretSize: default);
+            var session = nativeHostRouter.BeginTextSession(sessionOptions);
             textSession = session;
             nativeRoutingOwner.SynchronizeTextInputSessions();
+            var textCapabilities = nativeHost.UpdateTextInputSession(
+                window,
+                new TextInputSessionSnapshot(session.SessionId, sessionOptions));
+            Assert.That(
+                textCapabilities,
+                Is.EqualTo(PlatformTextInputCapabilities.CommittedText | PlatformTextInputCapabilities.Composition));
             Assert.That(session.LastDiagnostic?.Code, Is.Null);
 
             // Keep Runtime's session active while the native XIC receives FocusOut and FocusIn.
