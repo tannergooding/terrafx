@@ -302,6 +302,21 @@ internal sealed partial class EngineHostOptionsTests
             useUploadHeapGraphSources: true);
 
     [Test]
+    public Task D3D12SubmitsTransientStorageBufferComputeGraph()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.D3D12,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: true,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false);
+
+    [Test]
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
@@ -734,6 +749,21 @@ internal sealed partial class EngineHostOptionsTests
             overlapTransientBufferLifetimes: false,
             holdGraphCompletion: false,
             useRgba16FloatStorageImage: true);
+
+    [Test]
+    public Task VulkanSubmitsTransientStorageBufferComputeGraph()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.Vulkan,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: true,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false);
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Reliability",
@@ -3746,6 +3776,25 @@ internal sealed partial class EngineHostOptionsTests
                 {
                     Assert.That(BitConverter.ToUInt32(computeStorageImageBytes, 0), Is.EqualTo(2u));
                 }
+            }
+
+            if (useTransientStorage)
+            {
+                var transientStorageImage = storageImage
+                    ?? throw new InvalidOperationException("The transient graph compute test has no storage image.");
+                using var transientImageReadback = await graphicsDevice.ReadbackTextureAsync(
+                    transientStorageImage,
+                    new TextureSubresource(0, 0, TextureAspect.Color))
+                    .ConfigureAwait(false);
+                var transientImageBytes = new byte[checked((int)transientImageReadback.ByteLength)];
+
+                using (var transientImageReadLease = transientImageReadback.AcquireReadLease())
+                {
+                    var copyAction = new ReadbackCopyAction(transientImageBytes);
+                    transientImageReadLease.UseWindow(0, transientImageBytes.Length, ref copyAction);
+                }
+
+                Assert.That(BitConverter.ToUInt32(transientImageBytes, 0), Is.EqualTo(2u));
             }
 
             if (useMultipleComputeStorageBuffers)
