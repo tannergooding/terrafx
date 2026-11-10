@@ -223,6 +223,22 @@ internal sealed partial class EngineHostOptionsTests
             useTransientCopyAliasing: true);
 
     [Test]
+    public Task D3D12SubmitsConstantWriteComputeStorageBufferGraph()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.D3D12,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useConstantWriteComputeBuffer: true);
+
+    [Test]
     public Task D3D12SubmitsMultipleStorageBufferComputeGraph()
         => RunOffscreenGraphAsync(
             GraphicsBackend.D3D12,
@@ -704,6 +720,22 @@ internal sealed partial class EngineHostOptionsTests
             expectStorageImageFormatRejection: true);
 
     [Test]
+    public Task VulkanSubmitsConstantWriteComputeStorageBufferGraph()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.Vulkan,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useConstantWriteComputeBuffer: true);
+
+    [Test]
     public Task VulkanSubmitsMultipleStorageBufferComputeGraph()
         => RunOffscreenGraphAsync(
             GraphicsBackend.Vulkan,
@@ -795,7 +827,8 @@ internal sealed partial class EngineHostOptionsTests
         bool useFloatStorageImage = false,
         bool useSignedStorageImage = false,
         bool useRgba16FloatStorageImage = false,
-        bool expectStorageImageFormatRejection = false)
+        bool expectStorageImageFormatRejection = false,
+        bool useConstantWriteComputeBuffer = false)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -811,6 +844,7 @@ internal sealed partial class EngineHostOptionsTests
                 || useCompute
                 || useTransientStorage
                 || useMultipleComputeStorageBuffers
+                || useConstantWriteComputeBuffer
                 || useFloatStorageImage
                 || useSignedStorageImage
                 || useRgba16FloatStorageImage)
@@ -1430,17 +1464,22 @@ internal sealed partial class EngineHostOptionsTests
                 pipeline = await graphicsDevice.CreatePipelineAsync(pipelineDescription, CancellationToken.None)
                     .ConfigureAwait(false);
 
-                if (useCompute || useTransientStorage || useMultipleComputeStorageBuffers)
+                if (useCompute
+                    || useTransientStorage
+                    || useMultipleComputeStorageBuffers
+                    || useConstantWriteComputeBuffer)
                 {
-                    var computeStage = useFloatStorageImage
-                        ? "compute-storage-float-image"
-                        : useRgba16FloatStorageImage
-                            ? "compute-storage-rgba16-image"
-                            : useSignedStorageImage
-                                ? "compute-storage-signed-image"
-                                : useMultipleComputeStorageBuffers
-                                    ? "compute-storage-buffers"
-                                    : "compute-storage";
+                    var computeStage = useConstantWriteComputeBuffer
+                        ? "compute-storage-write"
+                        : useFloatStorageImage
+                            ? "compute-storage-float-image"
+                            : useRgba16FloatStorageImage
+                                ? "compute-storage-rgba16-image"
+                                : useSignedStorageImage
+                                    ? "compute-storage-signed-image"
+                                    : useMultipleComputeStorageBuffers
+                                        ? "compute-storage-buffers"
+                                        : "compute-storage";
                     using var computeBytecodeStorage = CreateBytecodeStorage(Path.Combine(
                         shaderFixtureDirectory,
                         $"M04OffscreenTriangle.{computeStage}.{shaderExtension}"));
@@ -1482,7 +1521,7 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(uploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
             }
 
-            if (useStorageResources || useCompute || useMultipleComputeStorageBuffers)
+            if (useStorageResources || useCompute || useMultipleComputeStorageBuffers || useConstantWriteComputeBuffer)
             {
                 storageBuffer = await graphicsDevice.CreateBufferAsync(
                     new BufferDescription(
@@ -1559,13 +1598,20 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(storageImageUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
             }
 
-            if (useBufferCopy || useCompute || useTransientStorage || useMultipleComputeStorageBuffers || useTransientBufferAliasing)
+            if (useBufferCopy
+                || useCompute
+                || useTransientStorage
+                || useMultipleComputeStorageBuffers
+                || useTransientBufferAliasing
+                || useConstantWriteComputeBuffer)
             {
-                expectedCopiedBytes = useFloatStorageImage || useSignedStorageImage || useRgba16FloatStorageImage
-                    ? [0x00, 0x00, 0x00, 0x00]
-                    : useCompute || useTransientStorage || useMultipleComputeStorageBuffers
-                        ? [0x02, 0x00, 0x00, 0x00]
-                    : [
+                expectedCopiedBytes = useConstantWriteComputeBuffer
+                    ? [0x40, 0x30, 0x20, 0x10]
+                    : useFloatStorageImage || useSignedStorageImage || useRgba16FloatStorageImage
+                        ? [0x00, 0x00, 0x00, 0x00]
+                        : useCompute || useTransientStorage || useMultipleComputeStorageBuffers
+                            ? [0x02, 0x00, 0x00, 0x00]
+                            : [
                         0x11,
                         0x23,
                         0x47,
@@ -2184,7 +2230,10 @@ internal sealed partial class EngineHostOptionsTests
 
             RenderPassId? computePassId = null;
 
-            if (useCompute || useTransientStorage || useMultipleComputeStorageBuffers)
+            if (useCompute
+                || useTransientStorage
+                || useMultipleComputeStorageBuffers
+                || useConstantWriteComputeBuffer)
             {
                 ImmutableArray<RenderPassId> computePredecessors = [];
 
@@ -2223,7 +2272,28 @@ internal sealed partial class EngineHostOptionsTests
                     RecordCompute);
                 computePassId = computePass;
 
-                if (useMultipleComputeStorageBuffers)
+                if (useConstantWriteComputeBuffer)
+                {
+                    var initialStorageBuffer = storageBufferInitialVersion
+                        ?? throw new InvalidOperationException("The graph constant-write compute test has no imported storage buffer.");
+                    computeStorageWriteVersion = graph.ReadWriteBuffer(
+                        computePass,
+                        initialStorageBuffer,
+                        initialStorageBuffer.Range);
+                    copySourceVersion = computeStorageWriteVersion;
+                    computeBindingSet = new BindingSet(
+                        [
+                            new BufferBinding(
+                                ShaderBindingGroup.Frame,
+                                0,
+                                ShaderResourceKind.StorageBuffer,
+                                computeStorageWriteVersion,
+                                initialStorageBuffer.Range),
+                        ],
+                        [],
+                        []);
+                }
+                else if (useMultipleComputeStorageBuffers)
                 {
                     var initialStorageBuffer = storageBufferInitialVersion
                         ?? throw new InvalidOperationException("The graph multi-buffer compute test has no first imported storage buffer.");
@@ -2594,6 +2664,7 @@ internal sealed partial class EngineHostOptionsTests
                 || useCompute
                 || useTransientStorage
                 || useMultipleComputeStorageBuffers
+                || useConstantWriteComputeBuffer
                 || useTextureCopy)
             {
                 ImmutableArray<RenderPassId> copyPredecessors = computePassId is RenderPassId copyComputePredecessor
@@ -3838,7 +3909,8 @@ internal sealed partial class EngineHostOptionsTests
                 || useCompute
                 || useTransientStorage
                 || useMultipleComputeStorageBuffers
-                || useTransientBufferAliasing)
+                || useTransientBufferAliasing
+                || useConstantWriteComputeBuffer)
             {
                 var destinationBufferForReadback = copyDestinationBuffer
                     ?? throw new InvalidOperationException("The graph copy test has no destination buffer.");
@@ -3890,12 +3962,12 @@ internal sealed partial class EngineHostOptionsTests
                 + $"UniformBuffer={useUniformBuffer}; "
                 + $"SampledTexture={useSampledTexture}; "
                 + $"StorageResources={useStorageResources}; "
-                + $"BufferCopy={useBufferCopy || useCompute || useMultipleComputeStorageBuffers || useTransientBufferAliasing}; "
+                + $"BufferCopy={useBufferCopy || useCompute || useMultipleComputeStorageBuffers || useTransientBufferAliasing || useConstantWriteComputeBuffer}; "
                 + $"TextureCopy={useTextureCopy}; "
                 + $"TransientTextureCopy={useTransientTextureCopy}; "
                 + $"TransientTextureAliasing={useTransientTextureAliasing}; "
                 + $"MultipleTextureCopies={useMultipleTextureCopies}; "
-                + $"Compute={useCompute}; "
+                + $"Compute={useCompute || useConstantWriteComputeBuffer}; "
                 + $"MultipleComputeStorageBuffers={useMultipleComputeStorageBuffers}; "
                 + $"TransientBufferAliasing={useTransientBufferAliasing}; "
                 + $"OverlappingTransientLifetimes={overlapTransientBufferLifetimes}; "
