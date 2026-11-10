@@ -42,6 +42,9 @@ internal static class SpirvReflectionValidator
     private const uint ExecutionModelFragment = 4;
     private const uint ExecutionModelVertex = 0;
     private const int HeaderWordCount = 5;
+    private const uint ImageFormatR32Float = 3;
+    private const uint ImageFormatR32SInt = 24;
+    private const uint ImageFormatR32UInt = 33;
     private const uint ImageSampled = 1;
     private const uint ImageStorage = 2;
     private const uint MagicNumber = 0x07230203;
@@ -792,6 +795,7 @@ internal static class SpirvReflectionValidator
         ShaderResourceKind kind,
         int arrayCount,
         ShaderResourceAccess access,
+        ShaderStorageImageFormat storageImageFormat,
         int shaderIndex)
     {
         var (bindingClassStart, bindingClassEnd) = kind switch {
@@ -814,7 +818,8 @@ internal static class SpirvReflectionValidator
             checked((int)(nativeBinding - bindingClassStart)),
             kind,
             arrayCount,
-            access);
+            access,
+            storageImageFormat);
     }
 
     private static ShaderBindingGroup GetResourceGroup(uint setIndex, int shaderIndex)
@@ -828,7 +833,10 @@ internal static class SpirvReflectionValidator
                 nameof(setIndex)),
         };
 
-    private static (ShaderResourceKind Kind, int ArrayCount) GetResourceType(
+    private static (
+        ShaderResourceKind Kind,
+        int ArrayCount,
+        ShaderStorageImageFormat StorageImageFormat) GetResourceType(
         Module module,
         uint typeId,
         uint storageClass)
@@ -854,6 +862,7 @@ internal static class SpirvReflectionValidator
         }
 
         ShaderResourceKind kind;
+        var storageImageFormat = ShaderStorageImageFormat.None;
 
         if (storageClass == StorageClassUniformConstant)
         {
@@ -865,6 +874,16 @@ internal static class SpirvReflectionValidator
                 OpTypeSampledImage => throw new NotSupportedException("Combined SPIR-V image-sampler descriptors are not supported."),
                 _ => throw new ArgumentException("SPIR-V descriptor metadata disagrees with its UniformConstant type."),
             };
+
+            if (kind == ShaderResourceKind.StorageImage)
+            {
+                storageImageFormat = type.Operands[7] switch {
+                    ImageFormatR32Float => ShaderStorageImageFormat.R32Float,
+                    ImageFormatR32SInt => ShaderStorageImageFormat.R32SInt,
+                    ImageFormatR32UInt => ShaderStorageImageFormat.R32UInt,
+                    _ => throw new NotSupportedException("The SPIR-V storage image has an unsupported format."),
+                };
+            }
         }
         else if (storageClass == StorageClassStorageBuffer)
         {
@@ -898,7 +917,7 @@ internal static class SpirvReflectionValidator
             throw new NotSupportedException($"SPIR-V descriptor storage class {storageClass} is not supported.");
         }
 
-        return (kind, checked((int)arrayCount));
+        return (kind, checked((int)arrayCount), storageImageFormat);
     }
 
     private static (ShaderValueType ValueType, int ByteLength) GetScalarValueType(Module module, uint typeId)
@@ -1192,10 +1211,20 @@ internal static class SpirvReflectionValidator
                 throw new ArgumentException($"SPIR-V descriptor variable id {variable.ResultId} has an incompatible pointer type.");
             }
 
-            var (resourceKind, arrayCount) = GetResourceType(module, pointerType.Operands[2], variable.StorageClass);
+            var (resourceKind, arrayCount, storageImageFormat) = GetResourceType(
+                module,
+                pointerType.Operands[2],
+                variable.StorageClass);
             var resourceAccess = GetResourceAccess(module, variable, pointerType.Operands[2], resourceKind);
             var group = GetResourceGroup(setIndex, shaderIndex);
-            actualResources.Add(GetResourceBinding(group, binding, resourceKind, arrayCount, resourceAccess, shaderIndex));
+            actualResources.Add(GetResourceBinding(
+                group,
+                binding,
+                resourceKind,
+                arrayCount,
+                resourceAccess,
+                storageImageFormat,
+                shaderIndex));
         }
     }
 

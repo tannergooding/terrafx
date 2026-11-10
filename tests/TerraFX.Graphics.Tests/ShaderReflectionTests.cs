@@ -322,6 +322,62 @@ internal sealed class ShaderReflectionTests
     }
 
     [Test]
+    public void ShaderResourceSignatureDefaultsAndValidatesStorageImageFormats()
+    {
+        var storageImage = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            3,
+            ShaderResourceKind.StorageImage,
+            1);
+        var floatStorageImage = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            3,
+            ShaderResourceKind.StorageImage,
+            1,
+            ShaderResourceAccess.ReadWrite,
+            ShaderStorageImageFormat.R32Float);
+        var signedStorageImage = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            3,
+            ShaderResourceKind.StorageImage,
+            1,
+            ShaderResourceAccess.ReadWrite,
+            ShaderStorageImageFormat.R32SInt);
+        var nonStorageResource = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.UniformBuffer,
+            1);
+
+        Assert.That(storageImage.StorageImageFormat, Is.EqualTo(ShaderStorageImageFormat.R32UInt));
+        Assert.That(floatStorageImage.StorageImageFormat, Is.EqualTo(ShaderStorageImageFormat.R32Float));
+        Assert.That(signedStorageImage.StorageImageFormat, Is.EqualTo(ShaderStorageImageFormat.R32SInt));
+        Assert.That(floatStorageImage, Is.Not.EqualTo(storageImage));
+        Assert.That(nonStorageResource.StorageImageFormat, Is.EqualTo(ShaderStorageImageFormat.None));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.StorageImage,
+            1,
+            ShaderResourceAccess.ReadWrite,
+            ShaderStorageImageFormat.None));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.StorageImage,
+            1,
+            ShaderResourceAccess.ReadWrite,
+            (ShaderStorageImageFormat)int.MaxValue));
+        _ = Assert.Throws<ArgumentException>(() => new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.StorageBuffer,
+            1,
+            ShaderResourceAccess.ReadWrite,
+            ShaderStorageImageFormat.R32Float));
+    }
+
+    [Test]
     public void ShaderResourceSignatureEnforcesPortableBindingRanges()
     {
         Assert.That(new ShaderResourceSignature(

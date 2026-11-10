@@ -461,7 +461,13 @@ internal sealed class M04ShaderFixtureCompilerTests
             Assert.That(typedComputeStorageFloatImageReflection.Resources, Does.Contain(
                 new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, 1, ShaderResourceAccess.ReadWrite)));
             Assert.That(typedComputeStorageFloatImageReflection.Resources, Does.Contain(
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 3, ShaderResourceKind.StorageImage, 1, ShaderResourceAccess.ReadWrite)));
+                new ShaderResourceSignature(
+                    ShaderBindingGroup.Frame,
+                    3,
+                    ShaderResourceKind.StorageImage,
+                    1,
+                    ShaderResourceAccess.ReadWrite,
+                    ShaderStorageImageFormat.R32Float)));
 
             Assert.That(typedComputeStorageSignedImageReflection.Stage, Is.EqualTo(ShaderStage.Compute));
             Assert.That(typedComputeStorageSignedImageReflection.EntryPoint, Is.EqualTo("CSStorageSignedImageMain"));
@@ -472,7 +478,13 @@ internal sealed class M04ShaderFixtureCompilerTests
             Assert.That(typedComputeStorageSignedImageReflection.Resources, Does.Contain(
                 new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.StorageBuffer, 1, ShaderResourceAccess.ReadWrite)));
             Assert.That(typedComputeStorageSignedImageReflection.Resources, Does.Contain(
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 4, ShaderResourceKind.StorageImage, 1, ShaderResourceAccess.ReadWrite)));
+                new ShaderResourceSignature(
+                    ShaderBindingGroup.Frame,
+                    4,
+                    ShaderResourceKind.StorageImage,
+                    1,
+                    ShaderResourceAccess.ReadWrite,
+                    ShaderStorageImageFormat.R32SInt)));
 
             Assert.That(typedPixelReflection.Stage, Is.EqualTo(ShaderStage.Pixel));
             Assert.That(typedPixelReflection.EntryPoint, Is.EqualTo("PSMain"));

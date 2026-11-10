@@ -377,7 +377,7 @@ internal sealed class GraphicsPipelineDescriptionTests
     }
 
     [Test]
-    public void GraphicsPipelineRejectsSharedResourceBindingsWithDifferentKindsOrArrayCounts()
+    public void GraphicsPipelineRejectsSharedResourceBindingsWithMismatchedMetadata()
     {
         using var owner = UnmanagedBuffer<byte>.Allocate(4, new BufferAllocationOptions(64, 1));
         using var bytecode = owner.AcquireRead(0, 4);
@@ -413,6 +413,13 @@ internal sealed class GraphicsPipelineDescriptionTests
             ShaderResourceKind.StorageImage,
             arrayCount: 2,
             ShaderResourceAccess.Read);
+        var mismatchedStorageImageFormat = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            binding: 0,
+            ShaderResourceKind.StorageImage,
+            arrayCount: 2,
+            ShaderResourceAccess.ReadWrite,
+            ShaderStorageImageFormat.R32Float);
 
         _ = Assert.Throws<ArgumentException>(() => CreatePipelineDescription(
             bytecode,
@@ -426,6 +433,10 @@ internal sealed class GraphicsPipelineDescriptionTests
             bytecode,
             vertexReflection: CreateSystemVertexReflection([vertexResource]),
             pixelReflection: CreateSystemPixelReflection([mismatchedAccess])));
+        _ = Assert.Throws<ArgumentException>(() => CreatePipelineDescription(
+            bytecode,
+            vertexReflection: CreateSystemVertexReflection([vertexResource]),
+            pixelReflection: CreateSystemPixelReflection([mismatchedStorageImageFormat])));
     }
 
     [Test]

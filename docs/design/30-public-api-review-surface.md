@@ -4080,6 +4080,14 @@ public enum ShaderResourceAccess
     ReadWrite = 3
 }
 
+public enum ShaderStorageImageFormat
+{
+    None = 0,
+    R32Float = 1,
+    R32SInt = 2,
+    R32UInt = 3
+}
+
 public enum ShaderCapability
 {
     None = 0,
@@ -4111,11 +4119,13 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
 {
     public ShaderResourceSignature(ShaderBindingGroup group, int binding, ShaderResourceKind kind, int arrayCount);
     public ShaderResourceSignature(ShaderBindingGroup group, int binding, ShaderResourceKind kind, int arrayCount, ShaderResourceAccess access);
+    public ShaderResourceSignature(ShaderBindingGroup group, int binding, ShaderResourceKind kind, int arrayCount, ShaderResourceAccess access, ShaderStorageImageFormat storageImageFormat);
     public ShaderResourceAccess Access { get; }
     public int ArrayCount { get; }
     public int Binding { get; }
     public ShaderBindingGroup Group { get; }
     public ShaderResourceKind Kind { get; }
+    public ShaderStorageImageFormat StorageImageFormat { get; }
     public static bool operator !=(ShaderResourceSignature left, ShaderResourceSignature right);
     public static bool operator ==(ShaderResourceSignature left, ShaderResourceSignature right);
     public bool Equals(ShaderResourceSignature other);
@@ -5207,6 +5217,8 @@ public static class VulkanGraphicsBackend
 }
 }
 ```
+
+`ShaderStorageImageFormat.None` is the not-applicable sentinel and is valid only for non-storage-image signatures; storage-image signatures require a defined non-`None` format. The existing access overload defaults storage images to `R32UInt`; reflection of another format uses the overload with an explicit `ShaderStorageImageFormat`.
 
 `BufferBinding.Kind` is `UniformBuffer` or `StorageBuffer`; `TextureBinding.Kind` is `SampledImage` or `StorageImage`. Their `Binding` values remain local to the selected resource class, matching `ShaderResourceSignature.Binding`; Vulkan set/binding offsets are applied by the backend, not supplied by callers. `SamplerBinding` represents only `Sampler`. Each binding range must be a nonempty subrange of its exact graph version, and the graph resource description must declare the usage required by its resource kind. `BindingSet` copies and canonical-sorts each initialized array, rejecting null elements and duplicate `(group, kind, binding)` identities; sampler uniqueness is `(group, binding)`. Different resource kinds may use the same local binding because their native register classes are distinct.
 

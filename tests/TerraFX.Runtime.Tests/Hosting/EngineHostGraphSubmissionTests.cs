@@ -592,6 +592,56 @@ internal sealed partial class EngineHostOptionsTests
             useTextureCopy: true,
             useTransientTextureCopy: true);
 
+    [Test]
+    public Task VulkanRejectsR32FloatComputeStorageImageFormatMismatch()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.Vulkan,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: true,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useFloatStorageImage: true,
+            expectStorageImageFormatRejection: true);
+
+    [Test]
+    public Task VulkanRejectsR32SIntComputeStorageImageWithoutTextureFormat()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.Vulkan,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: true,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useSignedStorageImage: true,
+            expectStorageImageFormatRejection: true);
+
+    [Test]
+    public Task VulkanSubmitsR32FloatComputeStorageImage()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.Vulkan,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: true,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useFloatStorageImage: true);
+
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
@@ -618,7 +668,10 @@ internal sealed partial class EngineHostOptionsTests
         int graphicsFrameSlotCount = 3,
         bool useTransientCopyAliasing = false,
         bool useDelayedTransientTextureAliasing = false,
-        bool useUploadHeapGraphSources = false)
+        bool useUploadHeapGraphSources = false,
+        bool useFloatStorageImage = false,
+        bool useSignedStorageImage = false,
+        bool expectStorageImageFormatRejection = false)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -633,7 +686,9 @@ internal sealed partial class EngineHostOptionsTests
                 || useStorageResources
                 || useCompute
                 || useTransientStorage
-                || useMultipleComputeStorageBuffers)
+                || useMultipleComputeStorageBuffers
+                || useFloatStorageImage
+                || useSignedStorageImage)
             && string.IsNullOrWhiteSpace(shaderFixtureDirectory))
         {
             Assert.Ignore("The M04 shader fixture is required for resource-bound graph cases.");
@@ -1252,9 +1307,13 @@ internal sealed partial class EngineHostOptionsTests
 
                 if (useCompute || useTransientStorage || useMultipleComputeStorageBuffers)
                 {
-                    var computeStage = useMultipleComputeStorageBuffers
-                        ? "compute-storage-buffers"
-                        : "compute-storage";
+                    var computeStage = useFloatStorageImage
+                        ? "compute-storage-float-image"
+                        : useSignedStorageImage
+                            ? "compute-storage-signed-image"
+                            : useMultipleComputeStorageBuffers
+                                ? "compute-storage-buffers"
+                                : "compute-storage";
                     using var computeBytecodeStorage = CreateBytecodeStorage(Path.Combine(
                         shaderFixtureDirectory,
                         $"M04OffscreenTriangle.{computeStage}.{shaderExtension}"));
@@ -1344,7 +1403,9 @@ internal sealed partial class EngineHostOptionsTests
                         depth: 1,
                         arrayLayers: 1,
                         mipLevels: 1,
-                        TextureFormat.R32UInt,
+                        useFloatStorageImage && !expectStorageImageFormatRejection
+                            ? TextureFormat.R32Float
+                            : TextureFormat.R32UInt,
                         TextureUsage.Storage | TextureUsage.CopySource | TextureUsage.CopyDestination,
                         $"m04-{backend}-frame-storage-image"))
                     .ConfigureAwait(false);
@@ -1368,8 +1429,10 @@ internal sealed partial class EngineHostOptionsTests
 
             if (useBufferCopy || useCompute || useTransientStorage || useMultipleComputeStorageBuffers || useTransientBufferAliasing)
             {
-                expectedCopiedBytes = useCompute || useTransientStorage || useMultipleComputeStorageBuffers
-                    ? [0x02, 0x00, 0x00, 0x00]
+                expectedCopiedBytes = useFloatStorageImage || useSignedStorageImage
+                    ? [0x00, 0x00, 0x00, 0x00]
+                    : useCompute || useTransientStorage || useMultipleComputeStorageBuffers
+                        ? [0x02, 0x00, 0x00, 0x00]
                     : [
                         0x11,
                         0x23,
@@ -2123,7 +2186,11 @@ internal sealed partial class EngineHostOptionsTests
                         [
                             new TextureBinding(
                                 ShaderBindingGroup.Frame,
-                                1,
+                                useFloatStorageImage
+                                    ? 3
+                                    : useSignedStorageImage
+                                        ? 4
+                                        : 1,
                                 ShaderResourceKind.StorageImage,
                                 computeStorageImageWriteVersion,
                                 sampleRange),
@@ -2749,6 +2816,19 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(compileResponse.Diagnostics, Is.Empty);
             var plan = compileResponse.Plan
                 ?? throw new InvalidOperationException("The compiled graph response omitted its plan.");
+
+            if (expectStorageImageFormatRejection)
+            {
+                var exception = Assert.ThrowsAsync<NotSupportedException>(async () =>
+                    await renderer.SubmitAsync(renderSnapshot, plan).ConfigureAwait(false));
+                Assert.That(
+                    exception!.Message,
+                    Does.Contain(useSignedStorageImage
+                        ? "no texture format for an R32SInt storage image"
+                        : "must match its reflected format"));
+                return;
+            }
+
             RenderGraphPlan? delayedTransientTexturePlan = null;
 
             if (useDelayedTransientTextureAliasing)
@@ -3529,7 +3609,9 @@ internal sealed partial class EngineHostOptionsTests
                     computeReadLease.UseWindow(0, computeStorageBytes.Length, ref copyAction);
                 }
 
-                Assert.That(BitConverter.ToUInt32(computeStorageBytes, 0), Is.EqualTo(2u));
+                Assert.That(
+                    BitConverter.ToUInt32(computeStorageBytes, 0),
+                    Is.EqualTo(useFloatStorageImage ? 0u : 2u));
 
                 var computeStorageImage = storageImage
                     ?? throw new InvalidOperationException("The graph compute test has no storage image.");
@@ -3545,7 +3627,14 @@ internal sealed partial class EngineHostOptionsTests
                     computeImageReadLease.UseWindow(0, computeStorageImageBytes.Length, ref copyAction);
                 }
 
-                Assert.That(BitConverter.ToUInt32(computeStorageImageBytes, 0), Is.EqualTo(2u));
+                if (useFloatStorageImage)
+                {
+                    Assert.That(BitConverter.ToSingle(computeStorageImageBytes, 0), Is.EqualTo(1.0f));
+                }
+                else
+                {
+                    Assert.That(BitConverter.ToUInt32(computeStorageImageBytes, 0), Is.EqualTo(2u));
+                }
             }
 
             if (useMultipleComputeStorageBuffers)

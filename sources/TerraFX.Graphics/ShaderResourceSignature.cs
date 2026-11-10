@@ -13,7 +13,7 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
     /// <param name="kind">The resource register class.</param>
     /// <param name="arrayCount">The positive fixed descriptor-array count.</param>
     /// <param name="access">The declared read/write capability.</param>
-    /// <exception cref="ArgumentOutOfRangeException">An identity, count, or access value is invalid.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">An identity, count, access value, or storage-image format is invalid.</exception>
     /// <exception cref="ArgumentException">A non-storage resource declares an access other than <see cref="ShaderResourceAccess.Read"/>.</exception>
     public ShaderResourceSignature(
         ShaderBindingGroup group,
@@ -21,6 +21,34 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
         ShaderResourceKind kind,
         int arrayCount,
         ShaderResourceAccess access)
+        : this(
+            group,
+            binding,
+            kind,
+            arrayCount,
+            access,
+            kind == ShaderResourceKind.StorageImage
+                ? ShaderStorageImageFormat.R32UInt
+                : ShaderStorageImageFormat.None)
+    {
+    }
+
+    /// <summary>Initializes a reflected shader resource binding with explicit access capability.</summary>
+    /// <param name="group">The portable resource group.</param>
+    /// <param name="binding">The register index within the resource class.</param>
+    /// <param name="kind">The resource register class.</param>
+    /// <param name="arrayCount">The positive fixed descriptor-array count.</param>
+    /// <param name="access">The declared read/write capability.</param>
+    /// <param name="storageImageFormat">The reflected image format for a storage-image binding.</param>
+    /// <exception cref="ArgumentOutOfRangeException">An identity, count, or access value is invalid.</exception>
+    /// <exception cref="ArgumentException">A non-storage resource declares a storage-image format or an access other than <see cref="ShaderResourceAccess.Read"/>.</exception>
+    public ShaderResourceSignature(
+        ShaderBindingGroup group,
+        int binding,
+        ShaderResourceKind kind,
+        int arrayCount,
+        ShaderResourceAccess access,
+        ShaderStorageImageFormat storageImageFormat)
     {
         if ((group == ShaderBindingGroup.None) || !Enum.IsDefined(group))
         {
@@ -48,6 +76,18 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
             }
         }
 
+        if (kind == ShaderResourceKind.StorageImage)
+        {
+            if ((storageImageFormat == ShaderStorageImageFormat.None) || !Enum.IsDefined(storageImageFormat))
+            {
+                throw new ArgumentOutOfRangeException(nameof(storageImageFormat));
+            }
+        }
+        else if (storageImageFormat != ShaderStorageImageFormat.None)
+        {
+            throw new ArgumentException("Only a storage-image binding may declare a storage-image format.", nameof(storageImageFormat));
+        }
+
         var maximumBinding = kind switch {
             ShaderResourceKind.UniformBuffer => 3,
             ShaderResourceKind.SampledImage => 15,
@@ -62,6 +102,7 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
         Binding = binding;
         Group = group;
         Kind = kind;
+        StorageImageFormat = storageImageFormat;
     }
 
     /// <summary>Initializes a reflected shader resource binding.</summary>
@@ -97,6 +138,9 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
     /// <summary>Gets the resource register class.</summary>
     public ShaderResourceKind Kind { get; }
 
+    /// <summary>Gets the reflected storage-image format, or <see cref="ShaderStorageImageFormat.None"/> for other resource kinds.</summary>
+    public ShaderStorageImageFormat StorageImageFormat { get; }
+
     /// <summary>Negates resource signature equality.</summary>
     public static bool operator !=(ShaderResourceSignature left, ShaderResourceSignature right) => !left.Equals(right);
 
@@ -109,11 +153,12 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
         && (Binding == other.Binding)
         && (Kind == other.Kind)
         && (ArrayCount == other.ArrayCount)
-        && (Access == other.Access);
+        && (Access == other.Access)
+        && (StorageImageFormat == other.StorageImageFormat);
 
     /// <inheritdoc />
     public override bool Equals(object? obj) => (obj is ShaderResourceSignature other) && Equals(other);
 
     /// <inheritdoc />
-    public override int GetHashCode() => HashCode.Combine(Group, Binding, Kind, ArrayCount, Access);
+    public override int GetHashCode() => HashCode.Combine(Group, Binding, Kind, ArrayCount, Access, StorageImageFormat);
 }

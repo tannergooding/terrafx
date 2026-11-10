@@ -206,9 +206,23 @@ internal static class M04ShaderReflectionReader
                 }
             }
 
+            var storageImageFormat = kind == ShaderResourceKind.StorageImage
+                ? format switch {
+                    "r32f" => ShaderStorageImageFormat.R32Float,
+                    "r32i" => ShaderStorageImageFormat.R32SInt,
+                    "r32ui" => ShaderStorageImageFormat.R32UInt,
+                    _ => throw new NotSupportedException($"The M04 reflection reader does not convert storage-image format '{format}'."),
+                }
+                : ShaderStorageImageFormat.None;
             resources.Add(new ReflectedResource(
                 name,
-                new ShaderResourceSignature(group, binding, kind, GetArrayCount(resource), descriptorBinding.Access),
+                new ShaderResourceSignature(
+                    group,
+                    binding,
+                    kind,
+                    GetArrayCount(resource),
+                    descriptorBinding.Access,
+                    storageImageFormat),
                 spirvType,
                 format,
                 componentFormat));
