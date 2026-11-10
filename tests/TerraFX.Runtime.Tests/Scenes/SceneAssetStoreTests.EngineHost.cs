@@ -67,18 +67,18 @@ internal sealed partial class SceneAssetStoreTests
             var activation = await loader.ActivateAsync(prepared).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             Assert.That(activation.Status, Is.EqualTo(SceneActivationStatus.Activated));
             Assert.That(activation.Instance, Is.Not.Null);
-            await host.InvokeAsync(_ => world!.Step()).ConfigureAwait(false);
 
             RenderExtractionResponse? response = null;
             var cameraId = Guid.Empty;
 
-            await host.InvokeAsync(_ => {
+            await host.InvokeAsync(context => {
                 if (!activation.Instance!.TryGetEntity(SceneAssetReaderTests.Fixtures.RootEntityId, out var cameraEntity))
                 {
                     throw new InvalidOperationException("The activated Scene did not retain its camera Entity.");
                 }
 
                 cameraId = world!.GetEntityId(cameraEntity);
+                _ = world!.Step();
                 var currentFrame = world.CurrentFrame3;
                 response = host.Renderer.Extract(
                     world,
