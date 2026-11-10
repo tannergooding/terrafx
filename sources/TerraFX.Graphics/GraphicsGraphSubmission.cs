@@ -714,8 +714,7 @@ internal sealed class GraphicsGraphSubmission
 
         foreach (var import in storageBufferImports.Values)
         {
-            if ((import.Version.Range != new GraphBufferRange(0, import.Buffer.ByteLength))
-                || (import.InitialContentsValid && (import.InitialState == GraphResourceState.Undefined))
+            if ((import.InitialContentsValid && (import.InitialState == GraphResourceState.Undefined))
                 || (import.InitialState is not (
                     GraphResourceState.Undefined
                     or GraphResourceState.General
@@ -724,7 +723,7 @@ internal sealed class GraphicsGraphSubmission
                     or GraphResourceState.StorageWrite
                     or GraphResourceState.StorageReadWrite)))
             {
-                throw new NotSupportedException("Native graph submission requires full-range Frame storage buffers in supported initial states.");
+                throw new NotSupportedException("Native graph submission requires Frame storage buffers in supported initial states.");
             }
         }
 
@@ -760,8 +759,7 @@ internal sealed class GraphicsGraphSubmission
 
         foreach (var import in copySourceBufferImports.Values)
         {
-            if ((import.Version.Range != new GraphBufferRange(0, import.Buffer.ByteLength))
-                || (import.IsTransient
+            if (import.IsTransient
                     ? (import.InitialContentsValid || (import.InitialState != GraphResourceState.Undefined))
                     : (!import.InitialContentsValid
                         || (import.InitialState is not (
@@ -770,16 +768,15 @@ internal sealed class GraphicsGraphSubmission
                             or GraphResourceState.CopyDestination
                             or GraphResourceState.StorageRead
                             or GraphResourceState.StorageWrite
-                            or GraphResourceState.StorageReadWrite)))))
+                            or GraphResourceState.StorageReadWrite))))
             {
-                throw new NotSupportedException("Native graph submission requires full-range copy-source buffers with valid imported or transient state.");
+                throw new NotSupportedException("Native graph submission requires copy-source buffers with valid imported or transient state.");
             }
         }
 
         foreach (var import in copyDestinationBufferImports.Values)
         {
-            if ((import.Version.Range != new GraphBufferRange(0, import.Buffer.ByteLength))
-                || (import.InitialContentsValid && (import.InitialState == GraphResourceState.Undefined))
+            if ((import.InitialContentsValid && (import.InitialState == GraphResourceState.Undefined))
                 || (import.InitialState is not (
                     GraphResourceState.Undefined
                     or GraphResourceState.General
@@ -789,7 +786,7 @@ internal sealed class GraphicsGraphSubmission
                     or GraphResourceState.StorageWrite
                     or GraphResourceState.StorageReadWrite)))
             {
-                throw new NotSupportedException("Native graph submission requires full-range copy-destination buffers with a supported initial state.");
+                throw new NotSupportedException("Native graph submission requires copy-destination buffers with a supported initial state.");
             }
         }
 
@@ -1246,9 +1243,9 @@ internal sealed class GraphicsGraphSubmission
                                 {
                                     if (!storageBufferImports.TryGetValue(binding.Resource.ResourceId, out var storageBufferImport)
                                         || (binding.Group != ShaderBindingGroup.Frame)
-                                        || (binding.Range != storageBufferImport.Version.Range))
+                                        || !binding.Range.IsWithin(storageBufferImport.Version.Range))
                                     {
-                                        throw new NotSupportedException("The Frame storage-buffer binding must exactly match the imported graph buffer range.");
+                                        throw new NotSupportedException("The Frame storage-buffer binding must fit the imported graph buffer range.");
                                     }
 
                                     if (currentPipelineStorageBufferWriteOnlyBindings.Contains(binding.Binding))

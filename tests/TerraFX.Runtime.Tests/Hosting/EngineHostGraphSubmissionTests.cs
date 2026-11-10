@@ -223,6 +223,22 @@ internal sealed partial class EngineHostOptionsTests
             useTransientCopyAliasing: true);
 
     [Test]
+    public Task D3D12SubmitsBufferCopyGraphFromUploadBuffer()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.D3D12,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: true,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useUploadHeapGraphSources: true);
+
+    [Test]
     public Task D3D12SubmitsConstantWriteComputeStorageBufferGraph()
         => RunOffscreenGraphAsync(
             GraphicsBackend.D3D12,
@@ -482,6 +498,24 @@ internal sealed partial class EngineHostOptionsTests
             overlapTransientBufferLifetimes: false,
             holdGraphCompletion: false,
             useTextureCopy: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsConstantWriteComputeStorageBufferSubrangeGraph(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useConstantWriteComputeBuffer: true,
+            useStorageBufferSubrange: true);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
@@ -828,7 +862,8 @@ internal sealed partial class EngineHostOptionsTests
         bool useSignedStorageImage = false,
         bool useRgba16FloatStorageImage = false,
         bool expectStorageImageFormatRejection = false,
-        bool useConstantWriteComputeBuffer = false)
+        bool useConstantWriteComputeBuffer = false,
+        bool useStorageBufferSubrange = false)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -845,6 +880,7 @@ internal sealed partial class EngineHostOptionsTests
                 || useTransientStorage
                 || useMultipleComputeStorageBuffers
                 || useConstantWriteComputeBuffer
+                || useStorageBufferSubrange
                 || useFloatStorageImage
                 || useSignedStorageImage
                 || useRgba16FloatStorageImage)
@@ -1055,6 +1091,8 @@ internal sealed partial class EngineHostOptionsTests
         GpuTexture? storageImage = null;
         GpuBuffer? frameUniformBuffer = null;
         GpuBuffer? storageBuffer = null;
+        long storageBufferBindingOffset = 0;
+        long copyDestinationRangeOffset = 0;
         GpuBuffer? secondStorageBuffer = null;
         GpuBuffer? copySourceBuffer = null;
         GpuBuffer? secondCopySourceBuffer = null;
@@ -1521,17 +1559,31 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(uploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
             }
 
-            if (useStorageResources || useCompute || useMultipleComputeStorageBuffers || useConstantWriteComputeBuffer)
+            if (useStorageResources
+                || useCompute
+                || useMultipleComputeStorageBuffers
+                || useConstantWriteComputeBuffer
+                || useStorageBufferSubrange)
             {
+                storageBufferBindingOffset = useStorageBufferSubrange
+                    ? checked(graphicsDevice.Capabilities.Limits.StorageBufferOffsetAlignment * sizeof(uint))
+                    : 0;
+                var storageBufferByteLength = checked(storageBufferBindingOffset + sizeof(uint));
                 storageBuffer = await graphicsDevice.CreateBufferAsync(
                     new BufferDescription(
-                        sizeof(uint),
+                        storageBufferByteLength,
                         BufferUsage.Storage | BufferUsage.CopySource | BufferUsage.CopyDestination,
                         GpuMemoryKind.DeviceLocal,
                         structuredStride: sizeof(uint),
                         debugName: $"m04-{backend}-frame-storage-buffer"))
                     .ConfigureAwait(false);
-                var storageBufferInitialBytes = new byte[sizeof(uint)];
+                var storageBufferInitialBytes = new byte[checked((int)storageBufferByteLength)];
+
+                if (useStorageBufferSubrange)
+                {
+                    _ = BitConverter.TryWriteBytes(storageBufferInitialBytes.AsSpan(0, sizeof(uint)), 0x56473829u);
+                }
+
                 var storageBufferUploadReceipt = await graphicsDevice.UploadBufferAsync(
                     storageBuffer,
                     0,
@@ -1677,14 +1729,35 @@ internal sealed partial class EngineHostOptionsTests
                     }
                 }
 
+                var copyDestinationByteLength = expectedCopiedBytes.Length;
+
+                if (useStorageBufferSubrange)
+                {
+                    copyDestinationRangeOffset = storageBufferBindingOffset;
+                    copyDestinationByteLength = checked(
+                        (int)(copyDestinationRangeOffset + expectedCopiedBytes.Length));
+                }
+
                 copyDestinationBuffer = await graphicsDevice.CreateBufferAsync(
                     new BufferDescription(
-                        expectedCopiedBytes.Length,
+                        copyDestinationByteLength,
                         BufferUsage.CopySource | BufferUsage.CopyDestination,
                         GpuMemoryKind.DeviceLocal,
                         structuredStride: null,
                         debugName: $"m04-{backend}-copy-destination"))
                     .ConfigureAwait(false);
+
+                if (useStorageBufferSubrange)
+                {
+                    var initialBytes = new byte[copyDestinationByteLength];
+                    _ = BitConverter.TryWriteBytes(initialBytes.AsSpan(0, sizeof(uint)), 0x29384756u);
+                    var uploadReceipt = await graphicsDevice.UploadBufferAsync(
+                        copyDestinationBuffer,
+                        0,
+                        initialBytes.AsSpan())
+                        .ConfigureAwait(false);
+                    Assert.That(uploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+                }
 
                 if (useMultipleComputeStorageBuffers || useTransientBufferAliasing)
                 {
@@ -1787,6 +1860,7 @@ internal sealed partial class EngineHostOptionsTests
             GraphBufferVersion? computeStorageWriteVersion = null;
             GraphBufferVersion? secondComputeStorageWriteVersion = null;
             GraphBufferVersion? copySourceVersion = null;
+            GraphBufferRange? copySourceBufferRange = null;
             GraphBufferVersion? secondCopySourceVersion = null;
             GraphBufferVersion? copyDestinationInitialVersion = null;
             GraphBufferVersion? copyDestinationWriteVersion = null;
@@ -1894,13 +1968,17 @@ internal sealed partial class EngineHostOptionsTests
 
             if (copyDestinationBuffer is GpuBuffer selectedCopyDestinationBuffer)
             {
-                var range = new GraphBufferRange(0, selectedCopyDestinationBuffer.ByteLength);
+                var copiedByteLength = expectedCopiedBytes?.Length
+                    ?? throw new InvalidOperationException("The graph copy destination has no expected bytes.");
+                var range = useStorageBufferSubrange
+                    ? new GraphBufferRange(copyDestinationRangeOffset, copiedByteLength)
+                    : new GraphBufferRange(0, selectedCopyDestinationBuffer.ByteLength);
                 copyDestinationInitialVersion = graph.ImportBuffer(
                     selectedCopyDestinationBuffer,
                     range,
                     new GraphImportOptions(
-                        GraphResourceState.Undefined,
-                        contentsValid: false,
+                        useStorageBufferSubrange ? GraphResourceState.General : GraphResourceState.Undefined,
+                        contentsValid: useStorageBufferSubrange,
                         completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
             }
 
@@ -2056,12 +2134,13 @@ internal sealed partial class EngineHostOptionsTests
                 if ((copySourceVersion is GraphBufferVersion selectedSource)
                     && (copyDestinationWriteVersion is GraphBufferVersion selectedDestination))
                 {
+                    var sourceRange = copySourceBufferRange ?? selectedSource.Range;
                     recorder.CopyBuffer(
                         selectedSource,
-                        0,
+                        sourceRange.ByteOffset,
                         selectedDestination,
-                        0,
-                        selectedSource.Range.ByteLength);
+                        selectedDestination.Range.ByteOffset,
+                        sourceRange.ByteLength);
                 }
 
                 if (useMultipleComputeStorageBuffers
@@ -2070,9 +2149,9 @@ internal sealed partial class EngineHostOptionsTests
                 {
                     recorder.CopyBuffer(
                         selectedSecondSource,
-                        0,
+                        selectedSecondSource.Range.ByteOffset,
                         selectedSecondDestination,
-                        0,
+                        selectedSecondDestination.Range.ByteOffset,
                         selectedSecondSource.Range.ByteLength);
                 }
 
@@ -2276,11 +2355,15 @@ internal sealed partial class EngineHostOptionsTests
                 {
                     var initialStorageBuffer = storageBufferInitialVersion
                         ?? throw new InvalidOperationException("The graph constant-write compute test has no imported storage buffer.");
+                    var storageBufferRange = useStorageBufferSubrange
+                        ? new GraphBufferRange(storageBufferBindingOffset, sizeof(uint))
+                        : initialStorageBuffer.Range;
                     computeStorageWriteVersion = graph.ReadWriteBuffer(
                         computePass,
                         initialStorageBuffer,
-                        initialStorageBuffer.Range);
+                        storageBufferRange);
                     copySourceVersion = computeStorageWriteVersion;
+                    copySourceBufferRange = storageBufferRange;
                     computeBindingSet = new BindingSet(
                         [
                             new BufferBinding(
@@ -2288,7 +2371,7 @@ internal sealed partial class EngineHostOptionsTests
                                 0,
                                 ShaderResourceKind.StorageBuffer,
                                 computeStorageWriteVersion,
-                                initialStorageBuffer.Range),
+                                storageBufferRange),
                         ],
                         [],
                         []);
@@ -2682,11 +2765,12 @@ internal sealed partial class EngineHostOptionsTests
                 if ((copySourceVersion is GraphBufferVersion selectedCopySource)
                     && (copyDestinationInitialVersion is GraphBufferVersion selectedCopyDestination))
                 {
+                    var sourceRange = copySourceBufferRange ?? selectedCopySource.Range;
                     graph.ReadBuffer(
                         copyPass,
                         selectedCopySource,
                         GraphBufferUsage.CopySource,
-                        selectedCopySource.Range);
+                        sourceRange);
                     copyDestinationWriteVersion = graph.WriteBuffer(
                         copyPass,
                         selectedCopyDestination,
@@ -3918,7 +4002,7 @@ internal sealed partial class EngineHostOptionsTests
                     ?? throw new InvalidOperationException("The graph copy test has no expected bytes.");
                 using var copyReadback = await graphicsDevice.ReadbackBufferAsync(
                     destinationBufferForReadback,
-                    0,
+                    useStorageBufferSubrange ? copyDestinationRangeOffset : 0,
                     expectedBytes.Length)
                     .ConfigureAwait(false);
                 var copiedBytes = new byte[expectedBytes.Length];
@@ -3930,6 +4014,41 @@ internal sealed partial class EngineHostOptionsTests
                 }
 
                 Assert.That(copiedBytes, Is.EqualTo(expectedBytes));
+
+                if (useStorageBufferSubrange)
+                {
+                    var storageBufferForReadback = storageBuffer
+                        ?? throw new InvalidOperationException("The subrange graph has no storage buffer.");
+                    using var prefixReadback = await graphicsDevice.ReadbackBufferAsync(
+                        storageBufferForReadback,
+                        0,
+                        sizeof(uint))
+                        .ConfigureAwait(false);
+                    var prefixBytes = new byte[sizeof(uint)];
+
+                    using (var prefixReadLease = prefixReadback.AcquireReadLease(0, prefixBytes.Length))
+                    {
+                        var copyAction = new ReadbackCopyAction(prefixBytes);
+                        prefixReadLease.UseWindow(0, prefixBytes.Length, ref copyAction);
+                    }
+
+                    Assert.That(BitConverter.ToUInt32(prefixBytes, 0), Is.EqualTo(0x56473829u));
+
+                    using var destinationPrefixReadback = await graphicsDevice.ReadbackBufferAsync(
+                        destinationBufferForReadback,
+                        0,
+                        sizeof(uint))
+                        .ConfigureAwait(false);
+                    var destinationPrefixBytes = new byte[sizeof(uint)];
+
+                    using (var destinationPrefixReadLease = destinationPrefixReadback.AcquireReadLease(0, destinationPrefixBytes.Length))
+                    {
+                        var copyAction = new ReadbackCopyAction(destinationPrefixBytes);
+                        destinationPrefixReadLease.UseWindow(0, destinationPrefixBytes.Length, ref copyAction);
+                    }
+
+                    Assert.That(BitConverter.ToUInt32(destinationPrefixBytes, 0), Is.EqualTo(0x29384756u));
+                }
 
                 if (useMultipleComputeStorageBuffers || useTransientBufferAliasing)
                 {
