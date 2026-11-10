@@ -627,6 +627,21 @@ internal sealed partial class EngineHostOptionsTests
             expectStorageImageFormatRejection: true);
 
     [Test]
+    public Task VulkanSubmitsMultipleStorageBufferComputeGraph()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.Vulkan,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: true,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false);
+
+    [Test]
     public Task VulkanSubmitsR32FloatComputeStorageImage()
         => RunOffscreenGraphAsync(
             GraphicsBackend.Vulkan,
