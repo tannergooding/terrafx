@@ -425,6 +425,8 @@ internal sealed class PlatformInputBroker
             if (!IsDeviceScoped(sample.Kind)
                 && (sample.Kind is not PhysicalInputEventKind.FocusGained
                     and not PhysicalInputEventKind.FocusLost
+                    and not PhysicalInputEventKind.WindowEntered
+                    and not PhysicalInputEventKind.WindowLeft
                     and not PhysicalInputEventKind.StateReconciliation))
             {
                 throw new InvalidOperationException($"The platform input sample kind {sample.Kind} is not supported by the Runtime capture broker.");
@@ -855,6 +857,8 @@ internal sealed class PlatformInputBroker
             case PhysicalInputEventKind.HorizontalScroll:
             case PhysicalInputEventKind.FocusGained:
             case PhysicalInputEventKind.FocusLost:
+            case PhysicalInputEventKind.WindowEntered:
+            case PhysicalInputEventKind.WindowLeft:
             case PhysicalInputEventKind.DeviceAdded:
             case PhysicalInputEventKind.DeviceRemoved:
             {

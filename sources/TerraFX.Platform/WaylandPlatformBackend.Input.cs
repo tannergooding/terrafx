@@ -412,7 +412,8 @@ internal sealed unsafe partial class WaylandPlatformBackend
 
     private void BindSeat(WaylandGlobal global)
     {
-        var version = Math.Min(global.Version, 5u);
+        // wl_pointer inherits its wire version from wl_seat, which must match the installed pointer listener.
+        var version = Math.Min(global.Version, 4u);
         var seat = Connection.BindGlobal(global, ProtocolMetadata.WlSeatInterface, version);
 
         if (Connection.AddListener(seat, _seatListener, GCHandle.ToIntPtr(_callbackHandle)) < 0)
@@ -667,12 +668,12 @@ internal sealed unsafe partial class WaylandPlatformBackend
             return;
         }
 
-        if (serial != 0)
+        var isDown = state == 1;
+
+        if (isDown && (serial != 0))
         {
             _lastClipboardGestureSerial = serial;
         }
-
-        var isDown = state == 1;
 
         if (isDown)
         {
@@ -683,7 +684,6 @@ internal sealed unsafe partial class WaylandPlatformBackend
             _ = _pointerButtonsDown.Remove(button);
         }
 
-        var scale = GetContentScale(window);
         _ = _inputSamples.TryEnqueue(new PlatformInputSample(
             isDown ? PhysicalInputEventKind.PointerButtonDown : PhysicalInputEventKind.PointerButtonUp,
             window.Window,
@@ -691,8 +691,6 @@ internal sealed unsafe partial class WaylandPlatformBackend
             PlatformInputDeviceKind.Pointer,
             MouseButton: mouseButton,
             IsDown: isDown,
-            PointerPosition: window.PointerPosition,
-            PointerContentScale: new Vector2(scale, scale),
             NativeTimestamp: checked((long)time),
             NativeClockDomain: "WaylandMonotonicMilliseconds",
             MonotonicTimestamp: _timeProvider.GetTimestamp(),

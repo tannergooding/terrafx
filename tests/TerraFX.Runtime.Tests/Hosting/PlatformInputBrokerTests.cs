@@ -17,6 +17,36 @@ namespace TerraFX.Runtime.Tests.Hosting;
 internal sealed class PlatformInputBrokerTests
 {
     [Test]
+    public void CapturesWindowPointerBoundaryEventsWithoutDeviceIdentity()
+    {
+        var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());
+        var window = new WindowHandle(17, 0, 1);
+        var samples = ImmutableArray.Create(
+            new PlatformInputSample(
+                PhysicalInputEventKind.WindowEntered,
+                window,
+                NativeDeviceIdentity: 0,
+                PlatformInputDeviceKind.Unknown,
+                MonotonicTimestamp: 1),
+            new PlatformInputSample(
+                PhysicalInputEventKind.WindowLeft,
+                window,
+                NativeDeviceIdentity: 0,
+                PlatformInputDeviceKind.Unknown,
+                MonotonicTimestamp: 2));
+
+        var captured = broker.Capture(new PlatformInputSampleBatch(samples, DiscardedSampleCount: 0), static _ => true);
+
+        Assert.That(captured.Events, Has.Length.EqualTo(2));
+        Assert.That(captured.Events[0].Kind, Is.EqualTo(PhysicalInputEventKind.WindowEntered));
+        Assert.That(captured.Events[1].Kind, Is.EqualTo(PhysicalInputEventKind.WindowLeft));
+        Assert.That(captured.Events.All(inputEvent => inputEvent.Window == window), Is.True);
+        Assert.That(captured.Events.All(static inputEvent => inputEvent.Device is null), Is.True);
+        Assert.That(captured.Events[0].HostSequence, Is.LessThan(captured.Events[1].HostSequence));
+        broker.Retire();
+    }
+
+    [Test]
     public void IssuesAndRetiresHostDeviceGenerationsWithStableEventIdentity()
     {
         var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());

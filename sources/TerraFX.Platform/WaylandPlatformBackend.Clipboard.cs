@@ -53,6 +53,9 @@ internal sealed partial class WaylandPlatformBackend
         ClipboardReadResponse? response = null;
         Exception? failure = null;
         byte[]? buffer = null;
+        using var cancellationRegistration = transfer.CancellationToken.Register(
+            static state => ((Stream)state!).Dispose(),
+            stream);
 
         try
         {
@@ -114,11 +117,27 @@ internal sealed partial class WaylandPlatformBackend
         }
         catch (IOException)
         {
-            var status = transfer.TerminalStatus ?? ClipboardTextResult.SelectionExpired;
+            var status = transfer.TerminalStatus
+                ?? (transfer.CallerCancellationToken.IsCancellationRequested
+                    ? ClipboardTextResult.Canceled
+                    : transfer.CancellationToken.IsCancellationRequested
+                        ? ClipboardTextResult.TimedOut
+                        : ClipboardTextResult.SelectionExpired);
             response = CreateClipboardReadResponse(
                 transfer.Request.Window,
                 status,
                 "The Wayland clipboard data source ended before the complete text transfer finished.");
+        }
+        catch (ObjectDisposedException) when (transfer.CancellationToken.IsCancellationRequested)
+        {
+            var status = transfer.TerminalStatus
+                ?? (transfer.CallerCancellationToken.IsCancellationRequested
+                    ? ClipboardTextResult.Canceled
+                    : ClipboardTextResult.TimedOut);
+            response = CreateClipboardReadResponse(
+                transfer.Request.Window,
+                status,
+                "The Wayland clipboard data transfer was canceled before it completed.");
         }
         catch (Exception exception)
         {
@@ -591,6 +610,7 @@ internal sealed partial class WaylandPlatformBackend
                 complete,
                 fail,
                 timeoutSource,
+                _timeProvider.GetTimestamp(),
                 cancellationToken);
             offer.ActiveReadCount++;
             _clipboardReads.Add(transfer);
@@ -1117,8 +1137,19 @@ internal sealed partial class WaylandPlatformBackend
             var transfer = _clipboardReads[index];
             var completionTask = transfer.CompletionTask;
 
-            if ((completionTask is null) || !completionTask.IsCompleted)
+            if (completionTask is null)
             {
+                continue;
+            }
+
+            if (!completionTask.IsCompleted)
+            {
+                if (_timeProvider.GetElapsedTime(transfer.StartTimestamp)
+                    >= TimeSpan.FromMilliseconds(ClipboardTransferTimeoutMilliseconds))
+                {
+                    transfer.Cancel(ClipboardTextResult.TimedOut);
+                }
+
                 continue;
             }
 
@@ -1341,6 +1372,7 @@ internal sealed partial class WaylandPlatformBackend
             Action<ClipboardReadResponse> complete,
             Action<Exception> fail,
             CancellationTokenSource timeoutSource,
+            long startTimestamp,
             CancellationToken callerCancellationToken)
         {
             CallerCancellationToken = callerCancellationToken;
@@ -1348,6 +1380,7 @@ internal sealed partial class WaylandPlatformBackend
             FailCallback = fail;
             Offer = offer;
             Request = request;
+            StartTimestamp = startTimestamp;
             TimeoutSource = timeoutSource;
             CancellationSource = CancellationTokenSource.CreateLinkedTokenSource(
                 callerCancellationToken,
@@ -1369,6 +1402,8 @@ internal sealed partial class WaylandPlatformBackend
         internal WaylandClipboardDataOfferState Offer { get; }
 
         internal ClipboardReadRequest Request { get; }
+
+        internal long StartTimestamp { get; }
 
         internal ClipboardStatus? TerminalStatus
         {
