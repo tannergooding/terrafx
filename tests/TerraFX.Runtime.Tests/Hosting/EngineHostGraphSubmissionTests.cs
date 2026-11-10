@@ -238,6 +238,53 @@ internal sealed partial class EngineHostOptionsTests
             holdGraphCompletion: false);
 
     [Test]
+    public Task D3D12SubmitsR32FloatComputeStorageImage()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.D3D12,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: true,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useFloatStorageImage: true);
+
+    [Test]
+    public Task D3D12SubmitsR32UIntComputeStorageImage()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.D3D12,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: true,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false);
+
+    [Test]
+    public Task D3D12SubmitsRgba16FloatComputeStorageImage()
+        => RunOffscreenGraphAsync(
+            GraphicsBackend.D3D12,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: true,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useRgba16FloatStorageImage: true);
+
+    [Test]
     public Task D3D12SubmitsTransientBufferAliasGroupsAcrossLiveSlots()
         => RunOffscreenGraphAsync(
             GraphicsBackend.D3D12,
