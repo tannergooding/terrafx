@@ -206,6 +206,14 @@ dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --confi
 dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Release
 ```
 
+The opt-in Windows physical-keyboard witness opens a visible Interactive D3D12 window and records a real A key-down/up through its HostLiveUI recipient. Focus the window and press/release A when prompted. This records physical routing only; it does not qualify UI-owned capture, IME composition, gamepad input, or device hotplug:
+
+```powershell
+$env:TERRAFX_RUN_M04_PHYSICAL_INPUT = '1'
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.EngineHostOptionsTests.ManualWindowsInteractivePhysicalKeyboardInputUsesHostLiveUiRoute"
+Remove-Item Env:\TERRAFX_RUN_M04_PHYSICAL_INPUT
+```
+
 The Windows TSF selection exercises protected-session input scopes/redaction, synchronous and asynchronous text-store locks, UTF-16 range validation, composition commit/cancel, and native document-context activation/update/retirement. It requires Windows 11 x64 and does not claim physical IME preedit/commit:
 
 ```powershell
