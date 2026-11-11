@@ -489,8 +489,8 @@ internal sealed class M04ShaderFixtureCompilerTests
 
             Assert.That(typedComputeStorageBuffersReflection.Stage, Is.EqualTo(ShaderStage.Compute));
             Assert.That(typedComputeStorageBuffersReflection.EntryPoint, Is.EqualTo("CSStorageBuffersMain"));
-            Assert.That(typedComputeStorageBuffersReflection.GroupSizeX, Is.EqualTo(1));
-            Assert.That(typedComputeStorageBuffersReflection.GroupSizeY, Is.EqualTo(1));
+            Assert.That(typedComputeStorageBuffersReflection.GroupSizeX, Is.EqualTo(2));
+            Assert.That(typedComputeStorageBuffersReflection.GroupSizeY, Is.EqualTo(2));
             Assert.That(typedComputeStorageBuffersReflection.GroupSizeZ, Is.EqualTo(1));
             Assert.That(typedComputeStorageBuffersReflection.Resources.Length, Is.EqualTo(2));
             Assert.That(typedComputeStorageBuffersReflection.Resources, Does.Contain(

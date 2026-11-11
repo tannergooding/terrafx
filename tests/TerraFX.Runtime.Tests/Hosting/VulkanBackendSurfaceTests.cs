@@ -150,6 +150,19 @@ internal sealed partial class EngineHostOptionsTests
             surface = graphicsDevice.CreateSurfaceAsync(binding, clientPixelSize, default).GetAwaiter().GetResult();
             var activeSurface = surface
                 ?? throw new InvalidOperationException("Vulkan surface creation returned no Surface.");
+
+            if (exerciseNativeWindowReplacement || expectWaylandCompositorDisconnect)
+            {
+                var capabilities = graphicsDevice.Capabilities;
+                TestContext.WriteLine(
+                    $"Platform={platformBackend}; OS={Environment.OSVersion.VersionString}; "
+                    + $"Backend={capabilities.Backend}; Profile={capabilities.Profile}; Adapter={capabilities.AdapterName}; "
+                    + $"Vendor={capabilities.VendorId:X4}; Device={capabilities.DeviceId:X4}; "
+                    + $"Driver={capabilities.DriverName} {capabilities.DriverVersion}; "
+                    + $"API={capabilities.ApiVersion.Major}.{capabilities.ApiVersion.Minor}.{capabilities.ApiVersion.Patch}; "
+                    + $"Features={string.Join(",", capabilities.ImplementedFeatures)}");
+            }
+
             Assert.That(activeSurface.Capabilities.SurfaceEpoch, Is.EqualTo(1));
             Assert.That(activeSurface.Capabilities.SwapchainEpoch, Is.EqualTo(1));
             Assert.That(activeSurface.Capabilities.PresentModes, Does.Contain(GraphicsPresentMode.Fifo));

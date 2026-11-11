@@ -202,7 +202,7 @@ void CSStorageImagesMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     FrameSecondStorageImage[uint2(0, 0)] = 0x55667788;
 }
 
-[numthreads(1, 1, 1)]
+[numthreads(2, 2, 1)]
 void CSStorageBuffersMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     if (any(dispatchThreadId != uint3(0, 0, 0)))

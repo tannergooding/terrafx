@@ -841,8 +841,12 @@ internal static class M04ShaderFixtureCompiler
             or "compute-storage-signed-image"
             or "compute-storage-write")
         {
+            var expectedNumThreads = stageName == "compute-storage-buffers"
+                ? "NumThreads=(2,2,1)"
+                : "NumThreads=(1,1,1)";
+
             if (!text.Contains($"EntryFunctionName: {entryPoint}", StringComparison.Ordinal)
-                || !text.Contains("NumThreads=(1,1,1)", StringComparison.Ordinal)
+                || !text.Contains(expectedNumThreads, StringComparison.Ordinal)
                 || !text.Contains("FrameStorageBuffer", StringComparison.Ordinal)
                 || ((stageName == "compute-storage-float-image")
                     && !text.Contains("FrameFloatStorageImage", StringComparison.Ordinal))
