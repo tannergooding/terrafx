@@ -8,6 +8,8 @@ namespace TerraFX.Graphics;
 
 internal sealed class GraphicsGraphSubmission
 {
+    internal const int MaximumNativeColorAttachmentCount = 8;
+
     internal GraphicsGraphSubmission(
         uint deviceEpoch,
         GpuTexture outputColorTarget,
@@ -298,11 +300,10 @@ internal sealed class GraphicsGraphSubmission
 
     internal void ValidateNativeRasterSubmission()
     {
-        if ((BufferImports.Length > 8)
-            || (TextureImports.Length is < 1 or > 8)
+        if ((TextureImports.Length < 1)
             || !ReferenceEquals(TextureImports[0].Texture, OutputColorTarget))
         {
-            throw new NotSupportedException("Native graph submission supports one graph output color target and up to seven imported or transient Frame resource textures.");
+            throw new NotSupportedException("Native graph submission requires one graph output target as the first texture import.");
         }
 
         var targetResourceId = TextureImports[0].Version.ResourceId;
@@ -543,6 +544,7 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
+        var colorTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
         var depthTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
         var sampledTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
         var storageTextureImports = new Dictionary<ulong, GraphTextureImportRecord>();
@@ -551,12 +553,14 @@ internal sealed class GraphicsGraphSubmission
         {
             var import = TextureImports[index];
             var usage = import.Version.Description.Usage;
+            var hasColorAttachmentUsage = (usage & TextureUsage.ColorAttachment) != 0;
             var hasDepthAttachmentUsage = (usage & TextureUsage.DepthAttachment) != 0;
             var hasSampledUsage = (usage & TextureUsage.Sampled) != 0;
             var hasStorageUsage = (usage & TextureUsage.Storage) != 0;
             var isDepthSampledImage = hasSampledUsage
                 && (import.Version.Description.Format == TextureFormat.D32Float)
                 && (import.Version.Range.Aspect == TextureAspect.Depth);
+            var hasColorAttachmentAccess = false;
             var hasDepthAttachmentAccess = false;
             var hasCopySourceImportAccess = false;
             var hasCopyDestinationImportAccess = false;
@@ -568,6 +572,7 @@ internal sealed class GraphicsGraphSubmission
                     continue;
                 }
 
+                hasColorAttachmentAccess |= (access.RequiredState == GraphResourceState.ColorAttachment) && access.IsWrite;
                 hasDepthAttachmentAccess |= access.RequiredState is GraphResourceState.DepthRead or GraphResourceState.DepthWrite;
                 hasCopySourceImportAccess |= (access.RequiredState == GraphResourceState.CopySource) && !access.IsWrite;
                 hasCopyDestinationImportAccess |= (access.RequiredState == GraphResourceState.CopyDestination) && access.IsWrite;
@@ -577,6 +582,51 @@ internal sealed class GraphicsGraphSubmission
                 || (import.Version.ResourceId == targetResourceId))
             {
                 throw new NotSupportedException("Native graph submission requires distinct non-target imported textures.");
+            }
+
+            if (hasColorAttachmentAccess)
+            {
+                var description = import.Version.Description;
+
+                if (hasCopySourceImportAccess
+                    && (((usage & TextureUsage.CopySource) == 0)
+                        || (hasCopyDestinationImportAccess && !import.IsTransient)
+                        || !copySourceTextureImports.TryAdd(import.Version.ResourceId, import)))
+                {
+                    throw new NotSupportedException("Native graph color attachment copy sources require copy-source usage and a supported import.");
+                }
+
+                if (hasCopyDestinationImportAccess
+                    && (((usage & TextureUsage.CopyDestination) == 0)
+                        || !copyDestinationTextureImports.TryAdd(import.Version.ResourceId, import)))
+                {
+                    throw new NotSupportedException("Native graph color attachment copy destinations require copy-destination usage.");
+                }
+
+                if (!hasColorAttachmentUsage
+                    || hasDepthAttachmentUsage
+                    || hasSampledUsage
+                    || hasStorageUsage
+                    || (description.Dimension != TextureDimension.Dimension2D)
+                    || (description.Depth != 1)
+                    || (description.Width != OutputColorTarget.Description.Width)
+                    || (description.Height != OutputColorTarget.Description.Height)
+                    || (import.Version.Range.MipCount != 1)
+                    || (import.Version.Range.LayerCount != 1)
+                    || (import.Version.Range.Aspect != TextureAspect.Color)
+                    || (import.InitialContentsValid && (import.InitialState == GraphResourceState.Undefined))
+                    || (import.InitialState is not (
+                        GraphResourceState.Undefined
+                        or GraphResourceState.General
+                        or GraphResourceState.CopySource
+                        or GraphResourceState.CopyDestination
+                        or GraphResourceState.ColorAttachment))
+                    || !colorTextureImports.TryAdd(import.Version.ResourceId, import))
+                {
+                    throw new NotSupportedException("Native graph color attachments require matching 2D color imports in a supported state.");
+                }
+
+                continue;
             }
 
             if (hasDepthAttachmentUsage && hasDepthAttachmentAccess)
@@ -842,7 +892,7 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
-        var hasColorAttachment = false;
+        var hasOutputColorAttachment = false;
         var hasVertexBufferPipeline = false;
         var hasVertexBufferBinding = false;
         var hasIndexBufferBinding = false;
@@ -870,6 +920,7 @@ internal sealed class GraphicsGraphSubmission
         var uniformBufferResourcesUsed = new HashSet<ulong>();
         var sampledTextureBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var sampledTextureResourcesUsed = new HashSet<ulong>();
+        var colorTextureResourcesUsed = new HashSet<ulong>();
         var depthTextureResourcesUsed = new HashSet<ulong>();
         var storageBufferBindingPairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var storageBufferResourcesUsed = new HashSet<ulong>();
@@ -877,6 +928,7 @@ internal sealed class GraphicsGraphSubmission
         var storageTextureResourcesUsed = new HashSet<ulong>();
         var copySourcePasses = new HashSet<RenderPassId>();
         var copyDestinationPasses = new HashSet<RenderPassId>();
+        var colorAttachmentPassResourcePairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var depthAttachmentPassResourcePairs = new HashSet<(RenderPassId PassId, ulong ResourceId)>();
         var copySourceTexturePasses = new HashSet<RenderPassId>();
         var copyDestinationTexturePasses = new HashSet<RenderPassId>();
@@ -886,6 +938,7 @@ internal sealed class GraphicsGraphSubmission
         foreach (var pass in Passes)
         {
             TextureFormat? passDepthTargetFormat = null;
+            var passColorTargetFormats = new List<TextureFormat>();
 
             if (pass.Kind == CommandRecorderPassKind.Presentation)
             {
@@ -942,6 +995,7 @@ internal sealed class GraphicsGraphSubmission
             {
                 var colorAttachmentCount = 0;
                 var depthAttachmentCount = 0;
+                var passColorAttachmentResources = new HashSet<ulong>();
 
                 foreach (var attachment in pass.Attachments)
                 {
@@ -970,21 +1024,34 @@ internal sealed class GraphicsGraphSubmission
                     else
                     {
                         colorAttachmentCount++;
+                        var description = attachment.Version.Description;
+                        var resourceId = attachment.Version.ResourceId;
+                        var isOutputTarget = resourceId == targetResourceId;
 
-                        if ((colorAttachmentCount != 1)
-                            || (attachment.Version.ResourceId != targetResourceId)
-                            || (attachment.Range != new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)))
+                        if ((colorAttachmentCount > Math.Min(
+                                OutputColorTarget.ResourceOwner.Device.Capabilities.Limits.MaximumColorAttachments,
+                                MaximumNativeColorAttachmentCount))
+                            || !passColorAttachmentResources.Add(resourceId)
+                            || (!isOutputTarget && !colorTextureImports.ContainsKey(resourceId))
+                            || (attachment.Range != new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color))
+                            || (description.Dimension != TextureDimension.Dimension2D)
+                            || (description.Depth != 1)
+                            || (description.Width != OutputColorTarget.Description.Width)
+                            || (description.Height != OutputColorTarget.Description.Height)
+                            || ((description.Usage & TextureUsage.ColorAttachment) == 0))
                         {
-                            throw new NotSupportedException("Native graph submission supports one mip-0/layer-0 color attachment on its graph output target.");
+                            throw new NotSupportedException("Native graph color attachments must be distinct matching mip-0/layer-0 color textures within the device attachment limit.");
                         }
 
-                        hasColorAttachment = true;
+                        passColorTargetFormats.Add(description.Format);
+                        hasOutputColorAttachment |= isOutputTarget;
+                        _ = colorAttachmentPassResourcePairs.Add((pass.PassId, resourceId));
                     }
                 }
 
-                if (colorAttachmentCount != 1)
+                if (colorAttachmentCount == 0)
                 {
-                    throw new NotSupportedException("Native graph raster passes require exactly one graph output color attachment.");
+                    throw new NotSupportedException("Native graph raster passes require at least one color attachment.");
                 }
             }
 
@@ -1036,12 +1103,18 @@ internal sealed class GraphicsGraphSubmission
                             throw new NotSupportedException("Native graph submission requires a same-device pipeline matching the pass kind.");
                         }
 
+                        var colorTargetFormatsMatch = layout.ColorTargetFormats.Length == passColorTargetFormats.Count;
+
+                        for (var index = 0; colorTargetFormatsMatch && (index < passColorTargetFormats.Count); index++)
+                        {
+                            colorTargetFormatsMatch = layout.ColorTargetFormats[index] == passColorTargetFormats[index];
+                        }
+
                         if (isComputePass
                             ? (layout.DepthTargetFormat.HasValue || !layout.ColorTargetFormats.IsEmpty)
                             : ((layout.DepthTargetFormat != passDepthTargetFormat)
                                 || (layout.Topology != PrimitiveTopology.TriangleList)
-                                || (layout.ColorTargetFormats.Length != 1)
-                                || (layout.ColorTargetFormats[0] != TextureImports[0].Version.Description.Format)))
+                                || !colorTargetFormatsMatch))
                         {
                             throw new NotSupportedException("Native graph submission requires attachment-free compute pipelines and triangle-list graphics pipelines matching its color and optional depth attachments.");
                         }
@@ -1174,9 +1247,10 @@ internal sealed class GraphicsGraphSubmission
                             }
                         }
 
-                        if (!currentPipelineSampledImageBindings.SetEquals(currentPipelineSamplerBindings))
+                        if ((currentPipelineSampledImageBindings.Count != 0)
+                            && (currentPipelineSamplerBindings.Count == 0))
                         {
-                            throw new NotSupportedException("Every Frame sampled-image binding requires a sampler at the matching binding.");
+                            throw new NotSupportedException("A graphics pipeline with sampled images must declare at least one sampler.");
                         }
 
                         currentPipeline = pipeline;
@@ -1995,6 +2069,18 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (access.IsTexture
+                && (access.RequiredState == GraphResourceState.ColorAttachment)
+                && colorAttachmentPassResourcePairs.Contains((access.PassId, access.ResourceId)))
+            {
+                if (access.IsWrite && colorTextureImports.ContainsKey(access.ResourceId))
+                {
+                    _ = colorTextureResourcesUsed.Add(access.ResourceId);
+                }
+
+                continue;
+            }
+
+            if (access.IsTexture
                 && depthTextureImports.ContainsKey(access.ResourceId)
                 && (access.RequiredState == GraphResourceState.DepthWrite))
             {
@@ -2168,6 +2254,20 @@ internal sealed class GraphicsGraphSubmission
             }
 
             if (transition.IsTexture
+                && colorTextureImports.ContainsKey(transition.ResourceId)
+                && (transition.AfterState == GraphResourceState.ColorAttachment)
+                && (transition.BeforeState is
+                    GraphResourceState.Undefined
+                    or GraphResourceState.General
+                    or GraphResourceState.ColorAttachment
+                    or GraphResourceState.CopySource
+                    or GraphResourceState.CopyDestination)
+                && colorAttachmentPassResourcePairs.Contains((transition.PassId, transition.ResourceId)))
+            {
+                continue;
+            }
+
+            if (transition.IsTexture
                 && depthTextureImports.ContainsKey(transition.ResourceId)
                 && (transition.AfterState == GraphResourceState.DepthWrite)
                 && (transition.BeforeState is
@@ -2306,6 +2406,11 @@ internal sealed class GraphicsGraphSubmission
             throw new NotSupportedException("Every imported depth attachment must be written by a graph pass.");
         }
 
+        if (colorTextureResourcesUsed.Count != colorTextureImports.Count)
+        {
+            throw new NotSupportedException("Every imported color attachment must be written by a graph pass.");
+        }
+
         if ((sampledTextureImports.Count != 0)
             && (!hasSampledImagePipeline
                 || !hasSampledImageBinding
@@ -2335,9 +2440,9 @@ internal sealed class GraphicsGraphSubmission
             throw new NotSupportedException("Every imported Frame storage image must be reflected, bound, and declared by a graph pass.");
         }
 
-        if (!hasColorAttachment)
+        if (!hasOutputColorAttachment)
         {
-            throw new NotSupportedException("Native graph submission requires at least one graph-output color attachment.");
+            throw new NotSupportedException("Native graph submission requires a graph-output color attachment.");
         }
     }
 

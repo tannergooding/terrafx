@@ -227,6 +227,7 @@ internal sealed unsafe partial class VulkanBackendDevice
 
             case VkImageLayout.VK_IMAGE_LAYOUT_GENERAL:
             case VkImageLayout.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+            case VkImageLayout.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
             {
                 barrier.srcStageMask = texture.GetLastStageMask(subresource);
                 barrier.srcAccessMask = texture.GetLastAccessMask(subresource);

@@ -1839,14 +1839,29 @@ public static unsafe class D3D12GraphicsBackend
                     checked(_uncertainGraphDescriptorSets.Count + descriptorSetCapacity));
                 _ = _uncertainGraphRenderTargetHeaps.EnsureCapacity(
                     checked(_uncertainGraphRenderTargetHeaps.Count + 1));
+                var renderTargetResourceIds = new List<ulong>();
+                var renderTargetResourceIdSet = new HashSet<ulong>();
+
+                foreach (var pass in submission.Passes)
+                {
+                    foreach (var attachment in pass.Attachments)
+                    {
+                        if (!attachment.IsDepth && renderTargetResourceIdSet.Add(attachment.Version.ResourceId))
+                        {
+                            renderTargetResourceIds.Add(attachment.Version.ResourceId);
+                        }
+                    }
+                }
+
                 var heapDescription = new D3D12_DESCRIPTOR_HEAP_DESC {
                     Type = D3D12_DESCRIPTOR_HEAP_TYPE.D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-                    NumDescriptors = 1,
+                    NumDescriptors = checked((uint)renderTargetResourceIds.Count),
                     Flags = D3D12_DESCRIPTOR_HEAP_FLAGS.D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
                     NodeMask = 0,
                 };
                 var heapId = typeof(ID3D12DescriptorHeap).GUID;
                 ID3D12DescriptorHeap* renderTargetHeap = null;
+                var renderTargetViews = new Dictionary<ulong, D3D12_CPU_DESCRIPTOR_HANDLE>(renderTargetResourceIds.Count);
                 var graphSubmissionAccepted = false;
                 var graphFrameSlotIndex = -1;
 
@@ -1860,18 +1875,35 @@ public static unsafe class D3D12GraphicsBackend
                     }
 
                     var renderTargetView = renderTargetHeap->GetCPUDescriptorHandleForHeapStart();
-                    var renderTargetViewDescription = new D3D12_RENDER_TARGET_VIEW_DESC {
-                        Format = GetNativeFormat(target.Description.Format),
-                        ViewDimension = D3D12_RTV_DIMENSION.D3D12_RTV_DIMENSION_TEXTURE2D,
-                        Texture2D = new D3D12_TEX2D_RTV {
-                            MipSlice = 0,
-                            PlaneSlice = 0,
-                        },
-                    };
-                    _device->CreateRenderTargetView(target.GetResource(), &renderTargetViewDescription, renderTargetView);
+                    var renderTargetViewIncrementSize = _device->GetDescriptorHandleIncrementSize(
+                        D3D12_DESCRIPTOR_HEAP_TYPE.D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+
+                    foreach (var resourceId in renderTargetResourceIds)
+                    {
+                        var colorTexture = submission.GetTexture(resourceId) as D3D12BackendTexture
+                            ?? throw new InvalidOperationException("A graph color attachment is not a D3D12 texture.");
+                        var renderTargetViewDescription = new D3D12_RENDER_TARGET_VIEW_DESC {
+                            Format = GetNativeFormat(colorTexture.Description.Format),
+                            ViewDimension = D3D12_RTV_DIMENSION.D3D12_RTV_DIMENSION_TEXTURE2D,
+                            Texture2D = new D3D12_TEX2D_RTV {
+                                MipSlice = 0,
+                                PlaneSlice = 0,
+                            },
+                        };
+                        _device->CreateRenderTargetView(
+                            colorTexture.GetResource(),
+                            &renderTargetViewDescription,
+                            renderTargetView);
+                        renderTargetViews.Add(resourceId, renderTargetView);
+                        renderTargetView.ptr = checked(
+                            renderTargetView.ptr + checked((nuint)renderTargetViewIncrementSize));
+                    }
+
                     var commandList = transferQueue.BeginGraphRecording();
                     graphFrameSlotIndex = transferQueue.ActiveGraphFrameSlotIndex;
                     var clearColor = stackalloc float[4];
+                    var renderTargetHandles = stackalloc D3D12_CPU_DESCRIPTOR_HANDLE[
+                        GraphicsGraphSubmission.MaximumNativeColorAttachmentCount];
                     var viewport = new D3D12_VIEWPORT {
                         TopLeftX = 0.0f,
                         TopLeftY = 0.0f,
@@ -2054,11 +2086,12 @@ public static unsafe class D3D12GraphicsBackend
                             {
                                 if (attachment.LoadAction == AttachmentLoadAction.Clear)
                                 {
+                                    var attachmentRenderTargetView = renderTargetViews[attachment.Version.ResourceId];
                                     clearColor[0] = attachment.ClearColor.X;
                                     clearColor[1] = attachment.ClearColor.Y;
                                     clearColor[2] = attachment.ClearColor.Z;
                                     clearColor[3] = attachment.ClearColor.W;
-                                    commandList->ClearRenderTargetView(renderTargetView, clearColor, 0, null);
+                                    commandList->ClearRenderTargetView(attachmentRenderTargetView, clearColor, 0, null);
                                 }
                             }
                         }
@@ -2291,9 +2324,19 @@ public static unsafe class D3D12GraphicsBackend
 
                         if (pass.Kind == CommandRecorderPassKind.Raster)
                         {
+                            var renderTargetCount = 0;
+
+                            foreach (var attachment in pass.Attachments)
+                            {
+                                if (!attachment.IsDepth)
+                                {
+                                    renderTargetHandles[renderTargetCount++] = renderTargetViews[attachment.Version.ResourceId];
+                                }
+                            }
+
                             commandList->OMSetRenderTargets(
-                                1,
-                                &renderTargetView,
+                                checked((uint)renderTargetCount),
+                                renderTargetHandles,
                                 false,
                                 hasDepthAttachment ? &depthStencilView : null);
                             ID3D12BackendPipelineDescriptorOwner? currentPipeline = null;

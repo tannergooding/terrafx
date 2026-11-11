@@ -210,6 +210,14 @@ internal sealed unsafe partial class VulkanBackendDevice
         _ = _uncertainGraphDescriptorSets.EnsureCapacity(
             checked(_uncertainGraphDescriptorSets.Count + descriptorSetCapacity));
         var targetResourceId = submission.TextureImports[0].Version.ResourceId;
+        var colorTextureScopes = new Dictionary<ulong, (
+            VulkanBackendTexture Texture,
+            TextureSubresource Subresource,
+            VkImageLayout Layout,
+            VkPipelineStageFlags2 LastStageMask,
+            VkAccessFlags2 LastAccessMask,
+            VkPipelineStageFlags2 StageMask,
+            VkAccessFlags2 AccessMask)>(submission.TextureImports.Length - 1);
         var depthTextureScopes = new Dictionary<ulong, (
             VulkanBackendTexture Texture,
             TextureSubresource Subresource,
@@ -239,7 +247,46 @@ internal sealed unsafe partial class VulkanBackendDevice
         {
             var import = submission.TextureImports[index];
 
-            if ((import.Version.Description.Usage & TextureUsage.DepthAttachment) != 0)
+            if ((import.Version.Description.Usage & TextureUsage.ColorAttachment) != 0)
+            {
+                var resourceId = import.Version.ResourceId;
+                var texture = submission.GetTexture(resourceId) as VulkanBackendTexture
+                    ?? throw new InvalidOperationException("The graph color attachment is not a Vulkan texture.");
+                var colorRange = import.Version.Range;
+                var hasColorAttachmentAccess = false;
+
+                foreach (var access in submission.Accesses)
+                {
+                    if (access.IsTexture
+                        && (access.ResourceId == resourceId)
+                        && (access.RequiredState == GraphResourceState.ColorAttachment)
+                        && access.IsWrite)
+                    {
+                        colorRange = access.TextureRange;
+                        hasColorAttachmentAccess = true;
+                        break;
+                    }
+                }
+
+                if (hasColorAttachmentAccess)
+                {
+                    var colorSubresource = new TextureSubresource(
+                        colorRange.FirstMip,
+                        colorRange.FirstLayer,
+                        colorRange.Aspect);
+                    colorTextureScopes.Add(
+                        resourceId,
+                        (
+                            texture,
+                            colorSubresource,
+                            texture.GetLayout(colorSubresource),
+                            texture.GetLastStageMask(colorSubresource),
+                            texture.GetLastAccessMask(colorSubresource),
+                            VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_NONE,
+                            VkAccessFlags2.VK_ACCESS_2_NONE));
+                }
+            }
+            else if ((import.Version.Description.Usage & TextureUsage.DepthAttachment) != 0)
             {
                 var resourceId = import.Version.ResourceId;
                 var texture = submission.GetTexture(resourceId) as VulkanBackendTexture
@@ -446,6 +493,18 @@ internal sealed unsafe partial class VulkanBackendDevice
                 barrier.dstStageMask,
                 barrier.dstAccessMask,
                 isScopeDestination);
+
+            if (colorTextureScopes.TryGetValue(resourceId, out var copyColorTextureScope))
+            {
+                colorTextureScopes[resourceId] = (
+                    copyColorTextureScope.Texture,
+                    copyColorTextureScope.Subresource,
+                    expectedLayout,
+                    barrier.dstStageMask,
+                    barrier.dstAccessMask,
+                    copyColorTextureScope.StageMask,
+                    copyColorTextureScope.AccessMask);
+            }
         }
 
         foreach (var pass in submission.Passes)
@@ -461,7 +520,13 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                 if (access.IsTexture)
                 {
-                    if (depthTextureScopes.TryGetValue(access.ResourceId, out var depthTextureScope))
+                    if (colorTextureScopes.TryGetValue(access.ResourceId, out var colorTextureScope))
+                    {
+                        colorTextureScope.StageMask |= VulkanGraphResourceStateMapper.GetStageMask(access.RequiredState, shaderStages);
+                        colorTextureScope.AccessMask |= VulkanGraphResourceStateMapper.GetAccessMask(access.RequiredState);
+                        colorTextureScopes[access.ResourceId] = colorTextureScope;
+                    }
+                    else if (depthTextureScopes.TryGetValue(access.ResourceId, out var depthTextureScope))
                     {
                         depthTextureScope.StageMask |= VulkanGraphResourceStateMapper.GetStageMask(access.RequiredState, shaderStages);
                         depthTextureScope.AccessMask |= VulkanGraphResourceStateMapper.GetAccessMask(access.RequiredState);
@@ -531,21 +596,76 @@ internal sealed unsafe partial class VulkanBackendDevice
 
         var selectedGraphFrameSlot = availableGraphFrameSlot
             ?? throw new InvalidOperationException("Vulkan graph command frame slots are exhausted before graphics admission.");
-        var imageView = default(VkImageView);
+        var colorAttachmentResourceIds = new List<ulong>();
+        var colorAttachmentResourceIdSet = new HashSet<ulong>();
+
+        foreach (var pass in submission.Passes)
+        {
+            foreach (var attachment in pass.Attachments)
+            {
+                if (!attachment.IsDepth && colorAttachmentResourceIdSet.Add(attachment.Version.ResourceId))
+                {
+                    colorAttachmentResourceIds.Add(attachment.Version.ResourceId);
+                }
+            }
+        }
+
+        var graphColorImageViews = new Dictionary<ulong, VkImageView>(colorAttachmentResourceIds.Count);
+        var graphImageViews = new List<VkImageView>(colorAttachmentResourceIds.Count);
         var acquiredImageIndex = 0u;
         var subresource = new TextureSubresource(0, 0, TextureAspect.Color);
         var currentLayout = target.GetLayout(subresource);
         var currentStageMask = target.GetLastStageMask(subresource);
         var currentAccessMask = target.GetLastAccessMask(subresource);
-        var ownsImageView = false;
+        var ownsImageViews = false;
         var hasAcquiredImage = false;
         var hasStartedRecording = false;
         var graphSubmissionAccepted = false;
+        var colorAttachmentStoreActions = new Dictionary<ulong, AttachmentStoreAction>(colorAttachmentResourceIds.Count);
+        var depthAttachmentStoreActions = new Dictionary<ulong, AttachmentStoreAction>(submission.TextureImports.Length - 1);
+        var passIndices = new Dictionary<RenderPassId, int>(submission.Passes.Length);
+        var textureContentsAfterSubmission = new Dictionary<ulong, (int PassIndex, bool IsValid)>(
+            submission.TextureImports.Length - 1);
+
+        for (var passIndex = 0; passIndex < submission.Passes.Length; passIndex++)
+        {
+            var pass = submission.Passes[passIndex];
+            passIndices.Add(pass.PassId, passIndex);
+
+            foreach (var attachment in pass.Attachments)
+            {
+                var storeActions = attachment.IsDepth ? depthAttachmentStoreActions : colorAttachmentStoreActions;
+                storeActions[attachment.Version.ResourceId] = attachment.StoreAction;
+                textureContentsAfterSubmission[attachment.Version.ResourceId] = (
+                    passIndex,
+                    attachment.StoreAction == AttachmentStoreAction.Store);
+            }
+        }
+
+        foreach (var access in submission.Accesses)
+        {
+            if (!access.IsTexture
+                || !access.IsWrite
+                || (access.RequiredState != GraphResourceState.CopyDestination))
+            {
+                continue;
+            }
+
+            var passIndex = passIndices[access.PassId];
+
+            if (!textureContentsAfterSubmission.TryGetValue(access.ResourceId, out var contentsState)
+                || (passIndex >= contentsState.PassIndex))
+            {
+                textureContentsAfterSubmission[access.ResourceId] = (passIndex, true);
+            }
+        }
+
         _commandBuffer = selectedGraphFrameSlot.CommandBuffer;
 
         try
         {
-            _ = _uncertainGraphImageViews.EnsureCapacity(checked(_uncertainGraphImageViews.Count + 1));
+            _ = _uncertainGraphImageViews.EnsureCapacity(
+                checked(_uncertainGraphImageViews.Count + colorAttachmentResourceIds.Count));
             _ = _uncertainTextureOwners.EnsureCapacity(checked(_uncertainTextureOwners.Count + 1));
             _ = descriptorSets.EnsureCapacity(descriptorSetCapacity);
 
@@ -566,10 +686,21 @@ internal sealed unsafe partial class VulkanBackendDevice
                 _surfaceImageAcquiredObserver?.Invoke();
             }
 
-            imageView = CreateGraphColorImageView(_device, target);
-            ownsImageView = true;
+            ownsImageViews = true;
+
+            foreach (var resourceId in colorAttachmentResourceIds)
+            {
+                var texture = submission.GetTexture(resourceId) as VulkanBackendTexture
+                    ?? throw new InvalidOperationException("A graph color attachment is not a Vulkan texture.");
+                var imageView = CreateGraphColorImageView(_device, texture);
+                graphColorImageViews.Add(resourceId, imageView);
+                graphImageViews.Add(imageView);
+            }
+
             BeginOneTimeCommands();
             hasStartedRecording = true;
+            var colorRenderingAttachments = stackalloc VkRenderingAttachmentInfo[
+                GraphicsGraphSubmission.MaximumNativeColorAttachmentCount];
 
             foreach (var pass in submission.Passes)
             {
@@ -735,6 +866,43 @@ internal sealed unsafe partial class VulkanBackendDevice
                                     currentStageMask,
                                     currentAccessMask,
                                     targetCopyTextureScope.IsDestination);
+                            }
+                        }
+                        else if (colorTextureScopes.TryGetValue(transition.ResourceId, out var colorTextureScope))
+                        {
+                            var (
+                                colorTexture,
+                                colorSubresource,
+                                colorLayout,
+                                colorLastStageMask,
+                                colorLastAccessMask,
+                                colorStageMask,
+                                colorAccessMask) = colorTextureScope;
+                            RecordGraphImageBarrier(
+                                pass,
+                                colorTexture,
+                                transition,
+                                ref colorLayout,
+                                ref colorLastStageMask,
+                                ref colorLastAccessMask);
+                            colorTextureScopes[transition.ResourceId] = (
+                                colorTexture,
+                                colorSubresource,
+                                colorLayout,
+                                colorLastStageMask,
+                                colorLastAccessMask,
+                                colorStageMask,
+                                colorAccessMask);
+
+                            if (copyTextureScopes.TryGetValue(transition.ResourceId, out var colorCopyTextureScope))
+                            {
+                                copyTextureScopes[transition.ResourceId] = (
+                                    colorCopyTextureScope.Texture,
+                                    colorCopyTextureScope.Subresource,
+                                    colorLayout,
+                                    colorLastStageMask,
+                                    colorLastAccessMask,
+                                    colorCopyTextureScope.IsDestination);
                             }
                         }
                         else if (depthTextureScopes.TryGetValue(transition.ResourceId, out var depthTextureScope))
@@ -1061,10 +1229,11 @@ internal sealed unsafe partial class VulkanBackendDevice
                     continue;
                 }
 
-                var colorAttachment = default(GraphicsGraphSubmissionAttachment);
                 var depthAttachment = default(GraphicsGraphSubmissionAttachment);
-                var hasColorAttachment = false;
+                var colorAttachmentCount = 0;
                 var hasDepthAttachment = false;
+                var remainingStorageBarrierCount = pass.Commands.Count(
+                    static command => command.Kind == GraphicsCommandKind.StorageBarrier);
 
                 foreach (var attachment in pass.Attachments)
                 {
@@ -1075,38 +1244,40 @@ internal sealed unsafe partial class VulkanBackendDevice
                     }
                     else
                     {
-                        colorAttachment = attachment;
-                        hasColorAttachment = true;
+                        if (colorAttachmentCount >= GraphicsGraphSubmission.MaximumNativeColorAttachmentCount)
+                        {
+                            throw new NotSupportedException("The graph pass exceeds the native color-attachment view capacity.");
+                        }
+
+                        var renderingAttachment = default(VkRenderingAttachmentInfo);
+                        renderingAttachment.sType = VkStructureType.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                        renderingAttachment.imageView = graphColorImageViews[attachment.Version.ResourceId];
+                        renderingAttachment.imageLayout = VkImageLayout.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                        renderingAttachment.loadOp = GetGraphAttachmentLoadOp(attachment.LoadAction);
+                        renderingAttachment.storeOp = (remainingStorageBarrierCount > 0)
+                            ? VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE
+                            : GetGraphAttachmentStoreOp(attachment.StoreAction);
+
+                        if (attachment.LoadAction == AttachmentLoadAction.Clear)
+                        {
+                            renderingAttachment.clearValue.color.float32[0] = attachment.ClearColor.X;
+                            renderingAttachment.clearValue.color.float32[1] = attachment.ClearColor.Y;
+                            renderingAttachment.clearValue.color.float32[2] = attachment.ClearColor.Z;
+                            renderingAttachment.clearValue.color.float32[3] = attachment.ClearColor.W;
+                        }
+
+                        colorRenderingAttachments[colorAttachmentCount++] = renderingAttachment;
                     }
                 }
 
-                if (!hasColorAttachment)
+                if (colorAttachmentCount == 0)
                 {
                     throw new InvalidOperationException("The raster graph pass has no color attachment.");
                 }
 
-                var renderingAttachment = default(VkRenderingAttachmentInfo);
-                var finalColorStoreOp = GetGraphAttachmentStoreOp(colorAttachment.StoreAction);
                 var finalDepthStoreOp = hasDepthAttachment
                     ? GetGraphAttachmentStoreOp(depthAttachment.StoreAction)
                     : default;
-                var remainingStorageBarrierCount = pass.Commands.Count(
-                    static command => command.Kind == GraphicsCommandKind.StorageBarrier);
-                renderingAttachment.sType = VkStructureType.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                renderingAttachment.imageView = imageView;
-                renderingAttachment.imageLayout = VkImageLayout.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                renderingAttachment.loadOp = GetGraphAttachmentLoadOp(colorAttachment.LoadAction);
-                renderingAttachment.storeOp = (remainingStorageBarrierCount > 0)
-                    ? VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE
-                    : finalColorStoreOp;
-
-                if (colorAttachment.LoadAction == AttachmentLoadAction.Clear)
-                {
-                    renderingAttachment.clearValue.color.float32[0] = colorAttachment.ClearColor.X;
-                    renderingAttachment.clearValue.color.float32[1] = colorAttachment.ClearColor.Y;
-                    renderingAttachment.clearValue.color.float32[2] = colorAttachment.ClearColor.Z;
-                    renderingAttachment.clearValue.color.float32[3] = colorAttachment.ClearColor.W;
-                }
 
                 var depthRenderingAttachment = default(VkRenderingAttachmentInfo);
 
@@ -1133,8 +1304,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                 renderingInfo.renderArea.extent.width = checked((uint)target.Description.Width);
                 renderingInfo.renderArea.extent.height = checked((uint)target.Description.Height);
                 renderingInfo.layerCount = 1;
-                renderingInfo.colorAttachmentCount = 1;
-                renderingInfo.pColorAttachments = &renderingAttachment;
+                renderingInfo.colorAttachmentCount = checked((uint)colorAttachmentCount);
+                renderingInfo.pColorAttachments = colorRenderingAttachments;
                 renderingInfo.pDepthAttachment = hasDepthAttachment ? &depthRenderingAttachment : null;
                 renderingInfo.pStencilAttachment = null;
                 VulkanApi.vkCmdBeginRendering(_commandBuffer, &renderingInfo);
@@ -1278,7 +1449,22 @@ internal sealed unsafe partial class VulkanBackendDevice
                         case GraphicsCommandKind.StorageBarrier:
                         {
                             VulkanApi.vkCmdEndRendering(_commandBuffer);
-                            renderingAttachment.loadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_LOAD;
+                            var colorAttachmentIndex = 0;
+
+                            foreach (var attachment in pass.Attachments)
+                            {
+                                if (attachment.IsDepth)
+                                {
+                                    continue;
+                                }
+
+                                colorRenderingAttachments[colorAttachmentIndex].loadOp =
+                                    VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_LOAD;
+                                colorRenderingAttachments[colorAttachmentIndex].storeOp = (remainingStorageBarrierCount > 1)
+                                    ? VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE
+                                    : GetGraphAttachmentStoreOp(attachment.StoreAction);
+                                colorAttachmentIndex++;
+                            }
 
                             if (hasDepthAttachment)
                             {
@@ -1287,9 +1473,6 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                             RecordGraphStorageBarrier(pass, submission, command);
                             remainingStorageBarrierCount--;
-                            renderingAttachment.storeOp = (remainingStorageBarrierCount > 0)
-                                ? VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE
-                                : finalColorStoreOp;
 
                             if (hasDepthAttachment)
                             {
@@ -1403,6 +1586,20 @@ internal sealed unsafe partial class VulkanBackendDevice
                 }
             }
 
+            foreach (var (resourceId, colorTextureScope) in colorTextureScopes)
+            {
+                var isColorAttachmentLayout =
+                    colorTextureScope.Layout == VulkanGraphResourceStateMapper.GetImageLayout(GraphResourceState.ColorAttachment);
+                var isCopyLayout = copyTextureScopes.TryGetValue(resourceId, out var copyTextureScope)
+                    && copyTextureScope.Layout is VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+                        or VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+                if (!isColorAttachmentLayout && !isCopyLayout)
+                {
+                    throw new InvalidOperationException("The compiled graph did not leave each imported color attachment in its tracked layout.");
+                }
+            }
+
             foreach (var (resourceId, copyTextureScope) in copyTextureScopes)
             {
                 if (resourceId == targetResourceId)
@@ -1416,7 +1613,11 @@ internal sealed unsafe partial class VulkanBackendDevice
                     VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
                     or VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
                 {
-                    throw new InvalidOperationException("The compiled graph did not leave each copy texture in a transfer layout.");
+                    if (!colorTextureScopes.ContainsKey(resourceId)
+                        || (copyTextureLayout != VulkanGraphResourceStateMapper.GetImageLayout(GraphResourceState.ColorAttachment)))
+                    {
+                        throw new InvalidOperationException("The compiled graph did not leave each copy texture in a transfer or color-attachment layout.");
+                    }
                 }
             }
 
@@ -1427,28 +1628,79 @@ internal sealed unsafe partial class VulkanBackendDevice
                     VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
                     surface.GetRenderFinishedSemaphore(acquiredImageIndex));
             selectedGraphFrameSlot.FenceValue = checked((ulong)submittedFence);
-            selectedGraphFrameSlot.ImageView = imageView;
+            selectedGraphFrameSlot.ImageViews = graphImageViews;
             selectedGraphFrameSlot.DescriptorSets = descriptorSets;
-            ownsImageView = false;
+            ownsImageViews = false;
             graphSubmissionAccepted = true;
             target.SetLayout(subresource, currentLayout);
             target.SetLastAccessScope(subresource, currentStageMask, currentAccessMask);
-            target.MarkInitialized(subresource);
 
-            foreach (var (
-                depthTexture,
-                depthSubresource,
-                depthLayout,
-                _,
-                _,
-                depthStageMask,
-                depthAccessMask) in depthTextureScopes.Values)
+            if (colorAttachmentStoreActions.TryGetValue(targetResourceId, out var targetStoreAction)
+                && (targetStoreAction == AttachmentStoreAction.Store))
             {
+                target.MarkInitialized(subresource);
+            }
+            else
+            {
+                target.MarkUninitialized(subresource);
+            }
+
+            foreach (var colorTextureScope in colorTextureScopes)
+            {
+                var (
+                    colorTexture,
+                    colorSubresource,
+                    colorLayout,
+                    _,
+                    _,
+                    colorStageMask,
+                    colorAccessMask) = colorTextureScope.Value;
+                colorTexture.SetLayout(colorSubresource, colorLayout);
+                colorTexture.SetLastAccessScope(
+                    colorSubresource,
+                    colorStageMask,
+                    colorAccessMask);
+
+                if (colorAttachmentStoreActions.TryGetValue(
+                    colorTextureScope.Key,
+                    out var colorStoreAction)
+                    && (colorStoreAction == AttachmentStoreAction.Store))
+                {
+                    colorTexture.MarkInitialized(colorSubresource);
+                }
+                else
+                {
+                    colorTexture.MarkUninitialized(colorSubresource);
+                }
+            }
+
+            foreach (var depthTextureScope in depthTextureScopes)
+            {
+                var (
+                    depthTexture,
+                    depthSubresource,
+                    depthLayout,
+                    _,
+                    _,
+                    depthStageMask,
+                    depthAccessMask) = depthTextureScope.Value;
                 depthTexture.SetLayout(depthSubresource, depthLayout);
                 depthTexture.SetLastAccessScope(
                     depthSubresource,
                     depthStageMask,
                     depthAccessMask);
+
+                if (depthAttachmentStoreActions.TryGetValue(
+                        depthTextureScope.Key,
+                        out var depthStoreAction)
+                    && (depthStoreAction == AttachmentStoreAction.Store))
+                {
+                    depthTexture.MarkInitialized(depthSubresource);
+                }
+                else
+                {
+                    depthTexture.MarkUninitialized(depthSubresource);
+                }
             }
 
             foreach (var (
@@ -1465,24 +1717,6 @@ internal sealed unsafe partial class VulkanBackendDevice
                     sampledSubresource,
                     sampledStageMask,
                     sampledAccessMask);
-            }
-
-            foreach (var pass in submission.Passes)
-            {
-                foreach (var attachment in pass.Attachments)
-                {
-                    if (attachment.IsDepth
-                        && (attachment.StoreAction == AttachmentStoreAction.Store))
-                    {
-                        var depthTexture = submission.GetTexture(attachment.Version.ResourceId) as VulkanBackendTexture
-                            ?? throw new InvalidOperationException("The graph depth attachment is not a Vulkan texture.");
-                        var depthSubresource = new TextureSubresource(
-                            attachment.Range.FirstMip,
-                            attachment.Range.FirstLayer,
-                            attachment.Range.Aspect);
-                        depthTexture.MarkInitialized(depthSubresource);
-                    }
-                }
             }
 
             foreach (var (
@@ -1502,14 +1736,15 @@ internal sealed unsafe partial class VulkanBackendDevice
                 storageTexture.MarkInitialized(storageSubresource);
             }
 
-            foreach (var (
-                copyTexture,
-                copyTextureSubresource,
-                copyTextureLayout,
-                copyTextureStageMask,
-                copyTextureAccessMask,
-                copyTextureIsDestination) in copyTextureScopes.Values)
+            foreach (var (resourceId, copyTextureScope) in copyTextureScopes)
             {
+                var (
+                    copyTexture,
+                    copyTextureSubresource,
+                    copyTextureLayout,
+                    copyTextureStageMask,
+                    copyTextureAccessMask,
+                    copyTextureIsDestination) = copyTextureScope;
                 copyTexture.SetLayout(copyTextureSubresource, copyTextureLayout);
                 copyTexture.SetLastAccessScope(
                     copyTextureSubresource,
@@ -1518,7 +1753,30 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                 if (copyTextureIsDestination)
                 {
-                    copyTexture.MarkInitialized(copyTextureSubresource);
+                    if (textureContentsAfterSubmission.TryGetValue(
+                        resourceId,
+                        out var finalContentsState)
+                        && !finalContentsState.IsValid)
+                    {
+                        copyTexture.MarkUninitialized(copyTextureSubresource);
+                    }
+                    else
+                    {
+                        copyTexture.MarkInitialized(copyTextureSubresource);
+                    }
+                }
+                else if (colorAttachmentStoreActions.TryGetValue(
+                    resourceId,
+                    out var copySourceStoreAction))
+                {
+                    if (copySourceStoreAction == AttachmentStoreAction.Store)
+                    {
+                        copyTexture.MarkInitialized(copyTextureSubresource);
+                    }
+                    else
+                    {
+                        copyTexture.MarkUninitialized(copyTextureSubresource);
+                    }
                 }
             }
 
@@ -1602,11 +1860,12 @@ internal sealed unsafe partial class VulkanBackendDevice
                 {
                     RetainUncertainTexture(target);
 
-                    if (imageView.Value != 0)
+                    foreach (var imageView in graphImageViews)
                     {
                         _uncertainGraphImageViews.Add(imageView);
-                        ownsImageView = false;
                     }
+
+                    ownsImageViews = false;
 
                     foreach (var descriptorSet in descriptorSets)
                     {
@@ -1623,9 +1882,12 @@ internal sealed unsafe partial class VulkanBackendDevice
             }
             finally
             {
-                if (ownsImageView)
+                if (ownsImageViews)
                 {
-                    VulkanApi.vkDestroyImageView(_device, imageView, null);
+                    for (var index = graphImageViews.Count - 1; index >= 0; index--)
+                    {
+                        VulkanApi.vkDestroyImageView(_device, graphImageViews[index], null);
+                    }
                 }
 
                 _commandBuffer = _transferCommandBuffer;
@@ -1997,8 +2259,17 @@ internal sealed unsafe partial class VulkanBackendDevice
                 graphFrameSlot.DescriptorSets = null;
             }
 
-            VulkanApi.vkDestroyImageView(_device, graphFrameSlot.ImageView, null);
-            graphFrameSlot.ImageView = default;
+            if (graphFrameSlot.ImageViews is List<VkImageView> imageViews)
+            {
+                for (var index = imageViews.Count - 1; index >= 0; index--)
+                {
+                    VulkanApi.vkDestroyImageView(_device, imageViews[index], null);
+                }
+
+                imageViews.Clear();
+                graphFrameSlot.ImageViews = null;
+            }
+
             graphFrameSlot.FenceValue = 0;
         }
     }

@@ -103,6 +103,9 @@ internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
     internal void MarkInitialized(TextureSubresource subresource)
         => _initialized[GetSubresourceIndex(subresource)] = true;
 
+    internal void MarkUninitialized(TextureSubresource subresource)
+        => _initialized[GetSubresourceIndex(subresource)] = false;
+
     internal void ReleaseDescriptorSet()
     {
         if (_descriptorSetReferenceCount <= 0)

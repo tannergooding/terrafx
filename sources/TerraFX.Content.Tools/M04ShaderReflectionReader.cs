@@ -534,19 +534,34 @@ internal static class M04ShaderReflectionReader
         return [.. requiredCapabilities];
     }
 
-    private static (string RegisterClass, int Binding) ParseDxilRegister(string register)
+    private static (string RegisterClass, int Binding, int RegisterSpace) ParseDxilRegister(string register)
     {
         var registerClass = register.StartsWith("cb", StringComparison.Ordinal)
             ? "cb"
             : register[..1];
-        var registerIndex = register.AsSpan(registerClass.Length);
+        var spaceSeparator = register.IndexOf(",space", registerClass.Length, StringComparison.Ordinal);
+        var registerIndex = spaceSeparator < 0
+            ? register.AsSpan(registerClass.Length)
+            : register.AsSpan(registerClass.Length, spaceSeparator - registerClass.Length);
 
         if (!int.TryParse(registerIndex, NumberStyles.None, CultureInfo.InvariantCulture, out var binding))
         {
-            throw new InvalidDataException($"DXIL register '{register}' is not a supported local binding.");
+            throw new InvalidDataException($"DXIL register '{register}' is not a supported register binding.");
         }
 
-        return (registerClass, binding);
+        var registerSpace = 0;
+
+        if (spaceSeparator >= 0
+            && !int.TryParse(
+                register.AsSpan(spaceSeparator + ",space".Length),
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out registerSpace))
+        {
+            throw new InvalidDataException($"DXIL register '{register}' is not a supported register space.");
+        }
+
+        return (registerClass, binding, registerSpace);
     }
 
     private static ImmutableArray<ShaderIoSignature> ParseDxilSignatures(
@@ -899,7 +914,7 @@ internal static class M04ShaderReflectionReader
                 throw new InvalidDataException("A DXIL resource-binding row has an invalid column count or descriptor count.");
             }
 
-            var (registerClass, binding) = ParseDxilRegister(row[5]);
+            var (registerClass, binding, registerSpace) = ParseDxilRegister(row[5]);
             var resourceName = NormalizeResourceName(row[0]);
             var matchedIndex = -1;
 
@@ -922,6 +937,7 @@ internal static class M04ShaderReflectionReader
                 if (StringComparer.Ordinal.Equals(resource.Name, resourceName)
                     && StringComparer.Ordinal.Equals(expectedRegisterClass, registerClass)
                     && (resource.Signature.Binding == binding)
+                    && (GetDescriptorSet(resource.Signature.Group) == registerSpace)
                     && (resource.Signature.ArrayCount == arrayCount))
                 {
                     matchedIndex = index;

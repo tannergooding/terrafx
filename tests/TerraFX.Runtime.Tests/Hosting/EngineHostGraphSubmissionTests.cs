@@ -28,6 +28,59 @@ namespace TerraFX.Runtime.Tests.Hosting;
 
 internal sealed partial class EngineHostOptionsTests
 {
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task CopiesIntoColorAttachmentInLaterGraphPass(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useMultipleColorAttachments: true,
+            useColorAttachmentCopyDestination: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task CopiesRenderedColorAttachmentInLaterGraphPass(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useMultipleColorAttachments: true,
+            useColorAttachmentCopy: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task CreatesNativePipelineWithEightUniformBuffersAcrossGroups(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useEightUniformPipelineOnly: true);
+
     [Test]
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Reliability",
@@ -675,6 +728,23 @@ internal sealed partial class EngineHostOptionsTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsMultipleColorAttachmentGraphAndReadsBackAsync(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useMultipleColorAttachments: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SubmitsMultipleComputeStorageBufferSubranges(GraphicsBackend backend)
         => RunOffscreenGraphAsync(
             backend,
@@ -812,6 +882,23 @@ internal sealed partial class EngineHostOptionsTests
             holdGraphCompletion: false,
             useTextureCopy: true,
             useMultipleTextureCopies: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsNineBufferImportCopyGraphAndReadsBackAsync(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: true,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useManyBufferCopyDestinations: true);
 
     [TestCase(GraphicsBackend.D3D12, false, false, false, false, false, false, false, false)]
     [TestCase(GraphicsBackend.Vulkan, false, false, false, false, false, false, false, false)]
@@ -1103,6 +1190,23 @@ internal sealed partial class EngineHostOptionsTests
             overlapTransientBufferLifetimes: false,
             holdGraphCompletion: false,
             useSampledTextureSubrange: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsSixteenSampledImagesWithEightSamplersAsync(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: true,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useSixteenSampledImages: true);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
@@ -1430,7 +1534,13 @@ internal sealed partial class EngineHostOptionsTests
         bool useDepthAttachment = false,
         TextureFormat targetColorFormat = TextureFormat.Rgba8Unorm,
         bool useColorAndDepthAttachmentLoad = false,
-        bool useAttachmentDontCareDiscardRoundTrip = false)
+        bool useAttachmentDontCareDiscardRoundTrip = false,
+        bool useMultipleColorAttachments = false,
+        bool useColorAttachmentCopy = false,
+        bool useColorAttachmentCopyDestination = false,
+        bool useEightUniformPipelineOnly = false,
+        bool useSixteenSampledImages = false,
+        bool useManyBufferCopyDestinations = false)
     {
         var frameUniformBindingIndex = useFrameLayoutUniformBuffer ? 2 : 0;
         var sampledImageBindingIndex = useArrayedSampledTexture ? 2 : 0;
@@ -1446,6 +1556,8 @@ internal sealed partial class EngineHostOptionsTests
         if ((useUniformBuffer
                 || useSampledTexture
                 || useStorageResources
+                || useSixteenSampledImages
+                || useEightUniformPipelineOnly
                 || useCompute
                 || useTransientStorage
                 || useMultipleComputeStorageBuffers
@@ -1460,6 +1572,7 @@ internal sealed partial class EngineHostOptionsTests
                 || useSignedStorageImage
                 || useRgba16FloatStorageImage
                 || useDepthAttachment
+                || useMultipleColorAttachments
                 || (targetColorFormat == TextureFormat.R32UInt))
             && string.IsNullOrWhiteSpace(shaderFixtureDirectory))
         {
@@ -1483,6 +1596,13 @@ internal sealed partial class EngineHostOptionsTests
             TextureFormat.Rgba8Srgb => [128, 64, 32, 255],
             _ => [32, 128, 224, 255],
         };
+
+        if (useSixteenSampledImages)
+        {
+            sampleBytes = [0, 255, 0, 255];
+        }
+
+        var sixteenSampledTextures = new GpuTexture?[15];
 
         if (useArrayedSampledTexture)
         {
@@ -1699,6 +1819,7 @@ internal sealed partial class EngineHostOptionsTests
         };
         EngineHost? host = null;
         GpuTexture? target = null;
+        var secondaryColorAttachmentTextures = new GpuTexture?[3];
         GpuTexture? depthAttachmentTexture = null;
         GpuTexture? delayedGraphTarget = null;
         GpuTexture? delayedGraphDestination = null;
@@ -1729,6 +1850,7 @@ internal sealed partial class EngineHostOptionsTests
         GpuBuffer? copySourceBuffer = null;
         GpuBuffer? secondCopySourceBuffer = null;
         GpuBuffer? copyDestinationBuffer = null;
+        var additionalCopyDestinationBuffers = new GpuBuffer?[7];
         GpuBuffer? secondCopyDestinationBuffer = null;
         byte[]? expectedCopiedBytes = null;
         byte[]? expectedSecondCopiedBytes = null;
@@ -1842,6 +1964,110 @@ internal sealed partial class EngineHostOptionsTests
                     targetUsage,
                     $"m04-{backend}-offscreen-clear"))
                 .ConfigureAwait(false);
+
+            if (useMultipleColorAttachments)
+            {
+                for (var index = 0; index < secondaryColorAttachmentTextures.Length; index++)
+                {
+                    secondaryColorAttachmentTextures[index] = await graphicsDevice.CreateTextureAsync(
+                        new TextureDescription(
+                            TextureDimension.Dimension2D,
+                            targetExtent.Width,
+                            targetExtent.Height,
+                            depth: 1,
+                            arrayLayers: 1,
+                            mipLevels: 1,
+                            TextureFormat.Rgba8Unorm,
+                            TextureUsage.ColorAttachment | TextureUsage.CopySource,
+                            $"m04-{backend}-color-attachment-{index + 1}"))
+                        .ConfigureAwait(false);
+                }
+            }
+
+            if (useColorAttachmentCopy)
+            {
+                var copyDestinationUsage = TextureUsage.CopySource | TextureUsage.CopyDestination;
+
+                if (useColorAttachmentCopyDestination)
+                {
+                    copyDestinationUsage |= TextureUsage.ColorAttachment;
+                }
+
+                copyDestinationTexture = await graphicsDevice.CreateTextureAsync(
+                    new TextureDescription(
+                        TextureDimension.Dimension2D,
+                        targetExtent.Width,
+                        targetExtent.Height,
+                        depth: 1,
+                        arrayLayers: 1,
+                        mipLevels: 1,
+                        TextureFormat.Rgba8Unorm,
+                        copyDestinationUsage,
+                        $"m04-{backend}-color-attachment-copy-destination"))
+                    .ConfigureAwait(false);
+            }
+            else if (useColorAttachmentCopyDestination)
+            {
+                copyDestinationTexture = await graphicsDevice.CreateTextureAsync(
+                    new TextureDescription(
+                        TextureDimension.Dimension2D,
+                        targetExtent.Width,
+                        targetExtent.Height,
+                        depth: 1,
+                        arrayLayers: 1,
+                        mipLevels: 1,
+                        TextureFormat.Rgba8Unorm,
+                        TextureUsage.CopySource | TextureUsage.CopyDestination | TextureUsage.ColorAttachment,
+                        $"m04-{backend}-color-attachment-copy-destination"))
+                    .ConfigureAwait(false);
+            }
+
+            if (useSixteenSampledImages)
+            {
+                if (sampledTextureFormat != TextureFormat.Rgba8Unorm)
+                {
+                    throw new InvalidOperationException("The sixteen-image graph witness requires RGBA8Unorm sampled textures.");
+                }
+
+                for (var index = 0; index < sixteenSampledTextures.Length; index++)
+                {
+                    var imageIndex = index + 1;
+                    var texture = await graphicsDevice.CreateTextureAsync(
+                        new TextureDescription(
+                            TextureDimension.Dimension2D,
+                            width: 1,
+                            height: 1,
+                            depth: 1,
+                            arrayLayers: 1,
+                            mipLevels: 1,
+                            TextureFormat.Rgba8Unorm,
+                            TextureUsage.Sampled | TextureUsage.CopyDestination,
+                            $"m04-{backend}-sampled-texture-{imageIndex}"))
+                        .ConfigureAwait(false);
+                    sixteenSampledTextures[index] = texture;
+                    byte[] textureBytes = [
+                        checked((byte)(imageIndex * 16)),
+                        checked((byte)(255 - (imageIndex * 16))),
+                        checked((byte)(imageIndex * 8)),
+                        byte.MaxValue,
+                    ];
+                    var sampleStorage = UnmanagedBuffer<byte>.Allocate(
+                        textureBytes.Length,
+                        new BufferAllocationOptions(textureBytes.Length, alignment: 1));
+                    sampleStorage.CopyFrom(textureBytes.AsSpan(), 0);
+
+                    using var ownedSampleBytes = sampleStorage.TransferToOwnedBuffer();
+                    using var sampleLease = ownedSampleBytes.AcquireReadLease(0, textureBytes.Length);
+                    var uploadReceipt = await graphicsDevice.UploadTextureAsync(
+                        texture,
+                        new TextureSubresource(0, 0, TextureAspect.Color),
+                        sampleLease,
+                        0,
+                        new TextureDataLayout(rowPitch: textureBytes.Length, slicePitch: textureBytes.Length))
+                        .ConfigureAwait(false);
+                    Assert.That(uploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+                }
+            }
 
             if (useDepthAttachment)
             {
@@ -2269,23 +2495,29 @@ internal sealed partial class EngineHostOptionsTests
             {
                 var shaderExtension = backend == GraphicsBackend.D3D12 ? "dxil" : "spv";
                 var vertexStage = useDepthAttachment ? "vertex-depth" : "vertex";
-                var pixelStage = (targetColorFormat == TextureFormat.R32UInt)
-                    ? "pixel-r32uint"
-                    : useDepthAttachment
-                        ? "pixel-depth"
-                        : useFrameLayoutUniformBuffer
-                        ? "pixel-frame-layout"
-                        : useStorageResources
-                            ? "pixel-sampled-frame-storage"
-                            : useMultipleFrameUniformBuffers
-                            ? "pixel-multiple-frame-uniforms"
-                            : useMultipleSampledImages
-                            ? "pixel-sampled-multiple"
-                            : useSampledTexture
-                            ? useArrayedSampledTexture
-                                ? "pixel-sampled-array"
-                                : (useUniformBuffer ? "pixel-sampled-frame" : "pixel-sampled")
-                            : (useUniformBuffer ? "pixel" : "pixel-graph");
+                var pixelStage = useEightUniformPipelineOnly
+                    ? "pixel-eight-uniforms"
+                    : useSixteenSampledImages
+                    ? "pixel-sampled-sixteen"
+                    : useMultipleColorAttachments
+                    ? "pixel-multiple-color-targets"
+                    : (targetColorFormat == TextureFormat.R32UInt)
+                        ? "pixel-r32uint"
+                        : useDepthAttachment
+                            ? "pixel-depth"
+                            : useFrameLayoutUniformBuffer
+                            ? "pixel-frame-layout"
+                            : useStorageResources
+                                ? "pixel-sampled-frame-storage"
+                                : useMultipleFrameUniformBuffers
+                                ? "pixel-multiple-frame-uniforms"
+                                : useMultipleSampledImages
+                                ? "pixel-sampled-multiple"
+                                : useSampledTexture
+                                ? useArrayedSampledTexture
+                                    ? "pixel-sampled-array"
+                                    : (useUniformBuffer ? "pixel-sampled-frame" : "pixel-sampled")
+                                : (useUniformBuffer ? "pixel" : "pixel-graph");
                 using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
                     shaderFixtureDirectory,
                     $"M04OffscreenTriangle.{vertexStage}.{shaderExtension}"));
@@ -2299,6 +2531,14 @@ internal sealed partial class EngineHostOptionsTests
                 var binaryFormat = backend == GraphicsBackend.D3D12
                     ? ShaderBinaryFormat.Dxil
                     : ShaderBinaryFormat.SpirV;
+                ImmutableArray<TextureFormat> colorTargetFormats = useMultipleColorAttachments
+                    ? [
+                        targetColorFormat,
+                        TextureFormat.Rgba8Unorm,
+                        TextureFormat.Rgba8Unorm,
+                        TextureFormat.Rgba8Unorm,
+                    ]
+                    : [targetColorFormat];
                 var pipelineDescription = new GraphicsPipelineDescription(
                     [
                         new ShaderBytecodeInput(ShaderStage.Vertex, binaryFormat, vertexBytecode, vertexReflection),
@@ -2306,7 +2546,7 @@ internal sealed partial class EngineHostOptionsTests
                     ],
                     [],
                     vertexStride: 0,
-                    [targetColorFormat],
+                    colorTargetFormats,
                     depthTargetFormat: useDepthAttachment ? TextureFormat.D32Float : null,
                     PrimitiveTopology.TriangleList,
                     PipelineBlendMode.Opaque,
@@ -2318,6 +2558,12 @@ internal sealed partial class EngineHostOptionsTests
                     bindingLayoutVersion: 1);
                 pipeline = await graphicsDevice.CreatePipelineAsync(pipelineDescription, CancellationToken.None)
                     .ConfigureAwait(false);
+
+                if (useEightUniformPipelineOnly)
+                {
+                    Assert.That(pipeline.Handle.IsValid, Is.True);
+                    return;
+                }
 
                 if (useCompute
                     || useTransientStorage
@@ -2772,6 +3018,21 @@ internal sealed partial class EngineHostOptionsTests
                         debugName: $"m04-{backend}-copy-destination"))
                     .ConfigureAwait(false);
 
+                if (useManyBufferCopyDestinations)
+                {
+                    for (var index = 0; index < additionalCopyDestinationBuffers.Length; index++)
+                    {
+                        additionalCopyDestinationBuffers[index] = await graphicsDevice.CreateBufferAsync(
+                            new BufferDescription(
+                                copyDestinationByteLength,
+                                BufferUsage.CopySource | BufferUsage.CopyDestination,
+                                GpuMemoryKind.DeviceLocal,
+                                structuredStride: null,
+                                debugName: $"m04-{backend}-copy-destination-{index + 1}"))
+                            .ConfigureAwait(false);
+                    }
+                }
+
                 if (useStorageBufferSubrange)
                 {
                     var initialBytes = new byte[copyDestinationByteLength];
@@ -2899,7 +3160,9 @@ internal sealed partial class EngineHostOptionsTests
                 useTransientTextureCopy
                 || useTransientTextureAliasing
                 || usePartialTextureCopy
-                || useTransientCopyAliasing)
+                || useTransientCopyAliasing
+                || useColorAttachmentCopy
+                || useColorAttachmentCopyDestination)
                 ? new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)
                 : new GraphTextureRange(1, 1, 1, 1, TextureAspect.Color);
             GraphBufferVersion? frameUniformVersion = null;
@@ -2917,6 +3180,10 @@ internal sealed partial class EngineHostOptionsTests
             GraphBufferRange? secondCopySourceBufferRange = null;
             GraphBufferVersion? copyDestinationInitialVersion = null;
             GraphBufferVersion? copyDestinationWriteVersion = null;
+            var additionalCopyDestinationInitialVersions =
+                new GraphBufferVersion?[additionalCopyDestinationBuffers.Length];
+            var additionalCopyDestinationWriteVersions =
+                new GraphBufferVersion?[additionalCopyDestinationBuffers.Length];
             GraphBufferVersion? secondCopyDestinationInitialVersion = null;
             GraphBufferVersion? secondCopyDestinationWriteVersion = null;
             GraphBufferVersion? transientBufferCopyWriteVersion = null;
@@ -2924,10 +3191,14 @@ internal sealed partial class EngineHostOptionsTests
             GraphBufferVersion? transientInitializationSourceVersion = null;
             GraphBufferVersion? transientSecondInitializationSourceVersion = null;
             GraphTextureVersion? sampledTextureVersion = null;
+            var sixteenSampledTextureVersions = new GraphTextureVersion?[sixteenSampledTextures.Length];
+            var secondaryColorAttachmentInitialVersions = new GraphTextureVersion?[secondaryColorAttachmentTextures.Length];
+            var secondaryColorAttachmentWriteVersions = new GraphTextureVersion?[secondaryColorAttachmentTextures.Length];
             GraphTextureVersion? depthAttachmentInitialVersion = null;
             GraphTextureVersion? copySourceTextureVersion = null;
             GraphTextureVersion? copyDestinationTextureInitialVersion = null;
             GraphTextureVersion? copyDestinationTextureWriteVersion = null;
+            GraphTextureVersion? colorAttachmentCopyDestinationVersion = null;
             GraphTextureVersion? secondCopySourceTextureVersion = null;
             GraphTextureVersion? secondCopyDestinationTextureInitialVersion = null;
             GraphTextureVersion? secondCopyDestinationTextureWriteVersion = null;
@@ -2952,9 +3223,14 @@ internal sealed partial class EngineHostOptionsTests
                 (useUniformBuffer ? 1 : 0) + (useMultipleFrameUniformBuffers ? 1 : 0));
             var storageBufferBindings = ImmutableArray.CreateBuilder<BufferBinding>(useStorageResources ? 1 : 0);
             var textureBindings = ImmutableArray.CreateBuilder<TextureBinding>(
-                (useSampledTexture ? 1 : 0) + (useMultipleSampledImages ? 1 : 0) + (useStorageResources ? 1 : 0));
+                (useSampledTexture ? 1 : 0)
+                    + (useMultipleSampledImages ? 1 : 0)
+                    + (useStorageResources ? 1 : 0)
+                    + (useSixteenSampledImages ? sixteenSampledTextures.Length : 0));
             var samplerBindings = ImmutableArray.CreateBuilder<SamplerBinding>(
-                (useSampledTexture ? 1 : 0) + (useMultipleSampledImages ? 1 : 0));
+                (useSampledTexture ? 1 : 0)
+                    + (useMultipleSampledImages ? 1 : 0)
+                    + (useSixteenSampledImages ? 7 : 0));
 
             if (frameUniformBuffer is GpuBuffer selectedBuffer)
             {
@@ -3016,6 +3292,20 @@ internal sealed partial class EngineHostOptionsTests
                         GraphResourceState.General,
                         contentsValid: true,
                         completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+            }
+
+            for (var index = 0; index < secondaryColorAttachmentTextures.Length; index++)
+            {
+                if (secondaryColorAttachmentTextures[index] is GpuTexture selectedSecondaryColorAttachmentTexture)
+                {
+                    secondaryColorAttachmentInitialVersions[index] = graph.ImportTexture(
+                        selectedSecondaryColorAttachmentTexture,
+                        new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
+                        new GraphImportOptions(
+                            GraphResourceState.Undefined,
+                            contentsValid: false,
+                            completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                }
             }
 
             if (additionalStorageImage is GpuTexture selectedAdditionalStorageImage)
@@ -3087,6 +3377,21 @@ internal sealed partial class EngineHostOptionsTests
                         completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
             }
 
+            for (var index = 0; index < additionalCopyDestinationBuffers.Length; index++)
+            {
+                if (additionalCopyDestinationBuffers[index] is GpuBuffer additionalCopyDestinationBuffer)
+                {
+                    var range = new GraphBufferRange(0, additionalCopyDestinationBuffer.ByteLength);
+                    additionalCopyDestinationInitialVersions[index] = graph.ImportBuffer(
+                        additionalCopyDestinationBuffer,
+                        range,
+                        new GraphImportOptions(
+                            GraphResourceState.Undefined,
+                            contentsValid: false,
+                            completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                }
+            }
+
             if (secondCopyDestinationBuffer is GpuBuffer selectedSecondCopyDestinationBuffer)
             {
                 var range = new GraphBufferRange(0, selectedSecondCopyDestinationBuffer.ByteLength);
@@ -3154,6 +3459,39 @@ internal sealed partial class EngineHostOptionsTests
                     1,
                     frameSampler
                         ?? throw new InvalidOperationException("The sampled Frame pipeline has no sampler.")));
+            }
+
+            for (var index = 0; index < sixteenSampledTextures.Length; index++)
+            {
+                if (sixteenSampledTextures[index] is not GpuTexture selectedTexture)
+                {
+                    continue;
+                }
+
+                var imageIndex = index + 1;
+                var manySampledTextureVersion = graph.ImportTexture(
+                    selectedTexture,
+                    sampledTextureRange,
+                    new GraphImportOptions(
+                        GraphResourceState.General,
+                        contentsValid: true,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                sixteenSampledTextureVersions[index] = manySampledTextureVersion;
+                textureBindings.Add(new TextureBinding(
+                    ShaderBindingGroup.Frame,
+                    imageIndex,
+                    ShaderResourceKind.SampledImage,
+                    manySampledTextureVersion,
+                    sampledTextureRange));
+
+                if ((imageIndex & 1) == 0)
+                {
+                    samplerBindings.Add(new SamplerBinding(
+                        ShaderBindingGroup.Frame,
+                        imageIndex / 2,
+                        frameSampler
+                            ?? throw new InvalidOperationException("The sixteen-image Frame pipeline has no sampler.")));
+                }
             }
 
             if (copySourceTexture is GpuTexture selectedCopySourceTexture)
@@ -3290,6 +3628,25 @@ internal sealed partial class EngineHostOptionsTests
                         sourceRange.ByteLength);
                 }
 
+                if (useManyBufferCopyDestinations
+                    && (copySourceVersion is GraphBufferVersion manyDestinationSource))
+                {
+                    var sourceRange = copySourceBufferRange ?? manyDestinationSource.Range;
+
+                    foreach (var destinationVersion in additionalCopyDestinationWriteVersions)
+                    {
+                        if (destinationVersion is GraphBufferVersion additionalDestinationVersion)
+                        {
+                            recorder.CopyBuffer(
+                                manyDestinationSource,
+                                sourceRange.ByteOffset,
+                                additionalDestinationVersion,
+                                additionalDestinationVersion.Range.ByteOffset,
+                                sourceRange.ByteLength);
+                        }
+                    }
+                }
+
                 if (useMultipleComputeStorageBuffers
                     && (secondCopySourceVersion is GraphBufferVersion selectedSecondSource)
                     && (secondCopyDestinationWriteVersion is GraphBufferVersion selectedSecondDestination))
@@ -3335,6 +3692,15 @@ internal sealed partial class EngineHostOptionsTests
                 {
                     recorder.CopyTexture(selectedSecondTextureSource, selectedSecondTextureDestination);
                 }
+            }
+
+            void RecordColorAttachmentCopy(scoped ref CommandRecorder recorder)
+            {
+                var source = secondaryColorAttachmentWriteVersions[0]
+                    ?? throw new InvalidOperationException("The graph color-attachment copy has no source version.");
+                var destination = colorAttachmentCopyDestinationVersion
+                    ?? throw new InvalidOperationException("The graph color-attachment copy has no destination version.");
+                recorder.CopyTexture(source, destination);
             }
 
             void RecordTransientTextureCopy(scoped ref CommandRecorder recorder)
@@ -3982,6 +4348,21 @@ internal sealed partial class EngineHostOptionsTests
                         selectedCopyDestination.Range);
                 }
 
+                if (useManyBufferCopyDestinations)
+                {
+                    for (var index = 0; index < additionalCopyDestinationInitialVersions.Length; index++)
+                    {
+                        if (additionalCopyDestinationInitialVersions[index] is GraphBufferVersion additionalInitialVersion)
+                        {
+                            additionalCopyDestinationWriteVersions[index] = graph.WriteBuffer(
+                                copyPass,
+                                additionalInitialVersion,
+                                GraphBufferUsage.CopyDestination,
+                                additionalInitialVersion.Range);
+                        }
+                    }
+                }
+
                 if ((copySourceTextureVersion is GraphTextureVersion selectedTextureSource)
                     && (copyDestinationTextureInitialVersion is GraphTextureVersion selectedTextureDestination))
                 {
@@ -4091,6 +4472,18 @@ internal sealed partial class EngineHostOptionsTests
                     sampledTextureBindingRange);
             }
 
+            for (var index = 0; index < sixteenSampledTextureVersions.Length; index++)
+            {
+                if (sixteenSampledTextureVersions[index] is GraphTextureVersion selectedSixteenSampledTextureVersion)
+                {
+                    graph.ReadTexture(
+                        pass,
+                        selectedSixteenSampledTextureVersion,
+                        GraphTextureUsage.SampledRead,
+                        sampledTextureRange);
+                }
+            }
+
             if (useStorageResources && (storageBufferInitialVersion is not null))
             {
                 var range = storageBufferInitialVersion.Range;
@@ -4120,7 +4513,11 @@ internal sealed partial class EngineHostOptionsTests
                     storageImageBindingRange));
             }
 
-            if (useUniformBuffer || useMultipleFrameUniformBuffers || useSampledTexture || useStorageResources)
+            if (useUniformBuffer
+                || useMultipleFrameUniformBuffers
+                || useSampledTexture
+                || useSixteenSampledImages
+                || useStorageResources)
             {
                 frameBindingSet = new BindingSet(
                     [
@@ -4142,6 +4539,21 @@ internal sealed partial class EngineHostOptionsTests
                     ? AttachmentStoreAction.Discard
                     : AttachmentStoreAction.Store,
                 renderSnapshot.Cameras[0].ClearColor);
+
+            for (var index = 0; index < secondaryColorAttachmentInitialVersions.Length; index++)
+            {
+                if (secondaryColorAttachmentInitialVersions[index] is GraphTextureVersion selectedSecondaryColorAttachmentVersion)
+                {
+                    secondaryColorAttachmentWriteVersions[index] = graph.WriteColorAttachment(
+                        pass,
+                        selectedSecondaryColorAttachmentVersion,
+                        selectedSecondaryColorAttachmentVersion.Range,
+                        AttachmentLoadAction.Clear,
+                        AttachmentStoreAction.Store,
+                        new Vector4(0.0f, 0.0f, 0.0f, 1.0f));
+                }
+            }
+
             GraphTextureVersion? depthAttachmentVersion = null;
 
             if (depthAttachmentInitialVersion is GraphTextureVersion selectedDepthAttachmentVersion)
@@ -4392,6 +4804,59 @@ internal sealed partial class EngineHostOptionsTests
                         AttachmentLoadAction.Clear,
                         AttachmentStoreAction.Store,
                         clearDepth: 0.0f);
+                }
+            }
+
+            if (useColorAttachmentCopy || useColorAttachmentCopyDestination)
+            {
+                var source = secondaryColorAttachmentWriteVersions[0]
+                    ?? throw new InvalidOperationException("The graph color-attachment copy has no rendered source.");
+                var destination = copyDestinationTextureInitialVersion
+                    ?? throw new InvalidOperationException("The graph color-attachment copy has no imported destination.");
+                var copyPass = graph.AddCopyPass(
+                    new RenderPassDescription(
+                        "offscreen-color-attachment-copy",
+                        1,
+                        [pass],
+                        hasExternalSideEffects: false),
+                    RecordColorAttachmentCopy);
+                graph.ReadTexture(
+                    copyPass,
+                    source,
+                    GraphTextureUsage.CopySource,
+                    source.Range);
+                colorAttachmentCopyDestinationVersion = graph.WriteTexture(
+                    copyPass,
+                    destination,
+                    GraphTextureUsage.CopyDestination,
+                    destination.Range);
+                copyDestinationTextureWriteVersion = colorAttachmentCopyDestinationVersion;
+
+                if (useColorAttachmentCopyDestination)
+                {
+                    var destinationVersion = colorAttachmentCopyDestinationVersion
+                        ?? throw new InvalidOperationException("The graph color-attachment copy has no destination version.");
+                    var loadPass = graph.AddRasterPass(
+                        new RenderPassDescription(
+                            "offscreen-color-attachment-copy-destination-load",
+                            2,
+                            [copyPass],
+                            hasExternalSideEffects: false),
+                        RecordEmptyPass);
+                    outputVersion = graph.WriteColorAttachment(
+                        loadPass,
+                        outputVersion,
+                        new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
+                        AttachmentLoadAction.Load,
+                        AttachmentStoreAction.Store,
+                        Vector4.Zero);
+                    copyDestinationTextureWriteVersion = graph.WriteColorAttachment(
+                        loadPass,
+                        destinationVersion,
+                        destinationVersion.Range,
+                        AttachmentLoadAction.Load,
+                        AttachmentStoreAction.Store,
+                        Vector4.Zero);
                 }
             }
 
@@ -4988,12 +5453,20 @@ internal sealed partial class EngineHostOptionsTests
                     + (useMultipleFrameUniformBuffers ? 1 : 0)
                     + (useStorageResources ? 1 : 0));
                 var secondTextureBindings = ImmutableArray.CreateBuilder<TextureBinding>(
-                    (useSampledTexture ? 1 : 0) + (useMultipleSampledImages ? 1 : 0) + (useStorageResources ? 1 : 0));
+                    (useSampledTexture ? 1 : 0)
+                        + (useMultipleSampledImages ? 1 : 0)
+                        + (useStorageResources ? 1 : 0)
+                        + (useSixteenSampledImages ? sixteenSampledTextures.Length : 0));
                 var secondSamplerBindings = ImmutableArray.CreateBuilder<SamplerBinding>(
-                    (useSampledTexture ? 1 : 0) + (useMultipleSampledImages ? 1 : 0));
+                    (useSampledTexture ? 1 : 0)
+                        + (useMultipleSampledImages ? 1 : 0)
+                        + (useSixteenSampledImages ? 7 : 0));
                 GraphBufferVersion? secondGraphStorageBufferInitialVersion = null;
                 GraphTextureVersion? secondStorageImageInitialVersion = null;
                 GraphTextureVersion? secondDepthAttachmentInitialVersion = null;
+                var secondColorAttachmentInitialVersions =
+                    new GraphTextureVersion?[secondaryColorAttachmentTextures.Length];
+                var secondSixteenSampledTextureVersions = new GraphTextureVersion?[sixteenSampledTextures.Length];
 
                 if (frameUniformBuffer is GpuBuffer secondSelectedBuffer)
                 {
@@ -5077,6 +5550,39 @@ internal sealed partial class EngineHostOptionsTests
                                 ?? throw new InvalidOperationException("The sampled Frame pipeline has no sampler.")));
                 }
 
+                for (var index = 0; index < sixteenSampledTextures.Length; index++)
+                {
+                    if (sixteenSampledTextures[index] is not GpuTexture selectedTexture)
+                    {
+                        continue;
+                    }
+
+                    var imageIndex = index + 1;
+                    var manySampledTextureVersion = secondGraph.ImportTexture(
+                        selectedTexture,
+                        sampledTextureRange,
+                        new GraphImportOptions(
+                                GraphResourceState.ShaderSampledRead,
+                                contentsValid: true,
+                                completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                    secondSixteenSampledTextureVersions[index] = manySampledTextureVersion;
+                    secondTextureBindings.Add(new TextureBinding(
+                        ShaderBindingGroup.Frame,
+                        imageIndex,
+                        ShaderResourceKind.SampledImage,
+                        manySampledTextureVersion,
+                        sampledTextureRange));
+
+                    if ((imageIndex & 1) == 0)
+                    {
+                        secondSamplerBindings.Add(new SamplerBinding(
+                                ShaderBindingGroup.Frame,
+                                imageIndex / 2,
+                                frameSampler
+                                    ?? throw new InvalidOperationException("The sixteen-image Frame pipeline has no sampler.")));
+                    }
+                }
+
                 if (useStorageResources && (storageBuffer is GpuBuffer selectedSecondGraphStorageBuffer))
                 {
                     var range = new GraphBufferRange(0, selectedSecondGraphStorageBuffer.ByteLength);
@@ -5109,6 +5615,24 @@ internal sealed partial class EngineHostOptionsTests
                             GraphResourceState.DepthWrite,
                             contentsValid: true,
                             completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                }
+
+                for (var index = 0; index < secondaryColorAttachmentTextures.Length; index++)
+                {
+                    if (useMultipleColorAttachments
+                        && (secondaryColorAttachmentTextures[index] is GpuTexture secondColorAttachmentTexture))
+                    {
+                        secondColorAttachmentInitialVersions[index] = secondGraph.ImportTexture(
+                            secondColorAttachmentTexture,
+                            new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
+                            new GraphImportOptions(
+                                (useColorAttachmentCopy || useColorAttachmentCopyDestination)
+                                && (index == 0)
+                                    ? GraphResourceState.CopySource
+                                    : GraphResourceState.ColorAttachment,
+                                contentsValid: true,
+                                completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                    }
                 }
 
                 var secondPass = secondGraph.AddRasterPass(
@@ -5152,6 +5676,18 @@ internal sealed partial class EngineHostOptionsTests
                         sampledTextureBindingRange);
                 }
 
+                for (var index = 0; index < secondSixteenSampledTextureVersions.Length; index++)
+                {
+                    if (secondSixteenSampledTextureVersions[index] is GraphTextureVersion selectedVersion)
+                    {
+                        secondGraph.ReadTexture(
+                            secondPass,
+                            selectedVersion,
+                            GraphTextureUsage.SampledRead,
+                            sampledTextureRange);
+                    }
+                }
+
                 if (secondGraphStorageBufferInitialVersion is GraphBufferVersion storageBufferVersion)
                 {
                     var secondStorageBufferWriteVersion = secondGraph.ReadWriteBuffer(
@@ -5184,6 +5720,7 @@ internal sealed partial class EngineHostOptionsTests
                     || useMultipleFrameUniformBuffers
                     || useSampledTexture
                     || useMultipleSampledImages
+                    || useSixteenSampledImages
                     || useStorageResources)
                 {
                     secondFrameBindingSet = new BindingSet(
@@ -5200,6 +5737,20 @@ internal sealed partial class EngineHostOptionsTests
                     AttachmentStoreAction.Store,
                     updatedSnapshot.Cameras[0].ClearColor);
 
+                for (var index = 0; index < secondColorAttachmentInitialVersions.Length; index++)
+                {
+                    if (secondColorAttachmentInitialVersions[index] is GraphTextureVersion selectedSecondColorAttachmentVersion)
+                    {
+                        _ = secondGraph.WriteColorAttachment(
+                            secondPass,
+                            selectedSecondColorAttachmentVersion,
+                            selectedSecondColorAttachmentVersion.Range,
+                            AttachmentLoadAction.Clear,
+                            AttachmentStoreAction.Store,
+                            new Vector4(0.0f, 0.0f, 0.0f, 1.0f));
+                    }
+                }
+
                 if (secondDepthAttachmentInitialVersion is GraphTextureVersion selectedSecondDepthVersion)
                 {
                     _ = secondGraph.WriteDepthAttachment(
@@ -5215,10 +5766,69 @@ internal sealed partial class EngineHostOptionsTests
 
                 secondGraph.SetPresentationSource(secondOutputVersion);
                 var secondCompileResponse = secondGraph.Compile();
-                Assert.That(secondCompileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
+                var secondCompileDiagnosticMessage = secondCompileResponse.Diagnostics.IsEmpty
+                    ? string.Empty
+                    : secondCompileResponse.Diagnostics[0].Message;
+                Assert.That(
+                    secondCompileResponse.Status,
+                    Is.EqualTo(RenderGraphCompileStatus.Compiled),
+                    secondCompileDiagnosticMessage);
                 var secondPlan = secondCompileResponse.Plan
                     ?? throw new InvalidOperationException("The second compiled graph response omitted its plan.");
                 secondReceipt = await renderer.SubmitAsync(updatedSnapshot, secondPlan).ConfigureAwait(false);
+            }
+
+            if (useMultipleColorAttachments)
+            {
+                byte[][] expectedPixels = [
+                    [0, 255, 255, 255],
+                    [255, 255, 0, 255],
+                    [255, 255, 255, 255],
+                ];
+
+                for (var index = 0; index < secondaryColorAttachmentTextures.Length; index++)
+                {
+                    var secondaryColorTexture = secondaryColorAttachmentTextures[index]
+                        ?? throw new InvalidOperationException("The multiple-color-attachment test has an incomplete texture set.");
+                    using var secondaryReadback = await graphicsDevice.ReadbackTextureAsync(
+                        secondaryColorTexture,
+                        new TextureSubresource(0, 0, TextureAspect.Color))
+                        .ConfigureAwait(false);
+                    var centerPixel = new byte[4];
+                    var attachmentPixelOffset = checked(
+                        (int)((secondaryReadback.RowPitch * (secondaryReadback.Height / 2))
+                            + (secondaryReadback.Width / 2 * centerPixel.Length)));
+
+                    using (var readLease = secondaryReadback.AcquireReadLease())
+                    {
+                        var copyAction = new ReadbackCopyAction(centerPixel);
+                        readLease.UseWindow(attachmentPixelOffset, centerPixel.Length, ref copyAction);
+                    }
+
+                    Assert.That(centerPixel, Is.EqualTo(expectedPixels[index]));
+                }
+            }
+
+            if (useColorAttachmentCopy || useColorAttachmentCopyDestination)
+            {
+                var copiedColorAttachment = copyDestinationTexture
+                    ?? throw new InvalidOperationException("The graph color-attachment copy has no destination texture.");
+                using var colorAttachmentCopyReadback = await graphicsDevice.ReadbackTextureAsync(
+                    copiedColorAttachment,
+                    new TextureSubresource(0, 0, TextureAspect.Color))
+                    .ConfigureAwait(false);
+                var centerPixel = new byte[4];
+                var colorCopyCenterPixelOffset = checked(
+                    (int)((colorAttachmentCopyReadback.RowPitch * (colorAttachmentCopyReadback.Height / 2))
+                        + (colorAttachmentCopyReadback.Width / 2 * centerPixel.Length)));
+
+                using (var readLease = colorAttachmentCopyReadback.AcquireReadLease())
+                {
+                    var copyAction = new ReadbackCopyAction(centerPixel);
+                    readLease.UseWindow(colorCopyCenterPixelOffset, centerPixel.Length, ref copyAction);
+                }
+
+                Assert.That(centerPixel, Is.EqualTo(new byte[] { 0, 255, 255, 255 }));
             }
 
             Assert.Multiple(() => {
@@ -5277,6 +5887,8 @@ internal sealed partial class EngineHostOptionsTests
                 ? (byte)255
                 : useMultipleSampledImages
                     ? (byte)48
+                    : useSixteenSampledImages
+                        ? (byte)120
                     : useFrameLayoutUniformBuffer
                         ? (byte)255
                     : useMultipleFrameUniformBuffers
@@ -5286,6 +5898,8 @@ internal sealed partial class EngineHostOptionsTests
                 ? (byte)255
                 : useMultipleSampledImages
                     ? (byte)80
+                    : useSixteenSampledImages
+                        ? (byte)135
                     : useFrameLayoutUniformBuffer
                         ? (byte)255
                     : useMultipleFrameUniformBuffers
@@ -5295,6 +5909,8 @@ internal sealed partial class EngineHostOptionsTests
                 ? (byte)255
                 : useMultipleSampledImages
                     ? (byte)128
+                    : useSixteenSampledImages
+                        ? (byte)60
                     : useFrameLayoutUniformBuffer
                         ? (byte)255
                     : useMultipleFrameUniformBuffers
@@ -5640,6 +6256,29 @@ internal sealed partial class EngineHostOptionsTests
 
                 Assert.That(copiedBytes, Is.EqualTo(expectedBytes));
 
+                if (useManyBufferCopyDestinations)
+                {
+                    for (var index = 0; index < additionalCopyDestinationBuffers.Length; index++)
+                    {
+                        var additionalDestination = additionalCopyDestinationBuffers[index]
+                            ?? throw new InvalidOperationException("The graph buffer-import test has an incomplete destination set.");
+                        using var additionalReadback = await graphicsDevice.ReadbackBufferAsync(
+                            additionalDestination,
+                            0,
+                            expectedBytes.Length)
+                            .ConfigureAwait(false);
+                        var additionalCopiedBytes = new byte[expectedBytes.Length];
+
+                        using (var additionalReadLease = additionalReadback.AcquireReadLease(0, additionalCopiedBytes.Length))
+                        {
+                            var copyAction = new ReadbackCopyAction(additionalCopiedBytes);
+                            additionalReadLease.UseWindow(0, additionalCopiedBytes.Length, ref copyAction);
+                        }
+
+                        Assert.That(additionalCopiedBytes, Is.EqualTo(expectedBytes));
+                    }
+                }
+
                 if (useStorageBufferSubrange)
                 {
                     var storageBufferForReadback = storageBuffer
@@ -5788,9 +6427,11 @@ internal sealed partial class EngineHostOptionsTests
                 + $"Fence={finalReceipt.CompletedFence}; "
                 + $"UniformBuffer={useUniformBuffer}; "
                 + $"SampledTexture={useSampledTexture}; "
+                + $"SixteenSampledImages={useSixteenSampledImages}; "
                 + $"DepthAttachment={useDepthAttachment}; "
+                + $"MultipleColorAttachments={useMultipleColorAttachments}; "
                 + $"StorageResources={useStorageResources}; "
-                + $"BufferCopy={useBufferCopy || useCompute || useMultipleComputeStorageBuffers || useTransientBufferAliasing || useConstantWriteComputeBuffer}; "
+                + $"BufferCopy={useBufferCopy || useCompute || useManyBufferCopyDestinations || useMultipleComputeStorageBuffers || useTransientBufferAliasing || useConstantWriteComputeBuffer}; "
                 + $"TextureCopy={useTextureCopy}; "
                 + $"TransientTextureCopy={useTransientTextureCopy}; "
                 + $"TransientTextureAliasing={useTransientTextureAliasing}; "
@@ -5819,6 +6460,12 @@ internal sealed partial class EngineHostOptionsTests
             copySourceBuffer?.Dispose();
             secondCopySourceBuffer?.Dispose();
             copyDestinationBuffer?.Dispose();
+
+            foreach (var additionalCopyDestinationBuffer in additionalCopyDestinationBuffers)
+            {
+                additionalCopyDestinationBuffer?.Dispose();
+            }
+
             secondCopyDestinationBuffer?.Dispose();
             copySourceTexture?.Dispose();
             copyDestinationTexture?.Dispose();
@@ -5835,8 +6482,20 @@ internal sealed partial class EngineHostOptionsTests
             }
 
             additionalSampledTexture?.Dispose();
+
+            foreach (var sixteenSampledTexture in sixteenSampledTextures)
+            {
+                sixteenSampledTexture?.Dispose();
+            }
+
             storageImage?.Dispose();
             additionalStorageImage?.Dispose();
+
+            foreach (var secondaryColorAttachmentTexture in secondaryColorAttachmentTextures)
+            {
+                secondaryColorAttachmentTexture?.Dispose();
+            }
+
             depthAttachmentTexture?.Dispose();
             target?.Dispose();
             delayedGraphTarget?.Dispose();

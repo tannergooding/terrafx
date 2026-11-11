@@ -21,6 +21,14 @@ struct DepthVertexOutput
     float4 color : COLOR0;
 };
 
+struct MultipleColorTargetsOutput
+{
+    float4 primary : SV_Target0;
+    float4 secondary : SV_Target1;
+    float4 tertiary : SV_Target2;
+    float4 quaternary : SV_Target3;
+};
+
 [[vk::binding(0, 0)]]
 cbuffer FrameData : register(b0, space0)
 {
@@ -39,6 +47,36 @@ cbuffer FrameLayoutData : register(b2, space0)
     row_major float4x4 transform;
     float3 samples[2];
     float4 tail;
+};
+
+[[vk::binding(3, 0)]]
+cbuffer FrameThirdData : register(b3, space0)
+{
+    float4 thirdColor;
+};
+
+[[vk::binding(0, 1)]]
+cbuffer MaterialData0 : register(b0, space1)
+{
+    float4 materialColor0;
+};
+
+[[vk::binding(1, 1)]]
+cbuffer MaterialData1 : register(b1, space1)
+{
+    float4 materialColor1;
+};
+
+[[vk::binding(2, 1)]]
+cbuffer MaterialData2 : register(b2, space1)
+{
+    float4 materialColor2;
+};
+
+[[vk::binding(3, 1)]]
+cbuffer MaterialData3 : register(b3, space1)
+{
+    float4 materialColor3;
 };
 
 [[vk::binding(16, 0)]]
@@ -84,6 +122,60 @@ RWTexture2D<uint> FrameSecondStorageImage : register(u6, space0);
 [[vk::binding(39, 0)]]
 RWTexture3D<uint> Frame3DStorageImage : register(u7, space0);
 
+[[vk::binding(19, 0)]]
+Texture2D<float4> FrameManyTexture3 : register(t3, space0);
+
+[[vk::binding(20, 0)]]
+Texture2D<float4> FrameManyTexture4 : register(t4, space0);
+
+[[vk::binding(21, 0)]]
+Texture2D<float4> FrameManyTexture5 : register(t5, space0);
+
+[[vk::binding(22, 0)]]
+Texture2D<float4> FrameManyTexture6 : register(t6, space0);
+
+[[vk::binding(23, 0)]]
+Texture2D<float4> FrameManyTexture7 : register(t7, space0);
+
+[[vk::binding(24, 0)]]
+Texture2D<float4> FrameManyTexture8 : register(t8, space0);
+
+[[vk::binding(25, 0)]]
+Texture2D<float4> FrameManyTexture9 : register(t9, space0);
+
+[[vk::binding(26, 0)]]
+Texture2D<float4> FrameManyTexture10 : register(t10, space0);
+
+[[vk::binding(27, 0)]]
+Texture2D<float4> FrameManyTexture11 : register(t11, space0);
+
+[[vk::binding(28, 0)]]
+Texture2D<float4> FrameManyTexture12 : register(t12, space0);
+
+[[vk::binding(29, 0)]]
+Texture2D<float4> FrameManyTexture13 : register(t13, space0);
+
+[[vk::binding(30, 0)]]
+Texture2D<float4> FrameManyTexture14 : register(t14, space0);
+
+[[vk::binding(31, 0)]]
+Texture2D<float4> FrameManyTexture15 : register(t15, space0);
+
+[[vk::binding(43, 0)]]
+SamplerState FrameSampler3 : register(s3, space0);
+
+[[vk::binding(44, 0)]]
+SamplerState FrameSampler4 : register(s4, space0);
+
+[[vk::binding(45, 0)]]
+SamplerState FrameSampler5 : register(s5, space0);
+
+[[vk::binding(46, 0)]]
+SamplerState FrameSampler6 : register(s6, space0);
+
+[[vk::binding(47, 0)]]
+SamplerState FrameSampler7 : register(s7, space0);
+
 VertexOutput VSMain(uint vertexId : SV_VertexID)
 {
     float2 positions[3] = {
@@ -127,6 +219,16 @@ float4 PSMain(VertexOutput input) : SV_Target0
     return color;
 }
 
+MultipleColorTargetsOutput PSMultipleColorTargetsMain(VertexOutput input)
+{
+    MultipleColorTargetsOutput output;
+    output.primary = float4(1.0, 0.0, 1.0, 1.0);
+    output.secondary = float4(0.0, 1.0, 1.0, 1.0);
+    output.tertiary = float4(1.0, 1.0, 0.0, 1.0);
+    output.quaternary = float4(1.0, 1.0, 1.0, 1.0);
+    return output;
+}
+
 float4 PSDepthMain(DepthVertexOutput input) : SV_Target0
 {
     return input.color;
@@ -140,6 +242,12 @@ float4 PSFrameLayoutMain(VertexOutput input) : SV_Target0
 float4 PSMultipleFrameMain(VertexOutput input) : SV_Target0
 {
     return (color + secondColor) * 0.5;
+}
+
+float4 PSEightUniformsMain(VertexOutput input) : SV_Target0
+{
+    return (color + secondColor + tail + thirdColor
+        + materialColor0 + materialColor1 + materialColor2 + materialColor3) / 8.0;
 }
 
 float4 PSGraphMain(VertexOutput input) : SV_Target0
@@ -166,6 +274,28 @@ float4 PSSampledMultipleMain(VertexOutput input) : SV_Target0
 {
     return (FrameTexture.Sample(FrameSampler, float2(0.5, 0.5))
         + FrameSecondTexture.Sample(FrameSecondSampler, float2(0.5, 0.5))) * 0.5;
+}
+
+float4 PSSampledSixteenMain(VertexOutput input) : SV_Target0
+{
+    float2 coordinates = float2(0.5, 0.5);
+    float4 color = FrameTexture.Sample(FrameSampler, coordinates)
+        + FrameSecondTexture.Sample(FrameSampler, coordinates)
+        + FrameArrayTexture.Sample(FrameSecondSampler, float3(coordinates, 0.0))
+        + FrameManyTexture3.Sample(FrameSecondSampler, coordinates)
+        + FrameManyTexture4.Sample(FrameArraySampler, coordinates)
+        + FrameManyTexture5.Sample(FrameArraySampler, coordinates)
+        + FrameManyTexture6.Sample(FrameSampler3, coordinates)
+        + FrameManyTexture7.Sample(FrameSampler3, coordinates)
+        + FrameManyTexture8.Sample(FrameSampler4, coordinates)
+        + FrameManyTexture9.Sample(FrameSampler4, coordinates)
+        + FrameManyTexture10.Sample(FrameSampler5, coordinates)
+        + FrameManyTexture11.Sample(FrameSampler5, coordinates)
+        + FrameManyTexture12.Sample(FrameSampler6, coordinates)
+        + FrameManyTexture13.Sample(FrameSampler6, coordinates)
+        + FrameManyTexture14.Sample(FrameSampler7, coordinates)
+        + FrameManyTexture15.Sample(FrameSampler7, coordinates);
+    return color * (1.0 / 16.0);
 }
 
 float4 PSSpriteMain(SpriteVertexOutput input) : SV_Target0
