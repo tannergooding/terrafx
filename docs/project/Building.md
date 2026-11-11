@@ -163,6 +163,20 @@ In the configured WSLg shell, run the same selection with isolated Linux outputs
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~VulkanDriverReturnsTimeoutForNeverSubmittedFence|FullyQualifiedName~VulkanSubmittedQueueWaitReturnsTimeoutUntilHostSignal" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
+The Vulkan backend device tests also verify conservative buffer/device retention when a native-signaled wait is overridden to report device loss or timeout. These are deterministic result-injection witnesses, not driver-generated failures:
+
+```powershell
+dotnet test .\tests\TerraFX.Graphics.Vulkan.Tests\TerraFX.Graphics.Vulkan.Tests.csproj --configuration Debug --filter "FullyQualifiedName~VulkanDeviceLostAfterNativeSignalRetainsBufferAndDevice|FullyQualifiedName~VulkanWaitTimeoutAfterNativeSignalQuarantinesBufferAndDevice"
+dotnet test .\tests\TerraFX.Graphics.Vulkan.Tests\TerraFX.Graphics.Vulkan.Tests.csproj --configuration Release --filter "FullyQualifiedName~VulkanDeviceLostAfterNativeSignalRetainsBufferAndDevice|FullyQualifiedName~VulkanWaitTimeoutAfterNativeSignalQuarantinesBufferAndDevice"
+```
+
+In the configured WSLg shell, run the same deterministic witness with isolated Linux outputs and Vulkan validation:
+
+```bash
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Graphics.Vulkan.Tests/TerraFX.Graphics.Vulkan.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~VulkanDeviceLostAfterNativeSignalRetainsBufferAndDevice|FullyQualifiedName~VulkanWaitTimeoutAfterNativeSignalQuarantinesBufferAndDevice" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Graphics.Vulkan.Tests/TerraFX.Graphics.Vulkan.Tests.csproj" --configuration Release --filter "FullyQualifiedName~VulkanDeviceLostAfterNativeSignalRetainsBufferAndDevice|FullyQualifiedName~VulkanWaitTimeoutAfterNativeSignalQuarantinesBufferAndDevice" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
 ### D3D12 OffscreenNative startup and descriptor-set probes
 
 The focused Runtime tests exercise D3D12 startup and descriptor writes using a `PlatformHostOwner`-issued identity:
