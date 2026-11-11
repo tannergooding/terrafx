@@ -1655,6 +1655,56 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task SharedNativeHeapBudgetAccountsForBuffersAndTexturesTogether()
+    {
+        var backendDevice = new FakeBackendDevice(
+            textureBudgetBytes: 32,
+            textureAllocationSizeBytes: 24,
+            bufferBudgetBytes: 32,
+            bufferAllocationSizeBytes: 8);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        GpuTexture? texture = null;
+        GpuBuffer? buffer = null;
+
+        try
+        {
+            texture = await graphicsDevice.CreateTextureAsync(CreateTextureDescription())
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            buffer = await graphicsDevice.CreateBufferAsync(CreateBufferDescription())
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert.That(backendDevice.TextureCreationCount, Is.EqualTo(1));
+            Assert.That(backendDevice.BufferCreationCount, Is.EqualTo(1));
+            _ = Assert.ThrowsAsync<OutOfMemoryException>(
+                async () => await graphicsDevice.CreateBufferAsync(CreateBufferDescription())
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+            Assert.That(backendDevice.BufferCreationCount, Is.EqualTo(1));
+
+            texture.Dispose();
+            texture = null;
+            Assert.That(
+                SpinWait.SpinUntil(() => backendDevice.TextureDisposalCount == 1, TimeSpan.FromSeconds(5)),
+                Is.True);
+
+            using var replacementBuffer = await graphicsDevice.CreateBufferAsync(CreateBufferDescription())
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert.That(backendDevice.BufferCreationCount, Is.EqualTo(2));
+        }
+        finally
+        {
+            texture?.Dispose();
+            buffer?.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+
+        Assert.That(backendDevice.TextureDisposalCount, Is.EqualTo(1));
+        Assert.That(backendDevice.BufferDisposalCount, Is.EqualTo(2));
+    }
+
+    [Test]
     public async Task SpanUploadCopiesCallerBytesAndReadbackReturnsTheRequestedRange()
     {
         var backendDevice = new FakeBackendDevice();

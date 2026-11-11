@@ -102,7 +102,7 @@ dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --confi
 dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Release --filter "FullyQualifiedName=TerraFX.Graphics.Tests.GraphicsBufferTransferTests.GraphFrameSlotAdmissionWaitsAtCapacityAndRecoversAfterRelease"
 ```
 
-The fake-backend allocation witnesses exercise exact and just-under resource heap budgets, the per-device persistent budget boundary for buffers, and budget reuse after disposal. The fake allocation sizes validate GraphicsDevice admission accounting; they do not represent real DXGI memory pressure:
+The fake-backend allocation witnesses exercise exact and just-under resource heap budgets, aggregate buffer/texture heap accounting, the per-device persistent budget boundary for buffers, and budget reuse after disposal. The fake allocation sizes validate GraphicsDevice admission accounting; they do not represent real DXGI memory pressure:
 
 ```powershell
 dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Debug --filter "FullyQualifiedName~BufferAllocationBudget|FullyQualifiedName~BufferNativeHeapBudget"
