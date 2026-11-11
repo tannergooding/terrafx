@@ -283,6 +283,52 @@ internal sealed class GraphicsBufferTransferTests
     }
 
     [Test]
+    public async Task BufferAllocationBudgetAcceptsExactPerDeviceLimit()
+    {
+        var backendDevice = new FakeBackendDevice(bufferAllocationSizeBytes: 512L * 1024 * 1024);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        GpuBuffer? buffer = null;
+
+        try
+        {
+            buffer = await graphicsDevice.CreateBufferAsync(CreateBufferDescription())
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert.That(backendDevice.BufferCreationCount, Is.EqualTo(1));
+        }
+        finally
+        {
+            buffer?.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+
+        Assert.That(backendDevice.BufferDisposalCount, Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task BufferAllocationBudgetRejectsBeforeBackendCreation()
+    {
+        var backendDevice = new FakeBackendDevice(bufferAllocationSizeBytes: (512L * 1024 * 1024) + 1);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+
+        try
+        {
+            _ = Assert.ThrowsAsync<OutOfMemoryException>(
+                async () => await graphicsDevice.CreateBufferAsync(CreateBufferDescription())
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+
+            Assert.That(backendDevice.BufferAllocationCreationCount, Is.Zero);
+            Assert.That(backendDevice.BufferCreationCount, Is.Zero);
+            Assert.That(graphicsDevice.Status, Is.EqualTo(GraphicsDeviceStatus.Ready));
+        }
+        finally
+        {
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
     public async Task BufferAllocationReservationRecoversAfterBackendCreationFailure()
     {
         const int failureCount = 257;
@@ -312,6 +358,62 @@ internal sealed class GraphicsBufferTransferTests
         }
 
         Assert.That(backendDevice.BufferDisposalCount, Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task BufferNativeHeapBudgetAcceptsExactAllocationSize()
+    {
+        var bufferDescription = CreateBufferDescription();
+        var backendDevice = new FakeBackendDevice(bufferBudgetBytes: bufferDescription.ByteLength);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+        GpuBuffer? buffer = null;
+
+        try
+        {
+            buffer = await graphicsDevice.CreateBufferAsync(bufferDescription)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert.That(backendDevice.BufferCreationCount, Is.EqualTo(1));
+            buffer.Dispose();
+            buffer = null;
+            Assert.That(
+                SpinWait.SpinUntil(() => backendDevice.BufferDisposalCount == 1, TimeSpan.FromSeconds(5)),
+                Is.True);
+
+            buffer = await graphicsDevice.CreateBufferAsync(bufferDescription)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert.That(backendDevice.BufferCreationCount, Is.EqualTo(2));
+        }
+        finally
+        {
+            buffer?.Dispose();
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+
+        Assert.That(backendDevice.BufferDisposalCount, Is.EqualTo(2));
+    }
+
+    [Test]
+    public async Task BufferNativeHeapBudgetRejectsBeforeBackendCreation()
+    {
+        var backendDevice = new FakeBackendDevice(bufferBudgetBytes: CreateBufferDescription().ByteLength - 1);
+        var graphicsDevice = await CreateGraphicsDeviceAsync(backendDevice).ConfigureAwait(false);
+
+        try
+        {
+            _ = Assert.ThrowsAsync<OutOfMemoryException>(
+                async () => await graphicsDevice.CreateBufferAsync(CreateBufferDescription())
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+
+            Assert.That(backendDevice.BufferAllocationCreationCount, Is.Zero);
+            Assert.That(backendDevice.BufferCreationCount, Is.Zero);
+        }
+        finally
+        {
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
     }
 
     [Test]
