@@ -47,11 +47,17 @@ Texture2D<float4> FrameTexture : register(t0, space0);
 [[vk::binding(17, 0)]]
 Texture2D<float4> FrameSecondTexture : register(t1, space0);
 
+[[vk::binding(18, 0)]]
+Texture2DArray<float4> FrameArrayTexture : register(t2, space0);
+
 [[vk::binding(40, 0)]]
 SamplerState FrameSampler : register(s0, space0);
 
 [[vk::binding(41, 0)]]
 SamplerState FrameSecondSampler : register(s1, space0);
+
+[[vk::binding(42, 0)]]
+SamplerState FrameArraySampler : register(s2, space0);
 
 [[vk::binding(32, 0)]]
 RWStructuredBuffer<uint> FrameStorageBuffer : register(u0, space0);
@@ -149,6 +155,11 @@ uint PSR32UIntMain(VertexOutput input) : SV_Target0
 float4 PSSampledMain(VertexOutput input) : SV_Target0
 {
     return FrameTexture.Sample(FrameSampler, float2(0.5, 0.5));
+}
+
+float4 PSSampledArrayMain(VertexOutput input) : SV_Target0
+{
+    return FrameArrayTexture.Sample(FrameArraySampler, float3(0.5, 0.5, 0.0));
 }
 
 float4 PSSampledMultipleMain(VertexOutput input) : SV_Target0

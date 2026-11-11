@@ -2370,7 +2370,11 @@ public static unsafe class D3D12GraphicsBackend
                                                     binding.Group,
                                                     binding.Binding,
                                                     texture,
-                                                    binding.Range));
+                                                    binding.Range,
+                                                    pipeline.Resources.Single(resource =>
+                                                        (resource.Kind == ShaderResourceKind.SampledImage)
+                                                        && (resource.Group == binding.Group)
+                                                        && (resource.Binding == binding.Binding)).ImageArrayed));
                                             }
                                             else
                                             {
@@ -3291,9 +3295,9 @@ public static unsafe class D3D12GraphicsBackend
                     }
 
                     if ((texture.Description.Dimension != TextureDimension.Dimension2D)
-                        || (texture.Description.ArrayLayers != 1))
+                        || (!binding.ImageArrayed && (texture.Description.ArrayLayers != 1)))
                     {
-                        throw new NotSupportedException("This D3D12 descriptor-set path supports single-layer 2D sampled textures.");
+                        throw new NotSupportedException("This D3D12 descriptor-set path requires a reflected 2D or 2D-array sampled texture.");
                     }
 
                     retainedSampledTextures[index] = texture;
@@ -3490,7 +3494,7 @@ public static unsafe class D3D12GraphicsBackend
                         cpuHandle.ptr = checked(
                             cpuHandle.ptr
                             + (checked((nuint)descriptorIndex) * _resourceDescriptorIncrementSize));
-                        CreateSampledImageView(retainedSampledTextures[index], binding.Range, cpuHandle);
+                        CreateSampledImageView(retainedSampledTextures[index], binding.Range, binding.ImageArrayed, cpuHandle);
                     }
 
                     var storageBufferIndex = 0;
@@ -3750,6 +3754,7 @@ public static unsafe class D3D12GraphicsBackend
             private void CreateSampledImageView(
                 D3D12BackendTexture texture,
                 GraphTextureRange range,
+                bool imageArrayed,
                 D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle)
             {
                 var description = texture.Description;
@@ -3757,15 +3762,33 @@ public static unsafe class D3D12GraphicsBackend
                 viewDescription.Format = (description.Format == TextureFormat.D32Float)
                     ? DXGI_FORMAT.DXGI_FORMAT_R32_FLOAT
                     : GetNativeFormat(description.Format);
-                viewDescription.ViewDimension = D3D12_SRV_DIMENSION.D3D12_SRV_DIMENSION_TEXTURE2D;
+                viewDescription.ViewDimension = imageArrayed
+                    ? D3D12_SRV_DIMENSION.D3D12_SRV_DIMENSION_TEXTURE2DARRAY
+                    : D3D12_SRV_DIMENSION.D3D12_SRV_DIMENSION_TEXTURE2D;
                 viewDescription.Shader4ComponentMapping = DefaultShader4ComponentMapping;
                 var anonymous = viewDescription.Anonymous;
-                var textureView = anonymous.Texture2D;
-                textureView.MostDetailedMip = checked((uint)range.FirstMip);
-                textureView.MipLevels = checked((uint)range.MipCount);
-                textureView.PlaneSlice = 0;
-                textureView.ResourceMinLODClamp = 0.0f;
-                anonymous.Texture2D = textureView;
+
+                if (imageArrayed)
+                {
+                    var textureView = anonymous.Texture2DArray;
+                    textureView.MostDetailedMip = checked((uint)range.FirstMip);
+                    textureView.MipLevels = checked((uint)range.MipCount);
+                    textureView.FirstArraySlice = checked((uint)range.FirstLayer);
+                    textureView.ArraySize = checked((uint)range.LayerCount);
+                    textureView.PlaneSlice = 0;
+                    textureView.ResourceMinLODClamp = 0.0f;
+                    anonymous.Texture2DArray = textureView;
+                }
+                else
+                {
+                    var textureView = anonymous.Texture2D;
+                    textureView.MostDetailedMip = checked((uint)range.FirstMip);
+                    textureView.MipLevels = checked((uint)range.MipCount);
+                    textureView.PlaneSlice = 0;
+                    textureView.ResourceMinLODClamp = 0.0f;
+                    anonymous.Texture2D = textureView;
+                }
+
                 viewDescription.Anonymous = anonymous;
                 _device->CreateShaderResourceView(texture.GetResource(), &viewDescription, cpuHandle);
             }

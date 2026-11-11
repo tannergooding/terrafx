@@ -612,7 +612,7 @@ internal sealed class GraphicsGraphSubmission
                         && hasStorageUsage
                         && !hasSampledUsage))
                 || ((import.Version.Range.MipCount != 1) && !(hasSampledUsage || hasStorageUsage))
-                || (import.Version.Range.LayerCount != 1)
+                || ((import.Version.Range.LayerCount != 1) && !hasSampledUsage)
                 || ((import.Version.Range.Aspect != TextureAspect.Color) && !isDepthSampledImage)
                 || ((import.Version.Description.Format == TextureFormat.D32Float) && !isDepthSampledImage))
             {
@@ -623,9 +623,7 @@ internal sealed class GraphicsGraphSubmission
             {
                 var supportedSubresourceRange = hasSampledUsage
                     ? (import.Version.Description.Dimension == TextureDimension.Dimension2D)
-                        && (import.Version.Description.ArrayLayers == 1)
                         && ((import.Version.Range.Aspect == TextureAspect.Color) || isDepthSampledImage)
-                        && (import.Version.Range.LayerCount == 1)
                     : (import.Version.Description.Dimension is TextureDimension.Dimension2D or TextureDimension.Dimension3D)
                         && (import.Version.Description.ArrayLayers == 1)
                         && (import.Version.Range.Aspect == TextureAspect.Color)
@@ -636,7 +634,7 @@ internal sealed class GraphicsGraphSubmission
                     || hasCopySourceImportAccess
                     || hasCopyDestinationImportAccess)
                 {
-                    throw new NotSupportedException("Native graph submission supports single-layer 2D color sampled images and 2D/3D storage images.");
+                    throw new NotSupportedException("Native graph submission supports 2D sampled images, including arrayed views, and non-arrayed 2D/3D storage images.");
                 }
 
                 if (hasSampledUsage)
@@ -1003,6 +1001,7 @@ internal sealed class GraphicsGraphSubmission
             var currentPipelineRequiresSampledImage = false;
             var currentPipelineRequiresSampler = false;
             var currentPipelineSampledImageBindings = new HashSet<int>();
+            var currentPipelineSampledImageArraying = new Dictionary<int, bool>();
             var currentPipelineSamplerBindings = new HashSet<int>();
             var currentPipelineRequiresStorageBuffer = false;
             var currentPipelineStorageBufferBindingCount = 0;
@@ -1059,6 +1058,7 @@ internal sealed class GraphicsGraphSubmission
                         currentPipelineStorageBufferBindingCount = 0;
                         currentPipelineStorageBufferWriteOnlyBindings.Clear();
                         currentPipelineSampledImageBindings.Clear();
+                        currentPipelineSampledImageArraying.Clear();
                         currentPipelineSamplerBindings.Clear();
                         currentPipelineStorageImageBindingCount = 0;
                         currentPipelineStorageImageFormats.Clear();
@@ -1123,7 +1123,8 @@ internal sealed class GraphicsGraphSubmission
                                 {
                                     currentPipelineRequiresSampledImage = true;
 
-                                    if (!currentPipelineSampledImageBindings.Add(resource.Binding))
+                                    if (!currentPipelineSampledImageBindings.Add(resource.Binding)
+                                        || !currentPipelineSampledImageArraying.TryAdd(resource.Binding, resource.ImageArrayed))
                                     {
                                         throw new NotSupportedException("A graphics pipeline cannot declare conflicting sampled-image signatures at one binding.");
                                     }
@@ -1158,6 +1159,11 @@ internal sealed class GraphicsGraphSubmission
 
                                 case ShaderResourceKind.StorageImage:
                                 {
+                                    if (resource.ImageArrayed)
+                                    {
+                                        throw new NotSupportedException("Native graph submission does not support arrayed storage-image bindings.");
+                                    }
+
                                     currentPipelineRequiresStorageImage = true;
                                     currentPipelineStorageImageBindingCount++;
 
@@ -1445,23 +1451,28 @@ internal sealed class GraphicsGraphSubmission
                                 case ShaderResourceKind.SampledImage:
                                 {
                                     if (!currentPipelineSampledImageBindings.Contains(binding.Binding)
+                                        || !currentPipelineSampledImageArraying.TryGetValue(binding.Binding, out var imageArrayed)
                                         || !sampledTextureImports.TryGetValue(
                                             binding.Resource.ResourceId,
                                             out var sampledTextureImport))
                                     {
-                                        throw new NotSupportedException("The Frame sampled-image binding must fit its imported single-layer color or D32 depth range.");
+                                        throw new NotSupportedException("The Frame sampled-image binding must match its reflected 2D or 2D-array shape and fit its imported color or D32 depth range.");
                                     }
 
                                     var isDepthSampledImage = (sampledTextureImport.Version.Description.Format == TextureFormat.D32Float)
                                         && (binding.Range.Aspect == TextureAspect.Depth);
+                                    var sampledTextureDescription = sampledTextureImport.Version.Description;
 
                                     if ((binding.Group != ShaderBindingGroup.Frame)
                                         || !binding.Range.IsWithin(sampledTextureImport.Version.Range)
                                         || ((binding.Range.Aspect != TextureAspect.Color) && !isDepthSampledImage)
                                         || ((sampledTextureImport.Version.Description.Format == TextureFormat.D32Float) && !isDepthSampledImage)
-                                        || (binding.Range.LayerCount != 1))
+                                        || (sampledTextureDescription.Dimension != TextureDimension.Dimension2D)
+                                        || (!imageArrayed
+                                            && ((sampledTextureDescription.ArrayLayers != 1)
+                                                || (binding.Range.LayerCount != 1))))
                                     {
-                                        throw new NotSupportedException("The Frame sampled-image binding must fit its imported single-layer color or D32 depth range.");
+                                        throw new NotSupportedException("The Frame sampled-image binding must match its reflected 2D or 2D-array shape and fit its imported color or D32 depth range.");
                                     }
 
                                     var accessDeclared = false;

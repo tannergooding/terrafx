@@ -427,9 +427,16 @@ internal static class SpirvReflectionValidator
         }
 
         var bindingComparison = left.Binding.CompareTo(right.Binding);
-        return bindingComparison != 0
-            ? bindingComparison
-            : left.ArrayCount.CompareTo(right.ArrayCount);
+
+        if (bindingComparison != 0)
+        {
+            return bindingComparison;
+        }
+
+        var arrayCountComparison = left.ArrayCount.CompareTo(right.ArrayCount);
+        return (arrayCountComparison != 0)
+            ? arrayCountComparison
+            : left.ImageArrayed.CompareTo(right.ImageArrayed);
     }
 
     private static void EnsureId(Module module, uint id)
@@ -801,6 +808,7 @@ internal static class SpirvReflectionValidator
         ShaderResourceAccess access,
         ShaderStorageImageFormat storageImageFormat,
         TextureDimension imageDimension,
+        bool imageArrayed,
         int shaderIndex)
     {
         var (bindingClassStart, bindingClassEnd) = kind switch {
@@ -825,7 +833,8 @@ internal static class SpirvReflectionValidator
             arrayCount,
             access,
             storageImageFormat,
-            imageDimension);
+            imageDimension,
+            imageArrayed);
     }
 
     private static ShaderBindingGroup GetResourceGroup(uint setIndex, int shaderIndex)
@@ -843,7 +852,8 @@ internal static class SpirvReflectionValidator
         ShaderResourceKind Kind,
         int ArrayCount,
         ShaderStorageImageFormat StorageImageFormat,
-        TextureDimension ImageDimension) GetResourceType(
+        TextureDimension ImageDimension,
+        bool ImageArrayed) GetResourceType(
         Module module,
         uint typeId,
         uint storageClass)
@@ -871,6 +881,7 @@ internal static class SpirvReflectionValidator
         ShaderResourceKind kind;
         var storageImageFormat = ShaderStorageImageFormat.None;
         var imageDimension = TextureDimension.None;
+        var imageArrayed = false;
 
         if (storageClass == StorageClassUniformConstant)
         {
@@ -885,11 +896,17 @@ internal static class SpirvReflectionValidator
 
             if (kind == ShaderResourceKind.StorageImage)
             {
+                if (type.Operands[4] > 1)
+                {
+                    throw new ArgumentException("SPIR-V image arraying must be a Boolean value.", nameof(typeId));
+                }
+
                 imageDimension = type.Operands[2] switch {
                     ImageDimension2D => TextureDimension.Dimension2D,
                     ImageDimension3D => TextureDimension.Dimension3D,
                     _ => throw new NotSupportedException("The selected graph profile supports only 2D and 3D storage images."),
                 };
+                imageArrayed = type.Operands[4] != 0;
                 storageImageFormat = type.Operands[7] switch {
                     ImageFormatRgba16Float => ShaderStorageImageFormat.Rgba16Float,
                     ImageFormatR32Float => ShaderStorageImageFormat.R32Float,
@@ -900,10 +917,16 @@ internal static class SpirvReflectionValidator
             }
             else if (kind == ShaderResourceKind.SampledImage)
             {
+                if (type.Operands[4] > 1)
+                {
+                    throw new ArgumentException("SPIR-V image arraying must be a Boolean value.", nameof(typeId));
+                }
+
                 imageDimension = type.Operands[2] switch {
                     ImageDimension2D => TextureDimension.Dimension2D,
                     _ => throw new NotSupportedException("The selected graph profile supports only 2D sampled images."),
                 };
+                imageArrayed = type.Operands[4] != 0;
             }
         }
         else if (storageClass == StorageClassStorageBuffer)
@@ -938,7 +961,7 @@ internal static class SpirvReflectionValidator
             throw new NotSupportedException($"SPIR-V descriptor storage class {storageClass} is not supported.");
         }
 
-        return (kind, checked((int)arrayCount), storageImageFormat, imageDimension);
+        return (kind, checked((int)arrayCount), storageImageFormat, imageDimension, imageArrayed);
     }
 
     private static (ShaderValueType ValueType, int ByteLength) GetScalarValueType(Module module, uint typeId)
@@ -1232,7 +1255,7 @@ internal static class SpirvReflectionValidator
                 throw new ArgumentException($"SPIR-V descriptor variable id {variable.ResultId} has an incompatible pointer type.");
             }
 
-            var (resourceKind, arrayCount, storageImageFormat, imageDimension) = GetResourceType(
+            var (resourceKind, arrayCount, storageImageFormat, imageDimension, imageArrayed) = GetResourceType(
                 module,
                 pointerType.Operands[2],
                 variable.StorageClass);
@@ -1246,6 +1269,7 @@ internal static class SpirvReflectionValidator
                 resourceAccess,
                 storageImageFormat,
                 imageDimension,
+                imageArrayed,
                 shaderIndex));
         }
     }

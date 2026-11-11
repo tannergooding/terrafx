@@ -363,6 +363,15 @@ internal sealed class ShaderReflectionTests
             0,
             ShaderResourceKind.SampledImage,
             1);
+        var arrayedSampledImage = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.SampledImage,
+            1,
+            ShaderResourceAccess.Read,
+            ShaderStorageImageFormat.None,
+            TextureDimension.Dimension2D,
+            imageArrayed: true);
         var nonStorageResource = new ShaderResourceSignature(
             ShaderBindingGroup.Frame,
             0,
@@ -376,9 +385,12 @@ internal sealed class ShaderReflectionTests
         Assert.That(storageImage.ImageDimension, Is.EqualTo(TextureDimension.Dimension2D));
         Assert.That(threeDimensionalStorageImage.ImageDimension, Is.EqualTo(TextureDimension.Dimension3D));
         Assert.That(sampledImage.ImageDimension, Is.EqualTo(TextureDimension.Dimension2D));
+        Assert.That(sampledImage.ImageArrayed, Is.False);
+        Assert.That(arrayedSampledImage.ImageArrayed, Is.True);
         Assert.That(nonStorageResource.ImageDimension, Is.EqualTo(TextureDimension.None));
         Assert.That(floatStorageImage, Is.Not.EqualTo(storageImage));
         Assert.That(threeDimensionalStorageImage, Is.Not.EqualTo(storageImage));
+        Assert.That(arrayedSampledImage, Is.Not.EqualTo(sampledImage));
         Assert.That(nonStorageResource.StorageImageFormat, Is.EqualTo(ShaderStorageImageFormat.None));
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => new ShaderResourceSignature(
             ShaderBindingGroup.Frame,
@@ -408,7 +420,8 @@ internal sealed class ShaderReflectionTests
             1,
             ShaderResourceAccess.ReadWrite,
             ShaderStorageImageFormat.R32UInt,
-            TextureDimension.None));
+            TextureDimension.None,
+            imageArrayed: true));
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => new ShaderResourceSignature(
             ShaderBindingGroup.Frame,
             0,
@@ -424,7 +437,8 @@ internal sealed class ShaderReflectionTests
             1,
             ShaderResourceAccess.Read,
             ShaderStorageImageFormat.None,
-            TextureDimension.Dimension2D));
+            TextureDimension.Dimension2D,
+            imageArrayed: true));
     }
 
     [Test]

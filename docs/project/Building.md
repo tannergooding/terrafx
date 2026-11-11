@@ -518,6 +518,15 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 
 In the configured WSLg shell, run the same filter with `-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/`.
 
+`SubmitsR8UnormSampledArrayLayer` creates a two-layer R8Unorm texture with layer values `0x00` and `0x80`, binds only layer 1, and samples layer zero relative to the 2D-array view. Readback must produce `(0x80, 0x00, 0x00, 0xFF)`. The test passes 2/2 on Windows D3D12/Vulkan and 1/1 applicable on WSLg Vulkan in Debug/Release; the WSLg D3D12 case is skipped.
+
+```powershell
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.EngineHostOptionsTests.SubmitsR8UnormSampledArrayLayer"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.EngineHostOptionsTests.SubmitsR8UnormSampledArrayLayer"
+```
+
+In the configured WSLg shell, run the same filter with `-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/` and Khronos validation enabled.
+
 The remaining profile-required color sampled views are exercised with distinct texels: `R32Float` 0.5 reads back `(0x80, 0x00, 0x00, 0xFF)`, `Rgba16Float` `(1.0, 0.5, 0.25, 1.0)` reads back `(0xFF, 0x80, 0x40, 0xFF)`, and `Rgba8Srgb` `(0x80, 0x40, 0x20, 0xFF)` reads back the sRGB-decoded `(0x37, 0x0D, 0x04, 0xFF)`. Each test passes 2/2 on Windows D3D12/Vulkan and 1/1 on WSLg Vulkan in Debug/Release; the WSLg D3D12 cases are skipped, with no validation-layer VUID/Validation Error matches.
 
 ```powershell

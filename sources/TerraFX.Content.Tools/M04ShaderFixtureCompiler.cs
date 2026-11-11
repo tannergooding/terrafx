@@ -28,6 +28,7 @@ internal static class M04ShaderFixtureCompiler
     private const string ShaderEntryPointPixelFrameLayout = "PSFrameLayoutMain";
     private const string ShaderEntryPointPixelMultipleFrame = "PSMultipleFrameMain";
     private const string ShaderEntryPointPixelR32UInt = "PSR32UIntMain";
+    private const string ShaderEntryPointSampledArrayPixel = "PSSampledArrayMain";
     private const string ShaderEntryPointSampledFramePixel = "PSSampledFrameMain";
     private const string ShaderEntryPointSampledFrameStoragePixel = "PSSampledFrameStorageMain";
     private const string ShaderEntryPointSampledMultiplePixel = "PSSampledMultipleMain";
@@ -54,6 +55,7 @@ internal static class M04ShaderFixtureCompiler
         "pixel-graph",
         "pixel-multiple-frame-uniforms",
         "pixel-r32uint",
+        "pixel-sampled-array",
         "pixel-sampled",
         "pixel-sampled-multiple",
         "pixel-sprite",
@@ -307,6 +309,17 @@ internal static class M04ShaderFixtureCompiler
                 ShaderEntryPointSampledPixel,
                 "ps_6_0",
                 "pixel-sampled",
+                cancellationToken).ConfigureAwait(false);
+            await CompileStageAsync(
+                manifest,
+                dxcExecutable,
+                spirvCrossExecutable,
+                spirvValidationExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointSampledArrayPixel,
+                "ps_6_0",
+                "pixel-sampled-array",
                 cancellationToken).ConfigureAwait(false);
             await CompileStageAsync(
                 manifest,
@@ -577,6 +590,15 @@ internal static class M04ShaderFixtureCompiler
                 dxcExecutable,
                 shaderPath,
                 stagingDirectory,
+                ShaderEntryPointSampledArrayPixel,
+                "ps_6_0",
+                "pixel-sampled-array",
+                cancellationToken).ConfigureAwait(false);
+            await CompileDxilStageAsync(
+                manifest,
+                dxcExecutable,
+                shaderPath,
+                stagingDirectory,
                 ShaderEntryPointSampledMultiplePixel,
                 "ps_6_0",
                 "pixel-sampled-multiple",
@@ -644,6 +666,7 @@ internal static class M04ShaderFixtureCompiler
             "pixel-graph" => ShaderEntryPointGraphPixel,
             "pixel-multiple-frame-uniforms" => ShaderEntryPointPixelMultipleFrame,
             "pixel-r32uint" => ShaderEntryPointPixelR32UInt,
+            "pixel-sampled-array" => ShaderEntryPointSampledArrayPixel,
             "pixel-sampled" => ShaderEntryPointSampledPixel,
             "pixel-sampled-multiple" => ShaderEntryPointSampledMultiplePixel,
             "pixel-sprite" => ShaderEntryPointSpritePixel,
@@ -1010,7 +1033,7 @@ internal static class M04ShaderFixtureCompiler
 
         var expectedOutputSemantic = stageName switch {
             "vertex" or "vertex-depth" or "vertex-sprite" => "SV_Position",
-            "pixel" or "pixel-depth" or "pixel-frame-layout" or "pixel-graph" or "pixel-multiple-frame-uniforms" or "pixel-r32uint" or "pixel-sampled" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => "SV_Target",
+            "pixel" or "pixel-depth" or "pixel-frame-layout" or "pixel-graph" or "pixel-multiple-frame-uniforms" or "pixel-r32uint" or "pixel-sampled" or "pixel-sampled-array" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => "SV_Target",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
         };
 
@@ -1058,6 +1081,13 @@ internal static class M04ShaderFixtureCompiler
             throw new InvalidDataException("DXC reflection from the compiled multi-UBO pixel DXIL does not contain its second uniform buffer.");
         }
 
+        if ((stageName == "pixel-sampled-array")
+            && (!text.Contains("FrameArrayTexture", StringComparison.Ordinal)
+                || !text.Contains("FrameArraySampler", StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException("DXC reflection from the compiled array-sampled pixel DXIL does not contain its image and sampler.");
+        }
+
         if ((stageName is "pixel-sampled" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage")
             && (!text.Contains("FrameTexture", StringComparison.Ordinal)
                 || !text.Contains("FrameSampler", StringComparison.Ordinal)))
@@ -1085,6 +1115,22 @@ internal static class M04ShaderFixtureCompiler
                 || text.Contains("FrameSampler", StringComparison.Ordinal)))
         {
             throw new InvalidDataException("The graph pixel shader must not declare reflected resources.");
+        }
+    }
+
+    private static void ValidatePixelSampledArrayResourceReflection(JsonElement root)
+    {
+        ValidateSampledResource(root, "separate_images", "FrameArrayTexture", 18);
+        ValidateSampledResource(root, "separate_samplers", "FrameArraySampler", 42);
+
+        if (!root.TryGetProperty("separate_images", out var images)
+            || (images.ValueKind != JsonValueKind.Array)
+            || (images.GetArrayLength() != 1)
+            || !images[0].TryGetProperty("type", out var type)
+            || (type.ValueKind != JsonValueKind.String)
+            || !StringComparer.Ordinal.Equals(type.GetString(), "texture2DArray"))
+        {
+            throw new InvalidDataException("SPIRV-Cross reflection must identify the sampled 2D-array view.");
         }
     }
 
@@ -1262,7 +1308,7 @@ internal static class M04ShaderFixtureCompiler
         var expectedMode = stageName switch {
             "compute-storage" or "compute-storage-buffers" or "compute-storage-3d-image" or "compute-storage-float-image" or "compute-storage-images" or "compute-storage-rgba16-image" or "compute-storage-signed-image" or "compute-storage-write" => mode is "comp" or "compute",
             "vertex" or "vertex-depth" or "vertex-sprite" => mode is "vert" or "vertex",
-            "pixel" or "pixel-depth" or "pixel-frame-layout" or "pixel-graph" or "pixel-multiple-frame-uniforms" or "pixel-r32uint" or "pixel-sampled" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => mode is "frag" or "fragment",
+            "pixel" or "pixel-depth" or "pixel-frame-layout" or "pixel-graph" or "pixel-multiple-frame-uniforms" or "pixel-r32uint" or "pixel-sampled" or "pixel-sampled-array" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => mode is "frag" or "fragment",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
         };
 
@@ -1300,6 +1346,11 @@ internal static class M04ShaderFixtureCompiler
         if (stageName == "pixel-sampled-multiple")
         {
             ValidatePixelSampledMultipleResourceReflection(root);
+        }
+
+        if (stageName == "pixel-sampled-array")
+        {
+            ValidatePixelSampledArrayResourceReflection(root);
         }
 
         if (stageName is "pixel-sampled" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage")

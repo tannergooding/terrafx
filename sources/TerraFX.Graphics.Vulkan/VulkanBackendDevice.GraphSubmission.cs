@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using TerraFX.Graphics;
 using TerraFX.Interop.Vulkan;
 using VulkanApi = TerraFX.Interop.Vulkan.Vulkan;
@@ -1189,6 +1190,10 @@ internal sealed unsafe partial class VulkanBackendDevice
                                         binding.Binding,
                                         texture,
                                         binding.Range,
+                                        pipeline.Resources.Single(resource =>
+                                            (resource.Kind == ShaderResourceKind.SampledImage)
+                                            && (resource.Group == binding.Group)
+                                            && (resource.Binding == binding.Binding)).ImageArrayed,
                                         VkImageLayout.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
                                 }
                                 else

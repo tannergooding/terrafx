@@ -280,7 +280,7 @@ internal sealed class M04ShaderFixtureCompilerTests
             await M04ShaderFixtureCompiler.CompileAsync(outputDirectory, CancellationToken.None).ConfigureAwait(false);
 
             var files = Directory.GetFiles(outputDirectory);
-            Assert.That(files.Length, Is.EqualTo(88));
+            Assert.That(files.Length, Is.EqualTo(92));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-buffers.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-3d-image.dxil")).Length, Is.GreaterThan(0));
@@ -299,6 +299,7 @@ internal sealed class M04ShaderFixtureCompilerTests
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-r32uint.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-multiple-frame-uniforms.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled.dxil")).Length, Is.GreaterThan(0));
+            Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-array.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-multiple.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sprite.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-frame.dxil")).Length, Is.GreaterThan(0));
@@ -321,6 +322,7 @@ internal sealed class M04ShaderFixtureCompilerTests
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-r32uint.spv")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-multiple-frame-uniforms.spv")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled.spv")).Length, Is.GreaterThan(0));
+            Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-array.spv")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-multiple.spv")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sprite.spv")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-frame.spv")).Length, Is.GreaterThan(0));
@@ -362,6 +364,8 @@ internal sealed class M04ShaderFixtureCompilerTests
                 await File.ReadAllTextAsync(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-multiple-frame-uniforms.reflection.json")).ConfigureAwait(false));
             using var sampledPixelReflection = JsonDocument.Parse(
                 await File.ReadAllTextAsync(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled.reflection.json")).ConfigureAwait(false));
+            using var sampledArrayPixelReflection = JsonDocument.Parse(
+                await File.ReadAllTextAsync(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-array.reflection.json")).ConfigureAwait(false));
             using var sampledMultiplePixelReflection = JsonDocument.Parse(
                 await File.ReadAllTextAsync(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-multiple.reflection.json")).ConfigureAwait(false));
             using var spritePixelReflection = JsonDocument.Parse(
@@ -460,6 +464,16 @@ internal sealed class M04ShaderFixtureCompilerTests
             Assert.That(multipleFrameUniformBuffers[1].GetProperty("binding").GetInt32(), Is.EqualTo(1));
             AssertReflectedEntryPoint(sampledPixelReflection, "PSSampledMain", "frag");
             AssertReflectedSampledResources(sampledPixelReflection);
+            AssertReflectedEntryPoint(sampledArrayPixelReflection, "PSSampledArrayMain", "frag");
+            var sampledArrayImages = sampledArrayPixelReflection.RootElement.GetProperty("separate_images");
+            var sampledArraySamplers = sampledArrayPixelReflection.RootElement.GetProperty("separate_samplers");
+            Assert.That(sampledArrayImages.GetArrayLength(), Is.EqualTo(1));
+            Assert.That(sampledArrayImages[0].GetProperty("name").GetString(), Is.EqualTo("FrameArrayTexture"));
+            Assert.That(sampledArrayImages[0].GetProperty("binding").GetInt32(), Is.EqualTo(18));
+            Assert.That(sampledArrayImages[0].GetProperty("type").GetString(), Is.EqualTo("texture2DArray"));
+            Assert.That(sampledArraySamplers.GetArrayLength(), Is.EqualTo(1));
+            Assert.That(sampledArraySamplers[0].GetProperty("name").GetString(), Is.EqualTo("FrameArraySampler"));
+            Assert.That(sampledArraySamplers[0].GetProperty("binding").GetInt32(), Is.EqualTo(42));
             AssertReflectedEntryPoint(sampledMultiplePixelReflection, "PSSampledMultipleMain", "frag");
             var sampledMultipleImages = sampledMultiplePixelReflection.RootElement.GetProperty("separate_images");
             var sampledMultipleSamplers = sampledMultiplePixelReflection.RootElement.GetProperty("separate_samplers");
@@ -496,6 +510,7 @@ internal sealed class M04ShaderFixtureCompilerTests
             var typedComputeStorageWriteReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "compute-storage-write");
             var typedPixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "pixel");
             var typedDepthPixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "pixel-depth");
+            var typedSampledArrayReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "pixel-sampled-array");
             var typedPixelFrameLayoutReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "pixel-frame-layout");
             var typedGraphPixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "pixel-graph");
             var typedMultipleFramePixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(outputDirectory, "pixel-multiple-frame-uniforms");
@@ -536,6 +551,26 @@ internal sealed class M04ShaderFixtureCompilerTests
                     ShaderInterpolation.Flat)));
             Assert.That(typedDepthPixelReflection.Stage, Is.EqualTo(ShaderStage.Pixel));
             Assert.That(typedDepthPixelReflection.EntryPoint, Is.EqualTo("PSDepthMain"));
+            Assert.That(typedSampledArrayReflection.Stage, Is.EqualTo(ShaderStage.Pixel));
+            Assert.That(typedSampledArrayReflection.EntryPoint, Is.EqualTo("PSSampledArrayMain"));
+            Assert.That(
+                typedSampledArrayReflection.Resources,
+                Does.Contain(new ShaderResourceSignature(
+                    ShaderBindingGroup.Frame,
+                    2,
+                    ShaderResourceKind.SampledImage,
+                    1,
+                    ShaderResourceAccess.Read,
+                    ShaderStorageImageFormat.None,
+                    TextureDimension.Dimension2D,
+                    imageArrayed: true)));
+            Assert.That(
+                typedSampledArrayReflection.Resources,
+                Does.Contain(new ShaderResourceSignature(
+                    ShaderBindingGroup.Frame,
+                    2,
+                    ShaderResourceKind.Sampler,
+                    1)));
             Assert.That(typedSpriteVertexReflection.Stage, Is.EqualTo(ShaderStage.Vertex));
             Assert.That(typedSpriteVertexReflection.EntryPoint, Is.EqualTo("VSSpriteMain"));
             Assert.That(typedSpriteVertexReflection.Inputs, Has.Length.EqualTo(2));
@@ -923,7 +958,7 @@ internal sealed class M04ShaderFixtureCompilerTests
             await M04ShaderFixtureCompiler.CompileDxilAsync(outputDirectory, CancellationToken.None).ConfigureAwait(false);
 
             var files = Directory.GetFiles(outputDirectory);
-            Assert.That(files.Length, Is.EqualTo(44));
+            Assert.That(files.Length, Is.EqualTo(46));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-buffers.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.compute-storage-3d-image.dxil")).Length, Is.GreaterThan(0));
@@ -942,6 +977,7 @@ internal sealed class M04ShaderFixtureCompilerTests
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-r32uint.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-multiple-frame-uniforms.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled.dxil")).Length, Is.GreaterThan(0));
+            Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-array.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-multiple.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sprite.dxil")).Length, Is.GreaterThan(0));
             Assert.That(new FileInfo(Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-frame.dxil")).Length, Is.GreaterThan(0));
@@ -981,6 +1017,8 @@ internal sealed class M04ShaderFixtureCompilerTests
                 Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-multiple-frame-uniforms.dxil-reflection.txt")).ConfigureAwait(false);
             var sampledPixelReflection = await File.ReadAllTextAsync(
                 Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled.dxil-reflection.txt")).ConfigureAwait(false);
+            var sampledArrayPixelReflection = await File.ReadAllTextAsync(
+                Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-array.dxil-reflection.txt")).ConfigureAwait(false);
             var sampledMultiplePixelReflection = await File.ReadAllTextAsync(
                 Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sampled-multiple.dxil-reflection.txt")).ConfigureAwait(false);
             var sampledFramePixelReflection = await File.ReadAllTextAsync(
@@ -1034,6 +1072,11 @@ internal sealed class M04ShaderFixtureCompilerTests
             Assert.That(sampledPixelReflection.Contains("EntryFunctionName: PSSampledMain", StringComparison.Ordinal), Is.True);
             Assert.That(sampledPixelReflection.Contains("FrameTexture", StringComparison.Ordinal), Is.True);
             Assert.That(sampledPixelReflection.Contains("FrameSampler", StringComparison.Ordinal), Is.True);
+            Assert.That(sampledArrayPixelReflection.Contains("EntryFunctionName: PSSampledArrayMain", StringComparison.Ordinal), Is.True);
+            Assert.That(sampledArrayPixelReflection.Contains("FrameArrayTexture", StringComparison.Ordinal), Is.True);
+            Assert.That(sampledArrayPixelReflection.Contains("FrameArraySampler", StringComparison.Ordinal), Is.True);
+            AssertDxilResourceBinding(sampledArrayPixelReflection, "FrameArrayTexture", "texture", "f32", "2darray", "t2");
+            AssertDxilResourceBinding(sampledArrayPixelReflection, "FrameArraySampler", "sampler", "NA", "NA", "s2");
             Assert.That(sampledMultiplePixelReflection.Contains("EntryFunctionName: PSSampledMultipleMain", StringComparison.Ordinal), Is.True);
             Assert.That(sampledMultiplePixelReflection.Contains("FrameSecondTexture", StringComparison.Ordinal), Is.True);
             Assert.That(sampledMultiplePixelReflection.Contains("FrameSecondSampler", StringComparison.Ordinal), Is.True);

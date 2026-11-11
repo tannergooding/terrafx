@@ -8,4 +8,5 @@ internal readonly record struct D3D12BackendSampledImageBinding(
     ShaderBindingGroup Group,
     int Binding,
     IGraphicsBackendTexture Texture,
-    GraphTextureRange Range);
+    GraphTextureRange Range,
+    bool ImageArrayed = false);

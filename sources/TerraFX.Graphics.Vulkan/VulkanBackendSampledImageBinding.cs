@@ -10,4 +10,5 @@ internal readonly record struct VulkanBackendSampledImageBinding(
     int Binding,
     VulkanBackendTexture Texture,
     GraphTextureRange Range,
+    bool ImageArrayed = false,
     VkImageLayout? ImageLayout = null);

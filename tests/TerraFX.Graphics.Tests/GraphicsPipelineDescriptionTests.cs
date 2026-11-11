@@ -428,6 +428,15 @@ internal sealed class GraphicsPipelineDescriptionTests
             ShaderResourceAccess.ReadWrite,
             ShaderStorageImageFormat.R32UInt,
             TextureDimension.Dimension3D);
+        var mismatchedImageArrayed = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            binding: 0,
+            ShaderResourceKind.StorageImage,
+            arrayCount: 2,
+            ShaderResourceAccess.ReadWrite,
+            ShaderStorageImageFormat.R32UInt,
+            TextureDimension.Dimension2D,
+            imageArrayed: true);
 
         _ = Assert.Throws<ArgumentException>(() => CreatePipelineDescription(
             bytecode,
@@ -449,6 +458,10 @@ internal sealed class GraphicsPipelineDescriptionTests
             bytecode,
             vertexReflection: CreateSystemVertexReflection([vertexResource]),
             pixelReflection: CreateSystemPixelReflection([mismatchedImageDimension])));
+        _ = Assert.Throws<ArgumentException>(() => CreatePipelineDescription(
+            bytecode,
+            vertexReflection: CreateSystemVertexReflection([vertexResource]),
+            pixelReflection: CreateSystemPixelReflection([mismatchedImageArrayed])));
     }
 
     [Test]

@@ -931,6 +931,24 @@ internal sealed partial class EngineHostOptionsTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsR8UnormSampledArrayLayer(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: true,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            sampledTextureFormat: TextureFormat.R8Unorm,
+            useArrayedSampledTexture: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SubmitsR8UnormSampledImage(GraphicsBackend backend)
         => RunOffscreenGraphAsync(
             backend,
@@ -1355,10 +1373,12 @@ internal sealed partial class EngineHostOptionsTests
         bool expectStorageImageDimensionRejection = false,
         bool useFrameLayoutUniformBuffer = false,
         TextureFormat sampledTextureFormat = TextureFormat.Rgba8Unorm,
+        bool useArrayedSampledTexture = false,
         bool useDepthAttachment = false,
         TextureFormat targetColorFormat = TextureFormat.Rgba8Unorm)
     {
         var frameUniformBindingIndex = useFrameLayoutUniformBuffer ? 2 : 0;
+        var sampledImageBindingIndex = useArrayedSampledTexture ? 2 : 0;
 
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -1408,6 +1428,17 @@ internal sealed partial class EngineHostOptionsTests
             TextureFormat.Rgba8Srgb => [128, 64, 32, 255],
             _ => [32, 128, 224, 255],
         };
+
+        if (useArrayedSampledTexture)
+        {
+            if (sampledTextureFormat != TextureFormat.R8Unorm)
+            {
+                throw new ArgumentOutOfRangeException(nameof(sampledTextureFormat));
+            }
+
+            sampleBytes = [0, 128];
+        }
+
         var sampledTextureAspect = sampledTextureFormat is TextureFormat.D32Float
             ? TextureAspect.Depth
             : TextureAspect.Color;
@@ -2080,13 +2111,14 @@ internal sealed partial class EngineHostOptionsTests
                 {
                     var textureWidth = useSampledTextureSubrange ? 2 : 1;
                     var textureMipLevels = useSampledTextureSubrange ? 2 : 1;
+                    var textureArrayLayers = useArrayedSampledTexture ? 2 : 1;
                     sampledTexture = await graphicsDevice.CreateTextureAsync(
                         new TextureDescription(
                             TextureDimension.Dimension2D,
                             textureWidth,
                             textureWidth,
                             depth: 1,
-                            arrayLayers: 1,
+                            arrayLayers: textureArrayLayers,
                             mipLevels: textureMipLevels,
                             sampledTextureFormat,
                             TextureUsage.Sampled | TextureUsage.CopyDestination,
@@ -2130,14 +2162,28 @@ internal sealed partial class EngineHostOptionsTests
 
                         using var ownedSampleBytes = sampleStorage.TransferToOwnedBuffer();
                         using var sampleLease = ownedSampleBytes.AcquireReadLease(0, sampleBytes.Length);
+                        var sampleMipLevel = useSampledTextureSubrange ? 1 : 0;
+                        var sampleByteCount = useArrayedSampledTexture ? 1 : sampleBytes.Length;
                         var sampleUploadReceipt = await graphicsDevice.UploadTextureAsync(
                             sampledTexture,
-                            new TextureSubresource(useSampledTextureSubrange ? 1 : 0, 0, sampledTextureAspect),
+                            new TextureSubresource(sampleMipLevel, 0, sampledTextureAspect),
                             sampleLease,
                             0,
-                            new TextureDataLayout(rowPitch: sampleBytes.Length, slicePitch: sampleBytes.Length))
+                            new TextureDataLayout(rowPitch: sampleByteCount, slicePitch: sampleByteCount))
                             .ConfigureAwait(false);
                         Assert.That(sampleUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+
+                        if (useArrayedSampledTexture)
+                        {
+                            var secondSampleUploadReceipt = await graphicsDevice.UploadTextureAsync(
+                                sampledTexture,
+                                new TextureSubresource(0, 1, sampledTextureAspect),
+                                sampleLease,
+                                1,
+                                new TextureDataLayout(rowPitch: 1, slicePitch: 1))
+                                .ConfigureAwait(false);
+                            Assert.That(secondSampleUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
+                        }
                     }
                     catch (OutOfMemoryException exception) when (
                         (backend == GraphicsBackend.D3D12)
@@ -2181,7 +2227,9 @@ internal sealed partial class EngineHostOptionsTests
                             : useMultipleSampledImages
                             ? "pixel-sampled-multiple"
                             : useSampledTexture
-                            ? (useUniformBuffer ? "pixel-sampled-frame" : "pixel-sampled")
+                            ? useArrayedSampledTexture
+                                ? "pixel-sampled-array"
+                                : (useUniformBuffer ? "pixel-sampled-frame" : "pixel-sampled")
                             : (useUniformBuffer ? "pixel" : "pixel-graph");
                 using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
                     shaderFixtureDirectory,
@@ -2772,12 +2820,13 @@ internal sealed partial class EngineHostOptionsTests
                 renderSnapshot,
                 target);
             var sampleRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
-            var sampledTextureRange = new GraphTextureRange(0, 1, 0, 1, sampledTextureAspect);
+            var sampledTextureFirstLayer = useArrayedSampledTexture ? 1 : 0;
+            var sampledTextureRange = new GraphTextureRange(0, 1, sampledTextureFirstLayer, 1, sampledTextureAspect);
             var sampledTextureImportRange = useSampledTextureSubrange
-                ? new GraphTextureRange(0, 2, 0, 1, sampledTextureAspect)
+                ? new GraphTextureRange(0, 2, sampledTextureFirstLayer, 1, sampledTextureAspect)
                 : sampledTextureRange;
             var sampledTextureBindingRange = useSampledTextureSubrange
-                ? new GraphTextureRange(1, 1, 0, 1, sampledTextureAspect)
+                ? new GraphTextureRange(1, 1, sampledTextureFirstLayer, 1, sampledTextureAspect)
                 : sampledTextureRange;
             var storageImageImportRange = useStorageImageSubrange
                 ? new GraphTextureRange(0, 2, 0, 1, TextureAspect.Color)
@@ -3017,13 +3066,13 @@ internal sealed partial class EngineHostOptionsTests
                         completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
                 textureBindings.Add(new TextureBinding(
                     ShaderBindingGroup.Frame,
-                    0,
+                    sampledImageBindingIndex,
                     ShaderResourceKind.SampledImage,
                     sampledTextureVersion,
                     sampledTextureBindingRange));
                 samplerBindings.Add(new SamplerBinding(
                     ShaderBindingGroup.Frame,
-                    0,
+                    sampledImageBindingIndex,
                     frameSampler
                         ?? throw new InvalidOperationException("The sampled Frame pipeline has no sampler.")));
             }
@@ -4172,13 +4221,13 @@ internal sealed partial class EngineHostOptionsTests
                         sampledTextureBindingRange);
                     secondTextureBindings.Add(new TextureBinding(
                         ShaderBindingGroup.Frame,
-                        0,
+                        sampledImageBindingIndex,
                         ShaderResourceKind.SampledImage,
                         secondSampledVersion,
                         sampledTextureBindingRange));
                     secondSamplerBindings.Add(new SamplerBinding(
                         ShaderBindingGroup.Frame,
-                        0,
+                        sampledImageBindingIndex,
                         frameSampler
                             ?? throw new InvalidOperationException("The sampled Frame pipeline has no sampler.")));
                 }
@@ -4873,13 +4922,13 @@ internal sealed partial class EngineHostOptionsTests
                             completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
                     secondTextureBindings.Add(new TextureBinding(
                         ShaderBindingGroup.Frame,
-                        0,
+                        sampledImageBindingIndex,
                         ShaderResourceKind.SampledImage,
                         secondSampledTextureVersion,
                         sampledTextureBindingRange));
                     secondSamplerBindings.Add(new SamplerBinding(
                         ShaderBindingGroup.Frame,
-                        0,
+                        sampledImageBindingIndex,
                         frameSampler
                             ?? throw new InvalidOperationException("The sampled Frame pipeline has no sampler.")));
                 }

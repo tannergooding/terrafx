@@ -491,7 +491,12 @@ internal sealed unsafe partial class VulkanBackendDevice
         {
             for (var index = 0; index < retainedSampledTextures.Length; index++)
             {
-                var imageView = CreateDescriptorImageView(_device, retainedSampledTextures[index], sortedImageBindings[index].Range);
+                var binding = sortedImageBindings[index];
+                var imageView = CreateDescriptorImageView(
+                    _device,
+                    retainedSampledTextures[index],
+                    binding.Range,
+                    binding.ImageArrayed);
                 imageViews[createdImageViewCount++] = imageView;
                 imageInfos[index].imageView = imageView;
             }

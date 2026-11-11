@@ -13,13 +13,16 @@ internal sealed unsafe partial class VulkanBackendDevice
     private static VkImageView CreateDescriptorImageView(
         VkDevice device,
         VulkanBackendTexture texture,
-        GraphTextureRange range)
+        GraphTextureRange range,
+        bool imageArrayed = false)
     {
         var description = texture.Description;
         var createInfo = default(VkImageViewCreateInfo);
         createInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         createInfo.image = texture.Image;
-        createInfo.viewType = GetNativeDescriptorImageViewType(description);
+        createInfo.viewType = imageArrayed
+            ? VkImageViewType.VK_IMAGE_VIEW_TYPE_2D_ARRAY
+            : GetNativeDescriptorImageViewType(description);
         createInfo.format = VulkanNativeTypeMapper.GetVkFormat(description.Format);
         createInfo.subresourceRange.aspectMask = description.Format == TextureFormat.D32Float
             ? VkImageAspectFlags.VK_IMAGE_ASPECT_DEPTH_BIT

@@ -80,6 +80,38 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
         ShaderResourceAccess access,
         ShaderStorageImageFormat storageImageFormat,
         TextureDimension imageDimension)
+        : this(
+            group,
+            binding,
+            kind,
+            arrayCount,
+            access,
+            storageImageFormat,
+            imageDimension,
+            imageArrayed: false)
+    {
+    }
+
+    /// <summary>Initializes a reflected shader resource binding with explicit image dimensionality and arraying.</summary>
+    /// <param name="group">The portable resource group.</param>
+    /// <param name="binding">The register index within the resource class.</param>
+    /// <param name="kind">The resource register class.</param>
+    /// <param name="arrayCount">The positive fixed descriptor-array count.</param>
+    /// <param name="access">The declared read/write capability.</param>
+    /// <param name="storageImageFormat">The reflected image format for a storage-image binding.</param>
+    /// <param name="imageDimension">The reflected dimension for a sampled or storage image.</param>
+    /// <param name="imageArrayed">Whether an image binding uses an arrayed shader view.</param>
+    /// <exception cref="ArgumentOutOfRangeException">An identity, count, access value, image dimension, or arraying value is invalid.</exception>
+    /// <exception cref="ArgumentException">A non-image resource declares image metadata, a non-storage resource declares a storage-image format, or an access other than <see cref="ShaderResourceAccess.Read"/>.</exception>
+    public ShaderResourceSignature(
+        ShaderBindingGroup group,
+        int binding,
+        ShaderResourceKind kind,
+        int arrayCount,
+        ShaderResourceAccess access,
+        ShaderStorageImageFormat storageImageFormat,
+        TextureDimension imageDimension,
+        bool imageArrayed)
     {
         if ((group == ShaderBindingGroup.None) || !Enum.IsDefined(group))
         {
@@ -118,6 +150,11 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
             {
                 throw new ArgumentOutOfRangeException(nameof(imageDimension));
             }
+
+            if (imageArrayed && (imageDimension != TextureDimension.Dimension2D))
+            {
+                throw new ArgumentOutOfRangeException(nameof(imageArrayed));
+            }
         }
         else if (kind == ShaderResourceKind.SampledImage)
         {
@@ -132,9 +169,10 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
             }
         }
         else if ((storageImageFormat != ShaderStorageImageFormat.None)
+            || imageArrayed
             || (imageDimension != TextureDimension.None))
         {
-            throw new ArgumentException("Only an image binding may declare an image format or dimension.", nameof(imageDimension));
+            throw new ArgumentException("Only an image binding may declare image metadata.", nameof(imageDimension));
         }
 
         var maximumBinding = kind switch {
@@ -150,6 +188,7 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
         Access = access;
         Binding = binding;
         Group = group;
+        ImageArrayed = imageArrayed;
         ImageDimension = imageDimension;
         Kind = kind;
         StorageImageFormat = storageImageFormat;
@@ -185,6 +224,9 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
     /// <summary>Gets the portable resource group.</summary>
     public ShaderBindingGroup Group { get; }
 
+    /// <summary>Gets whether an image binding uses an arrayed shader view.</summary>
+    public bool ImageArrayed { get; }
+
     /// <summary>Gets the reflected image dimension, or <see cref="TextureDimension.None"/> for non-image resources.</summary>
     public TextureDimension ImageDimension { get; }
 
@@ -208,11 +250,13 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
         && (ArrayCount == other.ArrayCount)
         && (Access == other.Access)
         && (StorageImageFormat == other.StorageImageFormat)
+        && (ImageArrayed == other.ImageArrayed)
         && (ImageDimension == other.ImageDimension);
 
     /// <inheritdoc />
     public override bool Equals(object? obj) => (obj is ShaderResourceSignature other) && Equals(other);
 
     /// <inheritdoc />
-    public override int GetHashCode() => HashCode.Combine(Group, Binding, Kind, ArrayCount, Access, StorageImageFormat, ImageDimension);
+    public override int GetHashCode()
+        => HashCode.Combine(Group, Binding, Kind, ArrayCount, Access, StorageImageFormat, ImageDimension, ImageArrayed);
 }
