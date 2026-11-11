@@ -84,6 +84,8 @@ internal sealed unsafe partial class WaylandPlatformBackend
             nint toplevel)
         {
             EnteredOutputs = [];
+            FractionalScaleProxy = 0;
+            HasPreferredScale = false;
             InitialLogicalClientSize = initialLogicalClientSize;
             IsConfigured = false;
             IsFullscreen = false;
@@ -94,16 +96,25 @@ internal sealed unsafe partial class WaylandPlatformBackend
             PendingConfiguredWidth = 0;
             PendingFullscreen = false;
             PointerPosition = default;
+            PreferredScale120 = 120;
             RequestedMode = requestedMode;
+            BufferScale = 1;
             Surface = surface;
             XdgSurface = xdgSurface;
             Toplevel = toplevel;
             TextInputChangeCause = 1;
             TextInputSession = null;
+            ViewportProxy = 0;
             Window = window;
         }
 
+        internal int BufferScale { get; set; }
+
         internal HashSet<nint> EnteredOutputs { get; }
+
+        internal nint FractionalScaleProxy { get; set; }
+
+        internal bool HasPreferredScale { get; set; }
 
         internal Vector2 InitialLogicalClientSize { get; }
 
@@ -125,6 +136,8 @@ internal sealed unsafe partial class WaylandPlatformBackend
 
         internal Vector2 PointerPosition { get; set; }
 
+        internal uint PreferredScale120 { get; set; }
+
         internal WindowMode RequestedMode { get; set; }
 
         internal nint Surface { get; }
@@ -134,6 +147,8 @@ internal sealed unsafe partial class WaylandPlatformBackend
         internal nint Toplevel { get; }
 
         internal uint TextInputChangeCause { get; set; }
+
+        internal nint ViewportProxy { get; set; }
 
         internal WindowHandle Window { get; }
 

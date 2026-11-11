@@ -54,15 +54,21 @@ internal sealed class WaylandDisplayConnectionTests
         Assert.That(connection.HasGlobal("wl_compositor"), Is.True);
         Assert.That(connection.HasGlobal("xdg_wm_base"), Is.True);
         Assert.That(connection.GetGlobals("wl_output"), Is.Not.Empty);
+        var fractionalScaleV1 = connection.GetGlobals("wp_fractional_scale_manager_v1");
+        var viewporter = connection.GetGlobals("wp_viewporter");
         var textInputV3 = connection.GetGlobals("zwp_text_input_manager_v3");
         var inputMethodV2 = connection.GetGlobals("zwp_input_method_manager_v2");
         var virtualKeyboardV1 = connection.GetGlobals("zwp_virtual_keyboard_manager_v1");
         TestContext.Progress.WriteLine(
-            $"Wayland text/input-method globals: text-input-v3={textInputV3.Length}, "
+            $"Wayland optional globals: fractional-scale-v1={fractionalScaleV1.Length}, "
+            + $"viewporter={viewporter.Length}, "
+            + $"text-input-v3={textInputV3.Length}, "
             + $"input-method-v2={inputMethodV2.Length}, virtual-keyboard-v1={virtualKeyboardV1.Length}.");
 
         if (Environment.GetEnvironmentVariable("TERRAFX_TEST_ISOLATED_WAYLAND_WSI") == "1")
         {
+            Assert.That(fractionalScaleV1, Is.Not.Empty);
+            Assert.That(viewporter, Is.Not.Empty);
             Assert.That(textInputV3, Is.Not.Empty);
             Assert.That(inputMethodV2, Is.Not.Empty);
             Assert.That(virtualKeyboardV1, Is.Not.Empty);

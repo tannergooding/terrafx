@@ -25,6 +25,10 @@ internal sealed unsafe class WaylandProtocolMetadata : IDisposable
     private nint _wlPointerInterface;
     private nint _wlSeatInterface;
     private nint _wlSurfaceInterface;
+    private nint _wpFractionalScaleManagerV1Interface;
+    private nint _wpFractionalScaleV1Interface;
+    private nint _wpViewportInterface;
+    private nint _wpViewporterInterface;
     private nint _xdgPopupInterface;
     private nint _xdgPositionerInterface;
     private nint _xdgSurfaceInterface;
@@ -56,6 +60,14 @@ internal sealed unsafe class WaylandProtocolMetadata : IDisposable
     internal nint WlSeatInterface => _wlSeatInterface;
 
     internal nint WlSurfaceInterface => _wlSurfaceInterface;
+
+    internal nint WpFractionalScaleManagerV1Interface => _wpFractionalScaleManagerV1Interface;
+
+    internal nint WpFractionalScaleV1Interface => _wpFractionalScaleV1Interface;
+
+    internal nint WpViewportInterface => _wpViewportInterface;
+
+    internal nint WpViewporterInterface => _wpViewporterInterface;
 
     internal nint XdgSurfaceInterface => _xdgSurfaceInterface;
 
@@ -197,6 +209,10 @@ internal sealed unsafe class WaylandProtocolMetadata : IDisposable
         _wlSurfaceInterface = connection.GetInterface("wl_surface_interface");
         _zwpTextInputV3Interface = AllocateInterface("zwp_text_input_v3", version: 1);
         _zwpTextInputManagerV3Interface = AllocateInterface("zwp_text_input_manager_v3", version: 1);
+        _wpFractionalScaleV1Interface = AllocateInterface("wp_fractional_scale_v1", version: 1);
+        _wpFractionalScaleManagerV1Interface = AllocateInterface("wp_fractional_scale_manager_v1", version: 1);
+        _wpViewportInterface = AllocateInterface("wp_viewport", version: 1);
+        _wpViewporterInterface = AllocateInterface("wp_viewporter", version: 1);
         _xdgPositionerInterface = AllocateInterface("xdg_positioner", version: 1);
         _xdgPopupInterface = AllocateInterface("xdg_popup", version: 1);
         _xdgSurfaceInterface = AllocateInterface("xdg_surface", version: 1);
@@ -228,6 +244,32 @@ internal sealed unsafe class WaylandProtocolMetadata : IDisposable
             [
                 new("destroy", ""),
                 new("get_text_input", "no", [_zwpTextInputV3Interface, _wlSeatInterface]),
+            ],
+            []);
+        InitializeInterface(
+            _wpFractionalScaleV1Interface,
+            [new("destroy", "")],
+            [new("preferred_scale", "u")]);
+        InitializeInterface(
+            _wpFractionalScaleManagerV1Interface,
+            [
+                new("destroy", ""),
+                new("get_fractional_scale", "no", [_wpFractionalScaleV1Interface, _wlSurfaceInterface]),
+            ],
+            []);
+        InitializeInterface(
+            _wpViewportInterface,
+            [
+                new("destroy", ""),
+                new("set_source", "ffff"),
+                new("set_destination", "ii"),
+            ],
+            []);
+        InitializeInterface(
+            _wpViewporterInterface,
+            [
+                new("destroy", ""),
+                new("get_viewport", "no", [_wpViewportInterface, _wlSurfaceInterface]),
             ],
             []);
         InitializeInterface(

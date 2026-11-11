@@ -255,6 +255,14 @@ internal sealed unsafe partial class WaylandPlatformBackend
         if (_outputsByProxy.TryGetValue(nativeOutput, out var output) && (output.Scale != scale))
         {
             output.Scale = scale;
+
+            foreach (var window in _windowsByHandle.Values)
+            {
+                if (window.EnteredOutputs.Contains(nativeOutput))
+                {
+                    UpdateWindowBufferScale(window);
+                }
+            }
         }
     }
 
@@ -305,7 +313,10 @@ internal sealed unsafe partial class WaylandPlatformBackend
 
         foreach (var window in _windowsByHandle.Values)
         {
-            _ = window.EnteredOutputs.Remove(output.NativeProxy);
+            if (window.EnteredOutputs.Remove(output.NativeProxy))
+            {
+                UpdateWindowBufferScale(window);
+            }
 
             if (window.NativeOutput == output.NativeProxy)
             {

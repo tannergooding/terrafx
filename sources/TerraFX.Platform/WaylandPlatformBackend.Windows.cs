@@ -31,6 +31,28 @@ internal sealed unsafe partial class WaylandPlatformBackend
         "Usage",
         "CA1031:Do not catch general exception types",
         Justification = "Exceptions must not cross the Wayland unmanaged callback boundary.")]
+    private static void OnFractionalScalePreferredScale(nint data, nint fractionalScale, uint scale120)
+    {
+        if (GCHandle.FromIntPtr(data).Target is not WaylandPlatformBackend backend)
+        {
+            return;
+        }
+
+        try
+        {
+            backend.HandleFractionalScalePreferredScale(fractionalScale, scale120);
+        }
+        catch (Exception exception)
+        {
+            backend._callbackFailure ??= exception;
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "Exceptions must not cross the Wayland unmanaged callback boundary.")]
     private static void OnSurfaceEnter(nint data, nint surface, nint output)
     {
         if (GCHandle.FromIntPtr(data).Target is not WaylandPlatformBackend backend)
@@ -273,6 +295,49 @@ internal sealed unsafe partial class WaylandPlatformBackend
             _windowsByXdgSurface.Add(xdgSurface, state);
             _windowsByToplevel.Add(toplevel, state);
 
+            if ((_fractionalScaleManager != 0) && (_viewporter != 0))
+            {
+                var viewportArguments = stackalloc WaylandArgument[2];
+                viewportArguments[0] = default;
+                viewportArguments[1].Pointer = surface;
+                state.ViewportProxy = Connection.CreateProxy(
+                    _viewporter,
+                    opcode: 1,
+                    ProtocolMetadata.WpViewportInterface,
+                    version: 1,
+                    viewportArguments);
+
+                if (state.ViewportProxy == 0)
+                {
+                    throw new IOException("The Wayland viewporter could not create a viewport.");
+                }
+
+                var fractionalScaleArguments = stackalloc WaylandArgument[2];
+                fractionalScaleArguments[0] = default;
+                fractionalScaleArguments[1].Pointer = surface;
+                state.FractionalScaleProxy = Connection.CreateProxy(
+                    _fractionalScaleManager,
+                    opcode: 1,
+                    ProtocolMetadata.WpFractionalScaleV1Interface,
+                    version: 1,
+                    fractionalScaleArguments);
+
+                if (state.FractionalScaleProxy == 0)
+                {
+                    throw new IOException("The Wayland fractional-scale manager could not create a surface scale.");
+                }
+
+                _windowsByFractionalScale.Add(state.FractionalScaleProxy, state);
+
+                if (Connection.AddListener(
+                        state.FractionalScaleProxy,
+                        _fractionalScaleListener,
+                        GCHandle.ToIntPtr(_callbackHandle)) < 0)
+                {
+                    throw new IOException("The Wayland fractional-scale listener could not be installed.");
+                }
+            }
+
             if (Connection.AddListener(surface, _surfaceListener, GCHandle.ToIntPtr(_callbackHandle)) < 0)
             {
                 throw new IOException("The Wayland wl_surface listener could not be installed.");
@@ -367,22 +432,24 @@ internal sealed unsafe partial class WaylandPlatformBackend
         EnsureActiveOwnerThread();
         var state = GetWindowState(window);
         var scale = GetContentScale(state);
-        var reportedScale = state.EnteredOutputs.Count != 0;
+        var reportedScale = state.HasPreferredScale
+            || ((state.FractionalScaleProxy == 0) && (state.EnteredOutputs.Count != 0));
         float? effectiveDpi = reportedScale ? (96.0f * scale) : null;
         var contentScale = new Vector2(scale, scale);
         var pixelSize = new PixelSize(
             GetPixelExtent(state.LogicalClientSize.X, scale, nameof(state.LogicalClientSize)),
             GetPixelExtent(state.LogicalClientSize.Y, scale, nameof(state.LogicalClientSize)));
-        var logicalSize = new Vector2(
-            pixelSize.Width / scale,
-            pixelSize.Height / scale);
 
         return new PlatformNativeWindowMetrics(
-            logicalSize,
+            state.LogicalClientSize,
             pixelSize,
             contentScale,
             effectiveDpi,
-            reportedScale ? DpiSource.WaylandIntegerBufferScale : DpiSource.Unknown,
+            state.HasPreferredScale
+                ? DpiSource.WaylandFractionalScale
+                : reportedScale
+                    ? DpiSource.WaylandIntegerBufferScale
+                    : DpiSource.Unknown,
             reportedScale ? DpiConfidence.Reported : DpiConfidence.Assumed96Dpi);
     }
 
@@ -479,9 +546,12 @@ internal sealed unsafe partial class WaylandPlatformBackend
         _ = _windowsBySurface.Remove(state.Surface);
         _ = _windowsByXdgSurface.Remove(state.XdgSurface);
         _ = _windowsByToplevel.Remove(state.Toplevel);
+        _ = _windowsByFractionalScale.Remove(state.FractionalScaleProxy);
         state.EnteredOutputs.Clear();
         var failures = new List<Exception>();
 
+        RetireWindowProxy(state.FractionalScaleProxy, sendDestroyRequests, failures);
+        RetireWindowProxy(state.ViewportProxy, sendDestroyRequests, failures);
         RetireWindowProxy(state.Toplevel, sendDestroyRequests, failures);
         RetireWindowProxy(state.XdgSurface, sendDestroyRequests, failures);
         RetireWindowProxy(state.Surface, sendDestroyRequests, failures);
@@ -493,6 +563,18 @@ internal sealed unsafe partial class WaylandPlatformBackend
     }
 
     private float GetContentScale(WaylandWindowState window)
+    {
+        if (window.HasPreferredScale)
+        {
+            return window.PreferredScale120 / 120.0f;
+        }
+
+        return (window.FractionalScaleProxy != 0)
+            ? 1.0f
+            : GetIntegerBufferScale(window);
+    }
+
+    private int GetIntegerBufferScale(WaylandWindowState window)
     {
         var scale = 1;
 
@@ -518,6 +600,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
             && _outputsByProxy.ContainsKey(output))
         {
             _ = window.EnteredOutputs.Add(output);
+            UpdateWindowBufferScale(window);
         }
     }
 
@@ -525,7 +608,24 @@ internal sealed unsafe partial class WaylandPlatformBackend
     {
         if (_windowsBySurface.TryGetValue(surface, out var window))
         {
-            _ = window.EnteredOutputs.Remove(output);
+            if (window.EnteredOutputs.Remove(output))
+            {
+                UpdateWindowBufferScale(window);
+            }
+        }
+    }
+
+    private void HandleFractionalScalePreferredScale(nint fractionalScale, uint scale120)
+    {
+        if (scale120 == 0)
+        {
+            throw new InvalidOperationException("The Wayland compositor advertised an invalid fractional surface scale.");
+        }
+
+        if (_windowsByFractionalScale.TryGetValue(fractionalScale, out var window))
+        {
+            window.PreferredScale120 = scale120;
+            window.HasPreferredScale = true;
         }
     }
 
@@ -598,6 +698,7 @@ internal sealed unsafe partial class WaylandPlatformBackend
         window.LogicalClientSize = new Vector2(clientWidth, clientHeight);
         window.IsFullscreen = window.PendingFullscreen;
         window.ObservedMode = window.IsFullscreen ? WindowMode.BorderlessFullscreen : WindowMode.Windowed;
+        SetViewportDestination(window);
         window.IsConfigured = true;
     }
 
@@ -613,8 +714,30 @@ internal sealed unsafe partial class WaylandPlatformBackend
         Connection.SendRequest(xdgWmBase, opcode: 3, arguments);
     }
 
+    private void InitializeFractionalScale()
+    {
+        var fractionalScaleGlobals = Connection.GetGlobals("wp_fractional_scale_manager_v1");
+        var viewporterGlobals = Connection.GetGlobals("wp_viewporter");
+
+        if (fractionalScaleGlobals.IsEmpty || viewporterGlobals.IsEmpty)
+        {
+            return;
+        }
+
+        _fractionalScaleManager = Connection.BindGlobal(
+            fractionalScaleGlobals[0],
+            ProtocolMetadata.WpFractionalScaleManagerV1Interface,
+            version: 1);
+        _viewporter = Connection.BindGlobal(
+            viewporterGlobals[0],
+            ProtocolMetadata.WpViewporterInterface,
+            version: 1);
+    }
+
     private void InitializeWindowListeners()
     {
+        _fractionalScaleListener = AllocateListenerTable(
+            (nint)(delegate* unmanaged[Cdecl]<nint, nint, uint, void>)&OnFractionalScalePreferredScale);
         _surfaceListener = AllocateListenerTable(
             (nint)(delegate* unmanaged[Cdecl]<nint, nint, nint, void>)&OnSurfaceEnter,
             (nint)(delegate* unmanaged[Cdecl]<nint, nint, nint, void>)&OnSurfaceLeave);
@@ -623,6 +746,14 @@ internal sealed unsafe partial class WaylandPlatformBackend
         _xdgToplevelListener = AllocateListenerTable(
             (nint)(delegate* unmanaged[Cdecl]<nint, nint, int, int, nint, void>)&OnToplevelConfigure,
             (nint)(delegate* unmanaged[Cdecl]<nint, nint, void>)&OnToplevelClose);
+    }
+
+    private void RetireFractionalScaleManagers(List<Exception> failures)
+    {
+        RetireWindowProxy(_fractionalScaleManager, sendDestroyRequest: true, failures);
+        _fractionalScaleManager = 0;
+        RetireWindowProxy(_viewporter, sendDestroyRequest: true, failures);
+        _viewporter = 0;
     }
 
     [SuppressMessage(
@@ -702,5 +833,44 @@ internal sealed unsafe partial class WaylandPlatformBackend
         {
             Marshal.FreeCoTaskMem(titleUtf8);
         }
+    }
+
+    private void SetViewportDestination(WaylandWindowState window)
+    {
+        if (window.ViewportProxy == 0)
+        {
+            return;
+        }
+
+        var arguments = stackalloc WaylandArgument[2];
+        arguments[0].FileDescriptor = GetPixelExtent(
+            window.LogicalClientSize.X,
+            scale: 1.0f,
+            nameof(window.LogicalClientSize));
+        arguments[1].FileDescriptor = GetPixelExtent(
+            window.LogicalClientSize.Y,
+            scale: 1.0f,
+            nameof(window.LogicalClientSize));
+        Connection.SendRequest(window.ViewportProxy, opcode: 2, arguments);
+    }
+
+    private void UpdateWindowBufferScale(WaylandWindowState window)
+    {
+        if (window.FractionalScaleProxy != 0)
+        {
+            return;
+        }
+
+        var scale = GetIntegerBufferScale(window);
+
+        if ((scale == window.BufferScale) || (Connection.GetProxyVersion(window.Surface) < 3))
+        {
+            return;
+        }
+
+        var arguments = stackalloc WaylandArgument[1];
+        arguments[0].FileDescriptor = scale;
+        Connection.SendRequest(window.Surface, opcode: 8, arguments);
+        window.BufferScale = scale;
     }
 }

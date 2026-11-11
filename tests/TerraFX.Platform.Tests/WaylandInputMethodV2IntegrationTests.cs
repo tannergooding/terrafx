@@ -404,6 +404,46 @@ internal sealed unsafe partial class WaylandInputMethodV2IntegrationTests
         throw new TimeoutException(failureMessage);
     }
 
+    private static void SetSwayOutputScale()
+    {
+        var startInfo = new ProcessStartInfo("swaymsg") {
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add("output");
+        startInfo.ArgumentList.Add("*");
+        startInfo.ArgumentList.Add("scale");
+        startInfo.ArgumentList.Add("1.25");
+
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("The private Sway scale command could not start.");
+
+        if (!process.WaitForExit(milliseconds: 5_000))
+        {
+            process.Kill(entireProcessTree: true);
+            throw new TimeoutException("The private Sway scale command did not complete.");
+        }
+
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        using var response = JsonDocument.Parse(output);
+        var commands = response.RootElement;
+        var succeeded = (process.ExitCode == 0)
+            && (commands.ValueKind == JsonValueKind.Array)
+            && (commands.GetArrayLength() > 0);
+
+        for (var index = 0; succeeded && (index < commands.GetArrayLength()); index++)
+        {
+            succeeded = commands[index].GetProperty("success").GetBoolean();
+        }
+
+        if (!succeeded)
+        {
+            throw new InvalidOperationException($"The private Sway fractional-scale request failed: {output} {error}");
+        }
+    }
+
     private static bool TryFindTextChange(
         List<PlatformTextInputSample> samples,
         TextInputChangeKind kind,
@@ -428,6 +468,102 @@ internal sealed unsafe partial class WaylandInputMethodV2IntegrationTests
         sampleResult = default;
         change = default;
         return false;
+    }
+
+    [Test]
+    public void ReportsFractionalScaleAndViewportMetricsOnPrivateSway()
+    {
+        if (!OperatingSystem.IsLinux()
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_ISOLATED_WAYLAND_WSI") != "1")
+            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SWAYSOCK")))
+        {
+            Assert.Ignore("The fractional-scale witness requires the private Sway test environment.");
+            return;
+        }
+
+        SetSwayOutputScale();
+        var backendOwner = PlatformBackendFactory.Create(
+            PlatformBackend.WaylandOnly,
+            ownerId: 1,
+            ClipboardServicePolicy.NotRequested);
+        nint sharedMemoryListener = 0;
+        nint sharedBufferListener = 0;
+
+        try
+        {
+            using (backendOwner)
+            {
+                if (backendOwner is not WaylandPlatformBackend backend)
+                {
+                    Assert.Fail("The Wayland backend factory returned a different backend.");
+                    return;
+                }
+
+                Assert.That(backend.Connection.GetGlobals("wp_fractional_scale_manager_v1"), Is.Not.Empty);
+                Assert.That(backend.Connection.GetGlobals("wp_viewporter"), Is.Not.Empty);
+                var window = new WindowHandle(ownerId: 1, index: 0, generation: 1);
+                var windowCreated = false;
+
+                try
+                {
+                    backend.CreateWindow(
+                        window,
+                        new WindowOptions("TerraFX Wayland fractional-scale probe") {
+                            ClientSize = new Vector2(640.0f, 360.0f),
+                            MinimumClientSize = new Vector2(320.0f, 180.0f),
+                            Resizable = false,
+                            Visible = true,
+                        },
+                        nativeMonitorHandle: 0);
+                    windowCreated = true;
+
+                    if (!backend.TryGetNativeWindowBinding(window, out var binding))
+                    {
+                        throw new InvalidOperationException("The private Wayland backend omitted its test window binding.");
+                    }
+
+                    AttachSharedBuffer(
+                        backend.Connection,
+                        binding.NativeWindowOrSurface,
+                        ref sharedMemoryListener,
+                        ref sharedBufferListener);
+
+                    var inputSamples = new List<PlatformInputSample>();
+                    var textSamples = new List<PlatformTextInputSample>();
+                    PumpUntil(
+                        backend,
+                        inputSamples,
+                        textSamples,
+                        () => backend.GetNativeWindowMetrics(window).DpiSource is DpiSource.WaylandFractionalScale,
+                        "The private Sway preferred fractional scale did not reach the mapped window.");
+
+                    var metrics = backend.GetNativeWindowMetrics(window);
+                    Assert.That(metrics.ContentScale.X, Is.EqualTo(1.25f));
+                    Assert.That(metrics.ContentScale.Y, Is.EqualTo(1.25f));
+                    Assert.That(metrics.EffectiveDpi, Is.EqualTo(120.0f));
+                    Assert.That(metrics.DpiConfidence, Is.EqualTo(DpiConfidence.Reported));
+                    Assert.That(
+                        metrics.ClientPixelSize.Width,
+                        Is.EqualTo(checked((int)Math.Round(metrics.LogicalClientSize.X * 1.25f, MidpointRounding.ToEven))));
+                    Assert.That(
+                        metrics.ClientPixelSize.Height,
+                        Is.EqualTo(checked((int)Math.Round(metrics.LogicalClientSize.Y * 1.25f, MidpointRounding.ToEven))));
+                }
+                finally
+                {
+                    if (windowCreated)
+                    {
+                        backend.CloseWindow(window);
+                        backend.Pump();
+                    }
+                }
+            }
+        }
+        finally
+        {
+            FreeListener(sharedMemoryListener);
+            FreeListener(sharedBufferListener);
+        }
     }
 
     [Test]

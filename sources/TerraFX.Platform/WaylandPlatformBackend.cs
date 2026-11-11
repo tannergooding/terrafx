@@ -28,6 +28,8 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
     private readonly List<WindowHandle> _closeRequests;
     private nint _compositor;
     private WaylandDisplayConnection? _connection;
+    private nint _fractionalScaleListener;
+    private nint _fractionalScaleManager;
     private LinuxEvdevGamepadCapture? _gamepadCapture;
     private PlatformServiceStatus _gamepadStatus;
     private bool _hasPendingTextInputCommit;
@@ -84,6 +86,8 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
     private bool _textInputStateRequiresResync;
     private WaylandTextInputSurroundingText? _textInputSurroundingText;
     private readonly TimeProvider _timeProvider;
+    private nint _viewporter;
+    private readonly Dictionary<nint, WaylandWindowState> _windowsByFractionalScale;
     private readonly Dictionary<WindowHandle, WaylandWindowState> _windowsByHandle;
     private readonly Dictionary<nint, WaylandWindowState> _windowsBySurface;
     private readonly Dictionary<nint, WaylandWindowState> _windowsByToplevel;
@@ -106,6 +110,7 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
             ? ClipboardServiceStatus.NotRequested
             : ClipboardServiceStatus.Unsupported;
         _closeRequests = [];
+        _windowsByFractionalScale = [];
         _gamepadStatus = PlatformServiceStatus.Unsupported;
         _inputSamples = new PlatformInputSampleQueue(_ownerThreadId);
         _keyboardKeysDown = [];
@@ -302,6 +307,7 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
         RetireSeat(failures, notifyFocus: false);
         RetireTextInputManager(failures);
         RetireClipboardManager(failures);
+        RetireFractionalScaleManagers(failures);
 
         if ((_xdgWmBase != 0) && (_connection is WaylandDisplayConnection connection))
         {
@@ -407,6 +413,7 @@ internal sealed unsafe partial class WaylandPlatformBackend : IPlatformBackend
         var protocolMetadata = WaylandProtocolMetadata.Create(connection);
         _protocolMetadata = protocolMetadata;
         _compositor = connection.BindGlobal("wl_compositor", maximumVersion: 4);
+        InitializeFractionalScale();
         var xdgWmBaseGlobal = connection.GetGlobals("xdg_wm_base")[0];
         _xdgWmBase = connection.BindGlobal(xdgWmBaseGlobal, protocolMetadata.XdgWmBaseInterface, XdgWmBaseVersion);
         _callbackHandle = GCHandle.Alloc(this);

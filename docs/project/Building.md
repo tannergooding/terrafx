@@ -309,6 +309,15 @@ Run the input-method-v2 integration selection only in the isolated Sway shell wi
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release --filter "FullyQualifiedName~WaylandInputMethodV2IntegrationTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
+WSLg advertises `wp_viewporter` but not `wp_fractional_scale_manager_v1`; the Platform backend uses integer `wl_output` buffer scaling unless both fractional-scale and viewporter globals are present. Private headless Sway advertises both. Its integration test sets the test-owned output to 1.25, maps a `wl_shm` buffer, and verifies the reported `ContentScale`, effective DPI, and rounded pixel extent through the fractional-scale/viewport path in Debug/Release. It never uses WSLg's display.
+
+Run the fractional-scale witness only in the isolated Sway shell with `TERRAFX_TEST_ISOLATED_WAYLAND_WSI=1` and `SWAYSOCK` set:
+
+```bash
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Debug --filter "FullyQualifiedName=TerraFX.Platform.Tests.WaylandInputMethodV2IntegrationTests.ReportsFractionalScaleAndViewportMetricsOnPrivateSway" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release --filter "FullyQualifiedName=TerraFX.Platform.Tests.WaylandInputMethodV2IntegrationTests.ReportsFractionalScaleAndViewportMetricsOnPrivateSway" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
 The XKB key-name table is hardware-independent and can be tested without an X server:
 
 ```powershell
