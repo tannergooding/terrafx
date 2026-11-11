@@ -185,6 +185,14 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 
 The Windows D3D12 tests exercise sampled D32 upload/readback, mip-1 3D RGBA8 and padded array transfers, two half-ring uploads/readbacks at nonzero staging offsets, the 64-MiB boundary, and dedicated oversize transfers. `GraphicsStagingRingAllocatorTests` uses controlled fence values to verify aligned reservations, cancellation, wrap without overlap while other ranges remain live, and retirement only after completion. Native D3D12/Vulkan transfers exercise nonzero offsets and release ranges against actual backend completion fences. The test-only 1-MiB reported-budget override forces the dedicated transfer path with simulated values; it does not qualify real low DXGI pressure. The delayed-fence witness covers admitted-upload retention, while injected `WAIT_TIMEOUT` after native completion validates quarantine mapping only. Descriptor/PSO tests verify resource-bearing writes and owner retention, not graph execution. Run the documented filters and use current-run TRX for adapter identity/counts; those are not permanent roadmap facts.
 
+An opt-in Windows probe checks the actual DXGI upload-heap availability, creates at most 512 MiB of real upload allocations, and attempts the normal upload path only if DXGI reports less than the 64-MiB ring request. It releases all resources afterward; if the bounded probe cannot lower the real budget enough, the test is reported skipped and does not qualify EN154. Run only on a host with sufficient memory headroom:
+
+```powershell
+$env:TERRAFX_RUN_D3D12_BUDGET_PRESSURE = '1'
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.EngineHostOptionsTests.ObservesActualDxgiBudgetPressureAndUsesDedicatedUploadStaging"
+Remove-Item Env:\TERRAFX_RUN_D3D12_BUDGET_PRESSURE
+```
+
 The descriptor witness fills the 256-slot sampler heap and 1024-entry resource heap with live native sets. It verifies refusal at both boundaries, resource-range rollback when sampler allocation fails, and range reuse after a descriptor set retires. This verifies native descriptor-capacity refusal and recovery, not GPU-completion retirement.
 
 The same native witness intentionally changes the typed sampled-image register from `t0` to `t1` while keeping the compiled DXIL unchanged; D3D12 rejects the mismatched pipeline state. This validates resource-register compatibility for the selected fixture, not complete reflection equivalence.

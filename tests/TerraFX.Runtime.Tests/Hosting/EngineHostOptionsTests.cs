@@ -2205,6 +2205,159 @@ internal sealed partial class EngineHostOptionsTests
     }
 
     [Test]
+    [System.Runtime.Versioning.SupportedOSPlatform("windows10.0.22000.0")]
+    public void ObservesActualDxgiBudgetPressureAndUsesDedicatedUploadStaging()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            Assert.Ignore("The D3D12 backend targets Windows 11.");
+            return;
+        }
+
+        if (!StringComparer.Ordinal.Equals(Environment.GetEnvironmentVariable("TERRAFX_RUN_D3D12_BUDGET_PRESSURE"), "1"))
+        {
+            Assert.Ignore("Set TERRAFX_RUN_D3D12_BUDGET_PRESSURE=1 to run the bounded native budget-pressure witness.");
+            return;
+        }
+
+        const long stagingRingCapacityBytes = 64L * 1024 * 1024;
+        const long maximumPressureAllocationBytes = 512L * 1024 * 1024;
+        const int pressureAllocationCount = checked((int)(maximumPressureAllocationBytes / stagingRingCapacityBytes));
+        var registration = D3D12GraphicsBackend.CreateRegistration();
+        var options = new EngineHostOptions(
+            HostProfile.OffscreenNative,
+            PlatformBackend.Headless,
+            GraphicsBackend.D3D12,
+            registration,
+            CreateAssetStoreOptions()) {
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
+        var platformOwner = PlatformHostOwner.Create(options);
+        D3D12GraphicsBackend.D3D12BackendFactory.D3D12BackendDevice? device = null;
+        IGraphicsBackendBuffer? destination = null;
+        var pressureBuffers = new List<IGraphicsBackendBuffer>(pressureAllocationCount);
+
+        try
+        {
+            try
+            {
+                device = (D3D12GraphicsBackend.D3D12BackendFactory.D3D12BackendDevice)
+                    new D3D12GraphicsBackend.D3D12BackendFactory().Create(
+                        platformOwner.OwnerId,
+                        GraphicsDeviceProfile.OffscreenNative,
+                        GraphicsPlatformKind.None,
+                        frameSlotCount: 3,
+                        CancellationToken.None);
+            }
+            catch (DllNotFoundException exception)
+            {
+                Assert.Ignore($"A required D3D12 system library is unavailable: {exception.Message}");
+                return;
+            }
+            catch (EntryPointNotFoundException exception)
+            {
+                Assert.Ignore($"A required D3D12 system entry point is unavailable: {exception.Message}");
+                return;
+            }
+            catch (NotSupportedException exception)
+            {
+                Assert.Ignore($"No available D3D12 device satisfies OffscreenNative: {exception.Message}");
+                return;
+            }
+
+            var backend = device
+                ?? throw new InvalidOperationException("D3D12 backend startup returned no device.");
+            var initialAvailableBytes = backend.AvailableUploadBudgetBytes;
+
+            if (initialAvailableBytes is not long initialAvailable)
+            {
+                Assert.Ignore("The selected D3D12 adapter does not report an upload-heap budget.");
+                return;
+            }
+
+            destination = backend.CreateBuffer(
+                new BufferDescription(
+                    4,
+                    BufferUsage.CopySource | BufferUsage.CopyDestination,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: null,
+                    debugName: "D3D12 actual-budget staging destination"));
+
+            var availableBytes = initialAvailable;
+            long pressureAllocatedBytes = 0;
+
+            while ((availableBytes >= stagingRingCapacityBytes)
+                && (pressureAllocatedBytes < maximumPressureAllocationBytes))
+            {
+                pressureBuffers.Add(backend.CreateBuffer(
+                    new BufferDescription(
+                        stagingRingCapacityBytes,
+                        BufferUsage.CopySource,
+                        GpuMemoryKind.Upload,
+                        structuredStride: null,
+                        debugName: "D3D12 actual-budget pressure allocation")));
+                pressureAllocatedBytes = checked(pressureAllocatedBytes + stagingRingCapacityBytes);
+                Thread.Sleep(TimeSpan.FromMilliseconds(100));
+                availableBytes = backend.AvailableUploadBudgetBytes
+                    ?? throw new InvalidOperationException("The selected D3D12 adapter stopped reporting its upload-heap budget.");
+            }
+
+            TestContext.WriteLine(
+                $"Adapter={backend.Capabilities.AdapterName}; Driver={backend.Capabilities.DriverVersion}; "
+                + $"InitialUploadAvailableBytes={initialAvailable}; PressureAllocatedBytes={pressureAllocatedBytes}; "
+                + $"FinalUploadAvailableBytes={availableBytes}; StagingRingBytes={stagingRingCapacityBytes}; "
+                + $"PressureCapBytes={maximumPressureAllocationBytes}");
+
+            if (availableBytes >= stagingRingCapacityBytes)
+            {
+                Assert.Ignore(
+                    $"The selected adapter still reports {availableBytes} bytes available after the bounded "
+                    + $"{pressureAllocatedBytes}-byte allocation probe; no real low-budget staging observation occurred.");
+                return;
+            }
+
+            Assert.That(backend.HasUploadStagingRing, Is.False);
+
+            try
+            {
+                var completedFence = backend.UploadBuffer(
+                    destination,
+                    GraphResourceState.General,
+                    destinationOffset: 0,
+                    source: [0x42, 0x17, 0x9C, 0xA5]);
+                Assert.That(completedFence, Is.GreaterThan(0));
+                Assert.That(backend.HasUploadStagingRing, Is.False);
+                TestContext.WriteLine("The real low DXGI upload-heap budget selected dedicated staging successfully.");
+            }
+            catch (OutOfMemoryException exception) when (
+                exception.Message.Contains("staging budget", StringComparison.Ordinal))
+            {
+                Assert.That(backend.HasUploadStagingRing, Is.False);
+                TestContext.WriteLine(
+                    $"The real low DXGI upload-heap budget rejected even the dedicated staging allocation: {exception.Message}");
+            }
+        }
+        finally
+        {
+            destination?.Dispose();
+
+            for (var index = pressureBuffers.Count - 1; index >= 0; index--)
+            {
+                pressureBuffers[index].Dispose();
+            }
+
+            try
+            {
+                device?.Dispose();
+            }
+            finally
+            {
+                platformOwner.DisposeFromOwner();
+            }
+        }
+    }
+
+    [Test]
     public async Task RecoversInteractiveGraphicsAndPublishesNewSurfaceEpoch()
     {
         if (!OperatingSystem.IsWindows())

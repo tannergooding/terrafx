@@ -878,8 +878,20 @@ public static unsafe class D3D12GraphicsBackend
 
             public GraphicsCapabilities Capabilities { get; }
 
+            internal long? AvailableUploadBudgetBytes
+            {
+                get
+                {
+                    EnsureOwnerThread();
+                    return GetAvailableBudgetBytes(GpuMemoryKind.Upload);
+                }
+            }
+
             internal bool HasUncertainTransferSubmission
                 => _transferQueue?.HasUncertainSubmission == true;
+
+            internal bool HasUploadStagingRing
+                => _uploadStagingResource is not null;
 
             bool IGraphicsBackendDevice.HasUncertainSubmission
                 => _transferQueue?.HasUncertainSubmission == true;
