@@ -21,6 +21,8 @@ internal static class M04ShaderFixtureCompiler
     private const string ShaderEntryPointComputeStorageRgba16Image = "CSStorageRgba16ImageMain";
     private const string ShaderEntryPointComputeStorageSignedImage = "CSStorageSignedImageMain";
     private const string ShaderEntryPointComputeStorageWrite = "CSStorageWriteMain";
+    private const string ShaderEntryPointDepthPixel = "PSDepthMain";
+    private const string ShaderEntryPointDepthVertex = "VSDepthMain";
     private const string ShaderEntryPointGraphPixel = "PSGraphMain";
     private const string ShaderEntryPointPixel = "PSMain";
     private const string ShaderEntryPointPixelFrameLayout = "PSFrameLayoutMain";
@@ -44,8 +46,10 @@ internal static class M04ShaderFixtureCompiler
         "compute-storage-signed-image",
         "compute-storage-write",
         "vertex",
+        "vertex-depth",
         "vertex-sprite",
         "pixel",
+        "pixel-depth",
         "pixel-frame-layout",
         "pixel-graph",
         "pixel-multiple-frame-uniforms",
@@ -223,9 +227,31 @@ internal static class M04ShaderFixtureCompiler
                 spirvValidationExecutable,
                 shaderPath,
                 stagingDirectory,
+                ShaderEntryPointDepthVertex,
+                "vs_6_0",
+                "vertex-depth",
+                cancellationToken).ConfigureAwait(false);
+            await CompileStageAsync(
+                manifest,
+                dxcExecutable,
+                spirvCrossExecutable,
+                spirvValidationExecutable,
+                shaderPath,
+                stagingDirectory,
                 ShaderEntryPointGraphPixel,
                 "ps_6_0",
                 "pixel-graph",
+                cancellationToken).ConfigureAwait(false);
+            await CompileStageAsync(
+                manifest,
+                dxcExecutable,
+                spirvCrossExecutable,
+                spirvValidationExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointDepthPixel,
+                "ps_6_0",
+                "pixel-depth",
                 cancellationToken).ConfigureAwait(false);
             await CompileStageAsync(
                 manifest,
@@ -479,9 +505,27 @@ internal static class M04ShaderFixtureCompiler
                 dxcExecutable,
                 shaderPath,
                 stagingDirectory,
+                ShaderEntryPointDepthVertex,
+                "vs_6_0",
+                "vertex-depth",
+                cancellationToken).ConfigureAwait(false);
+            await CompileDxilStageAsync(
+                manifest,
+                dxcExecutable,
+                shaderPath,
+                stagingDirectory,
                 ShaderEntryPointGraphPixel,
                 "ps_6_0",
                 "pixel-graph",
+                cancellationToken).ConfigureAwait(false);
+            await CompileDxilStageAsync(
+                manifest,
+                dxcExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointDepthPixel,
+                "ps_6_0",
+                "pixel-depth",
                 cancellationToken).ConfigureAwait(false);
             await CompileDxilStageAsync(
                 manifest,
@@ -584,6 +628,7 @@ internal static class M04ShaderFixtureCompiler
 
         var entryPoint = stageName switch {
             "vertex" => ShaderEntryPointVertex,
+            "vertex-depth" => ShaderEntryPointDepthVertex,
             "vertex-sprite" => ShaderEntryPointSpriteVertex,
             "compute-storage" => ShaderEntryPointComputeStorage,
             "compute-storage-buffers" => ShaderEntryPointComputeStorageBuffers,
@@ -594,6 +639,7 @@ internal static class M04ShaderFixtureCompiler
             "compute-storage-signed-image" => ShaderEntryPointComputeStorageSignedImage,
             "compute-storage-write" => ShaderEntryPointComputeStorageWrite,
             "pixel" => ShaderEntryPointPixel,
+            "pixel-depth" => ShaderEntryPointDepthPixel,
             "pixel-frame-layout" => ShaderEntryPointPixelFrameLayout,
             "pixel-graph" => ShaderEntryPointGraphPixel,
             "pixel-multiple-frame-uniforms" => ShaderEntryPointPixelMultipleFrame,
@@ -963,8 +1009,8 @@ internal static class M04ShaderFixtureCompiler
         }
 
         var expectedOutputSemantic = stageName switch {
-            "vertex" or "vertex-sprite" => "SV_Position",
-            "pixel" or "pixel-frame-layout" or "pixel-graph" or "pixel-multiple-frame-uniforms" or "pixel-r32uint" or "pixel-sampled" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => "SV_Target",
+            "vertex" or "vertex-depth" or "vertex-sprite" => "SV_Position",
+            "pixel" or "pixel-depth" or "pixel-frame-layout" or "pixel-graph" or "pixel-multiple-frame-uniforms" or "pixel-r32uint" or "pixel-sampled" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => "SV_Target",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
         };
 
@@ -1215,8 +1261,8 @@ internal static class M04ShaderFixtureCompiler
         var mode = modeElement.GetString();
         var expectedMode = stageName switch {
             "compute-storage" or "compute-storage-buffers" or "compute-storage-3d-image" or "compute-storage-float-image" or "compute-storage-images" or "compute-storage-rgba16-image" or "compute-storage-signed-image" or "compute-storage-write" => mode is "comp" or "compute",
-            "vertex" or "vertex-sprite" => mode is "vert" or "vertex",
-            "pixel" or "pixel-frame-layout" or "pixel-graph" or "pixel-multiple-frame-uniforms" or "pixel-r32uint" or "pixel-sampled" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => mode is "frag" or "fragment",
+            "vertex" or "vertex-depth" or "vertex-sprite" => mode is "vert" or "vertex",
+            "pixel" or "pixel-depth" or "pixel-frame-layout" or "pixel-graph" or "pixel-multiple-frame-uniforms" or "pixel-r32uint" or "pixel-sampled" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => mode is "frag" or "fragment",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
         };
 

@@ -2167,9 +2167,12 @@ internal sealed partial class EngineHostOptionsTests
             if (!string.IsNullOrWhiteSpace(shaderFixtureDirectory))
             {
                 var shaderExtension = backend == GraphicsBackend.D3D12 ? "dxil" : "spv";
+                var vertexStage = useDepthAttachment ? "vertex-depth" : "vertex";
                 var pixelStage = (targetColorFormat == TextureFormat.R32UInt)
                     ? "pixel-r32uint"
-                    : useFrameLayoutUniformBuffer
+                    : useDepthAttachment
+                        ? "pixel-depth"
+                        : useFrameLayoutUniformBuffer
                         ? "pixel-frame-layout"
                         : useStorageResources
                             ? "pixel-sampled-frame-storage"
@@ -2182,13 +2185,13 @@ internal sealed partial class EngineHostOptionsTests
                             : (useUniformBuffer ? "pixel" : "pixel-graph");
                 using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
                     shaderFixtureDirectory,
-                    $"M04OffscreenTriangle.vertex.{shaderExtension}"));
+                    $"M04OffscreenTriangle.{vertexStage}.{shaderExtension}"));
                 using var pixelBytecodeStorage = CreateBytecodeStorage(Path.Combine(
                     shaderFixtureDirectory,
                     $"M04OffscreenTriangle.{pixelStage}.{shaderExtension}"));
                 using var vertexBytecode = vertexBytecodeStorage.AcquireReadLease(0, vertexBytecodeStorage.Length);
                 using var pixelBytecode = pixelBytecodeStorage.AcquireReadLease(0, pixelBytecodeStorage.Length);
-                var vertexReflection = M04ShaderFixtureCompiler.ReadTypedReflection(shaderFixtureDirectory, "vertex");
+                var vertexReflection = M04ShaderFixtureCompiler.ReadTypedReflection(shaderFixtureDirectory, vertexStage);
                 var pixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(shaderFixtureDirectory, pixelStage);
                 var binaryFormat = backend == GraphicsBackend.D3D12
                     ? ShaderBinaryFormat.Dxil
@@ -3135,11 +3138,11 @@ internal sealed partial class EngineHostOptionsTests
                         recorder.SetBindings(selectedBindings);
                     }
 
-                    recorder.Draw(new DrawArguments(3, 1, 0, 0));
+                    recorder.Draw(new DrawArguments(3, useDepthAttachment ? 2 : 1, 0, 0));
 
                     if (useStorageResources)
                     {
-                        recorder.Draw(new DrawArguments(3, 1, 0, 0));
+                        recorder.Draw(new DrawArguments(3, useDepthAttachment ? 2 : 1, 0, 0));
                     }
                 }
             }

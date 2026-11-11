@@ -15,6 +15,12 @@ struct SpriteVertexOutput
     float2 textureCoordinate : TEXCOORD0;
 };
 
+struct DepthVertexOutput
+{
+    float4 position : SV_Position;
+    float4 color : COLOR0;
+};
+
 [[vk::binding(0, 0)]]
 cbuffer FrameData : register(b0, space0)
 {
@@ -85,6 +91,23 @@ VertexOutput VSMain(uint vertexId : SV_VertexID)
     return output;
 }
 
+DepthVertexOutput VSDepthMain(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
+{
+    float2 positions[3] = {
+        float2(-0.75, -0.75),
+        float2(0.0, 0.75),
+        float2(0.75, -0.75),
+    };
+
+    bool isNear = instanceId == 0;
+    DepthVertexOutput output;
+    output.position = float4(positions[vertexId], isNear ? 0.75 : 0.25, 1.0);
+    output.color = isNear
+        ? float4(1.0, 0.0, 1.0, 1.0)
+        : float4(0.0, 1.0, 1.0, 1.0);
+    return output;
+}
+
 SpriteVertexOutput VSSpriteMain(SpriteVertexInput input)
 {
     SpriteVertexOutput output;
@@ -96,6 +119,11 @@ SpriteVertexOutput VSSpriteMain(SpriteVertexInput input)
 float4 PSMain(VertexOutput input) : SV_Target0
 {
     return color;
+}
+
+float4 PSDepthMain(DepthVertexOutput input) : SV_Target0
+{
+    return input.color;
 }
 
 float4 PSFrameLayoutMain(VertexOutput input) : SV_Target0
