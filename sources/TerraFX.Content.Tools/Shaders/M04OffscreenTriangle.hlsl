@@ -27,6 +27,14 @@ cbuffer FrameSecondData : register(b1, space0)
     float4 secondColor;
 };
 
+[[vk::binding(2, 0)]]
+cbuffer FrameLayoutData : register(b2, space0)
+{
+    row_major float4x4 transform;
+    float3 samples[2];
+    float4 tail;
+};
+
 [[vk::binding(16, 0)]]
 Texture2D<float4> FrameTexture : register(t0, space0);
 
@@ -88,6 +96,11 @@ SpriteVertexOutput VSSpriteMain(SpriteVertexInput input)
 float4 PSMain(VertexOutput input) : SV_Target0
 {
     return color;
+}
+
+float4 PSFrameLayoutMain(VertexOutput input) : SV_Target0
+{
+    return mul(transform, float4(samples[0] + samples[1], 1.0)) + tail;
 }
 
 float4 PSMultipleFrameMain(VertexOutput input) : SV_Target0

@@ -571,6 +571,23 @@ internal sealed partial class EngineHostOptionsTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsMatrixAndArrayFrameUniformBuffer(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: true,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useFrameLayoutUniformBuffer: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SubmitsMultipleComputeStorageBufferSubranges(GraphicsBackend backend)
         => RunOffscreenGraphAsync(
             backend,
@@ -1180,8 +1197,11 @@ internal sealed partial class EngineHostOptionsTests
         bool useMultipleSampledImages = false,
         bool useMultipleFrameUniformBuffers = false,
         bool use3DStorageImage = false,
-        bool expectStorageImageDimensionRejection = false)
+        bool expectStorageImageDimensionRejection = false,
+        bool useFrameLayoutUniformBuffer = false)
     {
+        var frameUniformBindingIndex = useFrameLayoutUniformBuffer ? 2 : 0;
+
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
             Assert.Ignore("The D3D12 offscreen graph path targets Windows 11.");
@@ -1201,6 +1221,7 @@ internal sealed partial class EngineHostOptionsTests
                 || useMultipleComputeStorageImages
                 || useMultipleSampledImages
                 || useMultipleFrameUniformBuffers
+                || useFrameLayoutUniformBuffer
                 || use3DStorageImage
                 || useFloatStorageImage
                 || useSignedStorageImage
@@ -1955,13 +1976,15 @@ internal sealed partial class EngineHostOptionsTests
             if (!string.IsNullOrWhiteSpace(shaderFixtureDirectory))
             {
                 var shaderExtension = backend == GraphicsBackend.D3D12 ? "dxil" : "spv";
-                var pixelStage = useStorageResources
-                    ? "pixel-sampled-frame-storage"
-                    : useMultipleFrameUniformBuffers
+                var pixelStage = useFrameLayoutUniformBuffer
+                    ? "pixel-frame-layout"
+                    : useStorageResources
+                        ? "pixel-sampled-frame-storage"
+                        : useMultipleFrameUniformBuffers
                         ? "pixel-multiple-frame-uniforms"
-                    : useMultipleSampledImages
+                        : useMultipleSampledImages
                         ? "pixel-sampled-multiple"
-                    : useSampledTexture
+                        : useSampledTexture
                         ? (useUniformBuffer ? "pixel-sampled-frame" : "pixel-sampled")
                         : (useUniformBuffer ? "pixel" : "pixel-graph");
                 using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
@@ -2036,18 +2059,44 @@ internal sealed partial class EngineHostOptionsTests
                     : 0;
                 var frameUniformBytes = new byte[checked((int)(uniformBufferBindingOffset + 256))];
                 var uniformDataOffset = checked((int)uniformBufferBindingOffset);
-                _ = BitConverter.TryWriteBytes(
-                    frameUniformBytes.AsSpan(uniformDataOffset, sizeof(float)),
-                    useSampledTexture ? 1.0f : 0.0f);
-                _ = BitConverter.TryWriteBytes(
-                    frameUniformBytes.AsSpan(uniformDataOffset + sizeof(float), sizeof(float)),
-                    1.0f);
-                _ = BitConverter.TryWriteBytes(
-                    frameUniformBytes.AsSpan(uniformDataOffset + (sizeof(float) * 2), sizeof(float)),
-                    useSampledTexture ? 1.0f : 0.0f);
-                _ = BitConverter.TryWriteBytes(
-                    frameUniformBytes.AsSpan(uniformDataOffset + (sizeof(float) * 3), sizeof(float)),
-                    1.0f);
+
+                if (useFrameLayoutUniformBuffer)
+                {
+                    _ = BitConverter.TryWriteBytes(
+                        frameUniformBytes.AsSpan(uniformDataOffset + (sizeof(float) * 1), sizeof(float)),
+                        1.0f);
+                    _ = BitConverter.TryWriteBytes(
+                        frameUniformBytes.AsSpan(uniformDataOffset + (sizeof(float) * 4), sizeof(float)),
+                        1.0f);
+                    _ = BitConverter.TryWriteBytes(
+                        frameUniformBytes.AsSpan(uniformDataOffset + (sizeof(float) * 9), sizeof(float)),
+                        1.0f);
+                    _ = BitConverter.TryWriteBytes(
+                        frameUniformBytes.AsSpan(uniformDataOffset + (sizeof(float) * 15), sizeof(float)),
+                        1.0f);
+                    _ = BitConverter.TryWriteBytes(
+                        frameUniformBytes.AsSpan(uniformDataOffset + 64, sizeof(float)),
+                        1.0f);
+                    _ = BitConverter.TryWriteBytes(
+                        frameUniformBytes.AsSpan(uniformDataOffset + 84, sizeof(float)),
+                        1.0f);
+                }
+                else
+                {
+                    _ = BitConverter.TryWriteBytes(
+                        frameUniformBytes.AsSpan(uniformDataOffset, sizeof(float)),
+                        useSampledTexture ? 1.0f : 0.0f);
+                    _ = BitConverter.TryWriteBytes(
+                        frameUniformBytes.AsSpan(uniformDataOffset + sizeof(float), sizeof(float)),
+                        1.0f);
+                    _ = BitConverter.TryWriteBytes(
+                        frameUniformBytes.AsSpan(uniformDataOffset + (sizeof(float) * 2), sizeof(float)),
+                        useSampledTexture ? 1.0f : 0.0f);
+                    _ = BitConverter.TryWriteBytes(
+                        frameUniformBytes.AsSpan(uniformDataOffset + (sizeof(float) * 3), sizeof(float)),
+                        1.0f);
+                }
+
                 frameUniformBuffer = await graphicsDevice.CreateBufferAsync(
                     new BufferDescription(
                         frameUniformBytes.Length,
@@ -2621,7 +2670,7 @@ internal sealed partial class EngineHostOptionsTests
                 frameUniformBindingRange = bindingRange;
                 bufferBindings.Add(new BufferBinding(
                     ShaderBindingGroup.Frame,
-                    0,
+                    frameUniformBindingIndex,
                     ShaderResourceKind.UniformBuffer,
                     frameUniformVersion,
                     bindingRange));
@@ -3885,7 +3934,7 @@ internal sealed partial class EngineHostOptionsTests
                         secondUniformVersion.Range);
                     secondBufferBindings.Add(new BufferBinding(
                         ShaderBindingGroup.Frame,
-                        0,
+                        frameUniformBindingIndex,
                         ShaderResourceKind.UniformBuffer,
                         secondUniformVersion,
                         secondUniformVersion.Range));
@@ -4539,7 +4588,7 @@ internal sealed partial class EngineHostOptionsTests
                     var bindingRange = frameUniformBindingRange ?? importRange;
                     secondBufferBindings.Add(new BufferBinding(
                         ShaderBindingGroup.Frame,
-                        0,
+                        frameUniformBindingIndex,
                         ShaderResourceKind.UniformBuffer,
                         secondFrameUniformVersion,
                         bindingRange));
@@ -4765,6 +4814,8 @@ internal sealed partial class EngineHostOptionsTests
                 ? (byte)255
                 : useMultipleSampledImages
                     ? (byte)48
+                    : useFrameLayoutUniformBuffer
+                        ? (byte)255
                     : useMultipleFrameUniformBuffers
                         ? (byte)128
                     : (useSampledTexture ? (byte)32 : (useUniformBuffer ? (byte)0 : (byte)255));
@@ -4772,6 +4823,8 @@ internal sealed partial class EngineHostOptionsTests
                 ? (byte)255
                 : useMultipleSampledImages
                     ? (byte)80
+                    : useFrameLayoutUniformBuffer
+                        ? (byte)255
                     : useMultipleFrameUniformBuffers
                         ? (byte)128
                     : (useSampledTexture ? (byte)128 : (useUniformBuffer ? (byte)255 : (byte)0));
@@ -4779,6 +4832,8 @@ internal sealed partial class EngineHostOptionsTests
                 ? (byte)255
                 : useMultipleSampledImages
                     ? (byte)128
+                    : useFrameLayoutUniformBuffer
+                        ? (byte)255
                     : useMultipleFrameUniformBuffers
                         ? (byte)128
                     : (useSampledTexture ? (byte)224 : (useUniformBuffer ? (byte)0 : (byte)255));

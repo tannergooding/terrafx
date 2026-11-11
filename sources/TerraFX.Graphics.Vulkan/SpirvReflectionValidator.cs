@@ -667,14 +667,15 @@ internal static class SpirvReflectionValidator
 
             var columnType = GetType(module, type.Operands[1]);
 
-            if ((memberDecorations.MatrixMajor != DecorationRowMajor)
+            // DXC emits HLSL row-major matrices as SPIR-V ColMajor for Vulkan.
+            if ((memberDecorations.MatrixMajor is not (DecorationRowMajor or DecorationColMajor))
                 || (matrixStride != 16)
                 || (type.Operands[2] != 4)
                 || (columnType.Opcode != OpTypeVector)
                 || (columnType.Operands[2] != 4)
                 || (GetScalarValueType(module, columnType.Operands[1]).ValueType != ShaderValueType.Float1))
             {
-                throw new NotSupportedException("SPIR-V uniform matrices must be row-major float4x4 values with a 16-byte row stride.");
+                throw new NotSupportedException("SPIR-V uniform matrices must be float4x4 values with an explicit major order and a 16-byte stride.");
             }
 
             return (ShaderValueType.Float4x4, 64);

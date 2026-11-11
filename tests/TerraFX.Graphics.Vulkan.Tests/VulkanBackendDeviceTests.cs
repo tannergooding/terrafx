@@ -1593,11 +1593,12 @@ internal sealed class VulkanBackendDeviceTests
     public void RegistrationSelectsVulkanWithoutCreatingDevice()
         => Assert.That(VulkanGraphicsBackend.CreateRegistration().Backend, Is.EqualTo(GraphicsBackend.Vulkan));
 
-    [Test]
-    public void SpirvPreflightAcceptsContractualRowMajorMatrixRecordWithoutCreatingDevice()
+    [TestCase(4u)]
+    [TestCase(5u)]
+    public void SpirvPreflightAcceptsContractualMatrixRecordWithoutCreatingDevice(uint matrixMajor)
     {
         using var storage = CreateBytecodeStorage(CreateMatrixUniformSpirv(
-            matrixMajor: 4,
+            matrixMajor,
             matrixStride: 16,
             rowCount: 4,
             columnCount: 4));
@@ -1885,7 +1886,6 @@ internal sealed class VulkanBackendDeviceTests
             Throws.ArgumentException);
     }
 
-    [TestCase(5u, 16u, 4u, 4u)]
     [TestCase(4u, 32u, 4u, 4u)]
     [TestCase(4u, 16u, 3u, 4u)]
     [TestCase(4u, 16u, 4u, 3u)]

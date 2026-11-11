@@ -460,6 +460,12 @@ internal static class M04ShaderReflectionReader
             _ => throw new ArgumentOutOfRangeException(nameof(valueType)),
         };
 
+    private static string NormalizeDxilRecordName(string name)
+        => NormalizeResourceName(
+            name.StartsWith("hostlayout.", StringComparison.Ordinal)
+                ? name[11..]
+                : name);
+
     private static string NormalizeResourceName(string name)
         => name.StartsWith("type.", StringComparison.Ordinal) ? name[5..] : name;
 
@@ -1053,13 +1059,12 @@ internal static class M04ShaderReflectionReader
                 throw new InvalidDataException("SPIRV-Cross record-array stride does not match the supported HLSL layout.");
             }
 
+            // DXC emits HLSL row-major matrices as SPIR-V ColMajor; DXIL validation owns source major order.
             if (valueType == ShaderValueType.Float4x4)
             {
-                if ((GetRequiredInt32(member, "matrix_stride") != 16)
-                    || !member.TryGetProperty("row_major", out var rowMajor)
-                    || (rowMajor.ValueKind != JsonValueKind.True))
+                if (GetRequiredInt32(member, "matrix_stride") != 16)
                 {
-                    throw new InvalidDataException("The M04 record layout requires 16-byte row-major float4x4 matrices.");
+                    throw new InvalidDataException("The M04 record layout requires 16-byte float4x4 matrix strides.");
                 }
             }
             else if (member.TryGetProperty("matrix_stride", out _))
@@ -1283,7 +1288,8 @@ internal static class M04ShaderReflectionReader
 
                     var closingName = content[1..separator].Trim();
 
-                    if (!StringComparer.Ordinal.Equals(recordName, closingName))
+                    if ((recordName is null)
+                        || !StringComparer.Ordinal.Equals(NormalizeDxilRecordName(recordName), NormalizeDxilRecordName(closingName)))
                     {
                         throw new InvalidDataException($"DXIL cbuffer '{cbufferName}' has inconsistent record names.");
                     }
@@ -1314,7 +1320,7 @@ internal static class M04ShaderReflectionReader
                 throw new InvalidDataException($"DXIL cbuffer '{cbufferName}' omitted its record definition or byte length.");
             }
 
-            if (!StringComparer.Ordinal.Equals(NormalizeResourceName(cbufferName), NormalizeResourceName(recordName)))
+            if (!StringComparer.Ordinal.Equals(NormalizeDxilRecordName(cbufferName), NormalizeDxilRecordName(recordName)))
             {
                 throw new InvalidDataException($"DXIL cbuffer '{cbufferName}' does not identify its reflected record '{recordName}'.");
             }
@@ -1322,7 +1328,7 @@ internal static class M04ShaderReflectionReader
             try
             {
                 return new ShaderRecordLayout(
-                    NormalizeResourceName(recordName),
+                    NormalizeDxilRecordName(recordName),
                     byteLength.Value,
                     fields.ToImmutable());
             }
