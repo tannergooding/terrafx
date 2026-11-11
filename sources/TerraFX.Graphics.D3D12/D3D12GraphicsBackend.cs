@@ -2032,32 +2032,34 @@ public static unsafe class D3D12GraphicsBackend
 
                         foreach (var attachment in pass.Attachments)
                         {
-                            if (attachment.LoadAction != AttachmentLoadAction.Clear)
-                            {
-                                throw new NotSupportedException("Native D3D12 graph submission currently supports only clear attachments.");
-                            }
-
                             if (attachment.IsDepth)
                             {
                                 var depthTexture = submission.GetTexture(attachment.Version.ResourceId) as D3D12BackendTexture
                                     ?? throw new InvalidOperationException("The graph depth attachment is not a D3D12 texture.");
                                 depthStencilView = depthTexture.GetDepthStencilView();
                                 hasDepthAttachment = true;
-                                commandList->ClearDepthStencilView(
-                                    depthStencilView,
-                                    D3D12_CLEAR_FLAGS.D3D12_CLEAR_FLAG_DEPTH,
-                                    attachment.ClearDepth,
-                                    0,
-                                    0,
-                                    null);
+
+                                if (attachment.LoadAction == AttachmentLoadAction.Clear)
+                                {
+                                    commandList->ClearDepthStencilView(
+                                        depthStencilView,
+                                        D3D12_CLEAR_FLAGS.D3D12_CLEAR_FLAG_DEPTH,
+                                        attachment.ClearDepth,
+                                        0,
+                                        0,
+                                        null);
+                                }
                             }
                             else
                             {
-                                clearColor[0] = attachment.ClearColor.X;
-                                clearColor[1] = attachment.ClearColor.Y;
-                                clearColor[2] = attachment.ClearColor.Z;
-                                clearColor[3] = attachment.ClearColor.W;
-                                commandList->ClearRenderTargetView(renderTargetView, clearColor, 0, null);
+                                if (attachment.LoadAction == AttachmentLoadAction.Clear)
+                                {
+                                    clearColor[0] = attachment.ClearColor.X;
+                                    clearColor[1] = attachment.ClearColor.Y;
+                                    clearColor[2] = attachment.ClearColor.Z;
+                                    clearColor[3] = attachment.ClearColor.W;
+                                    commandList->ClearRenderTargetView(renderTargetView, clearColor, 0, null);
+                                }
                             }
                         }
 

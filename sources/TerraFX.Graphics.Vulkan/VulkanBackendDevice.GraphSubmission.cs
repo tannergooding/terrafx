@@ -30,6 +30,21 @@ internal sealed unsafe partial class VulkanBackendDevice
         return imageView;
     }
 
+    private static VkAttachmentLoadOp GetGraphAttachmentLoadOp(AttachmentLoadAction loadAction)
+        => loadAction switch {
+            AttachmentLoadAction.Clear => VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_CLEAR,
+            AttachmentLoadAction.Load => VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_LOAD,
+            AttachmentLoadAction.DontCare => VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            _ => throw new ArgumentOutOfRangeException(nameof(loadAction)),
+        };
+
+    private static VkAttachmentStoreOp GetGraphAttachmentStoreOp(AttachmentStoreAction storeAction)
+        => storeAction switch {
+            AttachmentStoreAction.Store => VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE,
+            AttachmentStoreAction.Discard => VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            _ => throw new ArgumentOutOfRangeException(nameof(storeAction)),
+        };
+
     private static VkImageView GetGraphDepthAttachmentImageView(VkDevice device, VulkanBackendTexture texture)
     {
         ArgumentNullException.ThrowIfNull(texture);
@@ -1071,15 +1086,28 @@ internal sealed unsafe partial class VulkanBackendDevice
                 }
 
                 var renderingAttachment = default(VkRenderingAttachmentInfo);
+                var finalColorStoreOp = GetGraphAttachmentStoreOp(colorAttachment.StoreAction);
+                var finalDepthStoreOp = hasDepthAttachment
+                    ? GetGraphAttachmentStoreOp(depthAttachment.StoreAction)
+                    : default;
+                var remainingStorageBarrierCount = pass.Commands.Count(
+                    static command => command.Kind == GraphicsCommandKind.StorageBarrier);
                 renderingAttachment.sType = VkStructureType.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
                 renderingAttachment.imageView = imageView;
                 renderingAttachment.imageLayout = VkImageLayout.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                renderingAttachment.loadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_CLEAR;
-                renderingAttachment.storeOp = VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE;
-                renderingAttachment.clearValue.color.float32[0] = colorAttachment.ClearColor.X;
-                renderingAttachment.clearValue.color.float32[1] = colorAttachment.ClearColor.Y;
-                renderingAttachment.clearValue.color.float32[2] = colorAttachment.ClearColor.Z;
-                renderingAttachment.clearValue.color.float32[3] = colorAttachment.ClearColor.W;
+                renderingAttachment.loadOp = GetGraphAttachmentLoadOp(colorAttachment.LoadAction);
+                renderingAttachment.storeOp = (remainingStorageBarrierCount > 0)
+                    ? VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE
+                    : finalColorStoreOp;
+
+                if (colorAttachment.LoadAction == AttachmentLoadAction.Clear)
+                {
+                    renderingAttachment.clearValue.color.float32[0] = colorAttachment.ClearColor.X;
+                    renderingAttachment.clearValue.color.float32[1] = colorAttachment.ClearColor.Y;
+                    renderingAttachment.clearValue.color.float32[2] = colorAttachment.ClearColor.Z;
+                    renderingAttachment.clearValue.color.float32[3] = colorAttachment.ClearColor.W;
+                }
+
                 var depthRenderingAttachment = default(VkRenderingAttachmentInfo);
 
                 if (hasDepthAttachment)
@@ -1089,9 +1117,15 @@ internal sealed unsafe partial class VulkanBackendDevice
                     depthRenderingAttachment.sType = VkStructureType.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
                     depthRenderingAttachment.imageView = GetGraphDepthAttachmentImageView(_device, depthTexture);
                     depthRenderingAttachment.imageLayout = VulkanGraphResourceStateMapper.GetImageLayout(GraphResourceState.DepthWrite);
-                    depthRenderingAttachment.loadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_CLEAR;
-                    depthRenderingAttachment.storeOp = VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE;
-                    depthRenderingAttachment.clearValue.depthStencil.depth = depthAttachment.ClearDepth;
+                    depthRenderingAttachment.loadOp = GetGraphAttachmentLoadOp(depthAttachment.LoadAction);
+                    depthRenderingAttachment.storeOp = (remainingStorageBarrierCount > 0)
+                        ? VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE
+                        : finalDepthStoreOp;
+
+                    if (depthAttachment.LoadAction == AttachmentLoadAction.Clear)
+                    {
+                        depthRenderingAttachment.clearValue.depthStencil.depth = depthAttachment.ClearDepth;
+                    }
                 }
 
                 var renderingInfo = default(VkRenderingInfo);
@@ -1245,7 +1279,25 @@ internal sealed unsafe partial class VulkanBackendDevice
                         {
                             VulkanApi.vkCmdEndRendering(_commandBuffer);
                             renderingAttachment.loadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_LOAD;
+
+                            if (hasDepthAttachment)
+                            {
+                                depthRenderingAttachment.loadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_LOAD;
+                            }
+
                             RecordGraphStorageBarrier(pass, submission, command);
+                            remainingStorageBarrierCount--;
+                            renderingAttachment.storeOp = (remainingStorageBarrierCount > 0)
+                                ? VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE
+                                : finalColorStoreOp;
+
+                            if (hasDepthAttachment)
+                            {
+                                depthRenderingAttachment.storeOp = (remainingStorageBarrierCount > 0)
+                                    ? VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE
+                                    : finalDepthStoreOp;
+                            }
+
                             VulkanApi.vkCmdBeginRendering(_commandBuffer, &renderingInfo);
                             VulkanApi.vkCmdSetViewport(_commandBuffer, 0, 1, &viewport);
                             VulkanApi.vkCmdSetScissor(_commandBuffer, 0, 1, &scissor);

@@ -478,6 +478,24 @@ internal sealed partial class EngineHostOptionsTests
         }
     }
 
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task LoadsStoredColorAndDepthAttachmentsAsync(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useDepthAttachment: true,
+            useColorAndDepthAttachmentLoad: true);
+
     [Test]
     public Task PlansOverlappingTransientTextureLifetimesSeparatelyOnVulkan()
         => RunOffscreenGraphAsync(
@@ -602,6 +620,41 @@ internal sealed partial class EngineHostOptionsTests
             overlapTransientBufferLifetimes: false,
             holdGraphCompletion: false,
             useDepthAttachment: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsDontCareDiscardColorAndDepthAttachmentsAsync(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useDepthAttachment: true,
+            useAttachmentDontCareDiscardRoundTrip: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsDontCareDiscardWithRasterStorageBarrierAsync(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: true,
+            useSampledTexture: true,
+            useStorageResources: true,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useAttachmentDontCareDiscardRoundTrip: true);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
@@ -1375,7 +1428,9 @@ internal sealed partial class EngineHostOptionsTests
         TextureFormat sampledTextureFormat = TextureFormat.Rgba8Unorm,
         bool useArrayedSampledTexture = false,
         bool useDepthAttachment = false,
-        TextureFormat targetColorFormat = TextureFormat.Rgba8Unorm)
+        TextureFormat targetColorFormat = TextureFormat.Rgba8Unorm,
+        bool useColorAndDepthAttachmentLoad = false,
+        bool useAttachmentDontCareDiscardRoundTrip = false)
     {
         var frameUniformBindingIndex = useFrameLayoutUniformBuffer ? 2 : 0;
         var sampledImageBindingIndex = useArrayedSampledTexture ? 2 : 0;
@@ -3216,6 +3271,11 @@ internal sealed partial class EngineHostOptionsTests
                 }
             }
 
+            void RecordEmptyPass(scoped ref CommandRecorder recorder)
+            {
+                _ = recorder;
+            }
+
             void RecordCopy(scoped ref CommandRecorder recorder)
             {
                 if ((copySourceVersion is GraphBufferVersion selectedSource)
@@ -4075,18 +4135,27 @@ internal sealed partial class EngineHostOptionsTests
                 pass,
                 graph.OffscreenColorTargetVersion,
                 new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
-                AttachmentLoadAction.Clear,
-                AttachmentStoreAction.Store,
+                useAttachmentDontCareDiscardRoundTrip
+                    ? AttachmentLoadAction.DontCare
+                    : AttachmentLoadAction.Clear,
+                useAttachmentDontCareDiscardRoundTrip
+                    ? AttachmentStoreAction.Discard
+                    : AttachmentStoreAction.Store,
                 renderSnapshot.Cameras[0].ClearColor);
+            GraphTextureVersion? depthAttachmentVersion = null;
 
             if (depthAttachmentInitialVersion is GraphTextureVersion selectedDepthAttachmentVersion)
             {
-                _ = graph.WriteDepthAttachment(
+                depthAttachmentVersion = graph.WriteDepthAttachment(
                     pass,
                     selectedDepthAttachmentVersion,
                     selectedDepthAttachmentVersion.Range,
-                    AttachmentLoadAction.Clear,
-                    AttachmentStoreAction.Store,
+                    useAttachmentDontCareDiscardRoundTrip
+                        ? AttachmentLoadAction.DontCare
+                        : AttachmentLoadAction.Clear,
+                    useAttachmentDontCareDiscardRoundTrip
+                        ? AttachmentStoreAction.Discard
+                        : AttachmentStoreAction.Store,
                     clearDepth: 0.0f);
             }
 
@@ -4268,12 +4337,65 @@ internal sealed partial class EngineHostOptionsTests
                     AttachmentLoadAction.Clear,
                     AttachmentStoreAction.Store,
                     renderSnapshot.Cameras[0].ClearColor);
-                graph.SetPresentationSource(secondOutputVersion);
+                outputVersion = secondOutputVersion;
             }
-            else
+
+            if (useColorAndDepthAttachmentLoad)
             {
-                graph.SetPresentationSource(outputVersion);
+                var loadPass = graph.AddRasterPass(
+                    new RenderPassDescription(
+                        "offscreen-attachment-load",
+                        rasterPredecessors.Length + 1,
+                        [pass],
+                        hasExternalSideEffects: false),
+                    RecordEmptyPass);
+                outputVersion = graph.WriteColorAttachment(
+                    loadPass,
+                    outputVersion,
+                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
+                    AttachmentLoadAction.Load,
+                    AttachmentStoreAction.Store,
+                    Vector4.Zero);
+                var loadDepthVersion = depthAttachmentVersion
+                    ?? throw new InvalidOperationException("The graph attachment-load test has no depth attachment.");
+                _ = graph.WriteDepthAttachment(
+                    loadPass,
+                    loadDepthVersion,
+                    loadDepthVersion.Range,
+                    AttachmentLoadAction.Load,
+                    AttachmentStoreAction.Store,
+                    clearDepth: 0.0f);
             }
+            else if (useAttachmentDontCareDiscardRoundTrip)
+            {
+                var restorePass = graph.AddRasterPass(
+                    new RenderPassDescription(
+                        "offscreen-attachment-restore",
+                        rasterPredecessors.Length + 1,
+                        [pass],
+                        hasExternalSideEffects: false),
+                    RecordEmptyPass);
+                outputVersion = graph.WriteColorAttachment(
+                    restorePass,
+                    outputVersion,
+                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
+                    AttachmentLoadAction.Clear,
+                    AttachmentStoreAction.Store,
+                    renderSnapshot.Cameras[0].ClearColor);
+
+                if (depthAttachmentVersion is GraphTextureVersion discardDepthVersion)
+                {
+                    depthAttachmentVersion = graph.WriteDepthAttachment(
+                        restorePass,
+                        discardDepthVersion,
+                        discardDepthVersion.Range,
+                        AttachmentLoadAction.Clear,
+                        AttachmentStoreAction.Store,
+                        clearDepth: 0.0f);
+                }
+            }
+
+            graph.SetPresentationSource(outputVersion);
 
             var compileResponse = graph.Compile();
             Assert.That(compileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
@@ -5084,9 +5206,11 @@ internal sealed partial class EngineHostOptionsTests
                         secondPass,
                         selectedSecondDepthVersion,
                         selectedSecondDepthVersion.Range,
-                        AttachmentLoadAction.Clear,
+                        useColorAndDepthAttachmentLoad
+                            ? AttachmentLoadAction.Load
+                            : AttachmentLoadAction.Clear,
                         AttachmentStoreAction.Store,
-                        clearDepth: 0.0f);
+                        clearDepth: useColorAndDepthAttachmentLoad ? 1.0f : 0.0f);
                 }
 
                 secondGraph.SetPresentationSource(secondOutputVersion);

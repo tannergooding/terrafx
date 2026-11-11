@@ -842,7 +842,7 @@ internal sealed class GraphicsGraphSubmission
             }
         }
 
-        var hasColorClear = false;
+        var hasColorAttachment = false;
         var hasVertexBufferPipeline = false;
         var hasVertexBufferBinding = false;
         var hasIndexBufferBinding = false;
@@ -954,8 +954,6 @@ internal sealed class GraphicsGraphSubmission
                             || (attachment.Version.ResourceId == targetResourceId)
                             || !depthTextureImports.ContainsKey(attachment.Version.ResourceId)
                             || (attachment.Range != new GraphTextureRange(0, 1, 0, 1, TextureAspect.Depth))
-                            || (attachment.LoadAction != AttachmentLoadAction.Clear)
-                            || (attachment.StoreAction != AttachmentStoreAction.Store)
                             || (description.Dimension != TextureDimension.Dimension2D)
                             || (description.Depth != 1)
                             || (description.Width != OutputColorTarget.Description.Width)
@@ -963,7 +961,7 @@ internal sealed class GraphicsGraphSubmission
                             || (description.Format != TextureFormat.D32Float)
                             || ((description.Usage & TextureUsage.DepthAttachment) == 0))
                         {
-                            throw new NotSupportedException("Native graph submission requires stored mip-0/layer-0 D32Float depth clears matching its output extent.");
+                            throw new NotSupportedException("Native graph submission requires a mip-0/layer-0 D32Float depth attachment matching its output extent.");
                         }
 
                         passDepthTargetFormat = description.Format;
@@ -975,14 +973,12 @@ internal sealed class GraphicsGraphSubmission
 
                         if ((colorAttachmentCount != 1)
                             || (attachment.Version.ResourceId != targetResourceId)
-                            || (attachment.Range != new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color))
-                            || (attachment.LoadAction != AttachmentLoadAction.Clear)
-                            || (attachment.StoreAction != AttachmentStoreAction.Store))
+                            || (attachment.Range != new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)))
                         {
-                            throw new NotSupportedException("Native graph submission currently supports only stored mip-0/layer-0 color clears to its graph output target.");
+                            throw new NotSupportedException("Native graph submission supports one mip-0/layer-0 color attachment on its graph output target.");
                         }
 
-                        hasColorClear = true;
+                        hasColorAttachment = true;
                     }
                 }
 
@@ -2000,15 +1996,18 @@ internal sealed class GraphicsGraphSubmission
 
             if (access.IsTexture
                 && depthTextureImports.ContainsKey(access.ResourceId)
-                && (access.RequiredState == GraphResourceState.DepthWrite)
-                && access.IsWrite)
+                && (access.RequiredState == GraphResourceState.DepthWrite))
             {
                 if (!depthAttachmentPassResourcePairs.Contains((access.PassId, access.ResourceId)))
                 {
                     throw new InvalidOperationException("The imported depth texture is declared by a pass without a matching depth attachment.");
                 }
 
-                _ = depthTextureResourcesUsed.Add(access.ResourceId);
+                if (access.IsWrite)
+                {
+                    _ = depthTextureResourcesUsed.Add(access.ResourceId);
+                }
+
                 continue;
             }
 
@@ -2336,9 +2335,9 @@ internal sealed class GraphicsGraphSubmission
             throw new NotSupportedException("Every imported Frame storage image must be reflected, bound, and declared by a graph pass.");
         }
 
-        if (!hasColorClear)
+        if (!hasColorAttachment)
         {
-            throw new NotSupportedException("Native graph submission requires at least one stored graph-output color clear.");
+            throw new NotSupportedException("Native graph submission requires at least one graph-output color attachment.");
         }
     }
 
