@@ -95,6 +95,13 @@ dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --confi
 dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Release --filter "FullyQualifiedName~TransientTextureGroupRollbackReleasesSharedAllocationAndBudget"
 ```
 
+The graph frame-slot witness fills a two-slot submission admission limit, verifies another request remains pending, then releases reservations and confirms admission recovers:
+
+```powershell
+dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Debug --filter "FullyQualifiedName=TerraFX.Graphics.Tests.GraphicsBufferTransferTests.GraphFrameSlotAdmissionWaitsAtCapacityAndRecoversAfterRelease"
+dotnet test .\tests\TerraFX.Graphics.Tests\TerraFX.Graphics.Tests.csproj --configuration Release --filter "FullyQualifiedName=TerraFX.Graphics.Tests.GraphicsBufferTransferTests.GraphFrameSlotAdmissionWaitsAtCapacityAndRecoversAfterRelease"
+```
+
 Run the D3D12 descriptor-range allocation and graph resource-state mapping tests (43/43 in Debug and Release):
 
 ```powershell
@@ -171,7 +178,7 @@ dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configu
 
 The Windows D3D12 tests exercise sampled D32 upload/readback, mip-1 3D RGBA8 and padded array transfers, two half-ring uploads/readbacks at nonzero staging offsets, the 64-MiB boundary, and dedicated oversize transfers. `GraphicsStagingRingAllocatorTests` uses controlled fence values to verify aligned reservations, cancellation, wrap without overlap while other ranges remain live, and retirement only after completion. Native D3D12/Vulkan transfers exercise nonzero offsets and release ranges against actual backend completion fences. The test-only 1-MiB reported-budget override forces the dedicated transfer path with simulated values; it does not qualify real low DXGI pressure. The delayed-fence witness covers admitted-upload retention, while injected `WAIT_TIMEOUT` after native completion validates quarantine mapping only. Descriptor/PSO tests verify resource-bearing writes and owner retention, not graph execution. Run the documented filters and use current-run TRX for adapter identity/counts; those are not permanent roadmap facts.
 
-The descriptor witness holds 128 live sampler-backed sets to fill the 256-slot sampler heap, verifies that the next sampler admission is refused, then retires one set/sampler and confirms both ranges can be reused by a replacement set. This verifies native descriptor-capacity refusal and recovery, not GPU-completion retirement.
+The descriptor witness fills the 256-slot sampler heap and 1024-entry resource heap with live native sets. It verifies refusal at both boundaries, resource-range rollback when sampler allocation fails, and range reuse after a descriptor set retires. This verifies native descriptor-capacity refusal and recovery, not GPU-completion retirement.
 
 The same native witness intentionally changes the typed sampled-image register from `t0` to `t1` while keeping the compiled DXIL unchanged; D3D12 rejects the mismatched pipeline state. This validates resource-register compatibility for the selected fixture, not complete reflection equivalence.
 

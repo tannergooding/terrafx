@@ -107,11 +107,14 @@ internal sealed class GraphicsBufferTransferTests
             heaps.MoveToImmutable());
     }
 
-    private static async Task<GraphicsDevice> CreateGraphicsDeviceAsync(FakeBackendDevice backendDevice)
+    private static async Task<GraphicsDevice> CreateGraphicsDeviceAsync(
+        FakeBackendDevice backendDevice,
+        int frameSlotCount = 3)
         => await GraphicsDevice.CreateAsync(
             ownerId: 31,
             new GraphicsBackendRegistration(new FakeBackendFactory(backendDevice)),
             GraphicsDeviceProfile.OffscreenNative,
+            frameSlotCount,
             GraphicsPlatformKind.None,
             CancellationToken.None).ConfigureAwait(false);
 
@@ -548,6 +551,43 @@ internal sealed class GraphicsBufferTransferTests
                 group.Dispose();
             }
 
+            await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public async Task GraphFrameSlotAdmissionWaitsAtCapacityAndRecoversAfterRelease()
+    {
+        var graphicsDevice = await CreateGraphicsDeviceAsync(
+            new FakeBackendDevice(),
+            frameSlotCount: 2).ConfigureAwait(false);
+
+        try
+        {
+            using var firstReservation = await graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            using var secondReservation = await graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            var waitingReservation = graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None);
+            Assert.That(waitingReservation.IsCompleted, Is.False);
+
+            firstReservation.Dispose();
+            using var recoveredReservation = await waitingReservation
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+
+            var nextWaitingReservation = graphicsDevice.AcquireGraphFrameSlotAsync(CancellationToken.None);
+            Assert.That(nextWaitingReservation.IsCompleted, Is.False);
+
+            recoveredReservation.Dispose();
+            using var replacementReservation = await nextWaitingReservation
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+        }
+        finally
+        {
             await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
     }

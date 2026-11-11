@@ -1653,78 +1653,222 @@ internal sealed partial class EngineHostOptionsTests
                 _ = Assert.Throws<InvalidOperationException>(storagePipeline.Dispose);
                 _ = Assert.Throws<InvalidOperationException>(device.Dispose);
 
+                using var descriptorCapacityPipeline = device.CreatePipeline(
+                    CreateD3D12ResourcePipelineDescription(
+                        vertexBytecode,
+                        pixelBytecode,
+                        vertexReflection,
+                        pixelReflection),
+                    [vertexBytecode, pixelBytecode]);
+                using var descriptorCapacityUniformBuffer = device.CreateBuffer(
+                    new BufferDescription(
+                        512,
+                        BufferUsage.Uniform,
+                        GpuMemoryKind.DeviceLocal,
+                        structuredStride: null,
+                        debugName: "d3d12-descriptor-capacity-frame-data"));
+                using var descriptorCapacitySampledTexture = device.CreateTexture(
+                    new TextureDescription(
+                        TextureDimension.Dimension2D,
+                        1,
+                        1,
+                        depth: 1,
+                        arrayLayers: 1,
+                        mipLevels: 1,
+                        TextureFormat.Rgba8Unorm,
+                        TextureUsage.Sampled,
+                        "d3d12-descriptor-capacity-sampled-texture"));
+                var descriptorCapacityUniformBufferBindings = ImmutableArray.Create(new D3D12BackendUniformBufferBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    descriptorCapacityUniformBuffer,
+                    0,
+                    16));
+                var descriptorCapacitySampledImageBindings = ImmutableArray.Create(new D3D12BackendSampledImageBinding(
+                    ShaderBindingGroup.Frame,
+                    0,
+                    descriptorCapacitySampledTexture,
+                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)));
                 const int SamplerHeapCapacity = 256;
-                const int SamplerDescriptorsPerSet = 2;
+                const int RetainedStorageSamplerCount = 2;
+                const int SampledDescriptorSetCount = SamplerHeapCapacity - RetainedStorageSamplerCount;
                 var descriptorSets = new D3D12GraphicsBackend.D3D12BackendFactory.D3D12BackendDevice.D3D12BackendDescriptorSet?[
-                    SamplerHeapCapacity / SamplerDescriptorsPerSet];
-                var samplerOwners = new IGraphicsBackendSampler?[descriptorSets.Length];
-                descriptorSets[0] = storageDescriptorSet;
-                samplerOwners[0] = storageSampler;
+                    SampledDescriptorSetCount];
 
                 try
                 {
-                    for (var index = 1; index < descriptorSets.Length; index++)
+                    for (var index = 0; index < descriptorSets.Length; index++)
                     {
-                        var samplerOwner = device.CreateSampler(
-                            storageSamplerDescription,
-                            effectiveMaximumAnisotropy: 1.0f);
-                        samplerOwners[index] = samplerOwner;
-                        var samplerBinding = ImmutableArray.Create(new D3D12BackendSamplerBinding(
-                            ShaderBindingGroup.Frame,
-                            0,
-                            samplerOwner));
                         descriptorSets[index] = device.CreateDescriptorSet(
-                            storagePipeline,
-                            storageUniformBufferBindings,
-                            storageSampledImageBindings,
-                            storageBufferBindings,
-                            storageImageBindings,
-                            samplerBinding);
+                            descriptorCapacityPipeline,
+                            descriptorCapacityUniformBufferBindings,
+                            descriptorCapacitySampledImageBindings,
+                            [],
+                            [],
+                            storageSamplerBindings);
                     }
 
                     _ = Assert.Throws<InvalidOperationException>(() => device.CreateSampler(
                         storageSamplerDescription,
                         effectiveMaximumAnisotropy: 1.0f));
+                    _ = Assert.Throws<InvalidOperationException>(() => device.CreateDescriptorSet(
+                        descriptorCapacityPipeline,
+                        descriptorCapacityUniformBufferBindings,
+                        descriptorCapacitySampledImageBindings,
+                        [],
+                        [],
+                        storageSamplerBindings));
 
                     var firstDescriptorSet = descriptorSets[0]
                         ?? throw new InvalidOperationException("The initial D3D12 descriptor set is missing.");
                     firstDescriptorSet.Dispose();
                     descriptorSets[0] = null;
-                    var firstSampler = samplerOwners[0]
-                        ?? throw new InvalidOperationException("The initial D3D12 sampler is missing.");
-                    firstSampler.Dispose();
-                    samplerOwners[0] = null;
-
-                    var replacementSampler = device.CreateSampler(
-                        storageSamplerDescription,
-                        effectiveMaximumAnisotropy: 1.0f);
-                    samplerOwners[0] = replacementSampler;
-                    var replacementSamplerBinding = ImmutableArray.Create(new D3D12BackendSamplerBinding(
-                        ShaderBindingGroup.Frame,
-                        0,
-                        replacementSampler));
                     descriptorSets[0] = device.CreateDescriptorSet(
+                        descriptorCapacityPipeline,
+                        descriptorCapacityUniformBufferBindings,
+                        descriptorCapacitySampledImageBindings,
+                        [],
+                        [],
+                        storageSamplerBindings);
+                    Assert.That(descriptorSets[0]?.AreDescriptorTableHandlesValid, Is.True);
+                    _ = Assert.Throws<InvalidOperationException>(() => device.CreateDescriptorSet(
+                        descriptorCapacityPipeline,
+                        descriptorCapacityUniformBufferBindings,
+                        descriptorCapacitySampledImageBindings,
+                        [],
+                        [],
+                        storageSamplerBindings));
+
+                    _ = Assert.Throws<InvalidOperationException>(() => device.CreateDescriptorSet(
                         storagePipeline,
                         storageUniformBufferBindings,
                         storageSampledImageBindings,
                         storageBufferBindings,
                         storageImageBindings,
-                        replacementSamplerBinding);
-                    Assert.That(descriptorSets[0]?.AreDescriptorTableHandlesValid, Is.True);
-                    _ = Assert.Throws<InvalidOperationException>(() => device.CreateSampler(
-                        storageSamplerDescription,
-                        effectiveMaximumAnisotropy: 1.0f));
+                        storageSamplerBindings));
+
+                    using var computeStorageImagesBytecodeStorage = CreateBytecodeStorage(Path.Combine(
+                        shaderFixtureDirectory,
+                        "M04OffscreenTriangle.compute-storage-images.dxil"));
+                    using var computeStorageImagesBytecode = computeStorageImagesBytecodeStorage.AcquireReadLease(
+                        0,
+                        computeStorageImagesBytecodeStorage.Length);
+                    var computeStorageImagesReflection = M04ShaderFixtureCompiler.ReadTypedReflection(
+                        shaderFixtureDirectory,
+                        "compute-storage-images");
+                    using var computeStorageImagesPipeline = device.CreatePipeline(
+                        new ComputePipelineDescription(
+                            new ShaderBytecodeInput(
+                                ShaderStage.Compute,
+                                ShaderBinaryFormat.Dxil,
+                                computeStorageImagesBytecode,
+                                computeStorageImagesReflection),
+                            bindingLayoutVersion: 1),
+                        [computeStorageImagesBytecode]);
+                    using var computeStorageBuffer = device.CreateBuffer(
+                        new BufferDescription(
+                            16,
+                            BufferUsage.Storage,
+                            GpuMemoryKind.DeviceLocal,
+                            structuredStride: 4,
+                            debugName: "d3d12-resource-descriptor-capacity-buffer"));
+                    using var computeStorageImage = device.CreateTexture(
+                        new TextureDescription(
+                            TextureDimension.Dimension2D,
+                            1,
+                            1,
+                            depth: 1,
+                            arrayLayers: 1,
+                            mipLevels: 1,
+                            TextureFormat.R32UInt,
+                            TextureUsage.Storage,
+                            "d3d12-resource-descriptor-capacity-image"));
+                    using var computeSecondStorageImage = device.CreateTexture(
+                        new TextureDescription(
+                            TextureDimension.Dimension2D,
+                            1,
+                            1,
+                            depth: 1,
+                            arrayLayers: 1,
+                            mipLevels: 1,
+                            TextureFormat.R32UInt,
+                            TextureUsage.Storage,
+                            "d3d12-resource-descriptor-capacity-second-image"));
+                    var computeStorageBufferBindings = ImmutableArray.Create(new D3D12BackendStorageBufferBinding(
+                        ShaderBindingGroup.Frame,
+                        0,
+                        computeStorageBuffer,
+                        0,
+                        16));
+                    var computeStorageImageBindings = ImmutableArray.Create(
+                        new D3D12BackendStorageImageBinding(
+                            ShaderBindingGroup.Frame,
+                            1,
+                            computeStorageImage,
+                            new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)),
+                        new D3D12BackendStorageImageBinding(
+                            ShaderBindingGroup.Frame,
+                            6,
+                            computeSecondStorageImage,
+                            new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)));
+
+                    D3D12GraphicsBackend.D3D12BackendFactory.D3D12BackendDevice.D3D12BackendDescriptorSet
+                        CreateComputeDescriptorSet()
+                    {
+                        return device.CreateDescriptorSet(
+                            computeStorageImagesPipeline,
+                            [],
+                            [],
+                            computeStorageBufferBindings,
+                            computeStorageImageBindings,
+                            []);
+                    }
+
+                    const int ResourceDescriptorCapacity = 1024;
+                    const int ResourceDescriptorsPerSampledSet = 2;
+                    const int RetainedStorageDescriptorCount = 4;
+                    const int ComputeDescriptorsPerSet = 3;
+                    const int ComputeDescriptorSetCount =
+                        (ResourceDescriptorCapacity
+                            - (SampledDescriptorSetCount * ResourceDescriptorsPerSampledSet)
+                            - RetainedStorageDescriptorCount)
+                        / ComputeDescriptorsPerSet;
+                    var computeDescriptorSets = new D3D12GraphicsBackend.D3D12BackendFactory.D3D12BackendDevice.D3D12BackendDescriptorSet?[
+                        ComputeDescriptorSetCount];
+
+                    try
+                    {
+                        for (var index = 0; index < computeDescriptorSets.Length; index++)
+                        {
+                            computeDescriptorSets[index] = CreateComputeDescriptorSet();
+                        }
+
+                        _ = Assert.Throws<InvalidOperationException>(() => {
+                            using var unexpectedDescriptorSet = CreateComputeDescriptorSet();
+                        });
+
+                        var releasedComputeDescriptorSet = computeDescriptorSets[0]
+                            ?? throw new InvalidOperationException("The first D3D12 compute descriptor set is missing.");
+                        releasedComputeDescriptorSet.Dispose();
+                        computeDescriptorSets[0] = null;
+                        computeDescriptorSets[0] = CreateComputeDescriptorSet();
+                        Assert.That(computeDescriptorSets[0]?.AreDescriptorTableHandlesValid, Is.True);
+                    }
+                    finally
+                    {
+                        for (var index = computeDescriptorSets.Length - 1; index >= 0; index--)
+                        {
+                            computeDescriptorSets[index]?.Dispose();
+                        }
+                    }
+
+                    storageDescriptorSet.Dispose();
                 }
                 finally
                 {
                     for (var index = descriptorSets.Length - 1; index >= 0; index--)
                     {
                         descriptorSets[index]?.Dispose();
-                    }
-
-                    for (var index = samplerOwners.Length - 1; index >= 0; index--)
-                    {
-                        samplerOwners[index]?.Dispose();
                     }
                 }
 
