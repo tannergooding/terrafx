@@ -1280,6 +1280,76 @@ internal sealed partial class PlatformInputRoutingOwnerTests
                 Is.EqualTo(PlatformTextInputCapabilities.CommittedText | PlatformTextInputCapabilities.Composition));
             Assert.That(session.LastDiagnostic?.Code, Is.Null);
 
+            var sessionChanges = new List<TextInputChange>();
+            var capturedChanges = new List<TextInputChange>();
+            var keyTransitionCount = 0;
+
+            void CaptureInput()
+            {
+                var capturedInput = nativeHost.PumpAndCapture();
+                nativeRoutingOwner.RouteCapturedInput(capturedInput);
+                nativeRoutingOwner.ServiceWindowInputRoutes(nativeHost.GetHostTimestamp());
+                keyTransitionCount += capturedInput.Events.Count(inputEvent =>
+                    inputEvent.Kind is PhysicalInputEventKind.KeyDown or PhysicalInputEventKind.KeyUp);
+
+                foreach (var textEvent in capturedInput.TextEvents)
+                {
+                    capturedChanges.AddRange(textEvent.Changes);
+                }
+
+                while (session.TryReadBatch(out var batch))
+                {
+                    sessionChanges.AddRange(batch?.Changes
+                        ?? throw new InvalidOperationException("The X11 XIM route returned a null text batch."));
+                }
+            }
+
+            string[] keyNames = ["Multi_key", "apostrophe", "e"];
+
+            foreach (var keyName in keyNames)
+            {
+                var keycode = IsolatedX11Input.GetKeycode(nativeHost.NativeDisplay, keyName);
+                IsolatedX11Input.SendKey(nativeHost.NativeDisplay, keycode, isDown: true);
+                CaptureInput();
+                IsolatedX11Input.SendKey(nativeHost.NativeDisplay, keycode, isDown: false);
+                CaptureInput();
+            }
+
+            for (var attempt = 0; attempt < 50
+                && !sessionChanges.Any(change =>
+                    (change.Kind == TextInputChangeKind.TextCommitted)
+                    && (change.Text == "é")); attempt++)
+            {
+                System.Threading.Thread.Sleep(10);
+                CaptureInput();
+            }
+
+            var committedTexts = sessionChanges
+                .Where(static change => change.Kind == TextInputChangeKind.TextCommitted)
+                .Select(static change => change.Text)
+                .ToArray();
+            var capturedCommittedTexts = capturedChanges
+                .Where(static change => change.Kind == TextInputChangeKind.TextCommitted)
+                .Select(static change => change.Text)
+                .ToArray();
+            var changeKinds = sessionChanges.Select(static change => change.Kind).ToArray();
+            var capturedChangeKinds = capturedChanges.Select(static change => change.Kind).ToArray();
+            var compositionStartedIndex = Array.IndexOf(changeKinds, TextInputChangeKind.CompositionStarted);
+            var compositionUpdatedIndex = Array.IndexOf(changeKinds, TextInputChangeKind.CompositionUpdated);
+            var committedTextIndex = Array.IndexOf(changeKinds, TextInputChangeKind.TextCommitted);
+            var compositionEndedIndex = Array.IndexOf(changeKinds, TextInputChangeKind.CompositionEnded);
+
+            Assert.Multiple(() => {
+                Assert.That(keyTransitionCount, Is.EqualTo(6));
+                Assert.That(committedTexts, Is.EqualTo(["é"]));
+                Assert.That(capturedCommittedTexts, Is.EqualTo(committedTexts));
+                Assert.That(changeKinds, Is.EqualTo(capturedChangeKinds));
+                Assert.That(compositionStartedIndex, Is.GreaterThanOrEqualTo(0));
+                Assert.That(compositionUpdatedIndex, Is.GreaterThan(compositionStartedIndex));
+                Assert.That(committedTextIndex, Is.GreaterThan(compositionUpdatedIndex));
+                Assert.That(compositionEndedIndex, Is.GreaterThan(committedTextIndex));
+            });
+
             // Keep Runtime's session active while the native XIC receives FocusOut and FocusIn.
             IsolatedX11Input.SetInputFocus(
                 nativeHost.NativeDisplay,

@@ -8,6 +8,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using TerraFX;
 using TerraFX.Input;
 
@@ -88,6 +89,11 @@ internal sealed partial class X11PlatformBackend
 
     private static unsafe partial class X11InputMethodNative
     {
+        internal const int LocaleCategoryCtype = 0;
+
+        [LibraryImport("libc.so.6", EntryPoint = "setlocale", StringMarshalling = StringMarshalling.Utf8)]
+        internal static partial nint SetLocale(int category, string? locale);
+
         [LibraryImport("libX11.so.6", EntryPoint = "XCloseIM")]
         internal static partial int XCloseIM(nint inputMethod);
 
@@ -199,6 +205,10 @@ internal sealed partial class X11PlatformBackend
             encoderShouldEmitUTF8Identifier: false,
             throwOnInvalidBytes: true);
 
+        private static bool s_localeAvailable;
+        private static bool s_localeInitialized;
+        private static readonly Lock s_localeLock = new();
+
         private ExceptionDispatchInfo? _callbackFailure;
         private GCHandle _clientDataHandle;
         private bool _compositionActive;
@@ -209,6 +219,7 @@ internal sealed partial class X11PlatformBackend
         private readonly PlatformInputSampleQueue _inputSamples;
         private bool _isDisposed;
         private bool _isFocused;
+        private bool _pendingCompositionEnd;
         private int _preeditSelectionStart;
         private string _preeditText = string.Empty;
         private readonly WindowHandle _window;
@@ -270,16 +281,70 @@ internal sealed partial class X11PlatformBackend
             }
         }
 
-        internal static nint OpenInputMethod(nint display)
+        internal static bool InitializeLocale()
         {
-            if ((X11InputMethodNative.XSupportsLocale() == 0)
-                || (X11InputMethodNative.XSetLocaleModifiers(string.Empty) == 0))
+            lock (s_localeLock)
             {
-                return 0;
-            }
+                if (s_localeInitialized)
+                {
+                    return s_localeAvailable;
+                }
 
-            return X11InputMethodNative.XOpenIM(display, 0, 0, 0);
+                s_localeInitialized = true;
+                var localeNamePointer = X11InputMethodNative.SetLocale(
+                    X11InputMethodNative.LocaleCategoryCtype,
+                    locale: null);
+
+                if (localeNamePointer == 0)
+                {
+                    return false;
+                }
+
+                var localeName = Marshal.PtrToStringUTF8(localeNamePointer);
+
+                if (localeName is null)
+                {
+                    return false;
+                }
+
+                if (localeName is "C" or "POSIX")
+                {
+                    // Xlib XIM uses process LC_CTYPE; adopt the environment only while libc is still at its default.
+                    var configuredLocale = Environment.GetEnvironmentVariable("LC_ALL");
+
+                    if (string.IsNullOrWhiteSpace(configuredLocale))
+                    {
+                        configuredLocale = Environment.GetEnvironmentVariable("LC_CTYPE");
+                    }
+
+                    if (string.IsNullOrWhiteSpace(configuredLocale))
+                    {
+                        configuredLocale = Environment.GetEnvironmentVariable("LANG");
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(configuredLocale)
+                        && (configuredLocale is not ("C" or "POSIX"))
+                        && (X11InputMethodNative.SetLocale(
+                            X11InputMethodNative.LocaleCategoryCtype,
+                            locale: string.Empty) == 0))
+                    {
+                        return false;
+                    }
+                }
+
+                if ((X11InputMethodNative.XSupportsLocale() == 0)
+                    || (X11InputMethodNative.XSetLocaleModifiers(string.Empty) == 0))
+                {
+                    return false;
+                }
+
+                s_localeAvailable = true;
+                return true;
+            }
         }
+
+        internal static nint OpenInputMethod(nint display)
+            => X11InputMethodNative.XOpenIM(display, 0, 0, 0);
 
         internal static X11TextInputContext? TryCreate(
             nint display,
@@ -378,7 +443,7 @@ internal sealed partial class X11PlatformBackend
             if (byteCount != 0)
             {
                 var text = s_utf8Encoding.GetString(bytes[..byteCount]);
-                _ = TryQueueChange(new TextInputChange(TextInputChangeKind.TextCommitted, text));
+                _ = TryQueueCommit(text);
             }
         }
 
@@ -397,6 +462,17 @@ internal sealed partial class X11PlatformBackend
             X11InputMethodNative.XUnsetICFocus(_inputContext);
             _isFocused = false;
             ThrowCallbackFailure();
+        }
+
+        internal void FlushPendingCompositionEnd()
+        {
+            if (!_pendingCompositionEnd)
+            {
+                return;
+            }
+
+            _pendingCompositionEnd = false;
+            _ = TryQueueChange(new TextInputChange(TextInputChangeKind.CompositionEnded));
         }
 
         internal void UpdateSnapshot(TextInputSessionSnapshot snapshot)
@@ -536,6 +612,8 @@ internal sealed partial class X11PlatformBackend
 
         private void CancelComposition(TextCompositionCancelReason reason)
         {
+            FlushPendingCompositionEnd();
+
             if (!_compositionActive)
             {
                 _ignorePreeditUntilDone = false;
@@ -633,8 +711,26 @@ internal sealed partial class X11PlatformBackend
         }
 
         private bool TryQueueChange(TextInputChange change)
+            => TryQueueChanges([change]);
+
+        private bool TryQueueCommit(string text)
         {
-            var changes = ImmutableArray.Create(change);
+            var committedText = new TextInputChange(TextInputChangeKind.TextCommitted, text);
+
+            if (!_pendingCompositionEnd)
+            {
+                return TryQueueChange(committedText);
+            }
+
+            _pendingCompositionEnd = false;
+            return TryQueueChanges([
+                committedText,
+                new TextInputChange(TextInputChangeKind.CompositionEnded),
+            ]);
+        }
+
+        private bool TryQueueChanges(ImmutableArray<TextInputChange> changes)
+        {
             return _inputSamples.TryEnqueueTextInput(new PlatformTextInputSample(
                 _window,
                 changes,
@@ -704,6 +800,7 @@ internal sealed partial class X11PlatformBackend
                     return 0;
                 }
 
+                context.FlushPendingCompositionEnd();
                 context._ignorePreeditUntilDone = false;
                 context._preeditText = string.Empty;
                 context._preeditSelectionStart = 0;
@@ -746,7 +843,7 @@ internal sealed partial class X11PlatformBackend
                     context._compositionActive = false;
                     context._preeditText = string.Empty;
                     context._preeditSelectionStart = 0;
-                    _ = context.TryQueueChange(new TextInputChange(TextInputChangeKind.CompositionEnded));
+                    context._pendingCompositionEnd = true;
                 }
             }
             catch (Exception exception)

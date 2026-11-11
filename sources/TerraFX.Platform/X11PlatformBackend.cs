@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -53,6 +54,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     private const long SubstructureNotifyMask = 1L << 19;
     private const long SubstructureRedirectMask = 1L << 20;
     private const int WindowedDpi = 96;
+    private const int XkbGroupShift = 13;
 
     private readonly nuint _atomAtom;
     private readonly X11ClipboardState _clipboard;
@@ -64,6 +66,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     private readonly LinuxEvdevGamepadCapture? _gamepadCapture;
     private readonly PlatformServiceStatus _gamepadStatus;
     private nint _inputMethod;
+    private readonly HashSet<(nuint Window, nuint Time, uint Keycode, int EventType)> _inputMethodKeyEventsThisPump = [];
     private readonly PlatformInputSampleQueue _inputSamples;
     private bool _isDisposed;
     private readonly X11KeyboardKeymap? _keyboardKeymap;
@@ -90,6 +93,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
         ArgumentOutOfRangeException.ThrowIfGreaterThan((int)clipboardPolicy, (int)ClipboardServicePolicy.Required);
         ArgumentOutOfRangeException.ThrowIfNegative((int)clipboardPolicy);
 
+        var inputMethodLocaleAvailable = X11TextInputContext.InitializeLocale();
         var display = X11Native.XOpenDisplay(null);
 
         if (display == 0)
@@ -243,7 +247,9 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
 
         try
         {
-            _inputMethod = X11TextInputContext.OpenInputMethod(_display);
+            _inputMethod = inputMethodLocaleAvailable
+                ? X11TextInputContext.OpenInputMethod(_display)
+                : 0;
 
             try
             {
@@ -925,6 +931,7 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
     public void Pump()
     {
         EnsureActiveOwnerThread();
+        _inputMethodKeyEventsThisPump.Clear();
 
         while (X11Native.XPending(_display) > 0)
         {
@@ -936,16 +943,30 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             }
 
             var inputMethodFiltered = false;
+            var inputMethodKeyEventHandled = false;
+
+            if ((_inputMethod != 0)
+                && (nativeEvent.Type is KeyPressEvent or KeyReleaseEvent)
+                && _windowsByNativeId.TryGetValue(nativeEvent.Any.Window, out var inputMethodState)
+                && (inputMethodState.TextInputContext is not null))
+            {
+                inputMethodKeyEventHandled = !_inputMethodKeyEventsThisPump.Add((
+                    nativeEvent.Key.Window,
+                    nativeEvent.Key.Time,
+                    nativeEvent.Key.Keycode,
+                    nativeEvent.Type));
+            }
 
             if ((_inputMethod != 0)
                 && (nativeEvent.Type != GenericEventType)
-                && _windowsByNativeId.TryGetValue(nativeEvent.Any.Window, out var inputMethodState)
-                && (inputMethodState.TextInputContext is X11TextInputContext inputContext))
+                && !inputMethodKeyEventHandled)
             {
-                inputMethodFiltered = X11InputMethodNative.XFilterEvent(
-                    &nativeEvent,
-                    nativeEvent.Any.Window) != 0;
-                inputContext.ThrowCallbackFailure();
+                inputMethodFiltered = X11InputMethodNative.XFilterEvent(&nativeEvent, window: 0) != 0;
+
+                foreach (var eventState in _windowsByHandle.Values)
+                {
+                    eventState.TextInputContext?.ThrowCallbackFailure();
+                }
             }
 
             if (nativeEvent.Type == MappingNotifyEvent)
@@ -1099,12 +1120,18 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             }
 
             if ((nativeEvent.Type == KeyPressEvent)
+                && !inputMethodKeyEventHandled
                 && !inputMethodFiltered
                 && _windowsByNativeId.TryGetValue(nativeEvent.Key.Window, out var textInputState)
                 && (textInputState.TextInputContext is X11TextInputContext textInputContext))
             {
                 textInputContext.LookupString(&nativeEvent.Key);
             }
+        }
+
+        foreach (var state in _windowsByHandle.Values)
+        {
+            state.TextInputContext?.FlushPendingCompositionEnd();
         }
 
         ClipboardAdvanceWrites();
@@ -1529,6 +1556,52 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             }
 
             var nativeDeviceIdentity = checked((nint)inputEvent->SourceId);
+
+            if ((cookie->Evtype is XInput2Native.KeyPress or XInput2Native.KeyRelease)
+                && (state.TextInputContext is X11TextInputContext inputContext))
+            {
+                var keyType = cookie->Evtype == XInput2Native.KeyPress ? KeyPressEvent : KeyReleaseEvent;
+                var keycode = checked((uint)inputEvent->Detail);
+                var keyEventIdentity = (inputEvent->Event, inputEvent->Time, keycode, keyType);
+
+                if (_inputMethodKeyEventsThisPump.Add(keyEventIdentity))
+                {
+                    var group = inputEvent->Group.Effective;
+
+                    if (group is < 0 or > 3)
+                    {
+                        throw new InvalidDataException("XInput2 returned an invalid keyboard group.");
+                    }
+
+                    var keyEvent = new X11Native.KeyEvent {
+                        Type = keyType,
+                        Serial = inputEvent->Serial,
+                        SendEvent = inputEvent->SendEvent,
+                        Display = _display,
+                        Window = inputEvent->Event,
+                        Root = inputEvent->Root,
+                        Subwindow = inputEvent->Child,
+                        Time = inputEvent->Time,
+                        X = checked((int)inputEvent->EventX),
+                        Y = checked((int)inputEvent->EventY),
+                        XRoot = checked((int)inputEvent->RootX),
+                        YRoot = checked((int)inputEvent->RootY),
+                        State = unchecked((uint)inputEvent->Mods.Effective)
+                            | (checked((uint)group) << XkbGroupShift),
+                        Keycode = keycode,
+                        SameScreen = 1,
+                    };
+                    var inputMethodFiltered = X11InputMethodNative.XFilterEvent(
+                        &keyEvent,
+                        keyEvent.Window) != 0;
+                    inputContext.ThrowCallbackFailure();
+
+                    if ((keyType == KeyPressEvent) && !inputMethodFiltered)
+                    {
+                        inputContext.LookupString(&keyEvent);
+                    }
+                }
+            }
 
             switch (cookie->Evtype)
             {
@@ -2399,6 +2472,21 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             XIEventMask* eventMasks,
             int numMasks);
 
+        [SuppressMessage(
+            "Design",
+            "TFX0002:Order type members by category, staticness, accessibility, and name using ordinal comparison",
+            Justification = "The XInput2 button-state fields must retain their native ABI order.")]
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct XIButtonState
+        {
+            internal int MaskLength;
+            internal byte* Mask;
+        }
+
+        [SuppressMessage(
+            "Design",
+            "TFX0002:Order type members by category, staticness, accessibility, and name using ordinal comparison",
+            Justification = "The XInput2 device-event fields must retain their native ABI order.")]
         [StructLayout(LayoutKind.Sequential)]
         internal struct XIDeviceEvent
         {
@@ -2420,6 +2508,10 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             internal double EventX;
             internal double EventY;
             internal int Flags;
+            internal XIButtonState Buttons;
+            internal XIValuatorState Valuators;
+            internal XIModifierState Mods;
+            internal XIModifierState Group;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -2428,6 +2520,31 @@ internal sealed unsafe partial class X11PlatformBackend : IPlatformBackend
             internal int DeviceId;
             internal int MaskLength;
             internal byte* Mask;
+        }
+
+        [SuppressMessage(
+            "Design",
+            "TFX0002:Order type members by category, staticness, accessibility, and name using ordinal comparison",
+            Justification = "The XInput2 modifier-state fields must retain their native ABI order.")]
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct XIModifierState
+        {
+            internal int Base;
+            internal int Latched;
+            internal int Locked;
+            internal int Effective;
+        }
+
+        [SuppressMessage(
+            "Design",
+            "TFX0002:Order type members by category, staticness, accessibility, and name using ordinal comparison",
+            Justification = "The XInput2 valuator-state fields must retain their native ABI order.")]
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct XIValuatorState
+        {
+            internal int MaskLength;
+            internal byte* Mask;
+            internal double* Values;
         }
     }
 
