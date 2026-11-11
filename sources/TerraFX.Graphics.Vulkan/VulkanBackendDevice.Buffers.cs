@@ -14,6 +14,7 @@ internal sealed unsafe partial class VulkanBackendDevice
 
     private int _liveBufferCount;
     private long _liveStagingBytes;
+    private readonly GraphicsStagingRingAllocator _uploadStagingAllocator;
     private VulkanBackendBuffer? _uploadStagingRing;
 
     private static VkBuffer CreateNativeBuffer(VkDevice device, BufferDescription description)
@@ -131,6 +132,27 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
 
         return nativeUsage;
+    }
+
+    private static void ReleaseStagingRange(
+        GraphicsStagingRingAllocator allocator,
+        GraphicsStagingRingAllocator.Reservation reservation,
+        long? completedFenceValue,
+        bool hasUncertainSubmission)
+    {
+        if (!reservation.IsValid || hasUncertainSubmission)
+        {
+            return;
+        }
+
+        if (completedFenceValue is long fenceValue)
+        {
+            allocator.RetireCompleted(reservation, fenceValue);
+        }
+        else
+        {
+            allocator.Cancel(reservation);
+        }
     }
 
     internal VulkanBackendBuffer CreateBuffer(
@@ -440,9 +462,11 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
     }
 
-    private (VulkanBackendBuffer Buffer, bool IsDedicated) GetUploadStagingBuffer(long byteLength)
+    private (VulkanBackendBuffer Buffer, bool IsDedicated, long Offset, GraphicsStagingRingAllocator.Reservation Reservation)
+        GetUploadStagingBuffer(long byteLength, long alignment)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(byteLength);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(alignment);
         EnsureActive();
         var ringCapacity = Math.Min(UploadStagingRingCapacityBytes, Capabilities.Limits.MaximumBufferByteLength);
 
@@ -455,7 +479,9 @@ internal sealed unsafe partial class VulkanBackendDevice
                     GpuMemoryKind.Upload,
                     structuredStride: null,
                     debugName: "Vulkan dedicated upload staging")),
-                true);
+                true,
+                0,
+                default);
         }
 
         var stagingRing = _uploadStagingRing;
@@ -471,7 +497,11 @@ internal sealed unsafe partial class VulkanBackendDevice
             _uploadStagingRing = stagingRing;
         }
 
-        return (stagingRing, false);
+        var reservation = ReserveStagingRange(
+            _uploadStagingAllocator,
+            byteLength,
+            alignment);
+        return (stagingRing, false, reservation.Offset, reservation);
     }
 
     private void ReleaseStagingBytes(long sizeBytes)
@@ -492,5 +522,31 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
 
         _liveStagingBytes = checked(_liveStagingBytes + sizeBytes);
+    }
+
+    private GraphicsStagingRingAllocator.Reservation ReserveStagingRange(
+        GraphicsStagingRingAllocator allocator,
+        long byteLength,
+        long alignment)
+    {
+        allocator.RetireCompleted(GetCompletedGraphFence());
+
+        if (allocator.TryReserve(byteLength, alignment, out var reservation))
+        {
+            return reservation;
+        }
+
+        if (allocator.OldestFenceValue is long oldestFenceValue)
+        {
+            WaitForGraphFence(oldestFenceValue);
+            allocator.RetireCompleted(GetCompletedGraphFence());
+
+            if (allocator.TryReserve(byteLength, alignment, out reservation))
+            {
+                return reservation;
+            }
+        }
+
+        throw new InvalidOperationException("The Vulkan upload staging ring is exhausted by live ranges.");
     }
 }

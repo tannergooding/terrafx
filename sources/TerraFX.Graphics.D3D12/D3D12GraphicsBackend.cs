@@ -822,6 +822,7 @@ public static unsafe class D3D12GraphicsBackend
             private int _liveDescriptorSetCount;
             private readonly int _ownerThreadId = Environment.CurrentManagedThreadId;
             private ID3D12Resource* _quarantinedStagingResource;
+            private readonly GraphicsStagingRingAllocator _readbackStagingAllocator;
             private ID3D12Resource* _readbackStagingResource;
             private D3D12DescriptorRangeAllocator? _resourceDescriptorAllocator;
             private ID3D12DescriptorHeap* _resourceDescriptorHeap;
@@ -834,6 +835,7 @@ public static unsafe class D3D12GraphicsBackend
             private D3D12BackendFactory.D3D12TransferQueue? _transferQueue;
             private readonly List<D3D12BackendDescriptorSet> _uncertainGraphDescriptorSets = [];
             private readonly List<nint> _uncertainGraphRenderTargetHeaps = [];
+            private readonly GraphicsStagingRingAllocator _uploadStagingAllocator;
             private byte* _uploadStagingMapped;
             private ID3D12Resource* _uploadStagingResource;
             private readonly Func<nint, uint, uint>? _waitForSingleObject;
@@ -868,8 +870,10 @@ public static unsafe class D3D12GraphicsBackend
                 _graphSubmissionObserver = graphSubmissionObserver;
                 _graphWaitForSingleObject = graphWaitForSingleObject;
                 _waitForSingleObject = waitForSingleObject;
+                _readbackStagingAllocator = new GraphicsStagingRingAllocator(StagingRingCapacityBytes);
                 _surfacePresentResultOverride = surfacePresentResultOverride;
                 _stagingBudgetBytesOverride = stagingBudgetBytesOverride;
+                _uploadStagingAllocator = new GraphicsStagingRingAllocator(StagingRingCapacityBytes);
             }
 
             public GraphicsCapabilities Capabilities { get; }
@@ -1111,6 +1115,27 @@ public static unsafe class D3D12GraphicsBackend
                 }
 
                 return false;
+            }
+
+            private static void ReleaseStagingRange(
+                GraphicsStagingRingAllocator allocator,
+                GraphicsStagingRingAllocator.Reservation reservation,
+                long? completedFenceValue,
+                bool hasUncertainSubmission)
+            {
+                if (!reservation.IsValid || hasUncertainSubmission)
+                {
+                    return;
+                }
+
+                if (completedFenceValue is long fenceValue)
+                {
+                    allocator.RetireCompleted(reservation, fenceValue);
+                }
+                else
+                {
+                    allocator.Cancel(reservation);
+                }
             }
 
             private static void ValidateTransferRange(
@@ -1579,8 +1604,14 @@ public static unsafe class D3D12GraphicsBackend
                 var sourceBuffer = GetTransferBuffer(source, BufferUsage.CopySource, nameof(source));
                 ValidateTransferRange(sourceBuffer.Description.ByteLength, sourceOffset, byteLength, nameof(sourceOffset), nameof(byteLength));
                 var transferQueue = GetTransferQueue();
-                var stagingResource = GetReadbackStaging(byteLength, out var isDedicated);
+                var stagingResource = GetReadbackStaging(
+                    byteLength,
+                    alignment: sizeof(uint),
+                    out var isDedicated,
+                    out var stagingOffset,
+                    out var stagingReservation);
                 var isMapped = false;
+                long? completedFenceValue = null;
 
                 try
                 {
@@ -1608,7 +1639,7 @@ public static unsafe class D3D12GraphicsBackend
 
                     commandList->CopyBufferRegion(
                         stagingResource,
-                        0,
+                        stagingOffset,
                         sourceResource,
                         checked((ulong)sourceOffset),
                         checked((ulong)byteLength));
@@ -1624,10 +1655,13 @@ public static unsafe class D3D12GraphicsBackend
                         commandList->ResourceBarrier(1, &toCommon);
                     }
 
-                    _ = transferQueue.SubmitAndWait();
+                    completedFenceValue = transferQueue.SubmitAndWait(
+                        stagingReservation.IsValid
+                            ? fenceValue => _readbackStagingAllocator.MarkSubmitted(stagingReservation, fenceValue)
+                            : null);
                     var readRange = new D3D12_RANGE {
-                        Begin = 0,
-                        End = checked((nuint)byteLength),
+                        Begin = checked((nuint)stagingOffset),
+                        End = checked((nuint)(stagingOffset + (ulong)byteLength)),
                     };
                     void* mapped = null;
                     ThrowIfFailed(stagingResource->Map(0, &readRange, &mapped));
@@ -1638,7 +1672,7 @@ public static unsafe class D3D12GraphicsBackend
                     }
 
                     isMapped = true;
-                    return CopyMappedStorageToOwnedBuffer((byte*)mapped, byteLength);
+                    return CopyMappedStorageToOwnedBuffer((byte*)mapped + checked((nint)stagingOffset), byteLength);
                 }
                 catch (Exception exception)
                 {
@@ -1673,6 +1707,12 @@ public static unsafe class D3D12GraphicsBackend
                             writtenByteLength: 0,
                             transferQueue);
                     }
+
+                    ReleaseStagingRange(
+                        _readbackStagingAllocator,
+                        stagingReservation,
+                        completedFenceValue,
+                        transferQueue.HasUncertainSubmission);
                 }
             }
 
@@ -1690,8 +1730,17 @@ public static unsafe class D3D12GraphicsBackend
                 var footprint = GetTextureCopyFootprint(sourceTexture.Description, subresource, extent);
                 var byteLength = checked((nint)footprint.TotalBytes);
                 var transferQueue = GetTransferQueue();
-                var stagingResource = GetReadbackStaging(byteLength, out var isDedicated);
+                var stagingResource = GetReadbackStaging(
+                    byteLength,
+                    D3D12Api.D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,
+                    out var isDedicated,
+                    out var stagingOffset,
+                    out var stagingReservation);
+                var placedFootprint = footprint.Layout;
+                placedFootprint.Offset = stagingOffset;
+                footprint.Layout = placedFootprint;
                 var isMapped = false;
+                long? completedFenceValue = null;
 
                 try
                 {
@@ -1732,11 +1781,14 @@ public static unsafe class D3D12GraphicsBackend
                         commandList->ResourceBarrier(1, &toCommon);
                     }
 
-                    _ = transferQueue.SubmitAndWait();
+                    completedFenceValue = transferQueue.SubmitAndWait(
+                        stagingReservation.IsValid
+                            ? fenceValue => _readbackStagingAllocator.MarkSubmitted(stagingReservation, fenceValue)
+                            : null);
 
                     var readRange = new D3D12_RANGE {
-                        Begin = checked((nuint)footprint.Layout.Offset),
-                        End = checked((nuint)footprint.TotalBytes),
+                        Begin = checked((nuint)stagingOffset),
+                        End = checked((nuint)(stagingOffset + footprint.TotalBytes)),
                     };
                     void* mapped = null;
                     ThrowIfFailed(stagingResource->Map(0, &readRange, &mapped));
@@ -1786,6 +1838,12 @@ public static unsafe class D3D12GraphicsBackend
                             writtenByteLength: 0,
                             transferQueue);
                     }
+
+                    ReleaseStagingRange(
+                        _readbackStagingAllocator,
+                        stagingReservation,
+                        completedFenceValue,
+                        transferQueue.HasUncertainSubmission);
                 }
             }
 
@@ -2716,12 +2774,23 @@ public static unsafe class D3D12GraphicsBackend
                     nameof(destinationOffset),
                     nameof(byteLength));
                 var transferQueue = GetTransferQueue();
-                var mapped = GetUploadStaging(byteLength, out var stagingResource, out var isDedicated);
+                var mapped = GetUploadStaging(
+                    byteLength,
+                    alignment: sizeof(uint),
+                    out var stagingResource,
+                    out var isDedicated,
+                    out var stagingOffset,
+                    out var stagingReservation);
                 var isMapped = true;
+                long? completedFenceValue = null;
 
                 try
                 {
-                    CopySourceLeaseToMappedStorage(source, sourceOffset, byteLength, mapped);
+                    CopySourceLeaseToMappedStorage(
+                        source,
+                        sourceOffset,
+                        byteLength,
+                        mapped + checked((nint)stagingOffset));
                     var commandList = transferQueue.BeginRecording();
                     var destinationResource = destinationBuffer.GetResource();
                     var initialState = D3D12GraphResourceStateMapper.GetBufferState(
@@ -2749,7 +2818,7 @@ public static unsafe class D3D12GraphicsBackend
                         destinationResource,
                         checked((ulong)destinationOffset),
                         stagingResource,
-                        0,
+                        stagingOffset,
                         checked((ulong)byteLength));
 
                     if (copyDestinationState != generalState)
@@ -2763,7 +2832,12 @@ public static unsafe class D3D12GraphicsBackend
                         commandList->ResourceBarrier(1, &toCommon);
                     }
 
-                    return transferQueue.SubmitAndWait();
+                    var completedFence = transferQueue.SubmitAndWait(
+                        stagingReservation.IsValid
+                            ? fenceValue => _uploadStagingAllocator.MarkSubmitted(stagingReservation, fenceValue)
+                            : null);
+                    completedFenceValue = completedFence;
+                    return completedFence;
                 }
                 catch (Exception exception)
                 {
@@ -2788,6 +2862,12 @@ public static unsafe class D3D12GraphicsBackend
                             byteLength,
                             transferQueue);
                     }
+
+                    ReleaseStagingRange(
+                        _uploadStagingAllocator,
+                        stagingReservation,
+                        completedFenceValue,
+                        transferQueue.HasUncertainSubmission);
                 }
             }
 
@@ -2817,11 +2897,20 @@ public static unsafe class D3D12GraphicsBackend
                     nameof(source));
                 var byteLength = (nint)source.Length;
                 var transferQueue = GetTransferQueue();
-                var mapped = GetUploadStaging(byteLength, out var stagingResource, out var isDedicated);
+                var mapped = GetUploadStaging(
+                    byteLength,
+                    alignment: sizeof(uint),
+                    out var stagingResource,
+                    out var isDedicated,
+                    out var stagingOffset,
+                    out var stagingReservation);
+                long? completedFenceValue = null;
 
                 try
                 {
-                    source.CopyTo(new Span<byte>(mapped, source.Length));
+                    source.CopyTo(new Span<byte>(
+                        mapped + checked((nint)stagingOffset),
+                        source.Length));
                     var commandList = transferQueue.BeginRecording();
                     var destinationResource = destinationBuffer.GetResource();
                     var initialState = D3D12GraphResourceStateMapper.GetBufferState(
@@ -2849,7 +2938,7 @@ public static unsafe class D3D12GraphicsBackend
                         destinationResource,
                         checked((ulong)destinationOffset),
                         stagingResource,
-                        0,
+                        stagingOffset,
                         checked((ulong)byteLength));
 
                     if (copyDestinationState != generalState)
@@ -2863,7 +2952,12 @@ public static unsafe class D3D12GraphicsBackend
                         commandList->ResourceBarrier(1, &toCommon);
                     }
 
-                    return transferQueue.SubmitAndWait();
+                    var completedFence = transferQueue.SubmitAndWait(
+                        stagingReservation.IsValid
+                            ? fenceValue => _uploadStagingAllocator.MarkSubmitted(stagingReservation, fenceValue)
+                            : null);
+                    completedFenceValue = completedFence;
+                    return completedFence;
                 }
                 catch (Exception exception)
                 {
@@ -2888,6 +2982,12 @@ public static unsafe class D3D12GraphicsBackend
                             byteLength,
                             transferQueue);
                     }
+
+                    ReleaseStagingRange(
+                        _uploadStagingAllocator,
+                        stagingReservation,
+                        completedFenceValue,
+                        transferQueue.HasUncertainSubmission);
                 }
             }
 
@@ -2917,11 +3017,23 @@ public static unsafe class D3D12GraphicsBackend
                 var footprint = GetTextureCopyFootprint(destinationTexture.Description, subresource, extent);
                 var byteLength = checked((nint)footprint.TotalBytes);
                 var transferQueue = GetTransferQueue();
-                var mapped = GetUploadStaging(byteLength, out var stagingResource, out var isDedicated);
+                var mapped = GetUploadStaging(
+                    byteLength,
+                    D3D12Api.D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,
+                    out var stagingResource,
+                    out var isDedicated,
+                    out var stagingOffset,
+                    out var stagingReservation);
+                var placedFootprint = footprint.Layout;
+                placedFootprint.Offset = stagingOffset;
+                footprint.Layout = placedFootprint;
+                long? completedFenceValue = null;
 
                 try
                 {
-                    new Span<byte>(mapped, checked((int)byteLength)).Clear();
+                    new Span<byte>(
+                        mapped + checked((nint)stagingOffset),
+                        checked((int)byteLength)).Clear();
                     CopyTextureSourceToFootprint(
                         source,
                         sourceOffset,
@@ -2969,7 +3081,12 @@ public static unsafe class D3D12GraphicsBackend
                         commandList->ResourceBarrier(1, &toCommon);
                     }
 
-                    return transferQueue.SubmitAndWait();
+                    var completedFence = transferQueue.SubmitAndWait(
+                        stagingReservation.IsValid
+                            ? fenceValue => _uploadStagingAllocator.MarkSubmitted(stagingReservation, fenceValue)
+                            : null);
+                    completedFenceValue = completedFence;
+                    return completedFence;
                 }
                 catch (Exception exception)
                 {
@@ -2994,6 +3111,12 @@ public static unsafe class D3D12GraphicsBackend
                             byteLength,
                             transferQueue);
                     }
+
+                    ReleaseStagingRange(
+                        _uploadStagingAllocator,
+                        stagingReservation,
+                        completedFenceValue,
+                        transferQueue.HasUncertainSubmission);
                 }
             }
 
@@ -4104,8 +4227,15 @@ public static unsafe class D3D12GraphicsBackend
                 return checked((long)availableBytes);
             }
 
-            private ID3D12Resource* GetReadbackStaging(nint byteLength, out bool isDedicated)
+            private ID3D12Resource* GetReadbackStaging(
+                nint byteLength,
+                long alignment,
+                out bool isDedicated,
+                out ulong stagingOffset,
+                out GraphicsStagingRingAllocator.Reservation reservation)
             {
+                stagingOffset = 0;
+                reservation = default;
                 var existingRing = _readbackStagingResource is not null;
                 var availableBudget = !existingRing && (byteLength <= StagingRingCapacityBytes)
                     ? GetAvailableBudgetBytes(GpuMemoryKind.Readback)
@@ -4119,6 +4249,8 @@ public static unsafe class D3D12GraphicsBackend
                 if (!isDedicated)
                 {
                     EnsureReadbackStaging();
+                    reservation = ReserveStagingRange(_readbackStagingAllocator, checked((long)byteLength), alignment);
+                    stagingOffset = checked((ulong)reservation.Offset);
                     return _readbackStagingResource;
                 }
 
@@ -4187,8 +4319,16 @@ public static unsafe class D3D12GraphicsBackend
                 return _transferQueue;
             }
 
-            private byte* GetUploadStaging(nint byteLength, out ID3D12Resource* stagingResource, out bool isDedicated)
+            private byte* GetUploadStaging(
+                nint byteLength,
+                long alignment,
+                out ID3D12Resource* stagingResource,
+                out bool isDedicated,
+                out ulong stagingOffset,
+                out GraphicsStagingRingAllocator.Reservation reservation)
             {
+                stagingOffset = 0;
+                reservation = default;
                 var existingRing = _uploadStagingResource is not null;
                 var availableBudget = !existingRing && (byteLength <= StagingRingCapacityBytes)
                     ? GetAvailableBudgetBytes(GpuMemoryKind.Upload)
@@ -4203,6 +4343,8 @@ public static unsafe class D3D12GraphicsBackend
                 {
                     EnsureUploadStaging();
                     stagingResource = _uploadStagingResource;
+                    reservation = ReserveStagingRange(_uploadStagingAllocator, checked((long)byteLength), alignment);
+                    stagingOffset = checked((ulong)reservation.Offset);
                     return _uploadStagingMapped;
                 }
 
@@ -4290,6 +4432,33 @@ public static unsafe class D3D12GraphicsBackend
                 var descriptorAllocator = _samplerDescriptorAllocator
                     ?? throw new InvalidOperationException("The D3D12 sampler descriptor heap has no free-slot owner.");
                 descriptorAllocator.Release(slot, 1);
+            }
+
+            private GraphicsStagingRingAllocator.Reservation ReserveStagingRange(
+                GraphicsStagingRingAllocator allocator,
+                long byteLength,
+                long alignment)
+            {
+                var transferQueue = GetTransferQueue();
+                allocator.RetireCompleted(transferQueue.GetCompletedFence());
+
+                if (allocator.TryReserve(byteLength, alignment, out var reservation))
+                {
+                    return reservation;
+                }
+
+                if (allocator.OldestFenceValue is long oldestFenceValue)
+                {
+                    transferQueue.WaitForFence(oldestFenceValue);
+                    allocator.RetireCompleted(transferQueue.GetCompletedFence());
+
+                    if (allocator.TryReserve(byteLength, alignment, out reservation))
+                    {
+                        return reservation;
+                    }
+                }
+
+                throw new InvalidOperationException("A D3D12 staging ring is exhausted by live ranges.");
             }
 
             internal sealed class D3D12BackendDescriptorSet : IDisposable
@@ -5684,7 +5853,7 @@ public static unsafe class D3D12GraphicsBackend
                 }
             }
 
-            internal long SubmitAndWait()
+            internal long SubmitAndWait(Action<long>? onSubmitted = null)
             {
                 EnsureOwnerThread();
 
@@ -5716,6 +5885,7 @@ public static unsafe class D3D12GraphicsBackend
                     throw new GraphicsDeviceLostException(signalResult.Value);
                 }
 
+                onSubmitted?.Invoke(checked((long)fenceValue));
                 var eventResult = _fence->SetEventOnCompletion(fenceValue, _fenceEvent);
 
                 if (eventResult.FAILED)

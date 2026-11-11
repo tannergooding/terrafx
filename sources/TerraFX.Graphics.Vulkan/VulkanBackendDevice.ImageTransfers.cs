@@ -13,9 +13,11 @@ internal sealed unsafe partial class VulkanBackendDevice
 {
     private static VkBufferImageCopy CreateBufferImageCopy(
         TextureSubresource subresource,
-        (int Width, int Height, int Depth) extent)
+        (int Width, int Height, int Depth) extent,
+        long bufferOffset = 0)
     {
         var copy = default(VkBufferImageCopy);
+        copy.bufferOffset = checked((ulong)bufferOffset);
         copy.imageSubresource.aspectMask = subresource.Aspect == TextureAspect.Depth
             ? VkImageAspectFlags.VK_IMAGE_ASPECT_DEPTH_BIT
             : VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT;
@@ -146,7 +148,13 @@ internal sealed unsafe partial class VulkanBackendDevice
         var rowByteLength = checked((nint)extent.Width * TextureReadback.GetBytesPerTexel(destination.Description.Format));
         var slicePitch = checked(rowByteLength * extent.Height);
         var byteLength = checked(slicePitch * extent.Depth);
-        var (staging, isDedicatedStaging) = GetUploadStagingBuffer(checked((long)byteLength));
+        var bufferOffsetAlignment = Math.Max(
+            Math.Max(4, TextureReadback.GetBytesPerTexel(destination.Description.Format)),
+            Capabilities.Limits.BufferCopyOffsetAlignment);
+        var (staging, isDedicatedStaging, stagingOffset, stagingReservation) = GetUploadStagingBuffer(
+            checked((long)byteLength),
+            bufferOffsetAlignment);
+        long? completedFenceValue = null;
 
         try
         {
@@ -156,7 +164,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                 sourceOffset,
                 sourceLayout,
                 extent,
-                rowByteLength);
+                rowByteLength,
+                stagingOffset);
             BeginOneTimeCommands();
             var oldLayout = destination.GetLayout(subresource);
             RecordImageBarrier(
@@ -166,13 +175,13 @@ internal sealed unsafe partial class VulkanBackendDevice
                 VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
             RecordBufferBarrier(
                 staging,
-                0,
+                stagingOffset,
                 byteLength,
                 VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_HOST_BIT,
                 VkAccessFlags2.VK_ACCESS_2_HOST_WRITE_BIT,
                 VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
                 VkAccessFlags2.VK_ACCESS_2_TRANSFER_READ_BIT);
-            var copy = CreateBufferImageCopy(subresource, extent);
+            var copy = CreateBufferImageCopy(subresource, extent, stagingOffset);
             VulkanApi.vkCmdCopyBufferToImage(
                 _commandBuffer,
                 staging.Buffer,
@@ -185,7 +194,12 @@ internal sealed unsafe partial class VulkanBackendDevice
                 subresource,
                 VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VkImageLayout.VK_IMAGE_LAYOUT_GENERAL);
-            var completionValue = SubmitAndWait(destination);
+            var completionValue = SubmitAndWait(
+                destination,
+                stagingReservation.IsValid
+                    ? fenceValue => _uploadStagingAllocator.MarkSubmitted(stagingReservation, fenceValue)
+                    : null);
+            completedFenceValue = completionValue;
             destination.SetLayout(subresource, VkImageLayout.VK_IMAGE_LAYOUT_GENERAL);
             destination.SetLastAccessScope(
                 subresource,
@@ -203,6 +217,15 @@ internal sealed unsafe partial class VulkanBackendDevice
             else if (isDedicatedStaging)
             {
                 staging.Dispose();
+            }
+
+            if (stagingReservation.IsValid)
+            {
+                ReleaseStagingRange(
+                    _uploadStagingAllocator,
+                    stagingReservation,
+                    completedFenceValue,
+                    _hasUncertainSubmission);
             }
         }
     }
@@ -331,7 +354,8 @@ internal sealed unsafe partial class VulkanBackendDevice
         nint sourceOffset,
         TextureDataLayout sourceLayout,
         (int Width, int Height, int Depth) extent,
-        nint rowByteLength)
+        nint rowByteLength,
+        long destinationOffset)
     {
         var mapped = MapHostVisibleMemory(destination);
 
@@ -346,7 +370,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                         + (checked((nint)depth) * sourceLayout.SlicePitch)
                         + (checked((nint)row) * sourceLayout.RowPitch));
                     var destinationRowOffset = checked(
-                        (checked((nint)depth) * extent.Height * rowByteLength)
+                        checked((nint)destinationOffset)
+                        + (checked((nint)depth) * extent.Height * rowByteLength)
                         + (checked((nint)row) * rowByteLength));
                     var copyLength = checked((int)rowByteLength);
                     var copyAction = new BufferLeaseCopyAction(mapped + destinationRowOffset);

@@ -126,6 +126,8 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         }
 
         Capabilities = capabilities;
+        _uploadStagingAllocator = new GraphicsStagingRingAllocator(
+            Math.Min(UploadStagingRingCapacityBytes, Capabilities.Limits.MaximumBufferByteLength));
     }
 
     public GraphicsCapabilities Capabilities { get; }

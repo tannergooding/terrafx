@@ -253,15 +253,18 @@ internal sealed unsafe partial class VulkanBackendDevice
             byteLength,
             nameof(destinationOffset),
             nameof(byteLength));
-        var (staging, isDedicatedStaging) = GetUploadStagingBuffer(checked((long)byteLength));
+        var (staging, isDedicatedStaging, stagingOffset, stagingReservation) = GetUploadStagingBuffer(
+            checked((long)byteLength),
+            Math.Max(4, Capabilities.Limits.BufferCopyOffsetAlignment));
+        long? completedFenceValue = null;
 
         try
         {
-            WriteMappedBuffer(staging, source, sourceOffset, byteLength);
+            WriteMappedBuffer(staging, source, sourceOffset, byteLength, stagingOffset);
             BeginOneTimeCommands();
             RecordBufferBarrier(
                 staging,
-                0,
+                stagingOffset,
                 byteLength,
                 VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_HOST_BIT,
                 VkAccessFlags2.VK_ACCESS_2_HOST_WRITE_BIT,
@@ -276,12 +279,17 @@ internal sealed unsafe partial class VulkanBackendDevice
                 VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
                 VkAccessFlags2.VK_ACCESS_2_TRANSFER_WRITE_BIT);
             var copy = new VkBufferCopy {
-                srcOffset = 0,
+                srcOffset = checked((ulong)stagingOffset),
                 dstOffset = checked((ulong)destinationOffset),
                 size = checked((ulong)byteLength),
             };
             VulkanApi.vkCmdCopyBuffer(_commandBuffer, staging.Buffer, destination.Buffer, 1, &copy);
-            var completedFence = SubmitAndWait(destination);
+            var completedFence = SubmitAndWait(
+                destination,
+                stagingReservation.IsValid
+                    ? fenceValue => _uploadStagingAllocator.MarkSubmitted(stagingReservation, fenceValue)
+                    : null);
+            completedFenceValue = completedFence;
             destination.SetLastAccessScope(
                 VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
                 VkAccessFlags2.VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -296,6 +304,15 @@ internal sealed unsafe partial class VulkanBackendDevice
             else if (isDedicatedStaging)
             {
                 staging.Dispose();
+            }
+
+            if (stagingReservation.IsValid)
+            {
+                ReleaseStagingRange(
+                    _uploadStagingAllocator,
+                    stagingReservation,
+                    completedFenceValue,
+                    _hasUncertainSubmission);
             }
         }
     }
@@ -324,15 +341,18 @@ internal sealed unsafe partial class VulkanBackendDevice
             source.Length,
             nameof(destinationOffset),
             nameof(source));
-        var (staging, isDedicatedStaging) = GetUploadStagingBuffer(source.Length);
+        var (staging, isDedicatedStaging, stagingOffset, stagingReservation) = GetUploadStagingBuffer(
+            source.Length,
+            Math.Max(4, Capabilities.Limits.BufferCopyOffsetAlignment));
+        long? completedFenceValue = null;
 
         try
         {
-            WriteMappedBuffer(staging, source);
+            WriteMappedBuffer(staging, source, stagingOffset);
             BeginOneTimeCommands();
             RecordBufferBarrier(
                 staging,
-                0,
+                stagingOffset,
                 source.Length,
                 VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_HOST_BIT,
                 VkAccessFlags2.VK_ACCESS_2_HOST_WRITE_BIT,
@@ -347,12 +367,17 @@ internal sealed unsafe partial class VulkanBackendDevice
                 VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
                 VkAccessFlags2.VK_ACCESS_2_TRANSFER_WRITE_BIT);
             var copy = new VkBufferCopy {
-                srcOffset = 0,
+                srcOffset = checked((ulong)stagingOffset),
                 dstOffset = checked((ulong)destinationOffset),
                 size = checked((ulong)source.Length),
             };
             VulkanApi.vkCmdCopyBuffer(_commandBuffer, staging.Buffer, destination.Buffer, 1, &copy);
-            var completedFence = SubmitAndWait(destination);
+            var completedFence = SubmitAndWait(
+                destination,
+                stagingReservation.IsValid
+                    ? fenceValue => _uploadStagingAllocator.MarkSubmitted(stagingReservation, fenceValue)
+                    : null);
+            completedFenceValue = completedFence;
             destination.SetLastAccessScope(
                 VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_COPY_BIT,
                 VkAccessFlags2.VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -367,6 +392,15 @@ internal sealed unsafe partial class VulkanBackendDevice
             else if (isDedicatedStaging)
             {
                 staging.Dispose();
+            }
+
+            if (stagingReservation.IsValid)
+            {
+                ReleaseStagingRange(
+                    _uploadStagingAllocator,
+                    stagingReservation,
+                    completedFenceValue,
+                    _hasUncertainSubmission);
             }
         }
     }
@@ -559,13 +593,16 @@ internal sealed unsafe partial class VulkanBackendDevice
     private void StopRecording()
         => ThrowIfFailed(VulkanApi.vkResetCommandBuffer(_commandBuffer, default), "vkResetCommandBuffer");
 
-    private long SubmitAndWait(VulkanBackendBuffer retainedBuffer)
-        => SubmitAndWaitCore(retainedBuffer, retainedTexture: null);
+    private long SubmitAndWait(VulkanBackendBuffer retainedBuffer, Action<long>? onSubmitted = null)
+        => SubmitAndWaitCore(retainedBuffer, retainedTexture: null, onSubmitted: onSubmitted);
 
-    private long SubmitAndWait(VulkanBackendTexture retainedTexture)
-        => SubmitAndWaitCore(retainedBuffer: null, retainedTexture: retainedTexture);
+    private long SubmitAndWait(VulkanBackendTexture retainedTexture, Action<long>? onSubmitted = null)
+        => SubmitAndWaitCore(retainedBuffer: null, retainedTexture: retainedTexture, onSubmitted: onSubmitted);
 
-    private long SubmitAndWaitCore(VulkanBackendBuffer? retainedBuffer, VulkanBackendTexture? retainedTexture)
+    private long SubmitAndWaitCore(
+        VulkanBackendBuffer? retainedBuffer,
+        VulkanBackendTexture? retainedTexture,
+        Action<long>? onSubmitted = null)
     {
         EnsureActive();
 
@@ -602,6 +639,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             _hasUncertainSubmission = true;
             ThrowIfFailed(VulkanApi.vkQueueSubmit2(_queue, 1, &submitInfo, default), "vkQueueSubmit2");
             _timelineValue = signalValue;
+            onSubmitted?.Invoke(checked((long)signalValue));
             var waitInfo = default(VkSemaphoreWaitInfo);
             waitInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
             waitInfo.semaphoreCount = 1;
@@ -653,13 +691,18 @@ internal sealed unsafe partial class VulkanBackendDevice
         VulkanBackendBuffer destination,
         BufferReadLease<byte> source,
         nint sourceOffset,
-        nint byteLength)
+        nint byteLength,
+        long destinationOffset)
     {
         var mapped = MapHostVisibleMemory(destination);
 
         try
         {
-            CopySourceLeaseToMappedStorage(source, sourceOffset, byteLength, mapped);
+            CopySourceLeaseToMappedStorage(
+                source,
+                sourceOffset,
+                byteLength,
+                mapped + checked((nint)destinationOffset));
             FlushMappedMemory(destination);
         }
         finally
@@ -668,13 +711,13 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
     }
 
-    private void WriteMappedBuffer(VulkanBackendBuffer destination, ReadOnlySpan<byte> source)
+    private void WriteMappedBuffer(VulkanBackendBuffer destination, ReadOnlySpan<byte> source, long destinationOffset)
     {
         var mapped = MapHostVisibleMemory(destination);
 
         try
         {
-            source.CopyTo(new Span<byte>(mapped, source.Length));
+            source.CopyTo(new Span<byte>(mapped + checked((nint)destinationOffset), source.Length));
             FlushMappedMemory(destination);
         }
         finally

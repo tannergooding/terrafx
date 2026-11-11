@@ -1498,11 +1498,37 @@ internal sealed class VulkanBackendDeviceTests
             Assert.That(texture.GetLayout(subresource), Is.EqualTo(VkImageLayout.VK_IMAGE_LAYOUT_GENERAL));
             Assert.That(texture.IsInitialized(subresource), Is.True);
 
+            var secondExpected = new byte[expected.Length];
+            Array.Fill(secondExpected, (byte)0x5A);
+            var secondSourceBytes = new byte[sourceByteLength];
+            Array.Fill(secondSourceBytes, (byte)0xCD);
+
+            for (var row = 0; row < height; row++)
+            {
+                Array.Copy(secondExpected, row * rowByteLength, secondSourceBytes, row * sourceRowPitch, rowByteLength);
+            }
+
+            var secondSourceStorage = UnmanagedBuffer<byte>.Allocate(
+                sourceByteLength,
+                new BufferAllocationOptions(sourceByteLength, alignment: 1));
+            secondSourceStorage.CopyFrom(secondSourceBytes.AsSpan(), 0);
+
+            using var secondOwnedSource = secondSourceStorage.TransferToOwnedBuffer();
+            using var secondSourceLease = secondOwnedSource.AcquireReadLease(0, sourceByteLength);
+            Assert.That(
+                device.UploadTexture(
+                    texture,
+                    subresource,
+                    secondSourceLease,
+                    0,
+                    new TextureDataLayout(sourceRowPitch, sourceSlicePitch)),
+                Is.GreaterThan(0));
+
             using var readback = device.ReadbackTexture(texture, subresource);
             Assert.That(readback.RowPitch, Is.EqualTo(checked((nint)rowByteLength)));
             Assert.That(readback.SlicePitch, Is.EqualTo(checked((nint)(rowByteLength * height))));
             Assert.That(readback.ByteLength, Is.EqualTo(checked((nint)expected.Length)));
-            AssertTextureReadback(readback, expected);
+            AssertTextureReadback(readback, secondExpected);
         }
         catch (DllNotFoundException exception)
         {

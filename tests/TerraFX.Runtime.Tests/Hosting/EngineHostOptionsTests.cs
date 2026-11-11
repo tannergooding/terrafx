@@ -583,28 +583,54 @@ internal sealed partial class EngineHostOptionsTests
                     debugName: "exact staging-ring boundary destination"))
                 .GetAwaiter()
                 .GetResult();
-            var ringUpload = graphicsDevice.UploadBufferAsync(
+            const int stagingSegmentByteLength = stagingRingByteLength / 2;
+            var firstRingUpload = graphicsDevice.UploadBufferAsync(
                 stagingBuffer,
                 0,
-                stagingPayload.AsSpan(0, stagingRingByteLength))
+                stagingPayload.AsSpan(0, stagingSegmentByteLength))
                 .GetAwaiter()
                 .GetResult();
-            Assert.That(ringUpload.Status, Is.EqualTo(UploadStatus.Ready));
-            var ringCompletedFence = ringUpload.CompletedFence
+            Assert.That(firstRingUpload.Status, Is.EqualTo(UploadStatus.Ready));
+            var firstRingCompletedFence = firstRingUpload.CompletedFence
                 ?? throw new InvalidOperationException("A ready D3D12 staging-ring upload has no completed fence.");
-            Assert.That(ringCompletedFence, Is.GreaterThan(0));
+            Assert.That(firstRingCompletedFence, Is.GreaterThan(0));
 
-            using (var ringReadback = graphicsDevice.ReadbackBufferAsync(
+            var secondRingUpload = graphicsDevice.UploadBufferAsync(
+                stagingBuffer,
+                stagingSegmentByteLength,
+                stagingPayload.AsSpan(stagingSegmentByteLength, stagingSegmentByteLength))
+                .GetAwaiter()
+                .GetResult();
+            Assert.That(secondRingUpload.Status, Is.EqualTo(UploadStatus.Ready));
+            var secondRingCompletedFence = secondRingUpload.CompletedFence
+                ?? throw new InvalidOperationException("A ready D3D12 staging-ring upload has no completed fence.");
+            Assert.That(secondRingCompletedFence, Is.GreaterThan(firstRingCompletedFence));
+
+            using (var firstRingReadback = graphicsDevice.ReadbackBufferAsync(
                 stagingBuffer,
                 0,
-                stagingRingByteLength)
+                stagingSegmentByteLength)
                 .GetAwaiter()
                 .GetResult())
-            using (var ringReadLease = ringReadback.AcquireReadLease(0, stagingRingByteLength))
+            using (var firstRingReadLease = firstRingReadback.AcquireReadLease(0, stagingSegmentByteLength))
             {
                 var ringActual = new byte[1];
                 var copyAction = new ReadbackCopyAction(ringActual);
-                ringReadLease.UseWindow(stagingRingByteLength - 1, 1, ref copyAction);
+                firstRingReadLease.UseWindow(stagingSegmentByteLength - 1, 1, ref copyAction);
+                Assert.That(ringActual, Is.EqualTo(new byte[] { 0 }));
+            }
+
+            using (var secondRingReadback = graphicsDevice.ReadbackBufferAsync(
+                stagingBuffer,
+                stagingSegmentByteLength,
+                stagingSegmentByteLength)
+                .GetAwaiter()
+                .GetResult())
+            using (var secondRingReadLease = secondRingReadback.AcquireReadLease(0, stagingSegmentByteLength))
+            {
+                var ringActual = new byte[1];
+                var copyAction = new ReadbackCopyAction(ringActual);
+                secondRingReadLease.UseWindow(stagingSegmentByteLength - 1, 1, ref copyAction);
                 Assert.That(ringActual, Is.EqualTo(new byte[] { 0x17 }));
             }
 
