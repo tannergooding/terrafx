@@ -3308,10 +3308,10 @@ public static unsafe class D3D12GraphicsBackend
                         throw new ArgumentException("A bound texture does not declare storage-image usage.", nameof(storageImageBindings));
                     }
 
-                    if ((texture.Description.Dimension != TextureDimension.Dimension2D)
+                    if (texture.Description.Dimension is not (TextureDimension.Dimension2D or TextureDimension.Dimension3D)
                         || (texture.Description.ArrayLayers != 1))
                     {
-                        throw new NotSupportedException("This D3D12 descriptor-set path supports single-layer 2D storage textures.");
+                        throw new NotSupportedException("This D3D12 descriptor-set path supports single-layer 2D and 3D storage textures.");
                     }
 
                     retainedStorageTextures[index] = texture;
@@ -3803,12 +3803,37 @@ public static unsafe class D3D12GraphicsBackend
             {
                 var viewDescription = default(D3D12_UNORDERED_ACCESS_VIEW_DESC);
                 viewDescription.Format = GetNativeFormat(texture.Description.Format);
-                viewDescription.ViewDimension = D3D12_UAV_DIMENSION.D3D12_UAV_DIMENSION_TEXTURE2D;
                 var anonymous = viewDescription.Anonymous;
-                var textureView = anonymous.Texture2D;
-                textureView.MipSlice = checked((uint)range.FirstMip);
-                textureView.PlaneSlice = 0;
-                anonymous.Texture2D = textureView;
+
+                switch (texture.Description.Dimension)
+                {
+                    case TextureDimension.Dimension2D:
+                    {
+                        viewDescription.ViewDimension = D3D12_UAV_DIMENSION.D3D12_UAV_DIMENSION_TEXTURE2D;
+                        var textureView = anonymous.Texture2D;
+                        textureView.MipSlice = checked((uint)range.FirstMip);
+                        textureView.PlaneSlice = 0;
+                        anonymous.Texture2D = textureView;
+                        break;
+                    }
+
+                    case TextureDimension.Dimension3D:
+                    {
+                        viewDescription.ViewDimension = D3D12_UAV_DIMENSION.D3D12_UAV_DIMENSION_TEXTURE3D;
+                        var textureView = anonymous.Texture3D;
+                        textureView.MipSlice = checked((uint)range.FirstMip);
+                        textureView.FirstWSlice = 0;
+                        textureView.WSize = checked((uint)Math.Max(1, texture.Description.Depth >> range.FirstMip));
+                        anonymous.Texture3D = textureView;
+                        break;
+                    }
+
+                    default:
+                    {
+                        throw new ArgumentOutOfRangeException(nameof(texture));
+                    }
+                }
+
                 viewDescription.Anonymous = anonymous;
                 _device->CreateUnorderedAccessView(texture.GetResource(), null, &viewDescription, cpuHandle);
             }

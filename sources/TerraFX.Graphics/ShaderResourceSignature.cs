@@ -40,7 +40,7 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
     /// <param name="arrayCount">The positive fixed descriptor-array count.</param>
     /// <param name="access">The declared read/write capability.</param>
     /// <param name="storageImageFormat">The reflected image format for a storage-image binding.</param>
-    /// <exception cref="ArgumentOutOfRangeException">An identity, count, or access value is invalid.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">An identity, count, access value, or storage-image format is invalid.</exception>
     /// <exception cref="ArgumentException">A non-storage resource declares a storage-image format or an access other than <see cref="ShaderResourceAccess.Read"/>.</exception>
     public ShaderResourceSignature(
         ShaderBindingGroup group,
@@ -49,6 +49,37 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
         int arrayCount,
         ShaderResourceAccess access,
         ShaderStorageImageFormat storageImageFormat)
+        : this(
+            group,
+            binding,
+            kind,
+            arrayCount,
+            access,
+            storageImageFormat,
+            kind is ShaderResourceKind.SampledImage or ShaderResourceKind.StorageImage
+                ? TextureDimension.Dimension2D
+                : TextureDimension.None)
+    {
+    }
+
+    /// <summary>Initializes a reflected shader resource binding with explicit image dimensionality.</summary>
+    /// <param name="group">The portable resource group.</param>
+    /// <param name="binding">The register index within the resource class.</param>
+    /// <param name="kind">The resource register class.</param>
+    /// <param name="arrayCount">The positive fixed descriptor-array count.</param>
+    /// <param name="access">The declared read/write capability.</param>
+    /// <param name="storageImageFormat">The reflected image format for a storage-image binding.</param>
+    /// <param name="imageDimension">The reflected dimension for a sampled or storage image.</param>
+    /// <exception cref="ArgumentOutOfRangeException">An identity, count, access value, or image dimension is invalid.</exception>
+    /// <exception cref="ArgumentException">A non-image resource declares image metadata, a non-storage resource declares a storage-image format, or an access other than <see cref="ShaderResourceAccess.Read"/>.</exception>
+    public ShaderResourceSignature(
+        ShaderBindingGroup group,
+        int binding,
+        ShaderResourceKind kind,
+        int arrayCount,
+        ShaderResourceAccess access,
+        ShaderStorageImageFormat storageImageFormat,
+        TextureDimension imageDimension)
     {
         if ((group == ShaderBindingGroup.None) || !Enum.IsDefined(group))
         {
@@ -82,10 +113,28 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
             {
                 throw new ArgumentOutOfRangeException(nameof(storageImageFormat));
             }
+
+            if (imageDimension is not (TextureDimension.Dimension2D or TextureDimension.Dimension3D))
+            {
+                throw new ArgumentOutOfRangeException(nameof(imageDimension));
+            }
         }
-        else if (storageImageFormat != ShaderStorageImageFormat.None)
+        else if (kind == ShaderResourceKind.SampledImage)
         {
-            throw new ArgumentException("Only a storage-image binding may declare a storage-image format.", nameof(storageImageFormat));
+            if (storageImageFormat != ShaderStorageImageFormat.None)
+            {
+                throw new ArgumentException("Only a storage-image binding may declare a storage-image format.", nameof(storageImageFormat));
+            }
+
+            if (imageDimension != TextureDimension.Dimension2D)
+            {
+                throw new ArgumentOutOfRangeException(nameof(imageDimension));
+            }
+        }
+        else if ((storageImageFormat != ShaderStorageImageFormat.None)
+            || (imageDimension != TextureDimension.None))
+        {
+            throw new ArgumentException("Only an image binding may declare an image format or dimension.", nameof(imageDimension));
         }
 
         var maximumBinding = kind switch {
@@ -101,6 +150,7 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
         Access = access;
         Binding = binding;
         Group = group;
+        ImageDimension = imageDimension;
         Kind = kind;
         StorageImageFormat = storageImageFormat;
     }
@@ -135,6 +185,9 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
     /// <summary>Gets the portable resource group.</summary>
     public ShaderBindingGroup Group { get; }
 
+    /// <summary>Gets the reflected image dimension, or <see cref="TextureDimension.None"/> for non-image resources.</summary>
+    public TextureDimension ImageDimension { get; }
+
     /// <summary>Gets the resource register class.</summary>
     public ShaderResourceKind Kind { get; }
 
@@ -154,11 +207,12 @@ public readonly struct ShaderResourceSignature : IEquatable<ShaderResourceSignat
         && (Kind == other.Kind)
         && (ArrayCount == other.ArrayCount)
         && (Access == other.Access)
-        && (StorageImageFormat == other.StorageImageFormat);
+        && (StorageImageFormat == other.StorageImageFormat)
+        && (ImageDimension == other.ImageDimension);
 
     /// <inheritdoc />
     public override bool Equals(object? obj) => (obj is ShaderResourceSignature other) && Equals(other);
 
     /// <inheritdoc />
-    public override int GetHashCode() => HashCode.Combine(Group, Binding, Kind, ArrayCount, Access, StorageImageFormat);
+    public override int GetHashCode() => HashCode.Combine(Group, Binding, Kind, ArrayCount, Access, StorageImageFormat, ImageDimension);
 }

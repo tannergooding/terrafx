@@ -518,6 +518,24 @@ internal sealed partial class EngineHostOptionsTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task Rejects3DStorageImageShaderWhenBoundTo2DTexture(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: true,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            use3DStorageImage: true,
+            expectStorageImageDimensionRejection: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SubmitsCombinedBufferAndTextureCopyGraphAndReadsBackAsync(GraphicsBackend backend)
         => RunOffscreenGraphAsync(
             backend,
@@ -808,6 +826,23 @@ internal sealed partial class EngineHostOptionsTests
             holdGraphCompletion: false,
             useTextureCopy: true,
             usePartialTextureCopy: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsR32UIntComputeStorageImageFor3DTexture(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: true,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            use3DStorageImage: true);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
@@ -1143,7 +1178,9 @@ internal sealed partial class EngineHostOptionsTests
         bool simulateVulkanGraphFenceTimeout = false,
         bool useMultipleComputeStorageImages = false,
         bool useMultipleSampledImages = false,
-        bool useMultipleFrameUniformBuffers = false)
+        bool useMultipleFrameUniformBuffers = false,
+        bool use3DStorageImage = false,
+        bool expectStorageImageDimensionRejection = false)
     {
         if ((backend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -1164,6 +1201,7 @@ internal sealed partial class EngineHostOptionsTests
                 || useMultipleComputeStorageImages
                 || useMultipleSampledImages
                 || useMultipleFrameUniformBuffers
+                || use3DStorageImage
                 || useFloatStorageImage
                 || useSignedStorageImage
                 || useRgba16FloatStorageImage)
@@ -1962,7 +2000,9 @@ internal sealed partial class EngineHostOptionsTests
                     || useMultipleComputeStorageBuffers
                     || useConstantWriteComputeBuffer)
                 {
-                    var computeStage = useConstantWriteComputeBuffer
+                    var computeStage = use3DStorageImage
+                        ? "compute-storage-3d-image"
+                        : useConstantWriteComputeBuffer
                         ? "compute-storage-write"
                         : useMultipleComputeStorageImages
                             ? "compute-storage-images"
@@ -2156,13 +2196,17 @@ internal sealed partial class EngineHostOptionsTests
             if (useStorageResources || useCompute || useTransientStorage)
             {
                 var storageImageWidth = useStorageImageSubrange ? 2 : 1;
+                var storageImageDimension = (use3DStorageImage && !expectStorageImageDimensionRejection)
+                    ? TextureDimension.Dimension3D
+                    : TextureDimension.Dimension2D;
+                var storageImageDepth = storageImageDimension == TextureDimension.Dimension3D ? 2 : 1;
                 var storageImageMipLevels = useStorageImageSubrange ? 2 : 1;
                 storageImage = await graphicsDevice.CreateTextureAsync(
                     new TextureDescription(
-                        TextureDimension.Dimension2D,
+                        storageImageDimension,
                         storageImageWidth,
                         storageImageWidth,
-                        depth: 1,
+                        depth: storageImageDepth,
                         arrayLayers: 1,
                         mipLevels: storageImageMipLevels,
                         useFloatStorageImage && !expectStorageImageFormatRejection
@@ -2199,7 +2243,7 @@ internal sealed partial class EngineHostOptionsTests
                     Assert.That(storageImageBaseMipUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
                 }
 
-                var storageImageInitialBytes = new byte[storageImageBytesPerTexel];
+                var storageImageInitialBytes = new byte[checked(storageImageBytesPerTexel * storageImageDepth)];
                 var storageImageInitialStorage = UnmanagedBuffer<byte>.Allocate(
                     storageImageInitialBytes.Length,
                     new BufferAllocationOptions(storageImageInitialBytes.Length, alignment: 1));
@@ -3260,13 +3304,15 @@ internal sealed partial class EngineHostOptionsTests
                         [
                             new TextureBinding(
                                 ShaderBindingGroup.Frame,
-                                useFloatStorageImage
-                                    ? 3
-                                    : useRgba16FloatStorageImage
-                                        ? 5
-                                        : useSignedStorageImage
-                                            ? 4
-                                            : 1,
+                                use3DStorageImage
+                                    ? 7
+                                    : useFloatStorageImage
+                                        ? 3
+                                        : useRgba16FloatStorageImage
+                                            ? 5
+                                            : useSignedStorageImage
+                                                ? 4
+                                                : 1,
                                 ShaderResourceKind.StorageImage,
                                 computeStorageImageWriteVersion,
                                 storageImageBindingRange),
@@ -3915,15 +3961,18 @@ internal sealed partial class EngineHostOptionsTests
             var plan = compileResponse.Plan
                 ?? throw new InvalidOperationException("The compiled graph response omitted its plan.");
 
-            if (expectStorageImageFormatRejection)
+            if (expectStorageImageFormatRejection || expectStorageImageDimensionRejection)
             {
                 var exception = Assert.ThrowsAsync<NotSupportedException>(async () =>
                     await renderer.SubmitAsync(renderSnapshot, plan).ConfigureAwait(false));
+                var expectedRejection = expectStorageImageDimensionRejection
+                    ? "must match its reflected format/dimension"
+                    : useSignedStorageImage
+                        ? "no texture format for an R32SInt storage image"
+                        : "must match its reflected format";
                 Assert.That(
                     exception!.Message,
-                    Does.Contain(useSignedStorageImage
-                        ? "no texture format for an R32SInt storage image"
-                        : "must match its reflected format"));
+                    Does.Contain(expectedRejection));
                 return;
             }
 
@@ -4850,7 +4899,17 @@ internal sealed partial class EngineHostOptionsTests
                     computeImageReadLease.UseWindow(0, computeStorageImageBytes.Length, ref copyAction);
                 }
 
-                if (useFloatStorageImage)
+                if (use3DStorageImage)
+                {
+                    Assert.That(computeImageReadback.Depth, Is.EqualTo(2));
+                    Assert.That(BitConverter.ToUInt32(computeStorageImageBytes, 0), Is.Zero);
+                    Assert.That(
+                        BitConverter.ToUInt32(
+                            computeStorageImageBytes,
+                            checked((int)computeImageReadback.SlicePitch)),
+                        Is.EqualTo(2u));
+                }
+                else if (useFloatStorageImage)
                 {
                     Assert.That(BitConverter.ToSingle(computeStorageImageBytes, 0), Is.EqualTo(1.0f));
                 }

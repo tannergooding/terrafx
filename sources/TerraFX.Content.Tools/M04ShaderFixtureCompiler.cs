@@ -14,6 +14,7 @@ namespace TerraFX.Content.Tools;
 internal static class M04ShaderFixtureCompiler
 {
     private const string ShaderEntryPointComputeStorage = "CSStorageMain";
+    private const string ShaderEntryPointComputeStorage3DImage = "CSStorage3DImageMain";
     private const string ShaderEntryPointComputeStorageBuffers = "CSStorageBuffersMain";
     private const string ShaderEntryPointComputeStorageFloatImage = "CSStorageFloatImageMain";
     private const string ShaderEntryPointComputeStorageImages = "CSStorageImagesMain";
@@ -33,6 +34,7 @@ internal static class M04ShaderFixtureCompiler
     private const string ShaderFileName = "M04OffscreenTriangle.hlsl";
     private static readonly string[] s_stageNames = [
         "compute-storage",
+        "compute-storage-3d-image",
         "compute-storage-buffers",
         "compute-storage-float-image",
         "compute-storage-images",
@@ -121,6 +123,17 @@ internal static class M04ShaderFixtureCompiler
                 ShaderEntryPointComputeStorageBuffers,
                 "cs_6_0",
                 "compute-storage-buffers",
+                cancellationToken).ConfigureAwait(false);
+            await CompileStageAsync(
+                manifest,
+                dxcExecutable,
+                spirvCrossExecutable,
+                spirvValidationExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointComputeStorage3DImage,
+                "cs_6_0",
+                "compute-storage-3d-image",
                 cancellationToken).ConfigureAwait(false);
             await CompileStageAsync(
                 manifest,
@@ -368,6 +381,15 @@ internal static class M04ShaderFixtureCompiler
                 dxcExecutable,
                 shaderPath,
                 stagingDirectory,
+                ShaderEntryPointComputeStorage3DImage,
+                "cs_6_0",
+                "compute-storage-3d-image",
+                cancellationToken).ConfigureAwait(false);
+            await CompileDxilStageAsync(
+                manifest,
+                dxcExecutable,
+                shaderPath,
+                stagingDirectory,
                 ShaderEntryPointComputeStorageWrite,
                 "cs_6_0",
                 "compute-storage-write",
@@ -521,6 +543,7 @@ internal static class M04ShaderFixtureCompiler
             "vertex-sprite" => ShaderEntryPointSpriteVertex,
             "compute-storage" => ShaderEntryPointComputeStorage,
             "compute-storage-buffers" => ShaderEntryPointComputeStorageBuffers,
+            "compute-storage-3d-image" => ShaderEntryPointComputeStorage3DImage,
             "compute-storage-float-image" => ShaderEntryPointComputeStorageFloatImage,
             "compute-storage-images" => ShaderEntryPointComputeStorageImages,
             "compute-storage-rgba16-image" => ShaderEntryPointComputeStorageRgba16Image,
@@ -723,6 +746,28 @@ internal static class M04ShaderFixtureCompiler
             cancellationToken).ConfigureAwait(false);
     }
 
+    private static void ValidateComputeStorage3DImageResourcesReflection(JsonElement root)
+    {
+        if (!root.TryGetProperty("images", out var storageImages)
+            || (storageImages.ValueKind != JsonValueKind.Array)
+            || (storageImages.GetArrayLength() != 1))
+        {
+            throw new InvalidDataException("SPIRV-Cross reflection must report the compute 3D storage image.");
+        }
+
+        ValidateResourceDescriptor(storageImages[0], "Frame3DStorageImage", 39);
+
+        if (!storageImages[0].TryGetProperty("type", out var typeElement)
+            || (typeElement.ValueKind != JsonValueKind.String)
+            || !StringComparer.Ordinal.Equals(typeElement.GetString(), "uimage3D")
+            || !storageImages[0].TryGetProperty("format", out var formatElement)
+            || (formatElement.ValueKind != JsonValueKind.String)
+            || !StringComparer.Ordinal.Equals(formatElement.GetString(), "r32ui"))
+        {
+            throw new InvalidDataException("SPIRV-Cross reflection does not match the compute 3D R32UInt storage image.");
+        }
+    }
+
     private static void ValidateComputeStorageBufferResourcesReflection(JsonElement root)
     {
         if (!root.TryGetProperty("ssbos", out var storageBuffers)
@@ -835,6 +880,7 @@ internal static class M04ShaderFixtureCompiler
     {
         if (stageName is "compute-storage"
             or "compute-storage-buffers"
+            or "compute-storage-3d-image"
             or "compute-storage-float-image"
             or "compute-storage-images"
             or "compute-storage-rgba16-image"
@@ -854,6 +900,8 @@ internal static class M04ShaderFixtureCompiler
                     && !text.Contains("FrameRgba16FloatStorageImage", StringComparison.Ordinal))
                 || ((stageName == "compute-storage-signed-image")
                     && !text.Contains("FrameSignedStorageImage", StringComparison.Ordinal))
+                || ((stageName == "compute-storage-3d-image")
+                    && !text.Contains("Frame3DStorageImage", StringComparison.Ordinal))
                 || ((stageName == "compute-storage")
                     && !text.Contains("FrameStorageImage", StringComparison.Ordinal))
                 || ((stageName == "compute-storage-images")
@@ -1105,7 +1153,7 @@ internal static class M04ShaderFixtureCompiler
 
         var mode = modeElement.GetString();
         var expectedMode = stageName switch {
-            "compute-storage" or "compute-storage-buffers" or "compute-storage-float-image" or "compute-storage-images" or "compute-storage-rgba16-image" or "compute-storage-signed-image" or "compute-storage-write" => mode is "comp" or "compute",
+            "compute-storage" or "compute-storage-buffers" or "compute-storage-3d-image" or "compute-storage-float-image" or "compute-storage-images" or "compute-storage-rgba16-image" or "compute-storage-signed-image" or "compute-storage-write" => mode is "comp" or "compute",
             "vertex" or "vertex-sprite" => mode is "vert" or "vertex",
             "pixel" or "pixel-graph" or "pixel-multiple-frame-uniforms" or "pixel-sampled" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => mode is "frag" or "fragment",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
@@ -1153,6 +1201,7 @@ internal static class M04ShaderFixtureCompiler
 
         if (stageName is "compute-storage-write"
             or "compute-storage-images"
+            or "compute-storage-3d-image"
             or "compute-storage-float-image"
             or "compute-storage-rgba16-image"
             or "compute-storage-signed-image")
@@ -1178,6 +1227,11 @@ internal static class M04ShaderFixtureCompiler
         if (stageName == "compute-storage-images")
         {
             ValidateComputeStorageImageResourcesReflection(root);
+        }
+
+        if (stageName == "compute-storage-3d-image")
+        {
+            ValidateComputeStorage3DImageResourcesReflection(root);
         }
     }
 

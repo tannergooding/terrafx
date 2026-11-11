@@ -350,6 +350,19 @@ internal sealed class ShaderReflectionTests
             1,
             ShaderResourceAccess.ReadWrite,
             ShaderStorageImageFormat.Rgba16Float);
+        var threeDimensionalStorageImage = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            3,
+            ShaderResourceKind.StorageImage,
+            1,
+            ShaderResourceAccess.ReadWrite,
+            ShaderStorageImageFormat.R32UInt,
+            TextureDimension.Dimension3D);
+        var sampledImage = new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.SampledImage,
+            1);
         var nonStorageResource = new ShaderResourceSignature(
             ShaderBindingGroup.Frame,
             0,
@@ -360,7 +373,12 @@ internal sealed class ShaderReflectionTests
         Assert.That(floatStorageImage.StorageImageFormat, Is.EqualTo(ShaderStorageImageFormat.R32Float));
         Assert.That(signedStorageImage.StorageImageFormat, Is.EqualTo(ShaderStorageImageFormat.R32SInt));
         Assert.That(rgba16FloatStorageImage.StorageImageFormat, Is.EqualTo(ShaderStorageImageFormat.Rgba16Float));
+        Assert.That(storageImage.ImageDimension, Is.EqualTo(TextureDimension.Dimension2D));
+        Assert.That(threeDimensionalStorageImage.ImageDimension, Is.EqualTo(TextureDimension.Dimension3D));
+        Assert.That(sampledImage.ImageDimension, Is.EqualTo(TextureDimension.Dimension2D));
+        Assert.That(nonStorageResource.ImageDimension, Is.EqualTo(TextureDimension.None));
         Assert.That(floatStorageImage, Is.Not.EqualTo(storageImage));
+        Assert.That(threeDimensionalStorageImage, Is.Not.EqualTo(storageImage));
         Assert.That(nonStorageResource.StorageImageFormat, Is.EqualTo(ShaderStorageImageFormat.None));
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => new ShaderResourceSignature(
             ShaderBindingGroup.Frame,
@@ -383,6 +401,30 @@ internal sealed class ShaderReflectionTests
             1,
             ShaderResourceAccess.ReadWrite,
             ShaderStorageImageFormat.R32Float));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.StorageImage,
+            1,
+            ShaderResourceAccess.ReadWrite,
+            ShaderStorageImageFormat.R32UInt,
+            TextureDimension.None));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.SampledImage,
+            1,
+            ShaderResourceAccess.Read,
+            ShaderStorageImageFormat.None,
+            TextureDimension.Dimension3D));
+        _ = Assert.Throws<ArgumentException>(() => new ShaderResourceSignature(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.UniformBuffer,
+            1,
+            ShaderResourceAccess.Read,
+            ShaderStorageImageFormat.None,
+            TextureDimension.Dimension2D));
     }
 
     [Test]

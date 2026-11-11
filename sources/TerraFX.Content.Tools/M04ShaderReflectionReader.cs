@@ -141,6 +141,7 @@ internal static class M04ShaderReflectionReader
             string? format = null;
             string? componentFormat = null;
             string? imageFormat = null;
+            var imageDimension = TextureDimension.None;
 
             if (kind is ShaderResourceKind.SampledImage or ShaderResourceKind.StorageImage)
             {
@@ -163,6 +164,12 @@ internal static class M04ShaderReflectionReader
 
                 componentFormat = imageType.ComponentFormat;
                 imageFormat = imageType.Format;
+                imageDimension = imageType.Dimension switch {
+                    "2d" => TextureDimension.Dimension2D,
+                    "3d" when kind == ShaderResourceKind.StorageImage => TextureDimension.Dimension3D,
+                    "3d" => throw new NotSupportedException("The selected M04 profile does not admit sampled 3D images."),
+                    _ => throw new NotSupportedException($"The selected M04 profile does not admit {imageType.Dimension} shader images."),
+                };
             }
 
             if (resource.TryGetProperty("format", out var formatElement))
@@ -223,7 +230,8 @@ internal static class M04ShaderReflectionReader
                     kind,
                     GetArrayCount(resource),
                     descriptorBinding.Access,
-                    storageImageFormat),
+                    storageImageFormat,
+                    imageDimension),
                 spirvType,
                 format,
                 componentFormat));

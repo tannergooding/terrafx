@@ -557,12 +557,15 @@ internal sealed class GraphicsGraphSubmission
 
             if (ReferenceEquals(import.Texture, OutputColorTarget)
                 || (import.Version.ResourceId == targetResourceId)
-                || (import.Version.Description.Dimension != TextureDimension.Dimension2D)
+                || ((import.Version.Description.Dimension != TextureDimension.Dimension2D)
+                    && !(import.Version.Description.Dimension == TextureDimension.Dimension3D
+                        && hasStorageUsage
+                        && !hasSampledUsage))
                 || ((import.Version.Range.MipCount != 1) && !(hasSampledUsage || hasStorageUsage))
                 || (import.Version.Range.LayerCount != 1)
                 || (import.Version.Range.Aspect != TextureAspect.Color))
             {
-                throw new NotSupportedException("Native graph submission requires distinct non-target 2D color texture ranges with single-layer selections.");
+                throw new NotSupportedException("Native graph submission requires distinct non-target 2D color texture ranges or storage-only 3D ranges with single-layer selections.");
             }
 
             foreach (var access in Accesses)
@@ -583,7 +586,7 @@ internal sealed class GraphicsGraphSubmission
                         && (import.Version.Description.ArrayLayers == 1)
                         && (import.Version.Range.Aspect == TextureAspect.Color)
                         && (import.Version.Range.LayerCount == 1)
-                    : (import.Version.Description.Dimension == TextureDimension.Dimension2D)
+                    : (import.Version.Description.Dimension is TextureDimension.Dimension2D or TextureDimension.Dimension3D)
                         && (import.Version.Description.ArrayLayers == 1)
                         && (import.Version.Range.Aspect == TextureAspect.Color)
                         && (import.Version.Range.LayerCount == 1);
@@ -593,7 +596,7 @@ internal sealed class GraphicsGraphSubmission
                     || hasCopySourceImportAccess
                     || hasCopyDestinationImportAccess)
                 {
-                    throw new NotSupportedException("Native graph submission supports single-layer 2D color sampled/storage image ranges.");
+                    throw new NotSupportedException("Native graph submission supports single-layer 2D color sampled images and 2D/3D storage images.");
                 }
 
                 if (hasSampledUsage)
@@ -925,6 +928,7 @@ internal sealed class GraphicsGraphSubmission
             var currentPipelineRequiresStorageImage = false;
             var currentPipelineStorageImageBindingCount = 0;
             var currentPipelineStorageImageFormats = new Dictionary<int, ShaderStorageImageFormat>();
+            var currentPipelineStorageImageDimensions = new Dictionary<int, TextureDimension>();
             var currentPipelineBindingsSet = false;
             var hasDraw = false;
             var hasDispatch = false;
@@ -976,6 +980,7 @@ internal sealed class GraphicsGraphSubmission
                         currentPipelineSamplerBindings.Clear();
                         currentPipelineStorageImageBindingCount = 0;
                         currentPipelineStorageImageFormats.Clear();
+                        currentPipelineStorageImageDimensions.Clear();
 
                         foreach (var reflection in layout.ShaderReflections)
                         {
@@ -1074,7 +1079,8 @@ internal sealed class GraphicsGraphSubmission
                                     currentPipelineRequiresStorageImage = true;
                                     currentPipelineStorageImageBindingCount++;
 
-                                    if (!currentPipelineStorageImageFormats.TryAdd(resource.Binding, resource.StorageImageFormat))
+                                    if (!currentPipelineStorageImageFormats.TryAdd(resource.Binding, resource.StorageImageFormat)
+                                        || !currentPipelineStorageImageDimensions.TryAdd(resource.Binding, resource.ImageDimension))
                                     {
                                         throw new NotSupportedException("A compute pipeline cannot declare conflicting storage-image signatures at one binding.");
                                     }
@@ -1399,6 +1405,11 @@ internal sealed class GraphicsGraphSubmission
                                         throw new NotSupportedException("The Frame storage-image binding has no matching reflected pipeline signature.");
                                     }
 
+                                    if (!currentPipelineStorageImageDimensions.TryGetValue(binding.Binding, out var storageImageDimension))
+                                    {
+                                        throw new NotSupportedException("The Frame storage-image binding has no matching reflected image dimension.");
+                                    }
+
                                     var expectedStorageImageTextureFormat = storageImageFormat switch {
                                         ShaderStorageImageFormat.Rgba16Float => TextureFormat.Rgba16Float,
                                         ShaderStorageImageFormat.R32Float => TextureFormat.R32Float,
@@ -1414,9 +1425,10 @@ internal sealed class GraphicsGraphSubmission
                                         || (binding.Range.MipCount != 1)
                                         || (binding.Range.LayerCount != 1)
                                         || (binding.Range.Aspect != TextureAspect.Color)
+                                        || (binding.Resource.Description.Dimension != storageImageDimension)
                                         || (binding.Resource.Description.Format != expectedStorageImageTextureFormat))
                                     {
-                                        throw new NotSupportedException("The Frame storage-image binding must match its reflected format and fit one imported color mip.");
+                                        throw new NotSupportedException("The Frame storage-image binding must match its reflected format/dimension and fit one imported color mip.");
                                     }
 
                                     GraphResourceAccess? storageReadAccess = null;

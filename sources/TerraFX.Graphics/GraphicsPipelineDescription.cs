@@ -316,10 +316,11 @@ public sealed class GraphicsPipelineDescription : PipelineDescription
             if ((vertexResource.Kind != pixelResource.Kind)
                 || (vertexResource.ArrayCount != pixelResource.ArrayCount)
                 || (vertexResource.Access != pixelResource.Access)
-                || (vertexResource.StorageImageFormat != pixelResource.StorageImageFormat))
+                || (vertexResource.StorageImageFormat != pixelResource.StorageImageFormat)
+                || (vertexResource.ImageDimension != pixelResource.ImageDimension))
             {
                 throw new ArgumentException(
-                    "Vertex and pixel shaders must agree on the type, descriptor count, access, and storage-image format of each shared resource binding.",
+                    "Vertex and pixel shaders must agree on the type, descriptor count, access, image dimension, and storage-image format of each shared resource binding.",
                     nameof(pixelReflection));
             }
 
