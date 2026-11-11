@@ -231,7 +231,7 @@ DISPLAY=:99 TERRAFX_TEST_ISOLATED_X11=1 "$DOTNET_ROOT/dotnet" test "$WORKTREE/te
 
 The optional X11 XIM witness requires a private Xvfb display and an active XIM server, with `XMODIFIERS=@im=ibus`. It verifies callback-style XIC creation and native FocusOut/FocusIn handling through Xlib's `XFilterEvent(XEvent*, Window)` ABI while the Runtime text session remains active; it does not send text or qualify IME preedit/commit. This never uses WSLg `:0`:
 
-The private IBus runner lists `table:compose` and confirms its selection through D-Bus, although the `ibus engine table:compose` CLI exits 1. A test-owned XTest `Multi_key`, apostrophe, `e` sequence sent through the focused XIC produced no Platform text changes; XIM preedit and commit remain unobserved.
+The private IBus runner lists `table:compose` and confirms its selection through D-Bus, although the `ibus engine table:compose` CLI exits 1. Test-owned XTest `Multi_key`, apostrophe, `e` input and a plain `a` press through the focused XIC produced no Platform text changes. With both `table:compose` and `xkb:us::eng` selected, core key events reached `XFilterEvent` and were filtered without XIM preedit or commit.
 
 ```bash
 DISPLAY=:99 XMODIFIERS=@im=ibus TERRAFX_TEST_ISOLATED_X11=1 TERRAFX_TEST_X11_XIM=1 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.PlatformInputRoutingOwnerTests.RoutesTextInputFocusAcrossNativeX11XimFocusChangesOnIsolatedDisplay" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
