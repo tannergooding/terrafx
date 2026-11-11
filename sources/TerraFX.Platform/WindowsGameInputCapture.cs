@@ -6,6 +6,8 @@ using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.Versioning;
+using System.Threading;
+using System.Threading.Tasks;
 using GameInputSharp.Abstractions;
 using GameInputSharp.Devices;
 
@@ -17,6 +19,12 @@ internal sealed partial class WindowsGameInputCapture : IDisposable
     private const ulong DispatchQuotaMicroseconds = 1000;
     private const int MaximumGamepadDevices = 256;
     private const int MaximumPendingRemovals = MaximumGamepadDevices;
+    // Keep the process-wide GameInput singleton and its creating MTA alive across host lifetimes.
+    private static GameInputManager? s_processGameInputAnchor;
+    private static readonly Lazy<bool> s_processGameInputLifetime = new(
+        InitializeProcessGameInputLifetime,
+        LazyThreadSafetyMode.ExecutionAndPublication);
+    private static Thread? s_processGameInputThread;
     private readonly Dictionary<nint, GamepadCapture> _devicesByNativeIdentity = [];
     private readonly Dictionary<string, GamepadCapture> _gamepadsById = [];
     private readonly GameInputManager _manager;
@@ -39,6 +47,11 @@ internal sealed partial class WindowsGameInputCapture : IDisposable
     {
         ArgumentNullException.ThrowIfNull(samples);
         ArgumentNullException.ThrowIfNull(timeProvider);
+
+        if (RuntimeFeature.IsDynamicCodeSupported)
+        {
+            _ = s_processGameInputLifetime.Value;
+        }
 
         _samples = samples;
         _timeProvider = timeProvider;
@@ -76,6 +89,45 @@ internal sealed partial class WindowsGameInputCapture : IDisposable
     }
 
     internal PlatformServiceStatus GamepadStatus { get; private set; }
+
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "Transfer process-lifetime GameInput initialization failures to the platform owner instead of terminating the process.")]
+    private static bool InitializeProcessGameInputLifetime()
+    {
+        var initialized = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() => {
+            try
+            {
+                var manager = new GameInputManager(logger: null, loadOnlyFromSystem32: true);
+                _ = manager.GetCurrentTimestamp();
+                s_processGameInputAnchor = manager;
+                initialized.SetResult();
+            }
+            catch (Exception exception)
+            {
+                initialized.SetException(exception);
+                return;
+            }
+
+            Thread.Sleep(Timeout.Infinite);
+        }) {
+            IsBackground = true,
+            Name = "TerraFX GameInput",
+        };
+        thread.SetApartmentState(ApartmentState.MTA);
+        s_processGameInputThread = thread;
+        thread.Start();
+        initialized.Task.GetAwaiter().GetResult();
+
+        if ((s_processGameInputAnchor is null) || (s_processGameInputThread is not { IsAlive: true }))
+        {
+            throw new InvalidOperationException("The process-lifetime GameInput owner did not retain its native manager thread.");
+        }
+
+        return true;
+    }
 
     public void Dispose()
     {

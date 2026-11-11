@@ -7,6 +7,7 @@ using NUnit.Framework;
 namespace TerraFX.Platform.Tests;
 
 [TestFixture]
+[NonParallelizable]
 [SupportedOSPlatform("windows")]
 internal sealed class WindowsGameInputCaptureTests
 {
@@ -26,5 +27,26 @@ internal sealed class WindowsGameInputCaptureTests
             Is.AnyOf(PlatformServiceStatus.Available, PlatformServiceStatus.Unavailable));
         Assert.DoesNotThrow(capture.Pump);
         Assert.That(samples.Drain().Samples.IsDefault, Is.False);
+    }
+
+    [Test]
+    public void ReusesTheProcessGameInputAcrossCaptureLifetimes()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Ignore("The GameInput adapter targets Windows.");
+        }
+
+        for (var captureIndex = 0; captureIndex < 3; captureIndex++)
+        {
+            var samples = new PlatformInputSampleQueue(Environment.CurrentManagedThreadId);
+            using var capture = new WindowsGameInputCapture(samples, TimeProvider.System);
+
+            Assert.That(
+                capture.GamepadStatus,
+                Is.AnyOf(PlatformServiceStatus.Available, PlatformServiceStatus.Unavailable));
+            Assert.DoesNotThrow(capture.Pump);
+            Assert.That(samples.Drain().Samples.IsDefault, Is.False);
+        }
     }
 }
