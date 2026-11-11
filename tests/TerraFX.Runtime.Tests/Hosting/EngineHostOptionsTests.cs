@@ -2372,6 +2372,141 @@ internal sealed partial class EngineHostOptionsTests
 
     [Test]
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Reliability",
+        "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
+        Justification = "The synchronous waits complete native requests before resource disposal, and the PlatformHostOwner must be used on its creating test thread.")]
+    [System.Runtime.Versioning.SupportedOSPlatform("windows10.0.22000.0")]
+    public void UsesDedicatedStagingWhenReportedBudgetCannotAdmitRing()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            Assert.Ignore("The D3D12 backend targets Windows 11.");
+            return;
+        }
+
+        var uploadBudgetQueries = 0;
+        var readbackBudgetQueries = 0;
+
+        long? GetStagingBudgetBytes(GpuMemoryKind memoryKind)
+        {
+            switch (memoryKind)
+            {
+                case GpuMemoryKind.Upload:
+                {
+                    uploadBudgetQueries++;
+                    break;
+                }
+
+                case GpuMemoryKind.Readback:
+                {
+                    readbackBudgetQueries++;
+                    break;
+                }
+
+                default:
+                {
+                    throw new ArgumentOutOfRangeException(nameof(memoryKind));
+                }
+            }
+
+            return 1024 * 1024;
+        }
+
+        var registration = new GraphicsBackendRegistration(
+            new D3D12GraphicsBackend.D3D12BackendFactory(
+                stagingBudgetBytesOverride: GetStagingBudgetBytes));
+        var options = new EngineHostOptions(
+            HostProfile.OffscreenNative,
+            PlatformBackend.Headless,
+            GraphicsBackend.D3D12,
+            registration,
+            CreateAssetStoreOptions()) {
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
+        var platformOwner = PlatformHostOwner.Create(options);
+        GraphicsDevice? device = null;
+
+        try
+        {
+            try
+            {
+                device = GraphicsDevice.CreateAsync(
+                    platformOwner.OwnerId,
+                    registration,
+                    GraphicsDeviceProfile.OffscreenNative,
+                    3,
+                    GraphicsPlatformKind.None,
+                    CancellationToken.None).GetAwaiter().GetResult();
+            }
+            catch (DllNotFoundException exception)
+            {
+                Assert.Ignore($"A required D3D12 system library is unavailable: {exception.Message}");
+                return;
+            }
+            catch (EntryPointNotFoundException exception)
+            {
+                Assert.Ignore($"A required D3D12 system entry point is unavailable: {exception.Message}");
+                return;
+            }
+            catch (NotSupportedException exception)
+            {
+                Assert.Ignore($"No available D3D12 device satisfies OffscreenNative: {exception.Message}");
+                return;
+            }
+
+            var graphicsDevice = device
+                ?? throw new InvalidOperationException("D3D12 GraphicsDevice startup returned no device.");
+            var expected = new byte[4096];
+
+            for (var index = 0; index < expected.Length; index++)
+            {
+                expected[index] = unchecked((byte)((index * 37) + 11));
+            }
+
+            using var buffer = graphicsDevice.CreateBufferAsync(
+                new BufferDescription(
+                    expected.Length,
+                    BufferUsage.CopySource | BufferUsage.CopyDestination,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: null,
+                    debugName: "reported-low-budget staging fallback"))
+                .GetAwaiter()
+                .GetResult();
+            var upload = graphicsDevice.UploadBufferAsync(buffer, 0, expected).GetAwaiter().GetResult();
+            Assert.That(upload.Status, Is.EqualTo(UploadStatus.Ready));
+
+            using var readback = graphicsDevice.ReadbackBufferAsync(buffer, 0, expected.Length).GetAwaiter().GetResult();
+            var actual = new byte[expected.Length];
+
+            using (var readLease = readback.AcquireReadLease(0, actual.Length))
+            {
+                var copyAction = new ReadbackCopyAction(actual);
+                readLease.UseWindow(0, actual.Length, ref copyAction);
+            }
+
+            Assert.That(actual, Is.EqualTo(expected));
+            Assert.That(uploadBudgetQueries, Is.GreaterThanOrEqualTo(2));
+            Assert.That(readbackBudgetQueries, Is.GreaterThanOrEqualTo(2));
+        }
+        finally
+        {
+            try
+            {
+                if (device is not null)
+                {
+                    device.ShutdownAsync().GetAwaiter().GetResult();
+                    Assert.That(device.Status, Is.EqualTo(GraphicsDeviceStatus.Disposed));
+                }
+            }
+            finally
+            {
+                platformOwner.DisposeFromOwner();
+            }
+        }
+    }
+
+    [Test]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Usage",
         "CA1031:Do not catch general exception types",
         Justification = "The dedicated STA test thread must transfer native failures after owner cleanup.")]

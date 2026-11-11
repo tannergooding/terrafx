@@ -36,6 +36,7 @@ public static unsafe class D3D12GraphicsBackend
         private readonly Func<long, long>? _completedFenceValueOverride;
         private readonly Action<GraphicsGraphSubmission>? _graphSubmissionObserver;
         private readonly Func<nint, uint, uint>? _graphWaitForSingleObject;
+        private readonly Func<GpuMemoryKind, long?>? _stagingBudgetBytesOverride;
         private readonly Func<int?>? _surfacePresentResultOverride;
         private readonly Func<nint, uint, uint>? _waitForSingleObject;
 
@@ -44,13 +45,15 @@ public static unsafe class D3D12GraphicsBackend
             Func<nint, uint, uint>? graphWaitForSingleObject = null,
             Func<long, long>? completedFenceValueOverride = null,
             Action<GraphicsGraphSubmission>? graphSubmissionObserver = null,
-            Func<int?>? surfacePresentResultOverride = null)
+            Func<int?>? surfacePresentResultOverride = null,
+            Func<GpuMemoryKind, long?>? stagingBudgetBytesOverride = null)
         {
             _waitForSingleObject = waitForSingleObject;
             _graphWaitForSingleObject = graphWaitForSingleObject;
             _completedFenceValueOverride = completedFenceValueOverride;
             _graphSubmissionObserver = graphSubmissionObserver;
             _surfacePresentResultOverride = surfacePresentResultOverride;
+            _stagingBudgetBytesOverride = stagingBudgetBytesOverride;
         }
 
         public GraphicsBackend Backend => GraphicsBackend.D3D12;
@@ -757,7 +760,8 @@ public static unsafe class D3D12GraphicsBackend
                                 _graphWaitForSingleObject,
                                 _completedFenceValueOverride,
                                 _graphSubmissionObserver,
-                                _surfacePresentResultOverride);
+                                _surfacePresentResultOverride,
+                                _stagingBudgetBytesOverride);
                             device = null;
                             adapter3 = null;
                             return backendDevice;
@@ -825,6 +829,7 @@ public static unsafe class D3D12GraphicsBackend
             private D3D12DescriptorRangeAllocator? _samplerDescriptorAllocator;
             private ID3D12DescriptorHeap* _samplerDescriptorHeap;
             private uint _samplerDescriptorIncrementSize;
+            private readonly Func<GpuMemoryKind, long?>? _stagingBudgetBytesOverride;
             private readonly Func<int?>? _surfacePresentResultOverride;
             private D3D12BackendFactory.D3D12TransferQueue? _transferQueue;
             private readonly List<D3D12BackendDescriptorSet> _uncertainGraphDescriptorSets = [];
@@ -842,7 +847,8 @@ public static unsafe class D3D12GraphicsBackend
                 Func<nint, uint, uint>? graphWaitForSingleObject,
                 Func<long, long>? completedFenceValueOverride,
                 Action<GraphicsGraphSubmission>? graphSubmissionObserver,
-                Func<int?>? surfacePresentResultOverride)
+                Func<int?>? surfacePresentResultOverride,
+                Func<GpuMemoryKind, long?>? stagingBudgetBytesOverride)
             {
                 ArgumentNullException.ThrowIfNull(capabilities);
 
@@ -863,6 +869,7 @@ public static unsafe class D3D12GraphicsBackend
                 _graphWaitForSingleObject = graphWaitForSingleObject;
                 _waitForSingleObject = waitForSingleObject;
                 _surfacePresentResultOverride = surfacePresentResultOverride;
+                _stagingBudgetBytesOverride = stagingBudgetBytesOverride;
             }
 
             public GraphicsCapabilities Capabilities { get; }
@@ -3984,6 +3991,13 @@ public static unsafe class D3D12GraphicsBackend
 
             private long? GetAvailableBudgetBytes(GpuMemoryKind memoryKind)
             {
+                if (_stagingBudgetBytesOverride is { } stagingBudgetBytesOverride)
+                {
+                    var availableBudgetBytes = stagingBudgetBytesOverride(memoryKind);
+                    ArgumentOutOfRangeException.ThrowIfNegative(availableBudgetBytes.GetValueOrDefault());
+                    return availableBudgetBytes;
+                }
+
                 if (_adapter is null)
                 {
                     return null;
