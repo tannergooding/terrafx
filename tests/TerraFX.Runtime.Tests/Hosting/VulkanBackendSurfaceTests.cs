@@ -111,7 +111,8 @@ internal sealed partial class EngineHostOptionsTests
         bool expectPresentationFenceTimeout = false,
         VkResult? expectedFirstPresentationNativeResult = null,
         Action<PlatformHostOwner, WindowHandle>? beforeFirstPresentation = null,
-        bool exerciseNativeWindowReplacement = false)
+        bool exerciseNativeWindowReplacement = false,
+        bool expectWaylandCompositorDisconnect = false)
     {
         var platformOwner = PlatformHostOwner.Create(options);
         GraphicsDevice? graphicsDevice = null;
@@ -250,17 +251,21 @@ internal sealed partial class EngineHostOptionsTests
             {
                 var surfaceLost = false;
                 PresentationStatus? nativePresentationStatus = null;
+                int? nativePresentationResult = null;
+                string? nativePresentationFailure = null;
 
                 try
                 {
                     var lostSubmission = renderer.SubmitAsync(
                         renderSnapshot,
-                        CreateSurfaceGraphPlan("vulkan-native-xlib-surface-loss"))
+                        CreateSurfaceGraphPlan("vulkan-native-surface-loss"))
                         .GetAwaiter()
                         .GetResult();
                     var lostSequence = lostSubmission.PresentationSequence
-                        ?? throw new InvalidOperationException("The native Xlib surface-loss submission omitted its presentation sequence.");
-                    nativePresentationStatus = activeSurface.WaitForPresentationAsync(lostSequence).GetAwaiter().GetResult().Status;
+                        ?? throw new InvalidOperationException("The native surface-loss submission omitted its presentation sequence.");
+                    var lostPresentation = activeSurface.WaitForPresentationAsync(lostSequence).GetAwaiter().GetResult();
+                    nativePresentationStatus = lostPresentation.Status;
+                    nativePresentationResult = lostPresentation.Diagnostic?.NativeResult;
                     surfaceLost = nativePresentationStatus is PresentationStatus.SurfaceLost;
                 }
                 catch (InvalidOperationException exception) when (
@@ -268,11 +273,13 @@ internal sealed partial class EngineHostOptionsTests
                     || exception.Message.Contains("VK_ERROR_SURFACE_LOST_KHR", StringComparison.Ordinal))
                 {
                     surfaceLost = true;
+                    nativePresentationFailure = exception.Message;
                 }
 
                 TestContext.WriteLine(
-                    $"Native Xlib window destruction produced SurfaceLost={surfaceLost}; "
-                    + $"presentation status={nativePresentationStatus?.ToString() ?? "lost during acquire"}.");
+                    $"Native surface disruption produced SurfaceLost={surfaceLost}; "
+                    + $"presentation status={nativePresentationStatus?.ToString() ?? "lost during acquire"}; "
+                    + $"native result={nativePresentationResult?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? nativePresentationFailure ?? "unavailable"}.");
                 Assert.That(surfaceLost || nativePresentationStatus is not null, Is.True);
 
                 if (nativePresentationStatus is PresentationStatus presentationStatus)
@@ -280,6 +287,26 @@ internal sealed partial class EngineHostOptionsTests
                     Assert.That(
                         presentationStatus,
                         Is.AnyOf(PresentationStatus.Presented, PresentationStatus.SurfaceLost, PresentationStatus.SwapchainLost));
+                }
+
+                if (expectWaylandCompositorDisconnect)
+                {
+                    Assert.That(
+                        surfaceLost || nativePresentationStatus is PresentationStatus.SwapchainLost,
+                        Is.True);
+
+                    if (nativePresentationStatus is PresentationStatus.SwapchainLost)
+                    {
+                        Assert.That(
+                            nativePresentationResult,
+                            Is.EqualTo((int)VkResult.VK_ERROR_OUT_OF_DATE_KHR));
+                    }
+
+                    graphicsDevice.RetireSurfaceAsync(activeSurface).GetAwaiter().GetResult();
+                    surface = null;
+                    platformOwner.CloseWindow(window.Value);
+                    window = null;
+                    return;
                 }
 
                 if (surfaceLost)
@@ -964,6 +991,37 @@ internal sealed partial class EngineHostOptionsTests
         };
         var host = EngineHost.StartAsync(options).GetAwaiter().GetResult();
         host.DisposeAsync().AsTask().GetAwaiter().GetResult();
+    }
+
+    [Test]
+    public void VulkanObservesWaylandWsiLossWhenPrivateCompositorExits()
+    {
+        if (!OperatingSystem.IsLinux()
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_ISOLATED_WAYLAND_WSI") != "1")
+            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY")))
+        {
+            Assert.Ignore("The Wayland surface-loss witness requires a test-owned compositor.");
+            return;
+        }
+
+        var swayProcessId = int.Parse(
+            Environment.GetEnvironmentVariable("TERRAFX_TEST_SWAY_PID")
+                ?? throw new InvalidOperationException("The private Sway process id was not provided."),
+            System.Globalization.CultureInfo.InvariantCulture);
+        var (options, registration, schemas) = CreateVulkanSurfaceTestSetup(PlatformBackend.WaylandOnly);
+        RunVulkanSurfaceWithDirectOwners(
+            options,
+            PlatformBackend.WaylandOnly,
+            registration,
+            schemas,
+            beforeFirstPresentation: (_, _) => {
+                using var swayProcess = System.Diagnostics.Process.GetProcessById(swayProcessId);
+                Assert.That(swayProcess.ProcessName, Is.EqualTo("sway"));
+                swayProcess.Kill();
+                Assert.That(swayProcess.WaitForExit(milliseconds: 5_000), Is.True);
+            },
+            exerciseNativeWindowReplacement: true,
+            expectWaylandCompositorDisconnect: true);
     }
 
     [Test]
