@@ -46,6 +46,8 @@ internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
         Array.Fill(_layouts, VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED);
     }
 
+    internal VkImageView DepthAttachmentImageView { get; set; }
+
     internal TextureDescription Description => _description;
 
     internal int DescriptorSetReferenceCount => _descriptorSetReferenceCount;
@@ -88,6 +90,7 @@ internal sealed class VulkanBackendTexture : IGraphicsBackendTexture
         _image = default;
         _isDisposed = true;
         _descriptorSetReferenceCount = 0;
+        DepthAttachmentImageView = default;
         _initialized = [];
         _lastAccessMasks = [];
         _lastStageMasks = [];

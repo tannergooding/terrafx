@@ -2027,18 +2027,38 @@ public static unsafe class D3D12GraphicsBackend
                             }
                         }
 
+                        var depthStencilView = default(D3D12_CPU_DESCRIPTOR_HANDLE);
+                        var hasDepthAttachment = false;
+
                         foreach (var attachment in pass.Attachments)
                         {
                             if (attachment.LoadAction != AttachmentLoadAction.Clear)
                             {
-                                throw new NotSupportedException("Native D3D12 graph submission currently supports only clear color attachments.");
+                                throw new NotSupportedException("Native D3D12 graph submission currently supports only clear attachments.");
                             }
 
-                            clearColor[0] = attachment.ClearColor.X;
-                            clearColor[1] = attachment.ClearColor.Y;
-                            clearColor[2] = attachment.ClearColor.Z;
-                            clearColor[3] = attachment.ClearColor.W;
-                            commandList->ClearRenderTargetView(renderTargetView, clearColor, 0, null);
+                            if (attachment.IsDepth)
+                            {
+                                var depthTexture = submission.GetTexture(attachment.Version.ResourceId) as D3D12BackendTexture
+                                    ?? throw new InvalidOperationException("The graph depth attachment is not a D3D12 texture.");
+                                depthStencilView = depthTexture.GetDepthStencilView();
+                                hasDepthAttachment = true;
+                                commandList->ClearDepthStencilView(
+                                    depthStencilView,
+                                    D3D12_CLEAR_FLAGS.D3D12_CLEAR_FLAG_DEPTH,
+                                    attachment.ClearDepth,
+                                    0,
+                                    0,
+                                    null);
+                            }
+                            else
+                            {
+                                clearColor[0] = attachment.ClearColor.X;
+                                clearColor[1] = attachment.ClearColor.Y;
+                                clearColor[2] = attachment.ClearColor.Z;
+                                clearColor[3] = attachment.ClearColor.W;
+                                commandList->ClearRenderTargetView(renderTargetView, clearColor, 0, null);
+                            }
                         }
 
                         if (pass.Kind == CommandRecorderPassKind.Presentation)
@@ -2269,7 +2289,11 @@ public static unsafe class D3D12GraphicsBackend
 
                         if (pass.Kind == CommandRecorderPassKind.Raster)
                         {
-                            commandList->OMSetRenderTargets(1, &renderTargetView, false, null);
+                            commandList->OMSetRenderTargets(
+                                1,
+                                &renderTargetView,
+                                false,
+                                hasDepthAttachment ? &depthStencilView : null);
                             ID3D12BackendPipelineDescriptorOwner? currentPipeline = null;
 
                             foreach (var command in pass.Commands)
@@ -4335,7 +4359,7 @@ public static unsafe class D3D12GraphicsBackend
 
                 internal D3D12BackendDevice Owner => _owner;
 
-                public void Dispose()
+                public virtual void Dispose()
                 {
                     if (_descriptorSetReferenceCount != 0)
                     {
@@ -4348,10 +4372,11 @@ public static unsafe class D3D12GraphicsBackend
                     }
 
                     var resource = _resource;
-                    _resource = null;
 
                     if (resource is not null)
                     {
+                        ReleaseAdditionalNativeState();
+                        _resource = null;
                         _ = resource->Release();
                     }
                 }
@@ -4376,6 +4401,10 @@ public static unsafe class D3D12GraphicsBackend
                 {
                     ObjectDisposedException.ThrowIf(_resource is null, this);
                     _descriptorSetReferenceCount = checked(_descriptorSetReferenceCount + 1);
+                }
+
+                protected virtual void ReleaseAdditionalNativeState()
+                {
                 }
             }
 
@@ -4482,6 +4511,8 @@ public static unsafe class D3D12GraphicsBackend
 
             private sealed class D3D12BackendTexture : D3D12BackendResource, IGraphicsBackendTexture
             {
+                private ID3D12DescriptorHeap* _depthStencilViewHeap;
+
                 internal D3D12BackendTexture(D3D12BackendDevice owner, ID3D12Resource* resource, TextureDescription description)
                     : base(owner, resource)
                 {
@@ -4490,6 +4521,70 @@ public static unsafe class D3D12GraphicsBackend
                 }
 
                 internal TextureDescription Description { get; }
+
+                internal D3D12_CPU_DESCRIPTOR_HANDLE GetDepthStencilView()
+                {
+                    if ((Description.Format != TextureFormat.D32Float)
+                        || ((Description.Usage & TextureUsage.DepthAttachment) == 0))
+                    {
+                        throw new InvalidOperationException("The D3D12 texture is not a D32Float depth attachment.");
+                    }
+
+                    Owner.EnsureOwnerThread();
+                    var resource = GetResource();
+
+                    if (_depthStencilViewHeap is null)
+                    {
+                        var heapDescription = new D3D12_DESCRIPTOR_HEAP_DESC {
+                            Type = D3D12_DESCRIPTOR_HEAP_TYPE.D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+                            NumDescriptors = 1,
+                            Flags = D3D12_DESCRIPTOR_HEAP_FLAGS.D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+                            NodeMask = 0,
+                        };
+                        var heapId = typeof(ID3D12DescriptorHeap).GUID;
+                        ID3D12DescriptorHeap* heap = null;
+
+                        try
+                        {
+                            ThrowIfFailed(Owner._device->CreateDescriptorHeap(&heapDescription, &heapId, (void**)&heap));
+
+                            if (heap is null)
+                            {
+                                throw new InvalidOperationException("D3D12 depth-stencil descriptor heap creation returned no heap.");
+                            }
+
+                            var viewDescription = new D3D12_DEPTH_STENCIL_VIEW_DESC {
+                                Format = GetNativeFormat(TextureFormat.D32Float),
+                                ViewDimension = D3D12_DSV_DIMENSION.D3D12_DSV_DIMENSION_TEXTURE2D,
+                                Texture2D = new D3D12_TEX2D_DSV {
+                                    MipSlice = 0,
+                                },
+                            };
+                            var view = heap->GetCPUDescriptorHandleForHeapStart();
+                            Owner._device->CreateDepthStencilView(resource, &viewDescription, view);
+                            _depthStencilViewHeap = heap;
+                            heap = null;
+                        }
+                        finally
+                        {
+                            if (heap is not null)
+                            {
+                                _ = heap->Release();
+                            }
+                        }
+                    }
+
+                    return _depthStencilViewHeap->GetCPUDescriptorHandleForHeapStart();
+                }
+
+                protected override void ReleaseAdditionalNativeState()
+                {
+                    if (_depthStencilViewHeap is not null)
+                    {
+                        _ = _depthStencilViewHeap->Release();
+                        _depthStencilViewHeap = null;
+                    }
+                }
             }
         }
 

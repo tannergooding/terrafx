@@ -25,6 +25,7 @@ internal static class M04ShaderFixtureCompiler
     private const string ShaderEntryPointPixel = "PSMain";
     private const string ShaderEntryPointPixelFrameLayout = "PSFrameLayoutMain";
     private const string ShaderEntryPointPixelMultipleFrame = "PSMultipleFrameMain";
+    private const string ShaderEntryPointPixelR32UInt = "PSR32UIntMain";
     private const string ShaderEntryPointSampledFramePixel = "PSSampledFrameMain";
     private const string ShaderEntryPointSampledFrameStoragePixel = "PSSampledFrameStorageMain";
     private const string ShaderEntryPointSampledMultiplePixel = "PSSampledMultipleMain";
@@ -48,6 +49,7 @@ internal static class M04ShaderFixtureCompiler
         "pixel-frame-layout",
         "pixel-graph",
         "pixel-multiple-frame-uniforms",
+        "pixel-r32uint",
         "pixel-sampled",
         "pixel-sampled-multiple",
         "pixel-sprite",
@@ -224,6 +226,17 @@ internal static class M04ShaderFixtureCompiler
                 ShaderEntryPointGraphPixel,
                 "ps_6_0",
                 "pixel-graph",
+                cancellationToken).ConfigureAwait(false);
+            await CompileStageAsync(
+                manifest,
+                dxcExecutable,
+                spirvCrossExecutable,
+                spirvValidationExecutable,
+                shaderPath,
+                stagingDirectory,
+                ShaderEntryPointPixelR32UInt,
+                "ps_6_0",
+                "pixel-r32uint",
                 cancellationToken).ConfigureAwait(false);
             await CompileStageAsync(
                 manifest,
@@ -475,6 +488,15 @@ internal static class M04ShaderFixtureCompiler
                 dxcExecutable,
                 shaderPath,
                 stagingDirectory,
+                ShaderEntryPointPixelR32UInt,
+                "ps_6_0",
+                "pixel-r32uint",
+                cancellationToken).ConfigureAwait(false);
+            await CompileDxilStageAsync(
+                manifest,
+                dxcExecutable,
+                shaderPath,
+                stagingDirectory,
                 ShaderEntryPointPixelMultipleFrame,
                 "ps_6_0",
                 "pixel-multiple-frame-uniforms",
@@ -575,6 +597,7 @@ internal static class M04ShaderFixtureCompiler
             "pixel-frame-layout" => ShaderEntryPointPixelFrameLayout,
             "pixel-graph" => ShaderEntryPointGraphPixel,
             "pixel-multiple-frame-uniforms" => ShaderEntryPointPixelMultipleFrame,
+            "pixel-r32uint" => ShaderEntryPointPixelR32UInt,
             "pixel-sampled" => ShaderEntryPointSampledPixel,
             "pixel-sampled-multiple" => ShaderEntryPointSampledMultiplePixel,
             "pixel-sprite" => ShaderEntryPointSpritePixel,
@@ -941,7 +964,7 @@ internal static class M04ShaderFixtureCompiler
 
         var expectedOutputSemantic = stageName switch {
             "vertex" or "vertex-sprite" => "SV_Position",
-            "pixel" or "pixel-frame-layout" or "pixel-graph" or "pixel-multiple-frame-uniforms" or "pixel-sampled" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => "SV_Target",
+            "pixel" or "pixel-frame-layout" or "pixel-graph" or "pixel-multiple-frame-uniforms" or "pixel-r32uint" or "pixel-sampled" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => "SV_Target",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
         };
 
@@ -950,6 +973,12 @@ internal static class M04ShaderFixtureCompiler
             || !text.Contains(expectedOutputSemantic, StringComparison.Ordinal))
         {
             throw new InvalidDataException($"DXC reflection from the compiled DXIL does not contain the expected {stageName} entry-point output.");
+        }
+
+        if ((stageName == "pixel-r32uint")
+            && !text.Contains("TARGET    uint", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("DXC reflection from the R32UInt pixel DXIL does not report an unsigned-integer target output.");
         }
 
         if ((stageName == "vertex-sprite")
@@ -1187,13 +1216,29 @@ internal static class M04ShaderFixtureCompiler
         var expectedMode = stageName switch {
             "compute-storage" or "compute-storage-buffers" or "compute-storage-3d-image" or "compute-storage-float-image" or "compute-storage-images" or "compute-storage-rgba16-image" or "compute-storage-signed-image" or "compute-storage-write" => mode is "comp" or "compute",
             "vertex" or "vertex-sprite" => mode is "vert" or "vertex",
-            "pixel" or "pixel-frame-layout" or "pixel-graph" or "pixel-multiple-frame-uniforms" or "pixel-sampled" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => mode is "frag" or "fragment",
+            "pixel" or "pixel-frame-layout" or "pixel-graph" or "pixel-multiple-frame-uniforms" or "pixel-r32uint" or "pixel-sampled" or "pixel-sampled-multiple" or "pixel-sprite" or "pixel-sampled-frame" or "pixel-sampled-frame-storage" => mode is "frag" or "fragment",
             _ => throw new ArgumentOutOfRangeException(nameof(stageName)),
         };
 
         if (!expectedMode)
         {
             throw new InvalidDataException($"SPIRV-Cross reported mode '{mode}' for the {stageName} shader stage.");
+        }
+
+        if (stageName == "pixel-r32uint")
+        {
+            if (!root.TryGetProperty("outputs", out var outputs)
+                || (outputs.ValueKind != JsonValueKind.Array)
+                || (outputs.GetArrayLength() != 1)
+                || !outputs[0].TryGetProperty("type", out var outputType)
+                || (outputType.ValueKind != JsonValueKind.String)
+                || !StringComparer.Ordinal.Equals(outputType.GetString(), "uint")
+                || !outputs[0].TryGetProperty("location", out var outputLocation)
+                || (outputLocation.ValueKind != JsonValueKind.Number)
+                || (outputLocation.GetInt32() != 0))
+            {
+                throw new InvalidDataException("SPIRV-Cross reflection does not report the R32UInt pixel output at location zero.");
+            }
         }
 
         if (stageName is "pixel" or "pixel-sampled-frame" or "pixel-sampled-frame-storage")

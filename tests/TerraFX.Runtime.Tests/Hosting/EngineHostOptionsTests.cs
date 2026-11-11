@@ -3207,9 +3207,11 @@ internal sealed partial class EngineHostOptionsTests
         Justification = "The X11 mode witness transfers owner-command failures through their task and disposes the owner in finally.")]
     public void X11PlatformOwnerReportsEwmhFullscreenConfirmationOrRefusal()
     {
-        if (!OperatingSystem.IsLinux())
+        if (!OperatingSystem.IsLinux()
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_ISOLATED_X11") != "1")
+            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
         {
-            Assert.Ignore("The X11 mode witness requires Linux.");
+            Assert.Ignore("The X11 mode witness requires an isolated Linux X11 display.");
             return;
         }
 

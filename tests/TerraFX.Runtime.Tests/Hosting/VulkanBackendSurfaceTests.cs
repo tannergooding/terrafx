@@ -87,7 +87,8 @@ internal sealed partial class EngineHostOptionsTests
         }
 
         if (OperatingSystem.IsLinux()
-            && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
+            && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY"))
+            && (Environment.GetEnvironmentVariable("TERRAFX_TEST_ISOLATED_X11") == "1"))
         {
             return PlatformBackend.X11Only;
         }
@@ -794,9 +795,10 @@ internal sealed partial class EngineHostOptionsTests
     public void VulkanBackendPresentsXlibSurfaceOnLinux()
     {
         if (!OperatingSystem.IsLinux()
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_ISOLATED_X11") != "1")
             || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
         {
-            Assert.Ignore("The Vulkan Xlib witness requires a Linux X11 display.");
+            Assert.Ignore("The Vulkan Xlib witness requires an isolated Linux X11 display.");
             return;
         }
 

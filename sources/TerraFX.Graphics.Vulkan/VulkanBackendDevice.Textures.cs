@@ -216,6 +216,12 @@ internal sealed unsafe partial class VulkanBackendDevice
         }
 
         ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+        if (texture.DepthAttachmentImageView.Value != 0)
+        {
+            VulkanApi.vkDestroyImageView(_device, texture.DepthAttachmentImageView, null);
+        }
+
         VulkanApi.vkDestroyImage(_device, texture.Image, null);
 
         if (texture.OwnsMemory)

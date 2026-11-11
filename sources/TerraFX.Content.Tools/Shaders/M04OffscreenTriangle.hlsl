@@ -113,6 +113,11 @@ float4 PSGraphMain(VertexOutput input) : SV_Target0
     return float4(1.0, 0.0, 1.0, 1.0);
 }
 
+uint PSR32UIntMain(VertexOutput input) : SV_Target0
+{
+    return 0x12345678;
+}
+
 float4 PSSampledMain(VertexOutput input) : SV_Target0
 {
     return FrameTexture.Sample(FrameSampler, float2(0.5, 0.5));

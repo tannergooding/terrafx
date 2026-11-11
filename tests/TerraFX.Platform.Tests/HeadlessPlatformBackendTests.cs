@@ -106,10 +106,11 @@ internal sealed partial class HeadlessPlatformBackendTests
     {
         if (!OperatingSystem.IsLinux()
             || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY"))
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_ISOLATED_X11") != "1")
             || (Environment.GetEnvironmentVariable("WAYLAND_DISPLAY") != "terrafx-unavailable")
             || (Environment.GetEnvironmentVariable("TERRAFX_TEST_WAYLAND_UNAVAILABLE") != "1"))
         {
-            Assert.Ignore("The fallback witness requires Linux X11 and an explicitly unavailable Wayland display.");
+            Assert.Ignore("The fallback witness requires an isolated Linux X11 display and an explicitly unavailable Wayland display.");
             return;
         }
 
@@ -144,9 +145,10 @@ internal sealed partial class HeadlessPlatformBackendTests
     public void X11OnlyCreatesAndRetiresAnInvisibleNativeWindowWhenDisplayIsAvailable()
     {
         if (!OperatingSystem.IsLinux()
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_ISOLATED_X11") != "1")
             || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
         {
-            Assert.Ignore("The X11 native window witness requires a Linux X11 display.");
+            Assert.Ignore("The X11 native window witness requires an isolated Linux X11 display.");
             return;
         }
 
@@ -463,9 +465,10 @@ internal sealed partial class HeadlessPlatformBackendTests
     public void X11OnlyReportsRandrMonitorSelectionWhenAvailable()
     {
         if (!OperatingSystem.IsLinux()
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_ISOLATED_X11") != "1")
             || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
         {
-            Assert.Ignore("The X11 monitor witness requires a Linux X11 display.");
+            Assert.Ignore("The X11 monitor witness requires an isolated Linux X11 display.");
             return;
         }
 

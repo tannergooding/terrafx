@@ -34,9 +34,10 @@ internal sealed partial class EngineHostOptionsTests
         }
 
         if ((platformBackend is PlatformBackend.X11Only)
-            && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
+            && (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY"))
+                || (Environment.GetEnvironmentVariable("TERRAFX_TEST_ISOLATED_X11") != "1")))
         {
-            Assert.Ignore("The Vulkan resize witness requires a Linux X11 display.");
+            Assert.Ignore("The Vulkan resize witness requires an isolated Linux X11 display.");
             return;
         }
 

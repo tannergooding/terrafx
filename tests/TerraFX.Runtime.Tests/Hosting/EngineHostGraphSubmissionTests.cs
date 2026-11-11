@@ -571,6 +571,40 @@ internal sealed partial class EngineHostOptionsTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsD32FloatSampledImage(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: true,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            sampledTextureFormat: TextureFormat.D32Float);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsDepthAttachmentGraph(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useDepthAttachment: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SubmitsMatrixAndArrayFrameUniformBuffer(GraphicsBackend backend)
         => RunOffscreenGraphAsync(
             backend,
@@ -846,6 +880,40 @@ internal sealed partial class EngineHostOptionsTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsR32FloatSampledImage(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: true,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            sampledTextureFormat: TextureFormat.R32Float);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsR32UIntColorAttachmentGraph(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            targetColorFormat: TextureFormat.R32UInt);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SubmitsR32UIntComputeStorageImageFor3DTexture(GraphicsBackend backend)
         => RunOffscreenGraphAsync(
             backend,
@@ -860,6 +928,93 @@ internal sealed partial class EngineHostOptionsTests
             overlapTransientBufferLifetimes: false,
             holdGraphCompletion: false,
             use3DStorageImage: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsR8UnormSampledImage(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: true,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            sampledTextureFormat: TextureFormat.R8Unorm);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsRgba16FloatColorAttachmentGraph(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: true,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            sampledTextureFormat: TextureFormat.Rgba16Float,
+            targetColorFormat: TextureFormat.Rgba16Float);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsRgba16FloatSampledImage(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: true,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            sampledTextureFormat: TextureFormat.Rgba16Float);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsRgba8SrgbColorAttachmentGraph(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: true,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            sampledTextureFormat: TextureFormat.Rgba8Srgb,
+            targetColorFormat: TextureFormat.Rgba8Srgb);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SubmitsRgba8SrgbSampledImage(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: true,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            sampledTextureFormat: TextureFormat.Rgba8Srgb);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
@@ -1198,7 +1353,10 @@ internal sealed partial class EngineHostOptionsTests
         bool useMultipleFrameUniformBuffers = false,
         bool use3DStorageImage = false,
         bool expectStorageImageDimensionRejection = false,
-        bool useFrameLayoutUniformBuffer = false)
+        bool useFrameLayoutUniformBuffer = false,
+        TextureFormat sampledTextureFormat = TextureFormat.Rgba8Unorm,
+        bool useDepthAttachment = false,
+        TextureFormat targetColorFormat = TextureFormat.Rgba8Unorm)
     {
         var frameUniformBindingIndex = useFrameLayoutUniformBuffer ? 2 : 0;
 
@@ -1225,7 +1383,9 @@ internal sealed partial class EngineHostOptionsTests
                 || use3DStorageImage
                 || useFloatStorageImage
                 || useSignedStorageImage
-                || useRgba16FloatStorageImage)
+                || useRgba16FloatStorageImage
+                || useDepthAttachment
+                || (targetColorFormat == TextureFormat.R32UInt))
             && string.IsNullOrWhiteSpace(shaderFixtureDirectory))
         {
             Assert.Ignore("The M04 shader fixture is required for resource-bound graph cases.");
@@ -1240,7 +1400,18 @@ internal sealed partial class EngineHostOptionsTests
             .. RenderingSchemaCatalogue.Schemas,
         ]);
         const int PackageTextureAssetId = 71;
-        var sampleBytes = new byte[] { 32, 128, 224, 255 };
+        var sampleBytes = sampledTextureFormat switch {
+            TextureFormat.R8Unorm => [128],
+            TextureFormat.R32Float => BitConverter.GetBytes(0.5f),
+            TextureFormat.D32Float => BitConverter.GetBytes(0.5f),
+            TextureFormat.Rgba16Float => [0x00, 0x3C, 0x00, 0x38, 0x00, 0x34, 0x00, 0x3C],
+            TextureFormat.Rgba8Srgb => [128, 64, 32, 255],
+            _ => [32, 128, 224, 255],
+        };
+        var sampledTextureAspect = sampledTextureFormat is TextureFormat.D32Float
+            ? TextureAspect.Depth
+            : TextureAspect.Color;
+        var targetBytesPerPixel = targetColorFormat is TextureFormat.Rgba16Float ? 8 : 4;
         var packageBytes = SceneAssetStoreTests.Package.CreatePackage();
 
         if (usePackageResidencyTexture)
@@ -1442,6 +1613,7 @@ internal sealed partial class EngineHostOptionsTests
         };
         EngineHost? host = null;
         GpuTexture? target = null;
+        GpuTexture? depthAttachmentTexture = null;
         GpuTexture? delayedGraphTarget = null;
         GpuTexture? delayedGraphDestination = null;
         GpuTexture? copySourceTexture = null;
@@ -1511,6 +1683,9 @@ internal sealed partial class EngineHostOptionsTests
             Entity cameraEntity = default;
             var cameraId = Guid.Empty;
             var targetExtent = new PixelSize(32, 32);
+            var initialCameraClearColor = (targetColorFormat == TextureFormat.R32UInt)
+                ? Vector4.Zero
+                : new Vector4(0.5f, 0.5f, 0.5f, 1.0f);
 
             static SceneComponentDefinitions.CameraComponent CreateCameraComponent(Vector4 clearColor)
             {
@@ -1535,7 +1710,7 @@ internal sealed partial class EngineHostOptionsTests
                     InitialReplayLineageId = Guid.NewGuid(),
                     WorldGuid = Guid.NewGuid(),
                 });
-                var camera = CreateCameraComponent(new Vector4(0.5f, 0.5f, 0.5f, 1.0f));
+                var camera = CreateCameraComponent(initialCameraClearColor);
                 var transform = new SceneComponentDefinitions.LocalTransformComponent(
                     Vector3.Zero,
                     Quaternion.Identity,
@@ -1577,14 +1752,30 @@ internal sealed partial class EngineHostOptionsTests
                     depth: 1,
                     arrayLayers: 1,
                     mipLevels: 1,
-                    TextureFormat.Rgba8Unorm,
+                    targetColorFormat,
                     targetUsage,
                     $"m04-{backend}-offscreen-clear"))
                 .ConfigureAwait(false);
 
+            if (useDepthAttachment)
+            {
+                depthAttachmentTexture = await graphicsDevice.CreateTextureAsync(
+                    new TextureDescription(
+                        TextureDimension.Dimension2D,
+                        targetExtent.Width,
+                        targetExtent.Height,
+                        depth: 1,
+                        arrayLayers: 1,
+                        mipLevels: 1,
+                        TextureFormat.D32Float,
+                        TextureUsage.DepthAttachment | TextureUsage.Sampled,
+                        $"m04-{backend}-depth-attachment"))
+                    .ConfigureAwait(false);
+            }
+
             if (backend == GraphicsBackend.Vulkan)
             {
-                var initialTargetBytes = new byte[checked(targetExtent.Width * targetExtent.Height * 4)];
+                var initialTargetBytes = new byte[checked(targetExtent.Width * targetExtent.Height * targetBytesPerPixel)];
                 Array.Fill(initialTargetBytes, (byte)0x3D);
                 var initialTargetStorage = UnmanagedBuffer<byte>.Allocate(
                     initialTargetBytes.Length,
@@ -1598,7 +1789,7 @@ internal sealed partial class EngineHostOptionsTests
                     new TextureSubresource(0, 0, TextureAspect.Color),
                     initialTargetLease,
                     0,
-                    new TextureDataLayout(targetExtent.Width * 4, initialTargetBytes.Length))
+                    new TextureDataLayout(targetExtent.Width * targetBytesPerPixel, initialTargetBytes.Length))
                     .ConfigureAwait(false);
                 Assert.That(uploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
             }
@@ -1897,7 +2088,7 @@ internal sealed partial class EngineHostOptionsTests
                             depth: 1,
                             arrayLayers: 1,
                             mipLevels: textureMipLevels,
-                            TextureFormat.Rgba8Unorm,
+                            sampledTextureFormat,
                             TextureUsage.Sampled | TextureUsage.CopyDestination,
                             $"m04-{backend}-frame-sampled-texture"))
                         .ConfigureAwait(false);
@@ -1924,7 +2115,7 @@ internal sealed partial class EngineHostOptionsTests
                             using var baseMipLease = ownedBaseMipBytes.AcquireReadLease(0, baseMipBytes.Length);
                             var baseMipUploadReceipt = await graphicsDevice.UploadTextureAsync(
                                 sampledTexture,
-                                new TextureSubresource(0, 0, TextureAspect.Color),
+                                new TextureSubresource(0, 0, sampledTextureAspect),
                                 baseMipLease,
                                 0,
                                 new TextureDataLayout(rowPitch: 8, slicePitch: 16))
@@ -1941,10 +2132,10 @@ internal sealed partial class EngineHostOptionsTests
                         using var sampleLease = ownedSampleBytes.AcquireReadLease(0, sampleBytes.Length);
                         var sampleUploadReceipt = await graphicsDevice.UploadTextureAsync(
                             sampledTexture,
-                            new TextureSubresource(useSampledTextureSubrange ? 1 : 0, 0, TextureAspect.Color),
+                            new TextureSubresource(useSampledTextureSubrange ? 1 : 0, 0, sampledTextureAspect),
                             sampleLease,
                             0,
-                            new TextureDataLayout(rowPitch: 4, slicePitch: 4))
+                            new TextureDataLayout(rowPitch: sampleBytes.Length, slicePitch: sampleBytes.Length))
                             .ConfigureAwait(false);
                         Assert.That(sampleUploadReceipt.Status, Is.EqualTo(UploadStatus.Ready));
                     }
@@ -1976,17 +2167,19 @@ internal sealed partial class EngineHostOptionsTests
             if (!string.IsNullOrWhiteSpace(shaderFixtureDirectory))
             {
                 var shaderExtension = backend == GraphicsBackend.D3D12 ? "dxil" : "spv";
-                var pixelStage = useFrameLayoutUniformBuffer
-                    ? "pixel-frame-layout"
-                    : useStorageResources
-                        ? "pixel-sampled-frame-storage"
-                        : useMultipleFrameUniformBuffers
-                        ? "pixel-multiple-frame-uniforms"
-                        : useMultipleSampledImages
-                        ? "pixel-sampled-multiple"
-                        : useSampledTexture
-                        ? (useUniformBuffer ? "pixel-sampled-frame" : "pixel-sampled")
-                        : (useUniformBuffer ? "pixel" : "pixel-graph");
+                var pixelStage = (targetColorFormat == TextureFormat.R32UInt)
+                    ? "pixel-r32uint"
+                    : useFrameLayoutUniformBuffer
+                        ? "pixel-frame-layout"
+                        : useStorageResources
+                            ? "pixel-sampled-frame-storage"
+                            : useMultipleFrameUniformBuffers
+                            ? "pixel-multiple-frame-uniforms"
+                            : useMultipleSampledImages
+                            ? "pixel-sampled-multiple"
+                            : useSampledTexture
+                            ? (useUniformBuffer ? "pixel-sampled-frame" : "pixel-sampled")
+                            : (useUniformBuffer ? "pixel" : "pixel-graph");
                 using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
                     shaderFixtureDirectory,
                     $"M04OffscreenTriangle.vertex.{shaderExtension}"));
@@ -2007,11 +2200,13 @@ internal sealed partial class EngineHostOptionsTests
                     ],
                     [],
                     vertexStride: 0,
-                    [TextureFormat.Rgba8Unorm],
-                    depthTargetFormat: null,
+                    [targetColorFormat],
+                    depthTargetFormat: useDepthAttachment ? TextureFormat.D32Float : null,
                     PrimitiveTopology.TriangleList,
                     PipelineBlendMode.Opaque,
-                    PipelineDepthMode.Disabled,
+                    useDepthAttachment
+                        ? PipelineDepthMode.ReversedGreaterEqualWrite
+                        : PipelineDepthMode.Disabled,
                     PipelineCullMode.None,
                     frontFaceClockwise: false,
                     bindingLayoutVersion: 1);
@@ -2574,12 +2769,13 @@ internal sealed partial class EngineHostOptionsTests
                 renderSnapshot,
                 target);
             var sampleRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
+            var sampledTextureRange = new GraphTextureRange(0, 1, 0, 1, sampledTextureAspect);
             var sampledTextureImportRange = useSampledTextureSubrange
-                ? new GraphTextureRange(0, 2, 0, 1, TextureAspect.Color)
-                : sampleRange;
+                ? new GraphTextureRange(0, 2, 0, 1, sampledTextureAspect)
+                : sampledTextureRange;
             var sampledTextureBindingRange = useSampledTextureSubrange
-                ? new GraphTextureRange(1, 1, 0, 1, TextureAspect.Color)
-                : sampleRange;
+                ? new GraphTextureRange(1, 1, 0, 1, sampledTextureAspect)
+                : sampledTextureRange;
             var storageImageImportRange = useStorageImageSubrange
                 ? new GraphTextureRange(0, 2, 0, 1, TextureAspect.Color)
                 : sampleRange;
@@ -2621,6 +2817,7 @@ internal sealed partial class EngineHostOptionsTests
             GraphBufferVersion? transientInitializationSourceVersion = null;
             GraphBufferVersion? transientSecondInitializationSourceVersion = null;
             GraphTextureVersion? sampledTextureVersion = null;
+            GraphTextureVersion? depthAttachmentInitialVersion = null;
             GraphTextureVersion? copySourceTextureVersion = null;
             GraphTextureVersion? copyDestinationTextureInitialVersion = null;
             GraphTextureVersion? copyDestinationTextureWriteVersion = null;
@@ -2789,6 +2986,17 @@ internal sealed partial class EngineHostOptionsTests
                 secondCopyDestinationInitialVersion = graph.ImportBuffer(
                     selectedSecondCopyDestinationBuffer,
                     range,
+                    new GraphImportOptions(
+                        GraphResourceState.Undefined,
+                        contentsValid: false,
+                        completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+            }
+
+            if (depthAttachmentTexture is GpuTexture selectedDepthAttachmentTexture)
+            {
+                depthAttachmentInitialVersion = graph.ImportTexture(
+                    selectedDepthAttachmentTexture,
+                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Depth),
                     new GraphImportOptions(
                         GraphResourceState.Undefined,
                         contentsValid: false,
@@ -3819,6 +4027,17 @@ internal sealed partial class EngineHostOptionsTests
                 AttachmentStoreAction.Store,
                 renderSnapshot.Cameras[0].ClearColor);
 
+            if (depthAttachmentInitialVersion is GraphTextureVersion selectedDepthAttachmentVersion)
+            {
+                _ = graph.WriteDepthAttachment(
+                    pass,
+                    selectedDepthAttachmentVersion,
+                    selectedDepthAttachmentVersion.Range,
+                    AttachmentLoadAction.Clear,
+                    AttachmentStoreAction.Store,
+                    clearDepth: 0.0f);
+            }
+
             if (useTransientCopyAliasing)
             {
                 var transientDescription = new TextureDescription(
@@ -4423,7 +4642,7 @@ internal sealed partial class EngineHostOptionsTests
                 new TextureSubresource(0, 0, TextureAspect.Color))
                 .ConfigureAwait(false))
             {
-                var firstPixel = new byte[sizeof(uint)];
+                var firstPixel = new byte[targetBytesPerPixel];
 
                 using (var readLease = firstReadback.AcquireReadLease())
                 {
@@ -4432,11 +4651,37 @@ internal sealed partial class EngineHostOptionsTests
                 }
 
                 Assert.Multiple(() => {
-                    Assert.That(firstPixel[0], Is.InRange(127, 129));
-                    Assert.That(firstPixel[1], Is.InRange(127, 129));
-                    Assert.That(firstPixel[2], Is.InRange(127, 129));
-                    Assert.That(firstPixel[3], Is.EqualTo(255));
-                    Assert.That(renderSnapshot.Cameras[0].ClearColor, Is.EqualTo(new Vector4(0.5f, 0.5f, 0.5f, 1.0f)));
+                    if (targetColorFormat == TextureFormat.R32UInt)
+                    {
+                        Assert.That(BitConverter.ToUInt32(firstPixel, 0), Is.Zero);
+                    }
+                    else if (targetColorFormat == TextureFormat.Rgba16Float)
+                    {
+                        Assert.That(firstPixel[0], Is.EqualTo(0x00));
+                        Assert.That(firstPixel[1], Is.EqualTo(0x38));
+                        Assert.That(firstPixel[2], Is.EqualTo(0x00));
+                        Assert.That(firstPixel[3], Is.EqualTo(0x38));
+                        Assert.That(firstPixel[4], Is.EqualTo(0x00));
+                        Assert.That(firstPixel[5], Is.EqualTo(0x38));
+                        Assert.That(firstPixel[6], Is.EqualTo(0x00));
+                        Assert.That(firstPixel[7], Is.EqualTo(0x3C));
+                    }
+                    else if (targetColorFormat == TextureFormat.Rgba8Srgb)
+                    {
+                        Assert.That(firstPixel[0], Is.EqualTo(188));
+                        Assert.That(firstPixel[1], Is.EqualTo(188));
+                        Assert.That(firstPixel[2], Is.EqualTo(188));
+                        Assert.That(firstPixel[3], Is.EqualTo(255));
+                    }
+                    else
+                    {
+                        Assert.That(firstPixel[0], Is.InRange(127, 129));
+                        Assert.That(firstPixel[1], Is.InRange(127, 129));
+                        Assert.That(firstPixel[2], Is.InRange(127, 129));
+                        Assert.That(firstPixel[3], Is.EqualTo(255));
+                    }
+
+                    Assert.That(renderSnapshot.Cameras[0].ClearColor, Is.EqualTo(initialCameraClearColor));
                 });
             }
 
@@ -4559,7 +4804,7 @@ internal sealed partial class EngineHostOptionsTests
             }).ConfigureAwait(false);
             var updatedSnapshot = secondSnapshot
                 ?? throw new InvalidOperationException("The updated camera extraction omitted its render snapshot.");
-            Assert.That(renderSnapshot.Cameras[0].ClearColor, Is.EqualTo(new Vector4(0.5f, 0.5f, 0.5f, 1.0f)));
+            Assert.That(renderSnapshot.Cameras[0].ClearColor, Is.EqualTo(initialCameraClearColor));
             Assert.That(updatedSnapshot.Cameras[0].ClearColor, Is.EqualTo(new Vector4(0.0f, 0.0f, 0.0f, 1.0f)));
 
             {
@@ -4574,6 +4819,7 @@ internal sealed partial class EngineHostOptionsTests
                     (useSampledTexture ? 1 : 0) + (useMultipleSampledImages ? 1 : 0));
                 GraphBufferVersion? secondGraphStorageBufferInitialVersion = null;
                 GraphTextureVersion? secondStorageImageInitialVersion = null;
+                GraphTextureVersion? secondDepthAttachmentInitialVersion = null;
 
                 if (frameUniformBuffer is GpuBuffer secondSelectedBuffer)
                 {
@@ -4680,6 +4926,17 @@ internal sealed partial class EngineHostOptionsTests
                             completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
                 }
 
+                if (useDepthAttachment && (depthAttachmentTexture is GpuTexture secondDepthAttachmentTexture))
+                {
+                    secondDepthAttachmentInitialVersion = secondGraph.ImportTexture(
+                        secondDepthAttachmentTexture,
+                        new GraphTextureRange(0, 1, 0, 1, TextureAspect.Depth),
+                        new GraphImportOptions(
+                            GraphResourceState.DepthWrite,
+                            contentsValid: true,
+                            completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
+                }
+
                 var secondPass = secondGraph.AddRasterPass(
                     new RenderPassDescription("offscreen-clear-again", 0, [], hasExternalSideEffects: false),
                     RecordSecondClear);
@@ -4768,6 +5025,18 @@ internal sealed partial class EngineHostOptionsTests
                     AttachmentLoadAction.Clear,
                     AttachmentStoreAction.Store,
                     updatedSnapshot.Cameras[0].ClearColor);
+
+                if (secondDepthAttachmentInitialVersion is GraphTextureVersion selectedSecondDepthVersion)
+                {
+                    _ = secondGraph.WriteDepthAttachment(
+                        secondPass,
+                        selectedSecondDepthVersion,
+                        selectedSecondDepthVersion.Range,
+                        AttachmentLoadAction.Clear,
+                        AttachmentStoreAction.Store,
+                        clearDepth: 0.0f);
+                }
+
                 secondGraph.SetPresentationSource(secondOutputVersion);
                 var secondCompileResponse = secondGraph.Compile();
                 Assert.That(secondCompileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
@@ -4808,8 +5077,26 @@ internal sealed partial class EngineHostOptionsTests
             }
 
             var centerPixelOffset = checked(
-                (int)((readback.RowPitch * (targetExtent.Height / 2)) + (targetExtent.Width / 2 * 4)));
+                (int)((readback.RowPitch * (targetExtent.Height / 2)) + (targetExtent.Width / 2 * targetBytesPerPixel)));
             var drawPixelCount = 0;
+            var (expectedSampledRed, expectedSampledGreen, expectedSampledBlue) = sampledTextureFormat switch {
+                TextureFormat.R8Unorm or TextureFormat.R32Float or TextureFormat.D32Float
+                    => (Red: (byte)128, Green: (byte)0, Blue: (byte)0),
+                TextureFormat.Rgba16Float
+                    => (Red: (byte)255, Green: (byte)128, Blue: (byte)64),
+                TextureFormat.Rgba8Srgb
+                    => (Red: (byte)55, Green: (byte)13, Blue: (byte)4),
+                _ => (Red: (byte)32, Green: (byte)128, Blue: (byte)224),
+            };
+
+            if ((targetColorFormat == TextureFormat.Rgba8Srgb)
+                && (sampledTextureFormat == TextureFormat.Rgba8Srgb))
+            {
+                expectedSampledRed = 128;
+                expectedSampledGreen = 64;
+                expectedSampledBlue = 32;
+            }
+
             var expectedRed = useStorageResources
                 ? (byte)255
                 : useMultipleSampledImages
@@ -4818,7 +5105,7 @@ internal sealed partial class EngineHostOptionsTests
                         ? (byte)255
                     : useMultipleFrameUniformBuffers
                         ? (byte)128
-                    : (useSampledTexture ? (byte)32 : (useUniformBuffer ? (byte)0 : (byte)255));
+                    : (useSampledTexture ? expectedSampledRed : (useUniformBuffer ? (byte)0 : (byte)255));
             var expectedGreen = useStorageResources
                 ? (byte)255
                 : useMultipleSampledImages
@@ -4827,7 +5114,7 @@ internal sealed partial class EngineHostOptionsTests
                         ? (byte)255
                     : useMultipleFrameUniformBuffers
                         ? (byte)128
-                    : (useSampledTexture ? (byte)128 : (useUniformBuffer ? (byte)255 : (byte)0));
+                    : (useSampledTexture ? expectedSampledGreen : (useUniformBuffer ? (byte)255 : (byte)0));
             var expectedBlue = useStorageResources
                 ? (byte)255
                 : useMultipleSampledImages
@@ -4836,7 +5123,7 @@ internal sealed partial class EngineHostOptionsTests
                         ? (byte)255
                     : useMultipleFrameUniformBuffers
                         ? (byte)128
-                    : (useSampledTexture ? (byte)224 : (useUniformBuffer ? (byte)0 : (byte)255));
+                    : (useSampledTexture ? expectedSampledBlue : (useUniformBuffer ? (byte)0 : (byte)255));
             var expectedBackgroundRed = 0;
             var expectedBackgroundGreen = 0;
             var expectedBackgroundBlue = 0;
@@ -4845,12 +5132,25 @@ internal sealed partial class EngineHostOptionsTests
             {
                 for (var x = 0; x < readback.Width; x++)
                 {
-                    var pixelOffset = checked((int)((readback.RowPitch * y) + (x * 4)));
+                    var pixelOffset = checked((int)((readback.RowPitch * y) + (x * targetBytesPerPixel)));
 
-                    if ((padded[pixelOffset] == expectedRed)
-                        && (padded[pixelOffset + 1] == expectedGreen)
-                        && (padded[pixelOffset + 2] == expectedBlue)
-                        && (padded[pixelOffset + 3] == 255))
+                    var isDrawPixel = (targetColorFormat == TextureFormat.R32UInt)
+                        ? (BitConverter.ToUInt32(padded, pixelOffset) == 0x12345678u)
+                        : (targetColorFormat == TextureFormat.Rgba16Float)
+                        ? (padded[pixelOffset] == 0x00)
+                            && (padded[pixelOffset + 1] == 0x3C)
+                            && (padded[pixelOffset + 2] == 0x00)
+                            && (padded[pixelOffset + 3] == 0x38)
+                            && (padded[pixelOffset + 4] == 0x00)
+                            && (padded[pixelOffset + 5] == 0x34)
+                            && (padded[pixelOffset + 6] == 0x00)
+                            && (padded[pixelOffset + 7] == 0x3C)
+                        : (padded[pixelOffset] == expectedRed)
+                            && (padded[pixelOffset + 1] == expectedGreen)
+                            && (padded[pixelOffset + 2] == expectedBlue)
+                            && (padded[pixelOffset + 3] == 255);
+
+                    if (isDrawPixel)
                     {
                         drawPixelCount++;
                     }
@@ -4861,11 +5161,21 @@ internal sealed partial class EngineHostOptionsTests
                 Assert.That(padded[0], Is.InRange(expectedBackgroundRed - 1, expectedBackgroundRed + 1));
                 Assert.That(padded[1], Is.InRange(expectedBackgroundGreen - 1, expectedBackgroundGreen + 1));
                 Assert.That(padded[2], Is.InRange(expectedBackgroundBlue - 1, expectedBackgroundBlue + 1));
-                Assert.That(padded[3], Is.EqualTo(255));
+                Assert.That(
+                    padded[targetColorFormat == TextureFormat.Rgba16Float ? 7 : 3],
+                    Is.EqualTo(
+                        targetColorFormat == TextureFormat.Rgba16Float
+                            ? 0x3C
+                            : (targetColorFormat == TextureFormat.R32UInt ? 0 : 255)));
 
                 if (pipeline is not null)
                 {
                     Assert.That(drawPixelCount, Is.GreaterThan(0));
+
+                    if (targetColorFormat == TextureFormat.R32UInt)
+                    {
+                        Assert.That(BitConverter.ToUInt32(padded, centerPixelOffset), Is.EqualTo(0x12345678u));
+                    }
                 }
                 else
                 {
@@ -5302,6 +5612,7 @@ internal sealed partial class EngineHostOptionsTests
                 + $"Fence={finalReceipt.CompletedFence}; "
                 + $"UniformBuffer={useUniformBuffer}; "
                 + $"SampledTexture={useSampledTexture}; "
+                + $"DepthAttachment={useDepthAttachment}; "
                 + $"StorageResources={useStorageResources}; "
                 + $"BufferCopy={useBufferCopy || useCompute || useMultipleComputeStorageBuffers || useTransientBufferAliasing || useConstantWriteComputeBuffer}; "
                 + $"TextureCopy={useTextureCopy}; "
@@ -5313,8 +5624,8 @@ internal sealed partial class EngineHostOptionsTests
                 + $"TransientBufferAliasing={useTransientBufferAliasing}; "
                 + $"OverlappingTransientLifetimes={overlapTransientBufferLifetimes}; "
                 + $"CameraClear={renderSnapshot.Cameras[0].ClearColor}->{updatedSnapshot.Cameras[0].ClearColor}; "
-                + $"Pixel={padded[centerPixelOffset]:X2}{padded[centerPixelOffset + 1]:X2}"
-                + $"{padded[centerPixelOffset + 2]:X2}{padded[centerPixelOffset + 3]:X2}; "
+                + $"TargetFormat={targetColorFormat}; "
+                + $"Pixel={Convert.ToHexString(padded.AsSpan(centerPixelOffset, targetBytesPerPixel))}; "
                 + $"DrawPixels={drawPixelCount}");
         }
         finally
@@ -5350,6 +5661,7 @@ internal sealed partial class EngineHostOptionsTests
             additionalSampledTexture?.Dispose();
             storageImage?.Dispose();
             additionalStorageImage?.Dispose();
+            depthAttachmentTexture?.Dispose();
             target?.Dispose();
             delayedGraphTarget?.Dispose();
             delayedGraphDestination?.Dispose();
