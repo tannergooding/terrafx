@@ -295,6 +295,22 @@ internal sealed class GraphicsBufferTransferTests
                 .WaitAsync(TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
             Assert.That(backendDevice.BufferCreationCount, Is.EqualTo(1));
+            _ = Assert.ThrowsAsync<OutOfMemoryException>(
+                async () => await graphicsDevice.CreateBufferAsync(CreateBufferDescription())
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+            Assert.That(backendDevice.BufferCreationCount, Is.EqualTo(1));
+
+            buffer.Dispose();
+            buffer = null;
+            Assert.That(
+                SpinWait.SpinUntil(() => backendDevice.BufferDisposalCount == 1, TimeSpan.FromSeconds(5)),
+                Is.True);
+
+            buffer = await graphicsDevice.CreateBufferAsync(CreateBufferDescription())
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert.That(backendDevice.BufferCreationCount, Is.EqualTo(2));
         }
         finally
         {
@@ -302,7 +318,7 @@ internal sealed class GraphicsBufferTransferTests
             await graphicsDevice.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
 
-        Assert.That(backendDevice.BufferDisposalCount, Is.EqualTo(1));
+        Assert.That(backendDevice.BufferDisposalCount, Is.EqualTo(2));
     }
 
     [Test]
@@ -374,6 +390,12 @@ internal sealed class GraphicsBufferTransferTests
                 .WaitAsync(TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
             Assert.That(backendDevice.BufferCreationCount, Is.EqualTo(1));
+            _ = Assert.ThrowsAsync<OutOfMemoryException>(
+                async () => await graphicsDevice.CreateBufferAsync(bufferDescription)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false));
+            Assert.That(backendDevice.BufferCreationCount, Is.EqualTo(1));
+
             buffer.Dispose();
             buffer = null;
             Assert.That(
