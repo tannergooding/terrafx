@@ -278,6 +278,13 @@ internal sealed unsafe partial class WaylandInputMethodV2IntegrationTests
         }
     }
 
+    private static bool HasIntegerBufferScale(WaylandPlatformBackend backend, WindowHandle window)
+    {
+        var metrics = backend.GetNativeWindowMetrics(window);
+        return (metrics.DpiSource is DpiSource.WaylandIntegerBufferScale)
+            && (metrics.ContentScale.X == 2.0f);
+    }
+
     private static bool IsInputMethodReady(
         InputMethodState state,
         List<PlatformInputSample> inputSamples,
@@ -548,6 +555,105 @@ internal sealed unsafe partial class WaylandInputMethodV2IntegrationTests
                     Assert.That(
                         metrics.ClientPixelSize.Height,
                         Is.EqualTo(checked((int)Math.Round(metrics.LogicalClientSize.Y * 1.25f, MidpointRounding.ToEven))));
+                }
+                finally
+                {
+                    if (windowCreated)
+                    {
+                        backend.CloseWindow(window);
+                        backend.Pump();
+                    }
+                }
+            }
+        }
+        finally
+        {
+            FreeListener(sharedMemoryListener);
+            FreeListener(sharedBufferListener);
+        }
+    }
+
+    [Test]
+    public void ReportsIntegerBufferScaleWhenFractionalScaleIsUnavailable()
+    {
+        if (!OperatingSystem.IsLinux()
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_ISOLATED_WAYLAND_X11") != "1")
+            || (Environment.GetEnvironmentVariable("TERRAFX_TEST_WAYLAND_INTEGER_SCALE") != "2")
+            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY")))
+        {
+            Assert.Ignore("The integer buffer-scale witness requires private Weston at output scale 2.");
+            return;
+        }
+
+        var backendOwner = PlatformBackendFactory.Create(
+            PlatformBackend.WaylandOnly,
+            ownerId: 1,
+            ClipboardServicePolicy.NotRequested);
+        nint sharedMemoryListener = 0;
+        nint sharedBufferListener = 0;
+
+        try
+        {
+            using (backendOwner)
+            {
+                if (backendOwner is not WaylandPlatformBackend backend)
+                {
+                    Assert.Fail("The Wayland backend factory returned a different backend.");
+                    return;
+                }
+
+                Assert.That(backend.Connection.GetGlobals("wp_fractional_scale_manager_v1"), Is.Empty);
+                Assert.That(backend.Connection.GetGlobals("wp_viewporter"), Is.Not.Empty);
+                var window = new WindowHandle(ownerId: 1, index: 0, generation: 1);
+                var windowCreated = false;
+
+                try
+                {
+                    backend.CreateWindow(
+                        window,
+                        new WindowOptions("TerraFX Wayland integer-scale probe") {
+                            ClientSize = new Vector2(640.0f, 360.0f),
+                            MinimumClientSize = new Vector2(320.0f, 180.0f),
+                            Resizable = false,
+                            Visible = true,
+                        },
+                        nativeMonitorHandle: 0);
+                    windowCreated = true;
+
+                    if (!backend.TryGetNativeWindowBinding(window, out var binding))
+                    {
+                        throw new InvalidOperationException("The private Wayland backend omitted its test window binding.");
+                    }
+
+                    Assert.That(backend.Connection.GetProxyVersion(binding.NativeWindowOrSurface), Is.GreaterThanOrEqualTo(3));
+                    AttachSharedBuffer(
+                        backend.Connection,
+                        binding.NativeWindowOrSurface,
+                        ref sharedMemoryListener,
+                        ref sharedBufferListener);
+
+                    var inputSamples = new List<PlatformInputSample>();
+                    var textSamples = new List<PlatformTextInputSample>();
+                    PumpUntil(
+                        backend,
+                        inputSamples,
+                        textSamples,
+                        () => HasIntegerBufferScale(backend, window),
+                        "The integer wl_output scale did not reach the mapped window.");
+
+                    var metrics = backend.GetNativeWindowMetrics(window);
+                    Assert.That(metrics.ContentScale.Y, Is.EqualTo(2.0f));
+                    Assert.That(metrics.EffectiveDpi, Is.EqualTo(192.0f));
+                    Assert.That(metrics.DpiConfidence, Is.EqualTo(DpiConfidence.Reported));
+                    Assert.That(
+                        metrics.ClientPixelSize.Width,
+                        Is.EqualTo(checked((int)Math.Round(metrics.LogicalClientSize.X * 2.0f, MidpointRounding.ToEven))));
+                    Assert.That(
+                        metrics.ClientPixelSize.Height,
+                        Is.EqualTo(checked((int)Math.Round(metrics.LogicalClientSize.Y * 2.0f, MidpointRounding.ToEven))));
+
+                    backend.Connection.SendRequest(binding.NativeWindowOrSurface, opcode: 6);
+                    backend.Connection.Roundtrip();
                 }
                 finally
                 {

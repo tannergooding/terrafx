@@ -318,6 +318,13 @@ Run the fractional-scale witness only in the isolated Sway shell with `TERRAFX_T
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release --filter "FullyQualifiedName=TerraFX.Platform.Tests.WaylandInputMethodV2IntegrationTests.ReportsFractionalScaleAndViewportMetricsOnPrivateSway" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
+Private Weston 14 advertises `wp_viewporter` but not `wp_fractional_scale_manager_v1`. Its scale-2 witness verifies integer-scale metrics and, with `WAYLAND_DEBUG=1`, records `wl_surface.set_buffer_scale(2)`; the test passes in Debug/Release. Run the private Weston runner in bubblewrap with its extracted `xkbcomp` bound at the path Xvfb requires:
+
+```bash
+bwrap --unshare-all --share-net --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --bind "$WORKTREE/artifacts/linux" "$WORKTREE/artifacts/linux" --ro-bind "$WORKTREE/artifacts/linux/native/extracted/usr/bin/xkbcomp" /usr/bin/xkbcomp --setenv WAYLAND_DEBUG 1 -- bash "$WORKTREE/artifacts/linux/native/wayland-test/debugger/run-private-wayland-test.sh" Debug "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" "FullyQualifiedName=TerraFX.Platform.Tests.WaylandInputMethodV2IntegrationTests.ReportsIntegerBufferScaleWhenFractionalScaleIsUnavailable" integer-scale
+bwrap --unshare-all --share-net --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --bind "$WORKTREE/artifacts/linux" "$WORKTREE/artifacts/linux" --ro-bind "$WORKTREE/artifacts/linux/native/extracted/usr/bin/xkbcomp" /usr/bin/xkbcomp --setenv WAYLAND_DEBUG 1 -- bash "$WORKTREE/artifacts/linux/native/wayland-test/debugger/run-private-wayland-test.sh" Release "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" "FullyQualifiedName=TerraFX.Platform.Tests.WaylandInputMethodV2IntegrationTests.ReportsIntegerBufferScaleWhenFractionalScaleIsUnavailable" integer-scale
+```
+
 The XKB key-name table is hardware-independent and can be tested without an X server:
 
 ```powershell
