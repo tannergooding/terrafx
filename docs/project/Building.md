@@ -177,6 +177,24 @@ In the configured WSLg shell, run the same deterministic witness with isolated L
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Graphics.Vulkan.Tests/TerraFX.Graphics.Vulkan.Tests.csproj" --configuration Release --filter "FullyQualifiedName~VulkanDeviceLostAfterNativeSignalRetainsBufferAndDevice|FullyQualifiedName~VulkanWaitTimeoutAfterNativeSignalQuarantinesBufferAndDevice" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
+Process-isolated graph tests also exercise D3D12/Vulkan graph-resource quarantine after an injected fence timeout. Run the Windows D3D12/Vulkan selection:
+
+```powershell
+$env:TERRAFX_M04_SHADER_FIXTURE_DIRECTORY = (Resolve-Path .\artifacts\shader-fixtures\m04-offscreen-complete-final).Path
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~D3D12GraphFenceTimeoutQuarantinesGraphResources|FullyQualifiedName~VulkanGraphFenceTimeoutQuarantinesGraphResources"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName~D3D12GraphFenceTimeoutQuarantinesGraphResources|FullyQualifiedName~VulkanGraphFenceTimeoutQuarantinesGraphResources"
+Remove-Item Env:\TERRAFX_M04_SHADER_FIXTURE_DIRECTORY
+```
+
+In the configured WSLg shell, run the Vulkan graph quarantine witness with isolated outputs and validation:
+
+```bash
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~VulkanGraphFenceTimeoutQuarantinesGraphResources" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Runtime.Tests/TerraFX.Runtime.Tests.csproj" --configuration Release --filter "FullyQualifiedName~VulkanGraphFenceTimeoutQuarantinesGraphResources" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
+All of these use controlled wait-result overrides. They exercise conservative resource/device retention; they do not simulate driver-generated device removal or a real submitted-work timeout.
+
 ### D3D12 OffscreenNative startup and descriptor-set probes
 
 The focused Runtime tests exercise D3D12 startup and descriptor writes using a `PlatformHostOwner`-issued identity:
