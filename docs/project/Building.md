@@ -238,6 +238,13 @@ dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --confi
 dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Release
 ```
 
+The focused Windows Raw Input witness verifies keyboard HID scan-code mapping and signed wheel deltas, including negative and high-resolution values:
+
+```powershell
+dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Debug --filter "FullyQualifiedName~WindowsRawInputCaptureTests"
+dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Release --filter "FullyQualifiedName~WindowsRawInputCaptureTests"
+```
+
 The opt-in Windows physical-keyboard witness opens a visible Interactive D3D12 window and records a real A key-down/up through its HostLiveUI recipient. Focus the window and press/release A when prompted. This records physical routing only; it does not qualify UI-owned capture, IME composition, gamepad input, or device hotplug:
 
 ```powershell
@@ -245,6 +252,16 @@ $env:TERRAFX_RUN_M04_PHYSICAL_INPUT = '1'
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.EngineHostOptionsTests.ManualWindowsInteractivePhysicalKeyboardInputUsesHostLiveUiRoute"
 Remove-Item Env:\TERRAFX_RUN_M04_PHYSICAL_INPUT
 ```
+
+The opt-in physical text witness creates a HostLiveUI `TextInputSession`, feeds committed text back as an updated UI snapshot, and requires a configured TSF IME to produce composition-start, preedit-update, commit, and composition-end records. Focus its visible window, compose a short word with the active IME, and commit it. The witness also records the physical H key to confirm the focused Raw Input route:
+
+```powershell
+$env:TERRAFX_RUN_M04_PHYSICAL_TEXT = '1'
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.EngineHostOptionsTests.ManualWindowsInteractivePhysicalTextInputUsesHostLiveUiSession"
+Remove-Item Env:\TERRAFX_RUN_M04_PHYSICAL_TEXT
+```
+
+Plain keyboard text without a TSF composition does not close the IME observation; use the separate keyboard witness above to qualify Raw Input key routing.
 
 The Windows TSF selection exercises protected-session input scopes/redaction, synchronous and asynchronous text-store locks, UTF-16 range validation, composition commit/cancel, and native document-context activation/update/retirement. It requires Windows 11 x64 and does not claim physical IME preedit/commit:
 

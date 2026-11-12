@@ -9,6 +9,11 @@ internal static class WindowsRawInputDecoder
     internal const ushort RawKeyboardBreak = 0x0001;
     internal const ushort RawKeyboardE0 = 0x0002;
     internal const ushort RawKeyboardE1 = 0x0004;
+    internal const short RawMouseWheelDelta = 120;
+
+    // RAWMOUSE carries the signed wheel delta in an unsigned union field.
+    internal static float DecodeWheelDelta(ushort encodedDelta)
+        => unchecked((short)encodedDelta) / (float)RawMouseWheelDelta;
 
     internal static int MapAbsoluteCoordinate(int normalizedCoordinate, int origin, int extent)
     {

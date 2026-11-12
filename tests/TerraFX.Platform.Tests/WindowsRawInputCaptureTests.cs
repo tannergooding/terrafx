@@ -9,6 +9,21 @@ namespace TerraFX.Platform.Tests;
 internal sealed class WindowsRawInputCaptureTests
 {
     [Test]
+    [TestCase((ushort)120, 1.0f)]
+    [TestCase((ushort)0xFF88, -1.0f)]
+    [TestCase((ushort)60, 0.5f)]
+    [TestCase((ushort)0xFFC4, -0.5f)]
+    public void DecodesSignedRawMouseWheelDeltas(ushort encodedDelta, float expectedDetents)
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            Assert.Ignore("The Windows Raw Input adapter targets Windows 11.");
+        }
+
+        Assert.That(WindowsRawInputDecoder.DecodeWheelDelta(encodedDelta), Is.EqualTo(expectedDetents));
+    }
+
+    [Test]
     public void MapsCommonWindowsScanCodesToPhysicalHidUsages()
     {
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))

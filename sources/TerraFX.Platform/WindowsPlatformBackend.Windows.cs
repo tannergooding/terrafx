@@ -37,7 +37,6 @@ internal sealed unsafe partial class WindowsPlatformBackend
     private const ushort RawMouseMoveAbsolute = 0x0001;
     private const ushort RawMouseVerticalWheel = 0x0400;
     private const ushort RawMouseVirtualDesktop = 0x0002;
-    private const ushort RawMouseWheelDelta = 120;
     private const uint SystemMetricScreenHeight = 1;
     private const uint SystemMetricScreenWidth = 0;
     private const uint SystemMetricVirtualScreenHeight = 79;
@@ -1251,7 +1250,7 @@ internal sealed unsafe partial class WindowsPlatformBackend
                 state.Window,
                 nativeDevice,
                 PlatformInputDeviceKind.Pointer,
-                ScrollValue: (short)mouse.ButtonData / (float)RawMouseWheelDelta,
+                ScrollValue: WindowsRawInputDecoder.DecodeWheelDelta(mouse.ButtonData),
                 ScrollUnit: PointerScrollUnit.Detents,
                 NativeTimestamp: nativeTimestamp,
                 NativeClockDomain: WindowsMessageTimeClockDomain,
@@ -1266,7 +1265,7 @@ internal sealed unsafe partial class WindowsPlatformBackend
                 state.Window,
                 nativeDevice,
                 PlatformInputDeviceKind.Pointer,
-                ScrollValue: (short)mouse.ButtonData / (float)RawMouseWheelDelta,
+                ScrollValue: WindowsRawInputDecoder.DecodeWheelDelta(mouse.ButtonData),
                 ScrollUnit: PointerScrollUnit.Detents,
                 NativeTimestamp: nativeTimestamp,
                 NativeClockDomain: WindowsMessageTimeClockDomain,
