@@ -32,6 +32,7 @@ internal sealed partial class SceneAssetStoreTests
         EbinRecord[] tracks,
         EbinRecord[] events,
         EbinField? skeletonReference = null,
+        EbinField? rootMotion = null,
         uint schemaMinor = 0)
     {
         var fields = new List<EbinField>
@@ -45,6 +46,11 @@ internal sealed partial class SceneAssetStoreTests
         if (skeletonReference is { } selectedSkeletonReference)
         {
             fields.Add(selectedSkeletonReference);
+        }
+
+        if (rootMotion is { } selectedRootMotion)
+        {
+            fields.Add(selectedRootMotion);
         }
 
         fields.Add(EbinPrimitives.UInt8(8, 0));
@@ -116,6 +122,16 @@ internal sealed partial class SceneAssetStoreTests
     private static EbinField CreateOptionalRecordField(uint tag, EbinRecord record, byte flags = 0)
         => new(tag, 22, flags, count: 1, EbinPrimitives.Encode(record));
 
+    private static EbinRecord CreateRootMotionRecord(Guid rootJointId)
+        => new(
+            new ContentSchemaIdentityAssignment("native/root-motion").SchemaId,
+            1,
+            0,
+            [
+                EbinPrimitives.Guid(1, rootJointId),
+                EbinPrimitives.UInt8(2, 0),
+            ]);
+
     private static byte[] CreateSkeletonRecord(EbinRecord[] joints, Guid? rootMotionJointId = null)
     {
         var fields = new List<EbinField>
@@ -125,7 +141,8 @@ internal sealed partial class SceneAssetStoreTests
 
         if (rootMotionJointId is { } selectedRootMotionJointId)
         {
-            fields.Add(EbinPrimitives.Guid(2, selectedRootMotionJointId));
+            var rootMotionField = EbinPrimitives.Guid(2, selectedRootMotionJointId);
+            fields.Add(new EbinField(2, 11, flags: 0, count: 1, rootMotionField.Payload));
         }
 
         return EbinPrimitives.Encode(new EbinRecord(
@@ -138,7 +155,11 @@ internal sealed partial class SceneAssetStoreTests
     private static byte[] CreateSkeletonRecord(Guid jointId, int parentIndex, Matrix4x4 inverseBind)
         => CreateSkeletonRecord([CreateJointRecord(jointId, parentIndex, Vector3.Zero, Vector3.One, inverseBind)]);
 
-    private static EbinRecord CreateTransformTrack(Guid targetId)
+    private static EbinRecord CreateTransformTrack(
+        Guid targetId,
+        byte channel = 0,
+        byte interpolation = 1,
+        EbinRecord[]? keys = null)
         => new(
             new ContentSchemaIdentityAssignment("native/transform-track").SchemaId,
             1,
@@ -146,20 +167,146 @@ internal sealed partial class SceneAssetStoreTests
             [
                 EbinPrimitives.Guid(1, targetId),
                 EbinPrimitives.UInt8(2, 1),
-                EbinPrimitives.UInt8(3, 0),
-                EbinPrimitives.UInt8(4, 1),
-                EbinPrimitives.RecordArray(5, [CreateVector3Key(0, Vector3.Zero)]),
+                EbinPrimitives.UInt8(3, channel),
+                EbinPrimitives.UInt8(4, interpolation),
+                EbinPrimitives.RecordArray(5, keys ?? [CreateVector3Key(0, Vector3.Zero)]),
             ]);
 
-    private static EbinRecord CreateVector3Key(long timeTicks, Vector3 value)
-        => new(
+    private static EbinRecord CreateVector3Key(
+        long timeTicks,
+        Vector3 value,
+        Vector3? inTangent = null,
+        Vector3? outTangent = null)
+    {
+        var fields = new List<EbinField>
+        {
+            EbinPrimitives.Int64(1, timeTicks),
+            EbinPrimitives.Geometry(2, value),
+        };
+
+        if (inTangent is { } selectedInTangent)
+        {
+            var inTangentField = EbinPrimitives.Geometry(3, selectedInTangent);
+            fields.Add(new EbinField(3, 15, flags: 0, count: 1, inTangentField.Payload));
+        }
+
+        if (outTangent is { } selectedOutTangent)
+        {
+            var outTangentField = EbinPrimitives.Geometry(4, selectedOutTangent);
+            fields.Add(new EbinField(4, 15, flags: 0, count: 1, outTangentField.Payload));
+        }
+
+        return new EbinRecord(
             new ContentSchemaIdentityAssignment("native/key-vector3").SchemaId,
             1,
             0,
+            fields.ToArray());
+    }
+
+    [Test]
+    public async Task AnimationAssetBinderValidatesPackageBackedSkeletonBindings()
+    {
+        var schemas = CreateAnimationAssetRegistry();
+        var registrationBuilder = new AssetStoreRegistrationBuilder(schemas);
+        _ = AnimationSupport.RegisterAssetCodecs(registrationBuilder);
+        const uint skeletonAssetId = 86;
+        const uint validClipAssetId = 87;
+        const uint unknownJointClipAssetId = 88;
+        const uint mismatchedRootMotionClipAssetId = 89;
+        const uint nonUnitRootScaleClipAssetId = 90;
+        const uint cubicRootScaleTangentClipAssetId = 91;
+        var rootJointId = new Guid("30000000-0000-4000-8000-00000000000b");
+        var unknownJointId = new Guid("40000000-0000-4000-8000-00000000000c");
+        var skeletonRecord = CreateSkeletonRecord(
+            [CreateJointRecord(rootJointId, -1, Vector3.Zero, Vector3.One, Matrix4x4.Identity)],
+            rootJointId);
+        var skeletonReference = CreateOptionalRecordField(5, CreateAssetReferenceRecord(
+            skeletonAssetId,
+            new ContentSchemaIdentityAssignment("native/skeleton").SchemaId,
+            schemaMajor: 1));
+        var rootMotionField = CreateOptionalRecordField(6, CreateRootMotionRecord(rootJointId));
+        var validClip = CreateAnimationClipRecord(
+            [CreateTransformTrack(rootJointId)],
+            [],
+            skeletonReference,
+            rootMotionField);
+        var unknownJointClip = CreateAnimationClipRecord(
+            [CreateTransformTrack(unknownJointId)],
+            [],
+            skeletonReference);
+        var mismatchedRootMotionClip = CreateAnimationClipRecord(
+            [],
+            [],
+            skeletonReference,
+            CreateOptionalRecordField(6, CreateRootMotionRecord(unknownJointId)));
+        var nonUnitRootScaleClip = CreateAnimationClipRecord(
+            [CreateTransformTrack(rootJointId, channel: 2, keys: [CreateVector3Key(0, new Vector3(2.0f, 1.0f, 1.0f))])],
+            [],
+            skeletonReference,
+            rootMotionField);
+        var cubicRootScaleTangentClip = CreateAnimationClipRecord(
             [
-                EbinPrimitives.Int64(1, timeTicks),
-                EbinPrimitives.Geometry(2, value),
-            ]);
+                CreateTransformTrack(
+                    rootJointId,
+                    channel: 2,
+                    interpolation: 2,
+                    keys: [CreateVector3Key(0, Vector3.One, new Vector3(1.0f, 0.0f, 0.0f), Vector3.Zero)]),
+            ],
+            [],
+            skeletonReference,
+            rootMotionField);
+        var packageBytes = Package.CreatePackage(
+            new Package.Entry(skeletonAssetId, Package.CreateEnvelope(skeletonAssetId, skeletonRecord)),
+            new Package.Entry(validClipAssetId, Package.CreateEnvelope(validClipAssetId, EbinPrimitives.Encode(validClip))),
+            new Package.Entry(unknownJointClipAssetId, Package.CreateEnvelope(unknownJointClipAssetId, EbinPrimitives.Encode(unknownJointClip))),
+            new Package.Entry(mismatchedRootMotionClipAssetId, Package.CreateEnvelope(mismatchedRootMotionClipAssetId, EbinPrimitives.Encode(mismatchedRootMotionClip))),
+            new Package.Entry(nonUnitRootScaleClipAssetId, Package.CreateEnvelope(nonUnitRootScaleClipAssetId, EbinPrimitives.Encode(nonUnitRootScaleClip))),
+            new Package.Entry(cubicRootScaleTangentClipAssetId, Package.CreateEnvelope(cubicRootScaleTangentClipAssetId, EbinPrimitives.Encode(cubicRootScaleTangentClip))));
+        var packagePath = Package.WritePackage(packageBytes);
+        AssetStore? assets = null;
+
+        try
+        {
+            assets = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(packageBytes), registrationBuilder.Build()))
+                .ConfigureAwait(false);
+            using var clipLease = await assets.LoadAsync<AnimationClipAsset>(new AssetId(checked((int)validClipAssetId)))
+                .ConfigureAwait(false);
+            using var skeletonLease = await AnimationClipAssetBinding.LoadSkeletonAsync(clipLease).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("The selected Clip should retain its Skeleton binding.");
+
+            Assert.That(skeletonLease.Value.Joints[0].JointId, Is.EqualTo(rootJointId));
+            Assert.That(skeletonLease.Value.RootMotionJointId, Is.EqualTo(rootJointId));
+
+            foreach (var invalidClipAssetId in new[]
+                {
+                    unknownJointClipAssetId,
+                    mismatchedRootMotionClipAssetId,
+                    nonUnitRootScaleClipAssetId,
+                    cubicRootScaleTangentClipAssetId,
+                })
+            {
+                using var invalidClipLease = await assets.LoadAsync<AnimationClipAsset>(new AssetId(checked((int)invalidClipAssetId)))
+                    .ConfigureAwait(false);
+                _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
+                    await AnimationClipAssetBinding.LoadSkeletonAsync(invalidClipLease).ConfigureAwait(false));
+            }
+        }
+        finally
+        {
+            try
+            {
+                if (assets is { } selectedAssets)
+                {
+                    await selectedAssets.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                File.Delete(packagePath);
+            }
+        }
+    }
 
     [Test]
     public async Task AnimationAssetCodecRejectsUnorderedTracksEventsAndRequiredOptionalReference()
