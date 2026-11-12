@@ -1,6 +1,8 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -17,6 +19,7 @@ using TerraFX.Graphics;
 using TerraFX.Graphics.D3D12;
 using TerraFX.Graphics.Vulkan;
 using TerraFX.Hosting;
+using TerraFX.Numerics;
 using TerraFX.Platform;
 using TerraFX.Rendering;
 using TerraFX.Runtime.Tests.Hosting;
@@ -45,6 +48,14 @@ internal sealed partial class SceneAssetStoreTests
             renderThroughNativeGraph: true,
             graphicsBackend: graphicsBackend);
 
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotPinnedAtlasPageSubmitsObjectAndMaterialGroupsAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotAtlasPageResidencyAsync(
+            renderThroughNativeGraph: true,
+            graphicsBackend: graphicsBackend,
+            useM05SpritePipeline: true);
+
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
         "Reliability",
         "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed",
@@ -57,7 +68,8 @@ internal sealed partial class SceneAssetStoreTests
         bool renderThroughNativeGraph,
         bool failGraphRecording = false,
         bool cancelGraphAdmission = false,
-        GraphicsBackend graphicsBackend = GraphicsBackend.Vulkan)
+        GraphicsBackend graphicsBackend = GraphicsBackend.Vulkan,
+        bool useM05SpritePipeline = false)
     {
         using var submissionCancellation = new CancellationTokenSource();
 
@@ -73,9 +85,17 @@ internal sealed partial class SceneAssetStoreTests
 
         var shaderFixtureDirectory = Environment.GetEnvironmentVariable("TERRAFX_M04_SHADER_FIXTURE_DIRECTORY");
 
-        if (renderThroughNativeGraph && string.IsNullOrWhiteSpace(shaderFixtureDirectory))
+        if (renderThroughNativeGraph
+            && !useM05SpritePipeline
+            && string.IsNullOrWhiteSpace(shaderFixtureDirectory))
         {
             Assert.Ignore("The M04 shader fixture is required for package-backed Sprite graph submission.");
+            return;
+        }
+
+        if (useM05SpritePipeline && !OperatingSystem.IsWindows())
+        {
+            Assert.Ignore("The M05 Sprite pipeline fixture is compiled by the pinned Windows-only DXC package.");
             return;
         }
 
@@ -143,6 +163,8 @@ internal sealed partial class SceneAssetStoreTests
         GpuTexture? targetTexture = null;
         GpuBuffer? vertexBuffer = null;
         GpuBuffer? indexBuffer = null;
+        GpuBuffer? frameBuffer = null;
+        GpuBuffer? objectDataBuffer = null;
         GpuSampler? sampler = null;
         GpuPipeline? pipeline = null;
 
@@ -242,53 +264,120 @@ internal sealed partial class SceneAssetStoreTests
 
             if (renderThroughNativeGraph)
             {
-                var fixtureDirectory = shaderFixtureDirectory
-                    ?? throw new InvalidOperationException("The package-backed Sprite graph has no shader fixture directory.");
-                var shaderExtension = graphicsBackend == GraphicsBackend.D3D12 ? "dxil" : "spv";
+                var vertexElements = new[] {
+                    new VertexElementDescription(0, VertexElementFormat.Float3, 0),
+                    new VertexElementDescription(1, VertexElementFormat.Float2, 3 * sizeof(float)),
+                };
+                var vertexLayout = ImmutableArray.Create(vertexElements);
                 var shaderBinaryFormat = graphicsBackend == GraphicsBackend.D3D12
                     ? ShaderBinaryFormat.Dxil
                     : ShaderBinaryFormat.SpirV;
-                using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
-                    fixtureDirectory,
-                    $"M04OffscreenTriangle.vertex-sprite.{shaderExtension}"));
-                using var pixelBytecodeStorage = CreateBytecodeStorage(Path.Combine(
-                    fixtureDirectory,
-                    $"M04OffscreenTriangle.pixel-sprite.{shaderExtension}"));
-                using var vertexBytecode = vertexBytecodeStorage.AcquireReadLease(
-                    0,
-                    vertexBytecodeStorage.Length);
-                using var pixelBytecode = pixelBytecodeStorage.AcquireReadLease(
-                    0,
-                    pixelBytecodeStorage.Length);
-                var vertexReflection = M04ShaderFixtureCompiler.ReadTypedReflection(fixtureDirectory, "vertex-sprite");
-                var pixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(fixtureDirectory, "pixel-sprite");
-                var pipelineDescription = new GraphicsPipelineDescription(
-                    [
-                        new ShaderBytecodeInput(
-                            ShaderStage.Vertex,
-                            shaderBinaryFormat,
-                            vertexBytecode,
-                            vertexReflection),
-                        new ShaderBytecodeInput(
-                            ShaderStage.Pixel,
-                            shaderBinaryFormat,
-                            pixelBytecode,
-                            pixelReflection),
-                    ],
-                    [
-                        new VertexElementDescription(0, VertexElementFormat.Float3, 0),
-                        new VertexElementDescription(1, VertexElementFormat.Float2, 3 * sizeof(float)),
-                    ],
-                    vertexStride: 5 * sizeof(float),
-                    [TextureFormat.Rgba8Unorm],
-                    depthTargetFormat: null,
-                    PrimitiveTopology.TriangleList,
-                    PipelineBlendMode.Opaque,
-                    PipelineDepthMode.Disabled,
-                    PipelineCullMode.None,
-                    frontFaceClockwise: false,
-                    bindingLayoutVersion: 1);
-                pipeline = await graphicsDevice.CreatePipelineAsync(pipelineDescription).ConfigureAwait(false);
+
+                if (useM05SpritePipeline)
+                {
+                    var shaderDirectory = Path.Combine(
+                        TestContext.CurrentContext.TestDirectory,
+                        "ShaderArtifacts",
+                        "ObjectGpuDataPipeline");
+                    var manifest = ShaderToolchainManifest.Load(Path.Combine(
+                        TestContext.CurrentContext.TestDirectory,
+                        "ShaderToolchainManifest.json"));
+                    var vertexReflection = M04ShaderReflectionReader.Read(
+                        await File.ReadAllTextAsync(Path.Combine(shaderDirectory, "SnapshotSpriteVertex.dxil.reflection.txt"))
+                            .ConfigureAwait(false),
+                        await File.ReadAllTextAsync(Path.Combine(shaderDirectory, "SnapshotSpriteVertex.spirv.reflection.json"))
+                            .ConfigureAwait(false),
+                        await File.ReadAllBytesAsync(Path.Combine(shaderDirectory, "SnapshotSpriteVertex.vertex.spv"))
+                            .ConfigureAwait(false),
+                        manifest.CompilerIdentity);
+                    var pixelReflection = M04ShaderReflectionReader.Read(
+                        await File.ReadAllTextAsync(Path.Combine(shaderDirectory, "SnapshotSpritePixel.dxil.reflection.txt"))
+                            .ConfigureAwait(false),
+                        await File.ReadAllTextAsync(Path.Combine(shaderDirectory, "SnapshotSpritePixel.spirv.reflection.json"))
+                            .ConfigureAwait(false),
+                        await File.ReadAllBytesAsync(Path.Combine(shaderDirectory, "SnapshotSpritePixel.pixel.spv"))
+                            .ConfigureAwait(false),
+                        manifest.CompilerIdentity);
+                    var shaderExtension = graphicsBackend == GraphicsBackend.D3D12 ? "dxil" : "spv";
+                    using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
+                        shaderDirectory,
+                        $"SnapshotSpriteVertex.vertex.{shaderExtension}"));
+                    using var pixelBytecodeStorage = CreateBytecodeStorage(Path.Combine(
+                        shaderDirectory,
+                        $"SnapshotSpritePixel.pixel.{shaderExtension}"));
+                    using var vertexBytecode = vertexBytecodeStorage.AcquireReadLease(0, vertexBytecodeStorage.Length);
+                    using var pixelBytecode = pixelBytecodeStorage.AcquireReadLease(0, pixelBytecodeStorage.Length);
+                    pipeline = await graphicsDevice.CreatePipelineAsync(
+                        new GraphicsPipelineDescription(
+                            [
+                                new ShaderBytecodeInput(
+                                    ShaderStage.Vertex,
+                                    shaderBinaryFormat,
+                                    vertexBytecode,
+                                    vertexReflection),
+                                new ShaderBytecodeInput(
+                                    ShaderStage.Pixel,
+                                    shaderBinaryFormat,
+                                    pixelBytecode,
+                                    pixelReflection),
+                            ],
+                            vertexLayout,
+                            vertexStride: 5 * sizeof(float),
+                            [TextureFormat.Rgba8Unorm],
+                            depthTargetFormat: null,
+                            PrimitiveTopology.TriangleList,
+                            PipelineBlendMode.Opaque,
+                            PipelineDepthMode.Disabled,
+                            PipelineCullMode.None,
+                            frontFaceClockwise: false,
+                            bindingLayoutVersion: 1))
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    var fixtureDirectory = shaderFixtureDirectory
+                        ?? throw new InvalidOperationException("The package-backed Sprite graph has no shader fixture directory.");
+                    var shaderExtension = graphicsBackend == GraphicsBackend.D3D12 ? "dxil" : "spv";
+                    using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
+                        fixtureDirectory,
+                        $"M04OffscreenTriangle.vertex-sprite.{shaderExtension}"));
+                    using var pixelBytecodeStorage = CreateBytecodeStorage(Path.Combine(
+                        fixtureDirectory,
+                        $"M04OffscreenTriangle.pixel-sprite.{shaderExtension}"));
+                    using var vertexBytecode = vertexBytecodeStorage.AcquireReadLease(
+                        0,
+                        vertexBytecodeStorage.Length);
+                    using var pixelBytecode = pixelBytecodeStorage.AcquireReadLease(
+                        0,
+                        pixelBytecodeStorage.Length);
+                    var vertexReflection = M04ShaderFixtureCompiler.ReadTypedReflection(fixtureDirectory, "vertex-sprite");
+                    var pixelReflection = M04ShaderFixtureCompiler.ReadTypedReflection(fixtureDirectory, "pixel-sprite");
+                    var pipelineDescription = new GraphicsPipelineDescription(
+                        [
+                            new ShaderBytecodeInput(
+                                ShaderStage.Vertex,
+                                shaderBinaryFormat,
+                                vertexBytecode,
+                                vertexReflection),
+                            new ShaderBytecodeInput(
+                                ShaderStage.Pixel,
+                                shaderBinaryFormat,
+                                pixelBytecode,
+                                pixelReflection),
+                        ],
+                        vertexLayout,
+                        vertexStride: 5 * sizeof(float),
+                        [TextureFormat.Rgba8Unorm],
+                        depthTargetFormat: null,
+                        PrimitiveTopology.TriangleList,
+                        PipelineBlendMode.Opaque,
+                        PipelineDepthMode.Disabled,
+                        PipelineCullMode.None,
+                        frontFaceClockwise: false,
+                        bindingLayoutVersion: 1);
+                    pipeline = await graphicsDevice.CreatePipelineAsync(pipelineDescription).ConfigureAwait(false);
+                }
+
                 sampler = await graphicsDevice.CreateSamplerAsync(
                     new SamplerDescription(
                         SamplerFilter.Linear,
@@ -351,6 +440,57 @@ internal sealed partial class SceneAssetStoreTests
                         TextureUsage.ColorAttachment | TextureUsage.CopySource,
                         "snapshot-atlas-residency-target")).ConfigureAwait(false);
 
+                byte[] frameDataBytes = [];
+                byte[] objectDataBytes = [];
+
+                if (useM05SpritePipeline)
+                {
+                    frameDataBytes = new byte[256];
+
+                    for (var index = 0; index < 4; index++)
+                    {
+                        BinaryPrimitives.WriteInt32LittleEndian(
+                            frameDataBytes.AsSpan(index * sizeof(float)),
+                            BitConverter.SingleToInt32Bits(1.0f));
+                    }
+
+                    frameBuffer = await graphicsDevice.CreateBufferAsync(
+                        new BufferDescription(
+                            frameDataBytes.Length,
+                            BufferUsage.Uniform | BufferUsage.CopySource,
+                            GpuMemoryKind.Upload,
+                            structuredStride: null,
+                            "m05-snapshot-sprite-frame-data")).ConfigureAwait(false);
+                    await graphicsDevice.WriteUploadBufferAsync(
+                        frameBuffer,
+                        0,
+                        frameDataBytes).ConfigureAwait(false);
+
+                    var objectGpuData = new ObjectGpuData(
+                        Matrix4x4.Identity,
+                        Matrix4x4.Identity,
+                        Vector4.UnitX,
+                        Vector4.UnitY,
+                        Vector4.UnitZ,
+                        0,
+                        0,
+                        0,
+                        0);
+                    objectDataBytes = new byte[256];
+                    objectGpuData.WriteTo(objectDataBytes);
+                    objectDataBuffer = await graphicsDevice.CreateBufferAsync(
+                        new BufferDescription(
+                            objectDataBytes.Length,
+                            BufferUsage.Uniform | BufferUsage.CopySource,
+                            GpuMemoryKind.Upload,
+                            structuredStride: null,
+                            "m05-snapshot-sprite-object-data")).ConfigureAwait(false);
+                    await graphicsDevice.WriteUploadBufferAsync(
+                        objectDataBuffer,
+                        0,
+                        objectDataBytes).ConfigureAwait(false);
+                }
+
                 var graph = engineHost.Renderer.BuildGraph(spriteSnapshot, targetTexture);
                 var sampleRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
                 var sampledPage = graph.ImportTexture(
@@ -360,23 +500,93 @@ internal sealed partial class SceneAssetStoreTests
                         GraphResourceState.General,
                         contentsValid: true,
                         completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
-                var graphBindingSet = new BindingSet(
-                    [],
-                    [
-                        new TextureBinding(
-                            ShaderBindingGroup.Frame,
-                            0,
-                            ShaderResourceKind.SampledImage,
-                            sampledPage,
-                            sampleRange),
-                    ],
-                    [
-                        new SamplerBinding(
-                            ShaderBindingGroup.Frame,
-                            0,
-                            sampler
-                                ?? throw new InvalidOperationException("The snapshot-atlas graph has no sampler.")),
-                    ]);
+                var graphBufferReads = new List<(GraphBufferVersion Version, GraphBufferRange Range)>();
+                var uniformBufferResourceOwners = new List<GraphicsResourceOwner>();
+                BindingSet graphBindingSet;
+
+                if (useM05SpritePipeline)
+                {
+                    var selectedFrameBuffer = frameBuffer
+                        ?? throw new InvalidOperationException("The Sprite graph has no Frame uniform buffer.");
+                    var frameRange = new GraphBufferRange(0, frameDataBytes.Length);
+                    var (frameState, frameContentsValid) = selectedFrameBuffer.ResourceOwner.GetGraphImportState(frameRange);
+                    var frameVersion = graph.ImportBuffer(
+                        selectedFrameBuffer,
+                        frameRange,
+                        new GraphImportOptions(
+                            frameState,
+                            frameContentsValid,
+                            GraphImportCompletionPolicy.WaitForLastUse));
+                    graphBufferReads.Add((frameVersion, frameRange));
+                    uniformBufferResourceOwners.Add(selectedFrameBuffer.ResourceOwner);
+
+                    var selectedObjectDataBuffer = objectDataBuffer
+                        ?? throw new InvalidOperationException("The Sprite graph has no ObjectData uniform buffer.");
+                    var objectDataRange = new GraphBufferRange(0, objectDataBytes.Length);
+                    var (objectDataState, objectDataContentsValid) =
+                        selectedObjectDataBuffer.ResourceOwner.GetGraphImportState(objectDataRange);
+                    var objectDataVersion = graph.ImportBuffer(
+                        selectedObjectDataBuffer,
+                        objectDataRange,
+                        new GraphImportOptions(
+                            objectDataState,
+                            objectDataContentsValid,
+                            GraphImportCompletionPolicy.WaitForLastUse));
+                    graphBufferReads.Add((objectDataVersion, objectDataRange));
+                    uniformBufferResourceOwners.Add(selectedObjectDataBuffer.ResourceOwner);
+
+                    graphBindingSet = new BindingSet(
+                        [
+                            new BufferBinding(
+                                ShaderBindingGroup.Frame,
+                                0,
+                                ShaderResourceKind.UniformBuffer,
+                                frameVersion,
+                                frameRange),
+                            new BufferBinding(
+                                ShaderBindingGroup.ObjectData,
+                                0,
+                                ShaderResourceKind.UniformBuffer,
+                                objectDataVersion,
+                                objectDataRange),
+                        ],
+                        [
+                            new TextureBinding(
+                                ShaderBindingGroup.Material,
+                                0,
+                                ShaderResourceKind.SampledImage,
+                                sampledPage,
+                                sampleRange),
+                        ],
+                        [
+                            new SamplerBinding(
+                                ShaderBindingGroup.Material,
+                                0,
+                                sampler
+                                    ?? throw new InvalidOperationException("The snapshot-atlas graph has no sampler.")),
+                        ]);
+                }
+                else
+                {
+                    graphBindingSet = new BindingSet(
+                        [],
+                        [
+                            new TextureBinding(
+                                ShaderBindingGroup.Frame,
+                                0,
+                                ShaderResourceKind.SampledImage,
+                                sampledPage,
+                                sampleRange),
+                        ],
+                        [
+                            new SamplerBinding(
+                                ShaderBindingGroup.Frame,
+                                0,
+                                sampler
+                                    ?? throw new InvalidOperationException("The snapshot-atlas graph has no sampler.")),
+                        ]);
+                }
+
                 var vertexImportRange = new GraphBufferRange(0, vertexBuffer.ByteLength);
                 var vertexVersion = graph.ImportBuffer(
                     vertexBuffer,
@@ -413,6 +623,11 @@ internal sealed partial class SceneAssetStoreTests
                             && indexResourceOwner.HasActiveUses
                             && targetResourceOwner.HasActiveUses
                             && pageResourceOwner.HasActiveUses;
+
+                        foreach (var resourceOwner in uniformBufferResourceOwners)
+                        {
+                            resourcePinsObservedDuringRecording &= resourceOwner.HasActiveUses;
+                        }
                     }
 
                     if (cancelGraphAdmission)
@@ -437,6 +652,12 @@ internal sealed partial class SceneAssetStoreTests
                     RecordPackageSample);
                 graph.ReadBuffer(rasterPass, vertexVersion, GraphBufferUsage.VertexRead, vertexRange);
                 graph.ReadBuffer(rasterPass, indexVersion, GraphBufferUsage.IndexRead, indexRange);
+
+                foreach (var bufferRead in graphBufferReads)
+                {
+                    graph.ReadBuffer(rasterPass, bufferRead.Version, GraphBufferUsage.UniformRead, bufferRead.Range);
+                }
+
                 graph.ReadTexture(rasterPass, sampledPage, GraphTextureUsage.SampledRead, sampleRange);
                 var targetRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
                 var output = graph.WriteColorAttachment(
@@ -462,6 +683,10 @@ internal sealed partial class SceneAssetStoreTests
                 vertexBuffer = null;
                 indexBuffer.Dispose();
                 indexBuffer = null;
+                frameBuffer?.Dispose();
+                frameBuffer = null;
+                objectDataBuffer?.Dispose();
+                objectDataBuffer = null;
 
                 if (failGraphRecording)
                 {
@@ -473,6 +698,11 @@ internal sealed partial class SceneAssetStoreTests
                         Assert.That(indexResourceOwner.HasActiveUses, Is.False);
                         Assert.That(targetResourceOwner.HasActiveUses, Is.False);
                         Assert.That(pageResourceOwner.HasActiveUses, Is.False);
+
+                        foreach (var resourceOwner in uniformBufferResourceOwners)
+                        {
+                            Assert.That(resourceOwner.HasActiveUses, Is.False);
+                        }
                     });
                 }
                 else if (cancelGraphAdmission)
@@ -485,6 +715,11 @@ internal sealed partial class SceneAssetStoreTests
                         Assert.That(indexResourceOwner.HasActiveUses, Is.False);
                         Assert.That(targetResourceOwner.HasActiveUses, Is.False);
                         Assert.That(pageResourceOwner.HasActiveUses, Is.False);
+
+                        foreach (var resourceOwner in uniformBufferResourceOwners)
+                        {
+                            Assert.That(resourceOwner.HasActiveUses, Is.False);
+                        }
                     });
                 }
                 else
@@ -569,6 +804,8 @@ internal sealed partial class SceneAssetStoreTests
             sampler?.Dispose();
             indexBuffer?.Dispose();
             vertexBuffer?.Dispose();
+            objectDataBuffer?.Dispose();
+            frameBuffer?.Dispose();
             targetTexture?.Dispose();
             snapshot?.Dispose();
             residencyLease?.Dispose();

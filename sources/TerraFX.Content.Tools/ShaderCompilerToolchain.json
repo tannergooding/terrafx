@@ -1,0 +1,48 @@
+{
+  "dxc": {
+    "release": "v1.8.2505.1",
+    "binaryVersion": "1.8.2505.32",
+    "windows": {
+      "nugetPackage": "Microsoft.Direct3D.DXC",
+      "nugetVersion": "1.8.2505.32",
+      "nugetSha256": "c6e82b70c14552f1dd58e4a79c93eeab1567eeb0a9ee63a51564c410429bce3e",
+      "dxcSha256": "ce11bb02f6027055e0b9f8c062d13b14f373c876a16557a4fa744314117d31e7",
+      "dxcompilerSha256": "5888d3e590f5bfd8743484e7f31313996734adec5741506271a5c6368cbe8ba9",
+      "dxilSha256": "0cf5fa4b90f74550166108b3870c883f4a85243976b246b1da3ea90ad5b92015",
+      "licenses": [
+        "LICENCE-MIT.txt",
+        "LICENSE-LLVM.txt",
+        "LICENSE-MS.txt"
+      ]
+    },
+    "linuxX64": {
+      "releaseAsset": "linux_dxc_2025_07_14.x86_64.tar.gz",
+      "releaseAssetSha256": "f2213da1fc99dc8778c8823078e16ba97c7f80f86a1d4520ab1adf4b462bc48c",
+      "dxcSha256": "25927f0c2eb2eb22ebdf72ecf4798345a53b997ef1b05fea0280410d220427bb",
+      "dxcompilerSha256": "72832c39c5dfdf537586ca6500de94ef28cbf69d148ab3abe573da6ea209bad0",
+      "dxilSha256": "51f6a6eb5c77391a86c03b82a79affdb7fa5ea9a3a67be37f5f573ca112ad931",
+      "releaseUrl": "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2505.1/linux_dxc_2025_07_14.x86_64.tar.gz"
+    },
+    "releaseUrl": "https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.8.2505.1"
+  },
+  "vulkanSdk": {
+    "version": "1.4.328.1",
+    "windowsX64": {
+      "installer": "vulkansdk-windows-X64-1.4.328.1.exe",
+      "installerSha256": "a8675df6d538079c2a719a9373994948091db785b48f142e024254e76348d16c",
+      "spirvValSha256": "7340749a3267980e8f62a53937dd80a312c14617c52aeb3f2c74d4ed2809de96",
+      "spirvCrossSha256": "d25b7c7b0a8d60239168e4df339f39c158b0d68484bd4ee8d8959480878ed04f",
+      "spirvDisSha256": "20f7fa253e2c43f3f66651631fefda834e34159e36d3e9c161f83a7c82f1e9a1"
+    },
+    "linuxX64": {
+      "archive": "vulkansdk-linux-x86_64-1.4.328.1.tar.xz",
+      "licensePath": "LICENSE.txt",
+      "archiveSha256": "241e75b56c91c0d210ed07a7c638ec05a3e5b0e4c66ba9f0ba0f102d823ad6bf"
+    },
+    "spirvCrossRevision": "vulkan-sdk-1.4.328.0",
+    "spirvToolsRevision": "vulkan-sdk-1.4.328.1",
+    "spirvToolsReportedVersion": "2025.4-0-g7f2d9ee9",
+    "configUrl": "https://vulkan.lunarg.com/sdk/config/1.4.328.1",
+    "licensePath": "Licenses/LICENSE.txt"
+  }
+}

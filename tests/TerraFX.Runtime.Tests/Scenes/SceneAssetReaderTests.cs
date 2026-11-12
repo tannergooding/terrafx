@@ -643,6 +643,59 @@ internal sealed class SceneAssetReaderTests
                 [.. fields]);
         }
 
+        internal static byte[] CreatePrefabWithChildPlacements(
+            AssetId assetId,
+            Guid entityId,
+            Guid[] childPlacementIds,
+            byte[][] childPlacements,
+            byte[][]? additionalEntityComponents = null)
+        {
+            ArgumentNullException.ThrowIfNull(childPlacementIds);
+            ArgumentNullException.ThrowIfNull(childPlacements);
+
+            if (childPlacementIds.Length != childPlacements.Length)
+            {
+                throw new ArgumentException("Each child PrefabPlacement requires one hierarchy identity.", nameof(childPlacements));
+            }
+
+            var childEntries = new byte[childPlacementIds.Length][];
+
+            for (var index = 0; index < childPlacementIds.Length; index++)
+            {
+                childEntries[index] = SceneHierarchyCodecTests.FixtureBuilder.EncodeEntry(
+                    (byte)SceneHierarchyEntryKind.PrefabPlacement,
+                    childPlacementIds[index]);
+            }
+
+            var entity = CreateRootEntity(entityId, additionalEntityComponents);
+            var hierarchy = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                new ContentSchemaIdentityAssignment("native/hierarchy").SchemaId,
+                2,
+                0,
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(
+                    1,
+                    SceneHierarchyCodecTests.FixtureBuilder.EncodeNode(
+                        entityId,
+                        parentEntityId: null,
+                        childEntries)),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(
+                    2,
+                    SceneHierarchyCodecTests.FixtureBuilder.EncodeEntry(
+                        (byte)SceneHierarchyEntryKind.Entity,
+                        entityId)));
+
+            return SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
+                new ContentSchemaIdentityAssignment("native/prefab").SchemaId,
+                2,
+                0,
+                SceneHierarchyCodecTests.FixtureBuilder.CreateUInt32Field(1, checked((uint)assetId.Value)),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(3, entity),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(4, hierarchy),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(5, childPlacements),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(6),
+                SceneHierarchyCodecTests.FixtureBuilder.CreateRecordArrayField(8));
+        }
+
         internal static byte[] CreateReferenceTarget(
             SceneReferenceTargetKind kind,
             Guid? entityId = null,
@@ -833,7 +886,8 @@ internal sealed class SceneAssetReaderTests
             Guid placementId,
             byte[] rootPose,
             byte[][]? externalSlots = null,
-            byte[][]? additionalEntityComponents = null)
+            byte[][]? additionalEntityComponents = null,
+            AssetId? placementPrefabAssetId = null)
         {
             var entity = CreateRootEntity(rootEntityId, additionalEntityComponents);
             var placement = CreatePrefabPlacement(
@@ -841,7 +895,7 @@ internal sealed class SceneAssetReaderTests
                 [rootPose],
                 [],
                 [],
-                new AssetId(1),
+                placementPrefabAssetId ?? new AssetId(1),
                 rootEntityId);
             var hierarchy = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
                 new ContentSchemaIdentityAssignment("native/hierarchy").SchemaId,

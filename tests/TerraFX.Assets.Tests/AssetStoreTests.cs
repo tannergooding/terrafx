@@ -196,6 +196,53 @@ internal sealed class AssetStoreTests
     }
 
     [Test]
+    public async Task AssetLeaseRetainsAndLoadsFromItsAnchoredPackageAcrossReplacement()
+    {
+        var registration = CreateRegistration();
+        var firstPackage = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 10)),
+            new AssetPackageReaderTests.TestEntry(2, CreateAssetEnvelope(2, 20)));
+        var secondPackage = AssetPackageReaderTests.CreatePackage(
+            new AssetPackageReaderTests.TestEntry(1, CreateAssetEnvelope(1, 100)),
+            new AssetPackageReaderTests.TestEntry(2, CreateAssetEnvelope(2, 200)));
+        var firstPath = AssetPackageReaderTests.WritePackage(firstPackage);
+        var secondPath = AssetPackageReaderTests.WritePackage(secondPackage);
+        var store = await AssetStore.CreateAsync(
+            CreateOptions(firstPath, firstPackage, registration),
+            CancellationToken.None).ConfigureAwait(false);
+
+        try
+        {
+            using var source = await store.LoadAsync<TestAssetValue>(new AssetId(1), CancellationToken.None).ConfigureAwait(false);
+            using var retained = source.Retain();
+            await store.ReplacePackageAsync(
+                CreateOptions(secondPath, secondPackage, registration),
+                CancellationToken.None).ConfigureAwait(false);
+
+            using var anchoredChild = await source.LoadFromPackageAsync<TestAssetValue>(new AssetId(2), CancellationToken.None).ConfigureAwait(false);
+            using var currentChild = await store.LoadAsync<TestAssetValue>(new AssetId(2), CancellationToken.None).ConfigureAwait(false);
+
+            Assert.That(retained.Value.Marker, Is.EqualTo(10));
+            Assert.That(anchoredChild.Value.Marker, Is.EqualTo(20));
+            Assert.That(currentChild.Value.Marker, Is.EqualTo(200));
+            Assert.That(retained.ProfileId, Is.EqualTo(source.ProfileId));
+            Assert.That(retained.SpatialSettings, Is.EqualTo(source.SpatialSettings));
+
+            await store.DisposeAsync().ConfigureAwait(false);
+
+            _ = Assert.Throws<ObjectDisposedException>(() => retained.Retain());
+            _ = Assert.ThrowsAsync<ObjectDisposedException>(
+                async () => await source.LoadFromPackageAsync<TestAssetValue>(new AssetId(2), CancellationToken.None).ConfigureAwait(false));
+        }
+        finally
+        {
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(firstPath);
+            File.Delete(secondPath);
+        }
+    }
+
+    [Test]
     public async Task AssetPackageLeaseLoadsFromItsPinnedPackageAfterReplacement()
     {
         var registration = CreateRegistration();
@@ -216,12 +263,8 @@ internal sealed class AssetStoreTests
                 CreateOptions(replacementPath, replacementPackage, registration),
                 CancellationToken.None).ConfigureAwait(false);
 
-            using var pinnedAsset = await packageLease.LoadFromPackageAsync<TestAssetValue>(
-                new AssetId(1),
-                CancellationToken.None).ConfigureAwait(false);
-            using var currentAsset = await store.LoadAsync<TestAssetValue>(
-                new AssetId(1),
-                CancellationToken.None).ConfigureAwait(false);
+            using var pinnedAsset = await packageLease.LoadFromPackageAsync<TestAssetValue>(new AssetId(1), CancellationToken.None).ConfigureAwait(false);
+            using var currentAsset = await store.LoadAsync<TestAssetValue>(new AssetId(1), CancellationToken.None).ConfigureAwait(false);
 
             Assert.That(pinnedAsset.Value.Marker, Is.EqualTo(17));
             Assert.That(currentAsset.Value.Marker, Is.EqualTo(23));
@@ -621,6 +664,7 @@ internal sealed class AssetStoreTests
             var firstLease = await store.LoadAsync<TestAssetValue>(new AssetId(1), CancellationToken.None).ConfigureAwait(false);
             _ = Assert.ThrowsAsync<InvalidOperationException>(
                 async () => await store.LoadAsync<TestAssetValue>(new AssetId(1), CancellationToken.None).ConfigureAwait(false));
+            _ = Assert.Throws<InvalidOperationException>(() => firstLease.Retain());
 
             firstLease.Dispose();
             var secondLease = await store.LoadAsync<TestAssetValue>(new AssetId(1), CancellationToken.None).ConfigureAwait(false);

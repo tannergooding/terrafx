@@ -21,6 +21,7 @@ internal static class Program
         "  TerraFX.Content.Tools verify-dxc",
         "  TerraFX.Content.Tools compile-m04-dxil <new-output-directory>",
         "  TerraFX.Content.Tools compile-m04-shader <new-output-directory>",
+        "  TerraFX.Content.Tools shader compile --source <file> --output <directory> --entry <name> --stage <vertex|pixel|compute> --dxc <path> --vulkan-sdk <path>",
         "  TerraFX.Content.Tools --help",
     ];
 
@@ -32,73 +33,100 @@ internal static class Program
             return 0;
         }
 
-        if (((arguments.Length == 2)
-                && (StringComparer.Ordinal.Equals(arguments[0], CompileShaderCommand)
-                    || StringComparer.Ordinal.Equals(arguments[0], CompileDxilCommand)))
-            || ((arguments.Length == 1) && StringComparer.Ordinal.Equals(arguments[0], VerifyDxcCommand)))
-        {
-            using var cancellationSource = new CancellationTokenSource();
+        var isShaderCompile = (arguments.Length >= 2)
+            && StringComparer.Ordinal.Equals(arguments[0], "shader")
+            && StringComparer.Ordinal.Equals(arguments[1], "compile");
+        var isM04Compile = (arguments.Length == 2)
+            && (StringComparer.Ordinal.Equals(arguments[0], CompileShaderCommand)
+                || StringComparer.Ordinal.Equals(arguments[0], CompileDxilCommand));
+        var isDxcVerification = (arguments.Length == 1)
+            && StringComparer.Ordinal.Equals(arguments[0], VerifyDxcCommand);
 
-            void Cancel(object? sender, ConsoleCancelEventArgs eventArgs)
-            {
-                eventArgs.Cancel = true;
-                cancellationSource.Cancel();
-            }
-
-            Console.CancelKeyPress += Cancel;
-
-            try
-            {
-                if (StringComparer.Ordinal.Equals(arguments[0], CompileShaderCommand))
-                {
-                    await M04ShaderFixtureCompiler.CompileAsync(arguments[1], cancellationSource.Token).ConfigureAwait(false);
-                    await Console.Out.WriteLineAsync($"Compiled and validated the M04 offscreen graphics shader fixture to '{Path.GetFullPath(arguments[1])}'.").ConfigureAwait(false);
-                }
-                else if (StringComparer.Ordinal.Equals(arguments[0], CompileDxilCommand))
-                {
-                    await M04ShaderFixtureCompiler.CompileDxilAsync(arguments[1], cancellationSource.Token).ConfigureAwait(false);
-                    await Console.Out.WriteLineAsync($"Compiled and reflected the M04 DXIL fixture to '{Path.GetFullPath(arguments[1])}'.").ConfigureAwait(false);
-                }
-                else
-                {
-                    await M04ShaderFixtureCompiler.VerifyDxcAsync(cancellationSource.Token).ConfigureAwait(false);
-                    await Console.Out.WriteLineAsync("The pinned Windows x64 DXC package files and executable version are valid.").ConfigureAwait(false);
-                }
-
-                return 0;
-            }
-            catch (OperationCanceledException)
-            {
-                await Console.Error.WriteLineAsync("The Content.Tools operation was canceled.").ConfigureAwait(false);
-                return 130;
-            }
-            catch (Exception exception) when (exception is ArgumentException
-                or FormatException
-                or IOException
-                or InvalidOperationException
-                or JsonException
-                or PlatformNotSupportedException
-                or TimeoutException
-                or UnauthorizedAccessException
-                or Win32Exception)
-            {
-                await Console.Error.WriteLineAsync($"Content.Tools: {exception.Message}").ConfigureAwait(false);
-                return 1;
-            }
-            finally
-            {
-                Console.CancelKeyPress -= Cancel;
-            }
-        }
-
-        if (arguments.Length == 0)
+        if (!isShaderCompile && !isM04Compile && !isDxcVerification)
         {
             await WriteUsageAsync().ConfigureAwait(false);
-            return 0;
+            return arguments.Length == 0 ? 0 : 2;
         }
 
-        await WriteUsageAsync().ConfigureAwait(false);
-        return 2;
+        using var cancellationSource = new CancellationTokenSource();
+
+        void Cancel(object? sender, ConsoleCancelEventArgs eventArgs)
+        {
+            eventArgs.Cancel = true;
+            cancellationSource.Cancel();
+        }
+
+        Console.CancelKeyPress += Cancel;
+
+        try
+        {
+            if (isShaderCompile)
+            {
+                var result = await ShaderCompileCommand.RunAsync(
+                    arguments[2..],
+                    cancellationSource.Token).ConfigureAwait(false);
+
+                foreach (var warning in result.Warnings)
+                {
+                    await Console.Error.WriteLineAsync(warning).ConfigureAwait(false);
+                }
+
+                await Console.Out.WriteLineAsync(result.DxilPath).ConfigureAwait(false);
+                await Console.Out.WriteLineAsync(result.SpirvPath).ConfigureAwait(false);
+                await Console.Out.WriteLineAsync(result.Fingerprint).ConfigureAwait(false);
+                return 0;
+            }
+
+            if (StringComparer.Ordinal.Equals(arguments[0], CompileShaderCommand))
+            {
+                await M04ShaderFixtureCompiler.CompileAsync(
+                    arguments[1],
+                    cancellationSource.Token).ConfigureAwait(false);
+                await Console.Out.WriteLineAsync(
+                    $"Compiled and validated the M04 offscreen triangle shader fixture to '{Path.GetFullPath(arguments[1])}'.")
+                    .ConfigureAwait(false);
+            }
+            else if (StringComparer.Ordinal.Equals(arguments[0], CompileDxilCommand))
+            {
+                await M04ShaderFixtureCompiler.CompileDxilAsync(
+                    arguments[1],
+                    cancellationSource.Token).ConfigureAwait(false);
+                await Console.Out.WriteLineAsync(
+                    $"Compiled and reflected the M04 DXIL fixture to '{Path.GetFullPath(arguments[1])}'.")
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                await M04ShaderFixtureCompiler.VerifyDxcAsync(cancellationSource.Token).ConfigureAwait(false);
+                await Console.Out.WriteLineAsync(
+                    "The pinned Windows x64 DXC package files and executable version are valid.")
+                    .ConfigureAwait(false);
+            }
+
+            return 0;
+        }
+        catch (OperationCanceledException)
+        {
+            await Console.Error.WriteLineAsync("The Content.Tools operation was canceled.").ConfigureAwait(false);
+            return 130;
+        }
+        catch (Exception exception) when (exception is ArgumentException
+            or FormatException
+            or IOException
+            or InvalidOperationException
+            or JsonException
+            or PlatformNotSupportedException
+            or TimeoutException
+            or UnauthorizedAccessException
+            or Win32Exception)
+        {
+            await Console.Error.WriteLineAsync($"Content.Tools: {exception.Message}").ConfigureAwait(false);
+            return 1;
+        }
+        finally
+        {
+            Console.CancelKeyPress -= Cancel;
+        }
     }
 
     private static Task WriteUsageAsync()

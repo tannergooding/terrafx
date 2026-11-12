@@ -8,6 +8,10 @@
     It is imported after Directory.Build.props.
   -->
 
+  <PropertyGroup>
+    <TerraFXDxcPackageVersion>1.8.2505.32</TerraFXDxcPackageVersion>
+  </PropertyGroup>
+
   <!-- Package versions for package references across all projects -->
   <ItemGroup>
     <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />

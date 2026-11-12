@@ -473,7 +473,11 @@ internal static class M04ShaderReflectionReader
                 : name);
 
     private static string NormalizeResourceName(string name)
-        => name.StartsWith("type.", StringComparison.Ordinal) ? name[5..] : name;
+        => name.StartsWith("type.", StringComparison.Ordinal)
+            ? name[5..]
+            : name.StartsWith("hostlayout.", StringComparison.Ordinal)
+                ? name["hostlayout.".Length..]
+                : name;
 
     private static ImmutableArray<ShaderCapability> ParseCapabilities(ReadOnlySpan<byte> bytecode)
     {
@@ -536,29 +540,40 @@ internal static class M04ShaderReflectionReader
 
     private static (string RegisterClass, int Binding, int RegisterSpace) ParseDxilRegister(string register)
     {
-        var registerClass = register.StartsWith("cb", StringComparison.Ordinal)
+        if (string.IsNullOrEmpty(register))
+        {
+            throw new InvalidDataException("A DXIL resource binding has an empty register.");
+        }
+
+        var registerParts = register.Split(',');
+        var registerName = registerParts[0];
+        var registerSpace = 0;
+
+        if ((registerParts.Length > 2)
+            || ((registerParts.Length == 2)
+                && (!registerParts[1].StartsWith("space", StringComparison.Ordinal)
+                    || !int.TryParse(
+                        registerParts[1].AsSpan("space".Length),
+                        NumberStyles.None,
+                        CultureInfo.InvariantCulture,
+                        out registerSpace))))
+        {
+            throw new InvalidDataException($"DXIL register '{register}' has an invalid register space.");
+        }
+
+        if (registerName.Length < 2)
+        {
+            throw new InvalidDataException($"DXIL register '{register}' is not a supported local binding.");
+        }
+
+        var registerClass = registerName.StartsWith("cb", StringComparison.Ordinal)
             ? "cb"
-            : register[..1];
-        var spaceSeparator = register.IndexOf(",space", registerClass.Length, StringComparison.Ordinal);
-        var registerIndex = spaceSeparator < 0
-            ? register.AsSpan(registerClass.Length)
-            : register.AsSpan(registerClass.Length, spaceSeparator - registerClass.Length);
+            : registerName[..1];
+        var registerIndex = registerName.AsSpan(registerClass.Length);
 
         if (!int.TryParse(registerIndex, NumberStyles.None, CultureInfo.InvariantCulture, out var binding))
         {
             throw new InvalidDataException($"DXIL register '{register}' is not a supported register binding.");
-        }
-
-        var registerSpace = 0;
-
-        if (spaceSeparator >= 0
-            && !int.TryParse(
-                register.AsSpan(spaceSeparator + ",space".Length),
-                NumberStyles.None,
-                CultureInfo.InvariantCulture,
-                out registerSpace))
-        {
-            throw new InvalidDataException($"DXIL register '{register}' is not a supported register space.");
         }
 
         return (registerClass, binding, registerSpace);
@@ -934,8 +949,8 @@ internal static class M04ShaderReflectionReader
                     _ => throw new ArgumentOutOfRangeException(nameof(resources)),
                 };
 
-                if (StringComparer.Ordinal.Equals(resource.Name, resourceName)
-                    && StringComparer.Ordinal.Equals(expectedRegisterClass, registerClass)
+                if (StringComparer.Ordinal.Equals(expectedRegisterClass, registerClass)
+                    && (GetDescriptorSet(resource.Signature.Group) == registerSpace)
                     && (resource.Signature.Binding == binding)
                     && (GetDescriptorSet(resource.Signature.Group) == registerSpace)
                     && (resource.Signature.ArrayCount == arrayCount))
@@ -947,7 +962,7 @@ internal static class M04ShaderReflectionReader
 
             if (matchedIndex < 0)
             {
-                throw new InvalidDataException($"DXIL resource '{resourceName}' does not match the typed SPIRV-Cross bindings.");
+                throw new InvalidDataException($"DXIL resource '{resourceName}' does not match the typed SPIRV-Cross binding identity.");
             }
 
             var matchedResource = resources[matchedIndex];
@@ -1315,9 +1330,12 @@ internal static class M04ShaderReflectionReader
                     }
 
                     var closingName = content[1..separator].Trim();
+                    var openingName = recordName
+                        ?? throw new InvalidDataException($"DXIL cbuffer '{cbufferName}' has an invalid record terminator.");
 
-                    if ((recordName is null)
-                        || !StringComparer.Ordinal.Equals(NormalizeDxilRecordName(recordName), NormalizeDxilRecordName(closingName)))
+                    if (!StringComparer.Ordinal.Equals(
+                        NormalizeDxilRecordName(openingName),
+                        NormalizeDxilRecordName(closingName)))
                     {
                         throw new InvalidDataException($"DXIL cbuffer '{cbufferName}' has inconsistent record names.");
                     }

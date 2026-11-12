@@ -1,0 +1,224 @@
+// Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
+
+using System;
+using NUnit.Framework;
+using TerraFX.Numerics;
+using TerraFX.Rendering;
+
+namespace TerraFX.Runtime.Tests.Rendering;
+
+[TestFixture]
+internal sealed class RenderingKernelsTests
+{
+    private static void ComputeCascadeSplitsWithEmptyRange()
+    {
+        Span<float> splits = stackalloc float[5];
+        RenderingKernels.ComputeCascadeSplits(10.0f, 10.0f, perspective: false, splits);
+    }
+
+    private static void ComputeCascadeSplitsWithShortDestination()
+    {
+        Span<float> splits = stackalloc float[4];
+        RenderingKernels.ComputeCascadeSplits(1.0f, 10.0f, perspective: false, splits);
+    }
+
+    private static void ComputePerspectiveSplitsWithNegativeNear()
+    {
+        Span<float> splits = stackalloc float[5];
+        RenderingKernels.ComputeCascadeSplits(-1.0f, 10.0f, perspective: true, splits);
+    }
+
+    [Test]
+    public void AmbientAndBrdfKernelsRespectFiniteAndGrazingGuards()
+    {
+        var ambient = RenderingKernels.EvaluateAmbientDiffuse(
+            new Vector3(0.8f, 0.4f, 0.2f),
+            0.0f,
+            1.0f,
+            new Vector3(MathF.PI));
+        Assert.That(ambient, Is.EqualTo(new Vector3(0.8f, 0.4f, 0.2f)));
+
+        var normal = Vector3.UnitZ;
+        var radiance = new Vector3(2.0f, 3.0f, 4.0f);
+        var specularOnly = RenderingKernels.EvaluateBrdf(normal, normal, normal, Vector3.One, 1.0f, 1.0f, radiance);
+        Assert.That(specularOnly.X, Is.EqualTo(2.0f / (4.0f * MathF.PI)).Within(1.0e-6f));
+        Assert.That(specularOnly.Y, Is.EqualTo(3.0f / (4.0f * MathF.PI)).Within(1.0e-6f));
+        Assert.That(specularOnly.Z, Is.EqualTo(4.0f / (4.0f * MathF.PI)).Within(1.0e-6f));
+
+        const float minimumRoughness = 0.045f;
+        var minimumRoughnessResult = RenderingKernels.EvaluateBrdf(
+            normal,
+            normal,
+            normal,
+            Vector3.One,
+            1.0f,
+            minimumRoughness,
+            Vector3.One);
+        Assert.That(float.IsFinite(minimumRoughnessResult.X), Is.True);
+        Assert.That(minimumRoughnessResult.X, Is.GreaterThan(0.0f));
+
+        Assert.That(
+            RenderingKernels.EvaluateBrdf(normal, Vector3.UnitX, normal, Vector3.One, 0.0f, 0.045f, radiance),
+            Is.EqualTo(Vector3.Zero));
+        Assert.That(
+            RenderingKernels.EvaluateBrdf(normal, normal, -normal, Vector3.One, 0.5f, 1.0f, radiance),
+            Is.EqualTo(Vector3.Zero));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => RenderingKernels.EvaluateBrdf(normal, normal, normal, Vector3.One, 0.0f, 0.044f, radiance));
+        _ = Assert.Throws<ArgumentException>(() => RenderingKernels.EvaluateBrdf(
+            normal,
+            normal,
+            normal,
+            new Vector3(float.MaxValue),
+            0.0f,
+            1.0f,
+            new Vector3(float.MaxValue)));
+    }
+
+    [Test]
+    public void CascadeSplitsSupportPerspectiveAndSignedOrthographicNear()
+    {
+        Span<float> splits = stackalloc float[5];
+        RenderingKernels.ComputeCascadeSplits(1.0f, 10.0f, perspective: false, splits);
+        float[] positiveExpected = [1.0f, 3.25f, 5.5f, 7.75f, 10.0f];
+        Assert.That(splits.ToArray(), Is.EqualTo(positiveExpected));
+
+        RenderingKernels.ComputeCascadeSplits(-1.0f, 10.0f, perspective: false, splits);
+        float[] signedExpected = [-1.0f, 1.75f, 4.5f, 7.25f, 10.0f];
+        Assert.That(splits.ToArray(), Is.EqualTo(signedExpected));
+
+        RenderingKernels.ComputeCascadeSplits(1.0f, 10.0f, perspective: true, splits);
+        Assert.That(splits[0], Is.EqualTo(1.0f));
+        Assert.That(splits[1], Is.EqualTo(2.5141397f).Within(1.0e-6f));
+        Assert.That(splits[2], Is.EqualTo(4.3311386f).Within(1.0e-6f));
+        Assert.That(splits[3], Is.EqualTo(6.6867065f).Within(1.0e-6f));
+        Assert.That(splits[4], Is.EqualTo(10.0f));
+
+        _ = Assert.Throws<ArgumentException>(ComputeCascadeSplitsWithShortDestination);
+        _ = Assert.Throws<ArgumentOutOfRangeException>(ComputePerspectiveSplitsWithNegativeNear);
+    }
+
+    [Test]
+    public void ColorConversionsPremultiplyLinearValuesAndToneMapOnce()
+    {
+        Assert.That(RenderingKernels.DecodeSrgb(0.04045f), Is.EqualTo(0.04045f / 12.92f).Within(1.0e-7f));
+        Assert.That(RenderingKernels.DecodeSrgb(1.0f), Is.EqualTo(1.0f));
+        Assert.That(RenderingKernels.EncodeSrgb(0.0031308f), Is.EqualTo(0.0031308f * 12.92f).Within(1.0e-7f));
+        Assert.That(
+            RenderingKernels.PremultiplyLinear(new Vector4(0.25f, 0.5f, 0.75f, 0.5f)),
+            Is.EqualTo(new Vector4(0.125f, 0.25f, 0.375f, 0.5f)));
+        Assert.That(RenderingKernels.ToneMapReinhard(new Vector3(0.0f, 1.0f, 3.0f)), Is.EqualTo(new Vector3(0.0f, 0.5f, 0.75f)));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => RenderingKernels.ToneMapReinhard(new Vector3(-0.01f, 0.0f, 0.0f)));
+    }
+
+    [Test]
+    public void DirectionalShadowFitSnapsCenterAndAddsCasterMargin()
+    {
+        Vector3[] corners =
+        [
+            new Vector3(2.25f, -3.5f, -1.0f),
+            new Vector3(4.25f, -3.5f, -1.0f),
+            new Vector3(2.25f, 0.5f, -1.0f),
+            new Vector3(4.25f, 0.5f, -1.0f),
+            new Vector3(2.25f, -3.5f, 5.0f),
+            new Vector3(4.25f, -3.5f, 5.0f),
+            new Vector3(2.25f, 0.5f, 5.0f),
+            new Vector3(4.25f, 0.5f, 5.0f)
+        ];
+        var (View, Center, Extent, Near, Far) = RenderingKernels.FitDirectionalShadow(corners, Vector3.UnitZ);
+        var texelWorldSize = Extent / 1024.0f;
+
+        Assert.That(View.IsFinite().All(), Is.True);
+        Assert.That(Extent, Is.EqualTo(4.0f / (1.0f - (3.0f / 1024.0f))).Within(1.0e-6f));
+        Assert.That(Center.X / texelWorldSize, Is.EqualTo(MathF.Round(Center.X / texelWorldSize)));
+        Assert.That(Center.Y / texelWorldSize, Is.EqualTo(MathF.Round(Center.Y / texelWorldSize)));
+        Assert.That(Near, Is.EqualTo(-11.0f));
+        Assert.That(Far, Is.EqualTo(5.0f));
+    }
+
+    [Test]
+    public void NormalTransformsUseInverseTransposeAndReportMirroring()
+    {
+        var world = Matrix4x4.CreateScale(new Vector3(2.0f, 1.0f, 0.5f));
+        var transformed = RenderingKernels.TransformNormal(Vector3.Normalize(new Vector3(1.0f, 1.0f, 0.0f)), world);
+        var expected = Vector3.Normalize(new Vector3(0.5f, 1.0f, 0.0f));
+        Assert.That(transformed.X, Is.EqualTo(expected.X).Within(1.0e-6f));
+        Assert.That(transformed.Y, Is.EqualTo(expected.Y).Within(1.0e-6f));
+        Assert.That(transformed.Z, Is.EqualTo(expected.Z).Within(1.0e-6f));
+        Assert.That(RenderingKernels.GetTransformParity(world), Is.EqualTo(1));
+        Assert.That(RenderingKernels.GetTransformParity(Matrix4x4.CreateScale(new Vector3(-1.0f, 1.0f, 1.0f))), Is.EqualTo(-1));
+        _ = Assert.Throws<ArgumentException>(() => RenderingKernels.TransformNormal(Vector3.UnitX, Matrix4x4.CreateScale(0.0f)));
+    }
+
+    [Test]
+    public void PointAndSpotLightingUseDeclaredAttenuationAndHardCutoff()
+    {
+        Assert.That(RenderingKernels.EvaluatePointIntensity(4.0f * MathF.PI), Is.EqualTo(1.0f));
+        Assert.That(RenderingKernels.EvaluatePointRangeAttenuation(0.0f, 10.0f), Is.EqualTo(10000.0f));
+        Assert.That(RenderingKernels.EvaluatePointRangeAttenuation(10.0f, 10.0f), Is.EqualTo(0.0f));
+        Assert.That(RenderingKernels.EvaluatePointRangeAttenuation(5.0f, 10.0f), Is.EqualTo(0.03515625f).Within(1.0e-7f));
+
+        var cutoff = MathF.Cos(0.25f);
+        Assert.That(RenderingKernels.EvaluateSpotFactor(cutoff, 0.25f, 0.25f), Is.EqualTo(1.0f));
+        Assert.That(RenderingKernels.EvaluateSpotFactor(cutoff - 0.001f, 0.25f, 0.25f), Is.EqualTo(0.0f));
+        Assert.That(RenderingKernels.EvaluateSpotFactor(1.0f, 0.1f, 0.4f), Is.EqualTo(1.0f));
+        Assert.That(RenderingKernels.EvaluateSpotFactor(-1.0f, 0.1f, 0.4f), Is.EqualTo(0.0f));
+        _ = Assert.Throws<ArgumentException>(() => RenderingKernels.EvaluateSpotFactor(
+            1.0f,
+            float.Epsilon,
+            MathF.BitIncrement(float.Epsilon)));
+    }
+
+    [Test]
+    public void ShadowBasisAtlasPcfAndReversedZBiasMatchTheContract()
+    {
+        RenderingKernels.GetShadowViewBasis(Vector3.UnitY, out var right, out var up, out var forward);
+        Assert.That(right, Is.EqualTo(new Vector3(0.0f, 0.0f, 1.0f)));
+        Assert.That(up, Is.EqualTo(new Vector3(1.0f, 0.0f, 0.0f)));
+        Assert.That(forward, Is.EqualTo(Vector3.UnitY));
+
+        RenderingKernels.GetShadowAtlasCellOrigin(0, out var x, out var y);
+        Assert.That((x, y), Is.EqualTo((0, 0)));
+        RenderingKernels.GetShadowAtlasCellOrigin(4, out x, out y);
+        Assert.That((x, y), Is.EqualTo((0, 1024)));
+        RenderingKernels.GetShadowAtlasCellOrigin(7, out x, out y);
+        Assert.That((x, y), Is.EqualTo((3072, 1024)));
+
+        var minimum = 0.5f / 4096.0f;
+        var maximum = 1023.5f / 4096.0f;
+        Assert.That(RenderingKernels.GetShadowPcfSampleUv(Vector2.Zero, 0, -1, -1), Is.EqualTo(new Vector2(minimum, minimum)));
+        Assert.That(RenderingKernels.GetShadowPcfSampleUv(Vector2.One, 0, 1, 1), Is.EqualTo(new Vector2(maximum, maximum)));
+
+        var bias = RenderingKernels.ComputeReceiverBias(0.001f, 1.0f, 0.05f, 0.0f, 0.0f);
+        Assert.That(bias, Is.EqualTo(0.001f));
+        Assert.That(RenderingKernels.IsShadowTapLit(0.5f, bias, 0.5f), Is.True);
+        Assert.That(RenderingKernels.IsShadowTapLit(0.5f, bias, 0.5005f), Is.True);
+        Assert.That(RenderingKernels.IsShadowTapLit(0.5f, bias, 0.7f), Is.False);
+        Assert.That(RenderingKernels.ComputeReceiverBias(0.05f, 4.0f, 0.05f, 1.0f, -2.0f), Is.EqualTo(0.05f));
+    }
+
+    [Test]
+    public void ShadowInputsRejectEmptyRangesAndInvalidLightTransforms()
+    {
+        _ = Assert.Throws<ArgumentOutOfRangeException>(ComputeCascadeSplitsWithEmptyRange);
+        _ = Assert.Throws<ArgumentException>(() => RenderingKernels.GetShadowViewBasis(Vector3.Zero, out _, out _, out _));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => RenderingKernels.GetShadowAtlasCellOrigin(16, out _, out _));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => RenderingKernels.ComputeReceiverBias(0.051f, 1.0f, 0.05f, 0.0f, 0.0f));
+    }
+
+    [Test]
+    public void SpriteVerticesAndUvFlipsPreserveCanonicalWinding()
+    {
+        var pivot = new Vector2(0.25f, 0.75f);
+        var size = new Vector2(4.0f, 2.0f);
+        Assert.That(RenderingKernels.GetSpriteVertex(0, pivot, size), Is.EqualTo(new Vector3(-1.0f, -1.5f, 0.0f)));
+        Assert.That(RenderingKernels.GetSpriteVertex(1, pivot, size), Is.EqualTo(new Vector3(-1.0f, 0.5f, 0.0f)));
+        Assert.That(RenderingKernels.GetSpriteVertex(2, pivot, size), Is.EqualTo(new Vector3(3.0f, 0.5f, 0.0f)));
+        Assert.That(RenderingKernels.GetSpriteVertex(3, pivot, size), Is.EqualTo(new Vector3(3.0f, -1.5f, 0.0f)));
+        var firstEdge = RenderingKernels.GetSpriteVertex(1, pivot, size) - RenderingKernels.GetSpriteVertex(0, pivot, size);
+        var secondEdge = RenderingKernels.GetSpriteVertex(2, pivot, size) - RenderingKernels.GetSpriteVertex(0, pivot, size);
+        Assert.That(Vector3.Cross(firstEdge, secondEdge).Z, Is.LessThan(0.0f));
+        Assert.That(RenderingKernels.GetSpriteUv(0, flipX: false, flipY: false), Is.EqualTo(new Vector2(0.0f, 1.0f)));
+        Assert.That(RenderingKernels.GetSpriteUv(0, flipX: true, flipY: false), Is.EqualTo(new Vector2(1.0f, 1.0f)));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => RenderingKernels.GetSpriteVertex(4, pivot, size));
+    }
+}

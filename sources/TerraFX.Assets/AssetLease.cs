@@ -30,6 +30,30 @@ public sealed class AssetLease<T> : IDisposable
     /// <summary>Gets the identity of the leased asset.</summary>
     public AssetId AssetId => _assetId;
 
+    /// <summary>Gets the spatial profile that produced the leased asset.</summary>
+    /// <exception cref="ObjectDisposedException">This lease has been disposed.</exception>
+    public SpatialProfileId ProfileId
+    {
+        get
+        {
+            var state = Volatile.Read(ref _state);
+            ObjectDisposedException.ThrowIf(state is null, this);
+            return state.Lifetime.ProfileId;
+        }
+    }
+
+    /// <summary>Gets the spatial settings that produced the leased asset.</summary>
+    /// <exception cref="ObjectDisposedException">This lease has been disposed.</exception>
+    public SpatialSettings SpatialSettings
+    {
+        get
+        {
+            var state = Volatile.Read(ref _state);
+            ObjectDisposedException.ThrowIf(state is null, this);
+            return state.Lifetime.SpatialSettings;
+        }
+    }
+
     /// <summary>Gets the decoded asset value while this lease is active.</summary>
     /// <exception cref="ObjectDisposedException">This lease has been disposed.</exception>
     public T Value

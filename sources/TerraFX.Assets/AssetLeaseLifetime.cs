@@ -19,6 +19,40 @@ internal sealed class AssetLeaseLifetime
         _decodedBytes = decodedBytes;
     }
 
+    internal SpatialProfileId ProfileId
+    {
+        get
+        {
+            var (_, backing) = AcquirePackageBackingReference();
+
+            try
+            {
+                return backing.ProfileId;
+            }
+            finally
+            {
+                backing.ReleaseReference();
+            }
+        }
+    }
+
+    internal SpatialSettings SpatialSettings
+    {
+        get
+        {
+            var (_, backing) = AcquirePackageBackingReference();
+
+            try
+            {
+                return backing.SpatialSettings;
+            }
+            finally
+            {
+                backing.ReleaseReference();
+            }
+        }
+    }
+
     internal (AssetStore Store, AssetPackageBacking Backing) AcquirePackageBackingReference()
     {
         var store = Volatile.Read(ref _store);

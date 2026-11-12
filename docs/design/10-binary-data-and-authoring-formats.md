@@ -692,6 +692,8 @@ Shorthands `same` above expand to the exact `R{native/texture-binding}`. `all` i
 
 Mesh-stream key is exactly semantic rank Position0/Normal1/Tangent2/UV0=3/UV1=4/Color5/Joints6/Weights7; ascending and unique. No arbitrary Header GUID sort. Each non-joint stream count=VertexCount; joints count=4*VertexCount. Position is mandatory. Tangent XYZ is a unit vector under the fixed `native/mesh` schema contract, W is bits +1/-1; weights are finite and nonnegative with exact dyadic sum within 1/100000 of one, without load normalization; joints are in the actual skeleton domain. Joint/weight/skeleton presence is all-or-none. Indices are in range, their count divisible by 3, and each exact dyadic triangle cross is nonzero. Groups begin at 0, have FirstIndex/IndexCount divisible by 3, contiguous nonempty ranges and final end=Indices.Count; every MaterialSlot is in the actual slot domain. Unreferenced vertices are not silently removed or made invalid; conservative bounds include all supplied positions. Material-slot order is semantic and may repeat the same asset.
 
+`render/sprite.Tint` admits finite nonnegative linear RGB with no upper clamp and finite alpha in `[0,1]`; preserve admitted binary32 bits, including signed zero. This closes the HDR shorthand without adding a field or changing the v1 schema tuple.
+
 Bounds are finite, ordered and conservative over the admitted vertices; sphere uses exact dyadic squared-distance inclusion. No minimal-sphere requirement. This edition admits supplied explicit noninterleaved streams and no authored LOD/morph/meshlet/packed formats; their actual M05 owners must extend the catalogue. It does not silently reinterpret opaque stride bytes.
 
 ### M03 8. Complete standalone checkpoint catalogue and equalities

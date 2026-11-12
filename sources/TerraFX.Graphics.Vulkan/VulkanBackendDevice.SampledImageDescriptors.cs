@@ -18,6 +18,23 @@ internal sealed unsafe partial class VulkanBackendDevice
         ImmutableArray<VulkanBackendSampledImageBinding> imageBindings,
         ImmutableArray<VulkanBackendStorageImageBinding> storageImageBindings,
         ImmutableArray<VulkanBackendSamplerBinding> samplerBindings)
+        => CreateGraphDescriptorSet(
+            pipeline,
+            uniformBufferBindings,
+            storageBufferBindings,
+            imageBindings,
+            storageImageBindings,
+            samplerBindings,
+            ShaderBindingGroup.Frame);
+
+    internal VulkanBackendDescriptorSet CreateGraphDescriptorSet(
+        VulkanBackendPipeline pipeline,
+        ImmutableArray<VulkanBackendUniformBufferBinding> uniformBufferBindings,
+        ImmutableArray<VulkanBackendStorageBufferBinding> storageBufferBindings,
+        ImmutableArray<VulkanBackendSampledImageBinding> imageBindings,
+        ImmutableArray<VulkanBackendStorageImageBinding> storageImageBindings,
+        ImmutableArray<VulkanBackendSamplerBinding> samplerBindings,
+        ShaderBindingGroup group)
     {
         ArgumentNullException.ThrowIfNull(pipeline);
         EnsureActive();
@@ -27,13 +44,18 @@ internal sealed unsafe partial class VulkanBackendDevice
             throw new ArgumentException("The pipeline is not live on this Vulkan device.", nameof(pipeline));
         }
 
+        if ((group == ShaderBindingGroup.None) || !Enum.IsDefined(group))
+        {
+            throw new ArgumentOutOfRangeException(nameof(group));
+        }
+
         if (uniformBufferBindings.IsDefault
             || storageBufferBindings.IsDefault
             || imageBindings.IsDefault
             || storageImageBindings.IsDefault
             || samplerBindings.IsDefault)
         {
-            throw new ArgumentException("All Frame descriptor binding arrays must be initialized.");
+            throw new ArgumentException("All graph descriptor binding arrays must be initialized.");
         }
 
         var resources = pipeline.Resources;
@@ -48,14 +70,14 @@ internal sealed unsafe partial class VulkanBackendDevice
         {
             var resource = resources[index];
 
-            if (resource.Group != ShaderBindingGroup.Frame)
+            if (resource.Group != group)
             {
                 continue;
             }
 
             if (resource.ArrayCount != 1)
             {
-                throw new NotSupportedException("Frame descriptor arrays are not supported.");
+                throw new NotSupportedException("Graph descriptor arrays are not supported.");
             }
 
             switch (resource.Kind)
@@ -92,11 +114,11 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                 default:
                 {
-                    throw new NotSupportedException("This descriptor-set path supports only Frame-group uniform buffers, storage buffers, sampled images, storage images, and samplers.");
+                    throw new NotSupportedException("This descriptor-set path supports only uniform buffers, storage buffers, sampled images, storage images, and samplers.");
                 }
             }
 
-            setIndex = checked((int)GetNativeDescriptorSetIndex(resource.Group));
+            setIndex = checked((int)GetNativeDescriptorSetIndex(group));
         }
 
         if ((setIndex < 0)
@@ -112,7 +134,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                 && (expectedStorageImageCount == 0)
                 && (expectedSamplerCount == 0)))
         {
-            throw new ArgumentException("The pipeline does not have a complete Frame-group descriptor set.");
+            throw new ArgumentException($"The pipeline does not have a complete {group} descriptor set.");
         }
 
         var sortedUniformBufferBindings = uniformBufferBindings.ToArray();
@@ -126,7 +148,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             var binding = sortedUniformBufferBindings[index];
             ArgumentNullException.ThrowIfNull(binding.Buffer);
 
-            if ((binding.Group != ShaderBindingGroup.Frame)
+            if ((binding.Group != group)
                 || (binding.Binding < 0)
                 || binding.Buffer.IsDisposed
                 || !ReferenceEquals(binding.Buffer.Owner, this))
@@ -200,7 +222,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             var binding = sortedStorageBufferBindings[index];
             ArgumentNullException.ThrowIfNull(binding.Buffer);
 
-            if ((binding.Group != ShaderBindingGroup.Frame)
+            if ((binding.Group != group)
                 || (binding.Binding < 0)
                 || binding.Buffer.IsDisposed
                 || !ReferenceEquals(binding.Buffer.Owner, this))
@@ -275,7 +297,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             var binding = sortedImageBindings[index];
             ArgumentNullException.ThrowIfNull(binding.Texture);
 
-            if ((binding.Group != ShaderBindingGroup.Frame)
+            if ((binding.Group != group)
                 || (binding.Binding < 0)
                 || binding.Texture.IsDisposed
                 || !ReferenceEquals(binding.Texture.Owner, this))
@@ -329,7 +351,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             var binding = sortedStorageImageBindings[index];
             ArgumentNullException.ThrowIfNull(binding.Texture);
 
-            if ((binding.Group != ShaderBindingGroup.Frame)
+            if ((binding.Group != group)
                 || (binding.Binding < 0)
                 || binding.Texture.IsDisposed
                 || !ReferenceEquals(binding.Texture.Owner, this))
@@ -384,7 +406,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             var binding = sortedSamplerBindings[index];
             ArgumentNullException.ThrowIfNull(binding.Sampler);
 
-            if ((binding.Group != ShaderBindingGroup.Frame)
+            if ((binding.Group != group)
                 || (binding.Binding < 0)
                 || binding.Sampler.IsDisposed
                 || !ReferenceEquals(binding.Sampler.Owner, this))

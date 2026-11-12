@@ -15,6 +15,7 @@
     <ProjectReference Include="..\TerraFX.Runtime\TerraFX.Runtime.csproj" />
     <Content Include="ShaderToolchainManifest.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Shaders\*.hlsl" Link="Shaders\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="ShaderCompilerToolchain.json" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(OS)' == 'Windows_NT'">

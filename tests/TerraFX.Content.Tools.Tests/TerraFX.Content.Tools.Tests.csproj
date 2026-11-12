@@ -5,6 +5,25 @@
   <ItemGroup>
     <ProjectReference Include="..\..\sources\TerraFX.Content.Tools\TerraFX.Content.Tools.csproj" />
     <Content Include="..\..\sources\TerraFX.Content.Tools\ShaderToolchainManifest.json" Link="ShaderToolchainManifest.json" CopyToOutputDirectory="PreserveNewest" />
+    <TerraFXShaderSource Include="Shaders\**\*.hlsl" EntryPoint="VSMain" Stage="vertex" />
+    <TerraFXShaderInclude Include="Shaders\**\*.hlsli" />
+    <None Update="Shaders\ObjectGpuData.hlsl" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <Import Project="..\..\sources\TerraFX.Content.Tools\ShaderCompilation.targets" />
+
+  <ItemGroup>
+    <AssemblyMetadata Include="TerraFXDxcPath" Value="$(TerraFXDxcPath)" />
+    <AssemblyMetadata Include="TerraFXVulkanSdkPath" Value="$(TerraFXVulkanSdkPath)" />
+  </ItemGroup>
+
+  <Target Name="CopyTerraFXShaderArtifactsToTestOutput" AfterTargets="Build">
+    <PropertyGroup>
+      <_TerraFXTestShaderOutput>$(OutDir)ShaderArtifacts\ObjectGpuData</_TerraFXTestShaderOutput>
+    </PropertyGroup>
+    <MakeDir Directories="$(_TerraFXTestShaderOutput)" />
+    <Copy SourceFiles="$(IntermediateOutputPath)TerraFXShaders\ObjectGpuData\ObjectGpuData.vertex.dxil;$(IntermediateOutputPath)TerraFXShaders\ObjectGpuData\ObjectGpuData.vertex.spv;$(IntermediateOutputPath)TerraFXShaders\ObjectGpuData\ObjectGpuData.dxil.reflection.txt;$(IntermediateOutputPath)TerraFXShaders\ObjectGpuData\ObjectGpuData.spirv.reflection.json;$(IntermediateOutputPath)TerraFXShaders\ObjectGpuData\ObjectGpuData.compile.sha256"
+          DestinationFolder="$(_TerraFXTestShaderOutput)" />
+  </Target>
 
 </Project>
