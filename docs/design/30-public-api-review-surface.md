@@ -868,6 +868,7 @@ All members use [05](05-owned-buffers-and-internal-collections.md)'s checked adm
 | Runtime: `SceneSchemaCatalogue.Schemas` | Immutable declarations for the selected native scene/prefab graph and the four persistent built-in scene components. This does not imply scene expansion, native payload execution, or complete C0/application composition. |
 | Graphics: `RenderingSchemaCatalogue.Schemas` | Immutable declarations for 26 mesh/material/texture/atlas and persistent rendering-component schemas. This does not imply native decoding, GPU resource creation, or render execution. |
 | Runtime: `AnimationSchemaCatalogue.Schemas` | Immutable declarations for 11 skeleton, clip, track, key, root-motion, and event schemas, including the selected EventPayload marker. This does not imply animation evaluation or event production. |
+| Runtime: `AnimationSupport.RegisterAssetCodecs(AssetStoreRegistrationBuilder)` | Registers the typed `SkeletonAsset` and `AnimationClipAsset` codecs against the exact compiled Animation schema tuples. It does not create playback state, resolve Scene/Skeleton/Atlas bindings, or evaluate clips. |
 | Physics: `PhysicsSchemaCatalogue.Schemas` | Immutable declarations for the ten primitive, support, statistics, and spatial-settings schemas. This does not imply primitive payload decoding, geometry admission, or physics execution. |
 | Runtime: `StandaloneContinuationSchemaCatalogue.Schemas` | Immutable declarations for 60 selected checkpoint, continuation, control, identity, ECS-layout, and scene-state schemas from Chapter 10 M03 and Chapter 27. Cross-owner C0 closure, application-owned state roles, and persistence/continuation execution remain separate requirements. |
 | Core/owner generated semantic values | Each selected row is an immutable typed model exposing exactly that table's fields/optional presence/ordered immutable collections; constructor signatures take those operands, never CLR discovery or serialized padding. Foundation-valued fields use the [M03 2](10-binary-data-and-authoring-formats.md#m03-2-preserved-foundation-and-reader-boundary) owned canonical-record/parsed-value wrapper so inert optional bytes survive. Explicit descriptor/attribute generation emits public symbolic author values/codecs and distinct World-bound component bindings. An Entity-valued author field uses stable Guid/selector input, not a fabricated live Entity. Each selected codec root is present in the application's closed compiled registration graph. |
@@ -3621,6 +3622,8 @@ A transaction begun from `SceneInstance` may mutate only child Entities that are
 
 `KeepLocal` preserves exact local translation and local rotation/scale when both old and new parents are non-roots. If either endpoint is a root, it atomically converts the translation representation through bounded parent-relative displacement while retaining the stored local rotation/scale. `KeepWorld` recomputes the complete relative SRT under Chapter 16's residual tolerance. `SetRootPosition` is valid only for a root in the transaction's sequential shadow state.
 
+`SkeletonAsset` and `AnimationClipAsset` are opaque, immutable package roots loaded through `AssetStore`; their codecs validate local record structure and bind-pose invariants. Registration does not resolve Clip references to Skeleton joints, expanded Scene keys, or Atlas frames, and does not create playback state.
+
 ```csharp
 using TerraFX.Assets;
 using TerraFX.Diagnostics;
@@ -3632,6 +3635,14 @@ using System.Threading.Tasks;
 
 namespace TerraFX.Animation
 {
+public sealed class SkeletonAsset { }
+public sealed class AnimationClipAsset { }
+
+public static class AnimationSupport
+{
+    public static AssetStoreRegistrationBuilder RegisterAssetCodecs(AssetStoreRegistrationBuilder builder);
+}
+
 public sealed class AnimationPlaybackOptions
 {
     public AnimationPlaybackOptions(float speed);
