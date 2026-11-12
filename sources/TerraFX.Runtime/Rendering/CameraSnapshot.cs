@@ -50,7 +50,7 @@ public readonly struct CameraSnapshot
             || !float.IsFinite(orthographicHeight)
             || (orthographicHeight <= 0.0f)
             || !float.IsFinite(near)
-            || (near <= 0.0f)
+            || ((projectionKind is CameraProjectionKind.Perspective) && (near <= 0.0f))
             || !viewport.IsFinite().All()
             || (viewport.X < 0.0f)
             || (viewport.Y < 0.0f)
@@ -136,7 +136,7 @@ public readonly struct CameraSnapshot
     /// <summary>Gets the camera's layer-selection mask.</summary>
     public ulong LayerMask { get; }
 
-    /// <summary>Gets the near distance.</summary>
+    /// <summary>Gets the camera's near-plane coordinate.</summary>
     public float Near { get; }
 
     /// <summary>Gets the signed camera ordering value.</summary>

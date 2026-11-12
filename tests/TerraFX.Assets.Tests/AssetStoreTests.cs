@@ -214,6 +214,7 @@ internal sealed class AssetStoreTests
         try
         {
             using var source = await store.LoadAsync<TestAssetValue>(new AssetId(1), CancellationToken.None).ConfigureAwait(false);
+            var sourceBackingToken = source.BackingToken;
             using var retained = source.Retain();
             await store.ReplacePackageAsync(
                 CreateOptions(secondPath, secondPackage, registration),
@@ -225,6 +226,9 @@ internal sealed class AssetStoreTests
             Assert.That(retained.Value.Marker, Is.EqualTo(10));
             Assert.That(anchoredChild.Value.Marker, Is.EqualTo(20));
             Assert.That(currentChild.Value.Marker, Is.EqualTo(200));
+            Assert.That(retained.BackingToken, Is.SameAs(sourceBackingToken));
+            Assert.That(anchoredChild.BackingToken, Is.SameAs(sourceBackingToken));
+            Assert.That(currentChild.BackingToken, Is.Not.SameAs(sourceBackingToken));
             Assert.That(retained.ProfileId, Is.EqualTo(source.ProfileId));
             Assert.That(retained.SpatialSettings, Is.EqualTo(source.SpatialSettings));
 

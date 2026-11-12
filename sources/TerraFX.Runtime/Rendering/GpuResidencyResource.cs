@@ -11,6 +11,8 @@ internal sealed class GpuResidencyResource : IDisposable
 {
     private readonly AssetLease<RenderTextureAsset> _assetLease;
     private int _isDisposed;
+    private int _ownerReleased;
+    private int _referenceCount = 1;
     private readonly GpuTexture _texture;
 
     internal GpuResidencyResource(GpuTexture texture, AssetLease<RenderTextureAsset> assetLease)
@@ -41,9 +43,61 @@ internal sealed class GpuResidencyResource : IDisposable
 
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
+        if (Interlocked.Exchange(ref _ownerReleased, 1) != 0)
         {
             return;
+        }
+
+        ReleaseReference();
+    }
+
+    internal void ReleaseLease()
+        => ReleaseReference();
+
+    internal GpuResidencyResourceLease Retain()
+    {
+        while (true)
+        {
+            var referenceCount = Volatile.Read(ref _referenceCount);
+            ObjectDisposedException.ThrowIf(referenceCount == 0, this);
+
+            if (referenceCount == int.MaxValue)
+            {
+                throw new InvalidOperationException("The GPU residency resource has too many live leases.");
+            }
+
+            if (Interlocked.CompareExchange(ref _referenceCount, referenceCount + 1, referenceCount) == referenceCount)
+            {
+                try
+                {
+                    return new GpuResidencyResourceLease(this);
+                }
+                catch
+                {
+                    ReleaseReference();
+                    throw;
+                }
+            }
+        }
+    }
+
+    private void ReleaseReference()
+    {
+        var referenceCount = Interlocked.Decrement(ref _referenceCount);
+
+        if (referenceCount < 0)
+        {
+            throw new InvalidOperationException("The GPU residency resource reference count became negative.");
+        }
+
+        if (referenceCount != 0)
+        {
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
+        {
+            throw new InvalidOperationException("The GPU residency resource was disposed more than once.");
         }
 
         try

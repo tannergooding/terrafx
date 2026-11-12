@@ -12,7 +12,8 @@ struct SpriteVertexInput
 struct SpriteVertexOutput
 {
     float4 position : SV_Position;
-    float2 textureCoordinate : TEXCOORD0;
+    noperspective float2 textureCoordinate : TEXCOORD0;
+    nointerpolation float4 tint : COLOR0;
 };
 
 struct DepthVertexOutput
@@ -211,6 +212,7 @@ SpriteVertexOutput VSSpriteMain(SpriteVertexInput input)
     SpriteVertexOutput output;
     output.position = float4(input.position, 1.0);
     output.textureCoordinate = input.textureCoordinate;
+    output.tint = float4(1.0, 1.0, 1.0, 1.0);
     return output;
 }
 
@@ -300,7 +302,7 @@ float4 PSSampledSixteenMain(VertexOutput input) : SV_Target0
 
 float4 PSSpriteMain(SpriteVertexOutput input) : SV_Target0
 {
-    return FrameTexture.Sample(FrameSampler, input.textureCoordinate);
+    return FrameTexture.Sample(FrameSampler, input.textureCoordinate) * input.tint;
 }
 
 float4 PSSampledFrameMain(VertexOutput input) : SV_Target0

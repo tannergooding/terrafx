@@ -143,6 +143,8 @@ internal sealed partial class SceneAssetStoreTests
                 ?? throw new InvalidOperationException("The successful Sprite extraction omitted its snapshot."));
             var spriteDraws = snapshot.SpriteDraws;
             Assert.That(spriteDraws, Has.Length.EqualTo(6));
+            var batches = RenderSpriteBatcher.Create(snapshot);
+            Assert.That(batches, Has.Length.EqualTo(6));
 
             var expectedEntityIds = new[]
             {
@@ -156,6 +158,21 @@ internal sealed partial class SceneAssetStoreTests
             var cameraOrder = snapshot.SpriteCameraOrders[0];
             Assert.That(cameraOrder.CameraId, Is.EqualTo(cameraId));
             Assert.That(cameraOrder.DrawIndices, Has.Length.EqualTo(expectedEntityIds.Length));
+
+            for (var index = 0; index < batches.Length; index++)
+            {
+                var batch = batches[index];
+                var drawIndex = cameraOrder.DrawIndices[index];
+                var sprite = spriteDraws[drawIndex];
+
+                Assert.That(batch.CameraId, Is.EqualTo(cameraId));
+                Assert.That(batch.Key.SceneInstanceId, Is.EqualTo(sprite.SceneInstanceId));
+                Assert.That(batch.Key.TextureAssetId, Is.EqualTo(1));
+                Assert.That(batch.Key.MaterialAssetId, Is.EqualTo(3));
+                Assert.That(batch.DrawIndices, Has.Length.EqualTo(1));
+                Assert.That(batch.DrawIndices[0], Is.EqualTo(drawIndex));
+            }
+
             var firstSpriteQuad = spriteDraws[cameraOrder.DrawIndices[0]].Quad;
             Assert.That(firstSpriteQuad.Vertex0.Position, Is.EqualTo(new Vector3(-0.5f, -2.25f, 0.0f)));
             Assert.That(firstSpriteQuad.Vertex1.Position, Is.EqualTo(new Vector3(-0.5f, 0.75f, 0.0f)));
@@ -193,6 +210,35 @@ internal sealed partial class SceneAssetStoreTests
             }
 
             snapshot2D.Dispose();
+
+            foreach (var near in new[] { 0.0f, -1.0f })
+            {
+                var orthographicCamera = new SceneComponentDefinitions.CameraComponent(
+                    (byte)CameraProjectionKind.Orthographic,
+                    float.Pi / 3.0f,
+                    10.0f,
+                    near,
+                    (byte)CameraFarMode.Finite,
+                    new SceneComponentDefinitions.OptionalSingle(10.0f),
+                    default,
+                    new Vector4(0.0f, 0.0f, 1.0f, 1.0f),
+                    (byte)(CameraClearFlags.Color | CameraClearFlags.Depth),
+                    new Vector4(0.0f, 0.0f, 0.0f, 1.0f),
+                    ulong.MaxValue,
+                    0);
+                world.Set(sceneEntities[0], in orthographicCamera);
+                var orthographicPublication = world.Step().Publication;
+                var orthographicResponse = renderer.Extract(
+                    world,
+                    new RenderExtractionOptions3D(
+                        orthographicPublication.Frame3,
+                        options.TargetExtent,
+                        options.CameraIds));
+                Assert.That(orthographicResponse.Status, Is.EqualTo(RenderExtractionStatus.Extracted));
+                using var orthographicSnapshot = (RenderSnapshot3D)(orthographicResponse.Snapshot
+                    ?? throw new InvalidOperationException("The successful orthographic extraction omitted its snapshot."));
+                Assert.That(orthographicSnapshot.Cameras[0].Near, Is.EqualTo(near));
+            }
 
             var zeroMaskCamera = new SceneComponentDefinitions.CameraComponent(
                 (byte)CameraProjectionKind.Perspective,

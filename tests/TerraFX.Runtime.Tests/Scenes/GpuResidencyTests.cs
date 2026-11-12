@@ -3,6 +3,7 @@
 using System;
 using System.IO;
 using System.Security.Cryptography;
+using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX.Assets;
@@ -103,10 +104,14 @@ internal sealed partial class SceneAssetStoreTests
             var residencyLease = await residencyService.EnsureGpuResidencyAsync(
                 assetLease,
                 new ResidencyOptions(TextureUsage.Sampled | TextureUsage.CopySource)).ConfigureAwait(false);
+            var secondResidencyLease = await residencyService.EnsureGpuResidencyAsync(
+                assetLease,
+                new ResidencyOptions(TextureUsage.Sampled | TextureUsage.CopySource)).ConfigureAwait(false);
 
             try
             {
                 assetLease.Dispose();
+                Assert.That(secondResidencyLease.Texture, Is.Not.SameAs(residencyLease.Texture));
                 Assert.That(residencyLease.AssetId, Is.EqualTo(new AssetId(TextureAssetId)));
                 Assert.That(residencyLease.DeviceEpoch, Is.EqualTo(graphicsDevice.DeviceEpoch));
                 Assert.That(residencyLease.Asset.Mips[0].Pixels[0], Is.EqualTo(basePixels[0]));
@@ -152,6 +157,7 @@ internal sealed partial class SceneAssetStoreTests
             }
             finally
             {
+                secondResidencyLease.Dispose();
                 residencyLease.Dispose();
             }
 
@@ -183,5 +189,142 @@ internal sealed partial class SceneAssetStoreTests
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => new ResidencyOptions(TextureUsage.Storage));
         _ = Assert.Throws<ArgumentOutOfRangeException>(
             () => new ResidencyOptions(TextureUsage.Sampled | TextureUsage.CopyDestination));
+    }
+
+    [Test]
+    public async Task SpriteResidencyCacheSeparatesReplacedPackageBackings()
+    {
+        var schemas = CreateRendererRegistry();
+        var registrationBuilder = new AssetStoreRegistrationBuilder(schemas);
+        _ = Renderer.RegisterAssetCodecs(registrationBuilder);
+        var registration = registrationBuilder.Build();
+        const int TextureAssetId = 71;
+        var firstPixels = new byte[16];
+        var secondPixels = new byte[16];
+
+        for (var index = 0; index < firstPixels.Length; index += 4)
+        {
+            firstPixels[index] = 17;
+            firstPixels[index + 1] = 17;
+            firstPixels[index + 2] = 17;
+            firstPixels[index + 3] = byte.MaxValue;
+            secondPixels[index] = 29;
+            secondPixels[index + 1] = 29;
+            secondPixels[index + 2] = 29;
+            secondPixels[index + 3] = byte.MaxValue;
+        }
+
+        var firstRecord = CreateRenderTextureAssetRecord(
+            2,
+            2,
+            RenderTextureColorSpace.Linear,
+            RenderTextureAlphaMode.Premultiplied,
+            RenderTextureSemantic.Color,
+            RenderTextureMipPolicy.BaseOnly,
+            CreateRenderTextureMipRecord(0, 2, 2, firstPixels));
+        var secondRecord = CreateRenderTextureAssetRecord(
+            2,
+            2,
+            RenderTextureColorSpace.Linear,
+            RenderTextureAlphaMode.Premultiplied,
+            RenderTextureSemantic.Color,
+            RenderTextureMipPolicy.BaseOnly,
+            CreateRenderTextureMipRecord(0, 2, 2, secondPixels));
+        var firstPackage = Package.CreatePackage(
+            new Package.Entry(TextureAssetId, Package.CreateEnvelope(TextureAssetId, firstRecord)));
+        var secondPackage = Package.CreatePackage(
+            new Package.Entry(TextureAssetId, Package.CreateEnvelope(TextureAssetId, secondRecord)));
+        var firstPath = Package.WritePackage(firstPackage);
+        var secondPath = Package.WritePackage(secondPackage);
+        EngineHost? host = null;
+        GpuResidencyLease? oldResidency = null;
+        GpuResidencyLease? newResidency = null;
+
+        try
+        {
+            var hostOptions = new EngineHostOptions(
+                HostProfile.OffscreenNative,
+                PlatformBackend.Headless,
+                GraphicsBackend.Vulkan,
+                VulkanGraphicsBackend.CreateRegistration(),
+                new AssetStoreOptions(
+                    firstPath,
+                    SHA256.HashData(firstPackage),
+                    registration)) {
+                CpuWorkerCount = 0,
+                PersistenceMetadata = WorldPersistenceHeaderWriterTests.CreateMetadata(),
+            };
+
+            try
+            {
+                host = await EngineHost.StartAsync(hostOptions).ConfigureAwait(false);
+            }
+            catch (DllNotFoundException exception)
+            {
+                Assert.Ignore($"Vulkan system library is unavailable: {exception.Message}");
+                return;
+            }
+            catch (EntryPointNotFoundException exception)
+            {
+                Assert.Ignore($"Vulkan system entry point is unavailable: {exception.Message}");
+                return;
+            }
+            catch (NotSupportedException exception)
+            {
+                Assert.Ignore($"No Vulkan device satisfies OffscreenNative: {exception.Message}");
+                return;
+            }
+
+            var engineHost = host
+                ?? throw new InvalidOperationException("Vulkan EngineHost startup returned no host.");
+            var residencyService = engineHost.GpuResidency
+                ?? throw new InvalidOperationException("OffscreenNative Vulkan startup returned no GPU residency service.");
+            using var oldAsset = await engineHost.Assets.LoadAsync<RenderTextureAsset>(
+                new AssetId(TextureAssetId)).ConfigureAwait(false);
+            await engineHost.Assets.ReplacePackageAsync(
+                new AssetStoreOptions(
+                    secondPath,
+                    SHA256.HashData(secondPackage),
+                    registration),
+                CancellationToken.None).ConfigureAwait(false);
+            using var newAsset = await engineHost.Assets.LoadAsync<RenderTextureAsset>(
+                new AssetId(TextureAssetId)).ConfigureAwait(false);
+            oldResidency = await residencyService.EnsureSpritePageResidencyAsync(
+                oldAsset,
+                new ResidencyOptions(),
+                CancellationToken.None).ConfigureAwait(false);
+            newResidency = await residencyService.EnsureSpritePageResidencyAsync(
+                newAsset,
+                new ResidencyOptions(),
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.That(newResidency.Texture, Is.Not.SameAs(oldResidency.Texture));
+            Assert.That(oldResidency.Asset.Mips[0].Pixels[0], Is.EqualTo(17));
+            Assert.That(newResidency.Asset.Mips[0].Pixels[0], Is.EqualTo(29));
+
+            using var repeatedOldResidency = await residencyService.EnsureSpritePageResidencyAsync(
+                oldAsset,
+                new ResidencyOptions(),
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.That(repeatedOldResidency.Texture, Is.SameAs(oldResidency.Texture));
+
+            oldResidency.Dispose();
+            oldResidency = null;
+            newResidency.Dispose();
+            newResidency = null;
+            await engineHost.StopAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            oldResidency?.Dispose();
+            newResidency?.Dispose();
+
+            if (host is not null)
+            {
+                await host.DisposeAsync().ConfigureAwait(false);
+            }
+
+            File.Delete(firstPath);
+            File.Delete(secondPath);
+        }
     }
 }

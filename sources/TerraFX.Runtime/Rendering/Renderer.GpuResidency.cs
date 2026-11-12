@@ -29,7 +29,7 @@ public sealed partial class Renderer
         var pageSet = sceneAssets.GetAtlasPageSet(sprite.AtlasAssetId);
         var frame = pageSet.GetFrame(sprite.FrameId);
         using var pageLease = pageSet.RetainPageLease(frame.Page);
-        return await residencyService.EnsureGpuResidencyAsync(
+        return await residencyService.EnsureSpritePageResidencyAsync(
             pageLease,
             options,
             cancellationToken).ConfigureAwait(false);

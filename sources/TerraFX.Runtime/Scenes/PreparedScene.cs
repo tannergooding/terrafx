@@ -10,9 +10,10 @@ namespace TerraFX.Scenes;
 /// <summary>Owns one bounded Scene preparation for its exact target World and AssetStore.</summary>
 public sealed class PreparedScene : IDisposable
 {
-    private int _activationAttempted;
+    private bool _activationAttempted;
     private readonly AssetId _assetId;
     private readonly AssetStore _assets;
+    private readonly Lock _gate = new();
     private readonly SceneLoadOptionsSnapshot _options;
     private SceneExpansionPlan? _plan;
     private readonly World _world;
@@ -42,7 +43,32 @@ public sealed class PreparedScene : IDisposable
 
     /// <summary>Releases the prepared Scene's package-backed asset leases.</summary>
     public void Dispose()
-        => Interlocked.Exchange(ref _plan, null)?.Dispose();
+    {
+        SceneExpansionPlan? plan;
+
+        lock (_gate)
+        {
+            plan = _plan;
+            _plan = null;
+        }
+
+        plan?.Dispose();
+    }
+
+    internal PreparedAssetsLifetime.Lease? AcquirePreparedAssets()
+    {
+        lock (_gate)
+        {
+            if (_activationAttempted)
+            {
+                throw new InvalidOperationException("Prepared assets cannot be acquired after activation admission.");
+            }
+
+            var plan = _plan
+                ?? throw new ObjectDisposedException(nameof(PreparedScene));
+            return plan.AcquirePreparedAssets();
+        }
+    }
 
     internal SceneExpansionPlan DetachPlan(World world)
     {
@@ -53,12 +79,18 @@ public sealed class PreparedScene : IDisposable
             throw new ArgumentException("The prepared Scene is bound to another exact World.", nameof(world));
         }
 
-        if (Interlocked.CompareExchange(ref _activationAttempted, 1, 0) != 0)
+        lock (_gate)
         {
-            throw new InvalidOperationException("A prepared Scene can be admitted for activation only once.");
-        }
+            if (_activationAttempted)
+            {
+                throw new InvalidOperationException("A prepared Scene can be admitted for activation only once.");
+            }
 
-        return Interlocked.Exchange(ref _plan, null)
-            ?? throw new ObjectDisposedException(nameof(PreparedScene));
+            _activationAttempted = true;
+            var plan = _plan
+                ?? throw new ObjectDisposedException(nameof(PreparedScene));
+            _plan = null;
+            return plan;
+        }
     }
 }

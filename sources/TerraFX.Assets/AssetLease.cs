@@ -66,6 +66,16 @@ public sealed class AssetLease<T> : IDisposable
         }
     }
 
+    internal AssetPackageBackingToken BackingToken
+    {
+        get
+        {
+            var state = Volatile.Read(ref _state);
+            ObjectDisposedException.ThrowIf(state is null, this);
+            return state.Lifetime.BackingToken;
+        }
+    }
+
     /// <summary>Releases this handle's package reference and invalidates <see cref="Value"/>.</summary>
     public void Dispose()
     {

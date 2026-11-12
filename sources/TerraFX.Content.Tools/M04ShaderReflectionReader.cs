@@ -81,6 +81,11 @@ internal static class M04ShaderReflectionReader
         {
             ValidateSpirvCrossIo(root, "inputs", inputs, stage, isInput: true);
             ValidateSpirvCrossIo(root, "outputs", outputs, stage, isInput: false);
+
+            if (stage is ShaderStage.Pixel)
+            {
+                SpirvImageTypeReader.ValidateInputInterpolation(spirvBytecode, inputs);
+            }
         }
 
         var recordLayouts = ParseRecordLayouts(root);
@@ -1447,9 +1452,14 @@ internal static class M04ShaderReflectionReader
         private const uint DecorationBinding = 33;
         private const uint DecorationBlock = 2;
         private const uint DecorationBufferBlock = 3;
+        private const uint DecorationCentroid = 16;
         private const uint DecorationDescriptorSet = 34;
+        private const uint DecorationFlat = 14;
+        private const uint DecorationLocation = 30;
+        private const uint DecorationNoPerspective = 13;
         private const uint DecorationNonReadable = 25;
         private const uint DecorationNonWritable = 24;
+        private const uint DecorationSample = 17;
         private const uint ImageFormatR32f = 3;
         private const uint ImageFormatR32i = 24;
         private const uint ImageFormatR32ui = 33;
@@ -1468,6 +1478,7 @@ internal static class M04ShaderReflectionReader
         private const ushort OpTypeSampler = 26;
         private const ushort OpTypeStruct = 30;
         private const ushort OpVariable = 59;
+        private const uint StorageClassInput = 1;
         private const uint StorageClassStorageBuffer = 12;
         private const uint StorageClassUniform = 2;
         private const uint StorageClassUniformConstant = 0;
@@ -1989,6 +2000,256 @@ internal static class M04ShaderReflectionReader
             }
         }
 
+        internal static void ValidateInputInterpolation(
+            ReadOnlySpan<byte> bytecode,
+            ImmutableArray<ShaderIoSignature> signatures)
+        {
+            var words = GetSpirvWords(bytecode);
+            var pointerPointees = new Dictionary<uint, uint>();
+            var inputVariables = new List<(uint PointerType, uint Id)>();
+            var variableDecorations = new Dictionary<uint, InterfaceDecorations>();
+            var memberDecorations = new Dictionary<(uint StructureId, uint MemberIndex), InterfaceDecorations>();
+
+            for (var cursor = 5; cursor < words.Length;)
+            {
+                var instruction = words[cursor];
+                var wordCount = checked((int)(instruction >> 16));
+                var opcode = checked((ushort)(instruction & 0xFFFF));
+
+                if ((wordCount == 0) || (wordCount > words.Length - cursor))
+                {
+                    throw new InvalidDataException("The reflected SPIR-V module contains a truncated instruction.");
+                }
+
+                switch (opcode)
+                {
+                    case OpTypePointer:
+                    {
+                        if (wordCount != 4)
+                        {
+                            throw new InvalidDataException("SPIR-V OpTypePointer has an invalid operand count.");
+                        }
+
+                        if (!pointerPointees.TryAdd(words[cursor + 1], words[cursor + 3]))
+                        {
+                            throw new InvalidDataException("The reflected SPIR-V module redeclares a pointer type ID.");
+                        }
+
+                        break;
+                    }
+
+                    case OpVariable:
+                    {
+                        if (wordCount is not (4 or 5))
+                        {
+                            throw new InvalidDataException("SPIR-V OpVariable has an invalid operand count.");
+                        }
+
+                        if (words[cursor + 3] == StorageClassInput)
+                        {
+                            inputVariables.Add((words[cursor + 1], words[cursor + 2]));
+                        }
+
+                        break;
+                    }
+
+                    case OpDecorate:
+                    {
+                        if (wordCount < 3)
+                        {
+                            throw new InvalidDataException("SPIR-V OpDecorate has an invalid operand count.");
+                        }
+
+                        var decoration = words[cursor + 2];
+
+                        if (decoration is DecorationLocation
+                            or DecorationCentroid
+                            or DecorationFlat
+                            or DecorationNoPerspective
+                            or DecorationSample)
+                        {
+                            var expectedWordCount = (decoration is DecorationLocation) ? 4 : 3;
+
+                            if (wordCount != expectedWordCount)
+                            {
+                                throw new InvalidDataException("A SPIR-V stage-I/O decoration has an invalid operand count.");
+                            }
+
+                            ApplyDecoration(
+                                GetOrAdd(variableDecorations, words[cursor + 1]),
+                                decoration,
+                                words,
+                                cursor);
+                        }
+
+                        break;
+                    }
+
+                    case OpMemberDecorate:
+                    {
+                        if (wordCount < 4)
+                        {
+                            throw new InvalidDataException("SPIR-V OpMemberDecorate has an invalid operand count.");
+                        }
+
+                        var decoration = words[cursor + 3];
+
+                        if (decoration is DecorationLocation
+                            or DecorationCentroid
+                            or DecorationFlat
+                            or DecorationNoPerspective
+                            or DecorationSample)
+                        {
+                            var expectedWordCount = (decoration is DecorationLocation) ? 5 : 4;
+
+                            if (wordCount != expectedWordCount)
+                            {
+                                throw new InvalidDataException("A SPIR-V stage-I/O member decoration has an invalid operand count.");
+                            }
+
+                            var key = (StructureId: words[cursor + 1], MemberIndex: words[cursor + 2]);
+                            ApplyDecoration(GetOrAdd(memberDecorations, key), decoration, words, cursor);
+                        }
+
+                        break;
+                    }
+                }
+
+                cursor += wordCount;
+            }
+
+            var inputLocations = new Dictionary<int, ShaderInterpolation>();
+
+            foreach (var (pointerType, variableId) in inputVariables)
+            {
+                if (variableDecorations.TryGetValue(variableId, out var variable))
+                {
+                    AddLocation(inputLocations, variable);
+                }
+
+                if (!pointerPointees.TryGetValue(pointerType, out var structureId))
+                {
+                    continue;
+                }
+
+                foreach (var (key, member) in memberDecorations)
+                {
+                    if (key.StructureId == structureId)
+                    {
+                        AddLocation(inputLocations, member);
+                    }
+                }
+            }
+
+            foreach (var signature in signatures)
+            {
+                if (signature.Location is not int location)
+                {
+                    continue;
+                }
+
+                var actualInterpolation = inputLocations.TryGetValue(location, out var interpolation)
+                    ? interpolation
+                    : ShaderInterpolation.Smooth;
+
+                if (actualInterpolation != signature.Interpolation)
+                {
+                    throw new InvalidDataException(
+                        $"SPIR-V pixel input location {location} uses {actualInterpolation}, but DXIL reflection reports {signature.Interpolation}.");
+                }
+            }
+        }
+
+        private static void AddLocation(
+            Dictionary<int, ShaderInterpolation> locations,
+            InterfaceDecorations decorations)
+        {
+            if (decorations.Location is not int location)
+            {
+                return;
+            }
+
+            if (decorations.Centroid || decorations.Sample)
+            {
+                throw new NotSupportedException("Centroid- or sample-qualified SPIR-V pixel inputs are not supported.");
+            }
+
+            if (decorations.Flat && decorations.NoPerspective)
+            {
+                throw new InvalidDataException("A SPIR-V pixel input cannot be both Flat and NoPerspective.");
+            }
+
+            var interpolation = decorations.Flat
+                ? ShaderInterpolation.Flat
+                : decorations.NoPerspective
+                    ? ShaderInterpolation.NoPerspective
+                    : ShaderInterpolation.Smooth;
+
+            if (locations.TryGetValue(location, out var existingInterpolation))
+            {
+                if (existingInterpolation != interpolation)
+                {
+                    throw new InvalidDataException($"SPIR-V pixel input location {location} has conflicting interpolation decorations.");
+                }
+            }
+            else
+            {
+                locations.Add(location, interpolation);
+            }
+        }
+
+        private static void ApplyDecoration(
+            InterfaceDecorations decorations,
+            uint decoration,
+            ReadOnlySpan<uint> words,
+            int cursor)
+        {
+            switch (decoration)
+            {
+                case DecorationCentroid:
+                {
+                    decorations.Centroid = true;
+                    break;
+                }
+
+                case DecorationFlat:
+                {
+                    decorations.Flat = true;
+                    break;
+                }
+
+                case DecorationLocation:
+                {
+                    var location = words[cursor + 3];
+
+                    if (location > int.MaxValue)
+                    {
+                        throw new InvalidDataException("A SPIR-V stage-I/O Location exceeds the supported range.");
+                    }
+
+                    if (decorations.Location is int existingLocation && (existingLocation != (int)location))
+                    {
+                        throw new InvalidDataException("A SPIR-V stage-I/O target has conflicting Location decorations.");
+                    }
+
+                    decorations.Location = (int)location;
+                    break;
+                }
+
+                case DecorationNoPerspective:
+                {
+                    decorations.NoPerspective = true;
+                    break;
+                }
+
+                case DecorationSample:
+                {
+                    decorations.Sample = true;
+                    break;
+                }
+            }
+        }
+
         private static ShaderResourceAccess GetDescriptorAccess(
             uint variableId,
             uint storageClass,
@@ -2101,6 +2362,34 @@ internal static class M04ShaderReflectionReader
             }
 
             throw new NotSupportedException("The reflected SPIR-V descriptor resource class is not supported by the M04 reflection reader.");
+        }
+
+        private static TDecorations GetOrAdd<TKey, TDecorations>(
+            Dictionary<TKey, TDecorations> decorations,
+            TKey key)
+            where TKey : notnull
+            where TDecorations : class, new()
+        {
+            if (!decorations.TryGetValue(key, out var value))
+            {
+                value = new TDecorations();
+                decorations.Add(key, value);
+            }
+
+            return value;
+        }
+
+        private sealed class InterfaceDecorations
+        {
+            internal bool Centroid { get; set; }
+
+            internal bool Flat { get; set; }
+
+            internal int? Location { get; set; }
+
+            internal bool NoPerspective { get; set; }
+
+            internal bool Sample { get; set; }
         }
     }
 

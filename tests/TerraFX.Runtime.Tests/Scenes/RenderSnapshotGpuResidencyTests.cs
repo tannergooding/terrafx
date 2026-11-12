@@ -159,6 +159,7 @@ internal sealed partial class SceneAssetStoreTests
         };
         EngineHost? host = null;
         RenderSnapshot3D? snapshot = null;
+        GpuResidencyLease? canonicalResidencyLease = null;
         GpuResidencyLease? residencyLease = null;
         GpuTexture? targetTexture = null;
         GpuBuffer? vertexBuffer = null;
@@ -257,10 +258,29 @@ internal sealed partial class SceneAssetStoreTests
                 ?? throw new InvalidOperationException("The host renderer omitted its Sprite snapshot.");
             Assert.That(spriteSnapshot.SpriteDraws, Has.Length.EqualTo(1));
             Assert.That(spriteSnapshot.AssetPins, Is.Not.Null);
+            canonicalResidencyLease = await engineHost.Renderer.EnsureSpritePageResidencyAsync(
+                spriteSnapshot,
+                spriteDrawIndex: 0,
+                new ResidencyOptions(TextureUsage.Sampled)).ConfigureAwait(false);
             residencyLease = await engineHost.Renderer.EnsureSpritePageResidencyAsync(
                 spriteSnapshot,
                 spriteDrawIndex: 0,
                 new ResidencyOptions(TextureUsage.Sampled | TextureUsage.CopySource)).ConfigureAwait(false);
+            Assert.That(residencyLease.Texture, Is.Not.SameAs(canonicalResidencyLease.Texture));
+            Assert.That(
+                canonicalResidencyLease.Texture.Description.Usage,
+                Is.EqualTo(TextureUsage.Sampled | TextureUsage.CopyDestination));
+            Assert.That(
+                residencyLease.Texture.Description.Usage,
+                Is.EqualTo(TextureUsage.Sampled | TextureUsage.CopySource | TextureUsage.CopyDestination));
+
+            using (var repeatedSampledLease = await engineHost.Renderer.EnsureSpritePageResidencyAsync(
+                       spriteSnapshot,
+                       spriteDrawIndex: 0,
+                       new ResidencyOptions(TextureUsage.Sampled)).ConfigureAwait(false))
+            {
+                Assert.That(repeatedSampledLease.Texture, Is.SameAs(canonicalResidencyLease.Texture));
+            }
 
             if (renderThroughNativeGraph)
             {
@@ -790,6 +810,8 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(actual, Is.EqualTo(expected));
             residencyLease.Dispose();
             residencyLease = null;
+            canonicalResidencyLease.Dispose();
+            canonicalResidencyLease = null;
             await engineHost.StopAsync().ConfigureAwait(false);
         }
         catch (Exception exception)
@@ -808,6 +830,7 @@ internal sealed partial class SceneAssetStoreTests
             frameBuffer?.Dispose();
             targetTexture?.Dispose();
             snapshot?.Dispose();
+            canonicalResidencyLease?.Dispose();
             residencyLease?.Dispose();
 
             if (host is not null)

@@ -105,6 +105,30 @@ internal sealed class SceneComponentDefinitionTests
         Assert.That(camera.AspectRatioOverride.Value, Is.EqualTo(16.0f / 9.0f));
         world.Set(entity, in defaultCamera);
 
+        foreach (var near in new[] { 0.0f, -1.0f })
+        {
+            var orthographicCamera = new SceneComponentDefinitions.CameraComponent(
+                (byte)CameraProjectionKind.Orthographic,
+                float.Pi / 3.0f,
+                10.0f,
+                near,
+                (byte)CameraFarMode.Finite,
+                new SceneComponentDefinitions.OptionalSingle(10.0f),
+                default,
+                new Vector4(0, 0, 1, 1),
+                (byte)(CameraClearFlags.Color | CameraClearFlags.Depth),
+                new Vector4(0, 0, 0, 1),
+                ulong.MaxValue,
+                0);
+
+            Assert.That(cameraRegistration.ValidateValue(in orthographicCamera, CancellationToken.None), Is.Empty);
+            world.Set(entity, in orthographicCamera);
+            Assert.That(world.TryGet<SceneComponentDefinitions.CameraComponent>(entity, out camera), Is.True);
+            Assert.That(camera.Near, Is.EqualTo(near));
+        }
+
+        world.Set(entity, in defaultCamera);
+
         var invalidCameras = new (SceneComponentDefinitions.CameraComponent Value, string Field)[]
         {
             (new(2, float.Pi / 3.0f, 1, 0.01f, 0, new(100), default, new Vector4(0, 0, 1, 1), 3, new Vector4(0, 0, 0, 1), ulong.MaxValue, 0), "ProjectionKind"),

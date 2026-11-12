@@ -19,6 +19,23 @@ internal sealed class AssetLeaseLifetime
         _decodedBytes = decodedBytes;
     }
 
+    internal AssetPackageBackingToken BackingToken
+    {
+        get
+        {
+            var (_, backing) = AcquirePackageBackingReference();
+
+            try
+            {
+                return backing.BackingToken;
+            }
+            finally
+            {
+                backing.ReleaseReference();
+            }
+        }
+    }
+
     internal SpatialProfileId ProfileId
     {
         get

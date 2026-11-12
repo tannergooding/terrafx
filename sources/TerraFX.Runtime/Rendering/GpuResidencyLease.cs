@@ -12,7 +12,13 @@ public sealed class GpuResidencyLease : IDisposable
 {
     private IDisposable? _packageLease;
 
-    internal GpuResidencyLease(AssetId assetId, uint deviceEpoch, IDisposable packageLease)
+    private readonly GpuResidencyResource _resource;
+
+    internal GpuResidencyLease(
+        AssetId assetId,
+        uint deviceEpoch,
+        GpuResidencyResource resource,
+        IDisposable packageLease)
     {
         if (!assetId.IsValid)
         {
@@ -20,10 +26,12 @@ public sealed class GpuResidencyLease : IDisposable
         }
 
         ArgumentOutOfRangeException.ThrowIfZero(deviceEpoch);
+        ArgumentNullException.ThrowIfNull(resource);
         ArgumentNullException.ThrowIfNull(packageLease);
 
         AssetId = assetId;
         DeviceEpoch = deviceEpoch;
+        _resource = resource;
         _packageLease = packageLease;
     }
 
@@ -41,11 +49,24 @@ public sealed class GpuResidencyLease : IDisposable
     public void Dispose()
         => Interlocked.Exchange(ref _packageLease, null)?.Dispose();
 
+    internal GpuResidencyResource TransferResource()
+    {
+        var packageLease = Interlocked.Exchange(ref _packageLease, null);
+        ObjectDisposedException.ThrowIf(packageLease is null, this);
+
+        if (!ReferenceEquals(packageLease, _resource))
+        {
+            packageLease.Dispose();
+            throw new InvalidOperationException("Only a root residency lease can transfer its resource.");
+        }
+
+        return _resource;
+    }
+
     private GpuResidencyResource GetResource()
     {
         var packageLease = Volatile.Read(ref _packageLease);
         ObjectDisposedException.ThrowIf(packageLease is null, this);
-        return packageLease as GpuResidencyResource
-            ?? throw new InvalidOperationException("The residency lease does not own a Runtime texture resource.");
+        return _resource;
     }
 }

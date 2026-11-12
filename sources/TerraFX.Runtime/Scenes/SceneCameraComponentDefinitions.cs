@@ -546,10 +546,12 @@ internal static partial class SceneComponentDefinitions
                 return true;
             }
 
-            if (!float.IsFinite(value.Near) || (value.Near <= 0.0f))
+            if (!float.IsFinite(value.Near)
+                || (((CameraProjectionKind)value.ProjectionKind is CameraProjectionKind.Perspective)
+                    && (value.Near <= 0.0f)))
             {
                 field = "Near";
-                message = "Camera near distance must be finite and positive.";
+                message = "Perspective camera near distance must be positive; an orthographic near plane may be signed.";
                 return true;
             }
 

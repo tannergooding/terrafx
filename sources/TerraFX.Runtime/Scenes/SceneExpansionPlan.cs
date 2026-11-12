@@ -24,7 +24,7 @@ internal sealed class SceneExpansionPlan : IDisposable
     private readonly Guid[] _occurrenceIds;
     private readonly ImmutableArray<SceneExpandedOccurrence> _occurrences;
     private Dictionary<AssetId, AssetLease<ScenePrefabAsset>>? _prefabLeases;
-    private IDisposable? _preparedAssets;
+    private PreparedAssetsLifetime? _preparedAssets;
     private readonly ImmutableArray<SceneExpandedReferenceBinding> _referenceBindings;
     private readonly ImmutableArray<int> _rootEntityIndicesByOccurrence;
     private readonly AssetId _sceneAssetId;
@@ -295,16 +295,24 @@ internal sealed class SceneExpansionPlan : IDisposable
         }
     }
 
+    internal PreparedAssetsLifetime.Lease? AcquirePreparedAssets()
+    {
+        ThrowIfDisposed();
+        return Volatile.Read(ref _preparedAssets)?.Acquire();
+    }
+
     internal void AttachPreparedAssets(IDisposable preparedAssets)
     {
         ArgumentNullException.ThrowIfNull(preparedAssets);
+        PreparedAssetsLifetime? lifetime = null;
         var transferred = false;
 
         try
         {
+            lifetime = new PreparedAssetsLifetime(preparedAssets);
             ThrowIfDisposed();
 
-            if (Interlocked.CompareExchange(ref _preparedAssets, preparedAssets, null) is not null)
+            if (Interlocked.CompareExchange(ref _preparedAssets, lifetime, null) is not null)
             {
                 throw new InvalidOperationException("The Scene expansion plan already owns prepared asset resources.");
             }
@@ -315,7 +323,14 @@ internal sealed class SceneExpansionPlan : IDisposable
         {
             if (!transferred)
             {
-                preparedAssets.Dispose();
+                if (lifetime is null)
+                {
+                    preparedAssets.Dispose();
+                }
+                else
+                {
+                    lifetime.Dispose();
+                }
             }
         }
     }
@@ -429,7 +444,7 @@ internal sealed class SceneExpansionPlan : IDisposable
         where TResource : class
     {
         ThrowIfDisposed();
-        return Volatile.Read(ref _preparedAssets) as TResource;
+        return Volatile.Read(ref _preparedAssets)?.GetValue() as TResource;
     }
 
     internal ReadOnlySpan<int> GetRootEntityIndices(int occurrenceIndex)

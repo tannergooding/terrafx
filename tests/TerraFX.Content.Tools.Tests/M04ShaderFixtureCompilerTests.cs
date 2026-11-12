@@ -260,6 +260,42 @@ internal sealed class M04ShaderFixtureCompilerTests
         throw new InvalidDataException($"DXIL reflection omitted the resource binding for '{resourceName}'.");
     }
 
+    private static byte[] ReplaceFirstSpirvInterpolation(
+        ReadOnlySpan<byte> bytecode,
+        uint currentDecoration,
+        uint replacementDecoration)
+    {
+        var words = MemoryMarshal.Cast<byte, uint>(bytecode).ToArray();
+
+        for (var cursor = 5; cursor < words.Length;)
+        {
+            var instruction = words[cursor];
+            var wordCount = checked((int)(instruction >> 16));
+            var opcode = checked((ushort)(instruction & 0xFFFF));
+
+            if ((wordCount == 0) || (wordCount > words.Length - cursor))
+            {
+                throw new InvalidDataException("The SPIR-V fixture contains a truncated instruction.");
+            }
+
+            var decorationIndex = opcode switch {
+                71 when wordCount == 3 => cursor + 2,
+                72 when wordCount == 4 => cursor + 3,
+                _ => -1,
+            };
+
+            if ((decorationIndex >= 0) && (words[decorationIndex] == currentDecoration))
+            {
+                words[decorationIndex] = replacementDecoration;
+                return MemoryMarshal.AsBytes(words.AsSpan()).ToArray();
+            }
+
+            cursor += wordCount;
+        }
+
+        throw new InvalidDataException("The SPIR-V fixture has no matching interpolation decoration.");
+    }
+
     [Test]
     public async Task CompileAsyncProducesValidatedDxilSpirvAndReflectionWithPinnedSdk()
     {
@@ -626,6 +662,44 @@ internal sealed class M04ShaderFixtureCompilerTests
             Assert.That(typedSpriteVertexReflection.Inputs[1].ValueType, Is.EqualTo(ShaderValueType.Float2));
             Assert.That(typedSpriteVertexReflection.Outputs[0].SemanticName, Is.EqualTo("TEXCOORD"));
             Assert.That(typedSpriteVertexReflection.Outputs[0].Location, Is.EqualTo(0));
+            Assert.That(typedSpritePixelReflection.Inputs, Has.Length.EqualTo(2));
+            Assert.That(
+                typedSpritePixelReflection.Inputs,
+                Does.Contain(new ShaderIoSignature(
+                    "TEXCOORD",
+                    0,
+                    0,
+                    ShaderValueType.Float2,
+                    ShaderInterpolation.NoPerspective)));
+            Assert.That(
+                typedSpritePixelReflection.Inputs,
+                Does.Contain(new ShaderIoSignature(
+                    "COLOR",
+                    0,
+                    1,
+                    ShaderValueType.Float4,
+                    ShaderInterpolation.Flat)));
+            var spritePixelDxilReflection = await File.ReadAllTextAsync(
+                Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sprite.dxil-reflection.txt"))
+                .ConfigureAwait(false);
+            var spritePixelSpirvReflection = await File.ReadAllTextAsync(
+                Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sprite.reflection.json"))
+                .ConfigureAwait(false);
+            var spritePixelSpirv = await File.ReadAllBytesAsync(
+                Path.Combine(outputDirectory, "M04OffscreenTriangle.pixel-sprite.spv"))
+                .ConfigureAwait(false);
+            var mismatchedSpritePixelSpirv = ReplaceFirstSpirvInterpolation(
+                spritePixelSpirv,
+                currentDecoration: 13,
+                replacementDecoration: 14);
+
+            Assert.That(
+                () => M04ShaderReflectionReader.Read(
+                    spritePixelDxilReflection,
+                    spritePixelSpirvReflection,
+                    mismatchedSpritePixelSpirv,
+                    typedSpritePixelReflection.CompilerIdentity),
+                Throws.TypeOf<InvalidDataException>());
             Assert.That(
                 typedVertexReflection.Outputs,
                 Is.EqualTo(ImmutableArray.Create(new ShaderIoSignature(
@@ -867,7 +941,7 @@ internal sealed class M04ShaderFixtureCompilerTests
 
             Assert.That(typedSpritePixelReflection.Stage, Is.EqualTo(ShaderStage.Pixel));
             Assert.That(typedSpritePixelReflection.EntryPoint, Is.EqualTo("PSSpriteMain"));
-            Assert.That(typedSpritePixelReflection.Inputs, Has.Length.EqualTo(1));
+            Assert.That(typedSpritePixelReflection.Inputs, Has.Length.EqualTo(2));
             Assert.That(typedSpritePixelReflection.Inputs[0].SemanticName, Is.EqualTo("TEXCOORD"));
             Assert.That(typedSpritePixelReflection.Inputs[0].Location, Is.EqualTo(0));
             Assert.That(typedSpritePixelReflection.Resources, Does.Contain(

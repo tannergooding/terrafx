@@ -10,6 +10,7 @@ namespace TerraFX.Assets;
 
 internal sealed class AssetPackageBacking
 {
+    private readonly AssetPackageBackingToken _backingToken = new();
     private int _ownerReleased;
     private readonly EbinReadLimits _readLimits;
     private FileStream? _stream;
@@ -31,6 +32,8 @@ internal sealed class AssetPackageBacking
         _readLimits = CreateReadLimits(options.MaximumDecodedAssetBytes);
         SpatialSettings = spatialSettings;
     }
+
+    internal AssetPackageBackingToken BackingToken => _backingToken;
 
     internal ImmutableArray<AssetPackageEntry> Entries { get; }
 
