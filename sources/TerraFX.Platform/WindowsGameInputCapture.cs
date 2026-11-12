@@ -1,46 +1,30 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
-using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
-using GameInputSharp.Abstractions;
-using GameInputSharp.Devices;
 
 namespace TerraFX.Platform;
 
 [SupportedOSPlatform("windows")]
-internal sealed partial class WindowsGameInputCapture : IDisposable
+internal sealed class WindowsGameInputCapture : IDisposable
 {
-    private const ulong DispatchQuotaMicroseconds = 1000;
-    private const int MaximumGamepadDevices = 256;
-    private const int MaximumPendingRemovals = MaximumGamepadDevices;
-    // Keep the process-wide GameInput singleton and its creating MTA alive across host lifetimes.
-    private static GameInputManager? s_processGameInputAnchor;
-    private static readonly Lazy<bool> s_processGameInputLifetime = new(
-        InitializeProcessGameInputLifetime,
-        LazyThreadSafetyMode.ExecutionAndPublication);
-    private static Thread? s_processGameInputThread;
-    private readonly Dictionary<nint, GamepadCapture> _devicesByNativeIdentity = [];
-    private readonly Dictionary<string, GamepadCapture> _gamepadsById = [];
-    private readonly GameInputManager _manager;
-    private readonly long _ownerThreadId;
-    private readonly Queue<PlatformInputSample> _pendingRemovals = new();
-    private ExceptionDispatchInfo? _callbackFailure;
+    private readonly BlockingCollection<Action<WindowsGameInputCaptureWorker>> _commands = [];
+    private readonly TaskCompletionSource<PlatformServiceStatus> _initialization = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _isDisposed;
+    private readonly int _ownerThreadId;
+    private int _pendingSampleCount;
+    private ExceptionDispatchInfo? _workerFailure;
+    private readonly ConcurrentQueue<PlatformInputSample> _pendingSamples = new();
     private readonly PlatformInputSampleQueue _samples;
-    private readonly TimeProvider _timeProvider;
-    private bool _deviceListDirty = true;
-    private bool _isDisposed;
-    private long _nextNativeIdentity = 1;
+    private readonly TaskCompletionSource _workerExited = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly Thread? _workerThread;
 
-    [SuppressMessage(
-        "Usage",
-        "CA1031:Do not catch general exception types",
-        Justification = "A failed GameInput owner initialization must release its manager before the Platform owner unwinds.")]
     internal WindowsGameInputCapture(
         PlatformInputSampleQueue samples,
         TimeProvider timeProvider)
@@ -48,187 +32,229 @@ internal sealed partial class WindowsGameInputCapture : IDisposable
         ArgumentNullException.ThrowIfNull(samples);
         ArgumentNullException.ThrowIfNull(timeProvider);
 
-        if (RuntimeFeature.IsDynamicCodeSupported)
-        {
-            _ = s_processGameInputLifetime.Value;
-        }
-
-        _samples = samples;
-        _timeProvider = timeProvider;
         _ownerThreadId = Environment.CurrentManagedThreadId;
-        _manager = new GameInputManager(logger: null, loadOnlyFromSystem32: true);
+        _samples = samples;
 
         if (!RuntimeFeature.IsDynamicCodeSupported)
         {
             GamepadStatus = PlatformServiceStatus.Unavailable;
+            _commands.CompleteAdding();
             return;
         }
 
+        var workerThread = new Thread(() => RunWorker(timeProvider)) {
+            IsBackground = true,
+            Name = "TerraFX GameInput host",
+        };
+        _workerThread = workerThread;
+
         try
         {
-            var (initSucceeded, _) = _manager.GetDiagnostics();
-            GamepadStatus = initSucceeded
-                ? PlatformServiceStatus.Available
-                : PlatformServiceStatus.Unavailable;
-            _manager.DeviceCallback += OnDeviceChanged;
-            _manager.ReadingCallback += OnReading;
+            workerThread.SetApartmentState(ApartmentState.MTA);
+            workerThread.Start();
+            GamepadStatus = _initialization.Task.GetAwaiter().GetResult();
         }
-        catch (Exception initializationException)
+        catch
         {
-            try
+            _commands.CompleteAdding();
+
+            if (workerThread.IsAlive)
             {
-                _manager.Dispose();
-            }
-            catch (Exception cleanupException)
-            {
-                throw new AggregateException(initializationException, cleanupException);
+                workerThread.Join();
             }
 
+            _commands.Dispose();
             throw;
         }
     }
 
-    internal PlatformServiceStatus GamepadStatus { get; private set; }
+    internal PlatformServiceStatus GamepadStatus { get; }
 
     [SuppressMessage(
         "Usage",
         "CA1031:Do not catch general exception types",
-        Justification = "Transfer process-lifetime GameInput initialization failures to the platform owner instead of terminating the process.")]
-    private static bool InitializeProcessGameInputLifetime()
+        Justification = "Each MTA command must transfer its exact failure to the waiting Platform owner without terminating the dispatcher.")]
+    private static void ExecuteCommand(
+        WindowsGameInputCaptureWorker worker,
+        Action<WindowsGameInputCaptureWorker> action,
+        TaskCompletionSource completion)
     {
-        var initialized = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread = new Thread(() => {
-            try
-            {
-                var manager = new GameInputManager(logger: null, loadOnlyFromSystem32: true);
-                _ = manager.GetCurrentTimestamp();
-                s_processGameInputAnchor = manager;
-                initialized.SetResult();
-            }
-            catch (Exception exception)
-            {
-                initialized.SetException(exception);
-                return;
-            }
-
-            Thread.Sleep(Timeout.Infinite);
-        }) {
-            IsBackground = true,
-            Name = "TerraFX GameInput",
-        };
-        thread.SetApartmentState(ApartmentState.MTA);
-        s_processGameInputThread = thread;
-        thread.Start();
-        initialized.Task.GetAwaiter().GetResult();
-
-        if ((s_processGameInputAnchor is null) || (s_processGameInputThread is not { IsAlive: true }))
+        try
         {
-            throw new InvalidOperationException("The process-lifetime GameInput owner did not retain its native manager thread.");
+            action(worker);
+            _ = completion.TrySetResult();
         }
-
-        return true;
+        catch (Exception exception)
+        {
+            _ = completion.TrySetException(exception);
+        }
     }
 
+    [SuppressMessage(
+        "Reliability",
+        "CA1065:Do not raise exceptions in unexpected locations",
+        Justification = "Disposal synchronously joins the MTA GameInput owner and reports failures instead of leaking native ownership.")]
     public void Dispose()
     {
         EnsureOwnerThread();
 
-        if (_isDisposed)
+        if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
         {
             return;
         }
 
-        _isDisposed = true;
-        _manager.DeviceCallback -= OnDeviceChanged;
-        _manager.ReadingCallback -= OnReading;
-
-        try
+        if (_workerThread is { } workerThread)
         {
-            _manager.Dispose();
+            _commands.CompleteAdding();
+            workerThread.Join();
         }
-        finally
-        {
-            foreach (var capture in _gamepadsById.Values)
-            {
-                capture.Device.Dispose();
-            }
 
-            _devicesByNativeIdentity.Clear();
-            _gamepadsById.Clear();
-            _pendingRemovals.Clear();
-        }
+        _commands.Dispose();
+        Volatile.Read(ref _workerFailure)?.Throw();
     }
 
     internal void Pump()
     {
-        EnsureOwnerThread();
-        ThrowIfDisposed();
-
-        if (GamepadStatus is not PlatformServiceStatus.Available)
-        {
-            return;
-        }
-
-        RetryPendingRemovals();
-        _manager.DispatchCallbacks(DispatchQuotaMicroseconds);
-        ThrowCallbackFailure();
-
-        if (_deviceListDirty)
-        {
-            SynchronizeGamepads();
-        }
-
-        foreach (var capture in _gamepadsById.Values)
-        {
-            if (capture.NeedsAnnouncement || capture.NeedsReconciliation)
-            {
-                ReconcileCurrentState(capture, GetNativeTimestamp());
-            }
-        }
+        InvokeWorker(static worker => worker.Pump());
+        DrainPendingSamples();
     }
 
     internal void RequestDeviceReconciliation(nint nativeIdentity)
     {
-        EnsureOwnerThread();
-        ThrowIfDisposed();
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero((long)nativeIdentity);
-
-        if (GamepadStatus is PlatformServiceStatus.Available
-            && _devicesByNativeIdentity.TryGetValue(nativeIdentity, out var capture))
-        {
-            capture.NeedsReconciliation = true;
-            ReconcileCurrentState(capture, GetNativeTimestamp());
-        }
+        InvokeWorker(worker => worker.RequestDeviceReconciliation(nativeIdentity));
+        DrainPendingSamples();
     }
 
     internal void RequestReconciliation()
     {
+        InvokeWorker(static worker => worker.RequestReconciliation());
+        DrainPendingSamples();
+    }
+
+    private void DrainPendingSamples()
+    {
+        EnsureOwnerThread();
+
+        while (_pendingSamples.TryPeek(out var sample))
+        {
+            if (!_samples.HasCapacity || !_samples.TryEnqueue(in sample))
+            {
+                return;
+            }
+
+            if (!_pendingSamples.TryDequeue(out _))
+            {
+                throw new InvalidOperationException("The GameInput sample queue changed before owner-thread retirement.");
+            }
+
+            _ = Interlocked.Decrement(ref _pendingSampleCount);
+        }
+    }
+
+    private void EnsureActiveOwnerThread()
+    {
         EnsureOwnerThread();
         ThrowIfDisposed();
+    }
+
+    private void EnsureOwnerThread()
+    {
+        if (_ownerThreadId != Environment.CurrentManagedThreadId)
+        {
+            throw new InvalidOperationException("Windows GameInput capture admission is restricted to the Platform owner thread.");
+        }
+    }
+
+    private void InvokeWorker(Action<WindowsGameInputCaptureWorker> action)
+    {
+        EnsureActiveOwnerThread();
+        ArgumentNullException.ThrowIfNull(action);
 
         if (GamepadStatus is not PlatformServiceStatus.Available)
         {
             return;
         }
 
-        Pump();
+        var workerThread = _workerThread
+            ?? throw new InvalidOperationException("The GameInput MTA worker was not initialized.");
 
-        foreach (var capture in _gamepadsById.Values)
+        if (!workerThread.IsAlive)
         {
-            capture.NeedsReconciliation = true;
-            ReconcileCurrentState(capture, GetNativeTimestamp());
+            Volatile.Read(ref _workerFailure)?.Throw();
+            throw new InvalidOperationException("The GameInput MTA worker exited unexpectedly.");
+        }
+
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _commands.Add(worker => ExecuteCommand(worker, action, completion));
+        var completedTask = Task.WhenAny(completion.Task, _workerExited.Task).GetAwaiter().GetResult();
+
+        if (!ReferenceEquals(completedTask, completion.Task))
+        {
+            Volatile.Read(ref _workerFailure)?.Throw();
+            throw new InvalidOperationException("The GameInput MTA worker exited before completing an owner request.");
+        }
+
+        completion.Task.GetAwaiter().GetResult();
+    }
+
+    [SuppressMessage(
+        "Usage",
+        "CA1031:Do not catch general exception types",
+        Justification = "MTA initialization and disposal failures must be retained and transferred to the Platform owner.")]
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "The MTA worker exclusively owns the capture object and disposes it on the same thread before exit.")]
+    private void RunWorker(TimeProvider timeProvider)
+    {
+        WindowsGameInputCaptureWorker? worker = null;
+
+        try
+        {
+            worker = new WindowsGameInputCaptureWorker(TryEnqueueSample, timeProvider);
+            _ = _initialization.TrySetResult(worker.GamepadStatus);
+
+            foreach (var command in _commands.GetConsumingEnumerable())
+            {
+                command(worker);
+            }
+        }
+        catch (Exception exception)
+        {
+            Volatile.Write(ref _workerFailure, ExceptionDispatchInfo.Capture(exception));
+            _ = _initialization.TrySetException(exception);
+        }
+        finally
+        {
+            if (worker is not null)
+            {
+                try
+                {
+                    worker.Dispose();
+                }
+                catch (Exception exception)
+                {
+                    Volatile.Write(ref _workerFailure, ExceptionDispatchInfo.Capture(exception));
+                }
+            }
+
+            _ = _workerExited.TrySetResult();
         }
     }
 
-    private sealed class GamepadCapture(GamepadDevice device, nint nativeIdentity, ulong readingCallbackToken)
+    private void ThrowIfDisposed()
+        => ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
+
+    private bool TryEnqueueSample(PlatformInputSample sample)
     {
-        internal readonly GamepadDevice Device = device;
-        internal readonly string DeviceId = device.DeviceId;
-        internal PlatformGamepadState LastState;
-        internal readonly nint NativeIdentity = nativeIdentity;
-        internal bool NeedsAnnouncement = true;
-        internal bool NeedsReconciliation = true;
-        internal uint ReportedUnmappedButtonMask;
-        internal readonly ulong ReadingCallbackToken = readingCallbackToken;
+        if (Interlocked.Increment(ref _pendingSampleCount) > PlatformInputSampleQueue.DefaultCapacity)
+        {
+            _ = Interlocked.Decrement(ref _pendingSampleCount);
+            return false;
+        }
+
+        _pendingSamples.Enqueue(sample);
+        return true;
     }
 }

@@ -1062,45 +1062,49 @@ internal sealed unsafe partial class WindowsPlatformBackend
             throw new InvalidOperationException("Windows returned an incomplete raw-input packet.");
         }
 
-        if (rawInput.Header.Device == 0)
-        {
-            throw new InvalidOperationException("Windows delivered raw input without a device identity.");
-        }
-
         var deviceKind = rawInput.Header.Type switch {
             RawInputTypeKeyboard => PlatformInputDeviceKind.Keyboard,
             RawInputTypeMouse => PlatformInputDeviceKind.Pointer,
             _ => throw new InvalidOperationException("Windows delivered a raw-input device class that was not registered."),
         };
+        var nativeDevice = rawInput.Header.Device;
 
-        if (_knownInputDevices.TryGetValue(rawInput.Header.Device, out var knownKind))
+        if ((nativeDevice == 0) && (deviceKind != PlatformInputDeviceKind.Pointer))
         {
-            if ((knownKind != PlatformInputDeviceKind.Unknown) && (knownKind != deviceKind))
-            {
-                throw new InvalidOperationException("Windows changed the class of a live raw-input device identity.");
-            }
-
-            _knownInputDevices[rawInput.Header.Device] = deviceKind;
+            throw new InvalidOperationException("Windows delivered keyboard input without a device identity.");
         }
-        else
+
+        if (nativeDevice != 0)
         {
-            _knownInputDevices.Add(rawInput.Header.Device, deviceKind);
-            CaptureNativeInputSample(new PlatformInputSample(
-                PhysicalInputEventKind.DeviceAdded,
-                null,
-                rawInput.Header.Device,
-                deviceKind,
-                NativeTimestamp: nativeTimestamp,
-                NativeClockDomain: WindowsMessageTimeClockDomain,
-                Diagnostics: diagnostics,
-                MonotonicTimestamp: monotonicTimestamp));
+            if (_knownInputDevices.TryGetValue(nativeDevice, out var knownKind))
+            {
+                if ((knownKind != PlatformInputDeviceKind.Unknown) && (knownKind != deviceKind))
+                {
+                    throw new InvalidOperationException("Windows changed the class of a live raw-input device identity.");
+                }
+
+                _knownInputDevices[nativeDevice] = deviceKind;
+            }
+            else
+            {
+                _knownInputDevices.Add(nativeDevice, deviceKind);
+                CaptureNativeInputSample(new PlatformInputSample(
+                    PhysicalInputEventKind.DeviceAdded,
+                    null,
+                    nativeDevice,
+                    deviceKind,
+                    NativeTimestamp: nativeTimestamp,
+                    NativeClockDomain: WindowsMessageTimeClockDomain,
+                    Diagnostics: diagnostics,
+                    MonotonicTimestamp: monotonicTimestamp));
+            }
         }
 
         if (deviceKind == PlatformInputDeviceKind.Keyboard)
         {
             CaptureRawKeyboard(
                 state,
-                rawInput.Header.Device,
+                nativeDevice,
                 rawInput.Data.Keyboard,
                 monotonicTimestamp,
                 nativeTimestamp,
@@ -1110,7 +1114,7 @@ internal sealed unsafe partial class WindowsPlatformBackend
         {
             CaptureRawMouse(
                 state,
-                rawInput.Header.Device,
+                nativeDevice,
                 rawInput.Data.Mouse,
                 monotonicTimestamp,
                 nativeTimestamp,

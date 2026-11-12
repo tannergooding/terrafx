@@ -17,6 +17,28 @@ namespace TerraFX.Runtime.Tests.Hosting;
 internal sealed class PlatformInputBrokerTests
 {
     [Test]
+    public void CapturesPrecisionTouchpadPointerInputWithoutDeviceIdentity()
+    {
+        var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());
+        var window = new WindowHandle(17, 0, 1);
+        var sample = new PlatformInputSample(
+            PhysicalInputEventKind.PointerRelativeMotion,
+            window,
+            NativeDeviceIdentity: 0,
+            PlatformInputDeviceKind.Pointer,
+            PointerDelta: Vector2.Zero,
+            MonotonicTimestamp: 1);
+
+        var captured = broker.Capture(new PlatformInputSampleBatch([sample], DiscardedSampleCount: 0), static _ => true);
+
+        Assert.That(captured.Events, Has.Length.EqualTo(1));
+        Assert.That(captured.Events[0].Kind, Is.EqualTo(PhysicalInputEventKind.PointerRelativeMotion));
+        Assert.That(captured.Events[0].Device, Is.Null);
+        Assert.That(captured.Events[0].Window, Is.EqualTo(window));
+        broker.Retire();
+    }
+
+    [Test]
     public void CapturesWindowPointerBoundaryEventsWithoutDeviceIdentity()
     {
         var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());
@@ -560,6 +582,26 @@ internal sealed class PlatformInputBrokerTests
         Assert.That(validCapture.Events[0].Kind, Is.EqualTo(PhysicalInputEventKind.DeviceAdded));
         Assert.That(validCapture.Events[1].Kind, Is.EqualTo(PhysicalInputEventKind.GamepadAxis));
         Assert.That(validCapture.Events[0].Device, Is.EqualTo(validCapture.Events[1].Device));
+        broker.Retire();
+    }
+
+    [Test]
+    public void RejectsKeyboardSamplesWithoutDeviceIdentity()
+    {
+        var broker = new PlatformInputBroker(17, new IncrementingTimeProvider());
+        var window = new WindowHandle(17, 0, 1);
+        var sample = new PlatformInputSample(
+            PhysicalInputEventKind.KeyDown,
+            window,
+            NativeDeviceIdentity: 0,
+            PlatformInputDeviceKind.Keyboard,
+            NativeUsagePage: 0x0007,
+            NativeUsage: 0x0004,
+            IsDown: true,
+            MonotonicTimestamp: 1);
+
+        _ = Assert.Throws<InvalidOperationException>(
+            () => broker.Capture(new PlatformInputSampleBatch([sample], DiscardedSampleCount: 0), static _ => true));
         broker.Retire();
     }
 

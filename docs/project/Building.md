@@ -77,6 +77,13 @@ In the configured WSLg shell below, run the same selection with Linux outputs is
 "$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Input.Tests/TerraFX.Input.Tests.csproj" --configuration Release --filter "FullyQualifiedName~InputRecordingTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
 ```
 
+The Linux evdev stick-state normalizer can be qualified in the same WSLg environment:
+
+```bash
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Debug --filter "FullyQualifiedName~LinuxEvdevGamepadAxisStateTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+"$DOTNET_ROOT/dotnet" test "$WORKTREE/tests/TerraFX.Platform.Tests/TerraFX.Platform.Tests.csproj" --configuration Release --filter "FullyQualifiedName~LinuxEvdevGamepadAxisStateTests" "-p:BaseArtifactsPath=$WORKTREE/artifacts/linux/"
+```
+
 ### Graphics capability contracts
 
 Run the owning-project tests for immutable device/surface capabilities, profile admission, buffer/texture/sampler descriptions, and invalid boundary rejection:
@@ -245,12 +252,35 @@ dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --confi
 dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Release --filter "FullyQualifiedName~WindowsRawInputCaptureTests"
 ```
 
+Windows may report `RAWINPUTHEADER.hDevice == 0` for Precision Touchpad pointer packets. Those remain window-scoped pointer events without a fabricated `Device` handle; keyboard input still requires a device identity. The Runtime broker regressions cover this source-less pointer case and the keyboard identity boundary:
+
+```powershell
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.PlatformInputBrokerTests.CapturesPrecisionTouchpadPointerInputWithoutDeviceIdentity|FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.PlatformInputBrokerTests.RejectsKeyboardSamplesWithoutDeviceIdentity"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Release --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.PlatformInputBrokerTests.CapturesPrecisionTouchpadPointerInputWithoutDeviceIdentity|FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.PlatformInputBrokerTests.RejectsKeyboardSamplesWithoutDeviceIdentity"
+```
+
 The opt-in Windows physical-keyboard witness opens a visible Interactive D3D12 window and records a real A key-down/up through its HostLiveUI recipient. Focus the window and press/release A when prompted. This records physical routing only; it does not qualify UI-owned capture, IME composition, gamepad input, or device hotplug:
 
 ```powershell
 $env:TERRAFX_RUN_M04_PHYSICAL_INPUT = '1'
 dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.EngineHostOptionsTests.ManualWindowsInteractivePhysicalKeyboardInputUsesHostLiveUiRoute"
 Remove-Item Env:\TERRAFX_RUN_M04_PHYSICAL_INPUT
+```
+
+The opt-in GameInput witness creates a visible Platform-owned window, recognizes a gamepad already connected at startup or a newly connected one, records a button down/up, then verifies removal and a new identity generation after reconnect. Focus the window and use a face button (A/B/X/Y); the Xbox Guide/center button opens Game Bar and is not part of this witness. After the disconnect prompt, leave the gamepad disconnected until the title changes to the reconnect prompt. It requires the documented GameInput PC runtime:
+
+```powershell
+$env:TERRAFX_RUN_M04_GAMEPAD = '1'
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName=TerraFX.Runtime.Tests.Hosting.EngineHostOptionsTests.ManualWindowsInteractivePhysicalGamepadLifecycleUsesGameInput"
+Remove-Item Env:\TERRAFX_RUN_M04_GAMEPAD
+```
+
+The opt-in MTA inventory probe reports whether GameInput initializes and the device classes it enumerates, without logging device identifiers:
+
+```powershell
+$env:TERRAFX_RUN_M04_GAMEPAD = '1'
+dotnet test .\tests\TerraFX.Platform.Tests\TerraFX.Platform.Tests.csproj --configuration Debug --filter "FullyQualifiedName=TerraFX.Platform.Tests.WindowsGameInputCaptureTests.ManualReportsMtaGameInputDeviceInventory"
+Remove-Item Env:\TERRAFX_RUN_M04_GAMEPAD
 ```
 
 The opt-in physical text witness creates a HostLiveUI `TextInputSession`, feeds committed text back as an updated UI snapshot, and requires a configured TSF IME to produce composition-start, preedit-update, commit, and composition-end records. Focus its visible window, compose a short word with the active IME, and commit it. The witness also records the physical H key to confirm the focused Raw Input route:

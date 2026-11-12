@@ -40,6 +40,58 @@ internal sealed class WindowsGamepadStateMapperTests
     }
 
     [Test]
+    public void NormalizesDiagonalSticksToUnitDiskWithoutChangingAxes()
+    {
+        var state = new PlatformGamepadState(
+            Buttons: 0,
+            LeftTrigger: 0.0f,
+            RightTrigger: 0.0f,
+            LeftThumbstickX: 1.0f,
+            LeftThumbstickY: 1.0f,
+            RightThumbstickX: -1.0f,
+            RightThumbstickY: -1.0f);
+        var values = WindowsGamepadStateMapper.CreateState(state);
+        var leftStick = values[16].StickValue
+            ?? throw new InvalidOperationException("The left-stick reconciliation has no value.");
+        var rightStick = values[17].StickValue
+            ?? throw new InvalidOperationException("The right-stick reconciliation has no value.");
+        var expectedAxis = MathF.Sqrt(0.5f);
+
+        Assert.Multiple(() => {
+            Assert.That(values[12].AxisValue, Is.EqualTo(1.0f));
+            Assert.That(values[13].AxisValue, Is.EqualTo(1.0f));
+            Assert.That(values[14].AxisValue, Is.EqualTo(-1.0f));
+            Assert.That(values[15].AxisValue, Is.EqualTo(-1.0f));
+            Assert.That(TerraFX.Numerics.Vector2.LengthSquared(leftStick), Is.LessThanOrEqualTo(1.0f));
+            Assert.That(leftStick.X, Is.EqualTo(expectedAxis).Within(1.0e-6f));
+            Assert.That(leftStick.Y, Is.EqualTo(expectedAxis).Within(1.0e-6f));
+            Assert.That(TerraFX.Numerics.Vector2.LengthSquared(rightStick), Is.LessThanOrEqualTo(1.0f));
+            Assert.That(rightStick.X, Is.EqualTo(-expectedAxis).Within(1.0e-6f));
+            Assert.That(rightStick.Y, Is.EqualTo(-expectedAxis).Within(1.0e-6f));
+        });
+    }
+
+    [Test]
+    public void NormalizesRoundedStickStrictlyInsideUnitDisk()
+    {
+        var state = new PlatformGamepadState(
+            Buttons: 0,
+            LeftTrigger: 0.0f,
+            RightTrigger: 0.0f,
+            LeftThumbstickX: 0.9493557214736938f,
+            LeftThumbstickY: -0.7048256993293762f,
+            RightThumbstickX: 0.0f,
+            RightThumbstickY: 0.0f);
+        var values = WindowsGamepadStateMapper.CreateState(state);
+        var leftStick = values[16].StickValue
+            ?? throw new InvalidOperationException("The left-stick reconciliation has no value.");
+
+        Assert.That(
+            TerraFX.Numerics.Vector2.LengthSquared(leftStick),
+            Is.LessThanOrEqualTo(1.0f));
+    }
+
+    [Test]
     public void RejectsNonNormalizedGamepadValues()
     {
         _ = Assert.Throws<InvalidDataException>(

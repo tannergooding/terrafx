@@ -12,7 +12,7 @@ using TerraFX.Input;
 
 namespace TerraFX.Platform;
 
-internal sealed partial class WindowsGameInputCapture
+internal sealed partial class WindowsGameInputCaptureWorker
 {
     private void AddGamepad(GamepadDevice gamepad)
     {
@@ -174,7 +174,7 @@ internal sealed partial class WindowsGameInputCapture
                 nativeTimestamp,
                 monotonicTimestamp);
 
-            if (!_samples.TryEnqueue(in sample))
+            if (!_enqueueSample(sample))
             {
                 capture.NeedsReconciliation = true;
                 return;
@@ -199,7 +199,7 @@ internal sealed partial class WindowsGameInputCapture
                 nativeTimestamp,
                 monotonicTimestamp);
 
-            if (!_samples.TryEnqueue(in deviceAdded))
+            if (!_enqueueSample(deviceAdded))
             {
                 capture.NeedsReconciliation = true;
                 return;
@@ -219,7 +219,7 @@ internal sealed partial class WindowsGameInputCapture
             ReconciliationState: WindowsGamepadStateMapper.CreateState(state),
             UnmappedGamepadButtonMask: unmappedButtonMask);
 
-        if (!_samples.TryEnqueue(in reconciliation))
+        if (!_enqueueSample(reconciliation))
         {
             capture.NeedsReconciliation = true;
             return;
@@ -266,6 +266,10 @@ internal sealed partial class WindowsGameInputCapture
         {
             EmitReconciliation(capture, current, nativeTimestamp, monotonicTimestamp, unmappedButtonMask);
         }
+        else
+        {
+            EmitChanges(capture, current, nativeTimestamp, monotonicTimestamp);
+        }
 
         capture.LastState = current;
     }
@@ -286,7 +290,7 @@ internal sealed partial class WindowsGameInputCapture
             nativeTimestamp,
             monotonicTimestamp);
 
-        if (!_samples.TryEnqueue(in deviceRemoved))
+        if (!_enqueueSample(deviceRemoved))
         {
             if (_pendingRemovals.Count >= MaximumPendingRemovals)
             {
@@ -301,7 +305,7 @@ internal sealed partial class WindowsGameInputCapture
     {
         while (_pendingRemovals.TryPeek(out var sample))
         {
-            if (!_samples.TryEnqueue(in sample))
+            if (!_enqueueSample(sample))
             {
                 return;
             }
@@ -312,8 +316,9 @@ internal sealed partial class WindowsGameInputCapture
 
     private void SynchronizeGamepads()
     {
-        _deviceListDirty = false;
         var devices = _manager.GetDevices();
+        _deviceListDirty = false;
+        _lastDeviceEnumerationTimestamp = _timeProvider.GetTimestamp();
         var discoveredIds = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var inputDevice in devices)

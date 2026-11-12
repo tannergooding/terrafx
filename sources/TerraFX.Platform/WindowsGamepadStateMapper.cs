@@ -87,11 +87,11 @@ internal static class WindowsGamepadStateMapper
         values.Add(new PlatformInputStateValue(
             PlatformInputStateValueKind.GamepadStick,
             Stick: GamepadStick.Left,
-            StickValue: new Vector2(state.LeftThumbstickX, state.LeftThumbstickY)));
+            StickValue: GamepadStickNormalizer.Normalize(state.LeftThumbstickX, state.LeftThumbstickY)));
         values.Add(new PlatformInputStateValue(
             PlatformInputStateValueKind.GamepadStick,
             Stick: GamepadStick.Right,
-            StickValue: new Vector2(state.RightThumbstickX, state.RightThumbstickY)));
+            StickValue: GamepadStickNormalizer.Normalize(state.RightThumbstickX, state.RightThumbstickY)));
         values.Add(new PlatformInputStateValue(
             PlatformInputStateValueKind.GamepadTrigger,
             Trigger: GamepadTrigger.Left,

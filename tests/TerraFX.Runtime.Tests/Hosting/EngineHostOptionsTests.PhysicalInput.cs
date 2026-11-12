@@ -6,6 +6,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
@@ -22,6 +23,224 @@ namespace TerraFX.Runtime.Tests.Hosting;
 
 internal sealed partial class EngineHostOptionsTests
 {
+    [Test]
+    [Apartment(ApartmentState.STA)]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "The PlatformHostOwner is disposed on its creating STA thread in the enclosing finally block.")]
+    public void ManualWindowsInteractivePhysicalGamepadLifecycleUsesGameInput()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)
+            || (RuntimeInformation.ProcessArchitecture != Architecture.X64))
+        {
+            Assert.Ignore("The physical GameInput witness requires Windows 11 x64.");
+            return;
+        }
+
+        if (!StringComparer.Ordinal.Equals(
+            Environment.GetEnvironmentVariable("TERRAFX_RUN_M04_GAMEPAD"),
+            "1"))
+        {
+            Assert.Ignore("Set TERRAFX_RUN_M04_GAMEPAD=1 to run the interactive physical GameInput witness.");
+            return;
+        }
+
+        var options = new EngineHostOptions(
+            HostProfile.Interactive,
+            PlatformBackend.WindowsNative,
+            GraphicsBackend.D3D12,
+            D3D12GraphicsBackend.CreateRegistration(),
+            CreateAssetStoreOptions()) {
+            PersistenceMetadata = CreatePersistenceMetadata(),
+        };
+        PlatformHostOwner? platformOwner = null;
+
+        try
+        {
+            platformOwner = PlatformHostOwner.Create(options);
+
+            if (platformOwner.Platform.GamepadStatus != PlatformServiceStatus.Available)
+            {
+                Assert.Ignore("The documented GameInput PC runtime is unavailable; physical gamepad capture is disabled.");
+                return;
+            }
+
+            TestContext.Progress.WriteLine($"GameInput status: {platformOwner.Platform.GamepadStatus}");
+            var window = platformOwner.CreateWindow(new WindowOptions("TerraFX M04 GameInput witness - initializing") {
+                ClientSize = new Vector2(640.0f, 360.0f),
+                Visible = true,
+            });
+
+            if (!WindowsTestNativeMethods.SetForegroundWindow(
+                platformOwner.GetNativeWindowBinding(window).NativeWindowOrSurface))
+            {
+                TestContext.Progress.WriteLine("The witness window could not be activated; use Alt+Tab to focus it.");
+            }
+
+            var knownDevices = new System.Collections.Generic.HashSet<InputDeviceHandle>();
+            var gamepad = default(InputDeviceHandle);
+            var sawInitialReconciliation = false;
+            var sawButtonDown = false;
+            var sawButtonUp = false;
+            GamepadButtonValue? pressedButton = null;
+            var baseline = Stopwatch.StartNew();
+
+            while (baseline.Elapsed < TimeSpan.FromSeconds(2))
+            {
+                foreach (var inputEvent in platformOwner.Pump().Events)
+                {
+                    if ((inputEvent.Kind == PhysicalInputEventKind.DeviceAdded)
+                        && (inputEvent.Device is { IsValid: true } device))
+                    {
+                        _ = knownDevices.Add(device);
+                    }
+
+                    if ((inputEvent.Kind == PhysicalInputEventKind.StateReconciliation)
+                        && (inputEvent.Device is { IsValid: true } reconciledDevice))
+                    {
+                        gamepad = reconciledDevice;
+                        sawInitialReconciliation = true;
+                        TestContext.Progress.WriteLine($"Gamepad state reconciled: {gamepad.OwnerId}/{gamepad.Index}@{gamepad.Generation}, controls={inputEvent.ReconciliationState.Length}");
+                    }
+                }
+
+                Thread.Sleep(10);
+            }
+
+            var connectPrompt = gamepad.IsValid
+                ? "Focus this window, then press and release A/B/X/Y (not Guide)"
+                : "Connect a physical gamepad, focus this window, then press and release A/B/X/Y (not Guide)";
+            _ = platformOwner.SetTitle(window, connectPrompt);
+            TestContext.Progress.WriteLine(connectPrompt);
+            var connectTimeout = Stopwatch.StartNew();
+
+            while ((!gamepad.IsValid || !sawButtonUp)
+                && (connectTimeout.Elapsed < TimeSpan.FromSeconds(60)))
+            {
+                foreach (var inputEvent in platformOwner.Pump().Events)
+                {
+                    if ((inputEvent.Kind == PhysicalInputEventKind.DeviceAdded)
+                        && (inputEvent.Device is { IsValid: true } addedDevice)
+                        && !knownDevices.Contains(addedDevice))
+                    {
+                        TestContext.WriteLine($"New device announcement: {addedDevice.OwnerId}/{addedDevice.Index}@{addedDevice.Generation}");
+                    }
+
+                    if ((inputEvent.Kind == PhysicalInputEventKind.StateReconciliation)
+                        && (inputEvent.Device is { IsValid: true } reconciledDevice)
+                        && !knownDevices.Contains(reconciledDevice))
+                    {
+                        gamepad = reconciledDevice;
+                        sawInitialReconciliation = true;
+                        TestContext.WriteLine($"Gamepad state reconciled: {gamepad.OwnerId}/{gamepad.Index}@{gamepad.Generation}, controls={inputEvent.ReconciliationState.Length}");
+                    }
+                    else if ((inputEvent.Kind is PhysicalInputEventKind.GamepadButtonDown or PhysicalInputEventKind.GamepadButtonUp)
+                        && (inputEvent.Device is { IsValid: true } buttonDevice)
+                        && !knownDevices.Contains(buttonDevice))
+                    {
+                        gamepad = buttonDevice;
+                        TestContext.Progress.WriteLine($"Gamepad button event: {inputEvent.Kind}, device={gamepad.OwnerId}/{gamepad.Index}@{gamepad.Generation}, button={inputEvent.Value?.GamepadButton}");
+                    }
+
+                    if (!gamepad.IsValid || (inputEvent.Device != gamepad))
+                    {
+                        continue;
+                    }
+
+                    if ((inputEvent.Kind == PhysicalInputEventKind.GamepadButtonDown)
+                        && (inputEvent.Value?.GamepadButton is { } buttonDown))
+                    {
+                        pressedButton = buttonDown;
+                        sawButtonDown = true;
+                    }
+                    else if ((inputEvent.Kind == PhysicalInputEventKind.GamepadButtonUp)
+                        && (inputEvent.Value?.GamepadButton is { } buttonUp)
+                        && (pressedButton == buttonUp))
+                    {
+                        sawButtonUp = true;
+                    }
+                }
+
+                if (!sawButtonUp)
+                {
+                    Thread.Sleep(10);
+                }
+            }
+
+            Assert.Multiple(() => {
+                Assert.That(gamepad.IsValid, Is.True, "No new physical GameInput gamepad was observed.");
+                Assert.That(sawInitialReconciliation, Is.True, "The new device's initial state was not reconciled.");
+                Assert.That(sawButtonDown, Is.True, "No physical GameInput button-down was observed.");
+                Assert.That(sawButtonUp, Is.True, "The matching GameInput button-up was not observed.");
+            });
+
+            _ = platformOwner.SetTitle(window, "Disconnect the gamepad and leave it disconnected");
+            TestContext.Progress.WriteLine($"Captured {gamepad}; disconnect the gamepad and leave it disconnected until removal is observed.");
+            var removalTimeout = Stopwatch.StartNew();
+            var sawRemoval = false;
+
+            while (!sawRemoval
+                && (removalTimeout.Elapsed < TimeSpan.FromSeconds(90)))
+            {
+                foreach (var inputEvent in platformOwner.Pump().Events)
+                {
+                    if ((inputEvent.Kind == PhysicalInputEventKind.DeviceRemoved)
+                        && (inputEvent.Device == gamepad))
+                    {
+                        sawRemoval = true;
+                        _ = platformOwner.SetTitle(window, "Removal observed; reconnect the same gamepad now");
+                        TestContext.Progress.WriteLine("Gamepad removal observed; reconnect the same gamepad now.");
+                    }
+                }
+
+                if (!sawRemoval)
+                {
+                    Thread.Sleep(10);
+                }
+            }
+
+            Assert.That(sawRemoval, Is.True, "No device removal was observed for the connected gamepad.");
+            var reconnectedGamepad = default(InputDeviceHandle);
+            var reconnectTimeout = Stopwatch.StartNew();
+
+            while (!reconnectedGamepad.IsValid
+                && (reconnectTimeout.Elapsed < TimeSpan.FromSeconds(90)))
+            {
+                foreach (var inputEvent in platformOwner.Pump().Events)
+                {
+                    if ((inputEvent.Kind == PhysicalInputEventKind.StateReconciliation)
+                        && (inputEvent.Device is { IsValid: true } reconnectedDevice)
+                        && (reconnectedDevice != gamepad))
+                    {
+                        reconnectedGamepad = reconnectedDevice;
+                        TestContext.Progress.WriteLine($"Reconnected gamepad state observed: {reconnectedGamepad.OwnerId}/{reconnectedGamepad.Index}@{reconnectedGamepad.Generation}");
+                    }
+                }
+
+                if (!reconnectedGamepad.IsValid)
+                {
+                    Thread.Sleep(10);
+                }
+            }
+
+            Assert.Multiple(() => {
+                Assert.That(reconnectedGamepad.IsValid, Is.True, "No reconnected gamepad generation was observed.");
+                Assert.That(reconnectedGamepad, Is.Not.EqualTo(gamepad));
+                Assert.That(reconnectedGamepad.OwnerId, Is.EqualTo(gamepad.OwnerId));
+
+                if (reconnectedGamepad.Index == gamepad.Index)
+                {
+                    Assert.That(reconnectedGamepad.Generation, Is.GreaterThan(gamepad.Generation));
+                }
+            });
+        }
+        finally
+        {
+            platformOwner?.DisposeFromOwner();
+        }
+    }
+
     [Test]
     public async Task ManualWindowsInteractivePhysicalKeyboardInputUsesHostLiveUiRoute()
     {

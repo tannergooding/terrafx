@@ -244,6 +244,19 @@ internal sealed class PlatformInputBroker
             or PhysicalInputEventKind.GamepadStick
             or PhysicalInputEventKind.GamepadTrigger;
 
+    private static bool IsPointerInput(PhysicalInputEventKind kind)
+        => kind is PhysicalInputEventKind.PointerButtonDown
+            or PhysicalInputEventKind.PointerButtonUp
+            or PhysicalInputEventKind.PointerAbsoluteMotion
+            or PhysicalInputEventKind.PointerRelativeMotion
+            or PhysicalInputEventKind.VerticalScroll
+            or PhysicalInputEventKind.HorizontalScroll;
+
+    private static bool IsUnidentifiedPointerSample(PlatformInputSample sample)
+        => (sample.NativeDeviceIdentity == 0)
+            && (sample.DeviceKind == PlatformInputDeviceKind.Pointer)
+            && IsPointerInput(sample.Kind);
+
     private static bool IsWindowReconciliationValue(PlatformInputStateValue value)
         => (value.Kind == PlatformInputStateValueKind.Digital)
             && (value.IsDown == true)
@@ -432,12 +445,14 @@ internal sealed class PlatformInputBroker
                 throw new InvalidOperationException($"The platform input sample kind {sample.Kind} is not supported by the Runtime capture broker.");
             }
 
+            var isUnidentifiedPointerSample = IsUnidentifiedPointerSample(sample);
             var isDeviceScopedSample = IsDeviceScoped(sample.Kind)
                 || ((sample.Kind == PhysicalInputEventKind.StateReconciliation) && (sample.NativeDeviceIdentity != 0));
             var isWindowlessSample = IsWindowless(sample.Kind)
                 || ((sample.Kind == PhysicalInputEventKind.StateReconciliation) && (sample.NativeDeviceIdentity != 0));
 
-            if (isDeviceScopedSample != (sample.NativeDeviceIdentity != 0))
+            if ((isDeviceScopedSample != (sample.NativeDeviceIdentity != 0))
+                && !isUnidentifiedPointerSample)
             {
                 throw new InvalidOperationException("The platform input sample has an invalid device source.");
             }
@@ -555,7 +570,7 @@ internal sealed class PlatformInputBroker
             {
                 device = GetDeviceHandle(sample.NativeDeviceIdentity, sample.DeviceKind, out isNewDevice);
             }
-            else if (IsDeviceScoped(sample.Kind))
+            else if (IsDeviceScoped(sample.Kind) && !isUnidentifiedPointerSample)
             {
                 throw new InvalidOperationException("A device-scoped platform input sample has no native identity.");
             }

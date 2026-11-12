@@ -261,7 +261,7 @@ public sealed class PhysicalInputEvent
             case PhysicalInputEventKind.PointerButtonDown:
             case PhysicalInputEventKind.PointerButtonUp:
             {
-                Ensure(device is not null && window is not null, kind);
+                Ensure(window is not null, kind);
                 Ensure(value is { Kind: PhysicalInputValueKind.Digital }
                     && value.Value.DigitalControl is { Kind: DigitalControlKind.MouseButton }
                     && (value.Value.IsDown == (kind == PhysicalInputEventKind.PointerButtonDown)), kind);
@@ -299,7 +299,7 @@ public sealed class PhysicalInputEvent
 
             case PhysicalInputEventKind.PointerAbsoluteMotion:
             {
-                Ensure(device is not null && window is not null, kind);
+                Ensure(window is not null, kind);
                 Ensure(pointerPosition is { } position && position.IsFinite().All(), kind);
                 Ensure(pointerContentScale is { } scale
                     && scale.IsFinite().All()
@@ -312,7 +312,7 @@ public sealed class PhysicalInputEvent
 
             case PhysicalInputEventKind.PointerRelativeMotion:
             {
-                Ensure(device is not null && window is not null, kind);
+                Ensure(window is not null, kind);
                 Ensure(pointerDelta is { } delta && delta.IsFinite().All(), kind);
                 Ensure(value is null && pointerPosition is null && pointerContentScale is null && scrollValue is null && scrollUnit is null, kind);
                 Ensure(playerSlot is null && !hasNativeKeyboardCode && reconciliationState.IsDefault, kind);
@@ -322,7 +322,7 @@ public sealed class PhysicalInputEvent
             case PhysicalInputEventKind.VerticalScroll:
             case PhysicalInputEventKind.HorizontalScroll:
             {
-                Ensure(device is not null && window is not null, kind);
+                Ensure(window is not null, kind);
                 Ensure(scrollValue is { } scroll && float.IsFinite(scroll), kind);
                 Ensure(scrollUnit is { } unit && Enum.IsDefined(unit) && (unit != PointerScrollUnit.None), kind);
                 Ensure(value is null && pointerPosition is null && pointerDelta is null && pointerContentScale is null, kind);

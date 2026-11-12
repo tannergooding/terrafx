@@ -246,16 +246,7 @@ internal sealed class LinuxEvdevGamepadAxisState
             GamepadStick.Right => (_rightX, _rightY),
             _ => throw new ArgumentOutOfRangeException(nameof(stick)),
         };
-        var lengthSquared = (x * x) + (y * y);
-
-        if (lengthSquared > 1.0f)
-        {
-            var inverseLength = 1.0f / MathF.Sqrt(lengthSquared);
-            x *= inverseLength;
-            y *= inverseLength;
-        }
-
-        return new Vector2(x, y);
+        return GamepadStickNormalizer.Normalize(x, y);
     }
 
     private float GetTriggerValue(GamepadTrigger trigger)

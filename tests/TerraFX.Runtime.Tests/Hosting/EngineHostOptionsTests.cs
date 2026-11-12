@@ -3707,6 +3707,11 @@ internal sealed partial class EngineHostOptionsTests
         internal static partial nint MonitorFromWindow(nint window, uint flags);
 
         [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport("user32.dll", EntryPoint = "SetForegroundWindow")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool SetForegroundWindow(nint window);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [LibraryImport("user32.dll", EntryPoint = "SetWindowPos", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static partial bool SetWindowPos(

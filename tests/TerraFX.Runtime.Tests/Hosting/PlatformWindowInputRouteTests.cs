@@ -48,6 +48,37 @@ internal sealed class PlatformWindowInputRouteTests
             value: new PhysicalInputValue(new DigitalControl(key), isDown));
 
     [Test]
+    public void RoutesSourceLessPointerButtonToHostLiveUi()
+    {
+        var ownerThreadId = Environment.CurrentManagedThreadId;
+        var sequenceLease = new HostEventSequenceLease();
+        var window = new WindowHandle(70, 0, 1);
+        var hostLiveUiRouter = new InputRouter(
+            InputRecipientKind.HostLiveUI,
+            70,
+            ownerThreadId,
+            sequenceLease,
+            window);
+        var route = new PlatformWindowInputRoute(window, hostLiveUiRouter);
+        var pointerDown = new PhysicalInputEvent(
+            PhysicalInputEventKind.PointerButtonDown,
+            hostTimestamp: 1,
+            hostSequence: sequenceLease.Allocate(),
+            device: null,
+            window,
+            value: new PhysicalInputValue(new DigitalControl(MouseButtonValue.Primary), isDown: true));
+
+        var result = route.Route(pointerDown);
+
+        Assert.Multiple(() => {
+            Assert.That(result.HostRecipient?.Status, Is.EqualTo(InputRoutingStatus.Applied));
+            Assert.That(result.HostRecipient?.HostSequence, Is.EqualTo(pointerDown.HostSequence));
+            Assert.That(result.SimulationRecipient, Is.Null);
+        });
+        hostLiveUiRouter.Dispose();
+    }
+
+    [Test]
     public void RoutesUiDispositionBeforeTheMatchingGameplayCopy()
     {
         var ownerThreadId = Environment.CurrentManagedThreadId;

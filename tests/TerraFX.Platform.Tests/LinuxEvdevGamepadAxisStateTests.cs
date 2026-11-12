@@ -11,6 +11,19 @@ namespace TerraFX.Platform.Tests;
 internal sealed class LinuxEvdevGamepadAxisStateTests
 {
     [Test]
+    public void NormalizesRoundedDiagonalSticksToUnitDisk()
+    {
+        var state = new LinuxEvdevGamepadAxisState([
+            (0x0000, new LinuxEvdevAxisInfo(-1_000_000, 1_000_000, Fuzz: 0, Flat: 0), 949_356),
+            (0x0001, new LinuxEvdevAxisInfo(-1_000_000, 1_000_000, Fuzz: 0, Flat: 0), 704_826),
+        ]);
+        var leftStick = state.GetCurrentState()[4].StickValue
+            ?? throw new InvalidOperationException("The initial left-stick state has no value.");
+
+        Assert.That(TerraFX.Numerics.Vector2.LengthSquared(leftStick), Is.LessThanOrEqualTo(1.0f));
+    }
+
+    [Test]
     public void NormalizesStandardStickAndTriggerAxes()
     {
         var state = new LinuxEvdevGamepadAxisState([
