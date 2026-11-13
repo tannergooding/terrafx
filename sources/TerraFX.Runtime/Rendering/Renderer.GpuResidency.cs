@@ -9,9 +9,10 @@ namespace TerraFX.Rendering;
 
 public sealed partial class Renderer
 {
-    private static async Task<GpuBuffer> UploadUniformBufferAsync(
+    private static async Task<GpuBuffer> UploadDeviceBufferAsync(
         GraphicsDevice device,
         ReadOnlyMemory<byte> bytes,
+        BufferUsage usage,
         string debugName,
         CancellationToken cancellationToken)
     {
@@ -22,7 +23,7 @@ public sealed partial class Renderer
             buffer = await device.CreateBufferAsync(
                 new BufferDescription(
                     bytes.Length,
-                    BufferUsage.Uniform | BufferUsage.CopyDestination,
+                    usage | BufferUsage.CopyDestination,
                     GpuMemoryKind.DeviceLocal,
                     structuredStride: null,
                     debugName),
@@ -42,30 +43,6 @@ public sealed partial class Renderer
         {
             buffer?.Dispose();
         }
-    }
-
-    internal async Task<GpuBuffer> CreateCameraUniformBufferAsync(
-        RenderSnapshot snapshot,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(snapshot);
-        cancellationToken.ThrowIfCancellationRequested();
-        ObjectDisposedException.ThrowIf(snapshot.IsDisposed, snapshot);
-
-        var device = _graphicsDevice
-            ?? throw new NotSupportedException("Headless rendering does not upload camera draw data.");
-        var bytes = RenderCameraGpuDataBufferBuilder.CreateFrameBuffer(
-            snapshot.Cameras.AsSpan(),
-            checked((int)device.Capabilities.Limits.UniformBufferOffsetAlignment),
-            out _);
-
-        if (bytes.Length == 0)
-        {
-            throw new InvalidOperationException("The render snapshot contains no camera data.");
-        }
-
-        return await UploadUniformBufferAsync(device, bytes, "sprite-camera-data", cancellationToken)
-            .ConfigureAwait(false);
     }
 
     internal async Task<GpuBuffer?> CreateSpriteObjectBufferAsync(
@@ -88,7 +65,38 @@ public sealed partial class Renderer
             snapshot.SpriteDraws.AsSpan(),
             checked((int)device.Capabilities.Limits.UniformBufferOffsetAlignment),
             out _);
-        return await UploadUniformBufferAsync(device, bytes, "sprite-object-data", cancellationToken)
+        return await UploadDeviceBufferAsync(
+                device,
+                bytes,
+                BufferUsage.Uniform,
+                "sprite-object-data",
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    internal async Task<GpuBuffer?> CreateSpriteVertexBufferAsync(
+        RenderSnapshot snapshot,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        cancellationToken.ThrowIfCancellationRequested();
+        ObjectDisposedException.ThrowIf(snapshot.IsDisposed, snapshot);
+
+        var device = _graphicsDevice
+            ?? throw new NotSupportedException("Headless rendering does not upload Sprite vertex data.");
+
+        if (snapshot.SpriteDraws.IsEmpty)
+        {
+            return null;
+        }
+
+        var bytes = RenderSpriteVertexBufferBuilder.Create(snapshot.SpriteDraws.AsSpan());
+        return await UploadDeviceBufferAsync(
+                device,
+                bytes,
+                BufferUsage.Vertex,
+                "sprite-vertex-data",
+                cancellationToken)
             .ConfigureAwait(false);
     }
 

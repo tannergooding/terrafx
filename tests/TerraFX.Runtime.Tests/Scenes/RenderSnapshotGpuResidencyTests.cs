@@ -358,27 +358,41 @@ internal sealed partial class SceneAssetStoreTests
                     quad.Vertex3,
                 };
                 var vertexBytes = MemoryMarshal.AsBytes(spriteVertices.AsSpan()).ToArray();
-                var sentinelVertices = new float[checked(spriteVertices.Length * 5)];
+                GraphBufferRange vertexRange;
 
-                for (var vertexIndex = 0; vertexIndex < spriteVertices.Length; vertexIndex++)
+                if (useM05SpritePipeline)
                 {
-                    var vertexOffset = checked(vertexIndex * 5);
-                    sentinelVertices[vertexOffset] = 2.0f;
-                    sentinelVertices[vertexOffset + 1] = 2.0f;
+                    vertexBuffer = await engineHost.Renderer.CreateSpriteVertexBufferAsync(spriteSnapshot)
+                        .ConfigureAwait(false)
+                        ?? throw new InvalidOperationException("The Sprite snapshot has no vertex buffer.");
+                    vertexRange = new GraphBufferRange(0, vertexBuffer.ByteLength);
+                }
+                else
+                {
+                    var sentinelVertices = new float[checked(spriteVertices.Length * 5)];
+
+                    for (var vertexIndex = 0; vertexIndex < spriteVertices.Length; vertexIndex++)
+                    {
+                        var vertexOffset = checked(vertexIndex * 5);
+                        sentinelVertices[vertexOffset] = 2.0f;
+                        sentinelVertices[vertexOffset + 1] = 2.0f;
+                    }
+
+                    var vertexUploadBytes = new byte[checked(vertexBytes.Length * 2)];
+                    MemoryMarshal.AsBytes(sentinelVertices.AsSpan()).CopyTo(vertexUploadBytes);
+                    vertexBytes.CopyTo(vertexUploadBytes.AsSpan(vertexBytes.Length));
+                    vertexBuffer = await graphicsDevice.CreateBufferAsync(
+                        new BufferDescription(
+                            vertexUploadBytes.Length,
+                            BufferUsage.Vertex | BufferUsage.CopyDestination,
+                            GpuMemoryKind.DeviceLocal,
+                            structuredStride: null,
+                            "snapshot-atlas-sprite-vertices")).ConfigureAwait(false);
+                    var vertexUpload = await graphicsDevice.UploadBufferAsync(vertexBuffer, 0, vertexUploadBytes).ConfigureAwait(false);
+                    Assert.That(vertexUpload.Status, Is.EqualTo(UploadStatus.Ready));
+                    vertexRange = new GraphBufferRange(vertexBytes.Length, vertexBytes.Length);
                 }
 
-                var vertexUploadBytes = new byte[checked(vertexBytes.Length * 2)];
-                MemoryMarshal.AsBytes(sentinelVertices.AsSpan()).CopyTo(vertexUploadBytes);
-                vertexBytes.CopyTo(vertexUploadBytes.AsSpan(vertexBytes.Length));
-                vertexBuffer = await graphicsDevice.CreateBufferAsync(
-                    new BufferDescription(
-                        vertexUploadBytes.Length,
-                        BufferUsage.Vertex | BufferUsage.CopyDestination,
-                        GpuMemoryKind.DeviceLocal,
-                        structuredStride: null,
-                        "snapshot-atlas-sprite-vertices")).ConfigureAwait(false);
-                var vertexUpload = await graphicsDevice.UploadBufferAsync(vertexBuffer, 0, vertexUploadBytes).ConfigureAwait(false);
-                Assert.That(vertexUpload.Status, Is.EqualTo(UploadStatus.Ready));
                 var indexBytes = MemoryMarshal.AsBytes(RenderSpriteGeometry.Indices.AsSpan()).ToArray();
                 var indexUploadBytes = new byte[checked(indexBytes.Length * 2)];
                 indexBytes.CopyTo(indexUploadBytes.AsSpan(indexBytes.Length));
@@ -553,7 +567,6 @@ internal sealed partial class SceneAssetStoreTests
                         GraphResourceState.General,
                         contentsValid: true,
                         completionPolicy: GraphImportCompletionPolicy.WaitForLastUse));
-                var vertexRange = new GraphBufferRange(vertexBytes.Length, vertexBytes.Length);
                 var vertexBinding = new VertexBufferBinding(0, vertexVersion, vertexRange, 5 * sizeof(float));
                 var indexImportRange = new GraphBufferRange(0, indexBuffer.ByteLength);
                 var indexVersion = graph.ImportBuffer(
