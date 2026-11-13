@@ -33,6 +33,7 @@ internal sealed partial class SceneAssetStoreTests
         EbinRecord[] events,
         EbinField? skeletonReference = null,
         EbinField? rootMotion = null,
+        EbinField? sceneReference = null,
         uint schemaMinor = 0)
     {
         var fields = new List<EbinField>
@@ -55,6 +56,12 @@ internal sealed partial class SceneAssetStoreTests
 
         fields.Add(EbinPrimitives.UInt8(8, 0));
         fields.Add(EbinPrimitives.Binary32(9, 0.0f));
+
+        if (sceneReference is { } selectedSceneReference)
+        {
+            fields.Add(selectedSceneReference);
+        }
+
         return new EbinRecord(
             new ContentSchemaIdentityAssignment("native/clip").SchemaId,
             1,
@@ -72,6 +79,36 @@ internal sealed partial class SceneAssetStoreTests
                 EbinPrimitives.Guid(2, schemaId),
                 EbinPrimitives.UInt32(3, schemaMajor),
             ]);
+
+    private static EbinRecord CreateAtlasRecord(uint textureAssetId, Guid frameId)
+    {
+        var frame = new EbinRecord(
+            new ContentSchemaIdentityAssignment("native/atlas-frame").SchemaId,
+            1,
+            0,
+            [
+                EbinPrimitives.Guid(1, frameId),
+                EbinPrimitives.UInt32(2, 0),
+                EbinPrimitives.UInt32(3, 2),
+                EbinPrimitives.UInt32(4, 2),
+                EbinPrimitives.UInt32(5, 1),
+                EbinPrimitives.UInt32(6, 1),
+                EbinPrimitives.UInt8(7, 2),
+            ]);
+        return new EbinRecord(
+            new ContentSchemaIdentityAssignment("native/atlas").SchemaId,
+            1,
+            0,
+            [
+                EbinPrimitives.RecordArray(1, [
+                    CreateAssetReferenceRecord(
+                        textureAssetId,
+                        new ContentSchemaIdentityAssignment("native/texture").SchemaId,
+                        schemaMajor: 1),
+                ]),
+                EbinPrimitives.RecordArray(2, [frame]),
+            ]);
+    }
 
     private static EbinRecord CreateClipEvent(Guid eventId, long timeTicks)
     {
@@ -132,6 +169,14 @@ internal sealed partial class SceneAssetStoreTests
                 EbinPrimitives.UInt8(2, 0),
             ]);
 
+    private static EbinField CreateSceneReference(uint sceneAssetId)
+        => CreateOptionalRecordField(
+            10,
+            CreateAssetReferenceRecord(
+                sceneAssetId,
+                new ContentSchemaIdentityAssignment("native/scene").SchemaId,
+                schemaMajor: 2));
+
     private static byte[] CreateSkeletonRecord(EbinRecord[] joints, Guid? rootMotionJointId = null)
     {
         var fields = new List<EbinField>
@@ -155,18 +200,71 @@ internal sealed partial class SceneAssetStoreTests
     private static byte[] CreateSkeletonRecord(Guid jointId, int parentIndex, Matrix4x4 inverseBind)
         => CreateSkeletonRecord([CreateJointRecord(jointId, parentIndex, Vector3.Zero, Vector3.One, inverseBind)]);
 
+    private static EbinRecord CreateSpriteKey(uint atlasAssetId, Guid frameId)
+        => new(
+            new ContentSchemaIdentityAssignment("native/key-sprite").SchemaId,
+            1,
+            0,
+            [
+                EbinPrimitives.Int64(1, 0),
+                EbinPrimitives.Record(2, CreateAssetReferenceRecord(
+                    atlasAssetId,
+                    new ContentSchemaIdentityAssignment("native/atlas").SchemaId,
+                    schemaMajor: 1)),
+                EbinPrimitives.Guid(3, frameId),
+            ]);
+
+    private static EbinRecord CreateSpriteTrack(Guid targetId, EbinRecord[] keys)
+        => new(
+            new ContentSchemaIdentityAssignment("native/sprite-track").SchemaId,
+            1,
+            0,
+            [
+                EbinPrimitives.Guid(1, targetId),
+                EbinPrimitives.RecordArray(2, keys),
+            ]);
+
+    private static EbinRecord CreateTextureRecord()
+    {
+        var mip = new EbinRecord(
+            new ContentSchemaIdentityAssignment("native/texture-mip").SchemaId,
+            1,
+            0,
+            [
+                EbinPrimitives.UInt32(1, 0),
+                EbinPrimitives.UInt32(2, 8),
+                EbinPrimitives.UInt32(3, 8),
+                EbinPrimitives.Bytes(4, new byte[8 * 8 * 4]),
+            ]);
+        return new EbinRecord(
+            new ContentSchemaIdentityAssignment("native/texture").SchemaId,
+            1,
+            0,
+            [
+                EbinPrimitives.UInt32(1, 8),
+                EbinPrimitives.UInt32(2, 8),
+                EbinPrimitives.UInt8(3, 0),
+                EbinPrimitives.UInt8(4, 0),
+                EbinPrimitives.UInt8(5, 1),
+                EbinPrimitives.UInt8(6, 0),
+                EbinPrimitives.UInt8(7, 0),
+                EbinPrimitives.RecordArray(8, [mip]),
+            ]);
+    }
+
     private static EbinRecord CreateTransformTrack(
         Guid targetId,
         byte channel = 0,
         byte interpolation = 1,
-        EbinRecord[]? keys = null)
+        EbinRecord[]? keys = null,
+        byte targetDomain = 1)
         => new(
             new ContentSchemaIdentityAssignment("native/transform-track").SchemaId,
             1,
             0,
             [
                 EbinPrimitives.Guid(1, targetId),
-                EbinPrimitives.UInt8(2, 1),
+                EbinPrimitives.UInt8(2, targetDomain),
                 EbinPrimitives.UInt8(3, channel),
                 EbinPrimitives.UInt8(4, interpolation),
                 EbinPrimitives.RecordArray(5, keys ?? [CreateVector3Key(0, Vector3.Zero)]),
@@ -201,6 +299,122 @@ internal sealed partial class SceneAssetStoreTests
             1,
             0,
             fields.ToArray());
+    }
+
+    [Test]
+    public async Task AnimationAssetBinderValidatesExpandedSceneKeysAndAtlasFrames()
+    {
+        var schemas = CreateAnimationAssetRegistry();
+        var registrationBuilder = new AssetStoreRegistrationBuilder(schemas);
+        _ = SceneSupport.RegisterAssetCodecs(registrationBuilder);
+        _ = Renderer.RegisterAssetCodecs(registrationBuilder);
+        _ = AnimationSupport.RegisterAssetCodecs(registrationBuilder);
+        const uint sceneAssetId = 900;
+        const uint textureAssetId = 901;
+        const uint atlasAssetId = 902;
+        const uint validClipAssetId = 903;
+        const uint invalidSceneClipAssetId = 904;
+        const uint invalidAtlasClipAssetId = 905;
+        var sceneRecord = SceneAssetReaderTests.Fixtures.CreateScene(new AssetId(checked((int)sceneAssetId)));
+        var initialPackageBytes = Package.CreatePackage(new Package.Entry(
+            sceneAssetId,
+            Package.CreateEnvelope(sceneAssetId, sceneRecord)));
+        var initialPackagePath = Package.WritePackage(initialPackageBytes);
+        AssetStore? initialStore = null;
+        Guid expandedEntityKey;
+
+        try
+        {
+            initialStore = await AssetStore.CreateAsync(new AssetStoreOptions(
+                initialPackagePath,
+                SHA256.HashData(initialPackageBytes),
+                registrationBuilder.Build())).ConfigureAwait(false);
+            using var sceneLease = await initialStore.LoadAsync<SceneAsset>(new AssetId(checked((int)sceneAssetId)))
+                .ConfigureAwait(false);
+            using var scenePlan = await ScenePrefabExpansionPlanner.PrepareTakingLeaseAsync(
+                sceneLease.Retain(),
+                SceneExpansionLimits.Default).ConfigureAwait(false);
+            expandedEntityKey = scenePlan.Entities[0].ExpandedEntityKey;
+        }
+        finally
+        {
+            try
+            {
+                if (initialStore is { } selectedStore)
+                {
+                    await selectedStore.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                File.Delete(initialPackagePath);
+            }
+        }
+
+        var frameId = new Guid("80000000-0000-4000-8000-000000000001");
+        var validTracks = new[] {
+                CreateTransformTrack(expandedEntityKey, targetDomain: 0),
+                CreateSpriteTrack(expandedEntityKey, [CreateSpriteKey(atlasAssetId, frameId)]),
+            };
+        var validClip = CreateAnimationClipRecord(validTracks, [], sceneReference: CreateSceneReference(sceneAssetId));
+        var invalidSceneClip = CreateAnimationClipRecord(
+            [CreateTransformTrack(new Guid("90000000-0000-4000-8000-000000000001"), targetDomain: 0)],
+            [],
+            sceneReference: CreateSceneReference(sceneAssetId));
+        var invalidAtlasClip = CreateAnimationClipRecord(
+            [
+                CreateTransformTrack(expandedEntityKey, targetDomain: 0),
+                    CreateSpriteTrack(
+                        expandedEntityKey,
+                        [CreateSpriteKey(atlasAssetId, new Guid("80000000-0000-4000-8000-000000000002"))]),
+                ],
+            [],
+            sceneReference: CreateSceneReference(sceneAssetId));
+        var atlasRecord = CreateAtlasRecord(textureAssetId, frameId);
+        var textureRecord = CreateTextureRecord();
+        var packageBytes = Package.CreatePackage(
+            new Package.Entry(sceneAssetId, Package.CreateEnvelope(sceneAssetId, sceneRecord)),
+            new Package.Entry(textureAssetId, Package.CreateEnvelope(textureAssetId, EbinPrimitives.Encode(textureRecord))),
+            new Package.Entry(atlasAssetId, Package.CreateEnvelope(atlasAssetId, EbinPrimitives.Encode(atlasRecord))),
+            new Package.Entry(validClipAssetId, Package.CreateEnvelope(validClipAssetId, EbinPrimitives.Encode(validClip))),
+            new Package.Entry(invalidSceneClipAssetId, Package.CreateEnvelope(invalidSceneClipAssetId, EbinPrimitives.Encode(invalidSceneClip))),
+            new Package.Entry(invalidAtlasClipAssetId, Package.CreateEnvelope(invalidAtlasClipAssetId, EbinPrimitives.Encode(invalidAtlasClip))));
+        var packagePath = Package.WritePackage(packageBytes);
+        AssetStore? assets = null;
+
+        try
+        {
+            assets = await AssetStore.CreateAsync(
+                new AssetStoreOptions(packagePath, SHA256.HashData(packageBytes), registrationBuilder.Build()))
+                .ConfigureAwait(false);
+            using var validClipLease = await assets.LoadAsync<AnimationClipAsset>(new AssetId(checked((int)validClipAssetId)))
+                .ConfigureAwait(false);
+            await AnimationClipAssetBinding.ValidatePackageBindingsAsync(validClipLease).ConfigureAwait(false);
+
+            using var invalidSceneClipLease = await assets.LoadAsync<AnimationClipAsset>(new AssetId(checked((int)invalidSceneClipAssetId)))
+                .ConfigureAwait(false);
+            _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await AnimationClipAssetBinding.ValidatePackageBindingsAsync(invalidSceneClipLease).ConfigureAwait(false));
+
+            using var invalidAtlasClipLease = await assets.LoadAsync<AnimationClipAsset>(new AssetId(checked((int)invalidAtlasClipAssetId)))
+                .ConfigureAwait(false);
+            _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await AnimationClipAssetBinding.ValidatePackageBindingsAsync(invalidAtlasClipLease).ConfigureAwait(false));
+        }
+        finally
+        {
+            try
+            {
+                if (assets is { } selectedAssets)
+                {
+                    await selectedAssets.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                File.Delete(packagePath);
+            }
+        }
     }
 
     [Test]

@@ -36,7 +36,7 @@ public sealed partial class Renderer
     /// <returns>The headless Renderer service.</returns>
     public static Renderer CreateHeadless() => new(graphicsDevice: null, gpuResidencyService: null);
 
-    /// <summary>Registers the built-in native Texture, Atlas, and Material asset codecs with an Assets builder.</summary>
+    /// <summary>Registers the built-in native Mesh, Texture, Atlas, and Material asset codecs with an Assets builder.</summary>
     /// <param name="builder">The asset-store builder whose schema registry contains the Rendering schemas.</param>
     /// <returns>The builder with the supported rendering asset codecs registered.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="builder"/> is null.</exception>
@@ -44,6 +44,7 @@ public sealed partial class Renderer
     public static AssetStoreRegistrationBuilder RegisterAssetCodecs(AssetStoreRegistrationBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
+        _ = builder.RegisterCodec(new RenderMeshAssetCodec());
         _ = builder.RegisterCodec(new RenderTextureAssetCodec());
         _ = builder.RegisterCodec(new RenderAtlasAssetCodec());
         return builder.RegisterCodec(new RenderMaterialAssetCodec());
