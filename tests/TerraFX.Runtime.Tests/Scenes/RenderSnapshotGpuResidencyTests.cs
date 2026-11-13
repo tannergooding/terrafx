@@ -93,12 +93,6 @@ internal sealed partial class SceneAssetStoreTests
             return;
         }
 
-        if (useM05SpritePipeline && !OperatingSystem.IsWindows())
-        {
-            Assert.Ignore("The M05 Sprite pipeline fixture is compiled by the pinned Windows-only DXC package.");
-            return;
-        }
-
         if ((graphicsBackend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
             Assert.Ignore("The D3D12 Sprite graph requires Windows 11.");
@@ -299,62 +293,7 @@ internal sealed partial class SceneAssetStoreTests
 
                 if (useM05SpritePipeline)
                 {
-                    var shaderDirectory = Path.Combine(
-                        TestContext.CurrentContext.TestDirectory,
-                        "ShaderArtifacts",
-                        "ObjectGpuDataPipeline");
-                    var manifest = ShaderToolchainManifest.Load(Path.Combine(
-                        TestContext.CurrentContext.TestDirectory,
-                        "ShaderToolchainManifest.json"));
-                    var vertexReflection = M04ShaderReflectionReader.Read(
-                        await File.ReadAllTextAsync(Path.Combine(shaderDirectory, "SnapshotSpriteVertex.dxil.reflection.txt"))
-                            .ConfigureAwait(false),
-                        await File.ReadAllTextAsync(Path.Combine(shaderDirectory, "SnapshotSpriteVertex.spirv.reflection.json"))
-                            .ConfigureAwait(false),
-                        await File.ReadAllBytesAsync(Path.Combine(shaderDirectory, "SnapshotSpriteVertex.vertex.spv"))
-                            .ConfigureAwait(false),
-                        manifest.CompilerIdentity);
-                    var pixelReflection = M04ShaderReflectionReader.Read(
-                        await File.ReadAllTextAsync(Path.Combine(shaderDirectory, "SnapshotSpritePixel.dxil.reflection.txt"))
-                            .ConfigureAwait(false),
-                        await File.ReadAllTextAsync(Path.Combine(shaderDirectory, "SnapshotSpritePixel.spirv.reflection.json"))
-                            .ConfigureAwait(false),
-                        await File.ReadAllBytesAsync(Path.Combine(shaderDirectory, "SnapshotSpritePixel.pixel.spv"))
-                            .ConfigureAwait(false),
-                        manifest.CompilerIdentity);
-                    var shaderExtension = graphicsBackend == GraphicsBackend.D3D12 ? "dxil" : "spv";
-                    using var vertexBytecodeStorage = CreateBytecodeStorage(Path.Combine(
-                        shaderDirectory,
-                        $"SnapshotSpriteVertex.vertex.{shaderExtension}"));
-                    using var pixelBytecodeStorage = CreateBytecodeStorage(Path.Combine(
-                        shaderDirectory,
-                        $"SnapshotSpritePixel.pixel.{shaderExtension}"));
-                    using var vertexBytecode = vertexBytecodeStorage.AcquireReadLease(0, vertexBytecodeStorage.Length);
-                    using var pixelBytecode = pixelBytecodeStorage.AcquireReadLease(0, pixelBytecodeStorage.Length);
-                    pipeline = await graphicsDevice.CreatePipelineAsync(
-                        new GraphicsPipelineDescription(
-                            [
-                                new ShaderBytecodeInput(
-                                    ShaderStage.Vertex,
-                                    shaderBinaryFormat,
-                                    vertexBytecode,
-                                    vertexReflection),
-                                new ShaderBytecodeInput(
-                                    ShaderStage.Pixel,
-                                    shaderBinaryFormat,
-                                    pixelBytecode,
-                                    pixelReflection),
-                            ],
-                            vertexLayout,
-                            vertexStride: 5 * sizeof(float),
-                            [TextureFormat.Rgba8Unorm],
-                            depthTargetFormat: null,
-                            PrimitiveTopology.TriangleList,
-                            PipelineBlendMode.PremultipliedAlpha,
-                            PipelineDepthMode.Disabled,
-                            PipelineCullMode.None,
-                            frontFaceClockwise: false,
-                            bindingLayoutVersion: 1))
+                    pipeline = await engineHost.Renderer.CreateSpriteC0PipelineAsync(TextureFormat.Rgba8Unorm)
                         .ConfigureAwait(false);
                 }
                 else

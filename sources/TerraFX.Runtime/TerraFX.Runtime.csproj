@@ -16,4 +16,34 @@
     <ProjectReference Include="..\TerraFX.Audio\TerraFX.Audio.csproj" />
   </ItemGroup>
 
+  <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
+    <TerraFXShaderSource Include="Shaders\SpriteC0Vertex.hlsl" EntryPoint="VSMain" Stage="vertex" />
+    <TerraFXShaderSource Include="Shaders\SpriteC0Pixel.hlsl" EntryPoint="PSMain" Stage="pixel" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(OS)' != 'Windows_NT'">
+    <EmbeddedResource Include="Shaders\Cooked\SpriteC0Vertex.vertex.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.SpriteC0Vertex.vertex.spv" />
+    <EmbeddedResource Include="Shaders\Cooked\SpriteC0Pixel.pixel.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.SpriteC0Pixel.pixel.spv" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\SpriteC0Vertex\SpriteC0Vertex.vertex.dxil"
+                      LogicalName="TerraFX.Rendering.Shaders.SpriteC0Vertex.vertex.dxil" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\SpriteC0Vertex\SpriteC0Vertex.vertex.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.SpriteC0Vertex.vertex.spv" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\SpriteC0Pixel\SpriteC0Pixel.pixel.dxil"
+                      LogicalName="TerraFX.Rendering.Shaders.SpriteC0Pixel.pixel.dxil" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\SpriteC0Pixel\SpriteC0Pixel.pixel.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.SpriteC0Pixel.pixel.spv" />
+  </ItemGroup>
+
+  <Import Project="..\..\tools\TerraFX.ShaderCompiler\ShaderCompilation.targets" />
+
+  <Target Name="CompileSpriteC0ShadersBeforeResources"
+          BeforeTargets="CreateManifestResourceNames"
+          DependsOnTargets="TerraFXCompileShaders"
+          Condition="'$(OS)' == 'Windows_NT'" />
+
 </Project>
