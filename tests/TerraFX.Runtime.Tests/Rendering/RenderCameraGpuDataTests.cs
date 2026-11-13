@@ -24,7 +24,8 @@ internal sealed class RenderCameraGpuDataTests
         float? verticalFieldOfView = null,
         SpatialPosition3? frameOrigin = null,
         SpatialPosition3? position = null,
-        Quaternion? rotation = null)
+        Quaternion? rotation = null,
+        Vector4? viewport = null)
     {
         var origin = frameOrigin ?? default;
         var frame = new SpatialFrame3(
@@ -51,7 +52,7 @@ internal sealed class RenderCameraGpuDataTests
             farMode,
             far,
             aspectRatioOverride,
-            new Vector4(0.0f, 0.0f, 1.0f, 1.0f),
+            viewport ?? new Vector4(0.0f, 0.0f, 1.0f, 1.0f),
             CameraClearFlags.Color,
             Vector4.Zero,
             ulong.MaxValue);
@@ -103,6 +104,38 @@ internal sealed class RenderCameraGpuDataTests
             Assert.That(ReadSingle(bytes, 68), Is.EqualTo((float)area.Y));
             Assert.That(ReadSingle(bytes, 72), Is.EqualTo((float)area.Width));
             Assert.That(ReadSingle(bytes, 76), Is.EqualTo((float)area.Height));
+        });
+    }
+
+    [Test]
+    public void BuildsAlignedCameraUniformRecordsWithMappedAreas()
+    {
+        CameraSnapshot[] cameras = [
+            CreateCamera(CameraProjectionKind.Perspective, near: 0.1f, far: 100.0f, orthographicHeight: 4.0f),
+            CreateCamera(
+                CameraProjectionKind.Perspective,
+                near: 0.1f,
+                far: 100.0f,
+                orthographicHeight: 4.0f,
+                viewport: new Vector4(0.125f, 0.1875f, 0.625f, 0.75f)),
+        ];
+
+        var buffer = RenderCameraGpuDataBufferBuilder.CreateFrameBuffer(cameras, 256, out var uniformStride);
+
+        Assert.Multiple(() => {
+            Assert.That(uniformStride, Is.EqualTo(256));
+            Assert.That(buffer.Length, Is.EqualTo(cameras.Length * uniformStride));
+            Assert.That(ReadSingle(buffer, 64), Is.Zero);
+            Assert.That(ReadSingle(buffer, 68), Is.Zero);
+            Assert.That(ReadSingle(buffer, 72), Is.EqualTo(16.0f));
+            Assert.That(ReadSingle(buffer, 76), Is.EqualTo(16.0f));
+            Assert.That(ReadSingle(buffer, uniformStride + 64), Is.EqualTo(2.0f));
+            Assert.That(ReadSingle(buffer, uniformStride + 68), Is.EqualTo(3.0f));
+            Assert.That(ReadSingle(buffer, uniformStride + 72), Is.EqualTo(10.0f));
+            Assert.That(ReadSingle(buffer, uniformStride + 76), Is.EqualTo(12.0f));
+            Assert.That(
+                buffer.AsSpan(RenderCameraGpuData.SizeInBytes, uniformStride - RenderCameraGpuData.SizeInBytes).ToArray(),
+                Is.EqualTo(new byte[uniformStride - RenderCameraGpuData.SizeInBytes]));
         });
     }
 

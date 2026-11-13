@@ -9,6 +9,65 @@ namespace TerraFX.Rendering;
 
 public sealed partial class Renderer
 {
+    private static async Task<GpuBuffer> UploadUniformBufferAsync(
+        GraphicsDevice device,
+        ReadOnlyMemory<byte> bytes,
+        string debugName,
+        CancellationToken cancellationToken)
+    {
+        GpuBuffer? buffer = null;
+
+        try
+        {
+            buffer = await device.CreateBufferAsync(
+                new BufferDescription(
+                    bytes.Length,
+                    BufferUsage.Uniform | BufferUsage.CopyDestination,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: null,
+                    debugName),
+                cancellationToken).ConfigureAwait(false);
+            var upload = await device.UploadBufferAsync(buffer, 0, bytes.Span, cancellationToken).ConfigureAwait(false);
+
+            if (upload.Status != UploadStatus.Ready)
+            {
+                throw new InvalidOperationException($"The '{debugName}' upload did not complete.");
+            }
+
+            var result = buffer;
+            buffer = null;
+            return result;
+        }
+        finally
+        {
+            buffer?.Dispose();
+        }
+    }
+
+    internal async Task<GpuBuffer> CreateCameraUniformBufferAsync(
+        RenderSnapshot snapshot,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        cancellationToken.ThrowIfCancellationRequested();
+        ObjectDisposedException.ThrowIf(snapshot.IsDisposed, snapshot);
+
+        var device = _graphicsDevice
+            ?? throw new NotSupportedException("Headless rendering does not upload camera draw data.");
+        var bytes = RenderCameraGpuDataBufferBuilder.CreateFrameBuffer(
+            snapshot.Cameras.AsSpan(),
+            checked((int)device.Capabilities.Limits.UniformBufferOffsetAlignment),
+            out _);
+
+        if (bytes.Length == 0)
+        {
+            throw new InvalidOperationException("The render snapshot contains no camera data.");
+        }
+
+        return await UploadUniformBufferAsync(device, bytes, "sprite-camera-data", cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     internal async Task<GpuBuffer?> CreateSpriteObjectBufferAsync(
         RenderSnapshot snapshot,
         CancellationToken cancellationToken = default)
@@ -29,33 +88,8 @@ public sealed partial class Renderer
             snapshot.SpriteDraws.AsSpan(),
             checked((int)device.Capabilities.Limits.UniformBufferOffsetAlignment),
             out _);
-        GpuBuffer? buffer = null;
-
-        try
-        {
-            buffer = await device.CreateBufferAsync(
-                new BufferDescription(
-                    bytes.LongLength,
-                    BufferUsage.Uniform | BufferUsage.CopyDestination,
-                    GpuMemoryKind.DeviceLocal,
-                    structuredStride: null,
-                    "sprite-object-data"),
-                cancellationToken).ConfigureAwait(false);
-            var upload = await device.UploadBufferAsync(buffer, 0, bytes, cancellationToken).ConfigureAwait(false);
-
-            if (upload.Status != UploadStatus.Ready)
-            {
-                throw new InvalidOperationException("The Sprite object-data upload did not complete.");
-            }
-
-            var result = buffer;
-            buffer = null;
-            return result;
-        }
-        finally
-        {
-            buffer?.Dispose();
-        }
+        return await UploadUniformBufferAsync(device, bytes, "sprite-object-data", cancellationToken)
+            .ConfigureAwait(false);
     }
 
     internal async Task<GpuResidencyLease> EnsureSpritePageResidencyAsync(
