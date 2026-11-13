@@ -74,11 +74,19 @@ public sealed partial class RenderGraphPlan
             }
         }
 
+        var passNodesById = new Dictionary<RenderPassId, RenderGraphPassNode>(Passes.Length);
+
+        foreach (var pass in Passes)
+        {
+            passNodesById.Add(pass.Id, pass);
+        }
+
         var passes = ImmutableArray.CreateBuilder<GraphicsGraphSubmissionPass>(OrderedPasses.Length);
 
         for (var index = 0; index < OrderedPasses.Length; index++)
         {
             var passId = OrderedPasses[index];
+            var passNode = passNodesById[passId];
             var passKind = OrderedPassKinds[index] switch {
                 RenderGraphPassKind.Raster => CommandRecorderPassKind.Raster,
                 RenderGraphPassKind.Compute => CommandRecorderPassKind.Compute,
@@ -120,6 +128,7 @@ public sealed partial class RenderGraphPlan
             passes.Add(new GraphicsGraphSubmissionPass(
                 passId,
                 passKind,
+                passNode.Description.RenderArea,
                 commands,
                 attachments.ToImmutable()));
         }

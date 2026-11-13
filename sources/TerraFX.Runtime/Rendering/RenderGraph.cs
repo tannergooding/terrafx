@@ -28,6 +28,7 @@ public sealed class RenderGraph
     private readonly RenderGraphOptions _options;
     private readonly Dictionary<RenderPassId, RenderPassCallback> _passCallbacks = [];
     private readonly Dictionary<RenderPassId, RenderGraphPassKind> _passKinds = [];
+    private readonly Dictionary<RenderPassId, RenderArea?> _passRenderAreas = [];
     private RenderPassId? _presentationPassId;
     private GraphTextureVersion? _presentationSource;
     private readonly GraphResourceRegistry _resources;
@@ -77,6 +78,59 @@ public sealed class RenderGraph
         }
 
         return (uint)graphOwnerId;
+    }
+
+    private static bool IsFullRenderArea(
+        RenderArea area,
+        TextureDescription description,
+        GraphTextureRange range)
+    {
+        var mipWidth = description.Width;
+        var mipHeight = description.Height;
+        var coversFullRange = true;
+        var mipEnd = range.FirstMip + range.MipCount;
+
+        for (var mip = 0; mip < mipEnd; mip++)
+        {
+            if (mip >= range.FirstMip
+                && ((area.X != 0)
+                    || (area.Y != 0)
+                    || (area.Width != mipWidth)
+                    || (area.Height != mipHeight)))
+            {
+                coversFullRange = false;
+            }
+
+            mipWidth = Math.Max(1, mipWidth / 2);
+            mipHeight = Math.Max(1, mipHeight / 2);
+        }
+
+        return coversFullRange;
+    }
+
+    private static void ValidateRenderArea(
+        RenderArea area,
+        TextureDescription description,
+        GraphTextureRange range)
+    {
+        var mipWidth = description.Width;
+        var mipHeight = description.Height;
+        var mipEnd = range.FirstMip + range.MipCount;
+
+        for (var mip = 0; mip < mipEnd; mip++)
+        {
+            if (mip >= range.FirstMip
+                && ((area.Width > mipWidth)
+                    || (area.X > (mipWidth - area.Width))
+                    || (area.Height > mipHeight)
+                    || (area.Y > (mipHeight - area.Height))))
+            {
+                throw new ArgumentException("The raster render area must fit every selected attachment mip.", nameof(range));
+            }
+
+            mipWidth = Math.Max(1, mipWidth / 2);
+            mipHeight = Math.Max(1, mipHeight / 2);
+        }
     }
 
     /// <summary>Adds one compute pass.</summary>
@@ -397,6 +451,7 @@ public sealed class RenderGraph
             throw new ArgumentOutOfRangeException(nameof(clearColor), "A color attachment clear value must be finite.");
         }
 
+        ValidateStoredPartialArea(pass, previousVersion, range, storeAction);
         var version = _resources.WriteAttachment(pass, previousVersion, range, loadAction, storeAction);
         _attachmentWrites.Add(new RenderGraphAttachmentWrite(
             pass,
@@ -441,6 +496,7 @@ public sealed class RenderGraph
             throw new ArgumentOutOfRangeException(nameof(clearDepth), "A depth clear value must be finite and in [0, 1].");
         }
 
+        ValidateStoredPartialArea(pass, previousVersion, range, storeAction);
         var version = _resources.WriteAttachment(pass, previousVersion, range, loadAction, storeAction);
         _attachmentWrites.Add(new RenderGraphAttachmentWrite(
             pass,
@@ -485,8 +541,25 @@ public sealed class RenderGraph
             throw new ArgumentOutOfRangeException(nameof(passKind));
         }
 
+        if (description.RenderArea is RenderArea renderArea)
+        {
+            if (passKind is not RenderGraphPassKind.Raster)
+            {
+                throw new ArgumentException("Only raster passes may declare a render area.", nameof(description));
+            }
+
+            if ((renderArea.Width > _options.TargetExtent.Width)
+                || (renderArea.X > (_options.TargetExtent.Width - renderArea.Width))
+                || (renderArea.Height > _options.TargetExtent.Height)
+                || (renderArea.Y > (_options.TargetExtent.Height - renderArea.Height)))
+            {
+                throw new ArgumentException("The render area must fit the graph target extent.", nameof(description));
+            }
+        }
+
         var passId = _resources.AddPass(description);
         _passKinds.Add(passId, passKind);
+        _passRenderAreas.Add(passId, description.RenderArea);
 
         if (callback is not null)
         {
@@ -666,6 +739,31 @@ public sealed class RenderGraph
         if (GetPassKind(pass) != RenderGraphPassKind.Raster)
         {
             throw new ArgumentException("Attachment writes require a raster pass.", nameof(pass));
+        }
+    }
+
+    private void ValidateStoredPartialArea(
+        RenderPassId pass,
+        GraphTextureVersion previousVersion,
+        GraphTextureRange range,
+        AttachmentStoreAction storeAction)
+    {
+        if (!_passRenderAreas.TryGetValue(pass, out var renderArea)
+            || (renderArea is not RenderArea area)
+            || !range.IsWithin(previousVersion.Range))
+        {
+            return;
+        }
+
+        ValidateRenderArea(area, previousVersion.Description, range);
+
+        if ((storeAction is AttachmentStoreAction.Store)
+            && !IsFullRenderArea(area, previousVersion.Description, range)
+            && !_resources.IsTextureInitialized(previousVersion, range))
+        {
+            throw new ArgumentException(
+                "A stored partial-area attachment write requires valid prior contents for the selected subresources.",
+                nameof(previousVersion));
         }
     }
 

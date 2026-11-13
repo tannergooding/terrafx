@@ -1988,9 +1988,36 @@ public static unsafe class D3D12GraphicsBackend
                         right = checked((int)target.Description.Width),
                         bottom = checked((int)target.Description.Height),
                     };
+                    var clearRect = stackalloc RECT[1];
 
                     foreach (var pass in submission.Passes)
                     {
+                        viewport.TopLeftX = 0.0f;
+                        viewport.TopLeftY = 0.0f;
+                        viewport.Width = target.Description.Width;
+                        viewport.Height = target.Description.Height;
+                        scissor.left = 0;
+                        scissor.top = 0;
+                        scissor.right = checked((int)target.Description.Width);
+                        scissor.bottom = checked((int)target.Description.Height);
+                        RECT* clearRects = null;
+                        uint clearRectCount = 0;
+
+                        if (pass.RenderArea is RenderArea renderArea)
+                        {
+                            viewport.TopLeftX = renderArea.X;
+                            viewport.TopLeftY = renderArea.Y;
+                            viewport.Width = renderArea.Width;
+                            viewport.Height = renderArea.Height;
+                            scissor.left = renderArea.X;
+                            scissor.top = renderArea.Y;
+                            scissor.right = checked(renderArea.X + renderArea.Width);
+                            scissor.bottom = checked(renderArea.Y + renderArea.Height);
+                            clearRect[0] = scissor;
+                            clearRects = clearRect;
+                            clearRectCount = 1;
+                        }
+
                         foreach (var aliasingBarrier in submission.AliasingBarriers)
                         {
                             if (aliasingBarrier.PassId != pass.PassId)
@@ -2148,8 +2175,8 @@ public static unsafe class D3D12GraphicsBackend
                                         D3D12_CLEAR_FLAGS.D3D12_CLEAR_FLAG_DEPTH,
                                         attachment.ClearDepth,
                                         0,
-                                        0,
-                                        null);
+                                        clearRectCount,
+                                        clearRects);
                                 }
                             }
                             else
@@ -2161,7 +2188,11 @@ public static unsafe class D3D12GraphicsBackend
                                     clearColor[1] = attachment.ClearColor.Y;
                                     clearColor[2] = attachment.ClearColor.Z;
                                     clearColor[3] = attachment.ClearColor.W;
-                                    commandList->ClearRenderTargetView(attachmentRenderTargetView, clearColor, 0, null);
+                                    commandList->ClearRenderTargetView(
+                                        attachmentRenderTargetView,
+                                        clearColor,
+                                        clearRectCount,
+                                        clearRects);
                                 }
                             }
                         }

@@ -7,5 +7,6 @@ namespace TerraFX.Graphics;
 internal readonly record struct GraphicsGraphSubmissionPass(
     RenderPassId PassId,
     CommandRecorderPassKind Kind,
+    RenderArea? RenderArea,
     ImmutableArray<RecordedGraphicsCommand> Commands,
     ImmutableArray<GraphicsGraphSubmissionAttachment> Attachments);

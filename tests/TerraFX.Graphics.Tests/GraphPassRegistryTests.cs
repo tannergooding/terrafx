@@ -46,4 +46,33 @@ internal sealed class GraphPassRegistryTests
     {
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => new GraphPassRegistry(0));
     }
+
+    [Test]
+    public void RenderAreaAndPassDescriptionPreserveOptionalRasterBounds()
+    {
+        var area = new RenderArea(2, 3, 5, 7);
+        var description = new RenderPassDescription("bounded", 0, [], false, area);
+        var legacyDescription = new RenderPassDescription("full", 1, [], false);
+
+        Assert.That(area, Is.EqualTo(new RenderArea(2, 3, 5, 7)));
+        Assert.That(area.X, Is.EqualTo(2));
+        Assert.That(area.Y, Is.EqualTo(3));
+        Assert.That(area.Width, Is.EqualTo(5));
+        Assert.That(area.Height, Is.EqualTo(7));
+        Assert.That(description.RenderArea, Is.EqualTo(area));
+        Assert.That(legacyDescription.RenderArea, Is.Null);
+    }
+
+    [Test]
+    public void RenderAreaRejectsInvalidCoordinatesAndExtents()
+    {
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => new RenderArea(-1, 0, 1, 1));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => new RenderArea(0, -1, 1, 1));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => new RenderArea(0, 0, 0, 1));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => new RenderArea(0, 0, 1, 0));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => new RenderArea(int.MaxValue, 0, 1, 1));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => new RenderArea(0, int.MaxValue, 1, 1));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(
+            () => new RenderPassDescription("invalid", 0, [], false, default(RenderArea)));
+    }
 }

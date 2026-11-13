@@ -589,6 +589,23 @@ internal sealed partial class EngineHostOptionsTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task RasterRenderAreaScopesAttachmentClear(GraphicsBackend backend)
+        => RunOffscreenGraphAsync(
+            backend,
+            useUniformBuffer: false,
+            useSampledTexture: false,
+            useStorageResources: false,
+            useBufferCopy: false,
+            useCompute: false,
+            useTransientStorage: false,
+            useMultipleComputeStorageBuffers: false,
+            useTransientBufferAliasing: false,
+            overlapTransientBufferLifetimes: false,
+            holdGraphCompletion: false,
+            useRenderAreaClear: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task Rejects3DStorageImageShaderWhenBoundTo2DTexture(GraphicsBackend backend)
         => RunOffscreenGraphAsync(
             backend,
@@ -1540,7 +1557,8 @@ internal sealed partial class EngineHostOptionsTests
         bool useColorAttachmentCopyDestination = false,
         bool useEightUniformPipelineOnly = false,
         bool useSixteenSampledImages = false,
-        bool useManyBufferCopyDestinations = false)
+        bool useManyBufferCopyDestinations = false,
+        bool useRenderAreaClear = false)
     {
         var frameUniformBindingIndex = useFrameLayoutUniformBuffer ? 2 : 0;
         var sampledImageBindingIndex = useArrayedSampledTexture ? 2 : 0;
@@ -2490,6 +2508,42 @@ internal sealed partial class EngineHostOptionsTests
             var renderer = engineHost.Renderer;
             var renderSnapshot = snapshot
                 ?? throw new InvalidOperationException("The host renderer omitted its render snapshot.");
+
+            if (useRenderAreaClear)
+            {
+                var invalidGraph = renderer.BuildGraph(renderSnapshot, target);
+                var renderArea = new RenderArea(targetExtent.Width / 2, targetExtent.Height / 2, 1, 1);
+                var invalidAreaPass = invalidGraph.AddRasterPass(new RenderPassDescription(
+                    "offscreen-invalid-partial-area",
+                    0,
+                    [],
+                    hasExternalSideEffects: false,
+                    renderArea: renderArea));
+                var invalidAreaTexture = invalidGraph.CreateTransientTexture(new TextureDescription(
+                    TextureDimension.Dimension2D,
+                    targetExtent.Width,
+                    targetExtent.Height,
+                    depth: 1,
+                    arrayLayers: 1,
+                    mipLevels: 1,
+                    TextureFormat.Rgba8Unorm,
+                    TextureUsage.ColorAttachment,
+                    "offscreen-invalid-partial-area"));
+
+                _ = Assert.Throws<ArgumentException>(() => invalidGraph.WriteColorAttachment(
+                    invalidAreaPass,
+                    invalidAreaTexture,
+                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
+                    AttachmentLoadAction.Clear,
+                    AttachmentStoreAction.Store,
+                    Vector4.Zero));
+                _ = Assert.Throws<ArgumentException>(() => invalidGraph.AddComputePass(new RenderPassDescription(
+                    "offscreen-invalid-compute-area",
+                    1,
+                    [],
+                    hasExternalSideEffects: false,
+                    renderArea: renderArea)));
+            }
 
             if (!string.IsNullOrWhiteSpace(shaderFixtureDirectory))
             {
@@ -4860,6 +4914,24 @@ internal sealed partial class EngineHostOptionsTests
                 }
             }
 
+            if (useRenderAreaClear)
+            {
+                var renderArea = new RenderArea(1, 1, 4, 4);
+                var partialClearPass = graph.AddRasterPass(new RenderPassDescription(
+                    "offscreen-partial-area-clear",
+                    rasterPredecessors.Length + 1,
+                    [pass],
+                    hasExternalSideEffects: false,
+                    renderArea: renderArea));
+                outputVersion = graph.WriteColorAttachment(
+                    partialClearPass,
+                    outputVersion,
+                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color),
+                    AttachmentLoadAction.Clear,
+                    AttachmentStoreAction.Store,
+                    new Vector4(0.0f, 1.0f, 0.0f, 1.0f));
+            }
+
             graph.SetPresentationSource(outputVersion);
 
             var compileResponse = graph.Compile();
@@ -5285,8 +5357,31 @@ internal sealed partial class EngineHostOptionsTests
 
                 using (var readLease = firstReadback.AcquireReadLease())
                 {
-                    var copyAction = new ReadbackCopyAction(firstPixel);
-                    readLease.UseWindow(0, firstPixel.Length, ref copyAction);
+                    if (useRenderAreaClear)
+                    {
+                        var readbackBytes = new byte[checked((int)firstReadback.ByteLength)];
+                        var copyAction = new ReadbackCopyAction(readbackBytes);
+                        readLease.UseWindow(0, readbackBytes.Length, ref copyAction);
+                        readbackBytes.AsSpan(0, firstPixel.Length).CopyTo(firstPixel);
+
+                        for (var y = 0; y < firstReadback.Height; y++)
+                        {
+                            for (var x = 0; x < firstReadback.Width; x++)
+                            {
+                                var pixelOffset = checked((int)((firstReadback.RowPitch * y) + (x * targetBytesPerPixel)));
+                                var isGreenPixel = (readbackBytes[pixelOffset] == 0)
+                                    && (readbackBytes[pixelOffset + 1] == 255)
+                                    && (readbackBytes[pixelOffset + 2] == 0)
+                                    && (readbackBytes[pixelOffset + 3] == 255);
+                                Assert.That(isGreenPixel, Is.EqualTo((x >= 1) && (x < 5) && (y >= 1) && (y < 5)));
+                            }
+                        }
+                    }
+                    else
+                    {
+                        var copyAction = new ReadbackCopyAction(firstPixel);
+                        readLease.UseWindow(0, firstPixel.Length, ref copyAction);
+                    }
                 }
 
                 Assert.Multiple(() => {

@@ -1292,8 +1292,14 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                 var renderingInfo = default(VkRenderingInfo);
                 renderingInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_RENDERING_INFO;
-                renderingInfo.renderArea.extent.width = checked((uint)target.Description.Width);
-                renderingInfo.renderArea.extent.height = checked((uint)target.Description.Height);
+                var renderAreaX = pass.RenderArea?.X ?? 0;
+                var renderAreaY = pass.RenderArea?.Y ?? 0;
+                var renderAreaWidth = pass.RenderArea?.Width ?? target.Description.Width;
+                var renderAreaHeight = pass.RenderArea?.Height ?? target.Description.Height;
+                renderingInfo.renderArea.offset.x = renderAreaX;
+                renderingInfo.renderArea.offset.y = renderAreaY;
+                renderingInfo.renderArea.extent.width = checked((uint)renderAreaWidth);
+                renderingInfo.renderArea.extent.height = checked((uint)renderAreaHeight);
                 renderingInfo.layerCount = 1;
                 renderingInfo.colorAttachmentCount = checked((uint)colorAttachmentCount);
                 renderingInfo.pColorAttachments = colorRenderingAttachments;
@@ -1302,16 +1308,18 @@ internal sealed unsafe partial class VulkanBackendDevice
                 VulkanApi.vkCmdBeginRendering(_commandBuffer, &renderingInfo);
 
                 var viewport = new VkViewport {
-                    x = 0.0f,
-                    y = 0.0f,
-                    width = target.Description.Width,
-                    height = target.Description.Height,
+                    x = renderAreaX,
+                    y = renderAreaY,
+                    width = renderAreaWidth,
+                    height = renderAreaHeight,
                     minDepth = 0.0f,
                     maxDepth = 1.0f,
                 };
                 var scissor = default(VkRect2D);
-                scissor.extent.width = checked((uint)target.Description.Width);
-                scissor.extent.height = checked((uint)target.Description.Height);
+                scissor.offset.x = renderAreaX;
+                scissor.offset.y = renderAreaY;
+                scissor.extent.width = checked((uint)renderAreaWidth);
+                scissor.extent.height = checked((uint)renderAreaHeight);
                 VulkanApi.vkCmdSetViewport(_commandBuffer, 0, 1, &viewport);
                 VulkanApi.vkCmdSetScissor(_commandBuffer, 0, 1, &scissor);
 
