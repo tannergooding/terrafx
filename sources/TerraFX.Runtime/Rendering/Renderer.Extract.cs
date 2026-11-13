@@ -4,6 +4,8 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.IO;
 using TerraFX;
 using TerraFX.Entities;
 using TerraFX.Numerics;
@@ -15,9 +17,11 @@ namespace TerraFX.Rendering;
 public sealed partial class Renderer
 {
     private const ulong DefaultSpriteLayerMask = ulong.MaxValue;
+    private const int MaximumBonePaletteEntryCount = 2048;
     private const int MaximumDrawInstanceCount = 131072;
     private const int MaximumLightCount = 256;
     private static readonly Guid s_directionalLightSchemaId = new ContentSchemaIdentityAssignment("render/directional-light").SchemaId;
+    private static readonly IComparer<MeshSortKey> s_meshSortKeyComparer = Comparer<MeshSortKey>.Create(CompareMeshSortKeys);
     private static readonly Guid s_pointLightSchemaId = new ContentSchemaIdentityAssignment("render/point-light").SchemaId;
     private static readonly Guid s_spotLightSchemaId = new ContentSchemaIdentityAssignment("render/spot-light").SchemaId;
 
@@ -136,6 +140,147 @@ public sealed partial class Renderer
 
         Array.Sort(directionalLights, static (left, right) => FoundationCatalogue.CompareRfc(left.LightId, right.LightId));
         return [.. directionalLights];
+    }
+
+    private static ImmutableArray<RenderMeshCameraOrder> CaptureMeshCameraOrders(
+        ImmutableArray<CameraSnapshot> cameras,
+        ImmutableArray<RenderMeshSnapshot> meshDraws)
+    {
+        var cameraOrders = ImmutableArray.CreateBuilder<RenderMeshCameraOrder>(cameras.Length);
+
+        foreach (var camera in cameras)
+        {
+            var selectedCount = 0;
+
+            foreach (var meshDraw in meshDraws)
+            {
+                if ((meshDraw.LayerMask & camera.LayerMask) != 0)
+                {
+                    selectedCount++;
+                }
+            }
+
+            var sortKeys = new MeshSortKey[selectedCount];
+            var sortKeyIndex = 0;
+
+            for (var drawIndex = 0; drawIndex < meshDraws.Length; drawIndex++)
+            {
+                var meshDraw = meshDraws[drawIndex];
+
+                if ((meshDraw.LayerMask & camera.LayerMask) == 0)
+                {
+                    continue;
+                }
+
+                sortKeys[sortKeyIndex++] = new MeshSortKey(
+                    drawIndex,
+                    meshDraw.IsTransparent,
+                    meshDraw.IsTransparent ? GetCameraViewZ(camera, meshDraw.SortPosition) : 0.0f,
+                    meshDraw.DrawId);
+            }
+
+            Array.Sort(sortKeys, s_meshSortKeyComparer);
+            var drawIndices = ImmutableArray.CreateBuilder<int>(sortKeys.Length);
+
+            for (var index = 0; index < sortKeys.Length; index++)
+            {
+                drawIndices.Add(sortKeys[index].DrawIndex);
+            }
+
+            cameraOrders.Add(new RenderMeshCameraOrder(camera.CameraId, drawIndices.MoveToImmutable()));
+        }
+
+        return cameraOrders.MoveToImmutable();
+    }
+
+    private static MeshCapture CaptureMeshes(
+        World world,
+        in WorldFrameReadLease frameReadLease,
+        CpuExtractionWorldParticipant extractionParticipant,
+        ReadOnlySpan<CameraSnapshot> cameras,
+        Guid snapshotId,
+        int meshDrawCount,
+        int paletteCount)
+    {
+        var meshDraws = new RenderMeshSnapshot[meshDrawCount];
+        var meshPalettes = ImmutableArray.CreateBuilder<RenderMeshPalette>(paletteCount);
+        var meshComponents = world.ReadComponentSnapshot<RenderComponentDefinitions.MeshComponent>(in frameReadLease);
+        var meshDrawIndex = 0;
+
+        while (meshComponents.MoveNext())
+        {
+            var component = meshComponents.CurrentValue;
+
+            if (!IsSelectedByAnyCamera(component.LayerMask, cameras))
+            {
+                continue;
+            }
+
+            if (!extractionParticipant.TryGetSceneInstance(world, meshComponents.CurrentEntity, out var sceneInstance)
+                || sceneInstance is null)
+            {
+                throw new InvalidOperationException("A render/mesh Entity is not owned by an active SceneInstance.");
+            }
+
+            var entity = meshComponents.CurrentEntity;
+            var entityId = world.GetEntityId(entity);
+            var sceneAssets = sceneInstance.GetPreparedAssets<RenderSceneAssetBundle>()
+                ?? throw new InvalidOperationException("A render/mesh Entity has no Scene-prepared Mesh resources.");
+            var mesh = sceneAssets.GetMesh(component.MeshAssetId);
+            var (position, linearTransform, _) = world.ResolveSceneEntityTransform(in frameReadLease, entity);
+            var sortPosition = SceneHierarchyTransform.Translate(
+                position,
+                Vector3.TransformDirection(mesh.Bounds.SphereCenter, linearTransform),
+                world.SpatialSettings);
+            var paletteIndex = -1;
+
+            if (mesh.SkeletonAssetId is { } skeletonAssetId)
+            {
+                var skeleton = sceneAssets.GetSkeleton(mesh.AssetId.Value)
+                    ?? throw new InvalidOperationException("A skinned Mesh has no retained package Skeleton.");
+                var skinMatrices = CreateBindPosePalette(skeleton);
+                paletteIndex = meshPalettes.Count;
+                meshPalettes.Add(new RenderMeshPalette(
+                    entityId,
+                    mesh.AssetId.Value,
+                    skeletonAssetId.Value,
+                    skinMatrices));
+            }
+
+            for (var groupIndex = 0; groupIndex < mesh.Groups.Length; groupIndex++)
+            {
+                var group = mesh.Groups[groupIndex];
+                var materialSlot = checked((int)group.MaterialSlot);
+                var materialAssetId = mesh.MaterialSlots[materialSlot].Value;
+                var material = sceneAssets.GetMaterial(materialAssetId);
+                meshDraws[meshDrawIndex++] = new RenderMeshSnapshot(
+                    snapshotId,
+                    frameReadLease.WorldGuid,
+                    sceneInstance.SceneInstanceId,
+                    CreateMeshDrawId(entityId, groupIndex),
+                    entityId,
+                    frameReadLease.Frame3,
+                    position,
+                    sortPosition,
+                    linearTransform,
+                    mesh.AssetId.Value,
+                    groupIndex,
+                    materialSlot,
+                    materialAssetId,
+                    paletteIndex,
+                    component.LayerMask,
+                    material.AlphaMode is RenderMaterialAsset.MaterialAlphaMode.Blend,
+                    HasPreviousTransform: false);
+            }
+        }
+
+        if (meshDrawIndex != meshDrawCount)
+        {
+            throw new InvalidOperationException("The selected Mesh draw count changed during the committed frame read lease.");
+        }
+
+        Array.Sort(meshDraws, static (left, right) => FoundationCatalogue.CompareRfc(left.DrawId, right.DrawId));
+        return new MeshCapture([.. meshDraws], meshPalettes.MoveToImmutable());
     }
 
     private static ImmutableArray<RenderPointLightSnapshot> CapturePointLights(
@@ -364,6 +509,20 @@ public sealed partial class Renderer
             : FoundationCatalogue.CompareRfc(left.CameraId, right.CameraId);
     }
 
+    private static int CompareMeshSortKeys(MeshSortKey left, MeshSortKey right)
+    {
+        var comparison = left.IsTransparent.CompareTo(right.IsTransparent);
+
+        if (comparison == 0 && left.IsTransparent)
+        {
+            comparison = right.CameraViewZ.CompareTo(left.CameraViewZ);
+        }
+
+        return (comparison != 0)
+            ? comparison
+            : FoundationCatalogue.CompareRfc(left.DrawId, right.DrawId);
+    }
+
     private static int CompareSpriteSortKeys(SpriteSortKey left, SpriteSortKey right)
     {
         var comparison = left.SortingLayer.CompareTo(right.SortingLayer);
@@ -456,6 +615,49 @@ public sealed partial class Renderer
         return count;
     }
 
+    private static MeshExtractionCounts CountSelectedMeshes(
+        World world,
+        in WorldFrameReadLease frameReadLease,
+        CpuExtractionWorldParticipant extractionParticipant,
+        ReadOnlySpan<CameraSnapshot> cameras)
+    {
+        var drawCount = 0;
+        var bonePaletteEntries = 0;
+        var skinnedMeshCount = 0;
+        var meshComponents = world.ReadComponentSnapshot<RenderComponentDefinitions.MeshComponent>(in frameReadLease);
+
+        while (meshComponents.MoveNext())
+        {
+            var component = meshComponents.CurrentValue;
+
+            if (!IsSelectedByAnyCamera(component.LayerMask, cameras))
+            {
+                continue;
+            }
+
+            if (!extractionParticipant.TryGetSceneInstance(world, meshComponents.CurrentEntity, out var sceneInstance)
+                || sceneInstance is null)
+            {
+                throw new InvalidOperationException("A render/mesh Entity is not owned by an active SceneInstance.");
+            }
+
+            var sceneAssets = sceneInstance.GetPreparedAssets<RenderSceneAssetBundle>()
+                ?? throw new InvalidOperationException("A render/mesh Entity has no Scene-prepared Mesh resources.");
+            var mesh = sceneAssets.GetMesh(component.MeshAssetId);
+            drawCount = checked(drawCount + mesh.Groups.Length);
+
+            if (mesh.SkeletonAssetId.HasValue)
+            {
+                var skeleton = sceneAssets.GetSkeleton(mesh.AssetId.Value)
+                    ?? throw new InvalidOperationException("A skinned Mesh has no retained package Skeleton.");
+                bonePaletteEntries = checked(bonePaletteEntries + skeleton.Joints.Length);
+                skinnedMeshCount = checked(skinnedMeshCount + 1);
+            }
+        }
+
+        return new MeshExtractionCounts(drawCount, bonePaletteEntries, skinnedMeshCount);
+    }
+
     private static int CountSelectedPointLights(
         World world,
         in WorldFrameReadLease frameReadLease,
@@ -517,24 +719,64 @@ public sealed partial class Renderer
         return count;
     }
 
+    private static ImmutableArray<Matrix4x4> CreateBindPosePalette(TerraFX.Animation.SkeletonAsset skeleton)
+    {
+        var joints = skeleton.Joints;
+        Span<Matrix4x4> bindModels = stackalloc Matrix4x4[joints.Length];
+        var skinMatrices = ImmutableArray.CreateBuilder<Matrix4x4>(joints.Length);
+
+        for (var index = 0; index < joints.Length; index++)
+        {
+            var joint = joints[index];
+            var bindLocal = Matrix4x4.CreateScale(joint.BindScale)
+                * Matrix4x4.CreateFromQuaternion(joint.BindRotation)
+                * Matrix4x4.CreateTranslation(joint.BindTranslation);
+            var bindModel = (joint.ParentIndex < 0)
+                ? bindLocal
+                : bindLocal * bindModels[joint.ParentIndex];
+            var skinMatrix = joint.InverseBind * bindModel;
+
+            if (!bindModel.IsFinite().All() || !skinMatrix.IsFinite().All())
+            {
+                throw new InvalidDataException("A Mesh static BindPose palette contains a nonfinite matrix.");
+            }
+
+            bindModels[index] = bindModel;
+            skinMatrices.Add(skinMatrix);
+        }
+
+        return skinMatrices.MoveToImmutable();
+    }
+
     private static Guid CreateLightId(Guid entityId, Guid schemaId)
         => FoundationNameUuid.Create(entityId, "light/" + schemaId.ToString("N"));
+
+    private static Guid CreateMeshDrawId(Guid entityId, int groupIndex)
+        => FoundationNameUuid.Create(
+            entityId,
+            "mesh-group/" + groupIndex.ToString("x8", CultureInfo.InvariantCulture));
 
     private static RenderSnapshotAssetPins? CreateSnapshotAssetPins(
         World world,
         CpuExtractionWorldParticipant extractionParticipant,
-        ImmutableArray<RenderSpriteSnapshot> sprites)
+        ImmutableArray<RenderSpriteSnapshot> sprites,
+        ImmutableArray<RenderMeshSnapshot> meshDraws)
     {
-        if (sprites.IsEmpty)
+        if (sprites.IsEmpty && meshDraws.IsEmpty)
         {
             return null;
         }
 
-        var sceneInstanceIds = new Guid[sprites.Length];
+        var sceneInstanceIds = new Guid[checked(sprites.Length + meshDraws.Length)];
 
         for (var index = 0; index < sprites.Length; index++)
         {
             sceneInstanceIds[index] = sprites[index].SceneInstanceId;
+        }
+
+        for (var index = 0; index < meshDraws.Length; index++)
+        {
+            sceneInstanceIds[sprites.Length + index] = meshDraws[index].SceneInstanceId;
         }
 
         Array.Sort(sceneInstanceIds, FoundationCatalogue.CompareRfc);
@@ -564,11 +806,11 @@ public sealed partial class Renderer
                 if (!extractionParticipant.TryGetSceneInstance(world, sceneInstanceId, out var sceneInstance)
                     || sceneInstance is null)
                 {
-                    throw new InvalidOperationException("A Sprite snapshot refers to a SceneInstance that is no longer active.");
+                    throw new InvalidOperationException("A render snapshot refers to a SceneInstance that is no longer active.");
                 }
 
                 var sceneAssets = sceneInstance.GetPreparedAssets<RenderSceneAssetBundle>()
-                    ?? throw new InvalidOperationException("A Sprite snapshot has no Scene-prepared asset bundle.");
+                    ?? throw new InvalidOperationException("A render snapshot has no Scene-prepared asset bundle.");
                 retainedSceneAssets.Add(sceneAssets.RetainForSnapshot(sceneInstanceId));
                 previousSceneInstanceId = sceneInstanceId;
             }
@@ -663,6 +905,8 @@ public sealed partial class Renderer
             snapshotId,
             cameraScratch);
         var cameraSpan = cameraScratch[..cameraCount];
+        var extractionParticipant = world.GetCpuExtractionParticipant<CpuExtractionWorldParticipant>()
+            ?? throw new InvalidOperationException("The built-in Renderer CPU extraction participant is not registered.");
         var spriteCount = CountSpriteDraws(world, in frameReadLease, cameraSpan);
 
         if (spriteCount > MaximumDrawInstanceCount)
@@ -714,8 +958,6 @@ public sealed partial class Renderer
             snapshotId,
             spotLightCount);
         var spotLightIds = CopySpotLightIds(spotLights);
-        var extractionParticipant = world.GetCpuExtractionParticipant<CpuExtractionWorldParticipant>()
-            ?? throw new InvalidOperationException("The built-in Renderer CPU extraction participant is not registered.");
         var spriteDraws = CaptureSprites(
             world,
             in frameReadLease,
@@ -728,7 +970,7 @@ public sealed partial class Renderer
 
         try
         {
-            assetPins = CreateSnapshotAssetPins(world, extractionParticipant, spriteDraws);
+            assetPins = CreateSnapshotAssetPins(world, extractionParticipant, spriteDraws, []);
             snapshot = new RenderSnapshot2D(
                 snapshotId,
                 frameReadLease.WorldGuid,
@@ -796,24 +1038,27 @@ public sealed partial class Renderer
             snapshotId,
             cameraScratch);
         var cameraSpan = cameraScratch[..cameraCount];
+        var extractionParticipant = world.GetCpuExtractionParticipant<CpuExtractionWorldParticipant>()
+            ?? throw new InvalidOperationException("The built-in Renderer CPU extraction participant is not registered.");
         var spriteCount = CountSpriteDraws(world, in frameReadLease, cameraSpan);
+        var meshCounts = CountSelectedMeshes(world, in frameReadLease, extractionParticipant, cameraSpan);
+        var drawCount = checked(spriteCount + meshCounts.DrawCount);
+        var directionalLightCount = CountSelectedDirectionalLights(world, in frameReadLease, cameraSpan);
+        var pointLightCount = CountSelectedPointLights(world, in frameReadLease, cameraSpan);
+        var spotLightCount = CountSelectedSpotLights(world, in frameReadLease, cameraSpan);
+        var lightCount = checked(checked(directionalLightCount + pointLightCount) + spotLightCount);
 
-        if (spriteCount > MaximumDrawInstanceCount)
+        if (drawCount > MaximumDrawInstanceCount)
         {
             return new RenderExtractionResponse(
                 RenderExtractionStatus.CapacityExceeded,
                 snapshot: null,
                 new RenderExtractionLimitDiagnostic(
                     RenderExtractionLimitKind.DrawInstances,
-                    spriteCount,
+                    drawCount,
                     MaximumDrawInstanceCount),
                 []);
         }
-
-        var directionalLightCount = CountSelectedDirectionalLights(world, in frameReadLease, cameraSpan);
-        var pointLightCount = CountSelectedPointLights(world, in frameReadLease, cameraSpan);
-        var spotLightCount = CountSelectedSpotLights(world, in frameReadLease, cameraSpan);
-        var lightCount = checked(checked(directionalLightCount + pointLightCount) + spotLightCount);
 
         if (lightCount > MaximumLightCount)
         {
@@ -821,6 +1066,18 @@ public sealed partial class Renderer
                 RenderExtractionStatus.CapacityExceeded,
                 snapshot: null,
                 new RenderExtractionLimitDiagnostic(RenderExtractionLimitKind.Lights, lightCount, MaximumLightCount),
+                []);
+        }
+
+        if (meshCounts.BonePaletteEntries > MaximumBonePaletteEntryCount)
+        {
+            return new RenderExtractionResponse(
+                RenderExtractionStatus.CapacityExceeded,
+                snapshot: null,
+                new RenderExtractionLimitDiagnostic(
+                    RenderExtractionLimitKind.BonePaletteEntries,
+                    meshCounts.BonePaletteEntries,
+                    MaximumBonePaletteEntryCount),
                 []);
         }
 
@@ -847,8 +1104,6 @@ public sealed partial class Renderer
             snapshotId,
             spotLightCount);
         var spotLightIds = CopySpotLightIds(spotLights);
-        var extractionParticipant = world.GetCpuExtractionParticipant<CpuExtractionWorldParticipant>()
-            ?? throw new InvalidOperationException("The built-in Renderer CPU extraction participant is not registered.");
         var spriteDraws = CaptureSprites(
             world,
             in frameReadLease,
@@ -856,12 +1111,21 @@ public sealed partial class Renderer
             snapshotId,
             spriteCount);
         var spriteCameraOrders = CaptureSpriteCameraOrders(cameras, spriteDraws);
+        var meshCapture = CaptureMeshes(
+            world,
+            in frameReadLease,
+            extractionParticipant,
+            cameraSpan,
+            snapshotId,
+            meshCounts.DrawCount,
+            meshCounts.SkinnedMeshCount);
+        var meshCameraOrders = CaptureMeshCameraOrders(cameras, meshCapture.Draws);
         RenderSnapshot3D? snapshot = null;
         RenderSnapshotAssetPins? assetPins = null;
 
         try
         {
-            assetPins = CreateSnapshotAssetPins(world, extractionParticipant, spriteDraws);
+            assetPins = CreateSnapshotAssetPins(world, extractionParticipant, spriteDraws, meshCapture.Draws);
             snapshot = new RenderSnapshot3D(
                 snapshotId,
                 frameReadLease.WorldGuid,
@@ -878,7 +1142,10 @@ public sealed partial class Renderer
                 spriteCameraOrders,
                 assetPins,
                 options.TargetExtent,
-                frameReadLease.Frame3);
+                frameReadLease.Frame3,
+                meshCapture.Draws,
+                meshCameraOrders,
+                meshCapture.Palettes);
             assetPins = null;
             frameReadLease.ValidateCurrent();
             var response = new RenderExtractionResponse(
@@ -895,6 +1162,21 @@ public sealed partial class Renderer
             assetPins?.Dispose();
         }
     }
+
+    private readonly record struct MeshCapture(
+        ImmutableArray<RenderMeshSnapshot> Draws,
+        ImmutableArray<RenderMeshPalette> Palettes);
+
+    private readonly record struct MeshExtractionCounts(
+        int DrawCount,
+        int BonePaletteEntries,
+        int SkinnedMeshCount);
+
+    private readonly record struct MeshSortKey(
+        int DrawIndex,
+        bool IsTransparent,
+        float CameraViewZ,
+        Guid DrawId);
 
     private readonly record struct SpriteSortKey(
         int DrawIndex,

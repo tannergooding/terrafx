@@ -54,6 +54,40 @@ internal static class RenderMeshAssetBinding
         }
     }
 
+    internal static void ValidateMaterialBindings(RenderMeshAsset mesh, RenderMaterialAsset material)
+    {
+        if (material.IsSprite)
+        {
+            if (!mesh.JointIndices.IsDefault)
+            {
+                throw new InvalidDataException("A Sprite-profile Material does not admit a skinned Mesh.");
+            }
+
+            if (mesh.Uv0.IsDefault)
+            {
+                throw new InvalidDataException("A Sprite-profile Mesh Material requires the Mesh UVSet0 stream.");
+            }
+
+            ValidateTextureBinding(mesh, material.Parameters.SpriteTexture);
+            return;
+        }
+
+        if (mesh.Normals.IsDefault)
+        {
+            throw new InvalidDataException("A PBR Mesh Material requires the Mesh Normal stream.");
+        }
+
+        ValidateTextureBinding(mesh, material.Parameters.BaseTexture);
+        ValidateTextureBinding(mesh, material.Parameters.PackedMetalRoughOcclusion);
+        ValidateTextureBinding(mesh, material.Parameters.NormalTexture);
+        ValidateTextureBinding(mesh, material.Parameters.EmissiveTexture);
+
+        if (material.Parameters.NormalTexture.HasValue && mesh.Tangents.IsDefault)
+        {
+            throw new InvalidDataException("A PBR normal-texture Mesh Material requires the Mesh Tangent stream.");
+        }
+    }
+
     internal static async Task ValidatePackageBindingsAsync(
         AssetLease<RenderMeshAsset> meshLease,
         CancellationToken cancellationToken = default)
@@ -81,35 +115,6 @@ internal static class RenderMeshAssetBinding
             using var materialTextureSet = await RenderMaterialTextureLoader.RetainAsync(
                 materialLease,
                 cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    private static void ValidateMaterialBindings(RenderMeshAsset mesh, RenderMaterialAsset material)
-    {
-        if (material.IsSprite)
-        {
-            if (mesh.Uv0.IsDefault)
-            {
-                throw new InvalidDataException("A Sprite-profile Mesh Material requires the Mesh UVSet0 stream.");
-            }
-
-            ValidateTextureBinding(mesh, material.Parameters.SpriteTexture);
-            return;
-        }
-
-        if (mesh.Normals.IsDefault)
-        {
-            throw new InvalidDataException("A PBR Mesh Material requires the Mesh Normal stream.");
-        }
-
-        ValidateTextureBinding(mesh, material.Parameters.BaseTexture);
-        ValidateTextureBinding(mesh, material.Parameters.PackedMetalRoughOcclusion);
-        ValidateTextureBinding(mesh, material.Parameters.NormalTexture);
-        ValidateTextureBinding(mesh, material.Parameters.EmissiveTexture);
-
-        if (material.Parameters.NormalTexture.HasValue && mesh.Tangents.IsDefault)
-        {
-            throw new InvalidDataException("A PBR normal-texture Mesh Material requires the Mesh Tangent stream.");
         }
     }
 

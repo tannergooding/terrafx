@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Immutable;
 using System.Threading;
+using TerraFX.Animation;
 using TerraFX;
 using TerraFX.Assets;
 
@@ -78,22 +79,26 @@ internal sealed class RenderSnapshotAssetPins : IDisposable
         private readonly ImmutableArray<AtlasPin> _atlasPages;
         private int _isDisposed;
         private readonly ImmutableArray<MaterialPin> _materials;
+        private readonly ImmutableArray<MeshPin> _meshes;
 
         internal SceneAssetPins(
             Guid sceneInstanceId,
             ImmutableArray<AtlasPin> atlasPages,
-            ImmutableArray<MaterialPin> materials)
+            ImmutableArray<MaterialPin> materials,
+            ImmutableArray<MeshPin> meshes)
         {
             ArgumentOutOfRangeException.ThrowIfEqual(sceneInstanceId, Guid.Empty);
 
-            if (atlasPages.IsDefaultOrEmpty || materials.IsDefault)
+            if (atlasPages.IsDefault || materials.IsDefault || meshes.IsDefault
+                || (atlasPages.IsEmpty && meshes.IsEmpty))
             {
-                throw new ArgumentException("Scene Sprite snapshot asset arrays must be initialized.");
+                throw new ArgumentException("Scene render snapshot asset arrays must be initialized.");
             }
 
             SceneInstanceId = sceneInstanceId;
             _atlasPages = atlasPages;
             _materials = materials;
+            _meshes = meshes;
         }
 
         internal Guid SceneInstanceId { get; }
@@ -105,14 +110,29 @@ internal sealed class RenderSnapshotAssetPins : IDisposable
                 return;
             }
 
-            foreach (var atlasPage in _atlasPages)
+            try
             {
-                atlasPage.PageSet.Dispose();
+                foreach (var atlasPage in _atlasPages)
+                {
+                    atlasPage.PageSet.Dispose();
+                }
             }
-
-            foreach (var material in _materials)
+            finally
             {
-                material.Lease.Dispose();
+                try
+                {
+                    foreach (var material in _materials)
+                    {
+                        material.Dispose();
+                    }
+                }
+                finally
+                {
+                    foreach (var mesh in _meshes)
+                    {
+                        mesh.Dispose();
+                    }
+                }
             }
         }
 
@@ -158,7 +178,7 @@ internal sealed class RenderSnapshotAssetPins : IDisposable
 
                 if (comparison == 0)
                 {
-                    return _materials[middle].Lease.Value;
+                    return _materials[middle].Material;
                 }
 
                 if (comparison < 0)
@@ -171,7 +191,94 @@ internal sealed class RenderSnapshotAssetPins : IDisposable
                 }
             }
 
-            throw new ArgumentException("The Material is not retained by this Sprite snapshot.", nameof(assetId));
+            throw new ArgumentException("The Material is not retained by this render snapshot.", nameof(assetId));
+        }
+
+        internal RenderMaterialTextureSet? GetMaterialTextureSet(int assetId)
+        {
+            ThrowIfDisposed();
+            var low = 0;
+            var high = _materials.Length - 1;
+
+            while (low <= high)
+            {
+                var middle = low + ((high - low) / 2);
+                var comparison = _materials[middle].AssetId.CompareTo(assetId);
+
+                if (comparison == 0)
+                {
+                    return _materials[middle].TextureSet;
+                }
+
+                if (comparison < 0)
+                {
+                    low = middle + 1;
+                }
+                else
+                {
+                    high = middle - 1;
+                }
+            }
+
+            throw new ArgumentException("The Material is not retained by this render snapshot.", nameof(assetId));
+        }
+
+        internal RenderMeshAsset GetMesh(int assetId)
+        {
+            ThrowIfDisposed();
+            var low = 0;
+            var high = _meshes.Length - 1;
+
+            while (low <= high)
+            {
+                var middle = low + ((high - low) / 2);
+                var comparison = _meshes[middle].AssetId.CompareTo(assetId);
+
+                if (comparison == 0)
+                {
+                    return _meshes[middle].Lease.Value;
+                }
+
+                if (comparison < 0)
+                {
+                    low = middle + 1;
+                }
+                else
+                {
+                    high = middle - 1;
+                }
+            }
+
+            throw new ArgumentException("The Mesh is not retained by this render snapshot.", nameof(assetId));
+        }
+
+        internal SkeletonAsset? GetSkeleton(int meshAssetId)
+        {
+            ThrowIfDisposed();
+            var low = 0;
+            var high = _meshes.Length - 1;
+
+            while (low <= high)
+            {
+                var middle = low + ((high - low) / 2);
+                var comparison = _meshes[middle].AssetId.CompareTo(meshAssetId);
+
+                if (comparison == 0)
+                {
+                    return _meshes[middle].SkeletonLease?.Value;
+                }
+
+                if (comparison < 0)
+                {
+                    low = middle + 1;
+                }
+                else
+                {
+                    high = middle - 1;
+                }
+            }
+
+            throw new ArgumentException("The Mesh is not retained by this render snapshot.", nameof(meshAssetId));
         }
 
         private void ThrowIfDisposed()
@@ -179,7 +286,46 @@ internal sealed class RenderSnapshotAssetPins : IDisposable
 
         internal readonly record struct AtlasPin(int AssetId, RenderAtlasPageSet PageSet);
 
-        internal readonly record struct MaterialPin(int AssetId, AssetLease<RenderMaterialAsset> Lease);
+        internal readonly record struct MaterialPin(
+            int AssetId,
+            AssetLease<RenderMaterialAsset>? Lease,
+            RenderMaterialTextureSet? TextureSet)
+        {
+            internal RenderMaterialAsset Material
+                => TextureSet?.Material
+                ?? Lease?.Value
+                ?? throw new ObjectDisposedException(nameof(MaterialPin));
+
+            internal void Dispose()
+            {
+                try
+                {
+                    Lease?.Dispose();
+                }
+                finally
+                {
+                    TextureSet?.Dispose();
+                }
+            }
+        }
+
+        internal readonly record struct MeshPin(
+            int AssetId,
+            AssetLease<RenderMeshAsset> Lease,
+            AssetLease<SkeletonAsset>? SkeletonLease)
+        {
+            internal void Dispose()
+            {
+                try
+                {
+                    Lease.Dispose();
+                }
+                finally
+                {
+                    SkeletonLease?.Dispose();
+                }
+            }
+        }
     }
 
     private sealed class SharedState

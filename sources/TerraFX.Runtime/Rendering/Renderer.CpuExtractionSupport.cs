@@ -85,6 +85,7 @@ public sealed partial class Renderer
         {
             ArgumentNullException.ThrowIfNull(builder);
             ArgumentNullException.ThrowIfNull(schemas);
+            _ = RenderComponentDefinitions.RegisterMesh(builder, schemas);
             _ = RenderComponentDefinitions.RegisterSprite(builder, schemas);
             _ = RenderComponentDefinitions.RegisterPointLight(builder, schemas);
             _ = RenderComponentDefinitions.RegisterDirectionalLight(builder, schemas);

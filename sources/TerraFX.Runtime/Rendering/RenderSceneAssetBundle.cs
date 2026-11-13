@@ -2,10 +2,12 @@
 
 using System;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
+using TerraFX.Animation;
 using TerraFX.Assets;
 using TerraFX.Entities;
 using TerraFX.Scenes;
@@ -15,31 +17,40 @@ namespace TerraFX.Rendering;
 internal sealed class RenderSceneAssetBundle : IDisposable
 {
     private static readonly Guid s_spriteSchemaId = new ContentSchemaIdentityAssignment("render/sprite").SchemaId;
+    private static readonly Guid s_meshSchemaId = new ContentSchemaIdentityAssignment("render/mesh").SchemaId;
 
     private readonly AtlasEntry[] _atlasEntries;
     private int _isDisposed;
     private readonly MaterialEntry[] _materialEntries;
+    private readonly MeshEntry[] _meshEntries;
     private WorldSceneStorageReservation? _storageReservation;
 
     private RenderSceneAssetBundle(
         AtlasEntry[] atlasEntries,
         MaterialEntry[] materialEntries,
+        MeshEntry[] meshEntries,
         WorldSceneStorageReservation storageReservation)
     {
         ArgumentNullException.ThrowIfNull(atlasEntries);
         ArgumentNullException.ThrowIfNull(materialEntries);
+        ArgumentNullException.ThrowIfNull(meshEntries);
         ArgumentNullException.ThrowIfNull(storageReservation);
 
-        if (atlasEntries.Length == 0)
+        if ((atlasEntries.Length == 0) && (meshEntries.Length == 0))
         {
-            throw new ArgumentException("A Sprite asset bundle requires at least one prepared Atlas.", nameof(atlasEntries));
+            throw new ArgumentException("A render asset bundle requires a prepared Sprite Atlas or Mesh.", nameof(atlasEntries));
         }
 
         _atlasEntries = atlasEntries;
         _materialEntries = materialEntries;
+        _meshEntries = meshEntries;
         _storageReservation = storageReservation;
     }
 
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "Prepared Mesh, Material, texture, and page leases transfer together into the Scene bundle and snapshot pin owners; all failure paths dispose untransferred leases.")]
     internal static async Task<RenderSceneAssetBundle?> PrepareAsync(
         SceneExpansionPlan plan,
         Func<long, WorldSceneStorageReservation?> reserveStorage,
@@ -49,34 +60,44 @@ internal sealed class RenderSceneAssetBundle : IDisposable
         ArgumentNullException.ThrowIfNull(reserveStorage);
         cancellationToken.ThrowIfCancellationRequested();
         var spriteCount = CountSprites(plan);
+        var meshComponentCount = CountMeshes(plan);
 
-        if (spriteCount == 0)
+        if ((spriteCount == 0) && (meshComponentCount == 0))
         {
             return null;
         }
 
-        var scratchReservation = reserveStorage(GetScratchByteReservation(spriteCount))
-            ?? throw new InvalidOperationException("The World cannot reserve Sprite asset-preparation scratch storage.");
+        var scratchReservation = reserveStorage(GetScratchByteReservation(spriteCount, meshComponentCount))
+            ?? throw new InvalidOperationException("The World cannot reserve render asset-preparation scratch storage.");
         WorldSceneStorageReservation? finalReservation = null;
+        WorldSceneStorageReservation? materialScratchReservation = null;
         AtlasEntry[]? atlasEntries = null;
         var loadedAtlasCount = 0;
         MaterialEntry[]? materialEntries = null;
         var loadedMaterialCount = 0;
+        MeshEntry[]? meshEntries = null;
+        var loadedMeshCount = 0;
 
         try
         {
             var atlasIds = new int[spriteCount];
-            var materialIds = new int[spriteCount];
-            var materialIdCount = 0;
-            FillAssetIds(plan, atlasIds, materialIds, ref materialIdCount, cancellationToken);
+            var spriteMaterialIds = new int[spriteCount];
+            var meshIds = new int[meshComponentCount];
+            var spriteMaterialIdCount = 0;
+            FillAssetIds(
+                plan,
+                atlasIds,
+                spriteMaterialIds,
+                ref spriteMaterialIdCount,
+                meshIds,
+                cancellationToken);
             Array.Sort(atlasIds);
-            Array.Sort(materialIds, 0, materialIdCount);
+            Array.Sort(spriteMaterialIds, 0, spriteMaterialIdCount);
+            Array.Sort(meshIds);
             var atlasCount = CompactDistinct(atlasIds, atlasIds.Length);
-            var materialCount = CompactDistinct(materialIds, materialIdCount);
-            finalReservation = reserveStorage(GetRequiredByteReservation(atlasCount, materialCount))
-                ?? throw new InvalidOperationException("The World cannot reserve retained Sprite asset-bundle storage.");
+            var meshCount = CompactDistinct(meshIds, meshIds.Length);
             atlasEntries = new AtlasEntry[atlasCount];
-            materialEntries = new MaterialEntry[materialCount];
+            meshEntries = new MeshEntry[meshCount];
 
             for (var index = 0; index < atlasCount; index++)
             {
@@ -112,6 +133,71 @@ internal sealed class RenderSceneAssetBundle : IDisposable
                 }
             }
 
+            for (var index = 0; index < meshCount; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var assetId = new AssetId(meshIds[index]);
+                var meshLease = await plan.LoadFromPackageAsync<RenderMeshAsset>(
+                    assetId,
+                    cancellationToken).ConfigureAwait(false);
+                AssetLease<RenderMeshAsset>? retainedMeshLease = null;
+                AssetLease<SkeletonAsset>? skeletonLease = null;
+
+                try
+                {
+                    skeletonLease = await RenderMeshAssetBinding.LoadSkeletonAsync(
+                        meshLease,
+                        cancellationToken).ConfigureAwait(false);
+                    retainedMeshLease = meshLease.Retain();
+                    var ownedMeshLease = retainedMeshLease
+                        ?? throw new InvalidOperationException("The Mesh lease could not be retained.");
+                    meshEntries[index] = new MeshEntry(assetId.Value, ownedMeshLease, skeletonLease);
+                    loadedMeshCount++;
+                    retainedMeshLease = null;
+                    skeletonLease = null;
+                }
+                finally
+                {
+                    retainedMeshLease?.Dispose();
+                    skeletonLease?.Dispose();
+                    meshLease.Dispose();
+                }
+            }
+
+            var meshMaterialReferenceCount = 0;
+
+            foreach (var meshEntry in meshEntries)
+            {
+                meshMaterialReferenceCount = checked(
+                    meshMaterialReferenceCount + meshEntry.Mesh.MaterialSlots.Length);
+            }
+
+            var totalMaterialReferenceCount = checked(spriteMaterialIdCount + meshMaterialReferenceCount);
+            materialScratchReservation = reserveStorage(
+                GetMaterialScratchByteReservation(spriteMaterialIdCount, meshMaterialReferenceCount))
+                ?? throw new InvalidOperationException("The World cannot reserve Mesh Material-reference scratch storage.");
+            var materialIds = new int[totalMaterialReferenceCount];
+            spriteMaterialIds.AsSpan(0, spriteMaterialIdCount).CopyTo(materialIds);
+            var meshMaterialIds = new int[meshMaterialReferenceCount];
+            var materialWriteIndex = 0;
+
+            foreach (var meshEntry in meshEntries)
+            {
+                foreach (var materialAssetId in meshEntry.Mesh.MaterialSlots)
+                {
+                    var materialAssetIdValue = materialAssetId.Value;
+                    materialIds[spriteMaterialIdCount + materialWriteIndex] = materialAssetIdValue;
+                    meshMaterialIds[materialWriteIndex++] = materialAssetIdValue;
+                }
+            }
+
+            Array.Sort(materialIds);
+            Array.Sort(meshMaterialIds);
+            var materialCount = CompactDistinct(materialIds, materialIds.Length);
+            finalReservation = reserveStorage(GetRequiredByteReservation(atlasCount, materialCount, meshCount))
+                ?? throw new InvalidOperationException("The World cannot reserve retained render asset-bundle storage.");
+            materialEntries = new MaterialEntry[materialCount];
+
             for (var index = 0; index < materialCount; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -119,53 +205,77 @@ internal sealed class RenderSceneAssetBundle : IDisposable
                 var materialLease = await plan.LoadFromPackageAsync<RenderMaterialAsset>(
                     assetId,
                     cancellationToken).ConfigureAwait(false);
+                AssetLease<RenderMaterialAsset>? retainedMaterialLease = null;
+                RenderMaterialTextureSet? retainedTextureSet = null;
 
                 try
                 {
                     var material = materialLease.Value;
+                    var isSpriteMaterial = Array.BinarySearch(
+                        spriteMaterialIds,
+                        0,
+                        spriteMaterialIdCount,
+                        assetId.Value) >= 0;
+                    var isMeshMaterial = Array.BinarySearch(meshMaterialIds, assetId.Value) >= 0;
 
-                    if (!material.IsSprite)
+                    if (isSpriteMaterial)
                     {
-                        throw new InvalidDataException("A render/sprite Material must select the exact Sprite profile.");
+                        if (!material.IsSprite)
+                        {
+                            throw new InvalidDataException("A render/sprite Material must select the exact Sprite profile.");
+                        }
+
+                        if (material.Parameters.SpriteTexture is { } texture
+                            && (texture.Sampler.Mip != 0))
+                        {
+                            throw new InvalidDataException("An Atlas-page Sprite Material cannot sample unavailable mip levels.");
+                        }
                     }
 
-                    if (material.Parameters.SpriteTexture is { } texture
-                        && (texture.Sampler.Mip != 0))
+                    if (isMeshMaterial)
                     {
-                        throw new InvalidDataException("An Atlas-page Sprite Material cannot sample unavailable mip levels.");
+                        var meshTextureSet = await RenderMaterialTextureLoader.RetainAsync(
+                            materialLease,
+                            cancellationToken).ConfigureAwait(false);
+                        retainedTextureSet = meshTextureSet;
+                    }
+                    else
+                    {
+                        retainedMaterialLease = materialLease.Retain();
                     }
 
-                    var retainedMaterialLease = (AssetLease<RenderMaterialAsset>?)materialLease.Retain();
-
-                    try
-                    {
-                        var ownedMaterialLease = retainedMaterialLease
-                            ?? throw new InvalidOperationException("The Material lease could not be retained.");
-                        materialEntries[index] = new MaterialEntry(assetId.Value, ownedMaterialLease);
-                        loadedMaterialCount++;
-                        retainedMaterialLease = null;
-                    }
-                    finally
-                    {
-                        retainedMaterialLease?.Dispose();
-                    }
+                    materialEntries[index] = new MaterialEntry(
+                        assetId.Value,
+                        retainedMaterialLease,
+                        retainedTextureSet);
+                    loadedMaterialCount++;
+                    retainedMaterialLease = null;
+                    retainedTextureSet = null;
                 }
                 finally
                 {
+                    retainedMaterialLease?.Dispose();
+                    retainedTextureSet?.Dispose();
                     materialLease.Dispose();
                 }
             }
 
+            ValidateMeshBindings(meshEntries, materialEntries);
             ValidateSpriteBindings(plan, atlasEntries, materialEntries, cancellationToken);
+            var ownedStorageReservation = finalReservation
+                ?? throw new InvalidOperationException("The prepared render bundle has no storage reservation.");
             var bundle = new RenderSceneAssetBundle(
                 atlasEntries,
                 materialEntries,
-                finalReservation);
+                meshEntries,
+                ownedStorageReservation);
             finalReservation = null;
             atlasEntries = null;
             materialEntries = null;
+            meshEntries = null;
             loadedAtlasCount = 0;
             loadedMaterialCount = 0;
+            loadedMeshCount = 0;
             return bundle;
         }
         catch
@@ -182,7 +292,15 @@ internal sealed class RenderSceneAssetBundle : IDisposable
             {
                 for (var index = 0; index < loadedMaterialCount; index++)
                 {
-                    materialEntries[index].Lease.Dispose();
+                    materialEntries[index].Dispose();
+                }
+            }
+
+            if (meshEntries is not null)
+            {
+                for (var index = 0; index < loadedMeshCount; index++)
+                {
+                    meshEntries[index].Dispose();
                 }
             }
 
@@ -191,6 +309,7 @@ internal sealed class RenderSceneAssetBundle : IDisposable
         finally
         {
             finalReservation?.Dispose();
+            materialScratchReservation?.Dispose();
             scratchReservation.Dispose();
         }
     }
@@ -227,6 +346,24 @@ internal sealed class RenderSceneAssetBundle : IDisposable
         return writeIndex;
     }
 
+    private static int CountMeshes(SceneExpansionPlan plan)
+    {
+        var meshCount = 0;
+
+        foreach (var entity in plan.Entities)
+        {
+            foreach (var component in entity.Components)
+            {
+                if (component.Schema.SchemaId == s_meshSchemaId)
+                {
+                    meshCount = checked(meshCount + 1);
+                }
+            }
+        }
+
+        return meshCount;
+    }
+
     private static int CountSprites(SceneExpansionPlan plan)
     {
         var spriteCount = 0;
@@ -248,11 +385,13 @@ internal sealed class RenderSceneAssetBundle : IDisposable
     private static void FillAssetIds(
         SceneExpansionPlan plan,
         int[] atlasIds,
-        int[] materialIds,
-        ref int materialIdCount,
+        int[] spriteMaterialIds,
+        ref int spriteMaterialIdCount,
+        int[] meshIds,
         CancellationToken cancellationToken)
     {
         var spriteIndex = 0;
+        var meshIndex = 0;
 
         foreach (var entity in plan.Entities)
         {
@@ -262,6 +401,17 @@ internal sealed class RenderSceneAssetBundle : IDisposable
             {
                 if (component.Schema.SchemaId != s_spriteSchemaId)
                 {
+                    if (component.Schema.SchemaId == s_meshSchemaId)
+                    {
+                        var mesh = RenderComponentDefinitions.GetMeshAssetReferences(component.EncodedRecord);
+                        meshIds[meshIndex++] = mesh.MeshAssetId;
+
+                        if (mesh.PoseMode != 0)
+                        {
+                            throw new InvalidDataException("Only static BindPose is admitted by the selected Mesh component schema.");
+                        }
+                    }
+
                     continue;
                 }
 
@@ -270,14 +420,14 @@ internal sealed class RenderSceneAssetBundle : IDisposable
 
                 if (references.MaterialAssetId is int materialAssetId)
                 {
-                    materialIds[materialIdCount++] = materialAssetId;
+                    spriteMaterialIds[spriteMaterialIdCount++] = materialAssetId;
                 }
             }
         }
 
-        if (spriteIndex != atlasIds.Length)
+        if ((spriteIndex != atlasIds.Length) || (meshIndex != meshIds.Length))
         {
-            throw new InvalidOperationException("The expanded Sprite count changed during package preparation.");
+            throw new InvalidOperationException("The expanded render component counts changed during package preparation.");
         }
     }
 
@@ -365,14 +515,66 @@ internal sealed class RenderSceneAssetBundle : IDisposable
         throw new InvalidOperationException("A prepared Sprite Material is absent from its bundle.");
     }
 
-    private static long GetRequiredByteReservation(int atlasCount, int materialCount)
+    private static MeshEntry FindMeshEntry(int meshAssetId, MeshEntry[] meshEntries)
+    {
+        var low = 0;
+        var high = meshEntries.Length - 1;
+
+        while (low <= high)
+        {
+            var middle = low + ((high - low) / 2);
+            var comparison = meshEntries[middle].AssetId.CompareTo(meshAssetId);
+
+            if (comparison == 0)
+            {
+                return meshEntries[middle];
+            }
+
+            if (comparison < 0)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle - 1;
+            }
+        }
+
+        throw new InvalidOperationException("A prepared Mesh is absent from its bundle.");
+    }
+
+    private static long GetMaterialScratchByteReservation(int spriteMaterialReferenceCount, int meshMaterialReferenceCount)
+        => checked(
+            64L
+            + ArrayBytes(checked(spriteMaterialReferenceCount + meshMaterialReferenceCount), sizeof(int))
+            + ArrayBytes(meshMaterialReferenceCount, sizeof(int)));
+
+    private static long GetRequiredByteReservation(int atlasCount, int materialCount, int meshCount)
         => checked(
             256L
             + ArrayBytes(atlasCount, Unsafe.SizeOf<AtlasEntry>())
-            + ArrayBytes(materialCount, Unsafe.SizeOf<MaterialEntry>()));
+            + ArrayBytes(materialCount, Unsafe.SizeOf<MaterialEntry>())
+            + ArrayBytes(meshCount, Unsafe.SizeOf<MeshEntry>()));
 
-    private static long GetScratchByteReservation(int spriteCount)
-        => checked(128L + (2L * ArrayBytes(spriteCount, sizeof(int))));
+    private static long GetScratchByteReservation(int spriteCount, int meshComponentCount)
+        => checked(
+            128L
+            + (2L * ArrayBytes(spriteCount, sizeof(int)))
+            + ArrayBytes(meshComponentCount, sizeof(int)));
+
+    private static void ValidateMeshBindings(MeshEntry[] meshEntries, MaterialEntry[] materialEntries)
+    {
+        foreach (var meshEntry in meshEntries)
+        {
+            var mesh = meshEntry.Mesh;
+
+            foreach (var materialAssetId in mesh.MaterialSlots)
+            {
+                var material = FindMaterialEntry(materialAssetId.Value, materialEntries).Material;
+                RenderMeshAssetBinding.ValidateMaterialBindings(mesh, material);
+            }
+        }
+    }
 
     private static void ValidateSpriteBindings(
         SceneExpansionPlan plan,
@@ -400,7 +602,7 @@ internal sealed class RenderSceneAssetBundle : IDisposable
                     continue;
                 }
 
-                var material = FindMaterialEntry(materialAssetId, materialEntries).Lease.Value;
+                var material = FindMaterialEntry(materialAssetId, materialEntries).Material;
 
                 if (!material.IsSprite)
                 {
@@ -436,12 +638,22 @@ internal sealed class RenderSceneAssetBundle : IDisposable
             {
                 foreach (var materialEntry in _materialEntries)
                 {
-                    materialEntry.Lease.Dispose();
+                    materialEntry.Dispose();
                 }
             }
             finally
             {
-                Interlocked.Exchange(ref _storageReservation, null)?.Dispose();
+                try
+                {
+                    foreach (var meshEntry in _meshEntries)
+                    {
+                        meshEntry.Dispose();
+                    }
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _storageReservation, null)?.Dispose();
+                }
             }
         }
     }
@@ -455,7 +667,19 @@ internal sealed class RenderSceneAssetBundle : IDisposable
     internal RenderMaterialAsset GetMaterial(int materialAssetId)
     {
         ThrowIfDisposed();
-        return FindMaterialEntry(materialAssetId, _materialEntries).Lease.Value;
+        return FindMaterialEntry(materialAssetId, _materialEntries).Material;
+    }
+
+    internal RenderMeshAsset GetMesh(int meshAssetId)
+    {
+        ThrowIfDisposed();
+        return FindMeshEntry(meshAssetId, _meshEntries).Mesh;
+    }
+
+    internal SkeletonAsset? GetSkeleton(int meshAssetId)
+    {
+        ThrowIfDisposed();
+        return FindMeshEntry(meshAssetId, _meshEntries).Skeleton;
     }
 
     internal RenderSnapshotAssetPins.SceneAssetPins RetainForSnapshot(Guid sceneInstanceId)
@@ -464,6 +688,7 @@ internal sealed class RenderSceneAssetBundle : IDisposable
         ArgumentOutOfRangeException.ThrowIfEqual(sceneInstanceId, Guid.Empty);
         var atlasPages = ImmutableArray.CreateBuilder<RenderSnapshotAssetPins.SceneAssetPins.AtlasPin>(_atlasEntries.Length);
         var materials = ImmutableArray.CreateBuilder<RenderSnapshotAssetPins.SceneAssetPins.MaterialPin>(_materialEntries.Length);
+        var meshes = ImmutableArray.CreateBuilder<RenderSnapshotAssetPins.SceneAssetPins.MeshPin>(_meshEntries.Length);
 
         try
         {
@@ -486,25 +711,80 @@ internal sealed class RenderSceneAssetBundle : IDisposable
 
             foreach (var materialEntry in _materialEntries)
             {
-                var retainedMaterial = (AssetLease<RenderMaterialAsset>?)materialEntry.Lease.Retain();
+                if (materialEntry.TextureSet is { } sourceTextureSet)
+                {
+                    RenderMaterialTextureSet? retainedTextureSet = null;
+
+                    try
+                    {
+                        retainedTextureSet = sourceTextureSet.Retain();
+                        var ownedTextureSet = retainedTextureSet
+                            ?? throw new InvalidOperationException("The Material texture set could not be retained.");
+                        materials.Add(new RenderSnapshotAssetPins.SceneAssetPins.MaterialPin(
+                            materialEntry.AssetId,
+                            null,
+                            ownedTextureSet));
+                        retainedTextureSet = null;
+                    }
+                    finally
+                    {
+                        retainedTextureSet?.Dispose();
+                    }
+                }
+                else
+                {
+                    var sourceMaterialLease = materialEntry.Lease
+                        ?? throw new InvalidOperationException("The prepared Material has no owned package lease.");
+                    AssetLease<RenderMaterialAsset>? retainedMaterial = null;
+
+                    try
+                    {
+                        retainedMaterial = sourceMaterialLease.Retain();
+                        var ownedMaterial = retainedMaterial
+                            ?? throw new InvalidOperationException("The Material lease could not be retained.");
+                        materials.Add(new RenderSnapshotAssetPins.SceneAssetPins.MaterialPin(
+                            materialEntry.AssetId,
+                            ownedMaterial,
+                            null));
+                        retainedMaterial = null;
+                    }
+                    finally
+                    {
+                        retainedMaterial?.Dispose();
+                    }
+                }
+            }
+
+            foreach (var meshEntry in _meshEntries)
+            {
+                AssetLease<RenderMeshAsset>? retainedMesh = null;
+                AssetLease<SkeletonAsset>? retainedSkeleton = null;
 
                 try
                 {
-                    var material = retainedMaterial
-                        ?? throw new InvalidOperationException("The Material lease could not be retained.");
-                    materials.Add(new RenderSnapshotAssetPins.SceneAssetPins.MaterialPin(materialEntry.AssetId, material));
-                    retainedMaterial = null;
+                    retainedMesh = meshEntry.Lease.Retain();
+                    retainedSkeleton = meshEntry.SkeletonLease?.Retain();
+                    var ownedMesh = retainedMesh
+                        ?? throw new InvalidOperationException("The Mesh lease could not be retained.");
+                    meshes.Add(new RenderSnapshotAssetPins.SceneAssetPins.MeshPin(
+                        meshEntry.AssetId,
+                        ownedMesh,
+                        retainedSkeleton));
+                    retainedSkeleton = null;
+                    retainedMesh = null;
                 }
                 finally
                 {
-                    retainedMaterial?.Dispose();
+                    retainedMesh?.Dispose();
+                    retainedSkeleton?.Dispose();
                 }
             }
 
             return new RenderSnapshotAssetPins.SceneAssetPins(
                 sceneInstanceId,
                 atlasPages.MoveToImmutable(),
-                materials.MoveToImmutable());
+                materials.MoveToImmutable(),
+                meshes.MoveToImmutable());
         }
         catch
         {
@@ -515,7 +795,12 @@ internal sealed class RenderSceneAssetBundle : IDisposable
 
             foreach (var material in materials)
             {
-                material.Lease.Dispose();
+                material.Dispose();
+            }
+
+            foreach (var mesh in meshes)
+            {
+                mesh.Dispose();
             }
 
             throw;
@@ -533,7 +818,7 @@ internal sealed class RenderSceneAssetBundle : IDisposable
             return;
         }
 
-        var material = FindMaterialEntry(selectedMaterialId, _materialEntries).Lease.Value;
+        var material = FindMaterialEntry(selectedMaterialId, _materialEntries).Material;
 
         if (!material.IsSprite)
         {
@@ -552,5 +837,48 @@ internal sealed class RenderSceneAssetBundle : IDisposable
 
     private readonly record struct AtlasEntry(int AssetId, RenderAtlasPageSet PageSet);
 
-    private readonly record struct MaterialEntry(int AssetId, AssetLease<RenderMaterialAsset> Lease);
+    private readonly record struct MaterialEntry(
+        int AssetId,
+        AssetLease<RenderMaterialAsset>? Lease,
+        RenderMaterialTextureSet? TextureSet)
+    {
+        internal RenderMaterialAsset Material
+            => TextureSet?.Material
+            ?? Lease?.Value
+            ?? throw new ObjectDisposedException(nameof(MaterialEntry));
+
+        internal void Dispose()
+        {
+            try
+            {
+                Lease?.Dispose();
+            }
+            finally
+            {
+                TextureSet?.Dispose();
+            }
+        }
+    }
+
+    private readonly record struct MeshEntry(
+        int AssetId,
+        AssetLease<RenderMeshAsset> Lease,
+        AssetLease<SkeletonAsset>? SkeletonLease)
+    {
+        internal RenderMeshAsset Mesh => Lease.Value;
+
+        internal SkeletonAsset? Skeleton => SkeletonLease?.Value;
+
+        internal void Dispose()
+        {
+            try
+            {
+                Lease.Dispose();
+            }
+            finally
+            {
+                SkeletonLease?.Dispose();
+            }
+        }
+    }
 }
