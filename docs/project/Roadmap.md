@@ -16,6 +16,6 @@ This page tracks current milestone state and open gates; it is not implementatio
 
 ## Next work
 
-1. Close the M03-B restore actor/caller table, then implement the existing Chapter 27 candidate-restore contract; this enables restored-World extraction.
-2. Select and contract a bounded glTF subset plus a second independent adapter with overlapping native semantics before source-tool implementation.
-3. Keep Sprite C0, live animation state, particles, and native Mesh drawing behind their exact Chapter 18-21/30 contracts and real producer/consumer evidence; do not add placeholder owners or inferred schemas.
+1. Complete Sprite C0 contract closure and built-in graph/batching over the existing real Sprite snapshots and M04 Graphics owners; this path does not depend on restore or source adapters.
+2. Close exact M03-B restore state-transfer, candidate-construction/issuance, and host schedule-adoption actors before implementing Chapter 27 Load and restored-World extraction.
+3. Select an explicit bounded source/output subset and a second independent adapter with overlapping native semantics before source-tool implementation; do not infer formats or approximations. Keep live animation, particles, and native Mesh drawing behind their own owner contracts.
