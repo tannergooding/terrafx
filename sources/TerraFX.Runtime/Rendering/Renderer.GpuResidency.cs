@@ -3,11 +3,61 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using TerraFX.Graphics;
 
 namespace TerraFX.Rendering;
 
 public sealed partial class Renderer
 {
+    internal async Task<GpuBuffer?> CreateSpriteObjectBufferAsync(
+        RenderSnapshot snapshot,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        cancellationToken.ThrowIfCancellationRequested();
+        ObjectDisposedException.ThrowIf(snapshot.IsDisposed, snapshot);
+
+        var device = _graphicsDevice
+            ?? throw new NotSupportedException("Headless rendering does not upload Sprite draw data.");
+
+        if (snapshot.SpriteDraws.IsEmpty)
+        {
+            return null;
+        }
+
+        var bytes = RenderSpriteGpuDataBufferBuilder.CreateObjectBuffer(
+            snapshot.SpriteDraws.AsSpan(),
+            checked((int)device.Capabilities.Limits.UniformBufferOffsetAlignment),
+            out _);
+        GpuBuffer? buffer = null;
+
+        try
+        {
+            buffer = await device.CreateBufferAsync(
+                new BufferDescription(
+                    bytes.LongLength,
+                    BufferUsage.Uniform | BufferUsage.CopyDestination,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: null,
+                    "sprite-object-data"),
+                cancellationToken).ConfigureAwait(false);
+            var upload = await device.UploadBufferAsync(buffer, 0, bytes, cancellationToken).ConfigureAwait(false);
+
+            if (upload.Status != UploadStatus.Ready)
+            {
+                throw new InvalidOperationException("The Sprite object-data upload did not complete.");
+            }
+
+            var result = buffer;
+            buffer = null;
+            return result;
+        }
+        finally
+        {
+            buffer?.Dispose();
+        }
+    }
+
     internal async Task<GpuResidencyLease> EnsureSpritePageResidencyAsync(
         RenderSnapshot snapshot,
         int spriteDrawIndex,

@@ -129,7 +129,11 @@ internal sealed partial class SceneAssetStoreTests
             new AssetId(SceneAssetId),
             additionalEntityComponents: [
                 CreateCameraRecord(order: 0),
-                CreateRenderSpriteRecord(AtlasAssetId, frameId, materialAssetId: MaterialAssetId),
+                CreateRenderSpriteRecord(
+                    AtlasAssetId,
+                    frameId,
+                    materialAssetId: MaterialAssetId,
+                    pixelSnap: true),
             ]);
         var packageBytes = Package.CreatePackage(
             new Package.Entry(TextureAssetId, Package.CreateEnvelope(TextureAssetId, textureRecord)),
@@ -346,7 +350,7 @@ internal sealed partial class SceneAssetStoreTests
                             [TextureFormat.Rgba8Unorm],
                             depthTargetFormat: null,
                             PrimitiveTopology.TriangleList,
-                            PipelineBlendMode.Opaque,
+                            PipelineBlendMode.PremultipliedAlpha,
                             PipelineDepthMode.Disabled,
                             PipelineCullMode.None,
                             frontFaceClockwise: false,
@@ -461,17 +465,32 @@ internal sealed partial class SceneAssetStoreTests
                         "snapshot-atlas-residency-target")).ConfigureAwait(false);
 
                 byte[] frameDataBytes = [];
-                byte[] objectDataBytes = [];
 
                 if (useM05SpritePipeline)
                 {
                     frameDataBytes = new byte[256];
+                    var frameMatrix = Matrix4x4.Identity;
 
-                    for (var index = 0; index < 4; index++)
+                    for (var row = 0; row < 4; row++)
+                    {
+                        for (var column = 0; column < 4; column++)
+                        {
+                            BinaryPrimitives.WriteInt32LittleEndian(
+                                frameDataBytes.AsSpan(((row * 4) + column) * sizeof(float)),
+                                BitConverter.SingleToInt32Bits(frameMatrix[row, column]));
+                        }
+                    }
+
+                    var frameArea = RenderCameraViewport.CreateArea(
+                        spriteSnapshot.Cameras[0].Viewport,
+                        targetExtent);
+                    var frameAreaValues = new float[] { frameArea.X, frameArea.Y, frameArea.Width, frameArea.Height };
+
+                    for (var index = 0; index < frameAreaValues.Length; index++)
                     {
                         BinaryPrimitives.WriteInt32LittleEndian(
-                            frameDataBytes.AsSpan(index * sizeof(float)),
-                            BitConverter.SingleToInt32Bits(1.0f));
+                            frameDataBytes.AsSpan(64 + (index * sizeof(float))),
+                            BitConverter.SingleToInt32Bits(frameAreaValues[index]));
                     }
 
                     frameBuffer = await graphicsDevice.CreateBufferAsync(
@@ -486,29 +505,9 @@ internal sealed partial class SceneAssetStoreTests
                         0,
                         frameDataBytes).ConfigureAwait(false);
 
-                    var objectGpuData = new ObjectGpuData(
-                        Matrix4x4.Identity,
-                        Matrix4x4.Identity,
-                        Vector4.UnitX,
-                        Vector4.UnitY,
-                        Vector4.UnitZ,
-                        0,
-                        0,
-                        0,
-                        0);
-                    objectDataBytes = new byte[256];
-                    objectGpuData.WriteTo(objectDataBytes);
-                    objectDataBuffer = await graphicsDevice.CreateBufferAsync(
-                        new BufferDescription(
-                            objectDataBytes.Length,
-                            BufferUsage.Uniform | BufferUsage.CopySource,
-                            GpuMemoryKind.Upload,
-                            structuredStride: null,
-                            "m05-snapshot-sprite-object-data")).ConfigureAwait(false);
-                    await graphicsDevice.WriteUploadBufferAsync(
-                        objectDataBuffer,
-                        0,
-                        objectDataBytes).ConfigureAwait(false);
+                    objectDataBuffer = await engineHost.Renderer.CreateSpriteObjectBufferAsync(spriteSnapshot)
+                        .ConfigureAwait(false)
+                        ?? throw new InvalidOperationException("The Sprite snapshot has no object-data buffer.");
                 }
 
                 var graph = engineHost.Renderer.BuildGraph(spriteSnapshot, targetTexture);
@@ -542,7 +541,7 @@ internal sealed partial class SceneAssetStoreTests
 
                     var selectedObjectDataBuffer = objectDataBuffer
                         ?? throw new InvalidOperationException("The Sprite graph has no ObjectData uniform buffer.");
-                    var objectDataRange = new GraphBufferRange(0, objectDataBytes.Length);
+                    var objectDataRange = new GraphBufferRange(0, selectedObjectDataBuffer.ByteLength);
                     var (objectDataState, objectDataContentsValid) =
                         selectedObjectDataBuffer.ResourceOwner.GetGraphImportState(objectDataRange);
                     var objectDataVersion = graph.ImportBuffer(
@@ -668,7 +667,14 @@ internal sealed partial class SceneAssetStoreTests
                 }
 
                 var rasterPass = graph.AddRasterPass(
-                    new RenderPassDescription("snapshot-atlas-page-sample", 0, [], hasExternalSideEffects: false),
+                    new RenderPassDescription(
+                        "snapshot-atlas-page-sample",
+                        0,
+                        [],
+                        hasExternalSideEffects: false,
+                        renderArea: useM05SpritePipeline
+                            ? RenderCameraViewport.CreateArea(spriteSnapshot.Cameras[0].Viewport, targetExtent)
+                            : null),
                     RecordPackageSample);
                 graph.ReadBuffer(rasterPass, vertexVersion, GraphBufferUsage.VertexRead, vertexRange);
                 graph.ReadBuffer(rasterPass, indexVersion, GraphBufferUsage.IndexRead, indexRange);
@@ -759,11 +765,17 @@ internal sealed partial class SceneAssetStoreTests
 
                     var centerPixelOffset = checked(
                         (int)((graphReadback.RowPitch * (targetExtent.Height / 2)) + (targetExtent.Width / 2 * 4)));
+                    byte[] expectedCenterPixel = useM05SpritePipeline
+                        ? [17, 8, 4, byte.MaxValue]
+                        : [17, 17, 17, 17];
                     Assert.Multiple(() => {
-                        Assert.That(graphReadbackBytes[centerPixelOffset], Is.EqualTo(17));
-                        Assert.That(graphReadbackBytes[centerPixelOffset + 1], Is.EqualTo(17));
-                        Assert.That(graphReadbackBytes[centerPixelOffset + 2], Is.EqualTo(17));
-                        Assert.That(graphReadbackBytes[centerPixelOffset + 3], Is.EqualTo(17));
+                        for (var channel = 0; channel < expectedCenterPixel.Length; channel++)
+                        {
+                            Assert.That(
+                                graphReadbackBytes[centerPixelOffset + channel],
+                                Is.EqualTo(expectedCenterPixel[channel]));
+                        }
+
                         Assert.That(graphReadbackBytes[0], Is.Not.EqualTo(17));
                     });
                 }
