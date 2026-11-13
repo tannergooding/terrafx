@@ -4,13 +4,14 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\sources\TerraFX.Content.Tools\TerraFX.Content.Tools.csproj" />
+    <ProjectReference Include="..\..\tools\TerraFX.ShaderCompiler\TerraFX.ShaderCompiler.csproj" />
     <Content Include="..\..\sources\TerraFX.Content.Tools\ShaderToolchainManifest.json" Link="ShaderToolchainManifest.json" CopyToOutputDirectory="PreserveNewest" />
     <TerraFXShaderSource Include="Shaders\**\*.hlsl" EntryPoint="VSMain" Stage="vertex" />
     <TerraFXShaderInclude Include="Shaders\**\*.hlsli" />
     <None Update="Shaders\ObjectGpuData.hlsl" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
-  <Import Project="..\..\sources\TerraFX.Content.Tools\ShaderCompilation.targets" />
+  <Import Project="..\..\tools\TerraFX.ShaderCompiler\ShaderCompilation.targets" />
 
   <ItemGroup>
     <AssemblyMetadata Include="TerraFXDxcPath" Value="$(TerraFXDxcPath)" />

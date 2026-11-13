@@ -19,7 +19,7 @@
     <PackageDownload Include="Microsoft.Direct3D.DXC"
                      Version="[$(TerraFXDxcPackageVersion)]"
                      Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
-    <ProjectReference Include="$(MSBuildThisFileDirectory)TerraFX.Content.Tools.csproj"
+    <ProjectReference Include="$(MSBuildThisFileDirectory)TerraFX.ShaderCompiler.csproj"
                       ReferenceOutputAssembly="false"
                       GlobalPropertiesToRemove="TerraFXPublishAot"
                       Condition="'$(IsTestProject)' != 'true'" />
@@ -53,28 +53,28 @@
                       WriteOnlyWhenDifferent="true" />
   </Target>
 
-  <Target Name="_TerraFXResolveContentTools"
+  <Target Name="_TerraFXResolveShaderCompiler"
           Condition="'@(TerraFXShaderSource)' != ''">
-    <MSBuild Projects="$(MSBuildThisFileDirectory)TerraFX.Content.Tools.csproj"
+    <MSBuild Projects="$(MSBuildThisFileDirectory)TerraFX.ShaderCompiler.csproj"
              Targets="GetTargetPath"
              Properties="Configuration=$(Configuration);TargetFramework=net11.0">
-      <Output TaskParameter="TargetOutputs" ItemName="_TerraFXContentToolsAssembly" />
+      <Output TaskParameter="TargetOutputs" ItemName="_TerraFXShaderCompilerAssembly" />
     </MSBuild>
-    <Error Condition="'@(_TerraFXContentToolsAssembly)' == ''"
-           Text="TerraFX.Content.Tools did not provide its build output path." />
+    <Error Condition="'@(_TerraFXShaderCompilerAssembly)' == ''"
+           Text="TerraFX.ShaderCompiler did not provide its build output path." />
   </Target>
 
   <Target Name="_TerraFXCompileShaderItems"
           Condition="'@(TerraFXShaderSource)' != ''"
-          DependsOnTargets="_TerraFXResolveContentTools"
-          Inputs="%(TerraFXShaderSource.FullPath);@(TerraFXShaderInclude);$(MSBuildProjectFullPath);$(MSBuildAllProjects);$(TerraFXShaderStateFile);$(MSBuildThisFileDirectory)ShaderCompilerToolchain.json;$(TerraFXDxcPath);@(_TerraFXDxcRuntimeLibrary);$(_TerraFXSpirvValidatorPath);$(_TerraFXSpirvCrossPath);@(_TerraFXContentToolsAssembly)"
+          DependsOnTargets="_TerraFXResolveShaderCompiler"
+          Inputs="%(TerraFXShaderSource.FullPath);@(TerraFXShaderInclude);$(MSBuildProjectFullPath);$(MSBuildAllProjects);$(TerraFXShaderStateFile);$(MSBuildThisFileDirectory)ShaderCompilerToolchain.json;$(TerraFXDxcPath);@(_TerraFXDxcRuntimeLibrary);$(_TerraFXSpirvValidatorPath);$(_TerraFXSpirvCrossPath);@(_TerraFXShaderCompilerAssembly)"
           Outputs="@(TerraFXShaderSource->'$(TerraFXShaderOutputRoot)%(RecursiveDir)%(Filename)\%(Filename).%(Stage).dxil');@(TerraFXShaderSource->'$(TerraFXShaderOutputRoot)%(RecursiveDir)%(Filename)\%(Filename).%(Stage).spv');@(TerraFXShaderSource->'$(TerraFXShaderOutputRoot)%(RecursiveDir)%(Filename)\%(Filename).dxil.reflection.txt');@(TerraFXShaderSource->'$(TerraFXShaderOutputRoot)%(RecursiveDir)%(Filename)\%(Filename).spirv.reflection.json');@(TerraFXShaderSource->'$(TerraFXShaderOutputRoot)%(RecursiveDir)%(Filename)\%(Filename).compile.sha256')">
     <Error Condition="'$(TerraFXDxcPath)' == '' or !Exists('$(TerraFXDxcPath)')"
            Text="Pinned DXC was not found. Set TerraFXDxcPath to the v1.8.2505.1/1.8.2505.32 compiler." />
     <Error Condition="'$(TerraFXVulkanSdkPath)' == '' or !Exists('$(TerraFXVulkanSdkPath)')"
            Text="Vulkan SDK 1.4.328.1 is required for SPIR-V validation and reflection. Set TerraFXVulkanSdkPath or VULKAN_SDK." />
     <MakeDir Directories="$(TerraFXShaderOutputRoot)%(TerraFXShaderSource.RecursiveDir)%(TerraFXShaderSource.Filename)" />
-    <Exec Command="dotnet &quot;@(_TerraFXContentToolsAssembly)&quot; shader compile --source &quot;%(TerraFXShaderSource.FullPath)&quot; --output &quot;$(TerraFXShaderOutputRoot)%(TerraFXShaderSource.RecursiveDir)%(TerraFXShaderSource.Filename)&quot; --entry &quot;%(TerraFXShaderSource.EntryPoint)&quot; --stage &quot;%(TerraFXShaderSource.Stage)&quot; --dxc &quot;$(TerraFXDxcPath)&quot; --vulkan-sdk &quot;$(TerraFXVulkanSdkPath)&quot; --include-root &quot;$(TerraFXShaderIncludeRoot)&quot; --define-list &quot;%(TerraFXShaderSource.Defines)&quot; --timeout-seconds &quot;$(TerraFXShaderTimeoutSeconds)&quot; $(_TerraFXShaderDebugSwitch)" />
+    <Exec Command="dotnet &quot;@(_TerraFXShaderCompilerAssembly)&quot; shader compile --source &quot;%(TerraFXShaderSource.FullPath)&quot; --output &quot;$(TerraFXShaderOutputRoot)%(TerraFXShaderSource.RecursiveDir)%(TerraFXShaderSource.Filename)&quot; --entry &quot;%(TerraFXShaderSource.EntryPoint)&quot; --stage &quot;%(TerraFXShaderSource.Stage)&quot; --dxc &quot;$(TerraFXDxcPath)&quot; --vulkan-sdk &quot;$(TerraFXVulkanSdkPath)&quot; --include-root &quot;$(TerraFXShaderIncludeRoot)&quot; --define-list &quot;%(TerraFXShaderSource.Defines)&quot; --timeout-seconds &quot;$(TerraFXShaderTimeoutSeconds)&quot; $(_TerraFXShaderDebugSwitch)" />
     <ItemGroup>
       <FileWrites Include="@(TerraFXShaderSource->'$(TerraFXShaderOutputRoot)%(RecursiveDir)%(Filename)\%(Filename).%(Stage).dxil')" />
       <FileWrites Include="@(TerraFXShaderSource->'$(TerraFXShaderOutputRoot)%(RecursiveDir)%(Filename)\%(Filename).%(Stage).spv')" />

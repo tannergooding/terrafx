@@ -62,19 +62,9 @@ internal static class Program
         {
             if (isShaderCompile)
             {
-                var result = await ShaderCompileCommand.RunAsync(
+                return await ShaderCompileCommand.RunCliAsync(
                     arguments[2..],
                     cancellationSource.Token).ConfigureAwait(false);
-
-                foreach (var warning in result.Warnings)
-                {
-                    await Console.Error.WriteLineAsync(warning).ConfigureAwait(false);
-                }
-
-                await Console.Out.WriteLineAsync(result.DxilPath).ConfigureAwait(false);
-                await Console.Out.WriteLineAsync(result.SpirvPath).ConfigureAwait(false);
-                await Console.Out.WriteLineAsync(result.Fingerprint).ConfigureAwait(false);
-                return 0;
             }
 
             if (StringComparer.Ordinal.Equals(arguments[0], CompileShaderCommand))

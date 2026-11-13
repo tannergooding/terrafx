@@ -26,7 +26,7 @@
     <TerraFXShaderSource Include="Shaders\SnapshotSpritePixel.hlsl" EntryPoint="PSMain" Stage="pixel" Condition="'$(OS)' == 'Windows_NT'" />
   </ItemGroup>
 
-  <Import Project="..\..\sources\TerraFX.Content.Tools\ShaderCompilation.targets" />
+  <Import Project="..\..\tools\TerraFX.ShaderCompiler\ShaderCompilation.targets" />
 
   <Target Name="CopyObjectDataPipelineShaderArtifacts" AfterTargets="Build" Condition="'$(OS)' == 'Windows_NT'">
     <PropertyGroup>

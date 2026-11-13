@@ -32,9 +32,9 @@ Use the corresponding Release configuration when qualifying Release behavior. Te
 
 ## Shader compilation
 
-Projects that build HLSL import `sources\TerraFX.Content.Tools\ShaderCompilation.targets` and declare shader inputs with `TerraFXShaderSource`. List transitive includes as `TerraFXShaderInclude` items. Generated DXIL/SPIR-V and reflection files are intermediate outputs.
+Projects that build HLSL import `tools\TerraFX.ShaderCompiler\ShaderCompilation.targets` and declare shader inputs with `TerraFXShaderSource`. List transitive includes as `TerraFXShaderInclude` items. Generated DXIL/SPIR-V and reflection files are intermediate outputs.
 
-Windows resolves the pinned DXC package automatically. Linux requires `TERRAFX_DXC_PATH` and `VULKAN_SDK`; both use Vulkan SDK 1.4.328.1 for SPIR-V validation/reflection. Set `TerraFXVulkanSdkPath` when the SDK is installed outside the configured default. To run the compiler tests or invoke the incremental target directly:
+Windows resolves the pinned DXC package automatically and uses Vulkan SDK 1.4.328.1 for SPIR-V validation/reflection; set `TerraFXVulkanSdkPath` when the SDK is installed outside the configured default. The Linux DXC tarball is not an allowed compiler input; Linux Vulkan consumers use SPIR-V cooked from the same HLSL on Windows. To run the compiler tests or invoke the incremental target directly:
 
 ```powershell
 dotnet test .\tests\TerraFX.Content.Tools.Tests\TerraFX.Content.Tools.Tests.csproj --configuration Debug -p:TerraFXVulkanSdkPath=C:\VulkanSDK\1.4.328.1

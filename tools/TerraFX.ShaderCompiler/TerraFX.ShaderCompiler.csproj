@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <PlatformTarget Condition="'$(OS)' == 'Windows_NT'">x64</PlatformTarget>
+    <TerraFXProjectCategory>tools</TerraFXProjectCategory>
+    <IsAotCompatible>false</IsAotCompatible>
+    <IsPackable>false</IsPackable>
+    <SkipLocalsInit>false</SkipLocalsInit>
+    <TerraFXUseRepositoryAnalyzers>false</TerraFXUseRepositoryAnalyzers>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="TerraFX.Content.Tools" Key="$(AssemblyOriginatorPublicKey)" />
+    <InternalsVisibleTo Include="TerraFX.Content.Tools.Tests" Key="$(AssemblyOriginatorPublicKey)" />
+    <ProjectReference Include="..\..\sources\TerraFX.Graphics\TerraFX.Graphics.csproj" />
+    <EmbeddedResource Include="ShaderCompilerToolchain.json"
+                      LogicalName="TerraFX.Content.Tools.ShaderCompilerToolchain.json" />
+  </ItemGroup>
+
+</Project>

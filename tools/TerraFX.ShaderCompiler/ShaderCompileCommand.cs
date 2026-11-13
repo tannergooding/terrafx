@@ -86,6 +86,21 @@ internal static class ShaderCompileCommand
             cancellationToken).ConfigureAwait(false);
     }
 
+    internal static async Task<int> RunCliAsync(string[] arguments, CancellationToken cancellationToken)
+    {
+        var result = await RunAsync(arguments, cancellationToken).ConfigureAwait(false);
+
+        foreach (var warning in result.Warnings)
+        {
+            await Console.Error.WriteLineAsync(warning, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        await Console.Out.WriteLineAsync(result.DxilPath, CancellationToken.None).ConfigureAwait(false);
+        await Console.Out.WriteLineAsync(result.SpirvPath, CancellationToken.None).ConfigureAwait(false);
+        await Console.Out.WriteLineAsync(result.Fingerprint, CancellationToken.None).ConfigureAwait(false);
+        return 0;
+    }
+
     private static IReadOnlyList<string> GetOptionValues(Dictionary<string, List<string>> options, string name)
         => options.TryGetValue(name, out var values) ? values : Array.Empty<string>();
 
