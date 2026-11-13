@@ -62,15 +62,15 @@ internal readonly struct RenderCameraGpuData
 
             if (camera.Far is float far)
             {
-                var depthRange = far - near;
+                var depthRange = (double)far - near;
 
-                if (!float.IsFinite(depthRange) || (depthRange <= 0.0f))
+                if (!double.IsFinite(depthRange) || (depthRange <= 0.0))
                 {
                     throw new InvalidOperationException("The perspective camera depth range is not representable.");
                 }
 
-                zScale = -near / depthRange;
-                zOffset = near * far / depthRange;
+                zScale = (float)(-(double)near / depthRange);
+                zOffset = (float)((double)near * far / depthRange);
             }
             else
             {
@@ -111,6 +111,11 @@ internal readonly struct RenderCameraGpuData
         if (!viewProjection.IsFinite().All())
         {
             throw new InvalidOperationException("The camera view-projection matrix is not finite.");
+        }
+
+        if (!Matrix4x4.TryInvert(viewProjection, out _))
+        {
+            throw new InvalidOperationException("The camera view-projection matrix has no admitted inverse.");
         }
 
         return new RenderCameraGpuData(viewProjection, area);
