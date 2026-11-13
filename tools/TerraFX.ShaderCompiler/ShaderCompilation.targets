@@ -7,11 +7,8 @@
     <TerraFXVulkanSdkPath Condition="'$(TerraFXVulkanSdkPath)' == '' and $([MSBuild]::IsOSPlatform('Windows')) and Exists('C:\VulkanSDK\1.4.328.1')">C:\VulkanSDK\1.4.328.1</TerraFXVulkanSdkPath>
     <TerraFXVulkanSdkPath Condition="'$(TerraFXVulkanSdkPath)' == ''">$(VULKAN_SDK)</TerraFXVulkanSdkPath>
     <TerraFXDxcPath Condition="'$(TerraFXDxcPath)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">$([System.IO.Path]::Combine('$(NuGetPackageRoot)', 'microsoft.direct3d.dxc', '$(TerraFXDxcPackageVersion)', 'build', 'native', 'bin', 'x64', 'dxc.exe'))</TerraFXDxcPath>
-    <TerraFXDxcPath Condition="'$(TerraFXDxcPath)' == '' and !$([MSBuild]::IsOSPlatform('Windows'))">$(TERRAFX_DXC_PATH)</TerraFXDxcPath>
     <_TerraFXSpirvValidatorPath Condition="$([MSBuild]::IsOSPlatform('Windows'))">$(TerraFXVulkanSdkPath)\Bin\spirv-val.exe</_TerraFXSpirvValidatorPath>
-    <_TerraFXSpirvValidatorPath Condition="!$([MSBuild]::IsOSPlatform('Windows'))">$(TerraFXVulkanSdkPath)/bin/spirv-val</_TerraFXSpirvValidatorPath>
     <_TerraFXSpirvCrossPath Condition="$([MSBuild]::IsOSPlatform('Windows'))">$(TerraFXVulkanSdkPath)\Bin\spirv-cross.exe</_TerraFXSpirvCrossPath>
-    <_TerraFXSpirvCrossPath Condition="!$([MSBuild]::IsOSPlatform('Windows'))">$(TerraFXVulkanSdkPath)/bin/spirv-cross</_TerraFXSpirvCrossPath>
     <_TerraFXShaderDebugSwitch Condition="'$(Configuration)' == 'Debug'">--debug</_TerraFXShaderDebugSwitch>
   </PropertyGroup>
 
@@ -27,15 +24,12 @@
 
   <PropertyGroup Condition="'$(TerraFXDxcPath)' != ''">
     <_TerraFXDxcDirectory>$([System.IO.Path]::GetDirectoryName('$(TerraFXDxcPath)'))</_TerraFXDxcDirectory>
-    <_TerraFXDxcLibraryDirectory Condition="$([MSBuild]::IsOSPlatform('Windows'))">$(_TerraFXDxcDirectory)</_TerraFXDxcLibraryDirectory>
-    <_TerraFXDxcLibraryDirectory Condition="!$([MSBuild]::IsOSPlatform('Windows'))">$([System.IO.Path]::GetFullPath('$([System.IO.Path]::Combine('$(_TerraFXDxcDirectory)', '..', 'lib'))'))</_TerraFXDxcLibraryDirectory>
+    <_TerraFXDxcLibraryDirectory>$(_TerraFXDxcDirectory)</_TerraFXDxcLibraryDirectory>
   </PropertyGroup>
 
   <ItemGroup Condition="'$(TerraFXDxcPath)' != ''">
     <_TerraFXDxcRuntimeLibrary Include="$(_TerraFXDxcLibraryDirectory)\dxcompiler.dll" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
     <_TerraFXDxcRuntimeLibrary Include="$(_TerraFXDxcLibraryDirectory)\dxil.dll" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
-    <_TerraFXDxcRuntimeLibrary Include="$(_TerraFXDxcLibraryDirectory)/libdxcompiler.so" Condition="!$([MSBuild]::IsOSPlatform('Windows'))" />
-    <_TerraFXDxcRuntimeLibrary Include="$(_TerraFXDxcLibraryDirectory)/libdxil.so" Condition="!$([MSBuild]::IsOSPlatform('Windows'))" />
   </ItemGroup>
 
   <Target Name="_TerraFXWriteShaderBuildState">
@@ -69,6 +63,8 @@
           DependsOnTargets="_TerraFXResolveShaderCompiler"
           Inputs="%(TerraFXShaderSource.FullPath);@(TerraFXShaderInclude);$(MSBuildProjectFullPath);$(MSBuildAllProjects);$(TerraFXShaderStateFile);$(MSBuildThisFileDirectory)ShaderCompilerToolchain.json;$(TerraFXDxcPath);@(_TerraFXDxcRuntimeLibrary);$(_TerraFXSpirvValidatorPath);$(_TerraFXSpirvCrossPath);@(_TerraFXShaderCompilerAssembly)"
           Outputs="@(TerraFXShaderSource->'$(TerraFXShaderOutputRoot)%(RecursiveDir)%(Filename)\%(Filename).%(Stage).dxil');@(TerraFXShaderSource->'$(TerraFXShaderOutputRoot)%(RecursiveDir)%(Filename)\%(Filename).%(Stage).spv');@(TerraFXShaderSource->'$(TerraFXShaderOutputRoot)%(RecursiveDir)%(Filename)\%(Filename).dxil.reflection.txt');@(TerraFXShaderSource->'$(TerraFXShaderOutputRoot)%(RecursiveDir)%(Filename)\%(Filename).spirv.reflection.json');@(TerraFXShaderSource->'$(TerraFXShaderOutputRoot)%(RecursiveDir)%(Filename)\%(Filename).compile.sha256')">
+    <Error Condition="!$([MSBuild]::IsOSPlatform('Windows'))"
+           Text="The pinned DXC toolchain is licensed for use only on Windows. Linux Vulkan consumers must use Windows-cooked SPIR-V." />
     <Error Condition="'$(TerraFXDxcPath)' == '' or !Exists('$(TerraFXDxcPath)')"
            Text="Pinned DXC was not found. Set TerraFXDxcPath to the v1.8.2505.1/1.8.2505.32 compiler." />
     <Error Condition="'$(TerraFXVulkanSdkPath)' == '' or !Exists('$(TerraFXVulkanSdkPath)')"

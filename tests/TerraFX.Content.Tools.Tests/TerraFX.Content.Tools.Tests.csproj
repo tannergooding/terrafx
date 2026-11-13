@@ -6,8 +6,8 @@
     <ProjectReference Include="..\..\sources\TerraFX.Content.Tools\TerraFX.Content.Tools.csproj" />
     <ProjectReference Include="..\..\tools\TerraFX.ShaderCompiler\TerraFX.ShaderCompiler.csproj" />
     <Content Include="..\..\sources\TerraFX.Content.Tools\ShaderToolchainManifest.json" Link="ShaderToolchainManifest.json" CopyToOutputDirectory="PreserveNewest" />
-    <TerraFXShaderSource Include="Shaders\**\*.hlsl" EntryPoint="VSMain" Stage="vertex" />
-    <TerraFXShaderInclude Include="Shaders\**\*.hlsli" />
+    <TerraFXShaderSource Include="Shaders\**\*.hlsl" EntryPoint="VSMain" Stage="vertex" Condition="'$(OS)' == 'Windows_NT'" />
+    <TerraFXShaderInclude Include="Shaders\**\*.hlsli" Condition="'$(OS)' == 'Windows_NT'" />
     <None Update="Shaders\ObjectGpuData.hlsl" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
@@ -18,7 +18,9 @@
     <AssemblyMetadata Include="TerraFXVulkanSdkPath" Value="$(TerraFXVulkanSdkPath)" />
   </ItemGroup>
 
-  <Target Name="CopyTerraFXShaderArtifactsToTestOutput" AfterTargets="Build">
+  <Target Name="CopyTerraFXShaderArtifactsToTestOutput"
+          AfterTargets="Build"
+          Condition="'$(OS)' == 'Windows_NT'">
     <PropertyGroup>
       <_TerraFXTestShaderOutput>$(OutDir)ShaderArtifacts\ObjectGpuData</_TerraFXTestShaderOutput>
     </PropertyGroup>

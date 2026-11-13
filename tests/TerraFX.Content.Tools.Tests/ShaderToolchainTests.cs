@@ -71,6 +71,14 @@ internal sealed class ShaderToolchainTests
             .Value
             ?? throw new InvalidDataException("The test assembly does not identify its Vulkan SDK path.");
 
+    private static void IgnoreUnlessWindowsShaderToolchain()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Ignore("The pinned DXC package is licensed for use only on Windows.");
+        }
+    }
+
     [Test]
     public void BoundedToolProcessRejectsOutputAboveAggregateLimit()
     {
@@ -106,6 +114,7 @@ internal sealed class ShaderToolchainTests
     [Test]
     public void CompiledFixtureMatchesBothBackendLayouts()
     {
+        IgnoreUnlessWindowsShaderToolchain();
         var dxilReflection = File.ReadAllText(GetArtifactPath("ObjectGpuData.dxil.reflection.txt"));
         var expectedNames = new[] { "World", "PreviousWorld", "NormalRow0", "NormalRow1", "NormalRow2", "Metadata" };
         var expectedOffsets = new[] { 0, 64, 128, 144, 160, 176 };
@@ -157,6 +166,7 @@ internal sealed class ShaderToolchainTests
     [Test]
     public async Task CompilerFailurePreservesPreviouslyUsableOutputs()
     {
+        IgnoreUnlessWindowsShaderToolchain();
         var root = CreateTemporaryDirectory();
 
         try
@@ -212,6 +222,7 @@ internal sealed class ShaderToolchainTests
     [Test]
     public async Task ShaderBuildTargetSkipsUpToDateOutputs()
     {
+        IgnoreUnlessWindowsShaderToolchain();
         var repositoryRoot = FindRepositoryRoot();
         var testDirectory = TestContext.CurrentContext.TestDirectory;
         var configuration = new DirectoryInfo(testDirectory).Parent?.Name
@@ -274,6 +285,7 @@ internal sealed class ShaderToolchainTests
     [Test]
     public async Task ShaderCompilerFingerprintTracksIncludesAndNormalizesDefineOrder()
     {
+        IgnoreUnlessWindowsShaderToolchain();
         var root = CreateTemporaryDirectory();
 
         try
@@ -327,6 +339,7 @@ internal sealed class ShaderToolchainTests
     [Test]
     public async Task ShaderCompilerProducesVertexPixelAndComputeProfiles()
     {
+        IgnoreUnlessWindowsShaderToolchain();
         var repositoryRoot = FindRepositoryRoot();
         var sourcePath = Path.Combine(repositoryRoot, "tests", "TerraFX.Content.Tools.Tests", "Shaders", "AllStages.hlsl");
         var outputRoot = CreateTemporaryDirectory();
@@ -379,6 +392,32 @@ internal sealed class ShaderToolchainTests
     }
 
     [Test]
+    public void ShaderCompilerRejectsPinnedToolchainOutsideWindows()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Ignore("This policy regression applies only to non-Windows hosts.");
+            return;
+        }
+
+        var request = new ShaderCompileRequest(
+            "unused.hlsl",
+            "unused",
+            "Main",
+            "vertex",
+            "unused-dxc",
+            "unused-sdk",
+            [],
+            [],
+            debug: false,
+            TimeSpan.FromSeconds(1));
+
+        var exception = Assert.ThrowsAsync<PlatformNotSupportedException>(async () =>
+            await ShaderCompiler.CompileAsync(request, CancellationToken.None).ConfigureAwait(false));
+        Assert.That(exception!.Message, Does.Contain("only on Windows"));
+    }
+
+    [Test]
     public void ShaderCompilerRejectsUnsupportedStageBeforeToolStartup()
     {
         var request = new ShaderCompileRequest(
@@ -400,6 +439,7 @@ internal sealed class ShaderToolchainTests
     [Test]
     public async Task ShaderCompilerRejectsWorkgroupAboveBaselineProfile()
     {
+        IgnoreUnlessWindowsShaderToolchain();
         var repositoryRoot = FindRepositoryRoot();
         var sourcePath = Path.Combine(repositoryRoot, "tests", "TerraFX.Content.Tools.Tests", "Shaders", "AllStages.hlsl");
         var outputRoot = CreateTemporaryDirectory();

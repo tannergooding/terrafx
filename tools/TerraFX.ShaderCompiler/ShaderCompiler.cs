@@ -30,6 +30,12 @@ internal static class ShaderCompiler
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(request.Timeout, TimeSpan.Zero);
         _ = GetTargetProfile(request.Stage);
 
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException(
+                "The pinned win-x64 DXC package may run only on Windows; Linux Vulkan consumers must use Windows-cooked SPIR-V.");
+        }
+
         using var manifest = LoadToolchainManifest();
         var toolchain = await ValidateToolchainAsync(request, manifest.RootElement, cancellationToken).ConfigureAwait(false);
         var closure = ShaderSourceClosure.Load(request.SourcePath, request.IncludeRoots);
@@ -66,8 +72,7 @@ internal static class ShaderCompiler
                 dxilArguments,
                 sourceDirectory,
                 request.Timeout,
-                cancellationToken,
-                toolchain.DxcEnvironment).ConfigureAwait(false);
+                cancellationToken).ConfigureAwait(false);
             EnsureToolSucceeded("DXIL compilation", toolchain.DxcPath, dxilResult);
             EnsureNonemptyFile(dxcOutputPath, "DXIL");
             EnsureNonemptyFile(dxilReflectionPath, "DXIL reflection");
@@ -78,8 +83,7 @@ internal static class ShaderCompiler
                 spirvArguments,
                 sourceDirectory,
                 request.Timeout,
-                cancellationToken,
-                toolchain.DxcEnvironment).ConfigureAwait(false);
+                cancellationToken).ConfigureAwait(false);
             EnsureToolSucceeded("SPIR-V compilation", toolchain.DxcPath, spirvResult);
             EnsureNonemptyFile(spirvOutputPath, "SPIR-V");
 
@@ -88,8 +92,7 @@ internal static class ShaderCompiler
                 ["--target-env", "vulkan1.3", spirvOutputPath],
                 sourceDirectory,
                 request.Timeout,
-                cancellationToken,
-                toolchain.SpirvEnvironment).ConfigureAwait(false);
+                cancellationToken).ConfigureAwait(false);
             EnsureToolSucceeded("SPIR-V validation", toolchain.SpirvValidatorPath, validationResult);
 
             var reflectionResult = await BoundedToolProcess.RunAsync(
@@ -97,8 +100,7 @@ internal static class ShaderCompiler
                 [spirvOutputPath, "--reflect"],
                 sourceDirectory,
                 request.Timeout,
-                cancellationToken,
-                toolchain.SpirvEnvironment).ConfigureAwait(false);
+                cancellationToken).ConfigureAwait(false);
             EnsureToolSucceeded("SPIR-V reflection", toolchain.SpirvCrossPath, reflectionResult);
             using var spirvReflection = JsonDocument.Parse(reflectionResult.StandardOutput);
             ValidateSpirvReflection(spirvReflection.RootElement, request);
@@ -257,40 +259,6 @@ internal static class ShaderCompiler
         return arguments;
     }
 
-    private static Dictionary<string, string> CreateDxcEnvironment(string dxcDirectory)
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            return [];
-        }
-
-        var libraryDirectory = Path.GetFullPath(Path.Combine(dxcDirectory, "..", "lib"));
-        var existing = Environment.GetEnvironmentVariable("LD_LIBRARY_PATH");
-        var value = string.IsNullOrEmpty(existing)
-            ? libraryDirectory
-            : string.Concat(libraryDirectory, Path.PathSeparator, existing);
-        return new Dictionary<string, string>(StringComparer.Ordinal) {
-            ["LD_LIBRARY_PATH"] = value
-        };
-    }
-
-    private static Dictionary<string, string> CreateSdkEnvironment(string sdkRoot)
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            return [];
-        }
-
-        var libraryDirectory = Path.Combine(sdkRoot, "lib");
-        var existing = Environment.GetEnvironmentVariable("LD_LIBRARY_PATH");
-        var value = string.IsNullOrEmpty(existing)
-            ? libraryDirectory
-            : string.Concat(libraryDirectory, Path.PathSeparator, existing);
-        return new Dictionary<string, string>(StringComparer.Ordinal) {
-            ["LD_LIBRARY_PATH"] = value
-        };
-    }
-
     private static void EnsureNonemptyFile(string path, string kind)
     {
         if (!File.Exists(path) || (new FileInfo(path).Length == 0))
@@ -446,24 +414,17 @@ internal static class ShaderCompiler
         var version = sdkManifest.GetProperty("version").GetString()
             ?? throw new InvalidDataException("The Vulkan SDK version is missing from the shader toolchain manifest.");
         var sdkRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(request.VulkanSdkPath));
-        var isWindows = OperatingSystem.IsWindows();
-        var sdkVersionRoot = isWindows
-            ? sdkRoot
-            : Directory.GetParent(sdkRoot)?.FullName
-                ?? throw new InvalidDataException($"The Vulkan SDK root '{sdkRoot}' has no version directory.");
 
-        if (!string.Equals(Path.GetFileName(sdkVersionRoot), version, StringComparison.Ordinal))
+        if (!string.Equals(Path.GetFileName(sdkRoot), version, StringComparison.Ordinal))
         {
             throw new InvalidDataException($"Expected Vulkan SDK {version}, but '{sdkRoot}' is not under the matching SDK directory.");
         }
 
-        var spirvDirectory = Path.Combine(sdkRoot, isWindows ? "Bin" : "bin");
-        var spirvValidatorPath = Path.Combine(spirvDirectory, isWindows ? "spirv-val.exe" : "spirv-val");
-        var spirvCrossPath = Path.Combine(spirvDirectory, isWindows ? "spirv-cross.exe" : "spirv-cross");
-        var dxcManifestPlatform = isWindows ? dxcManifest.GetProperty("windows") : dxcManifest.GetProperty("linuxX64");
-        var licensePath = isWindows
-            ? sdkManifest.GetProperty("licensePath").GetString()
-            : sdkManifest.GetProperty("linuxX64").GetProperty("licensePath").GetString();
+        var spirvDirectory = Path.Combine(sdkRoot, "Bin");
+        var spirvValidatorPath = Path.Combine(spirvDirectory, "spirv-val.exe");
+        var spirvCrossPath = Path.Combine(spirvDirectory, "spirv-cross.exe");
+        var dxcManifestPlatform = dxcManifest.GetProperty("windows");
+        var licensePath = sdkManifest.GetProperty("licensePath").GetString();
         var sdkLicensePath = Path.Combine(
             sdkRoot,
             (licensePath
@@ -474,22 +435,11 @@ internal static class ShaderCompiler
         VerifyFileSha256(dxcPath, dxcManifestPlatform.GetProperty("dxcSha256").GetString());
         var dxcDirectory = Path.GetDirectoryName(dxcPath)
             ?? throw new InvalidDataException("The DXC executable has no containing directory.");
-        var dxcEnvironment = CreateDxcEnvironment(dxcDirectory);
-
-        if (isWindows)
-        {
-            VerifyFileSha256(Path.Combine(dxcDirectory, "dxcompiler.dll"), dxcManifestPlatform.GetProperty("dxcompilerSha256").GetString());
-            VerifyFileSha256(Path.Combine(dxcDirectory, "dxil.dll"), dxcManifestPlatform.GetProperty("dxilSha256").GetString());
-            var sdkManifestPlatform = sdkManifest.GetProperty("windowsX64");
-            VerifyFileSha256(spirvValidatorPath, sdkManifestPlatform.GetProperty("spirvValSha256").GetString());
-            VerifyFileSha256(spirvCrossPath, sdkManifestPlatform.GetProperty("spirvCrossSha256").GetString());
-        }
-        else
-        {
-            var libraryDirectory = Path.GetFullPath(Path.Combine(dxcDirectory, "..", "lib"));
-            VerifyFileSha256(Path.Combine(libraryDirectory, "libdxcompiler.so"), dxcManifestPlatform.GetProperty("dxcompilerSha256").GetString());
-            VerifyFileSha256(Path.Combine(libraryDirectory, "libdxil.so"), dxcManifestPlatform.GetProperty("dxilSha256").GetString());
-        }
+        VerifyFileSha256(Path.Combine(dxcDirectory, "dxcompiler.dll"), dxcManifestPlatform.GetProperty("dxcompilerSha256").GetString());
+        VerifyFileSha256(Path.Combine(dxcDirectory, "dxil.dll"), dxcManifestPlatform.GetProperty("dxilSha256").GetString());
+        var sdkManifestPlatform = sdkManifest.GetProperty("windowsX64");
+        VerifyFileSha256(spirvValidatorPath, sdkManifestPlatform.GetProperty("spirvValSha256").GetString());
+        VerifyFileSha256(spirvCrossPath, sdkManifestPlatform.GetProperty("spirvCrossSha256").GetString());
 
         VerifyFileExists(spirvValidatorPath);
         VerifyFileExists(spirvCrossPath);
@@ -502,8 +452,7 @@ internal static class ShaderCompiler
             ["--version"],
             dxcDirectory,
             timeout,
-            cancellationToken,
-            dxcEnvironment).ConfigureAwait(false);
+            cancellationToken).ConfigureAwait(false);
         EnsureToolSucceeded("DXC version query", dxcPath, dxcVersionResult);
         var binaryVersion = dxcManifest.GetProperty("binaryVersion").GetString()
             ?? throw new InvalidDataException("The DXC binary version is missing from the shader toolchain manifest.");
@@ -518,8 +467,7 @@ internal static class ShaderCompiler
             ["--version"],
             spirvDirectory,
             timeout,
-            cancellationToken,
-            CreateSdkEnvironment(sdkRoot)).ConfigureAwait(false);
+            cancellationToken).ConfigureAwait(false);
         EnsureToolSucceeded("SPIR-V validator version query", spirvValidatorPath, validatorResult);
         var validatorVersion = sdkManifest.GetProperty("spirvToolsReportedVersion").GetString()
             ?? throw new InvalidDataException("The SPIR-V toolchain version is missing from the shader toolchain manifest.");
@@ -534,8 +482,7 @@ internal static class ShaderCompiler
             ["--revision"],
             spirvDirectory,
             timeout,
-            cancellationToken,
-            CreateSdkEnvironment(sdkRoot)).ConfigureAwait(false);
+            cancellationToken).ConfigureAwait(false);
         EnsureToolSucceeded("SPIR-V reflection-tool version query", spirvCrossPath, crossResult);
 
         var crossRevision = sdkManifest.GetProperty("spirvCrossRevision").GetString()
@@ -546,9 +493,7 @@ internal static class ShaderCompiler
             throw new InvalidDataException($"The SPIR-V reflection tool does not report the pinned revision {crossRevision}.");
         }
 
-        string[] dxcLibraries = isWindows
-            ? ["dxcompiler.dll", "dxil.dll"]
-            : [Path.Combine("..", "lib", "libdxcompiler.so"), Path.Combine("..", "lib", "libdxil.so")];
+        string[] dxcLibraries = ["dxcompiler.dll", "dxil.dll"];
         List<string> dxcHashes = [GetFileSha256(dxcPath)];
 
         foreach (var library in dxcLibraries)
@@ -557,7 +502,7 @@ internal static class ShaderCompiler
         }
 
         var dxcDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\0', dxcHashes))));
-        return new ToolchainPaths(dxcPath, spirvValidatorPath, spirvCrossPath, dxcDigest, validatorDigest, crossDigest, dxcEnvironment, CreateSdkEnvironment(sdkRoot));
+        return new ToolchainPaths(dxcPath, spirvValidatorPath, spirvCrossPath, dxcDigest, validatorDigest, crossDigest);
     }
 
     private static void VerifyFileExists(string path)
@@ -586,7 +531,5 @@ internal static class ShaderCompiler
         string SpirvCrossPath,
         string DxcDigest,
         string SpirvValidatorDigest,
-        string SpirvCrossDigest,
-        IReadOnlyDictionary<string, string> DxcEnvironment,
-        IReadOnlyDictionary<string, string> SpirvEnvironment);
+        string SpirvCrossDigest);
 }

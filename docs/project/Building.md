@@ -37,8 +37,9 @@ Projects that build HLSL import `tools\TerraFX.ShaderCompiler\ShaderCompilation.
 Windows resolves the pinned DXC package automatically and uses Vulkan SDK 1.4.328.1 for SPIR-V validation/reflection; set `TerraFXVulkanSdkPath` when the SDK is installed outside the configured default. The Linux DXC tarball is not an allowed compiler input; Linux Vulkan consumers use SPIR-V cooked from the same HLSL on Windows. To run the compiler tests or invoke the incremental target directly:
 
 ```powershell
-dotnet test .\tests\TerraFX.Content.Tools.Tests\TerraFX.Content.Tools.Tests.csproj --configuration Debug -p:TerraFXVulkanSdkPath=C:\VulkanSDK\1.4.328.1
-dotnet msbuild .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj -target:TerraFXCompileShaders
+$env:VULKAN_SDK = 'C:\VulkanSDK\1.4.328.1'
+dotnet test .\tests\TerraFX.Content.Tools.Tests\TerraFX.Content.Tools.Tests.csproj --configuration Debug
+dotnet msbuild .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj -target:TerraFXCompileShaders -property:TerraFXVulkanSdkPath=$env:VULKAN_SDK
 ```
 
 `TerraFXSkipShaderCompilation=true` explicitly skips shader compilation and is not shader validation.
