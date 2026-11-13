@@ -2,10 +2,12 @@
 
 using System;
 using System.Collections.Immutable;
+using TerraFX.Graphics;
 
 namespace TerraFX.Rendering;
 
 internal readonly record struct RenderSpriteBatch(
     Guid CameraId,
+    RenderArea Area,
     RenderSpriteBatchKey Key,
     ImmutableArray<int> DrawIndices);

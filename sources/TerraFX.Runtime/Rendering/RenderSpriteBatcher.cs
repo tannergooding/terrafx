@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using TerraFX.Assets;
+using TerraFX.Graphics;
 
 namespace TerraFX.Rendering;
 
@@ -23,8 +24,12 @@ internal static class RenderSpriteBatcher
             ?? throw new InvalidOperationException("The Sprite snapshot has no retained Scene assets.");
         var batches = ImmutableArray.CreateBuilder<RenderSpriteBatch>();
 
-        foreach (var cameraOrder in snapshot.SpriteCameraOrders)
+        for (var cameraIndex = 0; cameraIndex < snapshot.SpriteCameraOrders.Length; cameraIndex++)
         {
+            var cameraOrder = snapshot.SpriteCameraOrders[cameraIndex];
+            var area = RenderCameraViewport.CreateArea(
+                snapshot.Cameras[cameraIndex].Viewport,
+                snapshot.TargetExtent);
             var cameraKeys = new RenderSpriteBatchKey[cameraOrder.DrawIndices.Length];
 
             for (var index = 0; index < cameraOrder.DrawIndices.Length; index++)
@@ -52,7 +57,7 @@ internal static class RenderSpriteBatcher
                     sprite.MaterialAssetId);
             }
 
-            GroupAdjacent(cameraOrder.CameraId, cameraOrder.DrawIndices, cameraKeys, batches);
+            GroupAdjacent(cameraOrder.CameraId, area, cameraOrder.DrawIndices, cameraKeys, batches);
         }
 
         return batches.ToImmutable();
@@ -60,12 +65,18 @@ internal static class RenderSpriteBatcher
 
     internal static void GroupAdjacent(
         Guid cameraId,
+        RenderArea area,
         ImmutableArray<int> drawIndices,
         ReadOnlySpan<RenderSpriteBatchKey> keys,
         ImmutableArray<RenderSpriteBatch>.Builder batches)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(cameraId, Guid.Empty);
         ArgumentNullException.ThrowIfNull(batches);
+
+        if ((area.X < 0) || (area.Y < 0) || (area.Width <= 0) || (area.Height <= 0))
+        {
+            throw new ArgumentOutOfRangeException(nameof(area));
+        }
 
         if (drawIndices.IsDefault || (drawIndices.Length != keys.Length))
         {
@@ -81,7 +92,7 @@ internal static class RenderSpriteBatcher
 
             if (selectedKey is RenderSpriteBatchKey previousKey && (previousKey != key))
             {
-                batches.Add(new RenderSpriteBatch(cameraId, previousKey, selectedDrawIndices.ToImmutable()));
+                batches.Add(new RenderSpriteBatch(cameraId, area, previousKey, selectedDrawIndices.ToImmutable()));
                 selectedDrawIndices.Clear();
             }
 
@@ -91,7 +102,7 @@ internal static class RenderSpriteBatcher
 
         if (selectedKey is RenderSpriteBatchKey lastKey)
         {
-            batches.Add(new RenderSpriteBatch(cameraId, lastKey, selectedDrawIndices.ToImmutable()));
+            batches.Add(new RenderSpriteBatch(cameraId, area, lastKey, selectedDrawIndices.ToImmutable()));
         }
     }
 }

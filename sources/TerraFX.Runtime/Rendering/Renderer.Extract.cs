@@ -53,7 +53,7 @@ public sealed partial class Renderer
             }
 
             var (position, rotation) = world.ResolveSceneEntityPose(in frameReadLease, cameraEntity);
-            cameras[index] = new CameraSnapshot(
+            var cameraSnapshot = new CameraSnapshot(
                 snapshotId,
                 frameReadLease.WorldGuid,
                 cameraId,
@@ -73,6 +73,8 @@ public sealed partial class Renderer
                 (CameraClearFlags)camera.ClearFlags,
                 camera.ClearColor,
                 camera.LayerMask);
+            _ = RenderCameraViewport.CreateArea(cameraSnapshot.Viewport, cameraSnapshot.TargetExtent);
+            cameras[index] = cameraSnapshot;
         }
 
         for (var index = 1; index < cameraIds.Length; index++)

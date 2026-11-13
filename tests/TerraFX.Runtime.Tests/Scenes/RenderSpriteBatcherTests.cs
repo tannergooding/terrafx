@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Immutable;
 using NUnit.Framework;
+using TerraFX.Graphics;
 using TerraFX.Rendering;
 
 namespace TerraFX.Runtime.Tests.Scenes;
@@ -15,6 +16,7 @@ internal sealed class RenderSpriteBatcherTests
     {
         var cameraId = Guid.NewGuid();
         var sceneId = Guid.NewGuid();
+        var area = new RenderArea(2, 3, 10, 12);
         var first = new RenderSpriteBatchKey(sceneId, TextureAssetId: 1, MaterialAssetId: 3);
         var secondPage = new RenderSpriteBatchKey(sceneId, TextureAssetId: 2, MaterialAssetId: 3);
         var secondMaterial = new RenderSpriteBatchKey(sceneId, TextureAssetId: 1, MaterialAssetId: 4);
@@ -23,6 +25,7 @@ internal sealed class RenderSpriteBatcherTests
 
         RenderSpriteBatcher.GroupAdjacent(
             cameraId,
+            area,
             [6, 2, 9, 1, 4],
             keys,
             batches);
@@ -30,6 +33,7 @@ internal sealed class RenderSpriteBatcherTests
         Assert.That(batches, Has.Count.EqualTo(4));
         Assert.Multiple(() => {
             Assert.That(batches[0].CameraId, Is.EqualTo(cameraId));
+            Assert.That(batches[0].Area, Is.EqualTo(area));
             Assert.That(batches[0].Key, Is.EqualTo(first));
             Assert.That(batches[0].DrawIndices, Is.EqualTo([6, 2]));
             Assert.That(batches[1].Key, Is.EqualTo(secondPage));
@@ -46,16 +50,20 @@ internal sealed class RenderSpriteBatcherTests
     {
         var firstCamera = Guid.NewGuid();
         var secondCamera = Guid.NewGuid();
+        var firstArea = new RenderArea(0, 0, 16, 16);
+        var secondArea = new RenderArea(8, 0, 8, 16);
         var key = new RenderSpriteBatchKey(Guid.NewGuid(), TextureAssetId: 1, MaterialAssetId: null);
         var batches = ImmutableArray.CreateBuilder<RenderSpriteBatch>();
 
-        RenderSpriteBatcher.GroupAdjacent(firstCamera, [0], [key], batches);
-        RenderSpriteBatcher.GroupAdjacent(secondCamera, [1], [key], batches);
+        RenderSpriteBatcher.GroupAdjacent(firstCamera, firstArea, [0], [key], batches);
+        RenderSpriteBatcher.GroupAdjacent(secondCamera, secondArea, [1], [key], batches);
 
         Assert.That(batches, Has.Count.EqualTo(2));
         Assert.That(batches[0].CameraId, Is.EqualTo(firstCamera));
+        Assert.That(batches[0].Area, Is.EqualTo(firstArea));
         Assert.That(batches[0].DrawIndices, Is.EqualTo([0]));
         Assert.That(batches[1].CameraId, Is.EqualTo(secondCamera));
+        Assert.That(batches[1].Area, Is.EqualTo(secondArea));
         Assert.That(batches[1].DrawIndices, Is.EqualTo([1]));
     }
 }

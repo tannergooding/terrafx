@@ -123,6 +123,21 @@ internal sealed partial class SceneAssetStoreTests
                 world.Set(sceneEntities[index], in rootPosition);
             }
 
+            var camera = new SceneComponentDefinitions.CameraComponent(
+                (byte)CameraProjectionKind.Orthographic,
+                float.Pi / 3.0f,
+                10.0f,
+                0.0f,
+                (byte)CameraFarMode.Finite,
+                new SceneComponentDefinitions.OptionalSingle(10.0f),
+                default,
+                new Vector4(0.25f, 0.125f, 0.5f, 0.75f),
+                (byte)(CameraClearFlags.Color | CameraClearFlags.Depth),
+                new Vector4(0.0f, 0.0f, 0.0f, 1.0f),
+                ulong.MaxValue,
+                0);
+            world.Set(sceneEntities[0], in camera);
+
             var cameraId = world.GetEntityId(sceneEntities[0]);
             var spriteEntityIds = new Guid[sceneEntities.Length];
 
@@ -166,6 +181,7 @@ internal sealed partial class SceneAssetStoreTests
                 var sprite = spriteDraws[drawIndex];
 
                 Assert.That(batch.CameraId, Is.EqualTo(cameraId));
+                Assert.That(batch.Area, Is.EqualTo(new RenderArea(160, 60, 320, 360)));
                 Assert.That(batch.Key.SceneInstanceId, Is.EqualTo(sprite.SceneInstanceId));
                 Assert.That(batch.Key.TextureAssetId, Is.EqualTo(1));
                 Assert.That(batch.Key.MaterialAssetId, Is.EqualTo(3));
@@ -201,6 +217,9 @@ internal sealed partial class SceneAssetStoreTests
                 ?? throw new InvalidOperationException("The successful 2D Sprite extraction omitted its snapshot."));
             var cameraOrder2D = snapshot2D.SpriteCameraOrders[0];
             Assert.That(snapshot2D.SpriteDraws, Has.Length.EqualTo(expectedEntityIds.Length));
+            Assert.That(
+                RenderSpriteBatcher.Create(snapshot2D)[0].Area,
+                Is.EqualTo(new RenderArea(160, 60, 320, 360)));
 
             for (var index = 0; index < expectedEntityIds.Length; index++)
             {
