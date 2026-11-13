@@ -358,7 +358,7 @@ public sealed partial class World
                             if ((childIdentityOrdinal >= firstEntityIdentityOrdinal)
                                 && (childIdentityOrdinal < lastEntityIdentityOrdinalExclusive))
                             {
-                                AppendSceneSubtree(new Entity(_ownerId, childIndex, childGeneration));
+                                AppendSceneSubtree(CreateEntityHandle(childIndex, childGeneration));
                             }
 
                             if (!_entitySlots.TryGetNextSibling(
@@ -394,7 +394,7 @@ public sealed partial class World
                         throw new InvalidOperationException("A live Scene Entity identity references a non-live Entity slot.");
                     }
 
-                    var entity = new Entity(_ownerId, entityLocator, generation);
+                    var entity = CreateEntityHandle(entityLocator, generation);
                     var parentIsSceneEntity = false;
 
                     if (_entitySlots.TryGetParent(
@@ -441,7 +441,7 @@ public sealed partial class World
                         throw new InvalidOperationException("A live Scene Entity identity references a non-live Entity slot.");
                     }
 
-                    var entity = new Entity(_ownerId, entityLocator, generation);
+                    var entity = CreateEntityHandle(entityLocator, generation);
 
                     if (_entitySlots.TryGetParent(
                             entityLocator,
@@ -685,7 +685,7 @@ public sealed partial class World
                 throw new InvalidOperationException("The configured Entity-slot limit was reached during owner-command preflight.");
             }
 
-            candidates[entityIndex] = new Entity(_ownerId, slot, generation);
+            candidates[entityIndex] = CreateEntityHandle(slot, generation);
         }
 
         return candidates.MoveToImmutable();

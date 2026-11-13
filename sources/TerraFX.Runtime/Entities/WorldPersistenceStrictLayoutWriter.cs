@@ -1195,10 +1195,9 @@ internal static class WorldPersistenceStrictLayoutWriter
                 throw new ArgumentException("The archetype digest scratch is too small.", nameof(archetypeDigestStorage));
             }
 
-            var entity = new Entity(lease.OwnerId, checked((uint)slotIndex), generation);
             fieldStatus = WriteGuidField(
                 4,
-                lease.GetStrictLayoutEntityId(entity),
+                lease.GetStrictLayoutEntityId(slotIndex, generation),
                 isRequired: false,
                 fields,
                 ref fieldCount,

@@ -984,7 +984,7 @@ public sealed partial class World : IDisposable
                     throw new InvalidOperationException("The preflighted Entity slot changed before commit.");
                 }
 
-                var entity = new Entity(_ownerId, slotIndex, generation);
+                var entity = CreateEntityHandle(slotIndex, generation);
                 createdEntity = entity;
                 previousNextChunkOrdinal = _nextChunkOrdinal;
                 appendedChunkHadOrdinal = archetype.Storage.TryGetChunkOrdinal(chunkIndex, out _);
@@ -1418,7 +1418,7 @@ public sealed partial class World : IDisposable
             throw new InvalidOperationException("The stable identity ledger references an Entity slot without a live storage location.");
         }
 
-        entity = new Entity(_ownerId, locator, generation);
+        entity = CreateEntityHandle(locator, generation);
         return true;
     }
 
@@ -1633,7 +1633,7 @@ public sealed partial class World : IDisposable
             throw new InvalidOperationException("The stable identity ledger references a non-live Entity slot.");
         }
 
-        entity = new Entity(_ownerId, locator, generation);
+        entity = CreateEntityHandle(locator, generation);
         return true;
     }
 
@@ -1657,7 +1657,7 @@ public sealed partial class World : IDisposable
             return false;
         }
 
-        child = new Entity(_ownerId, childIndex, childGeneration);
+        child = CreateEntityHandle(childIndex, childGeneration);
         return true;
     }
 
@@ -1681,7 +1681,7 @@ public sealed partial class World : IDisposable
             return false;
         }
 
-        parent = new Entity(_ownerId, parentIndex, parentGeneration);
+        parent = CreateEntityHandle(parentIndex, parentGeneration);
         return true;
     }
 
@@ -1727,7 +1727,7 @@ public sealed partial class World : IDisposable
             return false;
         }
 
-        sibling = new Entity(_ownerId, siblingIndex, siblingGeneration);
+        sibling = CreateEntityHandle(siblingIndex, siblingGeneration);
         return true;
     }
 
@@ -1846,6 +1846,9 @@ public sealed partial class World : IDisposable
         _domainReservation.SetMaximumAdditionalBytes(
             checked(currentAdditionalBytes + remainingOwnedStateBytes));
     }
+
+    private Entity CreateEntityHandle(uint slotIndex, uint generation)
+        => new(_ownerId, slotIndex, generation);
 
     private void EnsureOwnerThread()
     {

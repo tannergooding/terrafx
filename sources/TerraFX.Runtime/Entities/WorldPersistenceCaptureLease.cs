@@ -338,6 +338,12 @@ internal ref struct WorldPersistenceCaptureLease
         return _world.GetPersistenceEntityId(this, entity);
     }
 
+    internal readonly Guid GetStrictLayoutEntityId(int slotIndex, uint generation)
+    {
+        ValidateCurrent();
+        return _world.GetPersistenceEntityId(this, slotIndex, generation);
+    }
+
     internal readonly void GetStrictLayoutSlot(
         int index,
         out uint generation,

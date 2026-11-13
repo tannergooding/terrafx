@@ -213,7 +213,7 @@ public sealed partial class World
             throw new InvalidOperationException("The stable identity ledger references an Entity slot without a live storage location.");
         }
 
-        entity = new Entity(_ownerId, locator, generation);
+        entity = CreateEntityHandle(locator, generation);
         return true;
     }
 

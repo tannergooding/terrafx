@@ -493,6 +493,16 @@ public sealed partial class World
         return _entitySlots.LiveEntityCount;
     }
 
+    internal Guid GetPersistenceEntityId(
+        WorldPersistenceCaptureLease lease,
+        int slotIndex,
+        uint generation)
+    {
+        ValidatePersistenceCaptureLease(lease);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(slotIndex);
+        return GetEntityId(CreateEntityHandle(checked((uint)slotIndex), generation));
+    }
+
     internal Guid GetPersistenceEntityId(WorldPersistenceCaptureLease lease, Entity entity)
     {
         ValidatePersistenceCaptureLease(lease);

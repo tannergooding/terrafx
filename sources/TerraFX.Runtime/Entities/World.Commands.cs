@@ -514,7 +514,7 @@ public sealed partial class World
                                  out var parentIndex,
                                  out var parentGeneration))
                     {
-                        parent = new Entity(_ownerId, parentIndex, parentGeneration);
+                        parent = CreateEntityHandle(parentIndex, parentGeneration);
                     }
                     else
                     {
@@ -688,7 +688,7 @@ public sealed partial class World
                     return false;
                 }
 
-                parent = new Entity(_ownerId, parentIndex, parentGeneration);
+                parent = CreateEntityHandle(parentIndex, parentGeneration);
                 return true;
             }
 
@@ -704,7 +704,7 @@ public sealed partial class World
                 {
                     while (true)
                     {
-                        var child = new Entity(_ownerId, childIndex, childGeneration);
+                        var child = CreateEntityHandle(childIndex, childGeneration);
 
                         if (!detachedHierarchyChildren.Contains(child)
                             && (!projectionsByEntity.TryGetValue(child, out var projection) || !projection.IsDestroyed))
@@ -735,7 +735,7 @@ public sealed partial class World
                 {
                     while (true)
                     {
-                        var child = new Entity(_ownerId, currentChildIndex, currentChildGeneration);
+                        var child = CreateEntityHandle(currentChildIndex, currentChildGeneration);
 
                         if (!detachedHierarchyChildren.Contains(child))
                         {
@@ -975,7 +975,7 @@ public sealed partial class World
                 {
                     while (true)
                     {
-                        var child = new Entity(_ownerId, childIndex, childGeneration);
+                        var child = CreateEntityHandle(childIndex, childGeneration);
 
                         if (!detachedHierarchyChildren.Contains(child))
                         {
@@ -1015,7 +1015,7 @@ public sealed partial class World
                 {
                     while (true)
                     {
-                        var child = new Entity(_ownerId, childIndex, childGeneration);
+                        var child = CreateEntityHandle(childIndex, childGeneration);
 
                         if (!detachedHierarchyChildren.Contains(child))
                         {
@@ -1173,7 +1173,7 @@ public sealed partial class World
                         throw new InvalidOperationException("The configured Entity-slot limit was reached during owner-command preflight.");
                     }
 
-                    if (!createdEntityHandles.Add(new Entity(_ownerId, predictedSlot, predictedGeneration)))
+                    if (!createdEntityHandles.Add(CreateEntityHandle(predictedSlot, predictedGeneration)))
                     {
                         throw new InvalidOperationException("The owner-command Entity preview contains a duplicate handle.");
                     }
@@ -1229,7 +1229,7 @@ public sealed partial class World
                     }
 
                     var createProjection = new ProjectedCommandEntity(
-                        new Entity(_ownerId, predictedSlot, predictedGeneration),
+                        CreateEntityHandle(predictedSlot, predictedGeneration),
                         source: null,
                         sourceChunkIndex: -1,
                         sourceRow: -1,
@@ -1495,7 +1495,7 @@ public sealed partial class World
                     var projection = createdProjections[index];
                     var description = projection.Description
                         ?? throw new InvalidOperationException("A token-created Entity has no EntityDescription.");
-                    projection.Entity = new Entity(_ownerId, slot, generation);
+                    projection.Entity = CreateEntityHandle(slot, generation);
 
                     assignments[index + sceneAssignmentOffset] = (description.PersistentId is { } persistentId)
                         ? new IdentityAssignment(
