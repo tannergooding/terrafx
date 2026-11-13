@@ -130,13 +130,27 @@ internal sealed class RenderMeshAssetCodecTests
             CreateFixedArrayField(2, elementKind: 2, stride: sizeof(ushort), elements));
     }
 
-    private static EbinRecord CreateMaterialRecord()
+    private static EbinRecord CreateMaterialRecord(uint? textureAssetId = null)
     {
+        var parameterFields = new List<EbinField> {
+            EbinPrimitives.Geometry(1, Vector4.One),
+        };
+
+        if (textureAssetId is { } selectedTextureAssetId)
+        {
+            parameterFields.Add(new EbinField(
+                2,
+                22,
+                flags: 0,
+                count: 1,
+                EbinPrimitives.Encode(CreateTextureBinding(selectedTextureAssetId))));
+        }
+
         var parameters = new EbinRecord(
             new ContentSchemaIdentityAssignment("native/material-sprite-parameters").SchemaId,
             1,
             0,
-            [EbinPrimitives.Geometry(1, Vector4.One)]);
+            parameterFields.ToArray());
         return new EbinRecord(
             new ContentSchemaIdentityAssignment("native/material").SchemaId,
             1,
@@ -315,6 +329,29 @@ internal sealed class RenderMeshAssetCodecTests
 
     private static EbinRecord CreateStream(string schemaName, params EbinField[] fields)
         => new(new ContentSchemaIdentityAssignment(schemaName).SchemaId, 1, 0, fields);
+
+    private static EbinRecord CreateTextureBinding(uint textureAssetId)
+        => new(
+            new ContentSchemaIdentityAssignment("native/texture-binding").SchemaId,
+            1,
+            0,
+            [
+                EbinPrimitives.Record(1, CreateAssetReference(
+                    textureAssetId,
+                    new ContentSchemaIdentityAssignment("native/texture").SchemaId)),
+                EbinPrimitives.Record(2, new EbinRecord(
+                    new ContentSchemaIdentityAssignment("native/sampler").SchemaId,
+                    1,
+                    0,
+                    [
+                        EbinPrimitives.UInt8(1, 1),
+                        EbinPrimitives.UInt8(2, 1),
+                        EbinPrimitives.UInt8(3, 0),
+                        EbinPrimitives.UInt8(4, 0),
+                        EbinPrimitives.UInt8(5, 0),
+                    ])),
+                EbinPrimitives.UInt8(3, 0),
+            ]);
 
     private static EbinRecord CreateUvStream(byte set, Vector2[] values)
     {
@@ -514,6 +551,43 @@ internal sealed class RenderMeshAssetCodecTests
             using var invalidMeshLease = await store.LoadAsync<RenderMeshAsset>(new AssetId(2)).ConfigureAwait(false);
             _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
                 await RenderMeshAssetBinding.ValidatePackageBindingsAsync(invalidMeshLease).ConfigureAwait(false));
+        }
+        finally
+        {
+            await store.DisposeAsync().ConfigureAwait(false);
+            File.Delete(packagePath);
+        }
+    }
+
+    [Test]
+    public async Task MeshAssetBinderResolvesMaterialTexturesFromTheSelectedPackage()
+    {
+        var schemas = CreateRegistry();
+        var builder = new AssetStoreRegistrationBuilder(schemas);
+        _ = Renderer.RegisterAssetCodecs(builder);
+        var positions = new[] {
+            Vector3.Zero,
+            Vector3.UnitX,
+            Vector3.UnitY,
+        };
+        var meshRecord = CreateMeshRecord(
+            positions,
+            [
+                CreatePositionStream(positions),
+                CreateUvStream(0, [Vector2.Zero, Vector2.UnitX, Vector2.UnitY]),
+            ],
+            [0, 1, 2],
+            [CreateMeshGroup(0, 3, 0)],
+            new RenderMeshBounds(Vector3.Zero, new Vector3(1.0f, 1.0f, 0.0f), new Vector3(0.5f, 0.5f, 0.0f), 1.0f));
+        var (store, packagePath) = await CreateStoreAsync(
+            CreatePackage([meshRecord], materialRecord: CreateMaterialRecord(textureAssetId: 1002)),
+            builder.Build()).ConfigureAwait(false);
+
+        try
+        {
+            using var meshLease = await store.LoadAsync<RenderMeshAsset>(new AssetId(1)).ConfigureAwait(false);
+            _ = Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await RenderMeshAssetBinding.ValidatePackageBindingsAsync(meshLease).ConfigureAwait(false));
         }
         finally
         {

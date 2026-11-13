@@ -77,6 +77,9 @@ internal static class RenderMeshAssetBinding
             using var materialLease = await retainedMeshLease.LoadFromPackageAsync<RenderMaterialAsset>(
                 materialAssetId,
                 cancellationToken).ConfigureAwait(false);
+            using var materialTextureSet = await RenderMaterialTextureLoader.RetainAsync(
+                materialLease,
+                cancellationToken).ConfigureAwait(false);
             ValidateMaterialBindings(mesh, materialLease.Value);
         }
     }
