@@ -206,7 +206,7 @@ Semantic issuance is narrower than CLR access. `World..ctor(WorldConstructionPla
 the only Runtime caller of `Allocate`; it consumes the exact Entities-owned admitted
 plan, validates its final target/domain/root/reservation/handoff grants before issuing
 once, then initializes live storage. A later initialization failure burns the ID.
-`World.Create(WorldOptions)`, `World.CreateHosted(...)` and
+`World.Create(WorldOptions)`, `World.CreateHosted(...)` and the contractually specified
 `World.CreateRestoreCandidate(...)` prepare fresh or restored plans through the same
 private constructor; the World factory is the only fresh-lineage selector, and a
 restore candidate consumes only source/transformation identity already admitted by
@@ -214,23 +214,55 @@ the plan. The WorldAdmissionDomain's registrar, reservations and interests do no
 issue owners or accept identity from GUID-only metadata. A default-domain replacement
 transfers its existing close-owner credit exactly once at successful publication;
 ordinary interests do not grant close authority, and retiring the former World
-releases only its own interests. The only
-Entity-constructor caller is `World.IssueEntity(uint,uint)`, which uses its receiver's
-owner and admitted slot/generation metadata. `RestoreEntities()` issues on the
-replacement candidate. `CommitStructuralTransactions()` is World-owned preflight and
-commit, not an authority delegated to producers: `ExecuteTick()` and
-`PumpControlBoundary()` invoke it for applicable structural work; the control boundary
-also processes queued scene intent and candidate replacement. CommandWriter/scene
-producers return tokens or queued intent, never live Entity values. `World.Step()`
-uses the common `ExecuteTick()` only after standalone admission. The host owner loop
-uses `PumpControlBoundary()` and `ExecuteTick()` after host admission; it never calls
+releases only its own interests.
+
+The only `Entity`-constructor caller is the private
+`World.CreateEntityHandle(uint slotIndex, uint generation)`, which uses its receiver's
+owner and the supplied slot/generation. Its current exact source callers are
+`World.CreateEntity(EntityDescription)`,
+`World.TryGetEntity(Guid, out Entity)`,
+`World.TryGetEntityByIdentityOrdinal(uint, out Entity)`,
+`World.TryGetFirstHierarchyChild(Entity, out Entity)`,
+`World.TryGetHierarchyParent(Entity, out Entity)`,
+`World.TryGetNextHierarchySibling(Entity, out Entity)`,
+`World.TryGetEntityFromSystem(WorldSystemInvocationDispatch, Guid, out Entity)`,
+`World.GetPersistenceEntityId(WorldPersistenceCaptureLease, int, uint)`,
+`World.DestroySceneEntitiesAtomically(Guid, uint, int, HierarchyDestroyMode, CancellationToken)`,
+`World.PreviewCandidateEntityHandles(int, scoped ReadOnlySpan<int>, int)`, and
+the local `AppendSceneSubtree(Entity)` function enclosed by
+`World.DestroySceneEntitiesAtomically(...)`, plus the local
+`GetFinalHierarchyDepth(Entity)`, `TryGetCurrentHierarchyParent(Entity, Entity)`,
+`CaptureCurrentHierarchyChildren(Entity)`, `CountLiveSubtree(ProjectedCommandEntity)`
+and `AppendDestroyedSubtree(ProjectedCommandEntity, ImmutableArray<WorldEntityIdentity>.Builder)`
+functions enclosed by
+`World.CommitCommandBatch(WorldCommandStaging, IdentityAssignment?, uint?,
+ImmutableArray<WorldHierarchyParentMutation>, CancellationToken)`. The command-batch
+method also materializes prospective handles directly during preflight/projection.
+A restored candidate must use its own World-owned handle materialization route; it
+cannot call the `Entity` constructor directly or reuse handles from the target World.
+
+`CommitCommandBatch(...)` is World-owned preflight and commit, not an authority
+delegated to producers. Its exact source callers are
+`WorldStepReceipt World.ExecuteTick()`,
+`long World.ApplySceneHierarchyTransaction(IWorldSceneParticipant, Guid, uint, int, ImmutableArray<WorldHierarchyComponentMutation>, ImmutableArray<WorldHierarchyParentMutation>, CancellationToken)`,
+`long World.DestroySceneEntitiesAtomically(Guid, uint, int, HierarchyDestroyMode, CancellationToken)`,
+`WorldSceneEntityBatchCommit World.CreateEntitiesAtomicallyCore(int, Func<ImmutableArray<Entity>, ImmutableArray<EntityDescription>>, IdentityAssignment?, uint, scoped ReadOnlySpan<int>, ReadOnlyMemory<int>, CancellationToken)`, and
+`void World.DestroyEntity(Entity, HierarchyDestroyMode)`. `World.CreateEntity(...)`
+performs its separate single-Entity preflight and commit. `Add`/`Remove` component
+operations use `MigrateEntity(...)`; tag transitions use `MigrateTag(...)`.
+`PumpControlBoundary()` processes accepted owner-control work and does not directly
+call the command-batch coordinator. CommandWriter/scene producers return tokens or
+queued intent, never live Entity values. `World.Step()` uses the common
+`ExecuteTick()` only after standalone admission. The host owner loop uses
+`PumpControlBoundary()` and `ExecuteTick()` after host admission; it never calls
 public `Step()` on a host-managed World.
 
 The reviewed policy semantics distinguish exact constructor Construction permission,
-exact sensitive-call permission, and callable acquisition. Only `World.IssueEntity`
-may construct Entity; only declared exact callers may invoke the allocator/issuer and
-World lifecycle helpers; no callable-acquisition permission follows from direct-call
-permission. These are semantic actor requirements, not a claim that the still-blocked
+exact sensitive-call permission, and callable acquisition. Only
+`World.CreateEntityHandle(uint,uint)` may construct Entity; only the declared exact
+callers may invoke the handle-materialization helper, allocator and World lifecycle
+helpers; no callable-acquisition permission follows from direct-call permission.
+These are semantic actor requirements, not a claim that the still-blocked
 serialized policy grammar or analyzer enforcement is implemented. Exact keys include
 declaring assembly, metadata type, method kind/name, staticness, generic arity,
 parameter/ref/scoped forms, and return/ref form. Unlisted/generated helpers receive no
@@ -249,7 +281,7 @@ The deferred hierarchy-destruction surface preserves intent without transferring
 | `SceneWorldParticipant.PrepareDestructionExpansion(WorldDestructionExpansionContext): PreparedWorldDestructionExpansion` | Sole registered hierarchy actor, paired with the existing `ExpandDescendantDestruction` grant; application writers do not acquire it. |
 | `WorldDestructionExpansionWriter.InsertDescendantDestruction(WorldEntityProjectionReference): WorldStructuralCommandAnchor` | Insert only the next certified descendant under its expansion context. |
 | `WorldDestructionExpansionContext.CreateResult(ImmutableArray<WorldOutputReservation>): PreparedWorldDestructionExpansion` | Validate and seal the complete expansion order; World merges it once at the original anchor. |
-| `World.CommitStructuralTransactions()` | World-owned normalization, mode-preserving lowering, expansion/merge, comparison, receipt preparation and installation. Producers cannot call this lifecycle helper. |
+| `World.CommitCommandBatch(WorldCommandStaging, IdentityAssignment?, uint?, ImmutableArray<WorldHierarchyParentMutation>, CancellationToken)` | World-owned normalization, mode-preserving lowering, expansion/merge, comparison, receipt preparation and installation. Only its exact declared World callers may invoke it; producers cannot call this lifecycle helper. |
 | `CommandReceipt.DestroyedEntityIdentities.get` | Public immutable observation only; the World prepared-receipt path populates it. Systems, responders and cleanup callbacks cannot author it. |
 
 These are exact semantic actor requirements for the future declarations, not existing compiler-enforcement evidence. The implementation policy must bind each exact signature/role; public callers receive only the two capture operations and copied receipt observation. No `World.*` type-wide grant, new friendship or dependency edge follows from these rows.
