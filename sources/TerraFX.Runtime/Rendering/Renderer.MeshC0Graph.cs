@@ -349,7 +349,7 @@ public sealed partial class Renderer
 
             if (!IsMeshC0Material(material))
             {
-                throw new NotSupportedException("Mesh C0 admits only opaque, double-sided PBR materials with supported base-color, emissive, and packed data textures.");
+                throw new NotSupportedException("Mesh C0 admits only supported opaque, masked, or blended double-sided PBR materials.");
             }
 
             var baseColorTexture = material.Parameters.BaseTexture;
