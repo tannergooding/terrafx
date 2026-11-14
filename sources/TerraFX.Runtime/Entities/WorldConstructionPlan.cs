@@ -198,7 +198,9 @@ internal sealed class WorldConstructionPlan
     {
         var expectedIssuanceNamespace = _restoreIdentityState?.IssuanceNamespace ?? _worldGuid;
         var hasRestoreEntityRows = (_restoreIdentityState?.EntitySlots.LiveEntityCount ?? 0) != 0;
-        var hasRestoreComponents = (_restoreEcsPlan is not null) && !_restoreEcsPlan.Components.IsEmpty;
+        var hasRestoreArchetype = (_restoreEcsPlan is not null)
+            && (!_restoreEcsPlan.Components.IsEmpty || !_restoreEcsPlan.Tags.IsEmpty);
+        var hasRestoreComponentWorkspace = (_restoreEcsPlan is not null) && !_restoreEcsPlan.Components.IsEmpty;
 
         if ((_worldGuid == Guid.Empty)
             || (ReplayLineageId == Guid.Empty)
@@ -234,8 +236,8 @@ internal sealed class WorldConstructionPlan
                     || hasRestoreEntityRows != (_restoreEcsStorageByteReservation > 0)
                     || hasRestoreEntityRows != (_restoreWorkPlanCapacity > 0)
                     || hasRestoreEntityRows != (_restoreWorkPlanByteReservation > 0)
-                    || hasRestoreComponents != (_restoreEcsArchetypeMetadataByteReservation > 0)
-                    || hasRestoreComponents != (_restoreComponentWorkspaceByteReservation > 0)
+                    || hasRestoreArchetype != (_restoreEcsArchetypeMetadataByteReservation > 0)
+                    || hasRestoreComponentWorkspace != (_restoreComponentWorkspaceByteReservation > 0)
                     || (_replacementPreparation is null))))
         {
             throw new InvalidOperationException("The standalone World construction plan is incomplete or inconsistent.");

@@ -47,6 +47,9 @@ internal static class WorldPersistenceEcsReader
         var persistentField = (contents.EntityCount == 0)
             ? default
             : record.GetRecordArrayElement(1, 0).GetField(1);
+        var tagField = (contents.EntityCount == 0)
+            ? default
+            : record.GetRecordArrayElement(1, 0).GetField(2);
         var transientField = (contents.EntityCount == 0)
             ? default
             : record.GetRecordArrayElement(1, 0).GetField(3);
@@ -56,6 +59,10 @@ internal static class WorldPersistenceEcsReader
                 || (persistentField.Kind != ArrayKind)
                 || !persistentField.IsRequired
                 || (persistentField.Count > int.MaxValue)
+                || (tagField.Tag != 3)
+                || (tagField.Kind != ArrayKind)
+                || !tagField.IsRequired
+                || (tagField.Count > int.MaxValue)
                 || (transientField.Tag != 4)
                 || (transientField.Kind != ArrayKind)
                 || !transientField.IsRequired
@@ -65,6 +72,7 @@ internal static class WorldPersistenceEcsReader
         }
 
         var persistentCount = (contents.EntityCount == 0) ? 0 : checked((int)persistentField.Count);
+        var tagCount = (contents.EntityCount == 0) ? 0 : checked((int)tagField.Count);
         var transientCount = (contents.EntityCount == 0) ? 0 : checked((int)transientField.Count);
         var components = ImmutableArray.CreateBuilder<IComponentRegistration>(checked(persistentCount + transientCount));
 
@@ -116,21 +124,36 @@ internal static class WorldPersistenceEcsReader
         }
 
         var componentResult = components.MoveToImmutable();
+        var tags = ImmutableArray.CreateBuilder<ContentSchemaReference>(tagCount);
+
+        for (var tagIndex = 0; tagIndex < tagCount; tagIndex++)
+        {
+            var tagRecord = record.GetRecordArrayElement(1, 0).GetRecordArrayElement(3, tagIndex);
+            var tagSchema = ReadTagSchemaReference(tagRecord, nameof(ecsRecord));
+            ValidateTagSchema(
+                tagSchema,
+                targetRegistration,
+                schemas: targetRegistration.Schemas,
+                parameterName: nameof(ecsRecord));
+            tags.Add(tagSchema);
+        }
+
+        var tagResult = tags.MoveToImmutable();
         ValidateDerivedDependencies(componentResult, persistentCount);
 
         for (var entityIndex = 0; entityIndex < contents.EntityCount; entityIndex++)
         {
             var entity = record.GetRecordArrayElement(1, entityIndex);
             var currentPersistentComponents = entity.GetField(1);
-            var tags = entity.GetField(2);
+            var entityTagField = entity.GetField(2);
             var currentTransientSchemas = entity.GetField(3);
 
             if ((currentPersistentComponents.Count != (ulong)persistentCount)
-                || (tags.Count != 0)
+                || (entityTagField.Count != (ulong)tagResult.Length)
                 || (currentTransientSchemas.Count != (ulong)transientCount)
                 || entity.TryGetField(6, out _))
             {
-                throw new NotSupportedException("The candidate restore slice requires one homogeneous component set without tags or Scene ownership.");
+                throw new NotSupportedException("The candidate restore slice requires one homogeneous component and tag signature without Scene ownership.");
             }
 
             for (var componentIndex = 0; componentIndex < persistentCount; componentIndex++)
@@ -154,9 +177,20 @@ internal static class WorldPersistenceEcsReader
                     throw new NotSupportedException("The candidate restore slice requires every Entity to use one homogeneous transient component set.");
                 }
             }
+
+            for (var tagIndex = 0; tagIndex < tagResult.Length; tagIndex++)
+            {
+                var tagRecord = entity.GetRecordArrayElement(3, tagIndex);
+                var tagSchema = ReadTagSchemaReference(tagRecord, nameof(ecsRecord));
+
+                if (tagSchema != tagResult[tagIndex])
+                {
+                    throw new NotSupportedException("The candidate restore slice requires every Entity to use one homogeneous tag set.");
+                }
+            }
         }
 
-        return WorldRestoreEcsPlan.Create(contents.EntityCount, persistentCount, componentResult);
+        return WorldRestoreEcsPlan.Create(contents.EntityCount, persistentCount, componentResult, tagResult);
     }
 
     internal static WorldPersistenceEcsContents Read(
@@ -328,6 +362,11 @@ internal static class WorldPersistenceEcsReader
             validatedLineageMembership,
             validatedIdentityHistory);
     }
+
+    internal static ContentSchemaReference ReadTagSchemaReferenceForRestore(
+        EbinRecordReadView record,
+        string parameterName)
+        => ReadTagSchemaReference(record, parameterName);
 
     internal static ContentSchemaReference ReadTransientComponentSchemaReference(
         EbinRecordReadView record,

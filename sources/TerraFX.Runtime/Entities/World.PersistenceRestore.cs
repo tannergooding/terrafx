@@ -2,6 +2,7 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Runtime.ExceptionServices;
@@ -273,14 +274,14 @@ public sealed partial class World
                 || (tagField.Tag != 3)
                 || (tagField.Kind != 24)
                 || !tagField.IsRequired
-                || (tagField.Count != 0)
+                || (tagField.Count != (ulong)restoreEcsPlan.Tags.Length)
                 || (transientSchemaField.Tag != 4)
                 || (transientSchemaField.Kind != 24)
                 || !transientSchemaField.IsRequired
                 || (transientSchemaField.Count != (ulong)restoreEcsPlan.TransientComponentCount)
                 || entityRecord.TryGetField(6, out _))
             {
-                throw new NotSupportedException("This candidate restore slice supports only homogeneous component signatures without tags or Scene ownership.");
+                throw new NotSupportedException("This candidate restore slice supports one homogeneous component and tag signature without Scene ownership.");
             }
 
             for (var componentIndex = 0; componentIndex < restoreEcsPlan.PersistentComponentCount; componentIndex++)
@@ -294,6 +295,19 @@ public sealed partial class World
                     || (header.Minor != registration.SchemaReference.Minor))
                 {
                     throw new ArgumentException("A candidate ECS component does not match the preflighted homogeneous component set.", nameof(ecsRecord));
+                }
+            }
+
+            for (var tagIndex = 0; tagIndex < restoreEcsPlan.Tags.Length; tagIndex++)
+            {
+                var tagRecord = entityRecord.GetRecordArrayElement(3, tagIndex);
+                var tagSchema = WorldPersistenceEcsReader.ReadTagSchemaReferenceForRestore(
+                    tagRecord,
+                    nameof(ecsRecord));
+
+                if (tagSchema != restoreEcsPlan.Tags[tagIndex])
+                {
+                    throw new ArgumentException("A candidate ECS tag does not match the preflighted homogeneous signature.", nameof(ecsRecord));
                 }
             }
 
@@ -378,18 +392,25 @@ public sealed partial class World
             return;
         }
 
-        var hasComponents = !restoreEcsPlan.Components.IsEmpty;
-        var metadataBytes = hasComponents
-            ? WorldArchetype.GetMetadataByteReservation(restoreEcsPlan.Components.Length, tagCount: 0)
+        var hasArchetype = !restoreEcsPlan.Components.IsEmpty || !restoreEcsPlan.Tags.IsEmpty;
+        var metadataBytes = hasArchetype
+            ? WorldArchetype.GetMetadataByteReservation(restoreEcsPlan.Components.Length, restoreEcsPlan.Tags.Length)
             : 0L;
         WorldArchetype? candidateArchetype = null;
         WorldArchetype archetype;
 
-        if (hasComponents)
+        if (hasArchetype)
         {
             if ((_archetypeCount != 1) || (_archetypes[1] is not null))
             {
                 throw new InvalidOperationException("The restore candidate does not have the preflighted component archetype slot.");
+            }
+
+            var tagIds = ImmutableArray.CreateBuilder<Guid>(restoreEcsPlan.Tags.Length);
+
+            foreach (var tag in restoreEcsPlan.Tags)
+            {
+                tagIds.Add(tag.SchemaId);
             }
 
             candidateArchetype = new WorldArchetype(
@@ -397,7 +418,7 @@ public sealed partial class World
                 1,
                 _maximumLiveEntities,
                 restoreEcsPlan.Components,
-                []);
+                tagIds.MoveToImmutable());
             archetype = candidateArchetype;
         }
         else

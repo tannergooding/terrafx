@@ -357,7 +357,7 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
     }
 
     [Test]
-    public void RestoresPersistentAndDerivedComponentsThroughCandidateContext()
+    public void RestoresPersistentResetAndDerivedComponentsWithTagsThroughCandidateContext()
     {
         var derivedAssignment = new ContentSchemaIdentityAssignment("application/world-root-test/derived-light-flux/v1");
         var derivedSchemaReference = new ContentSchemaReference(
@@ -373,9 +373,27 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             ContentSchemaStorage.Transient,
             ContentTransientRestore.ExactDerivedRehydration,
             []);
-        var schemas = CreateWorldRootSchemas(derivedMetadata);
+        var resetAssignment = new ContentSchemaIdentityAssignment("application/world-root-test/reset-restore/v1");
+        var resetSchemaReference = new ContentSchemaReference(
+            resetAssignment.SchemaId,
+            1,
+            0,
+            ContentSchemaScope.Content);
+        var resetMetadata = new DataSchema(
+            resetSchemaReference,
+            resetAssignment,
+            ContentSchemaRole.Component,
+            ContentSchemaOwner.Application,
+            ContentSchemaStorage.Transient,
+            ContentTransientRestore.ResetDeclaredDefaults,
+            []);
+        var schemas = CreateWorldRootSchemas(derivedMetadata, resetMetadata);
         var registrationBuilder = new WorldRegistrationBuilder(schemas);
         _ = RenderComponentDefinitions.RegisterPointLight(registrationBuilder, schemas);
+        var tagSchema = new EntityTagSchema(
+            new ContentSchemaIdentityAssignment("application/world-root-test/tag/v1").SchemaId,
+            1);
+        _ = registrationBuilder.RegisterTag(tagSchema);
         var pointLightSchemaReference = new ContentSchemaReference(
             new ContentSchemaIdentityAssignment("render/point-light").SchemaId,
             1,
@@ -406,6 +424,25 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             new DerivedLightFluxRestorer(),
             new DerivedLightFluxCodec());
         _ = registrationBuilder.RegisterComponent(derivedSchema, new DerivedLightFluxFactory(derivedBinding));
+        var resetSchema = ComponentSchema<ResetMarker>.FromRegistry(
+            schemas,
+            resetSchemaReference,
+            new ComponentLayout(Guid.NewGuid(), sizeof(int)));
+        var resetBinding = ComponentFactoryBinding<ResetMarker>.Create(
+            Guid.NewGuid(),
+            1,
+            resetSchema,
+            new ComponentStorageDeclaration(
+                sizeof(int),
+                [],
+                [new ComponentPaddingInterval(0, sizeof(int))]),
+            ComponentTransientRestore.Reset,
+            [],
+            [],
+            new ResetMarkerDefaults(),
+            new ResetMarkerRestorer(),
+            new ResetMarkerCodec());
+        _ = registrationBuilder.RegisterComponent(resetSchema, new ResetMarkerFactory(resetBinding));
         var registration = registrationBuilder.Build();
         using var domain = new WorldAdmissionDomain(16 * 1024 * 1024);
         using var world = World.Create(new WorldOptions(registration) {
@@ -420,10 +457,12 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             range: 10.0f,
             layerMask: ulong.MaxValue);
         var sourceDerived = new DerivedLightFlux(-1.0f);
+        var sourceReset = new ResetMarker(-1);
         var entity = world.CreateEntity(new EntityDescription(components: [
             ComponentInitialization.Value(in pointLight),
             ComponentInitialization.Value(in sourceDerived),
-        ]));
+            ComponentInitialization.Value(in sourceReset),
+        ], tags: [tagSchema.SchemaId]));
         _ = world.Step();
         var metadata = WorldPersistenceHeaderWriterTests.CreateMetadata();
         var profileRecord = WorldPersistenceHeaderWriterTests.CreateFoundationProfileRecord();
@@ -476,10 +515,17 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             ?? throw new InvalidOperationException("The real World capture did not produce validated checkpoint contents.");
         var capturedEcs = new EbinRecordReadView(checkpoint.WorldContents.EcsRecord.Span);
         var capturedEntity = capturedEcs.GetRecordArrayElement(1, 0);
-        var capturedTransientSchema = WorldPersistenceEcsReader.ReadTransientComponentSchemaReference(
-            capturedEntity.GetRecordArrayElement(4, 0),
-            nameof(checkpoint));
-        Assert.That(capturedTransientSchema, Is.EqualTo(derivedSchemaReference));
+        var capturedTransientSchemas = new ContentSchemaReference[2];
+
+        for (var index = 0; index < capturedTransientSchemas.Length; index++)
+        {
+            capturedTransientSchemas[index] = WorldPersistenceEcsReader.ReadTransientComponentSchemaReference(
+                capturedEntity.GetRecordArrayElement(4, index),
+                nameof(checkpoint));
+        }
+
+        Assert.That(capturedTransientSchemas, Does.Contain(derivedSchemaReference));
+        Assert.That(capturedTransientSchemas, Does.Contain(resetSchemaReference));
         var identityHistory = checkpoint.WorldContents.Ecs.ValidatedIdentityHistory
             ?? throw new InvalidOperationException("The captured checkpoint did not retain its validated identity history.");
         var restoreState = WorldRestoreIdentityState.CreateBranch(
@@ -542,12 +588,15 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             Assert.That(candidate.TryGetEntity(world.GetEntityId(entity), out var restoredEntity), Is.True);
             Assert.That(candidate.TryGet(restoredEntity, out RenderComponentDefinitions.PointLightComponent restoredPointLight), Is.True);
             Assert.That(candidate.TryGet(restoredEntity, out DerivedLightFlux restoredDerived), Is.True);
+            Assert.That(candidate.TryGet(restoredEntity, out ResetMarker restoredReset), Is.True);
+            Assert.That(candidate.HasTag(restoredEntity, tagSchema.SchemaId), Is.True);
             Assert.Multiple(() => {
                 Assert.That(restoredPointLight.Color, Is.EqualTo(pointLight.Color));
                 Assert.That(restoredPointLight.LuminousFlux, Is.EqualTo(pointLight.LuminousFlux));
                 Assert.That(restoredPointLight.Range, Is.EqualTo(pointLight.Range));
                 Assert.That(restoredPointLight.LayerMask, Is.EqualTo(pointLight.LayerMask));
                 Assert.That(restoredDerived.LuminousFlux, Is.EqualTo(pointLight.LuminousFlux * 2.0f));
+                Assert.That(restoredReset.Value, Is.EqualTo(17));
             });
         }
         finally
@@ -726,5 +775,66 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
                 }
             }
         }
+    }
+
+    private readonly struct ResetMarker
+    {
+        internal ResetMarker(int value)
+        {
+            Value = value;
+        }
+
+        internal int Value { get; }
+    }
+
+    private sealed class ResetMarkerCodec : IComponentStateCodec<ResetMarker, byte>
+    {
+        public nint Count(in ResetMarker value, ComponentCaptureBinding binding, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ComponentReadResult<byte> Read(
+            scoped ReadOnlySpan<byte> source,
+            ComponentReadBinding<byte> binding,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ImmutableArray<Diagnostic> Validate(
+            in ResetMarker value,
+            ComponentValidationBinding binding,
+            CancellationToken cancellationToken)
+            => [];
+
+        public nint Write(
+            in ResetMarker value,
+            scoped Span<byte> destination,
+            ComponentCaptureBinding binding,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class ResetMarkerDefaults : IComponentDefaultProvider<ResetMarker>
+    {
+        public ResetMarker Create(ComponentDefaultBinding binding)
+            => new(17);
+    }
+
+    private sealed class ResetMarkerFactory : IComponentFactory<ResetMarker>
+    {
+        internal ResetMarkerFactory(ComponentFactoryBinding<ResetMarker> binding)
+        {
+            ArgumentNullException.ThrowIfNull(binding);
+            Binding = binding;
+        }
+
+        public ComponentFactoryBinding<ResetMarker> Binding { get; }
+    }
+
+    private sealed class ResetMarkerRestorer : IComponentRestoreProvider<ResetMarker, byte>
+    {
+        public ResetMarker RebuildDerived(WorldStateRestoreBinding binding, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ResetMarker Restore(in byte author, WorldStateRestoreBinding binding, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
     }
 }

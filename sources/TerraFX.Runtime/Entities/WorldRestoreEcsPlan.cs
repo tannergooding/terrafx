@@ -11,21 +11,33 @@ internal sealed class WorldRestoreEcsPlan
     private WorldRestoreEcsPlan(
         int entityCount,
         int persistentComponentCount,
-        ImmutableArray<IComponentRegistration> components)
+        ImmutableArray<IComponentRegistration> components,
+        ImmutableArray<ContentSchemaReference> tags)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(entityCount);
         ArgumentOutOfRangeException.ThrowIfNegative(persistentComponentCount);
 
-        if (components.IsDefault)
+        if (components.IsDefault || tags.IsDefault)
         {
-            throw new ArgumentException("The restored ECS component set must be initialized.", nameof(components));
+            throw new ArgumentException("The restored ECS signature must be initialized.");
         }
 
         ArgumentOutOfRangeException.ThrowIfGreaterThan(persistentComponentCount, components.Length);
 
-        if ((entityCount == 0) && !components.IsEmpty)
+        if ((entityCount == 0) && (!components.IsEmpty || !tags.IsEmpty))
         {
-            throw new ArgumentException("An empty restore cannot declare components.", nameof(entityCount));
+            throw new ArgumentException("An empty restore cannot declare an ECS signature.", nameof(entityCount));
+        }
+
+        foreach (var tag in tags)
+        {
+            if ((tag.SchemaId == Guid.Empty)
+                || (tag.Major <= 0)
+                || (tag.Minor < 0)
+                || (tag.Scope != ContentSchemaScope.Content))
+            {
+                throw new ArgumentException("The restored tag signature contains an invalid schema reference.", nameof(tags));
+            }
         }
 
         for (var index = 0; index < components.Length; index++)
@@ -50,6 +62,7 @@ internal sealed class WorldRestoreEcsPlan
         EntityCount = entityCount;
         PersistentComponentCount = persistentComponentCount;
         Components = components;
+        Tags = tags;
     }
 
     internal ImmutableArray<IComponentRegistration> Components { get; }
@@ -57,17 +70,23 @@ internal sealed class WorldRestoreEcsPlan
     internal int EntityCount { get; }
 
     internal long OwnedByteReservation
-        => checked(64L + ArrayBytes(Components.Length, IntPtr.Size));
+        => checked(
+            64L
+            + ArrayBytes(Components.Length, IntPtr.Size)
+            + ArrayBytes(Tags.Length, Unsafe.SizeOf<ContentSchemaReference>()));
 
     internal int PersistentComponentCount { get; }
+
+    internal ImmutableArray<ContentSchemaReference> Tags { get; }
 
     internal int TransientComponentCount => Components.Length - PersistentComponentCount;
 
     internal static WorldRestoreEcsPlan Create(
         int entityCount,
         int persistentComponentCount,
-        ImmutableArray<IComponentRegistration> components)
-        => new(entityCount, persistentComponentCount, components);
+        ImmutableArray<IComponentRegistration> components,
+        ImmutableArray<ContentSchemaReference> tags)
+        => new(entityCount, persistentComponentCount, components, tags);
 
     private static long ArrayBytes(int count, int elementSize)
     {
