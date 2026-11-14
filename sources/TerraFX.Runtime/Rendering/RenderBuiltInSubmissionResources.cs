@@ -10,21 +10,27 @@ internal sealed class RenderBuiltInSubmissionResources
         GpuPipeline? meshAlphaMaskPipeline,
         GpuPipeline? spritePipeline,
         GpuPipeline? meshPipeline,
+        GpuPipeline? meshBlendPipeline,
         GpuPipeline? texturedMeshAlphaMaskPipeline,
         GpuPipeline? texturedMeshPipeline,
+        GpuPipeline? texturedMeshBlendPipeline,
         GpuPipeline? toneMapPipeline,
         GpuSampler? sampler)
     {
         MeshAlphaMaskPipeline = meshAlphaMaskPipeline;
         MeshPipeline = meshPipeline;
+        MeshBlendPipeline = meshBlendPipeline;
         TexturedMeshAlphaMaskPipeline = texturedMeshAlphaMaskPipeline;
         TexturedMeshPipeline = texturedMeshPipeline;
+        TexturedMeshBlendPipeline = texturedMeshBlendPipeline;
         Sampler = sampler;
         SpritePipeline = spritePipeline;
         ToneMapPipeline = toneMapPipeline;
     }
 
     internal GpuPipeline? MeshAlphaMaskPipeline { get; }
+
+    internal GpuPipeline? MeshBlendPipeline { get; }
 
     internal GpuPipeline? MeshPipeline { get; }
 
@@ -33,6 +39,8 @@ internal sealed class RenderBuiltInSubmissionResources
     internal GpuPipeline? SpritePipeline { get; }
 
     internal GpuPipeline? TexturedMeshAlphaMaskPipeline { get; }
+
+    internal GpuPipeline? TexturedMeshBlendPipeline { get; }
 
     internal GpuPipeline? TexturedMeshPipeline { get; }
 

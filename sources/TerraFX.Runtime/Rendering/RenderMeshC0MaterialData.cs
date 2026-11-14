@@ -32,7 +32,7 @@ internal readonly struct RenderMeshC0MaterialData
         _renderOptions = new Vector4(
             material.AlphaCutoff,
             material.AlphaMode is RenderMaterialAsset.MaterialAlphaMode.Mask ? 1.0f : 0.0f,
-            0.0f,
+            material.AlphaMode is RenderMaterialAsset.MaterialAlphaMode.Blend ? 1.0f : 0.0f,
             0.0f);
     }
 

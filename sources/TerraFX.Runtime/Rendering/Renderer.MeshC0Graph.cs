@@ -183,14 +183,23 @@ public sealed partial class Renderer
         && (material.ShaderId == s_meshC0ShaderId)
         && (material.PassId == s_meshC0PassId)
         && (material.LayoutId == s_meshC0LayoutId)
-        && (material.AlphaMode is RenderMaterialAsset.MaterialAlphaMode.Opaque or RenderMaterialAsset.MaterialAlphaMode.Mask)
-        && (material.OutputAlpha == RenderMaterialAsset.MaterialOutputAlpha.Straight)
+        && (material.AlphaMode is RenderMaterialAsset.MaterialAlphaMode.Opaque
+            or RenderMaterialAsset.MaterialAlphaMode.Mask
+            or RenderMaterialAsset.MaterialAlphaMode.Blend)
         && material.DepthTest
-        && material.DepthWrite
+        && (material.AlphaMode is RenderMaterialAsset.MaterialAlphaMode.Blend
+            ? !material.DepthWrite
+            : material.DepthWrite)
+        && (material.OutputAlpha
+            == (material.AlphaMode is RenderMaterialAsset.MaterialAlphaMode.Blend
+                ? RenderMaterialAsset.MaterialOutputAlpha.Premultiplied
+                : RenderMaterialAsset.MaterialOutputAlpha.Straight))
         && material.DoubleSided
         && (material.CullMode == RenderMaterialAsset.MaterialCullMode.None)
         && (material.RequiredCapabilities
-            == (0x191UL | (material.AlphaMode is RenderMaterialAsset.MaterialAlphaMode.Mask ? 0x004UL : 0UL)))
+            == (0x191UL
+                | (material.AlphaMode is RenderMaterialAsset.MaterialAlphaMode.Mask ? 0x004UL : 0UL)
+                | (material.AlphaMode is RenderMaterialAsset.MaterialAlphaMode.Blend ? 0x008UL : 0UL)))
         && !material.Parameters.NormalTexture.HasValue;
 
     private static bool IsSupportedMeshC0Texture(RenderMaterialAsset.TextureBinding binding)
@@ -579,7 +588,8 @@ public sealed partial class Renderer
                     baseColorTextureVersions[drawIndex],
                     emissiveTextureVersions[drawIndex],
                     packedMetalRoughOcclusionTextureVersions[drawIndex],
-                    materialAssets[selectedIndex].AlphaMode is RenderMaterialAsset.MaterialAlphaMode.Mask);
+                    materialAssets[selectedIndex].AlphaMode is RenderMaterialAsset.MaterialAlphaMode.Mask,
+                    materialAssets[selectedIndex].AlphaMode is RenderMaterialAsset.MaterialAlphaMode.Blend);
                 var pass = graph.AddBuiltInMeshRasterPass(
                     new RenderPassDescription(
                         $"TerraFX.MeshC0.Camera{cameraIndex}.Draw{orderIndex}",

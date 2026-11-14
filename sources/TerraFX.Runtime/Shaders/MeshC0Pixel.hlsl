@@ -86,5 +86,11 @@ float4 PSMain(PixelInput input) : SV_Target0
 
     color += Emissive.rgb;
     float visibility = input.Position.w > 0.0f ? 1.0f : 0.0f;
+
+    if (RenderOptions.z > 0.5f)
+    {
+        return float4(color * BaseColor.a, BaseColor.a) * visibility;
+    }
+
     return float4(color, 1.0f) * visibility;
 }

@@ -24,9 +24,16 @@ internal sealed class RenderMeshC0GraphPass
         GraphTextureVersion? baseColorTexture,
         GraphTextureVersion? emissiveTexture,
         GraphTextureVersion? packedMetalRoughOcclusionTexture,
-        bool alphaMask)
+        bool alphaMask,
+        bool alphaBlend)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(drawIndex);
+
+        if (alphaMask && alphaBlend)
+        {
+            throw new ArgumentException("A Mesh C0 pass cannot combine alpha masking and blending.");
+        }
+
         ArgumentNullException.ThrowIfNull(frameBuffer);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(frameStride);
         ArgumentOutOfRangeException.ThrowIfNegative(cameraIndex);
@@ -54,7 +61,10 @@ internal sealed class RenderMeshC0GraphPass
         EmissiveTexture = emissiveTexture;
         PackedMetalRoughOcclusionTexture = packedMetalRoughOcclusionTexture;
         AlphaMask = alphaMask;
+        AlphaBlend = alphaBlend;
     }
+
+    internal bool AlphaBlend { get; }
 
     internal bool AlphaMask { get; }
 
@@ -93,11 +103,14 @@ internal sealed class RenderMeshC0GraphPass
         var hasTexture = (BaseColorTexture is not null)
             || (EmissiveTexture is not null)
             || (PackedMetalRoughOcclusionTexture is not null);
-        var pipeline = (hasTexture, AlphaMask) switch {
-            (false, false) => resources.MeshPipeline,
-            (false, true) => resources.MeshAlphaMaskPipeline,
-            (true, false) => resources.TexturedMeshPipeline,
-            (true, true) => resources.TexturedMeshAlphaMaskPipeline,
+        var pipeline = (hasTexture, AlphaMask, AlphaBlend) switch {
+            (false, false, false) => resources.MeshPipeline,
+            (false, true, false) => resources.MeshAlphaMaskPipeline,
+            (false, false, true) => resources.MeshBlendPipeline,
+            (true, false, false) => resources.TexturedMeshPipeline,
+            (true, true, false) => resources.TexturedMeshAlphaMaskPipeline,
+            (true, false, true) => resources.TexturedMeshBlendPipeline,
+            _ => throw new InvalidOperationException("The built-in Mesh pass has an invalid alpha mode."),
         }
             ?? throw new InvalidOperationException("The built-in Mesh pass has no Mesh pipeline.");
         recorder.SetPipeline(pipeline.Handle);

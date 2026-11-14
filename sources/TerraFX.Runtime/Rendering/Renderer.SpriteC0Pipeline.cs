@@ -36,12 +36,17 @@ public sealed partial class Renderer
     internal Task<GpuPipeline> CreateMeshC0AlphaMaskPipelineAsync(
         TextureFormat colorTargetFormat,
         CancellationToken cancellationToken = default)
-        => CreateMeshC0PipelineAsync(colorTargetFormat, textured: false, alphaMask: true, cancellationToken);
+        => CreateMeshC0PipelineAsync(colorTargetFormat, textured: false, alphaMask: true, alphaBlend: false, cancellationToken);
+
+    internal Task<GpuPipeline> CreateMeshC0BlendPipelineAsync(
+        TextureFormat colorTargetFormat,
+        CancellationToken cancellationToken = default)
+        => CreateMeshC0PipelineAsync(colorTargetFormat, textured: false, alphaMask: false, alphaBlend: true, cancellationToken);
 
     internal Task<GpuPipeline> CreateMeshC0PipelineAsync(
         TextureFormat colorTargetFormat,
         CancellationToken cancellationToken = default)
-        => CreateMeshC0PipelineAsync(colorTargetFormat, textured: false, alphaMask: false, cancellationToken);
+        => CreateMeshC0PipelineAsync(colorTargetFormat, textured: false, alphaMask: false, alphaBlend: false, cancellationToken);
 
     internal async Task<GpuPipeline> CreateSpriteC0PipelineAsync(
         TextureFormat colorTargetFormat,
@@ -146,17 +151,23 @@ public sealed partial class Renderer
     internal Task<GpuPipeline> CreateTexturedMeshC0AlphaMaskPipelineAsync(
         TextureFormat colorTargetFormat,
         CancellationToken cancellationToken = default)
-        => CreateMeshC0PipelineAsync(colorTargetFormat, textured: true, alphaMask: true, cancellationToken);
+        => CreateMeshC0PipelineAsync(colorTargetFormat, textured: true, alphaMask: true, alphaBlend: false, cancellationToken);
+
+    internal Task<GpuPipeline> CreateTexturedMeshC0BlendPipelineAsync(
+        TextureFormat colorTargetFormat,
+        CancellationToken cancellationToken = default)
+        => CreateMeshC0PipelineAsync(colorTargetFormat, textured: true, alphaMask: false, alphaBlend: true, cancellationToken);
 
     internal Task<GpuPipeline> CreateTexturedMeshC0PipelineAsync(
         TextureFormat colorTargetFormat,
         CancellationToken cancellationToken = default)
-        => CreateMeshC0PipelineAsync(colorTargetFormat, textured: true, alphaMask: false, cancellationToken);
+        => CreateMeshC0PipelineAsync(colorTargetFormat, textured: true, alphaMask: false, alphaBlend: false, cancellationToken);
 
     private async Task<GpuPipeline> CreateMeshC0PipelineAsync(
         TextureFormat colorTargetFormat,
         bool textured,
         bool alphaMask,
+        bool alphaBlend,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -203,8 +214,10 @@ public sealed partial class Renderer
                 [colorTargetFormat],
                 depthTargetFormat: TextureFormat.D32Float,
                 PrimitiveTopology.TriangleList,
-                PipelineBlendMode.Opaque,
-                PipelineDepthMode.ReversedGreaterEqualWrite,
+                alphaBlend ? PipelineBlendMode.PremultipliedAlpha : PipelineBlendMode.Opaque,
+                alphaBlend
+                    ? PipelineDepthMode.ReversedGreaterEqualReadOnly
+                    : PipelineDepthMode.ReversedGreaterEqualWrite,
                 PipelineCullMode.None,
                 frontFaceClockwise: false,
                 bindingLayoutVersion: 1),

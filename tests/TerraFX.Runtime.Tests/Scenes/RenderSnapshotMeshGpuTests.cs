@@ -58,9 +58,10 @@ internal sealed partial class SceneAssetStoreTests
 
     private static async Task RunSnapshotBuiltInMeshC0GraphAsync(
         GraphicsBackend graphicsBackend,
-        bool unsupportedAlphaMode = false,
+        bool unsupportedCullMode = false,
         bool unsupportedActiveLight = false,
         bool useAlphaMask = false,
+        bool useAlphaBlend = false,
         bool useBaseColorTexture = false,
         bool useEmissiveTexture = false,
         bool usePackedMetalRoughOcclusionTexture = false,
@@ -92,17 +93,18 @@ internal sealed partial class SceneAssetStoreTests
                 baseTextureAddressU: unsupportedTextureSampler ? (byte)1 : (byte)0,
                 packedTextureAddressU: unsupportedTextureSampler ? (byte)1 : (byte)0,
                 emissiveTextureAddressU: unsupportedTextureSampler ? (byte)1 : (byte)0,
-                emissiveFactor: useEmissiveTexture ? Vector3.UnitY : Vector3.Zero,
+                emissiveFactor: useAlphaBlend ? new Vector3(2.0f, 0.0f, 0.0f)
+                    : useEmissiveTexture ? Vector3.UnitY : Vector3.Zero,
                 baseColorAlpha: baseColorAlpha),
-            alphaMode: (byte)(unsupportedAlphaMode ? 2 : useAlphaMask ? 1 : 0),
-            doubleSided: true,
+            alphaMode: (byte)(useAlphaBlend ? 2 : useAlphaMask ? 1 : 0),
+            doubleSided: !unsupportedCullMode,
             depthTest: true,
-            depthWrite: !unsupportedAlphaMode,
-            cullMode: 0,
-            outputAlpha: unsupportedAlphaMode ? (byte)1 : (byte)0,
-            requiredCapabilities: unsupportedAlphaMode
-                ? 0x199UL
-                : 0x191UL | (useAlphaMask ? 0x004UL : 0UL));
+            depthWrite: !useAlphaBlend,
+            cullMode: unsupportedCullMode ? (byte)1 : (byte)0,
+            outputAlpha: useAlphaBlend ? (byte)1 : (byte)0,
+            requiredCapabilities: 0x191UL
+                | (useAlphaMask ? 0x004UL : 0UL)
+                | (useAlphaBlend ? 0x008UL : 0UL));
         byte[][] meshComponents = [CreateMeshComponentRecord(checked((int)MeshAssetId), layerMask: ulong.MaxValue)];
 
         if (unsupportedActiveLight)
@@ -317,7 +319,7 @@ internal sealed partial class SceneAssetStoreTests
                     TextureUsage.ColorAttachment | TextureUsage.CopySource,
                     "mesh-c0-readback-target")).ConfigureAwait(false);
 
-            if (unsupportedAlphaMode
+            if (unsupportedCullMode
                 || unsupportedActiveLight
                 || unsupportedTextureSampler
                 || missingTextureUv0)
@@ -412,11 +414,17 @@ internal sealed partial class SceneAssetStoreTests
             Assert.Multiple(() => {
                 Assert.That(coloredPixelCount, Is.GreaterThan(0), $"Mesh C0 emitted no lit pixels; raster bounds were [{minimumX},{minimumY}]-[{maximumX},{maximumY}].");
                 Assert.That(firstColoredPixelOffset, Is.GreaterThanOrEqualTo(0));
-                Assert.That(readbackBytes[firstColoredPixelOffset], Is.EqualTo(2));
+                Assert.That(
+                    readbackBytes[firstColoredPixelOffset],
+                    Is.EqualTo(useAlphaBlend ? useBaseColorTexture ? (byte)119 : (byte)153 : (byte)2));
                 Assert.That(
                     readbackBytes[firstColoredPixelOffset + 1],
-                    Is.EqualTo(useEmissiveTexture ? 128 : useBaseColorTexture ? 0 : 2));
-                Assert.That(readbackBytes[firstColoredPixelOffset + 2], Is.EqualTo(useBaseColorTexture ? 0 : 2));
+                    Is.EqualTo(useAlphaBlend
+                        ? useBaseColorTexture ? 0 : 2
+                        : useEmissiveTexture ? 128 : useBaseColorTexture ? 0 : 2));
+                Assert.That(
+                    readbackBytes[firstColoredPixelOffset + 2],
+                    Is.EqualTo(useBaseColorTexture ? 0 : 2));
                 Assert.That(readbackBytes[firstColoredPixelOffset + 3], Is.EqualTo(byte.MaxValue));
                 Assert.That(readbackBytes.AsSpan(0, 4).ToArray(), Is.EqualTo(new byte[] { 0, 0, 0, byte.MaxValue }));
             });
@@ -473,8 +481,8 @@ internal sealed partial class SceneAssetStoreTests
             missingTextureUv0: true);
 
     [Test]
-    public Task SnapshotBuiltInMeshC0GraphRejectsBlendMaterialAsync()
-        => RunSnapshotBuiltInMeshC0GraphAsync(GraphicsBackend.Vulkan, unsupportedAlphaMode: true);
+    public Task SnapshotBuiltInMeshC0GraphRejectsSingleSidedMaterialAsync()
+        => RunSnapshotBuiltInMeshC0GraphAsync(GraphicsBackend.Vulkan, unsupportedCullMode: true);
 
     [Test]
     public Task SnapshotBuiltInMeshC0GraphRejectsUnsupportedTextureSamplerAsync()
@@ -510,6 +518,24 @@ internal sealed partial class SceneAssetStoreTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphRendersTexturedPremultipliedBlendAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useAlphaBlend: true,
+            useBaseColorTexture: true,
+            baseColorTextureAlpha: 128,
+            baseColorAlpha: 0.5f);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SnapshotBuiltInMeshC0GraphRendersUntexturedOpaquePbrAsync(GraphicsBackend graphicsBackend)
         => RunSnapshotBuiltInMeshC0GraphAsync(graphicsBackend);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphRendersUntexturedPremultipliedBlendAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useAlphaBlend: true,
+            baseColorAlpha: 0.5f);
 }
