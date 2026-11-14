@@ -14,6 +14,7 @@ internal sealed class RenderSpriteGraphState
         ImmutableArray<RenderSpriteGraphBufferUpload> bufferUploads,
         ImmutableArray<RenderSpriteGraphDeferredTexture> deferredTextures,
         ImmutableDictionary<RenderPassId, RenderSpriteC0GraphPass> passes,
+        ImmutableDictionary<RenderPassId, RenderMeshC0GraphPass> meshPasses,
         ImmutableDictionary<RenderPassId, RenderSpriteToneMapGraphPass> toneMapPasses)
     {
         if (!Enum.IsDefined(spriteColorTargetFormat) || !Enum.IsDefined(toneMapColorTargetFormat))
@@ -21,7 +22,11 @@ internal sealed class RenderSpriteGraphState
             throw new ArgumentOutOfRangeException(nameof(spriteColorTargetFormat));
         }
 
-        if (bufferUploads.IsDefault || deferredTextures.IsDefault || passes is null || toneMapPasses is null)
+        if (bufferUploads.IsDefault
+            || deferredTextures.IsDefault
+            || passes is null
+            || meshPasses is null
+            || toneMapPasses is null)
         {
             throw new ArgumentException("Built-in Sprite graph state must be initialized.");
         }
@@ -31,12 +36,15 @@ internal sealed class RenderSpriteGraphState
         BufferUploads = bufferUploads;
         DeferredTextures = deferredTextures;
         Passes = passes;
+        MeshPasses = meshPasses;
         ToneMapPasses = toneMapPasses;
     }
 
     internal ImmutableArray<RenderSpriteGraphBufferUpload> BufferUploads { get; }
 
     internal ImmutableArray<RenderSpriteGraphDeferredTexture> DeferredTextures { get; }
+
+    internal ImmutableDictionary<RenderPassId, RenderMeshC0GraphPass> MeshPasses { get; }
 
     internal ImmutableDictionary<RenderPassId, RenderSpriteC0GraphPass> Passes { get; }
 

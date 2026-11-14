@@ -848,7 +848,7 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(compiledPlan.OffscreenColorTarget, Is.SameAs(target));
             Assert.That(compiledPlan.SurfaceEpoch, Is.Zero);
             Assert.That(compiledPlan.SwapchainEpoch, Is.Zero);
-            var recordedPasses = compiledPlan.RecordPassCallbacksAsync(spriteResources: null).GetAwaiter().GetResult();
+            var recordedPasses = compiledPlan.RecordPassCallbacksAsync(builtInResources: null).GetAwaiter().GetResult();
 
             try
             {

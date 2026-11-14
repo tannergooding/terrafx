@@ -11,7 +11,7 @@ namespace TerraFX.Rendering;
 public sealed partial class RenderGraphPlan
 {
     internal async Task<ImmutableArray<RecordedPassCommandList>> RecordPassCallbacksAsync(
-        RenderSpriteC0SubmissionResources? spriteResources)
+        RenderBuiltInSubmissionResources? builtInResources)
     {
         var surface = SurfaceTarget;
         var device = surface?.Device
@@ -47,13 +47,16 @@ public sealed partial class RenderGraphPlan
                 var callback = OrderedPassCallbacks[index];
                 var builtInSpriteState = BuiltInSpriteState;
                 RenderSpriteC0GraphPass? spritePass = null;
+                RenderMeshC0GraphPass? meshPass = null;
                 RenderSpriteToneMapGraphPass? toneMapPass = null;
                 var hasSpritePass = (builtInSpriteState is not null)
                     && builtInSpriteState.Passes.TryGetValue(passId, out spritePass);
+                var hasMeshPass = (builtInSpriteState is not null)
+                    && builtInSpriteState.MeshPasses.TryGetValue(passId, out meshPass);
                 var hasToneMapPass = (builtInSpriteState is not null)
                     && builtInSpriteState.ToneMapPasses.TryGetValue(passId, out toneMapPass);
 
-                if ((callback is null) && !hasSpritePass && !hasToneMapPass)
+                if ((callback is null) && !hasSpritePass && !hasMeshPass && !hasToneMapPass)
                 {
                     continue;
                 }
@@ -110,7 +113,7 @@ public sealed partial class RenderGraphPlan
                     {
                         var selectedSpritePass = spritePass
                             ?? throw new InvalidOperationException("The built-in Sprite pass state is missing.");
-                        var selectedResources = spriteResources
+                        var selectedResources = builtInResources
                             ?? throw new InvalidOperationException("The built-in Sprite pass has no submission resources.");
 
                         void RecordSpritePass(scoped ref CommandRecorder recorder)
@@ -120,11 +123,25 @@ public sealed partial class RenderGraphPlan
 
                         selectedCallback = RecordSpritePass;
                     }
+                    else if (hasMeshPass)
+                    {
+                        var selectedMeshPass = meshPass
+                            ?? throw new InvalidOperationException("The built-in Mesh pass state is missing.");
+                        var selectedResources = builtInResources
+                            ?? throw new InvalidOperationException("The built-in Mesh pass has no submission resources.");
+
+                        void RecordMeshPass(scoped ref CommandRecorder recorder)
+                        {
+                            selectedMeshPass.Record(ref recorder, selectedResources);
+                        }
+
+                        selectedCallback = RecordMeshPass;
+                    }
                     else if (hasToneMapPass)
                     {
                         var selectedToneMapPass = toneMapPass
                             ?? throw new InvalidOperationException("The built-in Sprite tone-map pass state is missing.");
-                        var selectedResources = spriteResources
+                        var selectedResources = builtInResources
                             ?? throw new InvalidOperationException("The built-in Sprite tone-map pass has no submission resources.");
 
                         void RecordToneMapPass(scoped ref CommandRecorder recorder)

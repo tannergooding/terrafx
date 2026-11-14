@@ -119,9 +119,10 @@ public sealed partial class Renderer
         var spritePageLeases = new List<GpuResidencyLease>();
         var initializedSpriteBufferIds = new HashSet<ulong>();
         GpuPipeline? spritePipeline = null;
+        GpuPipeline? meshPipeline = null;
         GpuPipeline? spriteToneMapPipeline = null;
         GpuSampler? spriteSampler = null;
-        RenderSpriteC0SubmissionResources? spriteResources = null;
+        RenderBuiltInSubmissionResources? builtInResources = null;
         GraphicsDevice.GraphResourceUseLeaseSet? graphResourceUseLeases = null;
         GraphicsDevice.GraphFrameSlotReservation? graphFrameSlotReservation = null;
         var graphResourceUseLeasesTransferred = false;
@@ -188,6 +189,13 @@ public sealed partial class Renderer
                         cancellationToken).ConfigureAwait(false);
                 }
 
+                if (spriteState.MeshPasses.Count != 0)
+                {
+                    meshPipeline = await CreateMeshC0PipelineAsync(
+                        spriteState.SpriteColorTargetFormat,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
                 if (spriteState.ToneMapPasses.Count != 0)
                 {
                     spriteToneMapPipeline = await CreateSpriteToneMapPipelineAsync(
@@ -195,7 +203,14 @@ public sealed partial class Renderer
                         cancellationToken).ConfigureAwait(false);
                 }
 
-                if ((spritePipeline is not null) && (spriteToneMapPipeline is not null))
+                if (((spriteState.Passes.Count != 0) && (spritePipeline is null))
+                    || ((spriteState.MeshPasses.Count != 0) && (meshPipeline is null))
+                    || ((spriteState.ToneMapPasses.Count != 0) && (spriteToneMapPipeline is null)))
+                {
+                    throw new InvalidOperationException("The built-in render graph has an incomplete pipeline set.");
+                }
+
+                if (spriteState.Passes.Count != 0 || spriteState.ToneMapPasses.Count != 0)
                 {
                     spriteSampler = await device.CreateSamplerAsync(
                         new SamplerDescription(
@@ -207,14 +222,17 @@ public sealed partial class Renderer
                             SamplerAddressMode.Clamp,
                             maximumAnisotropy: 1.0f),
                         cancellationToken).ConfigureAwait(false);
-                    spriteResources = new RenderSpriteC0SubmissionResources(
+                }
+
+                if (spriteState.Passes.Count != 0
+                    || spriteState.MeshPasses.Count != 0
+                    || spriteState.ToneMapPasses.Count != 0)
+                {
+                    builtInResources = new RenderBuiltInSubmissionResources(
                         spritePipeline,
+                        meshPipeline,
                         spriteToneMapPipeline,
                         spriteSampler);
-                }
-                else if (spriteState.Passes.Count != 0 || spriteState.ToneMapPasses.Count != 0)
-                {
-                    throw new InvalidOperationException("The built-in Sprite graph has an incomplete pipeline set.");
                 }
             }
 
@@ -399,7 +417,7 @@ public sealed partial class Renderer
                 outputColorTarget = selectedTarget;
             }
 
-            var commandLists = await graph.RecordPassCallbacksAsync(spriteResources).ConfigureAwait(false);
+            var commandLists = await graph.RecordPassCallbacksAsync(builtInResources).ConfigureAwait(false);
             GraphicsGraphSubmission submission;
 
             try
@@ -451,6 +469,7 @@ public sealed partial class Renderer
                 graphFrameSlotReservation?.Dispose();
                 spriteSampler?.Dispose();
                 spriteToneMapPipeline?.Dispose();
+                meshPipeline?.Dispose();
                 spritePipeline?.Dispose();
 
                 foreach (var spritePageLease in spritePageLeases)

@@ -71,7 +71,7 @@ internal sealed partial class SceneAssetStoreTests
         return new EbinField(tag, 23, flags: 1, elementCount, payload);
     }
 
-    private static EbinRecord CreateMeshIndexRecord(int groupCount)
+    private static EbinRecord CreateMeshIndexRecord(int groupCount, bool reverseWinding = false)
     {
         var indices = new byte[checked(groupCount * 6)];
 
@@ -79,8 +79,8 @@ internal sealed partial class SceneAssetStoreTests
         {
             var offset = groupIndex * 6;
             BinaryPrimitives.WriteUInt16LittleEndian(indices.AsSpan(offset), 0);
-            BinaryPrimitives.WriteUInt16LittleEndian(indices.AsSpan(offset + 2), 1);
-            BinaryPrimitives.WriteUInt16LittleEndian(indices.AsSpan(offset + 4), 2);
+            BinaryPrimitives.WriteUInt16LittleEndian(indices.AsSpan(offset + 2), reverseWinding ? (ushort)2 : (ushort)1);
+            BinaryPrimitives.WriteUInt16LittleEndian(indices.AsSpan(offset + 4), reverseWinding ? (ushort)1 : (ushort)2);
         }
 
         return new EbinRecord(
@@ -113,12 +113,15 @@ internal sealed partial class SceneAssetStoreTests
             ]);
     }
 
-    private static EbinRecord CreateMeshPositionOrNormalStream(string schemaName, bool unitNormals = false)
+    private static EbinRecord CreateMeshPositionOrNormalStream(
+        string schemaName,
+        bool unitNormals = false,
+        Vector3? normalDirection = null)
     {
         var elements = new byte[36];
-        WriteMeshVector3(elements, unitNormals ? Vector3.UnitZ : Vector3.Zero);
-        WriteMeshVector3(elements.AsSpan(12), unitNormals ? Vector3.UnitZ : Vector3.UnitX);
-        WriteMeshVector3(elements.AsSpan(24), unitNormals ? Vector3.UnitZ : Vector3.UnitY);
+        WriteMeshVector3(elements, unitNormals ? (normalDirection ?? Vector3.UnitZ) : Vector3.Zero);
+        WriteMeshVector3(elements.AsSpan(12), unitNormals ? (normalDirection ?? Vector3.UnitZ) : Vector3.UnitX);
+        WriteMeshVector3(elements.AsSpan(24), unitNormals ? (normalDirection ?? Vector3.UnitZ) : Vector3.UnitY);
         return new EbinRecord(
             new ContentSchemaIdentityAssignment(schemaName).SchemaId,
             1,
@@ -132,10 +135,14 @@ internal sealed partial class SceneAssetStoreTests
     private static EbinRecord CreateMeshRecord(
         uint materialAssetId,
         uint? skeletonAssetId,
-        int groupCount = 2)
+        int groupCount = 2,
+        bool reverseWinding = false)
     {
         var positions = CreateMeshPositionOrNormalStream("native/mesh-position");
-        var normals = CreateMeshPositionOrNormalStream("native/mesh-normal", unitNormals: true);
+        var normals = CreateMeshPositionOrNormalStream(
+            "native/mesh-normal",
+            unitNormals: true,
+            normalDirection: reverseWinding ? -Vector3.UnitZ : Vector3.UnitZ);
         var streams = new System.Collections.Generic.List<EbinRecord> { positions, normals };
 
         if (skeletonAssetId is not null)
@@ -196,7 +203,7 @@ internal sealed partial class SceneAssetStoreTests
         var fields = new System.Collections.Generic.List<EbinField> {
             EbinPrimitives.UInt32(1, 3),
             EbinPrimitives.RecordArray(2, [.. streams]),
-            EbinPrimitives.Record(3, CreateMeshIndexRecord(groupCount)),
+            EbinPrimitives.Record(3, CreateMeshIndexRecord(groupCount, reverseWinding)),
             EbinPrimitives.RecordArray(4, groups),
             EbinPrimitives.RecordArray(5, [
                 CreateMeshAssetReferenceRecord(

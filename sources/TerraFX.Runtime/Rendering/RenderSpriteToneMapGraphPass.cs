@@ -36,10 +36,14 @@ internal sealed class RenderSpriteToneMapGraphPass
 
     internal GraphBufferVersion VertexBuffer { get; }
 
-    internal void Record(scoped ref CommandRecorder recorder, RenderSpriteC0SubmissionResources resources)
+    internal void Record(scoped ref CommandRecorder recorder, RenderBuiltInSubmissionResources resources)
     {
         ArgumentNullException.ThrowIfNull(resources);
-        recorder.SetPipeline(resources.ToneMapPipeline.Handle);
+        var pipeline = resources.ToneMapPipeline
+            ?? throw new InvalidOperationException("The built-in tone-map pass has no tone-map pipeline.");
+        var sampler = resources.Sampler
+            ?? throw new InvalidOperationException("The built-in tone-map pass has no sampler.");
+        recorder.SetPipeline(pipeline.Handle);
         recorder.SetVertexBuffer(new VertexBufferBinding(
             0,
             VertexBuffer,
@@ -76,7 +80,7 @@ internal sealed class RenderSpriteToneMapGraphPass
                 new SamplerBinding(
                     ShaderBindingGroup.Material,
                     0,
-                    resources.Sampler),
+                    sampler),
             ]));
         recorder.DrawIndexed(new DrawIndexedArguments(RenderSpriteGeometry.Indices.Length, 1, 0, 0, 0));
     }

@@ -56,10 +56,14 @@ internal sealed class RenderSpriteC0GraphPass
 
     internal GraphBufferVersion VertexBuffer { get; }
 
-    internal void Record(scoped ref CommandRecorder recorder, RenderSpriteC0SubmissionResources resources)
+    internal void Record(scoped ref CommandRecorder recorder, RenderBuiltInSubmissionResources resources)
     {
         ArgumentNullException.ThrowIfNull(resources);
-        recorder.SetPipeline(resources.Pipeline.Handle);
+        var pipeline = resources.SpritePipeline
+            ?? throw new InvalidOperationException("The built-in Sprite pass has no Sprite pipeline.");
+        var sampler = resources.Sampler
+            ?? throw new InvalidOperationException("The built-in Sprite pass has no sampler.");
+        recorder.SetPipeline(pipeline.Handle);
         recorder.SetVertexBuffer(new VertexBufferBinding(
             0,
             VertexBuffer,
@@ -107,7 +111,7 @@ internal sealed class RenderSpriteC0GraphPass
                     new SamplerBinding(
                         ShaderBindingGroup.Material,
                         0,
-                        resources.Sampler),
+                        sampler),
                 ]);
             recorder.SetBindings(bindings);
             recorder.DrawIndexed(new DrawIndexedArguments(

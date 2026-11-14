@@ -77,7 +77,13 @@ internal sealed partial class SceneAssetStoreTests
             new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(12, 7, 1, 1, orderBytes));
     }
 
-    private static byte[] CreateDirectionalLightRecord(ulong layerMask, bool enabled, int priority)
+    private static byte[] CreateDirectionalLightRecord(
+        ulong layerMask,
+        bool enabled,
+        int priority,
+        Vector3? color = null,
+        float illuminance = 5000.0f,
+        Vector3? direction = null)
     {
         var layerMaskBytes = new byte[sizeof(ulong)];
         BinaryPrimitives.WriteUInt64LittleEndian(layerMaskBytes, layerMask);
@@ -87,9 +93,19 @@ internal sealed partial class SceneAssetStoreTests
             new ContentSchemaIdentityAssignment("render/directional-light").SchemaId,
             1,
             0,
-            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 15, 0.5f, 0.75f, 1.0f),
-            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(2, 10, 5000.0f),
-            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(3, 15, 0.0f, -1.0f, 0.0f),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(
+                1,
+                15,
+                color?.X ?? 0.5f,
+                color?.Y ?? 0.75f,
+                color?.Z ?? 1.0f),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(2, 10, illuminance),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(
+                3,
+                15,
+                direction?.X ?? 0.0f,
+                direction?.Y ?? -1.0f,
+                direction?.Z ?? 0.0f),
             new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(4, 4, 1, 1, layerMaskBytes),
             new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(5, 9, 1, 1, [enabled ? (byte)1 : (byte)0]),
             new SceneHierarchyCodecTests.FixtureBuilder.FixtureField(6, 7, 1, 1, priorityBytes));

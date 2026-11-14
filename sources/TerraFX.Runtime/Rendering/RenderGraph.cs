@@ -21,6 +21,7 @@ public sealed class RenderGraph
     private const string UninitializedReadCode = "render-graph.uninitialized-read";
     private static long s_nextGraphOwnerId;
     private readonly List<RenderGraphAttachmentWrite> _attachmentWrites = [];
+    private readonly Dictionary<RenderPassId, RenderMeshC0GraphPass> _builtInMeshPasses = [];
     private readonly Dictionary<RenderPassId, RenderSpriteC0GraphPass> _builtInSpritePasses = [];
     private readonly Dictionary<RenderPassId, RenderSpriteToneMapGraphPass> _builtInSpriteToneMapPasses = [];
     private RenderGraphCompileResponse? _compiledResponse;
@@ -545,6 +546,14 @@ public sealed class RenderGraph
         return _resources.WriteTexture(pass, previousVersion, range, usage);
     }
 
+    internal RenderPassId AddBuiltInMeshRasterPass(RenderPassDescription description, RenderMeshC0GraphPass meshPass)
+    {
+        ArgumentNullException.ThrowIfNull(meshPass);
+        var pass = AddPass(description, RenderGraphPassKind.Raster, callback: null);
+        _builtInMeshPasses.Add(pass, meshPass);
+        return pass;
+    }
+
     internal RenderPassId AddBuiltInSpriteRasterPass(RenderPassDescription description, RenderSpriteC0GraphPass spritePass)
     {
         ArgumentNullException.ThrowIfNull(spritePass);
@@ -694,6 +703,7 @@ public sealed class RenderGraph
     private RenderSpriteGraphState? CreateBuiltInSpriteState()
     {
         if (_builtInSpritePasses.Count == 0
+            && _builtInMeshPasses.Count == 0
             && _builtInSpriteToneMapPasses.Count == 0
             && _builtInSpriteBufferUploads.Count == 0
             && _builtInSpriteDeferredTextures.Count == 0)
@@ -710,6 +720,7 @@ public sealed class RenderGraph
             [.. _builtInSpriteBufferUploads],
             [.. _builtInSpriteDeferredTextures],
             _builtInSpritePasses.ToImmutableDictionary(),
+            _builtInMeshPasses.ToImmutableDictionary(),
             _builtInSpriteToneMapPasses.ToImmutableDictionary());
     }
 

@@ -33,6 +33,56 @@ public sealed partial class Renderer
         return storage.TransferToOwnedBuffer();
     }
 
+    internal async Task<GpuPipeline> CreateMeshC0PipelineAsync(
+        TextureFormat colorTargetFormat,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var device = _graphicsDevice
+            ?? throw new NotSupportedException("Headless rendering does not create Mesh pipelines.");
+        var binaryFormat = device.Capabilities.Backend switch {
+            GraphicsBackend.D3D12 => ShaderBinaryFormat.Dxil,
+            GraphicsBackend.Vulkan => ShaderBinaryFormat.SpirV,
+            _ => throw new NotSupportedException("The selected GraphicsDevice has no Mesh C0 shader artifact."),
+        };
+        using var vertexStorage = LoadShaderBytecode(
+            "TerraFX.Rendering.Shaders.MeshC0Vertex.vertex.",
+            binaryFormat);
+        using var pixelStorage = LoadShaderBytecode(
+            "TerraFX.Rendering.Shaders.MeshC0Pixel.pixel.",
+            binaryFormat);
+        using var vertexBytecode = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
+        using var pixelBytecode = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
+        return await device.CreatePipelineAsync(
+            new GraphicsPipelineDescription(
+                [
+                    new ShaderBytecodeInput(
+                        ShaderStage.Vertex,
+                        binaryFormat,
+                        vertexBytecode,
+                        RenderMeshC0ShaderReflection.Vertex),
+                    new ShaderBytecodeInput(
+                        ShaderStage.Pixel,
+                        binaryFormat,
+                        pixelBytecode,
+                        RenderMeshC0ShaderReflection.Pixel),
+                ],
+                [
+                    new VertexElementDescription(0, VertexElementFormat.Float3, 0),
+                    new VertexElementDescription(1, VertexElementFormat.Float3, 3 * sizeof(float)),
+                ],
+                vertexStride: RenderMeshC0VertexBufferBuilder.VertexStride,
+                [colorTargetFormat],
+                depthTargetFormat: TextureFormat.D32Float,
+                PrimitiveTopology.TriangleList,
+                PipelineBlendMode.Opaque,
+                PipelineDepthMode.ReversedGreaterEqualWrite,
+                PipelineCullMode.None,
+                frontFaceClockwise: false,
+                bindingLayoutVersion: 1),
+            cancellationToken).ConfigureAwait(false);
+    }
+
     internal async Task<GpuPipeline> CreateSpriteC0PipelineAsync(
         TextureFormat colorTargetFormat,
         CancellationToken cancellationToken = default)

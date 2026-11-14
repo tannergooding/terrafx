@@ -50,6 +50,7 @@ public sealed partial class Renderer
             snapshot.TargetExtent,
             offscreenColorTarget));
         BuildSpriteC0Graph(snapshot, graph);
+        BuildMeshC0Graph(snapshot, graph);
         return graph;
     }
 
@@ -91,6 +92,7 @@ public sealed partial class Renderer
             snapshot.TargetExtent,
             surface));
         BuildSpriteC0Graph(snapshot, graph);
+        BuildMeshC0Graph(snapshot, graph);
         return graph;
     }
 }
