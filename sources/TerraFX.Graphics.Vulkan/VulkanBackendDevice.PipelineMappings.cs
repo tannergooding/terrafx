@@ -13,7 +13,8 @@ internal sealed unsafe partial class VulkanBackendDevice
 {
     internal static void ValidateStorageStageFeatures(
         ShaderReflection reflection,
-        bool fragmentStoresAndAtomicsEnabled)
+        bool fragmentStoresAndAtomicsEnabled,
+        bool vertexPipelineStoresAndAtomicsEnabled)
     {
         ArgumentNullException.ThrowIfNull(reflection);
 
@@ -27,8 +28,11 @@ internal sealed unsafe partial class VulkanBackendDevice
 
             if (reflection.Stage == ShaderStage.Vertex)
             {
-                throw new NotSupportedException(
-                    "The Vulkan pipeline baseline does not support vertex-stage storage writes without vertexPipelineStoresAndAtomics.");
+                if (!vertexPipelineStoresAndAtomicsEnabled)
+                {
+                    throw new NotSupportedException(
+                        "The Vulkan device does not support vertex-stage storage writes for this pipeline.");
+                }
             }
 
             if ((reflection.Stage == ShaderStage.Pixel) && !fragmentStoresAndAtomicsEnabled)
@@ -140,6 +144,7 @@ internal sealed unsafe partial class VulkanBackendDevice
         int index,
         IReadOnlySet<string> enabledSpirvExtensions,
         bool fragmentStoresAndAtomicsEnabled,
+        bool vertexPipelineStoresAndAtomicsEnabled,
         bool demoteToHelperInvocationEnabled)
     {
         ArgumentNullException.ThrowIfNull(shader);
@@ -176,6 +181,9 @@ internal sealed unsafe partial class VulkanBackendDevice
             index,
             enabledSpirvExtensions,
             demoteToHelperInvocationEnabled);
-        ValidateStorageStageFeatures(shader.Reflection, fragmentStoresAndAtomicsEnabled);
+        ValidateStorageStageFeatures(
+            shader.Reflection,
+            fragmentStoresAndAtomicsEnabled,
+            vertexPipelineStoresAndAtomicsEnabled);
     }
 }

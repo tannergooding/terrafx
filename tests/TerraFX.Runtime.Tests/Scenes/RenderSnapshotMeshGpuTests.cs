@@ -1,11 +1,14 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Buffers.Binary;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TerraFX;
+using TerraFX.Animation;
 using TerraFX.Assets;
 using TerraFX.Entities;
 using TerraFX.Graphics;
@@ -26,7 +29,8 @@ internal sealed partial class SceneAssetStoreTests
         GraphicsBackend graphicsBackend,
         string packagePath,
         byte[] packageBytes,
-        CompiledContentSchemaRegistry schemas)
+        CompiledContentSchemaRegistry schemas,
+        bool includeAnimation)
     {
         if ((graphicsBackend == GraphicsBackend.D3D12)
             && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
@@ -37,6 +41,12 @@ internal sealed partial class SceneAssetStoreTests
         var registrationBuilder = new AssetStoreRegistrationBuilder(schemas);
         _ = SceneSupport.RegisterAssetCodecs(registrationBuilder);
         _ = Renderer.RegisterAssetCodecs(registrationBuilder);
+
+        if (includeAnimation)
+        {
+            _ = AnimationSupport.RegisterAssetCodecs(registrationBuilder);
+        }
+
         var backendRegistration = graphicsBackend switch {
             GraphicsBackend.D3D12 => D3D12GraphicsBackend.CreateRegistration(),
             GraphicsBackend.Vulkan => VulkanGraphicsBackend.CreateRegistration(),
@@ -67,6 +77,7 @@ internal sealed partial class SceneAssetStoreTests
         bool useBaseColorTexture = false,
         bool useEmissiveTexture = false,
         bool usePackedMetalRoughOcclusionTexture = false,
+        bool useSkinning = false,
         bool useNormalMap = false,
         bool unsupportedTextureSampler = false,
         bool missingTextureUv0 = false,
@@ -86,6 +97,7 @@ internal sealed partial class SceneAssetStoreTests
         const uint EmissiveTextureAssetId = 5;
         const uint PackedTextureAssetId = 6;
         const uint NormalTextureAssetId = 7;
+        const uint SkeletonAssetId = 8;
         const int SceneAssetId = 3;
         var sceneAssetId = new AssetId(SceneAssetId);
         var materialRecord = CreateRenderMaterialAssetRecord(
@@ -133,7 +145,7 @@ internal sealed partial class SceneAssetStoreTests
                 Package.CreateEnvelope(MeshAssetId, EbinPrimitives.Encode(
                     CreateMeshRecord(
                         MaterialAssetId,
-                        skeletonAssetId: null,
+                        skeletonAssetId: useSkinning ? SkeletonAssetId : null,
                         groupCount: 2,
                         reverseWinding: true,
                         includeUv0: (useBaseColorTexture
@@ -227,9 +239,31 @@ internal sealed partial class SceneAssetStoreTests
             ];
         }
 
+        if (useSkinning)
+        {
+            var jointId = new Guid("70000000-0000-4000-8000-000000000001");
+            packageEntries = [
+                .. packageEntries,
+                new Package.Entry(
+                    SkeletonAssetId,
+                    Package.CreateEnvelope(
+                        SkeletonAssetId,
+                        EbinPrimitives.Encode(CreateMeshSkeletonRecord(jointId)))),
+            ];
+        }
+
         var packageBytes = Package.CreatePackage(packageEntries);
         var packagePath = Package.WritePackage(packageBytes);
         var schemas = CreateRendererRegistry();
+
+        if (useSkinning)
+        {
+            schemas = new CompiledContentSchemaRegistry([
+                .. schemas.Schemas,
+                .. AnimationSchemaCatalogue.Schemas,
+            ]);
+        }
+
         EngineHost? host = null;
         RenderSnapshot3D? snapshot = null;
         GpuTexture? targetTexture = null;
@@ -239,7 +273,12 @@ internal sealed partial class SceneAssetStoreTests
             try
             {
                 host = await EngineHost.StartAsync(
-                    CreateMeshC0HostOptions(graphicsBackend, packagePath, packageBytes, schemas)).ConfigureAwait(false);
+                    CreateMeshC0HostOptions(
+                        graphicsBackend,
+                        packagePath,
+                        packageBytes,
+                        schemas,
+                        includeAnimation: useSkinning)).ConfigureAwait(false);
             }
             catch (DllNotFoundException exception)
             {
@@ -402,6 +441,7 @@ internal sealed partial class SceneAssetStoreTests
                     + (useNormalMap ? 1 : 0)));
             var meshVertexBufferCount = 0;
             var meshIndexBufferCount = 0;
+            var meshBoneBufferCount = 0;
 
             foreach (var transientBuffer in plan.TransientBuffers)
             {
@@ -413,14 +453,51 @@ internal sealed partial class SceneAssetStoreTests
                 {
                     meshIndexBufferCount++;
                 }
+                else if (StringComparer.Ordinal.Equals(transientBuffer.Description.DebugName, "mesh-bone-palette-data"))
+                {
+                    meshBoneBufferCount++;
+                    Assert.That(transientBuffer.Description.StructuredStride, Is.EqualTo(RenderMeshC0BoneBufferBuilder.Stride));
+                }
             }
 
             Assert.Multiple(() => {
                 Assert.That(meshVertexBufferCount, Is.EqualTo(1));
                 Assert.That(meshIndexBufferCount, Is.EqualTo(1));
+                Assert.That(meshBoneBufferCount, Is.EqualTo(useSkinning ? 1 : 0));
             });
 
-            var submission = await engineHost.Renderer.SubmitAsync(meshSnapshot, plan).ConfigureAwait(false);
+            if (useSkinning)
+            {
+                var builtInState = plan.BuiltInSpriteState
+                    ?? throw new InvalidOperationException("The Mesh graph omitted its built-in submission state.");
+                var objectUpload = builtInState.BufferUploads.Single(
+                    static upload => StringComparer.Ordinal.Equals(upload.Version.Description.DebugName, "mesh-object-data"));
+                var vertexUpload = builtInState.BufferUploads.Single(
+                    static upload => upload.Version.Description.DebugName.StartsWith("mesh-vertices-", StringComparison.Ordinal));
+                var bonePaletteUpload = builtInState.BufferUploads.Single(
+                    static upload => StringComparer.Ordinal.Equals(upload.Version.Description.DebugName, "mesh-bone-palette-data"));
+                Assert.Multiple(() => {
+                    Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(objectUpload.Bytes.AsSpan(176)), Is.EqualTo(1u));
+                    Assert.That(BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(vertexUpload.Bytes.AsSpan(64))), Is.EqualTo(1.0f));
+                    Assert.That(BinaryPrimitives.ReadInt32LittleEndian(bonePaletteUpload.Bytes), Is.EqualTo(BitConverter.SingleToInt32Bits(1.0f)));
+                });
+            }
+
+            RenderSubmissionReceipt submission;
+
+            try
+            {
+                submission = await engineHost.Renderer.SubmitAsync(meshSnapshot, plan).ConfigureAwait(false);
+            }
+            catch (NotSupportedException exception) when (
+                useSkinning
+                && (graphicsBackend is GraphicsBackend.Vulkan)
+                && exception.Message.Contains("vertex-stage storage writes", StringComparison.Ordinal))
+            {
+                Assert.Ignore($"Vulkan device does not advertise vertexPipelineStoresAndAtomics for static skinning: {exception.Message}");
+                return;
+            }
+
             Assert.That(submission.CompletedFence, Is.GreaterThan(0));
             using var readback = await graphicsDevice.ReadbackTextureAsync(
                 targetTexture,
@@ -571,6 +648,14 @@ internal sealed partial class SceneAssetStoreTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphRendersAlphaMaskedStaticBindPoseSkinningAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useAlphaMask: true,
+            useSkinning: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SnapshotBuiltInMeshC0GraphRendersBaseAndEmissiveTexturesAsync(GraphicsBackend graphicsBackend)
         => RunSnapshotBuiltInMeshC0GraphAsync(
             graphicsBackend,
@@ -605,6 +690,15 @@ internal sealed partial class SceneAssetStoreTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphRendersNormalMapWithStaticBindPoseSkinningAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            usePointLight: true,
+            useSkinning: true,
+            useNormalMap: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SnapshotBuiltInMeshC0GraphRendersPackedMetalRoughOcclusionTextureAsync(GraphicsBackend graphicsBackend)
         => RunSnapshotBuiltInMeshC0GraphAsync(
             graphicsBackend,
@@ -612,8 +706,34 @@ internal sealed partial class SceneAssetStoreTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphRendersPremultipliedBlendStaticBindPoseSkinningAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useAlphaBlend: true,
+            useSkinning: true,
+            baseColorAlpha: 0.5f);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SnapshotBuiltInMeshC0GraphRendersSinglePointLightAsync(GraphicsBackend graphicsBackend)
         => RunSnapshotBuiltInMeshC0GraphAsync(graphicsBackend, usePointLight: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphRendersStaticBindPoseSkinningAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            usePointLight: true,
+            useSkinning: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphRendersTexturedAlphaMaskedStaticBindPoseSkinningAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useAlphaMask: true,
+            useBaseColorTexture: true,
+            useSkinning: true);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
@@ -624,6 +744,25 @@ internal sealed partial class SceneAssetStoreTests
             useBaseColorTexture: true,
             baseColorTextureAlpha: 128,
             baseColorAlpha: 0.5f);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphRendersTexturedPremultipliedBlendStaticBindPoseSkinningAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useAlphaBlend: true,
+            useBaseColorTexture: true,
+            useSkinning: true,
+            baseColorTextureAlpha: 128,
+            baseColorAlpha: 0.5f);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphRendersTexturedStaticBindPoseSkinningAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useBaseColorTexture: true,
+            useSkinning: true);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]

@@ -47,6 +47,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
     private readonly VkSemaphore _timelineSemaphore;
     private readonly VkCommandBuffer _transferCommandBuffer;
     private readonly Func<VkResult, VkResult>? _transferWaitResultOverride;
+    private readonly bool _vertexPipelineStoresAndAtomicsEnabled;
 
     private VulkanBackendDevice(
         VkInstance instance,
@@ -63,6 +64,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         GraphicsCapabilities capabilities,
         ImmutableHashSet<string> enabledSpirvExtensions,
         bool fragmentStoresAndAtomicsEnabled,
+        bool vertexPipelineStoresAndAtomicsEnabled,
         bool demoteToHelperInvocationEnabled,
         string? swapchainMaintenanceExtensionName,
         GraphicsPlatformKind platformKind,
@@ -98,6 +100,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         _device = device;
         _enabledSpirvExtensions = enabledSpirvExtensions;
         _fragmentStoresAndAtomicsEnabled = fragmentStoresAndAtomicsEnabled;
+        _vertexPipelineStoresAndAtomicsEnabled = vertexPipelineStoresAndAtomicsEnabled;
         _demoteToHelperInvocationEnabled = demoteToHelperInvocationEnabled;
         _queue = queue;
         _queueFamilyIndex = queueFamilyIndex;
@@ -314,6 +317,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                     logicalDevice,
                     enabledSpirvExtensions,
                     fragmentStoresAndAtomicsEnabled,
+                    vertexPipelineStoresAndAtomicsEnabled,
                     demoteToHelperInvocationEnabled,
                     queueFamilyIndices,
                     queues) = CreateLogicalDevice(
@@ -375,6 +379,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                     capabilities,
                     enabledSpirvExtensions,
                     fragmentStoresAndAtomicsEnabled,
+                    vertexPipelineStoresAndAtomicsEnabled,
                     demoteToHelperInvocationEnabled,
                     swapchainMaintenanceExtensionName,
                     platformKind,
@@ -663,6 +668,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         VkDevice Device,
         ImmutableHashSet<string> EnabledSpirvExtensions,
         bool FragmentStoresAndAtomicsEnabled,
+        bool VertexPipelineStoresAndAtomicsEnabled,
         bool DemoteToHelperInvocationEnabled,
         uint[] QueueFamilyIndices,
         VkQueue[] Queues) CreateLogicalDevice(
@@ -728,6 +734,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         VulkanApi.vkGetPhysicalDeviceFeatures(physicalDevice, &supportedFeatures);
         var enabledFeatures = default(VkPhysicalDeviceFeatures);
         enabledFeatures.fragmentStoresAndAtomics = supportedFeatures.fragmentStoresAndAtomics;
+        enabledFeatures.vertexPipelineStoresAndAtomics = supportedFeatures.vertexPipelineStoresAndAtomics;
         var supportedExtensions = EnumerateDeviceExtensions(physicalDevice);
         var enabledSpirvExtensions = ImmutableHashSet.CreateBuilder<string>(StringComparer.Ordinal);
         var enabledExtensionNames = new List<string>(4);
@@ -820,6 +827,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
             device,
             enabledSpirvExtensions.ToImmutable(),
             enabledFeatures.fragmentStoresAndAtomics != 0,
+            enabledFeatures.vertexPipelineStoresAndAtomics != 0,
             demoteToHelperInvocationEnabled,
             queueFamilyIndices,
             queues);

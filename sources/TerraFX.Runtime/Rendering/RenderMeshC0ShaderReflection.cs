@@ -17,9 +17,11 @@ internal static class RenderMeshC0ShaderReflection
 
     internal static ShaderReflection Pixel { get; } = CreatePixel();
 
+    internal static ShaderReflection SkinnedVertex { get; } = CreateVertex(skinned: true);
+
     internal static ShaderReflection TexturedPixel { get; } = CreatePixel(textured: true);
 
-    internal static ShaderReflection Vertex { get; } = CreateVertex();
+    internal static ShaderReflection Vertex { get; } = CreateVertex(skinned: false);
 
     private static ShaderReflection CreatePixel()
         => CreatePixel(textured: false);
@@ -109,17 +111,39 @@ internal static class RenderMeshC0ShaderReflection
             groupSizeZ: 0);
     }
 
-    private static ShaderReflection CreateVertex()
-        => new(
+    private static ShaderReflection CreateVertex(bool skinned)
+    {
+        var inputs = ImmutableArray.CreateBuilder<ShaderIoSignature>(skinned ? 6 : 4);
+        inputs.Add(new ShaderIoSignature("POSITION", 0, 0, ShaderValueType.Float3, ShaderInterpolation.Smooth));
+        inputs.Add(new ShaderIoSignature("NORMAL", 0, 1, ShaderValueType.Float3, ShaderInterpolation.Smooth));
+        inputs.Add(new ShaderIoSignature("TEXCOORD", 0, 2, ShaderValueType.Float2, ShaderInterpolation.Smooth));
+        inputs.Add(new ShaderIoSignature("TANGENT", 0, 3, ShaderValueType.Float4, ShaderInterpolation.Smooth));
+
+        if (skinned)
+        {
+            inputs.Add(new ShaderIoSignature("BLENDINDICES", 0, 4, ShaderValueType.Float4, ShaderInterpolation.Smooth));
+            inputs.Add(new ShaderIoSignature("BLENDWEIGHT", 0, 5, ShaderValueType.Float4, ShaderInterpolation.Smooth));
+        }
+
+        var resources = ImmutableArray.CreateBuilder<ShaderResourceSignature>(skinned ? 3 : 2);
+        resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1));
+        resources.Add(new ShaderResourceSignature(ShaderBindingGroup.ObjectData, 0, ShaderResourceKind.UniformBuffer, 1));
+
+        if (skinned)
+        {
+            resources.Add(new ShaderResourceSignature(
+                ShaderBindingGroup.ObjectData,
+                0,
+                ShaderResourceKind.StorageBuffer,
+                arrayCount: 1,
+                access: ShaderResourceAccess.ReadWrite));
+        }
+
+        return new ShaderReflection(
             ShaderStage.Vertex,
             "VSMain",
             s_compilerIdentity,
-            [
-                new ShaderIoSignature("POSITION", 0, 0, ShaderValueType.Float3, ShaderInterpolation.Smooth),
-                new ShaderIoSignature("NORMAL", 0, 1, ShaderValueType.Float3, ShaderInterpolation.Smooth),
-                new ShaderIoSignature("TEXCOORD", 0, 2, ShaderValueType.Float2, ShaderInterpolation.Smooth),
-                new ShaderIoSignature("TANGENT", 0, 3, ShaderValueType.Float4, ShaderInterpolation.Smooth),
-            ],
+            inputs.MoveToImmutable(),
             [
                 new ShaderIoSignature("SV_Position", 0, null, ShaderValueType.Float4, ShaderInterpolation.NoPerspective),
                 new ShaderIoSignature("TEXCOORD", 0, 0, ShaderValueType.Float3, ShaderInterpolation.Smooth),
@@ -127,10 +151,7 @@ internal static class RenderMeshC0ShaderReflection
                 new ShaderIoSignature("TEXCOORD", 2, 2, ShaderValueType.Float2, ShaderInterpolation.Smooth),
                 new ShaderIoSignature("TEXCOORD", 3, 3, ShaderValueType.Float4, ShaderInterpolation.Smooth),
             ],
-            [
-                new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1),
-                new ShaderResourceSignature(ShaderBindingGroup.ObjectData, 0, ShaderResourceKind.UniformBuffer, 1),
-            ],
+            resources.MoveToImmutable(),
             [
                 new ShaderRecordLayout(
                     "FrameData",
@@ -159,4 +180,5 @@ internal static class RenderMeshC0ShaderReflection
             groupSizeX: 0,
             groupSizeY: 0,
             groupSizeZ: 0);
+    }
 }

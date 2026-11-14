@@ -121,11 +121,18 @@ public sealed partial class Renderer
         GpuPipeline? spritePipeline = null;
         GpuPipeline? meshAlphaMaskPipeline = null;
         GpuPipeline? meshPipeline = null;
+        GpuPipeline? skinnedMeshPipeline = null;
+        GpuPipeline? skinnedMeshAlphaMaskPipeline = null;
+        GpuPipeline? skinnedMeshBlendPipeline = null;
         GpuPipeline? meshBlendPipeline = null;
         GpuPipeline? normalMappedMeshPipeline = null;
+        GpuPipeline? skinnedNormalMappedMeshPipeline = null;
         GpuPipeline? texturedMeshAlphaMaskPipeline = null;
+        GpuPipeline? skinnedTexturedMeshAlphaMaskPipeline = null;
         GpuPipeline? texturedMeshPipeline = null;
+        GpuPipeline? skinnedTexturedMeshPipeline = null;
         GpuPipeline? texturedMeshBlendPipeline = null;
+        GpuPipeline? skinnedTexturedMeshBlendPipeline = null;
         GpuPipeline? spriteToneMapPipeline = null;
         GpuSampler? spriteSampler = null;
         RenderBuiltInSubmissionResources? builtInResources = null;
@@ -241,9 +248,49 @@ public sealed partial class Renderer
                 var hasTexturedAlphaMaskPass = false;
                 var hasTexturedBlendPass = false;
                 var hasNormalMappedMeshPass = false;
+                var hasSkinnedMeshPass = false;
+                var hasSkinnedAlphaMaskPass = false;
+                var hasSkinnedBlendPass = false;
+                var hasSkinnedNormalMappedMeshPass = false;
+                var hasSkinnedTexturedAlphaMaskPass = false;
+                var hasSkinnedTexturedBlendPass = false;
+                var hasSkinnedTexturedMeshPass = false;
 
                 foreach (var meshPass in spriteState.MeshPasses.Values)
                 {
+                    if (meshPass.Skinned)
+                    {
+                        var hasSkinnedTexture = (meshPass.BaseColorTexture is not null)
+                            || (meshPass.EmissiveTexture is not null)
+                            || (meshPass.PackedMetalRoughOcclusionTexture is not null)
+                            || (meshPass.NormalTexture is not null);
+
+                        if (meshPass.NormalTexture is not null)
+                        {
+                            hasSkinnedNormalMappedMeshPass = true;
+                        }
+                        else if (meshPass.AlphaBlend)
+                        {
+                            hasSkinnedTexturedBlendPass |= hasSkinnedTexture;
+                            hasSkinnedBlendPass |= !hasSkinnedTexture;
+                        }
+                        else if (meshPass.AlphaMask)
+                        {
+                            hasSkinnedTexturedAlphaMaskPass |= hasSkinnedTexture;
+                            hasSkinnedAlphaMaskPass |= !hasSkinnedTexture;
+                        }
+                        else if (hasSkinnedTexture)
+                        {
+                            hasSkinnedTexturedMeshPass = true;
+                        }
+                        else
+                        {
+                            hasSkinnedMeshPass = true;
+                        }
+
+                        continue;
+                    }
+
                     var hasTexture = (meshPass.BaseColorTexture is not null)
                         || (meshPass.EmissiveTexture is not null)
                         || (meshPass.PackedMetalRoughOcclusionTexture is not null)
@@ -283,6 +330,55 @@ public sealed partial class Renderer
                 if (hasUntexturedMeshPass)
                 {
                     meshPipeline = await CreateMeshC0PipelineAsync(
+                        spriteState.SpriteColorTargetFormat,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                if (hasSkinnedMeshPass)
+                {
+                    skinnedMeshPipeline = await CreateSkinnedMeshC0PipelineAsync(
+                        spriteState.SpriteColorTargetFormat,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                if (hasSkinnedAlphaMaskPass)
+                {
+                    skinnedMeshAlphaMaskPipeline = await CreateSkinnedMeshC0AlphaMaskPipelineAsync(
+                        spriteState.SpriteColorTargetFormat,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                if (hasSkinnedBlendPass)
+                {
+                    skinnedMeshBlendPipeline = await CreateSkinnedMeshC0BlendPipelineAsync(
+                        spriteState.SpriteColorTargetFormat,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                if (hasSkinnedTexturedMeshPass)
+                {
+                    skinnedTexturedMeshPipeline = await CreateSkinnedTexturedMeshC0PipelineAsync(
+                        spriteState.SpriteColorTargetFormat,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                if (hasSkinnedTexturedAlphaMaskPass)
+                {
+                    skinnedTexturedMeshAlphaMaskPipeline = await CreateSkinnedTexturedMeshC0AlphaMaskPipelineAsync(
+                        spriteState.SpriteColorTargetFormat,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                if (hasSkinnedTexturedBlendPass)
+                {
+                    skinnedTexturedMeshBlendPipeline = await CreateSkinnedTexturedMeshC0BlendPipelineAsync(
+                        spriteState.SpriteColorTargetFormat,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                if (hasSkinnedNormalMappedMeshPass)
+                {
+                    skinnedNormalMappedMeshPipeline = await CreateSkinnedTexturedMeshC0NormalMappedPipelineAsync(
                         spriteState.SpriteColorTargetFormat,
                         cancellationToken).ConfigureAwait(false);
                 }
@@ -332,6 +428,13 @@ public sealed partial class Renderer
                 if (((spriteState.Passes.Count != 0) && (spritePipeline is null))
                     || (hasUntexturedAlphaMaskPass && (meshAlphaMaskPipeline is null))
                     || (hasUntexturedMeshPass && (meshPipeline is null))
+                    || (hasSkinnedMeshPass && (skinnedMeshPipeline is null))
+                    || (hasSkinnedAlphaMaskPass && (skinnedMeshAlphaMaskPipeline is null))
+                    || (hasSkinnedBlendPass && (skinnedMeshBlendPipeline is null))
+                    || (hasSkinnedTexturedMeshPass && (skinnedTexturedMeshPipeline is null))
+                    || (hasSkinnedTexturedAlphaMaskPass && (skinnedTexturedMeshAlphaMaskPipeline is null))
+                    || (hasSkinnedTexturedBlendPass && (skinnedTexturedMeshBlendPipeline is null))
+                    || (hasSkinnedNormalMappedMeshPass && (skinnedNormalMappedMeshPipeline is null))
                     || (hasUntexturedBlendPass && (meshBlendPipeline is null))
                     || (hasNormalMappedMeshPass && (normalMappedMeshPipeline is null))
                     || (hasTexturedAlphaMaskPass && (texturedMeshAlphaMaskPipeline is null))
@@ -346,6 +449,10 @@ public sealed partial class Renderer
                     || hasTexturedMeshPass
                     || hasTexturedAlphaMaskPass
                     || hasTexturedBlendPass
+                    || hasSkinnedTexturedMeshPass
+                    || hasSkinnedTexturedAlphaMaskPass
+                    || hasSkinnedTexturedBlendPass
+                    || hasSkinnedNormalMappedMeshPass
                     || hasNormalMappedMeshPass
                     || spriteState.ToneMapPasses.Count != 0)
                 {
@@ -369,11 +476,18 @@ public sealed partial class Renderer
                         meshAlphaMaskPipeline,
                         spritePipeline,
                         meshPipeline,
+                        skinnedMeshPipeline,
+                        skinnedMeshAlphaMaskPipeline,
+                        skinnedMeshBlendPipeline,
                         meshBlendPipeline,
                         normalMappedMeshPipeline,
+                        skinnedNormalMappedMeshPipeline,
                         texturedMeshAlphaMaskPipeline,
+                        skinnedTexturedMeshAlphaMaskPipeline,
                         texturedMeshPipeline,
+                        skinnedTexturedMeshPipeline,
                         texturedMeshBlendPipeline,
+                        skinnedTexturedMeshBlendPipeline,
                         spriteToneMapPipeline,
                         spriteSampler);
                 }
@@ -615,10 +729,17 @@ public sealed partial class Renderer
                 meshAlphaMaskPipeline?.Dispose();
                 meshBlendPipeline?.Dispose();
                 meshPipeline?.Dispose();
+                skinnedMeshPipeline?.Dispose();
+                skinnedMeshAlphaMaskPipeline?.Dispose();
+                skinnedMeshBlendPipeline?.Dispose();
                 normalMappedMeshPipeline?.Dispose();
+                skinnedNormalMappedMeshPipeline?.Dispose();
                 texturedMeshAlphaMaskPipeline?.Dispose();
+                skinnedTexturedMeshAlphaMaskPipeline?.Dispose();
                 texturedMeshBlendPipeline?.Dispose();
+                skinnedTexturedMeshBlendPipeline?.Dispose();
                 texturedMeshPipeline?.Dispose();
+                skinnedTexturedMeshPipeline?.Dispose();
                 spritePipeline?.Dispose();
 
                 foreach (var deferredTextureLease in deferredTextureLeases)

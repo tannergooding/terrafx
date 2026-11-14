@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Immutable;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -65,6 +66,90 @@ public sealed partial class Renderer
             alphaBlend: false,
             normalMapped: false,
             cancellationToken);
+
+    internal Task<GpuPipeline> CreateSkinnedMeshC0AlphaMaskPipelineAsync(
+        TextureFormat colorTargetFormat,
+        CancellationToken cancellationToken = default)
+        => CreateMeshC0PipelineAsync(
+            colorTargetFormat,
+            textured: false,
+            alphaMask: true,
+            alphaBlend: false,
+            normalMapped: false,
+            cancellationToken,
+            skinned: true);
+
+    internal Task<GpuPipeline> CreateSkinnedMeshC0BlendPipelineAsync(
+        TextureFormat colorTargetFormat,
+        CancellationToken cancellationToken = default)
+        => CreateMeshC0PipelineAsync(
+            colorTargetFormat,
+            textured: false,
+            alphaMask: false,
+            alphaBlend: true,
+            normalMapped: false,
+            cancellationToken,
+            skinned: true);
+
+    internal Task<GpuPipeline> CreateSkinnedMeshC0PipelineAsync(
+        TextureFormat colorTargetFormat,
+        CancellationToken cancellationToken = default)
+        => CreateMeshC0PipelineAsync(
+            colorTargetFormat,
+            textured: false,
+            alphaMask: false,
+            alphaBlend: false,
+            normalMapped: false,
+            cancellationToken,
+            skinned: true);
+
+    internal Task<GpuPipeline> CreateSkinnedTexturedMeshC0AlphaMaskPipelineAsync(
+        TextureFormat colorTargetFormat,
+        CancellationToken cancellationToken = default)
+        => CreateMeshC0PipelineAsync(
+            colorTargetFormat,
+            textured: true,
+            alphaMask: true,
+            alphaBlend: false,
+            normalMapped: false,
+            cancellationToken,
+            skinned: true);
+
+    internal Task<GpuPipeline> CreateSkinnedTexturedMeshC0BlendPipelineAsync(
+        TextureFormat colorTargetFormat,
+        CancellationToken cancellationToken = default)
+        => CreateMeshC0PipelineAsync(
+            colorTargetFormat,
+            textured: true,
+            alphaMask: false,
+            alphaBlend: true,
+            normalMapped: false,
+            cancellationToken,
+            skinned: true);
+
+    internal Task<GpuPipeline> CreateSkinnedTexturedMeshC0NormalMappedPipelineAsync(
+        TextureFormat colorTargetFormat,
+        CancellationToken cancellationToken = default)
+        => CreateMeshC0PipelineAsync(
+            colorTargetFormat,
+            textured: true,
+            alphaMask: false,
+            alphaBlend: false,
+            normalMapped: true,
+            cancellationToken,
+            skinned: true);
+
+    internal Task<GpuPipeline> CreateSkinnedTexturedMeshC0PipelineAsync(
+        TextureFormat colorTargetFormat,
+        CancellationToken cancellationToken = default)
+        => CreateMeshC0PipelineAsync(
+            colorTargetFormat,
+            textured: true,
+            alphaMask: false,
+            alphaBlend: false,
+            normalMapped: false,
+            cancellationToken,
+            skinned: true);
 
     internal async Task<GpuPipeline> CreateSpriteC0PipelineAsync(
         TextureFormat colorTargetFormat,
@@ -216,7 +301,8 @@ public sealed partial class Renderer
         bool alphaMask,
         bool alphaBlend,
         bool normalMapped,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool skinned = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -233,7 +319,9 @@ public sealed partial class Renderer
             _ => throw new NotSupportedException("The selected GraphicsDevice has no Mesh C0 shader artifact."),
         };
         using var vertexStorage = LoadShaderBytecode(
-            "TerraFX.Rendering.Shaders.MeshC0Vertex.vertex.",
+            skinned
+                ? "TerraFX.Rendering.Shaders.MeshC0SkinnedVertex.vertex."
+                : "TerraFX.Rendering.Shaders.MeshC0Vertex.vertex.",
             binaryFormat);
         using var pixelStorage = LoadShaderBytecode(
             (textured, alphaMask) switch {
@@ -245,6 +333,21 @@ public sealed partial class Renderer
             binaryFormat);
         using var vertexBytecode = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
         using var pixelBytecode = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
+        ImmutableArray<VertexElementDescription> vertexElements = skinned
+            ? [
+                new VertexElementDescription(0, VertexElementFormat.Float3, 0),
+                new VertexElementDescription(1, VertexElementFormat.Float3, 3 * sizeof(float)),
+                new VertexElementDescription(2, VertexElementFormat.Float2, 6 * sizeof(float)),
+                new VertexElementDescription(3, VertexElementFormat.Float4, 8 * sizeof(float)),
+                new VertexElementDescription(4, VertexElementFormat.Float4, 12 * sizeof(float)),
+                new VertexElementDescription(5, VertexElementFormat.Float4, 16 * sizeof(float)),
+            ]
+            : [
+                new VertexElementDescription(0, VertexElementFormat.Float3, 0),
+                new VertexElementDescription(1, VertexElementFormat.Float3, 3 * sizeof(float)),
+                new VertexElementDescription(2, VertexElementFormat.Float2, 6 * sizeof(float)),
+                new VertexElementDescription(3, VertexElementFormat.Float4, 8 * sizeof(float)),
+            ];
         return await device.CreatePipelineAsync(
             new GraphicsPipelineDescription(
                 [
@@ -252,19 +355,14 @@ public sealed partial class Renderer
                         ShaderStage.Vertex,
                         binaryFormat,
                         vertexBytecode,
-                        RenderMeshC0ShaderReflection.Vertex),
+                        skinned ? RenderMeshC0ShaderReflection.SkinnedVertex : RenderMeshC0ShaderReflection.Vertex),
                     new ShaderBytecodeInput(
                         ShaderStage.Pixel,
                         binaryFormat,
                         pixelBytecode,
                         textured ? RenderMeshC0ShaderReflection.TexturedPixel : RenderMeshC0ShaderReflection.Pixel),
                 ],
-                [
-                    new VertexElementDescription(0, VertexElementFormat.Float3, 0),
-                    new VertexElementDescription(1, VertexElementFormat.Float3, 3 * sizeof(float)),
-                    new VertexElementDescription(2, VertexElementFormat.Float2, 6 * sizeof(float)),
-                    new VertexElementDescription(3, VertexElementFormat.Float4, 8 * sizeof(float)),
-                ],
+                vertexElements,
                 vertexStride: RenderMeshC0VertexBufferBuilder.VertexStride,
                 [colorTargetFormat],
                 depthTargetFormat: TextureFormat.D32Float,

@@ -29,6 +29,26 @@ cbuffer ObjectData : register(b0, space2)
     uint4 Metadata;
 };
 
+#if defined(TERRAFX_SKINNED)
+struct BonePaletteEntry
+{
+    float4 SkinRow0;
+    float4 SkinRow1;
+    float4 SkinRow2;
+    float4 SkinRow3;
+    float4 NormalRow0;
+    float4 NormalRow1;
+    float4 NormalRow2;
+};
+#endif
+
+#if defined(TERRAFX_SKINNED)
+#if defined(TERRAFX_SPIRV)
+[[vk::binding(32, 2)]]
+#endif
+RWStructuredBuffer<BonePaletteEntry> BonePalette : register(u0, space2);
+#endif
+
 struct VertexInput
 {
 #if defined(TERRAFX_SPIRV)
@@ -47,6 +67,18 @@ struct VertexInput
     [[vk::location(3)]]
 #endif
     float4 Tangent : TANGENT0;
+#if defined(TERRAFX_SKINNED) && defined(TERRAFX_SPIRV)
+    [[vk::location(4)]]
+#endif
+#if defined(TERRAFX_SKINNED)
+    float4 JointIndices : BLENDINDICES0;
+#endif
+#if defined(TERRAFX_SKINNED) && defined(TERRAFX_SPIRV)
+    [[vk::location(5)]]
+#endif
+#if defined(TERRAFX_SKINNED)
+    float4 JointWeights : BLENDWEIGHT0;
+#endif
 };
 
 struct VertexOutput
@@ -73,11 +105,62 @@ struct VertexOutput
 VertexOutput VSMain(VertexInput input)
 {
     VertexOutput output;
-    float4 worldPosition = mul(float4(input.Position, 1.0f), World);
+    float4 localPosition = float4(input.Position, 1.0f);
+    float3 localNormal = input.Normal;
+    float3 localTangent = input.Tangent.xyz;
+
+#if defined(TERRAFX_SKINNED)
+    if (Metadata.x != 0)
+    {
+        uint paletteOffset = Metadata.x - 1;
+        uint4 jointIndices = (uint4)input.JointIndices;
+        float4 weights = input.JointWeights;
+        BonePaletteEntry bone0 = BonePalette[paletteOffset + jointIndices.x];
+        BonePaletteEntry bone1 = BonePalette[paletteOffset + jointIndices.y];
+        BonePaletteEntry bone2 = BonePalette[paletteOffset + jointIndices.z];
+        BonePaletteEntry bone3 = BonePalette[paletteOffset + jointIndices.w];
+        float4 skinnedPosition0 =
+            (input.Position.x * bone0.SkinRow0)
+            + (input.Position.y * bone0.SkinRow1)
+            + (input.Position.z * bone0.SkinRow2)
+            + bone0.SkinRow3;
+        float4 skinnedPosition1 =
+            (input.Position.x * bone1.SkinRow0)
+            + (input.Position.y * bone1.SkinRow1)
+            + (input.Position.z * bone1.SkinRow2)
+            + bone1.SkinRow3;
+        float4 skinnedPosition2 =
+            (input.Position.x * bone2.SkinRow0)
+            + (input.Position.y * bone2.SkinRow1)
+            + (input.Position.z * bone2.SkinRow2)
+            + bone2.SkinRow3;
+        float4 skinnedPosition3 =
+            (input.Position.x * bone3.SkinRow0)
+            + (input.Position.y * bone3.SkinRow1)
+            + (input.Position.z * bone3.SkinRow2)
+            + bone3.SkinRow3;
+        localPosition = (weights.x * skinnedPosition0)
+            + (weights.y * skinnedPosition1)
+            + (weights.z * skinnedPosition2)
+            + (weights.w * skinnedPosition3);
+        localNormal =
+            (weights.x * mul(input.Normal, float3x3(bone0.NormalRow0.xyz, bone0.NormalRow1.xyz, bone0.NormalRow2.xyz)))
+            + (weights.y * mul(input.Normal, float3x3(bone1.NormalRow0.xyz, bone1.NormalRow1.xyz, bone1.NormalRow2.xyz)))
+            + (weights.z * mul(input.Normal, float3x3(bone2.NormalRow0.xyz, bone2.NormalRow1.xyz, bone2.NormalRow2.xyz)))
+            + (weights.w * mul(input.Normal, float3x3(bone3.NormalRow0.xyz, bone3.NormalRow1.xyz, bone3.NormalRow2.xyz)));
+        localTangent =
+            (weights.x * mul(input.Tangent.xyz, float3x3(bone0.SkinRow0.xyz, bone0.SkinRow1.xyz, bone0.SkinRow2.xyz)))
+            + (weights.y * mul(input.Tangent.xyz, float3x3(bone1.SkinRow0.xyz, bone1.SkinRow1.xyz, bone1.SkinRow2.xyz)))
+            + (weights.z * mul(input.Tangent.xyz, float3x3(bone2.SkinRow0.xyz, bone2.SkinRow1.xyz, bone2.SkinRow2.xyz)))
+            + (weights.w * mul(input.Tangent.xyz, float3x3(bone3.SkinRow0.xyz, bone3.SkinRow1.xyz, bone3.SkinRow2.xyz)));
+    }
+#endif
+
+    float4 worldPosition = mul(localPosition, World);
     output.Position = mul(worldPosition, ViewProjection);
     output.WorldPosition = worldPosition.xyz;
-    output.WorldNormal = normalize(mul(input.Normal, float3x3(NormalRow0.xyz, NormalRow1.xyz, NormalRow2.xyz)));
+    output.WorldNormal = normalize(mul(localNormal, float3x3(NormalRow0.xyz, NormalRow1.xyz, NormalRow2.xyz)));
     output.Uv0 = input.Uv0;
-    output.WorldTangent = float4(mul(input.Tangent.xyz, (float3x3)World), input.Tangent.w);
+    output.WorldTangent = float4(mul(localTangent, (float3x3)World), input.Tangent.w);
     return output;
 }

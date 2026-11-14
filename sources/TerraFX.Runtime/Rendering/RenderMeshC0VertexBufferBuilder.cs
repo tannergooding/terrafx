@@ -2,13 +2,14 @@
 
 using System;
 using System.Buffers.Binary;
+using System.IO;
 using TerraFX.Numerics;
 
 namespace TerraFX.Rendering;
 
 internal static class RenderMeshC0VertexBufferBuilder
 {
-    internal const int VertexStride = 12 * sizeof(float);
+    internal const int VertexStride = 20 * sizeof(float);
 
     internal static byte[] Create(RenderMeshAsset mesh)
     {
@@ -35,6 +36,35 @@ internal static class RenderMeshC0VertexBufferBuilder
             if (!mesh.Tangents.IsDefault)
             {
                 WriteVector4(bytes, offset + (8 * sizeof(float)), mesh.Tangents[index]);
+            }
+
+            if (!mesh.JointIndices.IsDefault)
+            {
+                var jointOffset = checked(index * 4);
+                WriteVector4(
+                    bytes,
+                    offset + (12 * sizeof(float)),
+                    new Vector4(
+                        mesh.JointIndices[jointOffset],
+                        mesh.JointIndices[jointOffset + 1],
+                        mesh.JointIndices[jointOffset + 2],
+                        mesh.JointIndices[jointOffset + 3]));
+                var weights = mesh.Weights[index];
+                var weightSum = weights.X + weights.Y + weights.Z + weights.W;
+
+                if (!float.IsFinite(weightSum) || (weightSum <= 0.0f))
+                {
+                    throw new InvalidDataException("A skinned Mesh vertex has no positive finite joint-weight sum.");
+                }
+
+                WriteVector4(
+                    bytes,
+                    offset + (16 * sizeof(float)),
+                    new Vector4(
+                        weights.X / weightSum,
+                        weights.Y / weightSum,
+                        weights.Z / weightSum,
+                        weights.W / weightSum));
             }
         }
 

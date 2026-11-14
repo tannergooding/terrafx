@@ -108,20 +108,26 @@ public sealed partial class Renderer
 
     private static byte[] CreateMeshObjectBuffer(
         ReadOnlySpan<RenderMeshSnapshot> draws,
+        ReadOnlySpan<int> bonePaletteOffsets,
         int uniformStride)
     {
+        if (bonePaletteOffsets.Length != draws.Length)
+        {
+            throw new ArgumentException("Mesh palette offsets must match the draw count.", nameof(bonePaletteOffsets));
+        }
+
         var buffer = new byte[checked(draws.Length * uniformStride)];
 
         for (var index = 0; index < draws.Length; index++)
         {
-            CreateMeshObjectData(draws[index]).WriteTo(
+            CreateMeshObjectData(draws[index], bonePaletteOffsets[index]).WriteTo(
                 buffer.AsSpan(checked(index * uniformStride), ObjectGpuData.SizeInBytes));
         }
 
         return buffer;
     }
 
-    private static ObjectGpuData CreateMeshObjectData(RenderMeshSnapshot draw)
+    private static ObjectGpuData CreateMeshObjectData(RenderMeshSnapshot draw, int bonePaletteOffset)
     {
         if (!SpatialMath.TryToFrameRelative(draw.Position, draw.Frame3, out var position))
         {
@@ -143,13 +149,19 @@ public sealed partial class Renderer
             throw new InvalidOperationException("The Mesh normal transform is not finite.");
         }
 
+        if (((draw.PaletteIndex < 0) && (bonePaletteOffset != -1))
+            || ((draw.PaletteIndex >= 0) && (bonePaletteOffset < 0)))
+        {
+            throw new ArgumentException("The Mesh palette offset does not match the draw's captured palette.", nameof(bonePaletteOffset));
+        }
+
         return new ObjectGpuData(
             world,
             world,
             normalMatrix.Row1,
             normalMatrix.Row2,
             normalMatrix.Row3,
-            metadata0: 0,
+            metadata0: draw.PaletteIndex >= 0 ? checked((uint)bonePaletteOffset + 1) : 0,
             metadata1: 0,
             metadata2: 0,
             metadata3: 0);
@@ -352,6 +364,7 @@ public sealed partial class Renderer
         var hasEmissiveTextures = new List<bool>(selectedDrawCount);
         var hasPackedMetalRoughOcclusionTextures = new List<bool>(selectedDrawCount);
         var hasNormalTextures = new List<bool>(selectedDrawCount);
+        var selectedBonePaletteOffsets = new List<int>(selectedDrawCount);
         var vertexBytesByMesh = new List<byte[]>(selectedDrawCount);
         var indexBytesByMesh = new List<byte[]>(selectedDrawCount);
         var baseColorTextureVersions = new GraphTextureVersion?[meshSnapshot.MeshDraws.Length];
@@ -362,6 +375,11 @@ public sealed partial class Renderer
         Array.Fill(meshGeometryIndices, -1);
         var meshGeometryIndexByKey = new Dictionary<(Guid SceneInstanceId, int MeshAssetId), int>();
         var meshTextureVersionsByKey = new Dictionary<(AssetPackageBackingToken BackingToken, int TextureAssetId), GraphTextureVersion>();
+        var bonePaletteOffsets = new int[meshSnapshot.MeshPalettes.Length];
+        var bonePaletteBytes = RenderMeshC0BoneBufferBuilder.Create(
+            meshSnapshot.MeshPalettes.AsSpan(),
+            bonePaletteOffsets);
+        var hasSkinnedDraws = false;
         var preparedIndex = 0;
 
         for (var drawIndex = 0; drawIndex < meshSnapshot.MeshDraws.Length; drawIndex++)
@@ -385,6 +403,7 @@ public sealed partial class Renderer
             var emissiveTexture = material.Parameters.EmissiveTexture;
             var packedMetalRoughOcclusionTexture = material.Parameters.PackedMetalRoughOcclusion;
             var normalTexture = material.Parameters.NormalTexture;
+            var isSkinned = draw.PaletteIndex >= 0;
 
             if (normalTexture.HasValue && IsMirroredTransform(draw.LinearTransform))
             {
@@ -468,9 +487,9 @@ public sealed partial class Renderer
                 throw new NotSupportedException("Mesh C0 does not consume optional vertex-color streams.");
             }
 
-            if (!mesh.JointIndices.IsDefault || (draw.PaletteIndex >= 0))
+            if (mesh.JointIndices.IsDefault != (draw.PaletteIndex < 0))
             {
-                throw new NotSupportedException("Mesh C0 currently draws only unskinned Meshes; bind-pose palette evaluation requires its GPU deformation path.");
+                throw new InvalidOperationException("A skinned Mesh draw does not match its captured bind-pose palette.");
             }
 
             if ((draw.GroupIndex < 0) || (draw.GroupIndex >= mesh.Groups.Length))
@@ -481,6 +500,9 @@ public sealed partial class Renderer
             selectedDrawsInOrder.Add(draw);
             selectedIndices[drawIndex] = preparedIndex++;
             materialAssets.Add(material);
+            var bonePaletteOffset = isSkinned ? bonePaletteOffsets[draw.PaletteIndex] : -1;
+            selectedBonePaletteOffsets.Add(bonePaletteOffset);
+            hasSkinnedDraws |= isSkinned;
             hasBaseColorTextures.Add(baseColorTexture.HasValue);
             hasEmissiveTextures.Add(emissiveTexture.HasValue);
             hasPackedMetalRoughOcclusionTextures.Add(packedMetalRoughOcclusionTexture.HasValue);
@@ -499,7 +521,10 @@ public sealed partial class Renderer
             meshGeometryIndices[drawIndex] = meshGeometryIndex;
         }
 
-        var objectBytes = CreateMeshObjectBuffer(CollectionsMarshal.AsSpan(selectedDrawsInOrder), uniformStride);
+        var objectBytes = CreateMeshObjectBuffer(
+            CollectionsMarshal.AsSpan(selectedDrawsInOrder),
+            CollectionsMarshal.AsSpan(selectedBonePaletteOffsets),
+            uniformStride);
         var materialBytes = CreateMeshMaterialBuffer(
             CollectionsMarshal.AsSpan(materialAssets),
             CollectionsMarshal.AsSpan(hasBaseColorTextures),
@@ -540,6 +565,20 @@ public sealed partial class Renderer
                 structuredStride: null,
                 "mesh-object-data"),
             objectBytes);
+        GraphBufferVersion? currentBonePaletteBuffer = null;
+
+        if (hasSkinnedDraws)
+        {
+            currentBonePaletteBuffer = graph.CreateInitializedTransientBuffer(
+                new BufferDescription(
+                    bonePaletteBytes.Length,
+                    BufferUsage.Storage | BufferUsage.CopyDestination,
+                    GpuMemoryKind.DeviceLocal,
+                    RenderMeshC0BoneBufferBuilder.Stride,
+                    "mesh-bone-palette-data"),
+                bonePaletteBytes);
+        }
+
         var materialBuffer = graph.CreateInitializedTransientBuffer(
             new BufferDescription(
                 materialBytes.Length,
@@ -699,6 +738,8 @@ public sealed partial class Renderer
                     uniformStride,
                     vertexBuffer,
                     indexBuffer,
+                    currentBonePaletteBuffer,
+                    draw.PaletteIndex >= 0,
                     baseColorTextureVersions[drawIndex],
                     emissiveTextureVersions[drawIndex],
                     packedMetalRoughOcclusionTextureVersions[drawIndex],
@@ -713,6 +754,18 @@ public sealed partial class Renderer
                         hasExternalSideEffects: false,
                         renderArea: area),
                     meshPass);
+
+                if (meshPass.Skinned)
+                {
+                    var sourceBonePaletteBuffer = currentBonePaletteBuffer
+                        ?? throw new InvalidOperationException("The graph has a skinned Mesh pass without a bone-palette buffer.");
+                    currentBonePaletteBuffer = graph.ReadWriteBuffer(
+                        pass,
+                        sourceBonePaletteBuffer,
+                        new GraphBufferRange(0, sourceBonePaletteBuffer.Description.ByteLength));
+                    meshPass.SetBonePaletteWriteVersion(currentBonePaletteBuffer);
+                }
+
                 graph.ReadBuffer(
                     pass,
                     frameBuffer,

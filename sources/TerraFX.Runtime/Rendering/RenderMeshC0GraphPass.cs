@@ -8,6 +8,8 @@ namespace TerraFX.Rendering;
 
 internal sealed class RenderMeshC0GraphPass
 {
+    private bool _bonePaletteWriteVersionSet;
+
     internal RenderMeshC0GraphPass(
         int drawIndex,
         RenderMeshGroup group,
@@ -22,6 +24,8 @@ internal sealed class RenderMeshC0GraphPass
         int materialStride,
         GraphBufferVersion vertexBuffer,
         GraphBufferVersion indexBuffer,
+        GraphBufferVersion? bonePaletteBuffer,
+        bool skinned,
         GraphTextureVersion? baseColorTexture,
         GraphTextureVersion? emissiveTexture,
         GraphTextureVersion? packedMetalRoughOcclusionTexture,
@@ -46,6 +50,12 @@ internal sealed class RenderMeshC0GraphPass
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(materialStride);
         ArgumentNullException.ThrowIfNull(vertexBuffer);
         ArgumentNullException.ThrowIfNull(indexBuffer);
+
+        if (skinned)
+        {
+            ArgumentNullException.ThrowIfNull(bonePaletteBuffer);
+        }
+
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(group.IndexCount);
 
         DrawIndex = drawIndex;
@@ -61,6 +71,8 @@ internal sealed class RenderMeshC0GraphPass
         MaterialStride = materialStride;
         VertexBuffer = vertexBuffer;
         IndexBuffer = indexBuffer;
+        BonePaletteBuffer = bonePaletteBuffer;
+        Skinned = skinned;
         BaseColorTexture = baseColorTexture;
         EmissiveTexture = emissiveTexture;
         PackedMetalRoughOcclusionTexture = packedMetalRoughOcclusionTexture;
@@ -74,6 +86,8 @@ internal sealed class RenderMeshC0GraphPass
     internal bool AlphaMask { get; }
 
     internal GraphTextureVersion? BaseColorTexture { get; }
+
+    internal GraphBufferVersion? BonePaletteBuffer { get; private set; }
 
     internal int CameraIndex { get; }
 
@@ -105,6 +119,8 @@ internal sealed class RenderMeshC0GraphPass
 
     internal GraphBufferVersion PointLightBuffer { get; }
 
+    internal bool Skinned { get; }
+
     internal GraphBufferVersion VertexBuffer { get; }
 
     internal void Record(scoped ref CommandRecorder recorder, RenderBuiltInSubmissionResources resources)
@@ -113,17 +129,27 @@ internal sealed class RenderMeshC0GraphPass
             || (EmissiveTexture is not null)
             || (PackedMetalRoughOcclusionTexture is not null)
             || (NormalTexture is not null);
-        var pipeline = (NormalTexture is not null, hasTexture, AlphaMask, AlphaBlend) switch {
-            (true, _, false, false) => resources.NormalMappedMeshPipeline,
-            (true, _, _, _) => throw new InvalidOperationException("The built-in normal-mapped Mesh pass has an invalid alpha mode."),
-            (false, false, false, false) => resources.MeshPipeline,
-            (false, false, true, false) => resources.MeshAlphaMaskPipeline,
-            (false, false, false, true) => resources.MeshBlendPipeline,
-            (false, true, false, false) => resources.TexturedMeshPipeline,
-            (false, true, true, false) => resources.TexturedMeshAlphaMaskPipeline,
-            (false, true, false, true) => resources.TexturedMeshBlendPipeline,
+        var selectedPipeline = (Skinned, NormalTexture is not null, hasTexture, AlphaMask, AlphaBlend) switch {
+            (true, true, _, false, false) => resources.SkinnedNormalMappedMeshPipeline,
+            (true, true, _, _, _) => throw new InvalidOperationException("The built-in skinned normal-mapped Mesh pass has an invalid alpha mode."),
+            (true, false, false, false, false) => resources.SkinnedMeshPipeline,
+            (true, false, false, true, false) => resources.SkinnedMeshAlphaMaskPipeline,
+            (true, false, false, false, true) => resources.SkinnedMeshBlendPipeline,
+            (true, false, true, false, false) => resources.SkinnedTexturedMeshPipeline,
+            (true, false, true, true, false) => resources.SkinnedTexturedMeshAlphaMaskPipeline,
+            (true, false, true, false, true) => resources.SkinnedTexturedMeshBlendPipeline,
+            (false, true, _, false, false) => resources.NormalMappedMeshPipeline,
+            (false, true, _, _, _) => throw new InvalidOperationException("The built-in normal-mapped Mesh pass has an invalid alpha mode."),
+            (false, false, false, false, false) => resources.MeshPipeline,
+            (false, false, false, true, false) => resources.MeshAlphaMaskPipeline,
+            (false, false, false, false, true) => resources.MeshBlendPipeline,
+            (false, false, true, false, false) => resources.TexturedMeshPipeline,
+            (false, false, true, true, false) => resources.TexturedMeshAlphaMaskPipeline,
+            (false, false, true, false, true) => resources.TexturedMeshBlendPipeline,
             _ => throw new InvalidOperationException("The built-in Mesh pass has an invalid alpha mode."),
-        }
+        };
+
+        var pipeline = selectedPipeline
             ?? throw new InvalidOperationException("The built-in Mesh pass has no Mesh pipeline.");
         recorder.SetPipeline(pipeline.Handle);
         recorder.SetVertexBuffer(new VertexBufferBinding(
@@ -192,41 +218,51 @@ internal sealed class RenderMeshC0GraphPass
                         ?? throw new InvalidOperationException("The textured Mesh pass has no default sampler.")),
             ]
             : [];
-        var bindings = new BindingSet(
-            [
-                new BufferBinding(
-                    ShaderBindingGroup.Frame,
-                    0,
-                    ShaderResourceKind.UniformBuffer,
-                    FrameBuffer,
-                    new GraphBufferRange(
-                        checked((long)CameraIndex * FrameStride),
-                        RenderMeshC0FrameData.SizeInBytes)),
-                new BufferBinding(
-                    ShaderBindingGroup.Frame,
-                    1,
-                    ShaderResourceKind.UniformBuffer,
-                    PointLightBuffer,
-                    new GraphBufferRange(0, PointLightBuffer.Description.ByteLength)),
-                new BufferBinding(
-                    ShaderBindingGroup.ObjectData,
-                    0,
-                    ShaderResourceKind.UniformBuffer,
-                    ObjectBuffer,
-                    new GraphBufferRange(
-                        checked((long)DrawIndex * ObjectStride),
-                        ObjectGpuData.SizeInBytes)),
-                new BufferBinding(
-                    ShaderBindingGroup.Material,
-                    0,
-                    ShaderResourceKind.UniformBuffer,
-                    MaterialBuffer,
-                    new GraphBufferRange(
-                        checked((long)DrawIndex * MaterialStride),
-                        RenderMeshC0MaterialData.SizeInBytes)),
-            ],
-            textures,
-            samplers);
+        var bufferBindings = ImmutableArray.CreateBuilder<BufferBinding>(Skinned ? 5 : 4);
+        bufferBindings.Add(new BufferBinding(
+            ShaderBindingGroup.Frame,
+            0,
+            ShaderResourceKind.UniformBuffer,
+            FrameBuffer,
+            new GraphBufferRange(
+                checked((long)CameraIndex * FrameStride),
+                RenderMeshC0FrameData.SizeInBytes)));
+        bufferBindings.Add(new BufferBinding(
+            ShaderBindingGroup.Frame,
+            1,
+            ShaderResourceKind.UniformBuffer,
+            PointLightBuffer,
+            new GraphBufferRange(0, PointLightBuffer.Description.ByteLength)));
+        bufferBindings.Add(new BufferBinding(
+            ShaderBindingGroup.ObjectData,
+            0,
+            ShaderResourceKind.UniformBuffer,
+            ObjectBuffer,
+            new GraphBufferRange(
+                checked((long)DrawIndex * ObjectStride),
+                ObjectGpuData.SizeInBytes)));
+        bufferBindings.Add(new BufferBinding(
+            ShaderBindingGroup.Material,
+            0,
+            ShaderResourceKind.UniformBuffer,
+            MaterialBuffer,
+            new GraphBufferRange(
+                checked((long)DrawIndex * MaterialStride),
+                RenderMeshC0MaterialData.SizeInBytes)));
+
+        if (Skinned)
+        {
+            var bonePaletteBuffer = BonePaletteBuffer
+                ?? throw new InvalidOperationException("A skinned Mesh pass has no bone-palette buffer.");
+            bufferBindings.Add(new BufferBinding(
+                ShaderBindingGroup.ObjectData,
+                0,
+                ShaderResourceKind.StorageBuffer,
+                bonePaletteBuffer,
+                new GraphBufferRange(0, bonePaletteBuffer.Description.ByteLength)));
+        }
+
+        var bindings = new BindingSet(bufferBindings.MoveToImmutable(), textures, samplers);
         recorder.SetBindings(bindings);
         recorder.DrawIndexed(new DrawIndexedArguments(
             Group.IndexCount,
@@ -234,5 +270,21 @@ internal sealed class RenderMeshC0GraphPass
             firstIndex: Group.FirstIndex,
             baseVertex: 0,
             firstInstance: 0));
+    }
+
+    internal void SetBonePaletteWriteVersion(GraphBufferVersion version)
+    {
+        ArgumentNullException.ThrowIfNull(version);
+
+        var bonePaletteBuffer = BonePaletteBuffer
+            ?? throw new InvalidOperationException("A skinned Mesh pass has no bone-palette source buffer.");
+
+        if (_bonePaletteWriteVersionSet || (version.ResourceId != bonePaletteBuffer.ResourceId))
+        {
+            throw new InvalidOperationException("The Mesh bone-palette write version does not match its source buffer.");
+        }
+
+        BonePaletteBuffer = version;
+        _bonePaletteWriteVersionSet = true;
     }
 }

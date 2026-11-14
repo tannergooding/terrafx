@@ -744,6 +744,18 @@ public sealed partial class Renderer
                 throw new InvalidDataException("A Mesh static BindPose palette contains a nonfinite matrix.");
             }
 
+            var skinLinear = new Matrix4x4(
+                new Vector4(skinMatrix.Row1.X, skinMatrix.Row1.Y, skinMatrix.Row1.Z, 0.0f),
+                new Vector4(skinMatrix.Row2.X, skinMatrix.Row2.Y, skinMatrix.Row2.Z, 0.0f),
+                new Vector4(skinMatrix.Row3.X, skinMatrix.Row3.Y, skinMatrix.Row3.Z, 0.0f),
+                new Vector4(0.0f, 0.0f, 0.0f, 1.0f));
+
+            if (!Matrix4x4.TryInvert(skinLinear, out var inverseSkinLinear)
+                || !Matrix4x4.Transpose(inverseSkinLinear).IsFinite().All())
+            {
+                throw new InvalidDataException("A Mesh static BindPose palette contains a singular or nonfinite bone linear transform.");
+            }
+
             bindModels[index] = bindModel;
             skinMatrices.Add(skinMatrix);
         }

@@ -353,21 +353,51 @@ internal sealed class VulkanBackendDeviceTests
             groupSizeX: 0,
             groupSizeY: 0,
             groupSizeZ: 0);
+        var readOnlyVertexReflection = new ShaderReflection(
+            ShaderStage.Vertex,
+            "VSMain",
+            compilerIdentity,
+            [],
+            [],
+            [new ShaderResourceSignature(
+                ShaderBindingGroup.Frame,
+                0,
+                ShaderResourceKind.StorageBuffer,
+                1,
+                ShaderResourceAccess.Read)],
+            [],
+            [],
+            bindingLayoutVersion: 1,
+            groupSizeX: 0,
+            groupSizeY: 0,
+            groupSizeZ: 0);
 
         Assert.DoesNotThrow(() => VulkanBackendDevice.ValidateStorageStageFeatures(
             writablePixelReflection,
-            fragmentStoresAndAtomicsEnabled: true));
+            fragmentStoresAndAtomicsEnabled: true,
+            vertexPipelineStoresAndAtomicsEnabled: false));
         _ = Assert.Throws<NotSupportedException>(
             () => VulkanBackendDevice.ValidateStorageStageFeatures(
                 writablePixelReflection,
-                fragmentStoresAndAtomicsEnabled: false));
+                fragmentStoresAndAtomicsEnabled: false,
+                vertexPipelineStoresAndAtomicsEnabled: false));
         Assert.DoesNotThrow(() => VulkanBackendDevice.ValidateStorageStageFeatures(
             readOnlyPixelReflection,
-            fragmentStoresAndAtomicsEnabled: false));
+            fragmentStoresAndAtomicsEnabled: false,
+            vertexPipelineStoresAndAtomicsEnabled: false));
         _ = Assert.Throws<NotSupportedException>(
             () => VulkanBackendDevice.ValidateStorageStageFeatures(
                 writableVertexReflection,
-                fragmentStoresAndAtomicsEnabled: true));
+                fragmentStoresAndAtomicsEnabled: true,
+                vertexPipelineStoresAndAtomicsEnabled: false));
+        Assert.DoesNotThrow(() => VulkanBackendDevice.ValidateStorageStageFeatures(
+            writableVertexReflection,
+            fragmentStoresAndAtomicsEnabled: false,
+            vertexPipelineStoresAndAtomicsEnabled: true));
+        Assert.DoesNotThrow(() => VulkanBackendDevice.ValidateStorageStageFeatures(
+            readOnlyVertexReflection,
+            fragmentStoresAndAtomicsEnabled: false,
+            vertexPipelineStoresAndAtomicsEnabled: false));
     }
 
     [Test]

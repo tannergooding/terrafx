@@ -63,6 +63,7 @@ internal sealed unsafe partial class VulkanBackendDevice
                 index,
                 _enabledSpirvExtensions,
                 _fragmentStoresAndAtomicsEnabled,
+                _vertexPipelineStoresAndAtomicsEnabled,
                 _demoteToHelperInvocationEnabled);
         }
 
