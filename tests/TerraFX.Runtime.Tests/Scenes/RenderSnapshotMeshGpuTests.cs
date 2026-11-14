@@ -576,7 +576,7 @@ internal sealed partial class SceneAssetStoreTests
                         readbackBytes[firstColoredPixelOffset],
                         Is.EqualTo(useAlphaBlend
                             ? useBaseColorTexture ? (byte)119 : (byte)153
-                            : useVertexColor && !useEmissiveTexture ? (byte)1 : (byte)2));
+                            : useVertexColor ? (byte)1 : (byte)2));
                     Assert.That(
                         readbackBytes[firstColoredPixelOffset + 1],
                         Is.EqualTo(useAlphaBlend
@@ -660,6 +660,14 @@ internal sealed partial class SceneAssetStoreTests
             useAlphaMask: true,
             useVertexColor: true,
             vertexColorAlpha: 0.49f);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphEmissiveRemainsUnmodulatedByVertexColorAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useEmissiveTexture: true,
+            useVertexColor: true);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
