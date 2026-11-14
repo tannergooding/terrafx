@@ -218,7 +218,10 @@ internal sealed class GraphResourceRegistry
         return passId;
     }
 
-    internal GraphBufferVersion CreateTransientBuffer(BufferDescription description)
+    internal GraphBufferVersion CreateTransientBuffer(
+        BufferDescription description,
+        bool contentsValid,
+        GraphResourceState initialState)
     {
         EnsureOwnerThread();
         EnsureDeviceReady();
@@ -228,15 +231,21 @@ internal sealed class GraphResourceRegistry
         var version = new GraphBufferVersion(_deviceEpoch, GetNextResourceId(), 0, description, range);
         var resource = new GraphBufferResourceRecord(
             version,
-            contentsValid: false,
-            GraphResourceState.Undefined,
+            contentsValid,
+            initialState,
             importRecord: null);
         _bufferResourcesById.Add(version.ResourceId, resource);
         _bufferResourcesByVersion.Add(version, resource);
         return version;
     }
 
-    internal GraphTextureVersion CreateTransientTexture(TextureDescription description)
+    internal GraphBufferVersion CreateTransientBuffer(BufferDescription description)
+        => CreateTransientBuffer(description, contentsValid: false, GraphResourceState.Undefined);
+
+    internal GraphTextureVersion CreateTransientTexture(
+        TextureDescription description,
+        bool contentsValid,
+        GraphResourceState initialState)
     {
         EnsureOwnerThread();
         EnsureDeviceReady();
@@ -249,13 +258,16 @@ internal sealed class GraphResourceRegistry
         var version = new GraphTextureVersion(_deviceEpoch, GetNextResourceId(), 0, description, range);
         var resource = new GraphTextureResourceRecord(
             version,
-            contentsValid: false,
-            GraphResourceState.Undefined,
+            contentsValid,
+            initialState,
             importRecord: null);
         _textureResourcesById.Add(version.ResourceId, resource);
         _textureResourcesByVersion.Add(version, resource);
         return version;
     }
+
+    internal GraphTextureVersion CreateTransientTexture(TextureDescription description)
+        => CreateTransientTexture(description, contentsValid: false, GraphResourceState.Undefined);
 
     internal GraphBufferImportRecord GetBufferImport(GraphBufferVersion version)
     {

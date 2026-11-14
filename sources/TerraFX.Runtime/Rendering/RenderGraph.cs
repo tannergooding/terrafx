@@ -21,6 +21,8 @@ public sealed class RenderGraph
     private const string UninitializedReadCode = "render-graph.uninitialized-read";
     private static long s_nextGraphOwnerId;
     private readonly List<RenderGraphAttachmentWrite> _attachmentWrites = [];
+    private readonly Dictionary<RenderPassId, RenderSpriteC0GraphPass> _builtInSpritePasses = [];
+    private readonly Dictionary<RenderPassId, RenderSpriteToneMapGraphPass> _builtInSpriteToneMapPasses = [];
     private RenderGraphCompileResponse? _compiledResponse;
     private readonly uint _graphOwnerId;
     private bool _isSealed;
@@ -29,6 +31,12 @@ public sealed class RenderGraph
     private readonly Dictionary<RenderPassId, RenderPassCallback> _passCallbacks = [];
     private readonly Dictionary<RenderPassId, RenderGraphPassKind> _passKinds = [];
     private readonly Dictionary<RenderPassId, RenderArea?> _passRenderAreas = [];
+    private readonly List<RenderSpriteGraphBufferUpload> _builtInSpriteBufferUploads = [];
+    private readonly List<RenderSpriteGraphDeferredTexture> _builtInSpriteDeferredTextures = [];
+    private readonly HashSet<ulong> _nonAliasableTransientBufferIds = [];
+    private readonly HashSet<ulong> _nonAliasableTransientTextureIds = [];
+    private GraphTextureVersion? _builtInSurfaceColorTargetVersion;
+    private GraphTextureVersion? _defaultPresentationSource;
     private RenderPassId? _presentationPassId;
     private GraphTextureVersion? _presentationSource;
     private readonly GraphResourceRegistry _resources;
@@ -67,6 +75,12 @@ public sealed class RenderGraph
 
     /// <summary>Gets the selected presentation source version.</summary>
     public GraphTextureVersion? PresentationSource => _presentationSource;
+
+    internal ImmutableArray<ulong> NonAliasableTransientBufferIds
+        => [.. _nonAliasableTransientBufferIds];
+
+    internal ImmutableArray<ulong> NonAliasableTransientTextureIds
+        => [.. _nonAliasableTransientTextureIds];
 
     private static uint AllocateGraphOwnerId()
     {
@@ -192,6 +206,7 @@ public sealed class RenderGraph
             return _compiledResponse;
         }
 
+        _presentationSource ??= _defaultPresentationSource;
         var validation = _resources.ValidateCompilation();
         var presentationSourceValid = IsValidPresentationSource();
 
@@ -245,7 +260,10 @@ public sealed class RenderGraph
             _resources.Accesses,
             _resources.BufferImports,
             _resources.TextureImports,
-            [.. _attachmentWrites]);
+            [.. _attachmentWrites],
+            NonAliasableTransientBufferIds,
+            NonAliasableTransientTextureIds,
+            CreateBuiltInSpriteState());
         _compiledResponse = new RenderGraphCompileResponse(RenderGraphCompileStatus.Compiled, plan, []);
         _isSealed = true;
         return _compiledResponse;
@@ -527,6 +545,110 @@ public sealed class RenderGraph
         return _resources.WriteTexture(pass, previousVersion, range, usage);
     }
 
+    internal RenderPassId AddBuiltInSpriteRasterPass(RenderPassDescription description, RenderSpriteC0GraphPass spritePass)
+    {
+        ArgumentNullException.ThrowIfNull(spritePass);
+        var pass = AddPass(description, RenderGraphPassKind.Raster, callback: null);
+        _builtInSpritePasses.Add(pass, spritePass);
+        return pass;
+    }
+
+    internal RenderPassId AddBuiltInSpriteToneMapRasterPass(
+        RenderPassDescription description,
+        RenderSpriteToneMapGraphPass toneMapPass)
+    {
+        ArgumentNullException.ThrowIfNull(toneMapPass);
+        var pass = AddPass(description, RenderGraphPassKind.Raster, callback: null);
+        _builtInSpriteToneMapPasses.Add(pass, toneMapPass);
+        return pass;
+    }
+
+    internal GraphTextureVersion CreateDeferredTransientTexture(TextureDescription description, int drawIndex)
+    {
+        EnsureCanMutate();
+        ArgumentNullException.ThrowIfNull(description);
+        ArgumentOutOfRangeException.ThrowIfNegative(drawIndex);
+
+        if ((description.Usage & TextureUsage.Sampled) == 0)
+        {
+            throw new ArgumentException("A deferred Sprite texture must support sampling.", nameof(description));
+        }
+
+        var version = _resources.CreateTransientTexture(
+            description,
+            contentsValid: true,
+            GraphResourceState.General);
+        _builtInSpriteDeferredTextures.Add(new RenderSpriteGraphDeferredTexture(version, drawIndex));
+        _ = _nonAliasableTransientTextureIds.Add(version.ResourceId);
+        return version;
+    }
+
+    internal GraphBufferVersion CreateInitializedTransientBuffer(BufferDescription description, byte[] initialContents)
+    {
+        EnsureCanMutate();
+        ArgumentNullException.ThrowIfNull(description);
+        ArgumentNullException.ThrowIfNull(initialContents);
+
+        if ((description.Usage & BufferUsage.CopyDestination) == 0
+            || (description.MemoryKind != GpuMemoryKind.DeviceLocal)
+            || (initialContents.Length != description.ByteLength))
+        {
+            throw new ArgumentException("Built-in upload buffers require exact device-local copy-destination contents.", nameof(description));
+        }
+
+        var version = _resources.CreateTransientBuffer(
+            description,
+            contentsValid: true,
+            GraphResourceState.General);
+        _builtInSpriteBufferUploads.Add(new RenderSpriteGraphBufferUpload(version, initialContents));
+        // Built-in uploads complete before graph execution, so these buffers cannot safely share transient backing.
+        _ = _nonAliasableTransientBufferIds.Add(version.ResourceId);
+        return version;
+    }
+
+    internal GraphTextureVersion GetBuiltInOutputColorVersion()
+    {
+        EnsureCanMutate();
+
+        if (_offscreenColorTargetVersion is GraphTextureVersion offscreenVersion)
+        {
+            return offscreenVersion;
+        }
+
+        if (_builtInSurfaceColorTargetVersion is GraphTextureVersion surfaceVersion)
+        {
+            return surfaceVersion;
+        }
+
+        var surface = _options.Surface
+            ?? throw new InvalidOperationException("The graph has no built-in output target.");
+        _builtInSurfaceColorTargetVersion = _resources.CreateTransientTexture(
+            new TextureDescription(
+                TextureDimension.Dimension2D,
+                _options.TargetExtent.Width,
+                _options.TargetExtent.Height,
+                depth: 1,
+                arrayLayers: 1,
+                mipLevels: 1,
+                surface.PresentationSourceFormat,
+                TextureUsage.ColorAttachment | TextureUsage.CopySource,
+                "sprite-presentation-source"));
+        return _builtInSurfaceColorTargetVersion;
+    }
+
+    internal void SetDefaultPresentationSource(GraphTextureVersion version)
+    {
+        EnsureCanMutate();
+        ArgumentNullException.ThrowIfNull(version);
+
+        if (_defaultPresentationSource is not null)
+        {
+            throw new InvalidOperationException("The graph already has a built-in presentation source.");
+        }
+
+        _defaultPresentationSource = version;
+    }
+
     private RenderPassId AddPass(
         RenderPassDescription description,
         RenderGraphPassKind passKind,
@@ -567,6 +689,28 @@ public sealed class RenderGraph
         }
 
         return passId;
+    }
+
+    private RenderSpriteGraphState? CreateBuiltInSpriteState()
+    {
+        if (_builtInSpritePasses.Count == 0
+            && _builtInSpriteToneMapPasses.Count == 0
+            && _builtInSpriteBufferUploads.Count == 0
+            && _builtInSpriteDeferredTextures.Count == 0)
+        {
+            return null;
+        }
+
+        var targetFormat = _options.Surface?.PresentationSourceFormat
+            ?? _options.OffscreenColorTarget?.Description.Format
+            ?? throw new InvalidOperationException("A built-in Sprite graph has no output format.");
+        return new RenderSpriteGraphState(
+            TextureFormat.Rgba16Float,
+            targetFormat,
+            [.. _builtInSpriteBufferUploads],
+            [.. _builtInSpriteDeferredTextures],
+            _builtInSpritePasses.ToImmutableDictionary(),
+            _builtInSpriteToneMapPasses.ToImmutableDictionary());
     }
 
     private Diagnostic CreateDiagnostic(string code, string message)

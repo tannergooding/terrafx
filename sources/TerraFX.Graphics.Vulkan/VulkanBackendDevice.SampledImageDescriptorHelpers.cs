@@ -74,7 +74,8 @@ internal sealed unsafe partial class VulkanBackendDevice
             {
                 var subresource = new TextureSubresource(mipLevel, arrayLayer, range.Aspect);
 
-                if (!texture.IsInitialized(subresource))
+                // Explicit layouts are supplied only for compiled graph passes, whose access ledger validates prior writes.
+                if (!descriptorLayout.HasValue && !texture.IsInitialized(subresource))
                 {
                     throw new InvalidOperationException("Every sampled-image subresource must be initialized before descriptor creation.");
                 }

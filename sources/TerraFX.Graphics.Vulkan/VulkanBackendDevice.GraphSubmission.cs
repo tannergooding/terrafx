@@ -234,6 +234,7 @@ internal sealed unsafe partial class VulkanBackendDevice
             VkAccessFlags2 LastAccessMask,
             VkPipelineStageFlags2 StageMask,
             VkAccessFlags2 AccessMask)>(submission.TextureImports.Length - 1);
+        var colorAttachmentSampledResources = new HashSet<ulong>();
         var storageTextureScopes = new Dictionary<ulong, (
             VulkanBackendTexture Texture,
             TextureSubresource Subresource,
@@ -254,22 +255,31 @@ internal sealed unsafe partial class VulkanBackendDevice
                     ?? throw new InvalidOperationException("The graph color attachment is not a Vulkan texture.");
                 var colorRange = import.Version.Range;
                 var hasColorAttachmentAccess = false;
+                var hasSampledAccess = false;
 
                 foreach (var access in submission.Accesses)
                 {
-                    if (access.IsTexture
-                        && (access.ResourceId == resourceId)
-                        && (access.RequiredState == GraphResourceState.ColorAttachment)
-                        && access.IsWrite)
+                    if (!access.IsTexture || (access.ResourceId != resourceId))
+                    {
+                        continue;
+                    }
+
+                    if ((access.RequiredState == GraphResourceState.ColorAttachment) && access.IsWrite)
                     {
                         colorRange = access.TextureRange;
                         hasColorAttachmentAccess = true;
-                        break;
                     }
+
+                    hasSampledAccess |= (access.RequiredState == GraphResourceState.ShaderSampledRead) && !access.IsWrite;
                 }
 
                 if (hasColorAttachmentAccess)
                 {
+                    if (hasSampledAccess)
+                    {
+                        _ = colorAttachmentSampledResources.Add(resourceId);
+                    }
+
                     var colorSubresource = new TextureSubresource(
                         colorRange.FirstMip,
                         colorRange.FirstLayer,
@@ -1580,11 +1590,14 @@ internal sealed unsafe partial class VulkanBackendDevice
             {
                 var isColorAttachmentLayout =
                     colorTextureScope.Layout == VulkanGraphResourceStateMapper.GetImageLayout(GraphResourceState.ColorAttachment);
+                // A tone-map pass may sample a transient HDR color attachment after its final color write.
+                var isSampledLayout = colorAttachmentSampledResources.Contains(resourceId)
+                    && (colorTextureScope.Layout == VulkanGraphResourceStateMapper.GetImageLayout(GraphResourceState.ShaderSampledRead));
                 var isCopyLayout = copyTextureScopes.TryGetValue(resourceId, out var copyTextureScope)
                     && copyTextureScope.Layout is VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
                         or VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 
-                if (!isColorAttachmentLayout && !isCopyLayout)
+                if (!isColorAttachmentLayout && !isSampledLayout && !isCopyLayout)
                 {
                     throw new InvalidOperationException("The compiled graph did not leave each imported color attachment in its tracked layout.");
                 }

@@ -10,7 +10,8 @@ namespace TerraFX.Rendering;
 
 public sealed partial class RenderGraphPlan
 {
-    internal async Task<ImmutableArray<RecordedPassCommandList>> RecordPassCallbacksAsync()
+    internal async Task<ImmutableArray<RecordedPassCommandList>> RecordPassCallbacksAsync(
+        RenderSpriteC0SubmissionResources? spriteResources)
     {
         var surface = SurfaceTarget;
         var device = surface?.Device
@@ -44,8 +45,15 @@ public sealed partial class RenderGraphPlan
                 var passId = OrderedPasses[index];
                 var passKind = OrderedPassKinds[index];
                 var callback = OrderedPassCallbacks[index];
+                var builtInSpriteState = BuiltInSpriteState;
+                RenderSpriteC0GraphPass? spritePass = null;
+                RenderSpriteToneMapGraphPass? toneMapPass = null;
+                var hasSpritePass = (builtInSpriteState is not null)
+                    && builtInSpriteState.Passes.TryGetValue(passId, out spritePass);
+                var hasToneMapPass = (builtInSpriteState is not null)
+                    && builtInSpriteState.ToneMapPasses.TryGetValue(passId, out toneMapPass);
 
-                if (callback is null)
+                if ((callback is null) && !hasSpritePass && !hasToneMapPass)
                 {
                     continue;
                 }
@@ -56,7 +64,7 @@ public sealed partial class RenderGraphPlan
                     RenderGraphPassKind.Raster => CommandRecorderPassKind.Raster,
                     RenderGraphPassKind.Presentation or RenderGraphPassKind.OffscreenOutput
                         => throw new InvalidOperationException("A synthetic terminal-output pass cannot have a recording callback."),
-                    _ => throw new ArgumentOutOfRangeException(nameof(passKind)),
+                    _ => throw new InvalidOperationException("The graph plan contains an unsupported pass kind."),
                 };
                 var accesses = ImmutableArray.CreateBuilder<GraphResourceAccess>();
                 var colorTargetFormats = ImmutableArray.CreateBuilder<TextureFormat>();
@@ -96,13 +104,46 @@ public sealed partial class RenderGraphPlan
 
                 try
                 {
+                    var selectedCallback = callback;
+
+                    if (hasSpritePass)
+                    {
+                        var selectedSpritePass = spritePass
+                            ?? throw new InvalidOperationException("The built-in Sprite pass state is missing.");
+                        var selectedResources = spriteResources
+                            ?? throw new InvalidOperationException("The built-in Sprite pass has no submission resources.");
+
+                        void RecordSpritePass(scoped ref CommandRecorder recorder)
+                        {
+                            selectedSpritePass.Record(ref recorder, selectedResources);
+                        }
+
+                        selectedCallback = RecordSpritePass;
+                    }
+                    else if (hasToneMapPass)
+                    {
+                        var selectedToneMapPass = toneMapPass
+                            ?? throw new InvalidOperationException("The built-in Sprite tone-map pass state is missing.");
+                        var selectedResources = spriteResources
+                            ?? throw new InvalidOperationException("The built-in Sprite tone-map pass has no submission resources.");
+
+                        void RecordToneMapPass(scoped ref CommandRecorder recorder)
+                        {
+                            selectedToneMapPass.Record(ref recorder, selectedResources);
+                        }
+
+                        selectedCallback = RecordToneMapPass;
+                    }
+
                     commandList = await device.RecordPassAsync(
                         passId,
                         commandRecorderPassKind,
                         accesses.ToImmutable(),
                         colorTargetFormats.ToImmutable(),
                         depthTargetFormat,
-                        callback).ConfigureAwait(false);
+                        selectedCallback
+                            ?? throw new InvalidOperationException("The graph pass has no recording callback."))
+                        .ConfigureAwait(false);
                     commandLists.Add(commandList);
                     commandList = null;
                 }

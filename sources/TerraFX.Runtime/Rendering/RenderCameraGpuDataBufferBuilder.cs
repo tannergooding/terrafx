@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using TerraFX.Graphics;
 
 namespace TerraFX.Rendering;
 
@@ -23,6 +24,17 @@ internal static class RenderCameraGpuDataBufferBuilder
             data.WriteTo(buffer.AsSpan(checked(index * uniformStride), RenderCameraGpuData.SizeInBytes));
         }
 
+        return buffer;
+    }
+
+    internal static byte[] CreateToneMapFrameBuffer(
+        RenderArea area,
+        int vulkanAlignment,
+        out int uniformStride)
+    {
+        uniformStride = RenderCameraGpuData.GetUniformAllocationStride(vulkanAlignment);
+        var buffer = new byte[uniformStride];
+        RenderCameraGpuData.CreateToneMap(area).WriteTo(buffer.AsSpan(0, RenderCameraGpuData.SizeInBytes));
         return buffer;
     }
 }

@@ -8,6 +8,7 @@ using NUnit.Framework;
 using TerraFX;
 using TerraFX.Assets;
 using TerraFX.Graphics;
+using TerraFX.Numerics;
 using TerraFX.Rendering;
 
 namespace TerraFX.Runtime.Tests.Scenes;
@@ -120,10 +121,19 @@ internal sealed partial class SceneAssetStoreTests
             [.. fields]);
     }
 
-    private static byte[] CreateRenderMaterialSpriteParametersRecord(int? textureAssetId = null, byte uvSet = 0)
+    private static byte[] CreateRenderMaterialSpriteParametersRecord(
+        int? textureAssetId = null,
+        byte uvSet = 0,
+        Vector4? color = null)
     {
         var fields = new System.Collections.Generic.List<SceneHierarchyCodecTests.FixtureBuilder.FixtureField> {
-            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 16, 1.0f, 1.0f, 1.0f, 1.0f),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(
+                1,
+                16,
+                color?.X ?? 1.0f,
+                color?.Y ?? 1.0f,
+                color?.Z ?? 1.0f,
+                color?.W ?? 1.0f),
         };
 
         if (textureAssetId is int texture)

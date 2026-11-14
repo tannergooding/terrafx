@@ -21,12 +21,43 @@ public sealed class GpuResidencyService
     private readonly Lock _gate = new();
     private readonly GraphicsDevice _graphicsDevice;
     private readonly Dictionary<SpriteResidencyKey, SpriteResidencyCacheEntry> _spritePageResidencies = [];
+    private Task _spriteSubmissionTail = Task.CompletedTask;
     private bool _stopping;
 
     internal GpuResidencyService(GraphicsDevice graphicsDevice)
     {
         ArgumentNullException.ThrowIfNull(graphicsDevice);
         _graphicsDevice = graphicsDevice;
+    }
+
+    internal static TextureDescription CreateTextureDescription(
+        RenderTextureAsset textureAsset,
+        TextureUsage requestedUsage,
+        string debugName)
+    {
+        ArgumentNullException.ThrowIfNull(textureAsset);
+        ArgumentNullException.ThrowIfNull(debugName);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(textureAsset.Width);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(textureAsset.Height);
+
+        var format = textureAsset.Format switch {
+            0 => textureAsset.ColorSpace switch {
+                RenderTextureColorSpace.Linear => TextureFormat.Rgba8Unorm,
+                RenderTextureColorSpace.Srgb => TextureFormat.Rgba8Srgb,
+                _ => throw new NotSupportedException("The Runtime Texture color space is unsupported."),
+            },
+            _ => throw new NotSupportedException("The Runtime Texture format is unsupported."),
+        };
+        return new TextureDescription(
+            TextureDimension.Dimension2D,
+            textureAsset.Width,
+            textureAsset.Height,
+            depth: 1,
+            arrayLayers: 1,
+            mipLevels: textureAsset.Mips.Length,
+            format,
+            requestedUsage | TextureUsage.CopyDestination,
+            debugName);
     }
 
     /// <summary>Uploads one immutable Runtime Texture asset and returns its package/device ownership lease.</summary>
@@ -69,6 +100,34 @@ public sealed class GpuResidencyService
 
         _ = CompleteEnsureAsync(completion, asset, options, cancellationToken);
         return completion.Task;
+    }
+
+    internal async Task<IDisposable> AcquireSpriteSubmissionLeaseAsync(CancellationToken cancellationToken)
+    {
+        TaskCompletionSource release;
+        Task predecessor;
+
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_stopping, this);
+            release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            predecessor = _spriteSubmissionTail;
+            _spriteSubmissionTail = release.Task;
+            _ = _activeRequests.Add(release.Task);
+        }
+
+        try
+        {
+            await predecessor.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            await predecessor.ConfigureAwait(false);
+            CompleteSpriteSubmission(release);
+            throw;
+        }
+
+        return new SpriteSubmissionLease(this, release);
     }
 
     internal async Task<GpuResidencyLease> EnsureSpritePageResidencyAsync(
@@ -277,6 +336,14 @@ public sealed class GpuResidencyService
         }
     }
 
+    private void CompleteSpriteSubmission(TaskCompletionSource completion)
+    {
+        if (completion.TrySetResult())
+        {
+            FinishRequest(completion.Task);
+        }
+    }
+
     private async Task<GpuResidencyLease> CreateGpuResidencyLeaseAsync<T>(
         AssetLease<T> asset,
         ResidencyOptions options,
@@ -301,25 +368,10 @@ public sealed class GpuResidencyService
                 throw new InvalidOperationException("The GraphicsDevice is not accepting texture residency requests.");
             }
 
-            var format = textureAsset.Format switch {
-                0 => textureAsset.ColorSpace switch {
-                    RenderTextureColorSpace.Linear => TextureFormat.Rgba8Unorm,
-                    RenderTextureColorSpace.Srgb => TextureFormat.Rgba8Srgb,
-                    _ => throw new NotSupportedException("The Runtime Texture color space is unsupported."),
-                },
-                _ => throw new NotSupportedException("The Runtime Texture format is unsupported."),
-            };
-            var usage = options.Usage | TextureUsage.CopyDestination;
             texture = await _graphicsDevice.CreateTextureAsync(
-                new TextureDescription(
-                    TextureDimension.Dimension2D,
-                    textureAsset.Width,
-                    textureAsset.Height,
-                    depth: 1,
-                    arrayLayers: 1,
-                    mipLevels: textureAsset.Mips.Length,
-                    format,
-                    usage,
+                CreateTextureDescription(
+                    textureAsset,
+                    options.Usage,
                     $"runtime-texture-{asset.AssetId.Value}"),
                 cancellationToken).ConfigureAwait(false);
 
@@ -557,6 +609,24 @@ public sealed class GpuResidencyService
             {
                 _service.ReleaseSpritePageLease(_key, _entry);
             }
+        }
+    }
+
+    private sealed class SpriteSubmissionLease : IDisposable
+    {
+        private readonly TaskCompletionSource _completion;
+        private GpuResidencyService? _owner;
+
+        internal SpriteSubmissionLease(GpuResidencyService owner, TaskCompletionSource completion)
+        {
+            _owner = owner;
+            _completion = completion;
+        }
+
+        public void Dispose()
+        {
+            var owner = Interlocked.Exchange(ref _owner, null);
+            owner?.CompleteSpriteSubmission(_completion);
         }
     }
 }

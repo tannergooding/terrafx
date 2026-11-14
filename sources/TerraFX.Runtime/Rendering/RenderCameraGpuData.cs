@@ -121,6 +121,16 @@ internal readonly struct RenderCameraGpuData
         return new RenderCameraGpuData(viewProjection, area);
     }
 
+    internal static RenderCameraGpuData CreateToneMap(RenderArea area)
+    {
+        if (!area.IsValid)
+        {
+            throw new ArgumentOutOfRangeException(nameof(area));
+        }
+
+        return new RenderCameraGpuData(Matrix4x4.Identity, area);
+    }
+
     internal static int GetUniformAllocationStride(int vulkanAlignment)
         => ObjectGpuData.GetUniformAllocationStride(vulkanAlignment);
 

@@ -26,6 +26,16 @@ internal static class RenderSpriteVertexBufferBuilder
         return buffer;
     }
 
+    internal static byte[] CreateFullScreenQuad()
+    {
+        var buffer = new byte[4 * VertexStride];
+        WriteVertex(buffer, GetVertexOffset(0, 0), new RenderSpriteVertex(new Vector3(-1.0f, -1.0f, 0.0f), new Vector2(0.0f, 1.0f)));
+        WriteVertex(buffer, GetVertexOffset(0, 1), new RenderSpriteVertex(new Vector3(-1.0f, 1.0f, 0.0f), new Vector2(0.0f, 0.0f)));
+        WriteVertex(buffer, GetVertexOffset(0, 2), new RenderSpriteVertex(new Vector3(1.0f, 1.0f, 0.0f), new Vector2(1.0f, 0.0f)));
+        WriteVertex(buffer, GetVertexOffset(0, 3), new RenderSpriteVertex(new Vector3(1.0f, -1.0f, 0.0f), new Vector2(1.0f, 1.0f)));
+        return buffer;
+    }
+
     private static int GetVertexOffset(int spriteIndex, int vertexIndex)
         => checked(((spriteIndex * 4) + vertexIndex) * VertexStride);
 

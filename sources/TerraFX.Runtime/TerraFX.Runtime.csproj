@@ -19,6 +19,7 @@
   <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
     <TerraFXShaderSource Include="Shaders\SpriteC0Vertex.hlsl" EntryPoint="VSMain" Stage="vertex" />
     <TerraFXShaderSource Include="Shaders\SpriteC0Pixel.hlsl" EntryPoint="PSMain" Stage="pixel" />
+    <TerraFXShaderSource Include="Shaders\SpriteToneMapPixel.hlsl" EntryPoint="PSMain" Stage="pixel" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(OS)' != 'Windows_NT'">
@@ -26,6 +27,8 @@
                       LogicalName="TerraFX.Rendering.Shaders.SpriteC0Vertex.vertex.spv" />
     <EmbeddedResource Include="Shaders\Cooked\SpriteC0Pixel.pixel.spv"
                       LogicalName="TerraFX.Rendering.Shaders.SpriteC0Pixel.pixel.spv" />
+    <EmbeddedResource Include="Shaders\Cooked\SpriteToneMapPixel.pixel.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.SpriteToneMapPixel.pixel.spv" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
@@ -37,11 +40,15 @@
                       LogicalName="TerraFX.Rendering.Shaders.SpriteC0Pixel.pixel.dxil" />
     <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\SpriteC0Pixel\SpriteC0Pixel.pixel.spv"
                       LogicalName="TerraFX.Rendering.Shaders.SpriteC0Pixel.pixel.spv" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\SpriteToneMapPixel\SpriteToneMapPixel.pixel.dxil"
+                      LogicalName="TerraFX.Rendering.Shaders.SpriteToneMapPixel.pixel.dxil" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\SpriteToneMapPixel\SpriteToneMapPixel.pixel.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.SpriteToneMapPixel.pixel.spv" />
   </ItemGroup>
 
   <Import Project="..\..\tools\TerraFX.ShaderCompiler\ShaderCompilation.targets" />
 
-  <Target Name="CompileSpriteC0ShadersBeforeResources"
+  <Target Name="CompileRuntimeShadersBeforeResources"
           BeforeTargets="CreateManifestResourceNames"
           DependsOnTargets="TerraFXCompileShaders"
           Condition="'$(OS)' == 'Windows_NT'" />

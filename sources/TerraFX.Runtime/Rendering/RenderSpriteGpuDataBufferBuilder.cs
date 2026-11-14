@@ -23,4 +23,12 @@ internal static class RenderSpriteGpuDataBufferBuilder
 
         return buffer;
     }
+
+    internal static byte[] CreateToneMapObjectBuffer(int vulkanAlignment, out int uniformStride)
+    {
+        uniformStride = RenderSpriteGpuData.GetUniformAllocationStride(vulkanAlignment);
+        var buffer = new byte[uniformStride];
+        RenderSpriteGpuData.CreateToneMap().WriteTo(buffer.AsSpan(0, RenderSpriteGpuData.SizeInBytes));
+        return buffer;
+    }
 }

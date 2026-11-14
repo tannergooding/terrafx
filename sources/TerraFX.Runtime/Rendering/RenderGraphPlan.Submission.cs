@@ -13,9 +13,11 @@ public sealed partial class RenderGraphPlan
         GpuTexture outputColorTarget,
         ImmutableArray<RecordedPassCommandList> recordedPassCommandLists,
         ImmutableArray<GraphBufferImportRecord> transientBufferImports,
-        ImmutableArray<GraphTextureImportRecord> transientTextureImports)
+        ImmutableArray<GraphTextureImportRecord> transientTextureImports,
+        IReadOnlyDictionary<ulong, GraphResourceState> deferredTextureInitialStates)
     {
         ArgumentNullException.ThrowIfNull(outputColorTarget);
+        ArgumentNullException.ThrowIfNull(deferredTextureInitialStates);
 
         if (recordedPassCommandLists.IsDefault)
         {
@@ -51,17 +53,30 @@ public sealed partial class RenderGraphPlan
         var textureImports = ImmutableArray.CreateBuilder<GraphTextureImportRecord>(
             checked(TextureImports.Length + transientTextureImports.Length));
         textureImports.AddRange(TextureImports);
+        var deferredTextureImportCount = 0;
 
         for (var index = 0; index < transientTextureImports.Length; index++)
         {
             var import = transientTextureImports[index];
+            var isDeferredTexture = deferredTextureInitialStates.ContainsKey(import.Version.ResourceId);
 
-            if (!import.IsTransient || !ReferenceEquals(import.Version, TransientTextures[index]))
+            if (isDeferredTexture)
+            {
+                deferredTextureImportCount++;
+            }
+
+            if ((import.IsTransient == isDeferredTexture)
+                || !ReferenceEquals(import.Version, TransientTextures[index]))
             {
                 throw new ArgumentException("The materialized transient texture order does not match the compiled graph.", nameof(transientTextureImports));
             }
 
             textureImports.Add(import);
+        }
+
+        if (deferredTextureImportCount != deferredTextureInitialStates.Count)
+        {
+            throw new ArgumentException("The deferred texture states do not match the materialized graph imports.", nameof(deferredTextureInitialStates));
         }
 
         var commandListsByPass = new Dictionary<RenderPassId, RecordedPassCommandList>();
@@ -169,6 +184,29 @@ public sealed partial class RenderGraphPlan
             }
         }
 
+        var stateTransitions = ImmutableArray.CreateBuilder<GraphResourceStateTransition>(StateTransitions.Length);
+
+        foreach (var transition in StateTransitions)
+        {
+            if (transition.IsTexture
+                && deferredTextureInitialStates.TryGetValue(transition.ResourceId, out var initialState)
+                && (transition.AfterState == GraphResourceState.ShaderSampledRead)
+                && (transition.BeforeState == GraphResourceState.General))
+            {
+                if (initialState == GraphResourceState.ShaderSampledRead)
+                {
+                    continue;
+                }
+
+                if (initialState != GraphResourceState.General)
+                {
+                    throw new InvalidOperationException("A deferred Sprite texture has an unsupported initial graph state.");
+                }
+            }
+
+            stateTransitions.Add(transition);
+        }
+
         return new GraphicsGraphSubmission(
             DeviceEpoch,
             outputColorTarget,
@@ -178,7 +216,7 @@ public sealed partial class RenderGraphPlan
             SwapchainEpoch,
             OrderedPasses,
             passes.ToImmutable(),
-            StateTransitions,
+            stateTransitions.ToImmutable(),
             TransientBufferAliasingBarriers,
             TransientTextureAliasingBarriers,
             Accesses,

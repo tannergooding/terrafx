@@ -11,6 +11,16 @@ namespace TerraFX.Rendering;
 
 public sealed partial class Renderer
 {
+    private static bool MatchesTextureDescription(TextureDescription expected, TextureDescription actual)
+        => (expected.Dimension == actual.Dimension)
+            && (expected.Width == actual.Width)
+            && (expected.Height == actual.Height)
+            && (expected.Depth == actual.Depth)
+            && (expected.ArrayLayers == actual.ArrayLayers)
+            && (expected.MipLevels == actual.MipLevels)
+            && (expected.Format == actual.Format)
+            && (expected.Usage == actual.Usage);
+
     /// <summary>Submits an immutable graph compiled for the exact render snapshot.</summary>
     /// <param name="snapshot">The World-produced snapshot used to build the graph.</param>
     /// <param name="graph">The successfully compiled graph plan.</param>
@@ -104,13 +114,109 @@ public sealed partial class Renderer
         var transientTextures = new List<GpuTexture>(graph.TransientTextures.Length);
         var transientTextureGroups = new List<GraphicsTransientTextureGroup>(graph.TransientTextureGroups.Length);
         var transientTexturesByResourceId = new Dictionary<ulong, GpuTexture>(graph.TransientTextures.Length);
-        var graphResourceUseLeases = device.AcquireGraphResourceUseLeases(graphResourceOwners);
+        var spritePageResidencies = new Dictionary<ulong, GpuResidencyLease>();
+        var spritePageInitialStates = new Dictionary<ulong, GraphResourceState>();
+        var spritePageLeases = new List<GpuResidencyLease>();
+        var initializedSpriteBufferIds = new HashSet<ulong>();
+        GpuPipeline? spritePipeline = null;
+        GpuPipeline? spriteToneMapPipeline = null;
+        GpuSampler? spriteSampler = null;
+        RenderSpriteC0SubmissionResources? spriteResources = null;
+        GraphicsDevice.GraphResourceUseLeaseSet? graphResourceUseLeases = null;
         GraphicsDevice.GraphFrameSlotReservation? graphFrameSlotReservation = null;
         var graphResourceUseLeasesTransferred = false;
+        IDisposable? spriteSubmissionLease = null;
+
+        if (graph.BuiltInSpriteState is not null)
+        {
+            spriteSubmissionLease = await (_gpuResidencyService
+                ?? throw new InvalidOperationException("The built-in Sprite graph has no GPU residency service."))
+                .AcquireSpriteSubmissionLeaseAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         try
         {
+            graphResourceUseLeases = device.AcquireGraphResourceUseLeases(graphResourceOwners);
             graphFrameSlotReservation = await device.AcquireGraphFrameSlotAsync(cancellationToken).ConfigureAwait(false);
+
+            if (graph.BuiltInSpriteState is { } spriteState)
+            {
+                var retainedAssetPins = snapshotAssetPins
+                    ?? throw new InvalidOperationException("The built-in Sprite graph has no retained snapshot assets.");
+
+                foreach (var upload in spriteState.BufferUploads)
+                {
+                    _ = initializedSpriteBufferIds.Add(upload.Version.ResourceId);
+                }
+
+                foreach (var deferredTexture in spriteState.DeferredTextures)
+                {
+                    var residency = await EnsureSpritePageResidencyAsync(
+                        snapshot,
+                        retainedAssetPins,
+                        deferredTexture.DrawIndex,
+                        new ResidencyOptions(TextureUsage.Sampled),
+                        cancellationToken).ConfigureAwait(false);
+                    spritePageLeases.Add(residency);
+
+                    if ((residency.DeviceEpoch != graph.DeviceEpoch)
+                        || !MatchesTextureDescription(
+                            residency.Texture.Description,
+                            deferredTexture.Version.Description))
+                    {
+                        throw new InvalidOperationException("A Sprite Atlas page residency does not match the compiled graph resource.");
+                    }
+
+                    spritePageResidencies.Add(deferredTexture.Version.ResourceId, residency);
+                    var (pageState, pageContentsValid) =
+                        residency.Texture.ResourceOwner.GetGraphImportState(deferredTexture.Version.Range);
+
+                    if (!pageContentsValid
+                        || (pageState is not (GraphResourceState.General or GraphResourceState.ShaderSampledRead)))
+                    {
+                        throw new InvalidOperationException("A Sprite Atlas page has unsupported content or state for sampling.");
+                    }
+
+                    spritePageInitialStates.Add(deferredTexture.Version.ResourceId, pageState);
+                }
+
+                if (spriteState.Passes.Count != 0)
+                {
+                    spritePipeline = await CreateSpriteC0PipelineAsync(
+                        spriteState.SpriteColorTargetFormat,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                if (spriteState.ToneMapPasses.Count != 0)
+                {
+                    spriteToneMapPipeline = await CreateSpriteToneMapPipelineAsync(
+                        spriteState.ToneMapColorTargetFormat,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                if ((spritePipeline is not null) && (spriteToneMapPipeline is not null))
+                {
+                    spriteSampler = await device.CreateSamplerAsync(
+                        new SamplerDescription(
+                            SamplerFilter.Linear,
+                            SamplerFilter.Linear,
+                            SamplerFilter.None,
+                            SamplerAddressMode.Clamp,
+                            SamplerAddressMode.Clamp,
+                            SamplerAddressMode.Clamp,
+                            maximumAnisotropy: 1.0f),
+                        cancellationToken).ConfigureAwait(false);
+                    spriteResources = new RenderSpriteC0SubmissionResources(
+                        spritePipeline,
+                        spriteToneMapPipeline,
+                        spriteSampler);
+                }
+                else if (spriteState.Passes.Count != 0 || spriteState.ToneMapPasses.Count != 0)
+                {
+                    throw new InvalidOperationException("The built-in Sprite graph has an incomplete pipeline set.");
+                }
+            }
 
             foreach (var transientGroup in graph.TransientBufferGroups)
             {
@@ -139,16 +245,57 @@ public sealed partial class Renderer
                 }
             }
 
+            if (graph.BuiltInSpriteState is { } uploadState)
+            {
+                foreach (var upload in uploadState.BufferUploads)
+                {
+                    var buffer = transientBuffersByResourceId[upload.Version.ResourceId];
+                    var receipt = await device.UploadBufferAsync(
+                        buffer,
+                        destinationOffset: 0,
+                        upload.Bytes,
+                        cancellationToken).ConfigureAwait(false);
+
+                    if ((receipt.Status != UploadStatus.Ready) || (receipt.DeviceEpoch != graph.DeviceEpoch))
+                    {
+                        throw new InvalidOperationException("A built-in Sprite buffer upload did not complete on the graph device epoch.");
+                    }
+
+                    var range = new GraphBufferRange(0, buffer.ByteLength);
+                    var (state, contentsValid) = buffer.ResourceOwner.GetGraphImportState(range);
+
+                    if ((state != GraphResourceState.General) || !contentsValid)
+                    {
+                        throw new InvalidOperationException("A built-in Sprite buffer upload did not publish initialized General-state contents.");
+                    }
+                }
+            }
+
             var transientBufferImports = ImmutableArray.CreateBuilder<GraphBufferImportRecord>(graph.TransientBuffers.Length);
 
             for (var index = 0; index < graph.TransientBuffers.Length; index++)
             {
                 var transientVersion = graph.TransientBuffers[index];
                 var buffer = transientBuffersByResourceId[transientVersion.ResourceId];
-                transientBufferImports.Add(new GraphBufferImportRecord(
-                    buffer,
-                    transientVersion,
-                    isTransient: true));
+
+                if (initializedSpriteBufferIds.Contains(transientVersion.ResourceId))
+                {
+                    transientBufferImports.Add(new GraphBufferImportRecord(
+                        buffer,
+                        transientVersion,
+                        new GraphImportOptions(
+                            GraphResourceState.General,
+                            contentsValid: true,
+                            GraphImportCompletionPolicy.RequireIdle),
+                        isTransient: true));
+                }
+                else
+                {
+                    transientBufferImports.Add(new GraphBufferImportRecord(
+                        buffer,
+                        transientVersion,
+                        isTransient: true));
+                }
             }
 
             foreach (var transientGroup in graph.TransientTextureGroups)
@@ -170,11 +317,19 @@ public sealed partial class Renderer
                 else
                 {
                     var transientVersion = transientGroup[0];
-                    var texture = await device.CreateTextureAsync(
-                        transientVersion.Description,
-                        cancellationToken).ConfigureAwait(false);
-                    transientTextures.Add(texture);
-                    transientTexturesByResourceId.Add(transientVersion.ResourceId, texture);
+
+                    if (spritePageResidencies.TryGetValue(transientVersion.ResourceId, out var residency))
+                    {
+                        transientTexturesByResourceId.Add(transientVersion.ResourceId, residency.Texture);
+                    }
+                    else
+                    {
+                        var texture = await device.CreateTextureAsync(
+                            transientVersion.Description,
+                            cancellationToken).ConfigureAwait(false);
+                        transientTextures.Add(texture);
+                        transientTexturesByResourceId.Add(transientVersion.ResourceId, texture);
+                    }
                 }
             }
 
@@ -183,6 +338,28 @@ public sealed partial class Renderer
             foreach (var transientVersion in graph.TransientTextures)
             {
                 var texture = transientTexturesByResourceId[transientVersion.ResourceId];
+
+                if (spritePageResidencies.ContainsKey(transientVersion.ResourceId))
+                {
+                    var (state, contentsValid) = texture.ResourceOwner.GetGraphImportState(transientVersion.Range);
+                    var expectedState = spritePageInitialStates[transientVersion.ResourceId];
+
+                    if ((state != expectedState) || !contentsValid)
+                    {
+                        throw new InvalidOperationException("A Sprite Atlas page changed state before graph submission.");
+                    }
+
+                    transientTextureImports.Add(new GraphTextureImportRecord(
+                        texture,
+                        transientVersion,
+                        new GraphImportOptions(
+                            state,
+                            contentsValid: true,
+                            GraphImportCompletionPolicy.WaitForLastUse),
+                        isTransient: false));
+                    continue;
+                }
+
                 transientTextureImports.Add(new GraphTextureImportRecord(
                     texture,
                     transientVersion,
@@ -222,7 +399,7 @@ public sealed partial class Renderer
                 outputColorTarget = selectedTarget;
             }
 
-            var commandLists = await graph.RecordPassCallbacksAsync().ConfigureAwait(false);
+            var commandLists = await graph.RecordPassCallbacksAsync(spriteResources).ConfigureAwait(false);
             GraphicsGraphSubmission submission;
 
             try
@@ -231,7 +408,8 @@ public sealed partial class Renderer
                     outputColorTarget,
                     commandLists,
                     transientBufferImports.MoveToImmutable(),
-                    transientTextureImports.MoveToImmutable());
+                    transientTextureImports.MoveToImmutable(),
+                    spritePageInitialStates);
             }
             catch
             {
@@ -243,9 +421,11 @@ public sealed partial class Renderer
                 throw;
             }
 
+            var admittedResourceUseLeases = graphResourceUseLeases
+                ?? throw new InvalidOperationException("The graph resource-use leases were not admitted.");
             var submissionTask = device.SubmitGraphAsync(
                 submission,
-                graphResourceUseLeases,
+                admittedResourceUseLeases,
                 graphFrameSlotReservation,
                 cancellationToken);
             graphResourceUseLeasesTransferred = true;
@@ -261,31 +441,46 @@ public sealed partial class Renderer
         }
         finally
         {
-            if (!graphResourceUseLeasesTransferred)
+            try
             {
-                graphResourceUseLeases.Dispose();
+                if (!graphResourceUseLeasesTransferred)
+                {
+                    graphResourceUseLeases?.Dispose();
+                }
+
+                graphFrameSlotReservation?.Dispose();
+                spriteSampler?.Dispose();
+                spriteToneMapPipeline?.Dispose();
+                spritePipeline?.Dispose();
+
+                foreach (var spritePageLease in spritePageLeases)
+                {
+                    spritePageLease.Dispose();
+                }
+
+                foreach (var transientBufferGroup in transientBufferGroups)
+                {
+                    transientBufferGroup.Dispose();
+                }
+
+                foreach (var transientBuffer in transientBuffers)
+                {
+                    transientBuffer.Dispose();
+                }
+
+                foreach (var transientTexture in transientTextures)
+                {
+                    transientTexture.Dispose();
+                }
+
+                foreach (var transientTextureGroup in transientTextureGroups)
+                {
+                    transientTextureGroup.Dispose();
+                }
             }
-
-            graphFrameSlotReservation?.Dispose();
-
-            foreach (var transientBufferGroup in transientBufferGroups)
+            finally
             {
-                transientBufferGroup.Dispose();
-            }
-
-            foreach (var transientBuffer in transientBuffers)
-            {
-                transientBuffer.Dispose();
-            }
-
-            foreach (var transientTexture in transientTextures)
-            {
-                transientTexture.Dispose();
-            }
-
-            foreach (var transientTextureGroup in transientTextureGroups)
-            {
-                transientTextureGroup.Dispose();
+                spriteSubmissionLease?.Dispose();
             }
         }
     }

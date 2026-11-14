@@ -44,8 +44,12 @@ internal sealed partial class SceneAssetStoreTests
         byte flipMask = 0,
         bool pixelSnap = false,
         int sortingLayer = 2,
-        int sortingOrder = -3)
+        int sortingOrder = -3,
+        Vector4? tint = null,
+        Vector2? pivot = null)
     {
+        var selectedTint = tint ?? new Vector4(1.0f, 0.5f, 0.25f, 1.0f);
+        var selectedPivot = pivot ?? new Vector2(0.25f, 0.75f);
         var fields = new System.Collections.Generic.List<SceneHierarchyCodecTests.FixtureBuilder.FixtureField> {
             SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(
                 1,
@@ -53,9 +57,15 @@ internal sealed partial class SceneAssetStoreTests
                     atlasAssetId,
                     new ContentSchemaIdentityAssignment("native/atlas").SchemaId)),
             SceneHierarchyCodecTests.FixtureBuilder.CreateGuidField(2, frameId),
-            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(3, 14, 0.25f, 0.75f),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(3, 14, selectedPivot.X, selectedPivot.Y),
             SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(4, 14, 2.0f, 3.0f),
-            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(5, 16, 1.0f, 0.5f, 0.25f, 1.0f),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(
+                5,
+                16,
+                selectedTint.X,
+                selectedTint.Y,
+                selectedTint.Z,
+                selectedTint.W),
             SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(6, flipMask),
             CreateRenderSpriteInt32Field(7, sortingLayer),
             CreateRenderSpriteInt32Field(8, sortingOrder),

@@ -65,6 +65,31 @@ internal sealed class SpriteC0ShaderReflectionTests
     }
 
     [Test]
+    public void CompiledToneMapShaderArtifactsMatchTheirFixedReflection()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Ignore("The pinned Windows-only DXC toolchain produces the Sprite tone-map reflection artifacts.");
+            return;
+        }
+
+        var shaderDirectory = Path.Combine(
+            TestContext.CurrentContext.TestDirectory,
+            "ShaderArtifacts",
+            "ObjectGpuDataPipeline");
+        var manifest = ShaderToolchainManifest.Load(Path.Combine(
+            TestContext.CurrentContext.TestDirectory,
+            "ShaderToolchainManifest.json"));
+        var pixel = M04ShaderReflectionReader.Read(
+            File.ReadAllText(Path.Combine(shaderDirectory, "SpriteToneMapPixel.dxil.reflection.txt")),
+            File.ReadAllText(Path.Combine(shaderDirectory, "SpriteToneMapPixel.spirv.reflection.json")),
+            File.ReadAllBytes(Path.Combine(shaderDirectory, "SpriteToneMapPixel.pixel.spv")),
+            manifest.CompilerIdentity);
+
+        AssertEquivalent(SpriteToneMapShaderReflection.Pixel, pixel);
+    }
+
+    [Test]
     public void RuntimeAssemblyContainsShaderBytecodeForItsBackend()
     {
         string[] resources = OperatingSystem.IsWindows()
@@ -73,10 +98,13 @@ internal sealed class SpriteC0ShaderReflectionTests
                 "TerraFX.Rendering.Shaders.SpriteC0Pixel.pixel.dxil",
                 "TerraFX.Rendering.Shaders.SpriteC0Vertex.vertex.spv",
                 "TerraFX.Rendering.Shaders.SpriteC0Pixel.pixel.spv",
+                "TerraFX.Rendering.Shaders.SpriteToneMapPixel.pixel.dxil",
+                "TerraFX.Rendering.Shaders.SpriteToneMapPixel.pixel.spv",
             ]
             : [
                 "TerraFX.Rendering.Shaders.SpriteC0Vertex.vertex.spv",
                 "TerraFX.Rendering.Shaders.SpriteC0Pixel.pixel.spv",
+                "TerraFX.Rendering.Shaders.SpriteToneMapPixel.pixel.spv",
             ];
         var assembly = typeof(Renderer).Assembly;
 

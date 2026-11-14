@@ -29,6 +29,49 @@ namespace TerraFX.Runtime.Tests.Scenes;
 
 internal sealed partial class SceneAssetStoreTests
 {
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInSpriteC0GraphRejectsMaterialTextureOverrideAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotAtlasPageResidencyAsync(
+            renderThroughNativeGraph: true,
+            graphicsBackend: graphicsBackend,
+            useBuiltInSpriteGraph: true,
+            useUnsupportedMaterialTexture: true);
+    [Test]
+    public Task SnapshotBuiltInSpriteC0GraphRejectsMissingInitialClearAsync()
+        => RunSnapshotAtlasPageResidencyAsync(
+            renderThroughNativeGraph: true,
+            graphicsBackend: GraphicsBackend.Vulkan,
+            useBuiltInSpriteGraph: true,
+            cameraClearFlags: CameraClearFlags.Depth,
+            expectUninitializedTargetRejection: true);
+
+    [Test]
+    public Task SnapshotBuiltInSpriteC0GraphRejectsPartialInitialViewportAsync()
+        => RunSnapshotAtlasPageResidencyAsync(
+            renderThroughNativeGraph: true,
+            graphicsBackend: GraphicsBackend.Vulkan,
+            useBuiltInSpriteGraph: true,
+            cameraViewport: new Vector4(0.0f, 0.0f, 0.5f, 1.0f),
+            expectUninitializedTargetRejection: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInSpriteC0GraphRendersAtlasPageAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotAtlasPageResidencyAsync(
+            renderThroughNativeGraph: true,
+            graphicsBackend: graphicsBackend,
+            useBuiltInSpriteGraph: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInSpriteC0GraphSharesAtlasPageAcrossSceneInstancesAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotAtlasPageResidencyAsync(
+            renderThroughNativeGraph: true,
+            graphicsBackend: graphicsBackend,
+            useBuiltInSpriteGraph: true,
+            activateSecondSceneInstance: true);
+
     [Test]
     public Task SnapshotGraphCancellationReleasesImportedResourcePinsAsync()
         => RunSnapshotAtlasPageResidencyAsync(renderThroughNativeGraph: true, cancelGraphAdmission: true);
@@ -69,7 +112,13 @@ internal sealed partial class SceneAssetStoreTests
         bool failGraphRecording = false,
         bool cancelGraphAdmission = false,
         GraphicsBackend graphicsBackend = GraphicsBackend.Vulkan,
-        bool useM05SpritePipeline = false)
+        bool useM05SpritePipeline = false,
+        bool useBuiltInSpriteGraph = false,
+        bool useUnsupportedMaterialTexture = false,
+        Vector4? cameraViewport = null,
+        CameraClearFlags? cameraClearFlags = null,
+        bool expectUninitializedTargetRejection = false,
+        bool activateSecondSceneInstance = false)
     {
         using var submissionCancellation = new CancellationTokenSource();
 
@@ -87,6 +136,7 @@ internal sealed partial class SceneAssetStoreTests
 
         if (renderThroughNativeGraph
             && !useM05SpritePipeline
+            && !useBuiltInSpriteGraph
             && string.IsNullOrWhiteSpace(shaderFixtureDirectory))
         {
             Assert.Ignore("The M04 shader fixture is required for package-backed Sprite graph submission.");
@@ -109,9 +159,14 @@ internal sealed partial class SceneAssetStoreTests
         var atlasRecord = CreateRenderAtlasRecord(
             TextureAssetId,
             CreateRenderAtlasFrameRecord(frameId, page: 0, x: 4, y: 4, width: 4, height: 4));
+        var materialColor = useBuiltInSpriteGraph
+            ? new Vector4(0.5f, 1.0f, 0.5f, 1.0f)
+            : Vector4.One;
         var materialRecord = CreateRenderMaterialAssetRecord(
             isSprite: true,
-            CreateRenderMaterialSpriteParametersRecord(),
+            CreateRenderMaterialSpriteParametersRecord(
+                textureAssetId: useUnsupportedMaterialTexture ? TextureAssetId : null,
+                color: materialColor),
             alphaMode: 2,
             doubleSided: false,
             depthTest: false,
@@ -127,7 +182,11 @@ internal sealed partial class SceneAssetStoreTests
                     AtlasAssetId,
                     frameId,
                     materialAssetId: MaterialAssetId,
-                    pixelSnap: true),
+                    pixelSnap: true,
+                    tint: useBuiltInSpriteGraph
+                        ? new Vector4(1.0f, 0.5f, 0.25f, 0.5f)
+                        : null,
+                    pivot: useBuiltInSpriteGraph ? new Vector2(0.5f, 0.5f) : null),
             ]);
         var packageBytes = Package.CreatePackage(
             new Package.Entry(TextureAssetId, Package.CreateEnvelope(TextureAssetId, textureRecord)),
@@ -157,9 +216,11 @@ internal sealed partial class SceneAssetStoreTests
         };
         EngineHost? host = null;
         RenderSnapshot3D? snapshot = null;
+        RenderSnapshot3D? repeatedSnapshot = null;
         GpuResidencyLease? canonicalResidencyLease = null;
         GpuResidencyLease? residencyLease = null;
         GpuTexture? targetTexture = null;
+        GpuTexture? repeatedBuiltInTargetTexture = null;
         GpuBuffer? vertexBuffer = null;
         GpuBuffer? indexBuffer = null;
         GpuBuffer? frameBuffer = null;
@@ -210,6 +271,7 @@ internal sealed partial class SceneAssetStoreTests
             }).ConfigureAwait(false);
 
             SceneInstance? sceneInstance = null;
+            SceneInstance? secondSceneInstance = null;
 
             using (var prepared = await loader!.PrepareAsync(
                     new AssetId(SceneAssetId),
@@ -222,23 +284,57 @@ internal sealed partial class SceneAssetStoreTests
                     ?? throw new InvalidOperationException("The activated Sprite Scene omitted its instance.");
             }
 
+            if (activateSecondSceneInstance)
+            {
+                using var secondPrepared = await loader!.PrepareAsync(
+                    new AssetId(SceneAssetId),
+                    new SceneLoadOptions()).ConfigureAwait(false);
+                var secondActivation = await loader.ActivateAsync(secondPrepared)
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.That(secondActivation.Status, Is.EqualTo(SceneActivationStatus.Activated));
+                secondSceneInstance = secondActivation.Instance
+                    ?? throw new InvalidOperationException("The second activated Sprite Scene omitted its instance.");
+            }
+
             var activeSceneInstance = sceneInstance
                 ?? throw new InvalidOperationException("The activated Sprite Scene omitted its instance.");
-            await engineHost.InvokeAsync(_ => world!.Step()).ConfigureAwait(false);
             var cameraId = Guid.Empty;
             var targetExtent = new PixelSize(32, 32);
+            SpatialFrame3 frame3 = default;
 
             await engineHost.InvokeAsync(_ => {
-                if (!activeSceneInstance.TryGetEntity(SceneAssetReaderTests.Fixtures.RootEntityId, out var cameraEntity))
-                {
-                    throw new InvalidOperationException("The activated Sprite Scene did not retain its camera Entity.");
-                }
-
+                var cameraEntity = world!.CreateEntity(new EntityDescription(Guid.NewGuid()));
+                var localTransform = SceneComponentDefinitions.CreateAssignedLocalTransform(
+                    Vector3.Zero,
+                    Quaternion.Identity,
+                    Vector3.One);
+                var rootPosition = new SceneComponentDefinitions.RootPositionComponent(
+                    new SpatialPosition3(default, new Vector3(0.0f, 0.0f, -5.0f)));
+                var camera = new SceneComponentDefinitions.CameraComponent(
+                    (byte)CameraProjectionKind.Perspective,
+                    float.Pi / 3.0f,
+                    10.0f,
+                    0.1f,
+                    (byte)CameraFarMode.Finite,
+                    new SceneComponentDefinitions.OptionalSingle(1000.0f),
+                    default,
+                    cameraViewport ?? new Vector4(0.0f, 0.0f, 1.0f, 1.0f),
+                    (byte)(cameraClearFlags ?? (CameraClearFlags.Color | CameraClearFlags.Depth)),
+                    new Vector4(0.0f, 0.0f, 0.0f, 1.0f),
+                    ulong.MaxValue,
+                    0);
+                world.Add(cameraEntity, in localTransform);
+                world.Add(cameraEntity, in rootPosition);
+                world.Add(cameraEntity, in camera);
                 cameraId = world!.GetEntityId(cameraEntity);
+                frame3 = world.Step().Frame3;
+            }).ConfigureAwait(false);
+
+            await engineHost.InvokeAsync(_ => {
                 var extraction = engineHost.Renderer.Extract(
-                    world,
+                    world!,
                     new RenderExtractionOptions3D(
-                        world.CurrentFrame3,
+                        frame3,
                         targetExtent,
                         [cameraId]));
 
@@ -254,7 +350,7 @@ internal sealed partial class SceneAssetStoreTests
 
             var spriteSnapshot = snapshot
                 ?? throw new InvalidOperationException("The host renderer omitted its Sprite snapshot.");
-            Assert.That(spriteSnapshot.SpriteDraws, Has.Length.EqualTo(1));
+            Assert.That(spriteSnapshot.SpriteDraws, Has.Length.EqualTo(activateSecondSceneInstance ? 2 : 1));
             Assert.That(spriteSnapshot.AssetPins, Is.Not.Null);
             canonicalResidencyLease = await engineHost.Renderer.EnsureSpritePageResidencyAsync(
                 spriteSnapshot,
@@ -280,7 +376,178 @@ internal sealed partial class SceneAssetStoreTests
                 Assert.That(repeatedSampledLease.Texture, Is.SameAs(canonicalResidencyLease.Texture));
             }
 
-            if (renderThroughNativeGraph)
+            if (renderThroughNativeGraph && useBuiltInSpriteGraph)
+            {
+                targetTexture = await graphicsDevice.CreateTextureAsync(
+                        new TextureDescription(
+                            TextureDimension.Dimension2D,
+                            targetExtent.Width,
+                            targetExtent.Height,
+                            depth: 1,
+                            arrayLayers: 1,
+                            mipLevels: 1,
+                            TextureFormat.Rgba8Unorm,
+                            TextureUsage.ColorAttachment | TextureUsage.CopySource,
+                            "snapshot-atlas-residency-target")).ConfigureAwait(false);
+                var selectedTarget = targetTexture
+                        ?? throw new InvalidOperationException("The built-in Sprite graph has no output target.");
+
+                if (useUnsupportedMaterialTexture)
+                {
+                    _ = Assert.Throws<NotSupportedException>(() =>
+                        engineHost.Renderer.BuildGraph(spriteSnapshot, selectedTarget));
+                }
+                else if (expectUninitializedTargetRejection)
+                {
+                    _ = Assert.Throws<NotSupportedException>(() =>
+                        engineHost.Renderer.BuildGraph(spriteSnapshot, selectedTarget));
+                }
+                else
+                {
+                    var graph = engineHost.Renderer.BuildGraph(spriteSnapshot, selectedTarget);
+                    var compileResponse = graph.Compile();
+                    Assert.That(compileResponse.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
+                    var plan = compileResponse.Plan
+                        ?? throw new InvalidOperationException("The built-in Sprite graph compile omitted its plan.");
+
+                    if (activateSecondSceneInstance)
+                    {
+                        var spriteState = plan.BuiltInSpriteState
+                            ?? throw new InvalidOperationException("The built-in Sprite graph omitted its state.");
+                        Assert.That(spriteState.Passes.Count, Is.EqualTo(2));
+                        Assert.That(spriteState.DeferredTextures, Has.Length.EqualTo(1));
+                        Assert.That(
+                            spriteSnapshot.SpriteDraws[0].SceneInstanceId,
+                            Is.Not.EqualTo(spriteSnapshot.SpriteDraws[1].SceneInstanceId));
+                    }
+
+                    var spriteObjectBytes = default(byte[]?);
+
+                    foreach (var upload in plan.BuiltInSpriteState?.BufferUploads
+                        ?? throw new InvalidOperationException("The built-in Sprite graph omitted prepared buffer data."))
+                    {
+                        if (upload.Version.Description.DebugName == "sprite-object-data")
+                        {
+                            spriteObjectBytes = upload.Bytes;
+                            break;
+                        }
+                    }
+
+                    Assert.That(spriteObjectBytes, Is.Not.Null);
+                    var preparedSpriteObjectBytes = spriteObjectBytes
+                        ?? throw new InvalidOperationException("The built-in Sprite graph omitted Sprite object data.");
+
+                    if (activateSecondSceneInstance)
+                    {
+                        var spriteState = plan.BuiltInSpriteState
+                            ?? throw new InvalidOperationException("The built-in Sprite graph omitted its state.");
+                        var spriteObjectStride = 0;
+
+                        foreach (var spritePass in spriteState.Passes.Values)
+                        {
+                            spriteObjectStride = spritePass.ObjectStride;
+                            break;
+                        }
+
+                        Assert.Multiple(() => {
+                            Assert.That(BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(preparedSpriteObjectBytes.AsSpan(spriteObjectStride + 64))), Is.EqualTo(0.5f));
+                            Assert.That(BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(preparedSpriteObjectBytes.AsSpan(spriteObjectStride + 68))), Is.EqualTo(0.5f));
+                            Assert.That(BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(preparedSpriteObjectBytes.AsSpan(spriteObjectStride + 72))), Is.EqualTo(0.125f));
+                            Assert.That(BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(preparedSpriteObjectBytes.AsSpan(spriteObjectStride + 76))), Is.EqualTo(0.5f));
+                        });
+                    }
+
+                    Assert.Multiple(() => {
+                        Assert.That(BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(preparedSpriteObjectBytes.AsSpan(64))), Is.EqualTo(0.5f));
+                        Assert.That(BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(preparedSpriteObjectBytes.AsSpan(68))), Is.EqualTo(0.5f));
+                        Assert.That(BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(preparedSpriteObjectBytes.AsSpan(72))), Is.EqualTo(0.125f));
+                        Assert.That(BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(preparedSpriteObjectBytes.AsSpan(76))), Is.EqualTo(0.5f));
+                    });
+                    var submissionTask = engineHost.Renderer.SubmitAsync(
+                        spriteSnapshot,
+                        plan,
+                        submissionCancellation.Token);
+                    spriteSnapshot.Dispose();
+                    Assert.That(spriteSnapshot.AssetPins, Is.Null);
+                    var submission = await submissionTask.ConfigureAwait(false);
+                    Assert.That(submission.CompletedFence, Is.GreaterThan(0));
+                    var (atlasPageState, atlasPageContentsValid) =
+                        canonicalResidencyLease.Texture.ResourceOwner.GetGraphImportState(
+                            new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
+                    Assert.That(atlasPageContentsValid, Is.True);
+                    Assert.That(atlasPageState, Is.EqualTo(GraphResourceState.ShaderSampledRead));
+                    repeatedBuiltInTargetTexture = await graphicsDevice.CreateTextureAsync(
+                            new TextureDescription(
+                                TextureDimension.Dimension2D,
+                                targetExtent.Width,
+                                targetExtent.Height,
+                                depth: 1,
+                                arrayLayers: 1,
+                                mipLevels: 1,
+                                TextureFormat.Rgba8Unorm,
+                                TextureUsage.ColorAttachment | TextureUsage.CopySource,
+                                "snapshot-atlas-residency-repeat-target")).ConfigureAwait(false);
+                    await engineHost.InvokeAsync(_ => {
+                        var repeatedExtraction = engineHost.Renderer.Extract(
+                            world!,
+                            new RenderExtractionOptions3D(
+                                frame3,
+                                targetExtent,
+                                [cameraId]));
+
+                        if (repeatedExtraction.Status != RenderExtractionStatus.Extracted)
+                        {
+                            throw new InvalidOperationException(
+                                $"The repeated Sprite snapshot extraction failed: {string.Join("; ", repeatedExtraction.Diagnostics)}");
+                        }
+
+                        repeatedSnapshot = repeatedExtraction.Snapshot as RenderSnapshot3D
+                            ?? throw new InvalidOperationException("The successful repeated Sprite extraction omitted its 3D snapshot.");
+                    }).ConfigureAwait(false);
+                    var selectedRepeatedSnapshot = repeatedSnapshot
+                        ?? throw new InvalidOperationException("The host renderer omitted its repeated Sprite snapshot.");
+                    var repeatedGraph = engineHost.Renderer.BuildGraph(selectedRepeatedSnapshot, repeatedBuiltInTargetTexture);
+                    var repeatedCompile = repeatedGraph.Compile();
+                    Assert.That(repeatedCompile.Status, Is.EqualTo(RenderGraphCompileStatus.Compiled));
+                    var repeatedPlan = repeatedCompile.Plan
+                        ?? throw new InvalidOperationException("The repeated built-in Sprite graph compile omitted its plan.");
+                    var repeatedSubmission = await engineHost.Renderer.SubmitAsync(
+                        selectedRepeatedSnapshot,
+                        repeatedPlan,
+                        submissionCancellation.Token).ConfigureAwait(false);
+                    Assert.That(repeatedSubmission.CompletedFence, Is.GreaterThan(submission.CompletedFence));
+                    selectedRepeatedSnapshot.Dispose();
+                    Assert.That(selectedRepeatedSnapshot.AssetPins, Is.Null);
+                    repeatedSnapshot = null;
+
+                    using var graphReadback = await graphicsDevice.ReadbackTextureAsync(
+                        targetTexture,
+                        new TextureSubresource(0, 0, TextureAspect.Color)).ConfigureAwait(false);
+                    var graphReadbackBytes = new byte[checked((int)graphReadback.ByteLength)];
+
+                    using (var readLease = graphReadback.AcquireReadLease())
+                    {
+                        readLease.CopyWindow(0, graphReadbackBytes);
+                    }
+
+                    var centerPixelOffset = checked(
+                        (int)((graphReadback.RowPitch * (targetExtent.Height / 2)) + (targetExtent.Width / 2 * 4)));
+                    byte[] expectedCenterPixel = activateSecondSceneInstance
+                        ? [8, 8, 2, byte.MaxValue]
+                        : [4, 4, 1, byte.MaxValue];
+                    Assert.Multiple(() => {
+                        for (var channel = 0; channel < expectedCenterPixel.Length; channel++)
+                        {
+                            Assert.That(
+                                graphReadbackBytes[centerPixelOffset + channel],
+                                Is.EqualTo(expectedCenterPixel[channel]));
+                        }
+
+                        Assert.That(graphReadbackBytes.AsSpan(0, 4).ToArray(), Is.EqualTo(new byte[] { 0, 0, 0, byte.MaxValue }));
+                    });
+                }
+            }
+            else if (renderThroughNativeGraph)
             {
                 var vertexElements = new[] {
                     new VertexElementDescription(0, VertexElementFormat.Float3, 0),
@@ -435,8 +702,8 @@ internal sealed partial class SceneAssetStoreTests
                     }
 
                     var frameArea = RenderCameraViewport.CreateArea(
-                        spriteSnapshot.Cameras[0].Viewport,
-                        targetExtent);
+                            spriteSnapshot.Cameras[0].Viewport,
+                            targetExtent);
                     var frameAreaValues = new float[] { frameArea.X, frameArea.Y, frameArea.Width, frameArea.Height };
 
                     for (var index = 0; index < frameAreaValues.Length; index++)
@@ -463,7 +730,16 @@ internal sealed partial class SceneAssetStoreTests
                         ?? throw new InvalidOperationException("The Sprite snapshot has no object-data buffer.");
                 }
 
-                var graph = engineHost.Renderer.BuildGraph(spriteSnapshot, targetTexture);
+                var graph = new RenderGraph(new RenderGraphOptions(
+                    spriteSnapshot.SnapshotId,
+                    spriteSnapshot.WorldGuid,
+                    spriteSnapshot.TickIndex,
+                    spriteSnapshot.FrameDimension,
+                    spriteSnapshot.ProfileId,
+                    spriteSnapshot.FrameRevision,
+                    spriteSnapshot.CameraIds,
+                    spriteSnapshot.TargetExtent,
+                    targetTexture));
                 var sampleRange = new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color);
                 var sampledPage = graph.ImportTexture(
                     residencyLease.Texture,
@@ -733,6 +1009,13 @@ internal sealed partial class SceneAssetStoreTests
                 }
             }
 
+            if (secondSceneInstance is not null)
+            {
+                var secondUnload = await secondSceneInstance.UnloadAsync(HierarchyDestroyMode.DestroySubtree)
+                    .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.That(secondUnload.Status, Is.EqualTo(SceneUnloadStatus.Unloaded));
+            }
+
             var unload = await activeSceneInstance.UnloadAsync(HierarchyDestroyMode.DestroySubtree)
                 .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             Assert.That(unload.Status, Is.EqualTo(SceneUnloadStatus.Unloaded));
@@ -793,7 +1076,9 @@ internal sealed partial class SceneAssetStoreTests
             objectDataBuffer?.Dispose();
             frameBuffer?.Dispose();
             targetTexture?.Dispose();
+            repeatedBuiltInTargetTexture?.Dispose();
             snapshot?.Dispose();
+            repeatedSnapshot?.Dispose();
             canonicalResidencyLease?.Dispose();
             residencyLease?.Dispose();
 

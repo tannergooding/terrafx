@@ -562,6 +562,7 @@ internal sealed class GraphicsGraphSubmission
                 && (import.Version.Range.Aspect == TextureAspect.Depth);
             var hasColorAttachmentAccess = false;
             var hasDepthAttachmentAccess = false;
+            var hasSampledImportAccess = false;
             var hasCopySourceImportAccess = false;
             var hasCopyDestinationImportAccess = false;
 
@@ -574,6 +575,7 @@ internal sealed class GraphicsGraphSubmission
 
                 hasColorAttachmentAccess |= (access.RequiredState == GraphResourceState.ColorAttachment) && access.IsWrite;
                 hasDepthAttachmentAccess |= access.RequiredState is GraphResourceState.DepthRead or GraphResourceState.DepthWrite;
+                hasSampledImportAccess |= (access.RequiredState == GraphResourceState.ShaderSampledRead) && !access.IsWrite;
                 hasCopySourceImportAccess |= (access.RequiredState == GraphResourceState.CopySource) && !access.IsWrite;
                 hasCopyDestinationImportAccess |= (access.RequiredState == GraphResourceState.CopyDestination) && access.IsWrite;
             }
@@ -605,7 +607,6 @@ internal sealed class GraphicsGraphSubmission
 
                 if (!hasColorAttachmentUsage
                     || hasDepthAttachmentUsage
-                    || hasSampledUsage
                     || hasStorageUsage
                     || (description.Dimension != TextureDimension.Dimension2D)
                     || (description.Depth != 1)
@@ -624,6 +625,20 @@ internal sealed class GraphicsGraphSubmission
                     || !colorTextureImports.TryAdd(import.Version.ResourceId, import))
                 {
                     throw new NotSupportedException("Native graph color attachments require matching 2D color imports in a supported state.");
+                }
+
+                if (hasSampledImportAccess)
+                {
+                    if (!hasSampledUsage
+                        || hasStorageUsage
+                        || isDepthSampledImage
+                        || !import.IsTransient
+                        || import.InitialContentsValid
+                        || (import.InitialState != GraphResourceState.Undefined)
+                        || !sampledTextureImports.TryAdd(import.Version.ResourceId, import))
+                    {
+                        throw new NotSupportedException("Native graph color attachments may be sampled later only as graph transients written before sampling.");
+                    }
                 }
 
                 continue;
@@ -831,8 +846,7 @@ internal sealed class GraphicsGraphSubmission
 
         foreach (var import in vertexBufferImports.Values)
         {
-            if (import.IsTransient
-                || (import.Version.Range != new GraphBufferRange(0, import.Buffer.ByteLength))
+            if ((import.Version.Range != new GraphBufferRange(0, import.Buffer.ByteLength))
                 || !import.InitialContentsValid
                 || (import.InitialState is not (
                     GraphResourceState.General
@@ -846,8 +860,7 @@ internal sealed class GraphicsGraphSubmission
 
         foreach (var import in indexBufferImports.Values)
         {
-            if (import.IsTransient
-                || (import.Version.Range != new GraphBufferRange(0, import.Buffer.ByteLength))
+            if ((import.Version.Range != new GraphBufferRange(0, import.Buffer.ByteLength))
                 || !import.InitialContentsValid
                 || (import.InitialState is not (
                     GraphResourceState.General
@@ -2337,6 +2350,16 @@ internal sealed class GraphicsGraphSubmission
                 && sampledTextureImports.ContainsKey(transition.ResourceId)
                 && (transition.AfterState == GraphResourceState.ShaderSampledRead)
                 && (transition.BeforeState == GraphResourceState.General)
+                && sampledTextureBindingPairs.Contains((transition.PassId, transition.ResourceId)))
+            {
+                continue;
+            }
+
+            if (transition.IsTexture
+                && sampledTextureImports.TryGetValue(transition.ResourceId, out var sampledTextureImport)
+                && sampledTextureImport.IsTransient
+                && (transition.AfterState == GraphResourceState.ShaderSampledRead)
+                && (transition.BeforeState == GraphResourceState.ColorAttachment)
                 && sampledTextureBindingPairs.Contains((transition.PassId, transition.ResourceId)))
             {
                 continue;

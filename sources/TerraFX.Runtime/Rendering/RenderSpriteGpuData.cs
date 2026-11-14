@@ -46,6 +46,9 @@ internal readonly struct RenderSpriteGpuData
             sprite.PixelSnap ? PixelSnapFlag : 0);
     }
 
+    internal static RenderSpriteGpuData CreateToneMap()
+        => new(Matrix4x4.Identity, Vector4.One, flags: 0);
+
     internal static int GetUniformAllocationStride(int vulkanAlignment)
         => ObjectGpuData.GetUniformAllocationStride(vulkanAlignment);
 

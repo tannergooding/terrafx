@@ -39,7 +39,7 @@ public sealed partial class Renderer
             throw new InvalidOperationException("The offscreen target belongs to a stale GraphicsDevice epoch.");
         }
 
-        return new RenderGraph(new RenderGraphOptions(
+        var graph = new RenderGraph(new RenderGraphOptions(
             snapshot.SnapshotId,
             snapshot.WorldGuid,
             snapshot.TickIndex,
@@ -49,6 +49,8 @@ public sealed partial class Renderer
             snapshot.CameraIds,
             snapshot.TargetExtent,
             offscreenColorTarget));
+        BuildSpriteC0Graph(snapshot, graph);
+        return graph;
     }
 
     /// <summary>Builds an interactive graph for one exact committed render snapshot and Surface.</summary>
@@ -78,7 +80,7 @@ public sealed partial class Renderer
             throw new ArgumentException("The Surface belongs to another GraphicsDevice.", nameof(surface));
         }
 
-        return new RenderGraph(new RenderGraphOptions(
+        var graph = new RenderGraph(new RenderGraphOptions(
             snapshot.SnapshotId,
             snapshot.WorldGuid,
             snapshot.TickIndex,
@@ -88,5 +90,7 @@ public sealed partial class Renderer
             snapshot.CameraIds,
             snapshot.TargetExtent,
             surface));
+        BuildSpriteC0Graph(snapshot, graph);
+        return graph;
     }
 }

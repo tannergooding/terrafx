@@ -23,7 +23,10 @@ public sealed partial class RenderGraphPlan
         ImmutableArray<GraphResourceAccess> accesses,
         ImmutableArray<GraphBufferImportRecord> bufferImports,
         ImmutableArray<GraphTextureImportRecord> textureImports,
-        ImmutableArray<RenderGraphAttachmentWrite> attachmentWrites)
+        ImmutableArray<RenderGraphAttachmentWrite> attachmentWrites,
+        ImmutableArray<ulong> nonAliasableTransientBufferIds,
+        ImmutableArray<ulong> nonAliasableTransientTextureIds,
+        RenderSpriteGraphState? builtInSpriteState)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(presentationSource);
@@ -37,7 +40,9 @@ public sealed partial class RenderGraphPlan
             || accesses.IsDefault
             || bufferImports.IsDefault
             || textureImports.IsDefault
-            || attachmentWrites.IsDefault)
+            || attachmentWrites.IsDefault
+            || nonAliasableTransientBufferIds.IsDefault
+            || nonAliasableTransientTextureIds.IsDefault)
         {
             throw new ArgumentException("A compiled graph plan requires initialized immutable data.");
         }
@@ -128,24 +133,26 @@ public sealed partial class RenderGraphPlan
         var aliasGroups = new List<(
             BufferDescription Description,
             int LastPassIndex,
+            bool CanAlias,
             ImmutableArray<GraphBufferVersion>.Builder Versions)>();
+        var nonAliasableBufferIds = new HashSet<ulong>(nonAliasableTransientBufferIds);
 
         foreach (var (version, firstPassIndex, lastPassIndex) in orderedTransientLifetimes)
         {
             var aliasGroupIndex = -1;
+            var canAlias = (version.Description.MemoryKind == GpuMemoryKind.DeviceLocal)
+                && !nonAliasableBufferIds.Contains(version.ResourceId);
 
-            if (version.Description.MemoryKind == GpuMemoryKind.DeviceLocal)
+            for (var index = 0; canAlias && (index < aliasGroups.Count); index++)
             {
-                for (var index = 0; index < aliasGroups.Count; index++)
-                {
-                    var (aliasGroupDescription, aliasGroupLastPassIndex, _) = aliasGroups[index];
+                var (aliasGroupDescription, aliasGroupLastPassIndex, aliasGroupCanAlias, _) = aliasGroups[index];
 
-                    if ((aliasGroupLastPassIndex < firstPassIndex)
-                        && AreTransientBufferDescriptionsCompatible(aliasGroupDescription, version.Description))
-                    {
-                        aliasGroupIndex = index;
-                        break;
-                    }
+                if (aliasGroupCanAlias
+                    && (aliasGroupLastPassIndex < firstPassIndex)
+                    && AreTransientBufferDescriptionsCompatible(aliasGroupDescription, version.Description))
+                {
+                    aliasGroupIndex = index;
+                    break;
                 }
             }
 
@@ -153,15 +160,16 @@ public sealed partial class RenderGraphPlan
             {
                 var versions = ImmutableArray.CreateBuilder<GraphBufferVersion>();
                 versions.Add(version);
-                aliasGroups.Add((version.Description, lastPassIndex, versions));
+                aliasGroups.Add((version.Description, lastPassIndex, canAlias, versions));
             }
             else
             {
-                var (aliasGroupDescription, _, aliasGroupVersions) = aliasGroups[aliasGroupIndex];
+                var (aliasGroupDescription, _, aliasGroupCanAlias, aliasGroupVersions) = aliasGroups[aliasGroupIndex];
                 aliasGroupVersions.Add(version);
                 aliasGroups[aliasGroupIndex] = (
                     aliasGroupDescription,
                     lastPassIndex,
+                    aliasGroupCanAlias,
                     aliasGroupVersions);
             }
 
@@ -171,7 +179,7 @@ public sealed partial class RenderGraphPlan
         var transientBufferGroups = ImmutableArray.CreateBuilder<ImmutableArray<GraphBufferVersion>>(aliasGroups.Count);
         var aliasingBarriers = ImmutableArray.CreateBuilder<GraphResourceAliasingBarrier>();
 
-        foreach (var (_, _, aliasGroupVersions) in aliasGroups)
+        foreach (var (_, _, _, aliasGroupVersions) in aliasGroups)
         {
             var versions = aliasGroupVersions.ToImmutable();
             transientBufferGroups.Add(versions);
@@ -202,17 +210,21 @@ public sealed partial class RenderGraphPlan
         var textureAliasGroups = new List<(
             TextureDescription Description,
             int LastPassIndex,
+            bool CanAlias,
             ImmutableArray<GraphTextureVersion>.Builder Versions)>();
+        var nonAliasableTextureIds = new HashSet<ulong>(nonAliasableTransientTextureIds);
 
         foreach (var (version, firstPassIndex, lastPassIndex) in orderedTransientTextureLifetimes)
         {
             var aliasGroupIndex = -1;
+            var canAlias = !nonAliasableTextureIds.Contains(version.ResourceId);
 
-            for (var index = 0; index < textureAliasGroups.Count; index++)
+            for (var index = 0; canAlias && (index < textureAliasGroups.Count); index++)
             {
-                var (aliasGroupDescription, aliasGroupLastPassIndex, _) = textureAliasGroups[index];
+                var (aliasGroupDescription, aliasGroupLastPassIndex, aliasGroupCanAlias, _) = textureAliasGroups[index];
 
-                if ((aliasGroupLastPassIndex < firstPassIndex)
+                if (aliasGroupCanAlias
+                    && (aliasGroupLastPassIndex < firstPassIndex)
                     && GraphTextureAliasingBarrier.AreCompatible(aliasGroupDescription, version.Description))
                 {
                     aliasGroupIndex = index;
@@ -224,15 +236,16 @@ public sealed partial class RenderGraphPlan
             {
                 var versions = ImmutableArray.CreateBuilder<GraphTextureVersion>();
                 versions.Add(version);
-                textureAliasGroups.Add((version.Description, lastPassIndex, versions));
+                textureAliasGroups.Add((version.Description, lastPassIndex, canAlias, versions));
             }
             else
             {
-                var (aliasGroupDescription, _, aliasGroupVersions) = textureAliasGroups[aliasGroupIndex];
+                var (aliasGroupDescription, _, aliasGroupCanAlias, aliasGroupVersions) = textureAliasGroups[aliasGroupIndex];
                 aliasGroupVersions.Add(version);
                 textureAliasGroups[aliasGroupIndex] = (
                     aliasGroupDescription,
                     lastPassIndex,
+                    aliasGroupCanAlias,
                     aliasGroupVersions);
             }
         }
@@ -241,7 +254,7 @@ public sealed partial class RenderGraphPlan
             textureAliasGroups.Count);
         var textureAliasingBarriers = ImmutableArray.CreateBuilder<GraphTextureAliasingBarrier>();
 
-        foreach (var (_, _, aliasGroupVersions) in textureAliasGroups)
+        foreach (var (_, _, _, aliasGroupVersions) in textureAliasGroups)
         {
             var versions = aliasGroupVersions.ToImmutable();
             transientTextureGroups.Add(versions);
@@ -286,6 +299,7 @@ public sealed partial class RenderGraphPlan
         TickIndex = options.TickIndex;
         TransientBuffers = [.. transientBuffers.Values];
         TransientTextures = [.. transientTextures.Values];
+        BuiltInSpriteState = builtInSpriteState;
         WorldGuid = options.WorldGuid;
     }
 
@@ -330,6 +344,8 @@ public sealed partial class RenderGraphPlan
     internal ImmutableArray<RenderGraphAttachmentWrite> AttachmentWrites { get; }
 
     internal ImmutableArray<GraphBufferImportRecord> BufferImports { get; }
+
+    internal RenderSpriteGraphState? BuiltInSpriteState { get; }
 
     internal ImmutableArray<RenderPassCallback?> OrderedPassCallbacks { get; }
 

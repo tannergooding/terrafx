@@ -102,6 +102,34 @@ public sealed partial class Renderer
 
     internal async Task<GpuResidencyLease> EnsureSpritePageResidencyAsync(
         RenderSnapshot snapshot,
+        RenderSnapshotAssetPins snapshotAssetPins,
+        int spriteDrawIndex,
+        ResidencyOptions options,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(snapshotAssetPins);
+        ArgumentNullException.ThrowIfNull(options);
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentOutOfRangeException.ThrowIfNegative(spriteDrawIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(spriteDrawIndex, snapshot.SpriteDraws.Length);
+
+        var residencyService = _gpuResidencyService
+            ?? throw new NotSupportedException("Headless rendering does not upload Sprite assets.");
+        var sprite = snapshot.SpriteDraws[spriteDrawIndex];
+        var sceneAssets = snapshotAssetPins.GetSceneAssets(sprite.SceneInstanceId)
+            ?? throw new InvalidOperationException("The Sprite snapshot has no retained Scene assets.");
+        var pageSet = sceneAssets.GetAtlasPageSet(sprite.AtlasAssetId);
+        var frame = pageSet.GetFrame(sprite.FrameId);
+        using var pageLease = pageSet.RetainPageLease(frame.Page);
+        return await residencyService.EnsureSpritePageResidencyAsync(
+            pageLease,
+            options,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async Task<GpuResidencyLease> EnsureSpritePageResidencyAsync(
+        RenderSnapshot snapshot,
         int spriteDrawIndex,
         ResidencyOptions options,
         CancellationToken cancellationToken = default)
@@ -112,17 +140,12 @@ public sealed partial class Renderer
         ArgumentOutOfRangeException.ThrowIfNegative(spriteDrawIndex);
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(spriteDrawIndex, snapshot.SpriteDraws.Length);
 
-        var residencyService = _gpuResidencyService
-            ?? throw new NotSupportedException("Headless rendering does not upload Sprite assets.");
-        var sprite = snapshot.SpriteDraws[spriteDrawIndex];
-        using var snapshotAssetPins = snapshot.RetainAssetPins();
-        var sceneAssets = snapshotAssetPins?.GetSceneAssets(sprite.SceneInstanceId)
+        using var snapshotAssetPins = snapshot.RetainAssetPins()
             ?? throw new InvalidOperationException("The Sprite snapshot has no retained Scene assets.");
-        var pageSet = sceneAssets.GetAtlasPageSet(sprite.AtlasAssetId);
-        var frame = pageSet.GetFrame(sprite.FrameId);
-        using var pageLease = pageSet.RetainPageLease(frame.Page);
-        return await residencyService.EnsureSpritePageResidencyAsync(
-            pageLease,
+        return await EnsureSpritePageResidencyAsync(
+            snapshot,
+            snapshotAssetPins,
+            spriteDrawIndex,
             options,
             cancellationToken).ConfigureAwait(false);
     }
