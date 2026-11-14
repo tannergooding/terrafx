@@ -9,7 +9,7 @@ namespace TerraFX.Rendering;
 
 internal static class RenderMeshC0VertexBufferBuilder
 {
-    internal const int VertexStride = 20 * sizeof(float);
+    internal const int VertexStride = 24 * sizeof(float);
 
     internal static byte[] Create(RenderMeshAsset mesh)
     {
@@ -38,12 +38,17 @@ internal static class RenderMeshC0VertexBufferBuilder
                 WriteVector4(bytes, offset + (8 * sizeof(float)), mesh.Tangents[index]);
             }
 
+            WriteVector4(
+                bytes,
+                offset + (12 * sizeof(float)),
+                mesh.Colors.IsDefault ? Vector4.One : mesh.Colors[index]);
+
             if (!mesh.JointIndices.IsDefault)
             {
                 var jointOffset = checked(index * 4);
                 WriteVector4(
                     bytes,
-                    offset + (12 * sizeof(float)),
+                    offset + (16 * sizeof(float)),
                     new Vector4(
                         mesh.JointIndices[jointOffset],
                         mesh.JointIndices[jointOffset + 1],
@@ -59,7 +64,7 @@ internal static class RenderMeshC0VertexBufferBuilder
 
                 WriteVector4(
                     bytes,
-                    offset + (16 * sizeof(float)),
+                    offset + (20 * sizeof(float)),
                     new Vector4(
                         weights.X / weightSum,
                         weights.Y / weightSum,

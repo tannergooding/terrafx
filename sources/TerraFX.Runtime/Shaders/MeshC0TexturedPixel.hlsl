@@ -96,12 +96,16 @@ struct PixelInput
     [[vk::location(3)]]
 #endif
     float4 WorldTangent : TEXCOORD3;
+#if defined(TERRAFX_SPIRV)
+    [[vk::location(4)]]
+#endif
+    float4 Color : TEXCOORD4;
 };
 
 float4 PSMain(PixelInput input) : SV_Target0
 {
-    float3 baseColor = BaseColor.rgb;
-    float alpha = BaseColor.a;
+    float3 baseColor = BaseColor.rgb * input.Color.rgb;
+    float alpha = BaseColor.a * input.Color.a;
 
     if (Factors.z > 0.0f)
     {

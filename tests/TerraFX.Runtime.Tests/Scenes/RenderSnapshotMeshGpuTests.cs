@@ -78,6 +78,7 @@ internal sealed partial class SceneAssetStoreTests
         bool useEmissiveTexture = false,
         bool usePackedMetalRoughOcclusionTexture = false,
         bool useSkinning = false,
+        bool useVertexColor = false,
         bool useNormalMap = false,
         bool unsupportedTextureSampler = false,
         bool missingTextureUv0 = false,
@@ -154,7 +155,9 @@ internal sealed partial class SceneAssetStoreTests
                             || useNormalMap) && !missingTextureUv0,
                         includeTangents: useNormalMap && !missingTangents,
                         positionOffset: usePointLight ? Vector3.UnitZ : null,
-                        normalDirection: useNormalMap ? Vector3.UnitZ : null)))),
+                        normalDirection: useNormalMap ? Vector3.UnitZ : null,
+                        useMixedJointInfluences: useSkinning,
+                        includeColors: useVertexColor)))),
             new Package.Entry(
                 MaterialAssetId,
                 Package.CreateEnvelope(MaterialAssetId, materialRecord)),
@@ -248,7 +251,7 @@ internal sealed partial class SceneAssetStoreTests
                     SkeletonAssetId,
                     Package.CreateEnvelope(
                         SkeletonAssetId,
-                        EbinPrimitives.Encode(CreateMeshSkeletonRecord(jointId)))),
+                        EbinPrimitives.Encode(CreateMeshSkeletonRecord(jointId, jointCount: 2)))),
             ];
         }
 
@@ -478,8 +481,15 @@ internal sealed partial class SceneAssetStoreTests
                     static upload => StringComparer.Ordinal.Equals(upload.Version.Description.DebugName, "mesh-bone-palette-data"));
                 Assert.Multiple(() => {
                     Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(objectUpload.Bytes.AsSpan(176)), Is.EqualTo(1u));
-                    Assert.That(BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(vertexUpload.Bytes.AsSpan(64))), Is.EqualTo(1.0f));
+                    Assert.That(BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(vertexUpload.Bytes.AsSpan(48))), Is.EqualTo(useVertexColor ? 0.5f : 1.0f));
+                    Assert.That(BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(vertexUpload.Bytes.AsSpan(64))), Is.EqualTo(0.0f));
+                    Assert.That(BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(vertexUpload.Bytes.AsSpan(68))), Is.EqualTo(1.0f));
+                    Assert.That(BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(vertexUpload.Bytes.AsSpan(72))), Is.EqualTo(1.0f));
+                    Assert.That(BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(vertexUpload.Bytes.AsSpan(76))), Is.EqualTo(0.0f));
+                    Assert.That(BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(vertexUpload.Bytes.AsSpan(80))), Is.EqualTo(0.25f));
+                    Assert.That(BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(vertexUpload.Bytes.AsSpan(92))), Is.EqualTo(0.25f));
                     Assert.That(BinaryPrimitives.ReadInt32LittleEndian(bonePaletteUpload.Bytes), Is.EqualTo(BitConverter.SingleToInt32Bits(1.0f)));
+                    Assert.That(meshSnapshot.MeshPalettes[0].SkinMatrices, Has.Length.EqualTo(2));
                 });
             }
 
@@ -562,7 +572,9 @@ internal sealed partial class SceneAssetStoreTests
                 {
                     Assert.That(
                         readbackBytes[firstColoredPixelOffset],
-                        Is.EqualTo(useAlphaBlend ? useBaseColorTexture ? (byte)119 : (byte)153 : (byte)2));
+                        Is.EqualTo(useAlphaBlend
+                            ? useBaseColorTexture ? (byte)119 : (byte)153
+                            : useVertexColor && !useEmissiveTexture ? (byte)1 : (byte)2));
                     Assert.That(
                         readbackBytes[firstColoredPixelOffset + 1],
                         Is.EqualTo(useAlphaBlend
@@ -590,6 +602,23 @@ internal sealed partial class SceneAssetStoreTests
             File.Delete(packagePath);
         }
     }
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphAppliesLinearVertexColorsAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useBaseColorTexture: true,
+            useVertexColor: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphAppliesLinearVertexColorsWithStaticSkinningAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useBaseColorTexture: true,
+            useSkinning: true,
+            useVertexColor: true);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]

@@ -482,11 +482,6 @@ public sealed partial class Renderer
                 }
             }
 
-            if (!mesh.Colors.IsDefault)
-            {
-                throw new NotSupportedException("Mesh C0 does not consume optional vertex-color streams.");
-            }
-
             if (mesh.JointIndices.IsDefault != (draw.PaletteIndex < 0))
             {
                 throw new InvalidOperationException("A skinned Mesh draw does not match its captured bind-pose palette.");
@@ -738,7 +733,10 @@ public sealed partial class Renderer
                     uniformStride,
                     vertexBuffer,
                     indexBuffer,
-                    currentBonePaletteBuffer,
+                    draw.PaletteIndex >= 0
+                        ? currentBonePaletteBuffer
+                            ?? throw new InvalidOperationException("The graph has a skinned Mesh pass without a bone-palette buffer.")
+                        : null,
                     draw.PaletteIndex >= 0,
                     baseColorTextureVersions[drawIndex],
                     emissiveTextureVersions[drawIndex],

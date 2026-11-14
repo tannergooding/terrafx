@@ -21,7 +21,9 @@
     <TerraFXShaderSource Include="Shaders\SpriteC0Pixel.hlsl" EntryPoint="PSMain" Stage="pixel" />
     <TerraFXShaderSource Include="Shaders\SpriteToneMapPixel.hlsl" EntryPoint="PSMain" Stage="pixel" />
     <TerraFXShaderSource Include="Shaders\MeshC0Vertex.hlsl" EntryPoint="VSMain" Stage="vertex" />
+    <TerraFXShaderSource Include="Shaders\MeshC0TexturedVertex.hlsl" EntryPoint="VSMain" Stage="vertex" />
     <TerraFXShaderSource Include="Shaders\MeshC0SkinnedVertex.hlsl" EntryPoint="VSMain" Stage="vertex" />
+    <TerraFXShaderSource Include="Shaders\MeshC0SkinnedTexturedVertex.hlsl" EntryPoint="VSMain" Stage="vertex" />
     <TerraFXShaderSource Include="Shaders\MeshC0Pixel.hlsl" EntryPoint="PSMain" Stage="pixel" />
     <TerraFXShaderSource Include="Shaders\MeshC0MaskPixel.hlsl" EntryPoint="PSMain" Stage="pixel" />
     <TerraFXShaderSource Include="Shaders\MeshC0TexturedPixel.hlsl" EntryPoint="PSMain" Stage="pixel" />
@@ -43,8 +45,12 @@
                       LogicalName="TerraFX.Rendering.Shaders.SpriteToneMapPixel.pixel.spv" />
     <EmbeddedResource Include="Shaders\Cooked\MeshC0Vertex.vertex.spv"
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0Vertex.vertex.spv" />
+    <EmbeddedResource Include="Shaders\Cooked\MeshC0TexturedVertex.vertex.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedVertex.vertex.spv" />
     <EmbeddedResource Include="Shaders\Cooked\MeshC0SkinnedVertex.vertex.spv"
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0SkinnedVertex.vertex.spv" />
+    <EmbeddedResource Include="Shaders\Cooked\MeshC0SkinnedTexturedVertex.vertex.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0SkinnedTexturedVertex.vertex.spv" />
     <EmbeddedResource Include="Shaders\Cooked\MeshC0Pixel.pixel.spv"
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0Pixel.pixel.spv" />
     <EmbeddedResource Include="Shaders\Cooked\MeshC0MaskPixel.pixel.spv"
@@ -72,10 +78,18 @@
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0Vertex.vertex.dxil" />
     <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0Vertex\MeshC0Vertex.vertex.spv"
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0Vertex.vertex.spv" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0TexturedVertex\MeshC0TexturedVertex.vertex.dxil"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedVertex.vertex.dxil" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0TexturedVertex\MeshC0TexturedVertex.vertex.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedVertex.vertex.spv" />
     <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0SkinnedVertex\MeshC0SkinnedVertex.vertex.dxil"
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0SkinnedVertex.vertex.dxil" />
     <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0SkinnedVertex\MeshC0SkinnedVertex.vertex.spv"
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0SkinnedVertex.vertex.spv" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0SkinnedTexturedVertex\MeshC0SkinnedTexturedVertex.vertex.dxil"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0SkinnedTexturedVertex.vertex.dxil" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0SkinnedTexturedVertex\MeshC0SkinnedTexturedVertex.vertex.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0SkinnedTexturedVertex.vertex.spv" />
     <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0Pixel\MeshC0Pixel.pixel.dxil"
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0Pixel.pixel.dxil" />
     <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0Pixel\MeshC0Pixel.pixel.spv"

@@ -48,18 +48,24 @@ struct PixelInput
     [[vk::location(1)]]
 #endif
     float3 WorldNormal : TEXCOORD1;
+#if defined(TERRAFX_SPIRV)
+    [[vk::location(2)]]
+#endif
+    float4 Color : TEXCOORD2;
 };
 
 float4 PSMain(PixelInput input) : SV_Target0
 {
+    float3 baseColor = BaseColor.rgb * input.Color.rgb;
+    float alpha = BaseColor.a * input.Color.a;
+
 #if defined(TERRAFX_ALPHA_MASK)
-    if (BaseColor.a < RenderOptions.x)
+    if (alpha < RenderOptions.x)
     {
         discard;
     }
 #endif
 
-    float3 baseColor = BaseColor.rgb;
     float metallic = Factors.x;
     float roughness = Factors.y;
     float3 n = normalize(input.WorldNormal);
@@ -105,7 +111,7 @@ float4 PSMain(PixelInput input) : SV_Target0
 
     if (RenderOptions.z > 0.5f)
     {
-        return float4(color * BaseColor.a, BaseColor.a) * visibility;
+        return float4(color * alpha, alpha) * visibility;
     }
 
     return float4(color, 1.0f) * visibility;

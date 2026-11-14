@@ -319,9 +319,12 @@ public sealed partial class Renderer
             _ => throw new NotSupportedException("The selected GraphicsDevice has no Mesh C0 shader artifact."),
         };
         using var vertexStorage = LoadShaderBytecode(
-            skinned
-                ? "TerraFX.Rendering.Shaders.MeshC0SkinnedVertex.vertex."
-                : "TerraFX.Rendering.Shaders.MeshC0Vertex.vertex.",
+            (skinned, textured) switch {
+                (false, false) => "TerraFX.Rendering.Shaders.MeshC0Vertex.vertex.",
+                (false, true) => "TerraFX.Rendering.Shaders.MeshC0TexturedVertex.vertex.",
+                (true, false) => "TerraFX.Rendering.Shaders.MeshC0SkinnedVertex.vertex.",
+                (true, true) => "TerraFX.Rendering.Shaders.MeshC0SkinnedTexturedVertex.vertex.",
+            },
             binaryFormat);
         using var pixelStorage = LoadShaderBytecode(
             (textured, alphaMask) switch {
@@ -333,21 +336,42 @@ public sealed partial class Renderer
             binaryFormat);
         using var vertexBytecode = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
         using var pixelBytecode = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
-        ImmutableArray<VertexElementDescription> vertexElements = skinned
-            ? [
+        ImmutableArray<VertexElementDescription> vertexElements = (skinned, textured) switch {
+            (true, true) => [
                 new VertexElementDescription(0, VertexElementFormat.Float3, 0),
                 new VertexElementDescription(1, VertexElementFormat.Float3, 3 * sizeof(float)),
                 new VertexElementDescription(2, VertexElementFormat.Float2, 6 * sizeof(float)),
                 new VertexElementDescription(3, VertexElementFormat.Float4, 8 * sizeof(float)),
                 new VertexElementDescription(4, VertexElementFormat.Float4, 12 * sizeof(float)),
                 new VertexElementDescription(5, VertexElementFormat.Float4, 16 * sizeof(float)),
-            ]
-            : [
+                new VertexElementDescription(6, VertexElementFormat.Float4, 20 * sizeof(float)),
+            ],
+            (true, false) => [
+                new VertexElementDescription(0, VertexElementFormat.Float3, 0),
+                new VertexElementDescription(1, VertexElementFormat.Float3, 3 * sizeof(float)),
+                new VertexElementDescription(2, VertexElementFormat.Float4, 12 * sizeof(float)),
+                new VertexElementDescription(3, VertexElementFormat.Float4, 16 * sizeof(float)),
+                new VertexElementDescription(4, VertexElementFormat.Float4, 20 * sizeof(float)),
+            ],
+            (false, true) => [
                 new VertexElementDescription(0, VertexElementFormat.Float3, 0),
                 new VertexElementDescription(1, VertexElementFormat.Float3, 3 * sizeof(float)),
                 new VertexElementDescription(2, VertexElementFormat.Float2, 6 * sizeof(float)),
                 new VertexElementDescription(3, VertexElementFormat.Float4, 8 * sizeof(float)),
-            ];
+                new VertexElementDescription(4, VertexElementFormat.Float4, 12 * sizeof(float)),
+            ],
+            _ => [
+                new VertexElementDescription(0, VertexElementFormat.Float3, 0),
+                new VertexElementDescription(1, VertexElementFormat.Float3, 3 * sizeof(float)),
+                new VertexElementDescription(2, VertexElementFormat.Float4, 12 * sizeof(float)),
+            ],
+        };
+        var vertexReflection = (skinned, textured) switch {
+            (false, false) => RenderMeshC0ShaderReflection.Vertex,
+            (false, true) => RenderMeshC0ShaderReflection.TexturedVertex,
+            (true, false) => RenderMeshC0ShaderReflection.SkinnedVertex,
+            (true, true) => RenderMeshC0ShaderReflection.SkinnedTexturedVertex,
+        };
         return await device.CreatePipelineAsync(
             new GraphicsPipelineDescription(
                 [
@@ -355,7 +379,7 @@ public sealed partial class Renderer
                         ShaderStage.Vertex,
                         binaryFormat,
                         vertexBytecode,
-                        skinned ? RenderMeshC0ShaderReflection.SkinnedVertex : RenderMeshC0ShaderReflection.Vertex),
+                        vertexReflection),
                     new ShaderBytecodeInput(
                         ShaderStage.Pixel,
                         binaryFormat,

@@ -146,7 +146,9 @@ internal sealed partial class SceneAssetStoreTests
         bool includeUv0 = false,
         bool includeTangents = false,
         Vector3? positionOffset = null,
-        Vector3? normalDirection = null)
+        Vector3? normalDirection = null,
+        bool useMixedJointInfluences = false,
+        bool includeColors = false)
     {
         var offset = positionOffset ?? Vector3.Zero;
         var positions = CreateMeshPositionOrNormalStream(
@@ -195,9 +197,45 @@ internal sealed partial class SceneAssetStoreTests
                 ]));
         }
 
+        if (includeColors)
+        {
+            var colorElements = new byte[48];
+
+            for (var index = 0; index < 3; index++)
+            {
+                var colorOffset = index * 16;
+                BinaryPrimitives.WriteInt32LittleEndian(colorElements.AsSpan(colorOffset), BitConverter.SingleToInt32Bits(0.5f));
+                BinaryPrimitives.WriteInt32LittleEndian(colorElements.AsSpan(colorOffset + 4), BitConverter.SingleToInt32Bits(1.0f));
+                BinaryPrimitives.WriteInt32LittleEndian(colorElements.AsSpan(colorOffset + 8), BitConverter.SingleToInt32Bits(1.0f));
+                BinaryPrimitives.WriteInt32LittleEndian(colorElements.AsSpan(colorOffset + 12), BitConverter.SingleToInt32Bits(1.0f));
+            }
+
+            streams.Add(new EbinRecord(
+                new ContentSchemaIdentityAssignment("native/mesh-color").SchemaId,
+                1,
+                0,
+                [
+                    EbinPrimitives.UInt32(1, 16),
+                    CreateMeshFixedArrayField(2, elementKind: 16, stride: 16, colorElements),
+                ]));
+        }
+
         if (skeletonAssetId is not null)
         {
             var jointIndices = new byte[24];
+
+            if (useMixedJointInfluences)
+            {
+                for (var vertexIndex = 0; vertexIndex < 3; vertexIndex++)
+                {
+                    var jointOffset = vertexIndex * 8;
+                    BinaryPrimitives.WriteUInt16LittleEndian(jointIndices.AsSpan(jointOffset), 0);
+                    BinaryPrimitives.WriteUInt16LittleEndian(jointIndices.AsSpan(jointOffset + 2), 1);
+                    BinaryPrimitives.WriteUInt16LittleEndian(jointIndices.AsSpan(jointOffset + 4), 1);
+                    BinaryPrimitives.WriteUInt16LittleEndian(jointIndices.AsSpan(jointOffset + 6), 0);
+                }
+            }
+
             var jointStream = new EbinRecord(
                 new ContentSchemaIdentityAssignment("native/mesh-joints").SchemaId,
                 1,
@@ -210,7 +248,16 @@ internal sealed partial class SceneAssetStoreTests
 
             for (var index = 0; index < 3; index++)
             {
-                BinaryPrimitives.WriteInt32LittleEndian(weights.AsSpan(index * 16), BitConverter.SingleToInt32Bits(1.0f));
+                var weightOffset = index * 16;
+                var weight = useMixedJointInfluences ? 0.25f : 1.0f;
+                BinaryPrimitives.WriteInt32LittleEndian(weights.AsSpan(weightOffset), BitConverter.SingleToInt32Bits(weight));
+
+                if (useMixedJointInfluences)
+                {
+                    BinaryPrimitives.WriteInt32LittleEndian(weights.AsSpan(weightOffset + 4), BitConverter.SingleToInt32Bits(weight));
+                    BinaryPrimitives.WriteInt32LittleEndian(weights.AsSpan(weightOffset + 8), BitConverter.SingleToInt32Bits(weight));
+                    BinaryPrimitives.WriteInt32LittleEndian(weights.AsSpan(weightOffset + 12), BitConverter.SingleToInt32Bits(weight));
+                }
             }
 
             var weightStream = new EbinRecord(
