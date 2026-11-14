@@ -146,6 +146,7 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             InitialReplayLineageId = Guid.NewGuid(),
             WorldGuid = Guid.NewGuid(),
         });
+        var sourceEntity = world.CreateEntity(new EntityDescription());
         _ = world.Step();
         using var lease = world.AcquirePersistenceCaptureLease();
         Assert.That(
@@ -237,13 +238,77 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
         var readContents = WorldPersistenceCheckpointWriter.ReadContents(
             firstFileRecord,
             limits,
-            null,
+            registration,
             schemas,
             new uint[assetIdCount],
             new WorldPersistenceIdentityScratchEntry[identityAssignmentCount],
             lineageMembershipScratch);
         Assert.That(readContents.WorldContents.Ecs.LineageMembershipCount, Is.EqualTo(1));
         Assert.That(lineageMembershipScratch[0], Is.EqualTo(world.ReplayLineageId));
+        capturedRecordUse.Dispose();
+        retainedCaptureReservation.Dispose();
+        lease.Dispose();
+
+        var identityHistory = readContents.WorldContents.Ecs.ValidatedIdentityHistory
+            ?? throw new InvalidOperationException("The captured checkpoint did not retain its validated identity history.");
+        var branchId = Guid.NewGuid();
+        var restoreState = WorldRestoreIdentityState.CreateBranch(
+            identityHistory,
+            branchId,
+            readContents.CheckpointDigest.Span,
+            readContents.NextTick,
+            isStrictLocal: false,
+            readContents.WorldContents.Configuration);
+        Assert.That(
+            world.TryPrepareLoadReplacement(
+                world.WorldGuid,
+                sourceBytes: 4096,
+                targetBytes: 4096,
+                dataBytes: 4096,
+                cleanupBytes: 4096,
+                out var replacementPreparation,
+                out var bindingRefusal,
+                out var admissionRefusal),
+            Is.True);
+        Assert.That(bindingRefusal.IsNone, Is.True);
+        Assert.That(admissionRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+        using (var preparation = replacementPreparation
+            ?? throw new InvalidOperationException("The captured World did not admit its branch replacement."))
+        {
+            Assert.That(
+                world.TryPrepareRestoreConstructionPlan(
+                    restoreState,
+                    readContents.WorldContents.Configuration,
+                    preparation,
+                    readContents.WorldContents.Clock.TickRate,
+                    readContents.WorldContents.Clock.TimeScale,
+                    out var constructionPlan,
+                    out bindingRefusal,
+                    out admissionRefusal),
+                Is.True);
+            Assert.That(bindingRefusal.IsNone, Is.True);
+            Assert.That(admissionRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+            var plan = constructionPlan
+                ?? throw new InvalidOperationException("The captured World did not produce its restore construction plan.");
+
+            try
+            {
+                using var candidate = World.CreateRestoreCandidate(plan);
+                World.InitializeRestoreCandidate(candidate);
+                candidate.RestoreEmptyEcsRows(
+                    readContents.WorldContents.EcsRecord,
+                    readContents.WorldContents.Ecs,
+                    CancellationToken.None);
+                var sourceEntityId = world.GetEntityId(sourceEntity);
+                Assert.That(candidate.TryGetEntity(sourceEntityId, out var restoredEntity), Is.True);
+                Assert.That(candidate.GetEntityId(restoredEntity), Is.EqualTo(sourceEntityId));
+                Assert.That(restoredEntity.OwnerId, Is.EqualTo(candidate.OwnerId));
+            }
+            finally
+            {
+                plan.ReleaseUntransferredRestoreResources();
+            }
+        }
 
         var tamperedFileRecord = (byte[])firstFileRecord.Clone();
         var fileDigestOffset = FindSequence(tamperedFileRecord, firstFileContentDigest);
@@ -253,9 +318,6 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             () => WorldPersistenceCheckpointWriter.ReadTransactionGeneration(tamperedFileRecord, limits),
             Throws.ArgumentException);
 
-        capturedRecordUse.Dispose();
-        retainedCaptureReservation.Dispose();
-        lease.Dispose();
         world.SetTimeScale(0.5f);
         _ = world.Step();
         using var nextLease = world.AcquirePersistenceCaptureLease();
