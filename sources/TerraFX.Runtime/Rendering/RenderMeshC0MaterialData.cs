@@ -17,7 +17,8 @@ internal readonly struct RenderMeshC0MaterialData
     internal RenderMeshC0MaterialData(
         RenderMaterialAsset material,
         bool hasBaseColorTexture,
-        bool hasEmissiveTexture)
+        bool hasEmissiveTexture,
+        bool hasPackedMetalRoughOcclusionTexture)
     {
         ArgumentNullException.ThrowIfNull(material);
         _baseColor = material.Parameters.Color;
@@ -26,7 +27,7 @@ internal readonly struct RenderMeshC0MaterialData
             material.Parameters.Roughness,
             hasBaseColorTexture ? 1.0f : 0.0f,
             hasEmissiveTexture ? 1.0f : 0.0f);
-        _emissive = new Vector4(material.Parameters.Emissive, 0.0f);
+        _emissive = new Vector4(material.Parameters.Emissive, hasPackedMetalRoughOcclusionTexture ? 1.0f : 0.0f);
     }
 
     private static void WriteSingle(Span<byte> destination, int offset, float value)

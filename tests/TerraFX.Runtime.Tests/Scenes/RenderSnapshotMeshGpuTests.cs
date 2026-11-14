@@ -62,6 +62,7 @@ internal sealed partial class SceneAssetStoreTests
         bool unsupportedActiveLight = false,
         bool useBaseColorTexture = false,
         bool useEmissiveTexture = false,
+        bool usePackedMetalRoughOcclusionTexture = false,
         bool unsupportedTextureSampler = false,
         bool missingTextureUv0 = false)
     {
@@ -75,14 +76,18 @@ internal sealed partial class SceneAssetStoreTests
         const uint MaterialAssetId = 2;
         const uint BaseColorTextureAssetId = 4;
         const uint EmissiveTextureAssetId = 5;
+        const uint PackedTextureAssetId = 6;
         const int SceneAssetId = 3;
         var sceneAssetId = new AssetId(SceneAssetId);
         var materialRecord = CreateRenderMaterialAssetRecord(
             isSprite: false,
             CreateRenderMaterialPbrParametersRecord(
                 baseTextureAssetId: useBaseColorTexture ? checked((int)BaseColorTextureAssetId) : null,
+                packedTextureAssetId: usePackedMetalRoughOcclusionTexture ? checked((int)PackedTextureAssetId) : null,
                 emissiveTextureAssetId: useEmissiveTexture ? checked((int)EmissiveTextureAssetId) : null,
+                metallic: usePackedMetalRoughOcclusionTexture ? 0.5f : 0.0f,
                 baseTextureAddressU: unsupportedTextureSampler ? (byte)1 : (byte)0,
+                packedTextureAddressU: unsupportedTextureSampler ? (byte)1 : (byte)0,
                 emissiveTextureAddressU: unsupportedTextureSampler ? (byte)1 : (byte)0,
                 emissiveFactor: useEmissiveTexture ? Vector3.UnitY : Vector3.Zero),
             alphaMode: (byte)(unsupportedAlphaMode ? 2 : 0),
@@ -111,7 +116,9 @@ internal sealed partial class SceneAssetStoreTests
                         skeletonAssetId: null,
                         groupCount: 2,
                         reverseWinding: true,
-                        includeUv0: (useBaseColorTexture || useEmissiveTexture) && !missingTextureUv0)))),
+                        includeUv0: (useBaseColorTexture
+                            || useEmissiveTexture
+                            || usePackedMetalRoughOcclusionTexture) && !missingTextureUv0)))),
             new Package.Entry(
                 MaterialAssetId,
                 Package.CreateEnvelope(MaterialAssetId, materialRecord)),
@@ -155,6 +162,25 @@ internal sealed partial class SceneAssetStoreTests
                             RenderTextureSemantic.Color,
                             RenderTextureMipPolicy.BaseOnly,
                             CreateRenderTextureMipRecord(0, 1, 1, [0, byte.MaxValue, 0, byte.MaxValue])))),
+            ];
+        }
+
+        if (usePackedMetalRoughOcclusionTexture)
+        {
+            packageEntries = [
+                .. packageEntries,
+                new Package.Entry(
+                    PackedTextureAssetId,
+                    Package.CreateEnvelope(
+                        PackedTextureAssetId,
+                        CreateRenderTextureAssetRecord(
+                            1,
+                            1,
+                            RenderTextureColorSpace.Linear,
+                            RenderTextureAlphaMode.Straight,
+                            RenderTextureSemantic.Data,
+                            RenderTextureMipPolicy.BaseOnly,
+                            CreateRenderTextureMipRecord(0, 1, 1, [byte.MaxValue, byte.MaxValue, 0, byte.MaxValue])))),
             ];
         }
 
@@ -302,7 +328,10 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(plan.BuiltInSpriteState?.MeshPasses, Has.Count.EqualTo(2));
             Assert.That(
                 plan.BuiltInSpriteState?.MeshDeferredTextures,
-                Has.Length.EqualTo((useBaseColorTexture ? 1 : 0) + (useEmissiveTexture ? 1 : 0)));
+                Has.Length.EqualTo(
+                    (useBaseColorTexture ? 1 : 0)
+                    + (useEmissiveTexture ? 1 : 0)
+                    + (usePackedMetalRoughOcclusionTexture ? 1 : 0)));
             var meshVertexBufferCount = 0;
             var meshIndexBufferCount = 0;
 
@@ -428,6 +457,13 @@ internal sealed partial class SceneAssetStoreTests
     [TestCase(GraphicsBackend.Vulkan)]
     public Task SnapshotBuiltInMeshC0GraphRendersEmissiveTextureAsync(GraphicsBackend graphicsBackend)
         => RunSnapshotBuiltInMeshC0GraphAsync(graphicsBackend, useEmissiveTexture: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphRendersPackedMetalRoughOcclusionTextureAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            usePackedMetalRoughOcclusionTexture: true);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]

@@ -38,6 +38,11 @@ Texture2D<float4> BaseColorTexture : register(t0, space1);
 Texture2D<float4> EmissiveTexture : register(t1, space1);
 
 #if defined(TERRAFX_SPIRV)
+[[vk::binding(18, 1)]]
+#endif
+Texture2D<float4> PackedMetalRoughOcclusionTexture : register(t2, space1);
+
+#if defined(TERRAFX_SPIRV)
 [[vk::binding(40, 1)]]
 #endif
 SamplerState BaseColorSampler : register(s0, space1);
@@ -46,6 +51,11 @@ SamplerState BaseColorSampler : register(s0, space1);
 [[vk::binding(41, 1)]]
 #endif
 SamplerState EmissiveSampler : register(s1, space1);
+
+#if defined(TERRAFX_SPIRV)
+[[vk::binding(42, 1)]]
+#endif
+SamplerState PackedMetalRoughOcclusionSampler : register(s2, space1);
 
 struct PixelInput
 {
@@ -73,11 +83,21 @@ float4 PSMain(PixelInput input) : SV_Target0
         baseColor *= BaseColorTexture.Sample(BaseColorSampler, input.Uv0).rgb;
     }
 
-    float metallic = Factors.x;
-    float roughness = Factors.y;
+    float3 packedMetalRoughOcclusion = float3(1.0f, 1.0f, 1.0f);
+
+    if (Emissive.w > 0.0f)
+    {
+        packedMetalRoughOcclusion = PackedMetalRoughOcclusionTexture.Sample(
+            PackedMetalRoughOcclusionSampler,
+            input.Uv0).rgb;
+    }
+
+    float metallic = Factors.x * packedMetalRoughOcclusion.b;
+    float roughness = max(Factors.y * packedMetalRoughOcclusion.g, 0.045f);
+    float occlusion = packedMetalRoughOcclusion.r;
     float3 n = normalize(input.WorldNormal);
     float3 v = normalize(CameraPosition.xyz - input.WorldPosition);
-    float3 color = AmbientIrradiance.rgb * baseColor * (1.0f - metallic) / 3.14159265358979323846f;
+    float3 color = AmbientIrradiance.rgb * baseColor * (1.0f - metallic) * occlusion / 3.14159265358979323846f;
 
     if (LightRadiance.w > 0.0f)
     {

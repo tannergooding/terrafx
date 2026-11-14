@@ -73,10 +73,12 @@ public sealed partial class Renderer
         ReadOnlySpan<RenderMaterialAsset> materials,
         ReadOnlySpan<bool> hasBaseColorTextures,
         ReadOnlySpan<bool> hasEmissiveTextures,
+        ReadOnlySpan<bool> hasPackedMetalRoughOcclusionTextures,
         int uniformStride)
     {
         if ((hasBaseColorTextures.Length != materials.Length)
-            || (hasEmissiveTextures.Length != materials.Length))
+            || (hasEmissiveTextures.Length != materials.Length)
+            || (hasPackedMetalRoughOcclusionTextures.Length != materials.Length))
         {
             throw new ArgumentException("Mesh texture-presence flags must match the Material count.");
         }
@@ -88,7 +90,8 @@ public sealed partial class Renderer
             new RenderMeshC0MaterialData(
                 materials[index],
                 hasBaseColorTextures[index],
-                hasEmissiveTextures[index]).WriteTo(
+                hasEmissiveTextures[index],
+                hasPackedMetalRoughOcclusionTextures[index]).WriteTo(
                 buffer.AsSpan(checked(index * uniformStride), RenderMeshC0MaterialData.SizeInBytes));
         }
 
@@ -187,10 +190,9 @@ public sealed partial class Renderer
         && material.DoubleSided
         && (material.CullMode == RenderMaterialAsset.MaterialCullMode.None)
         && (material.RequiredCapabilities == 0x191)
-        && !material.Parameters.PackedMetalRoughOcclusion.HasValue
         && !material.Parameters.NormalTexture.HasValue;
 
-    private static bool IsSupportedMeshC0ColorTexture(RenderMaterialAsset.TextureBinding binding)
+    private static bool IsSupportedMeshC0Texture(RenderMaterialAsset.TextureBinding binding)
         => (binding.UvSet == 0)
         && (binding.Sampler.Minification == 1)
         && (binding.Sampler.Magnification == 1)
@@ -271,10 +273,12 @@ public sealed partial class Renderer
         var materialAssets = new List<RenderMaterialAsset>(selectedDrawCount);
         var hasBaseColorTextures = new List<bool>(selectedDrawCount);
         var hasEmissiveTextures = new List<bool>(selectedDrawCount);
+        var hasPackedMetalRoughOcclusionTextures = new List<bool>(selectedDrawCount);
         var vertexBytesByMesh = new List<byte[]>(selectedDrawCount);
         var indexBytesByMesh = new List<byte[]>(selectedDrawCount);
         var baseColorTextureVersions = new GraphTextureVersion?[meshSnapshot.MeshDraws.Length];
         var emissiveTextureVersions = new GraphTextureVersion?[meshSnapshot.MeshDraws.Length];
+        var packedMetalRoughOcclusionTextureVersions = new GraphTextureVersion?[meshSnapshot.MeshDraws.Length];
         var meshGeometryIndices = new int[meshSnapshot.MeshDraws.Length];
         Array.Fill(meshGeometryIndices, -1);
         var meshGeometryIndexByKey = new Dictionary<(Guid SceneInstanceId, int MeshAssetId), int>();
@@ -295,25 +299,30 @@ public sealed partial class Renderer
 
             if (!IsMeshC0Material(material))
             {
-                throw new NotSupportedException("Mesh C0 admits only opaque, double-sided PBR materials with optional base-color and emissive color textures.");
+                throw new NotSupportedException("Mesh C0 admits only opaque, double-sided PBR materials with supported base-color, emissive, and packed data textures.");
             }
 
             var baseColorTexture = material.Parameters.BaseTexture;
             var emissiveTexture = material.Parameters.EmissiveTexture;
+            var packedMetalRoughOcclusionTexture = material.Parameters.PackedMetalRoughOcclusion;
 
-            if (baseColorTexture.HasValue || emissiveTexture.HasValue)
+            if (baseColorTexture.HasValue
+                || emissiveTexture.HasValue
+                || packedMetalRoughOcclusionTexture.HasValue)
             {
                 if ((baseColorTexture is RenderMaterialAsset.TextureBinding baseTextureBinding
-                        && !IsSupportedMeshC0ColorTexture(baseTextureBinding))
+                        && !IsSupportedMeshC0Texture(baseTextureBinding))
                     || (emissiveTexture is RenderMaterialAsset.TextureBinding emissiveTextureBinding
-                        && !IsSupportedMeshC0ColorTexture(emissiveTextureBinding)))
+                        && !IsSupportedMeshC0Texture(emissiveTextureBinding))
+                    || (packedMetalRoughOcclusionTexture is RenderMaterialAsset.TextureBinding packedTextureBinding
+                        && !IsSupportedMeshC0Texture(packedTextureBinding)))
                 {
-                    throw new NotSupportedException("Mesh C0 color textures require UV0, linear minification/magnification, no mip filtering, and clamp addressing.");
+                    throw new NotSupportedException("Mesh C0 textures require UV0, linear minification/magnification, no mip filtering, and clamp addressing.");
                 }
 
                 if (mesh.Uv0.IsDefault)
                 {
-                    throw new NotSupportedException("Mesh C0 color textures require an authored UV0 vertex stream.");
+                    throw new NotSupportedException("Mesh C0 textures require an authored UV0 vertex stream.");
                 }
 
                 if (baseColorTexture is RenderMaterialAsset.TextureBinding selectedBaseTexture)
@@ -335,6 +344,17 @@ public sealed partial class Renderer
                         draw.MaterialAssetId,
                         drawIndex,
                         selectedEmissiveTexture,
+                        meshTextureVersionsByKey);
+                }
+
+                if (packedMetalRoughOcclusionTexture is RenderMaterialAsset.TextureBinding selectedPackedTexture)
+                {
+                    packedMetalRoughOcclusionTextureVersions[drawIndex] = GetMeshC0TextureVersion(
+                        graph,
+                        sceneAssets,
+                        draw.MaterialAssetId,
+                        drawIndex,
+                        selectedPackedTexture,
                         meshTextureVersionsByKey);
                 }
             }
@@ -359,6 +379,7 @@ public sealed partial class Renderer
             materialAssets.Add(material);
             hasBaseColorTextures.Add(baseColorTexture.HasValue);
             hasEmissiveTextures.Add(emissiveTexture.HasValue);
+            hasPackedMetalRoughOcclusionTextures.Add(packedMetalRoughOcclusionTexture.HasValue);
             var geometryKey = (draw.SceneInstanceId, draw.MeshAssetId);
 
             if (!meshGeometryIndexByKey.TryGetValue(geometryKey, out var meshGeometryIndex))
@@ -378,6 +399,7 @@ public sealed partial class Renderer
             CollectionsMarshal.AsSpan(materialAssets),
             CollectionsMarshal.AsSpan(hasBaseColorTextures),
             CollectionsMarshal.AsSpan(hasEmissiveTextures),
+            CollectionsMarshal.AsSpan(hasPackedMetalRoughOcclusionTextures),
             uniformStride);
         var frameBuffer = graph.CreateInitializedTransientBuffer(
             new BufferDescription(
@@ -554,7 +576,8 @@ public sealed partial class Renderer
                     vertexBuffer,
                     indexBuffer,
                     baseColorTextureVersions[drawIndex],
-                    emissiveTextureVersions[drawIndex]);
+                    emissiveTextureVersions[drawIndex],
+                    packedMetalRoughOcclusionTextureVersions[drawIndex]);
                 var pass = graph.AddBuiltInMeshRasterPass(
                     new RenderPassDescription(
                         $"TerraFX.MeshC0.Camera{cameraIndex}.Draw{orderIndex}",
@@ -604,6 +627,17 @@ public sealed partial class Renderer
                     graph.ReadTexture(
                         pass,
                         emissiveTextureVersion,
+                        GraphTextureUsage.SampledRead,
+                        new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
+                }
+
+                if (packedMetalRoughOcclusionTextureVersions[drawIndex] is GraphTextureVersion packedTextureVersion
+                    && (baseColorTextureVersions[drawIndex]?.ResourceId != packedTextureVersion.ResourceId)
+                    && (emissiveTextureVersions[drawIndex]?.ResourceId != packedTextureVersion.ResourceId))
+                {
+                    graph.ReadTexture(
+                        pass,
+                        packedTextureVersion,
                         GraphTextureUsage.SampledRead,
                         new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
                 }

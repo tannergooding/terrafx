@@ -22,7 +22,8 @@ internal sealed class RenderMeshC0GraphPass
         GraphBufferVersion vertexBuffer,
         GraphBufferVersion indexBuffer,
         GraphTextureVersion? baseColorTexture,
-        GraphTextureVersion? emissiveTexture)
+        GraphTextureVersion? emissiveTexture,
+        GraphTextureVersion? packedMetalRoughOcclusionTexture)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(drawIndex);
         ArgumentNullException.ThrowIfNull(frameBuffer);
@@ -50,6 +51,7 @@ internal sealed class RenderMeshC0GraphPass
         IndexBuffer = indexBuffer;
         BaseColorTexture = baseColorTexture;
         EmissiveTexture = emissiveTexture;
+        PackedMetalRoughOcclusionTexture = packedMetalRoughOcclusionTexture;
     }
 
     internal GraphTextureVersion? BaseColorTexture { get; }
@@ -78,11 +80,15 @@ internal sealed class RenderMeshC0GraphPass
 
     internal int ObjectStride { get; }
 
+    internal GraphTextureVersion? PackedMetalRoughOcclusionTexture { get; }
+
     internal GraphBufferVersion VertexBuffer { get; }
 
     internal void Record(scoped ref CommandRecorder recorder, RenderBuiltInSubmissionResources resources)
     {
-        var hasTexture = (BaseColorTexture is not null) || (EmissiveTexture is not null);
+        var hasTexture = (BaseColorTexture is not null)
+            || (EmissiveTexture is not null)
+            || (PackedMetalRoughOcclusionTexture is not null);
         var pipeline = (hasTexture ? resources.TexturedMeshPipeline : resources.MeshPipeline)
             ?? throw new InvalidOperationException("The built-in Mesh pass has no Mesh pipeline.");
         recorder.SetPipeline(pipeline.Handle);
@@ -95,7 +101,7 @@ internal sealed class RenderMeshC0GraphPass
             IndexBuffer,
             new GraphBufferRange(0, IndexBuffer.Description.ByteLength),
             MeshIndexFormat == RenderMeshIndexFormat.UInt16 ? TerraFX.Graphics.IndexFormat.UInt16 : TerraFX.Graphics.IndexFormat.UInt32));
-        var sharedTexture = BaseColorTexture ?? EmissiveTexture;
+        var sharedTexture = BaseColorTexture ?? EmissiveTexture ?? PackedMetalRoughOcclusionTexture;
         ImmutableArray<TextureBinding> textures = hasTexture
             ? [
                 new TextureBinding(
@@ -112,6 +118,13 @@ internal sealed class RenderMeshC0GraphPass
                     EmissiveTexture ?? sharedTexture
                         ?? throw new InvalidOperationException("The textured Mesh pass has no emissive binding."),
                     new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)),
+                new TextureBinding(
+                    ShaderBindingGroup.Material,
+                    2,
+                    ShaderResourceKind.SampledImage,
+                    PackedMetalRoughOcclusionTexture ?? sharedTexture
+                        ?? throw new InvalidOperationException("The textured Mesh pass has no packed data binding."),
+                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)),
             ]
             : [];
         ImmutableArray<SamplerBinding> samplers = hasTexture
@@ -124,6 +137,11 @@ internal sealed class RenderMeshC0GraphPass
                 new SamplerBinding(
                     ShaderBindingGroup.Material,
                     1,
+                    resources.Sampler
+                        ?? throw new InvalidOperationException("The textured Mesh pass has no default sampler.")),
+                new SamplerBinding(
+                    ShaderBindingGroup.Material,
+                    2,
                     resources.Sampler
                         ?? throw new InvalidOperationException("The textured Mesh pass has no default sampler.")),
             ]
