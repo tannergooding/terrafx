@@ -15,6 +15,16 @@ internal static class WorldPersistenceIdentityBranchWriter
         out int recordBytes,
         out EbinStructuralDiagnostic? diagnostic)
     {
+        var current = branch.CurrentRecord;
+        return MeasureRecord(in current, limits, out recordBytes, out diagnostic);
+    }
+
+    internal static EbinWriteStatus MeasureRecord(
+        in World.WorldIdentityBranchRecord branch,
+        EbinReadLimits limits,
+        out int recordBytes,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
         Span<EbinFieldSource> fields = stackalloc EbinFieldSource[10];
         Span<byte> payloadStorage = stackalloc byte[128];
         var status = BuildFields(
@@ -42,6 +52,24 @@ internal static class WorldPersistenceIdentityBranchWriter
 
     internal static EbinWriteStatus Write(
         in World.IdentityBranchCaptureEnumerator branch,
+        EbinReadLimits limits,
+        scoped Span<byte> candidateStorage,
+        scoped Span<byte> destination,
+        out int bytesWritten,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        var current = branch.CurrentRecord;
+        return WriteRecord(
+            in current,
+            limits,
+            candidateStorage,
+            destination,
+            out bytesWritten,
+            out diagnostic);
+    }
+
+    internal static EbinWriteStatus WriteRecord(
+        in World.WorldIdentityBranchRecord branch,
         EbinReadLimits limits,
         scoped Span<byte> candidateStorage,
         scoped Span<byte> destination,
@@ -197,7 +225,7 @@ internal static class WorldPersistenceIdentityBranchWriter
     }
 
     private static EbinWriteStatus BuildFields(
-        in World.IdentityBranchCaptureEnumerator branch,
+        in World.WorldIdentityBranchRecord branch,
         Span<EbinFieldSource> fields,
         Span<byte> payloadStorage,
         out int fieldCount,
@@ -210,14 +238,22 @@ internal static class WorldPersistenceIdentityBranchWriter
         payloadBytes = 0;
         diagnostic = null;
 
-        if (!branch.CurrentForkSourceRecord.IsEmpty)
+        if (!branch.ForkSourceRecord.IsEmpty)
         {
             throw new NotSupportedException("The identity-branch writer does not yet support fork-source records.");
         }
 
+        var isRoot = branch.DirectoryIndex == 0;
+        var hasParent = branch.ParentBranchId.HasValue;
+
+        if (isRoot == hasParent)
+        {
+            throw new InvalidOperationException("The identity branch parent does not match its directory position.");
+        }
+
         var status = AddUInt16Field(
             1,
-            checked((ushort)branch.CurrentDirectoryIndex),
+            checked((ushort)branch.DirectoryIndex),
             fields,
             ref fieldCount,
             payloadStorage,
@@ -231,7 +267,7 @@ internal static class WorldPersistenceIdentityBranchWriter
 
         status = AddGuidField(
             2,
-            branch.CurrentBranchId,
+            branch.BranchId,
             isRequired: true,
             fields,
             ref fieldCount,
@@ -246,7 +282,7 @@ internal static class WorldPersistenceIdentityBranchWriter
 
         status = AddGuidField(
             3,
-            branch.CurrentLineageId,
+            branch.LineageId,
             isRequired: true,
             fields,
             ref fieldCount,
@@ -261,7 +297,7 @@ internal static class WorldPersistenceIdentityBranchWriter
 
         status = AddGuidField(
             4,
-            branch.CurrentNamespaceId,
+            branch.NamespaceId,
             isRequired: true,
             fields,
             ref fieldCount,
@@ -274,7 +310,7 @@ internal static class WorldPersistenceIdentityBranchWriter
             return status;
         }
 
-        if (branch.CurrentParentBranchId is Guid parentBranchId)
+        if (branch.ParentBranchId is Guid parentBranchId)
         {
             status = AddGuidField(
                 5,
@@ -294,7 +330,7 @@ internal static class WorldPersistenceIdentityBranchWriter
 
         status = AddInt64Field(
             6,
-            branch.CurrentCreatedAtNextTick,
+            branch.CreatedAtNextTick,
             fields,
             ref fieldCount,
             payloadStorage,
@@ -306,7 +342,7 @@ internal static class WorldPersistenceIdentityBranchWriter
             return status;
         }
 
-        var sourceCheckpointDigest = branch.CurrentSourceCheckpointDigest;
+        var sourceCheckpointDigest = branch.SourceCheckpointDigest;
 
         if (!sourceCheckpointDigest.IsEmpty)
         {
@@ -327,7 +363,7 @@ internal static class WorldPersistenceIdentityBranchWriter
 
         status = AddUInt8Field(
             9,
-            branch.CurrentKind,
+            branch.DirectoryIndex == 0 ? (byte)1 : (byte)2,
             fields,
             ref fieldCount,
             payloadStorage,
@@ -341,7 +377,7 @@ internal static class WorldPersistenceIdentityBranchWriter
 
         return AddInt64Field(
             10,
-            checked((long)branch.CurrentFirstAssignmentOrdinal),
+            checked((long)branch.FirstAssignmentOrdinal),
             fields,
             ref fieldCount,
             payloadStorage,

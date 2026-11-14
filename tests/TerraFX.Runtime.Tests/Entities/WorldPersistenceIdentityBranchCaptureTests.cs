@@ -50,6 +50,53 @@ internal sealed class WorldPersistenceIdentityBranchCaptureTests
     }
 
     [Test]
+    public void WritesBranchSourceCheckpointDigestAsOptionalBlob()
+    {
+        var digest = new byte[32];
+        digest[0] = 0xA5;
+        var branch = new World.WorldIdentityBranchRecord(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            createdAtNextTick: 5,
+            firstAssignmentOrdinal: 2,
+            directoryIndex: 1,
+            sourceCheckpointDigest: digest);
+
+        Assert.That(
+            WorldPersistenceIdentityBranchWriter.MeasureRecord(
+                in branch,
+                EbinReadLimits.Foundation,
+                out var recordBytes,
+                out var diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete));
+        Assert.That(diagnostic, Is.Null);
+        var candidate = new byte[recordBytes];
+        var destination = new byte[recordBytes];
+        Assert.That(
+            WorldPersistenceIdentityBranchWriter.WriteRecord(
+                in branch,
+                EbinReadLimits.Foundation,
+                candidate,
+                destination,
+                out var bytesWritten,
+                out diagnostic),
+            Is.EqualTo(EbinWriteStatus.Complete));
+        Assert.That(diagnostic, Is.Null);
+        Assert.That(bytesWritten, Is.EqualTo(recordBytes));
+
+        var record = new EbinRecordReadView(destination);
+        var digestField = record.GetField(6);
+        Assert.That(record.FieldCount, Is.EqualTo(9));
+        Assert.That(digestField.Tag, Is.EqualTo(7));
+        Assert.That(digestField.Kind, Is.EqualTo(13));
+        Assert.That(digestField.IsRequired, Is.False);
+        Assert.That(digestField.Count, Is.EqualTo(32));
+        Assert.That(digestField.Payload.ToArray(), Is.EqualTo(digest));
+    }
+
+    [Test]
     public void WritesRootAndOrdinaryIdentityBranchRecordsCanonically()
     {
         var registration = new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build();

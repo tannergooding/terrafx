@@ -648,6 +648,8 @@ public sealed partial class World
             }
         }
 
+        internal readonly WorldIdentityBranchRecord CurrentRecord => GetCurrentBranch();
+
         internal readonly ReadOnlyMemory<byte> CurrentSourceCheckpointDigest
         {
             get
