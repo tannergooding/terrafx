@@ -16,8 +16,10 @@ internal sealed class WorldConstructionPlan
     private readonly bool _ownsAdmissionDomain;
     private readonly bool _ownsWorkerPool;
     private readonly WorldGuidRegistry _registry;
+    private readonly WorldGuidReplacementPreparation? _replacementPreparation;
     private readonly ResolvedWorldOptions _resolvedOptions;
     private readonly WorldRestoreIdentityState? _restoreIdentityState;
+    private int _restoreResourcesState;
     private readonly WorldSystemQuarantineReservation _systemQuarantineReservation;
     private readonly WorldWorkerPool _workerPool;
     private readonly Guid _worldGuid;
@@ -40,7 +42,8 @@ internal sealed class WorldConstructionPlan
         StableIdentityLedger identityLedger,
         WorldSystemQuarantineReservation systemQuarantineReservation,
         WorldWorkerPool workerPool,
-        WorldRestoreIdentityState? restoreIdentityState = null)
+        WorldRestoreIdentityState? restoreIdentityState = null,
+        WorldGuidReplacementPreparation? replacementPreparation = null)
     {
         _resolvedOptions = resolvedOptions;
         ReplayLineageId = replayLineageId;
@@ -59,6 +62,7 @@ internal sealed class WorldConstructionPlan
         _systemQuarantineReservation = systemQuarantineReservation;
         _workerPool = workerPool;
         _restoreIdentityState = restoreIdentityState;
+        _replacementPreparation = replacementPreparation;
     }
 
     internal WorldAdmissionDomain AdmissionDomain => _admissionDomain;
@@ -83,6 +87,8 @@ internal sealed class WorldConstructionPlan
 
     internal WorldGuidRegistry Registry => _registry;
 
+    internal WorldGuidReplacementPreparation? ReplacementPreparation => _replacementPreparation;
+
     internal Guid ReplayLineageId { get; }
 
     internal ResolvedWorldOptions ResolvedOptions => _resolvedOptions;
@@ -96,6 +102,50 @@ internal sealed class WorldConstructionPlan
     internal Guid WorldGuid => _worldGuid;
 
     internal WorldGuidGrant WorldGuidGrant => _worldGuidGrant;
+
+    internal void ReleaseUntransferredRestoreResources()
+    {
+        if ((_restoreIdentityState is null) || (_restoreResourcesState != 0))
+        {
+            return;
+        }
+
+        _restoreResourcesState = 2;
+
+        try
+        {
+            if (!_admissionDomain.TryReleaseFreshLineage(_lineageGrant))
+            {
+                throw new InvalidOperationException("The untransferred restore lineage reservation could not be released.");
+            }
+        }
+        finally
+        {
+            try
+            {
+                _systemQuarantineReservation.Release();
+            }
+            finally
+            {
+                _domainReservation.Dispose();
+            }
+        }
+    }
+
+    internal void TransferRestoreResourcesToWorld()
+    {
+        if (_restoreIdentityState is null)
+        {
+            return;
+        }
+
+        if (_restoreResourcesState != 0)
+        {
+            throw new InvalidOperationException("The restore construction reservations were already transferred or released.");
+        }
+
+        _restoreResourcesState = 1;
+    }
 
     internal void ValidateForConstruction()
     {
@@ -126,9 +176,17 @@ internal sealed class WorldConstructionPlan
                     || (_restoreIdentityState.LineageMembership.WorldGuid != _worldGuid)
                     || (_restoreIdentityState.LineageMembership.ReplayLineageId != ReplayLineageId)
                     || (_restoreIdentityState.ActiveBranchId != _identityBranchId)
-                    || !ReferenceEquals(_restoreIdentityState.IdentityLedger, _identityLedger))))
+                    || !ReferenceEquals(_restoreIdentityState.IdentityLedger, _identityLedger)
+                    || (_replacementPreparation is null))))
         {
             throw new InvalidOperationException("The standalone World construction plan is incomplete or inconsistent.");
+        }
+
+        if (_restoreIdentityState is not null
+            && (!_replacementPreparation!.TryGetReplacementGrant(out var replacementGrant)
+                || !replacementGrant.Equals(_worldGuidGrant)))
+        {
+            throw new InvalidOperationException("The restore construction plan does not own its exact provisional WorldGuid grant.");
         }
     }
 }

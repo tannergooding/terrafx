@@ -70,11 +70,18 @@ internal sealed class WorldLoadPreparedState : IDisposable
         {
             try
             {
-                _sourceUse.Dispose();
+                ConstructionPlan.ReleaseUntransferredRestoreResources();
             }
             finally
             {
-                _packageLease.Dispose();
+                try
+                {
+                    _sourceUse.Dispose();
+                }
+                finally
+                {
+                    _packageLease.Dispose();
+                }
             }
         }
     }

@@ -288,6 +288,38 @@ internal sealed class WorldGuidRegistry
         }
     }
 
+    internal bool IsActive(in WorldGuidGrant grant)
+    {
+        if (!grant.IsOwnedBy(this))
+        {
+            return false;
+        }
+
+        using var scope = ReentrantGate.EnterScope(ref _admissionGate);
+
+        if (!IsKeyCellValid(grant.KeyCellIndex, grant.KeyGeneration)
+            || !IsBindingCellValid(grant.BindingCellIndex, grant.BindingGeneration)
+            || !IsUseCellValid(grant.OwnerUseCellIndex, grant.OwnerUseGeneration))
+        {
+            return false;
+        }
+
+        ref var keyCell = ref GetKeyCell(grant.KeyCellIndex);
+        ref var bindingCell = ref GetBindingCell(grant.BindingCellIndex);
+        ref var ownerUseCell = ref GetUseCell(grant.OwnerUseCellIndex);
+
+        return (keyCell._worldGuid == grant.WorldGuid)
+            && (bindingCell._state == CellStateActive)
+            && (bindingCell._keyCellIndex == grant.KeyCellIndex)
+            && (bindingCell._keyGeneration == grant.KeyGeneration)
+            && (ownerUseCell._state == CellStateReserved)
+            && (ownerUseCell._role == UseRoleOwner)
+            && (ownerUseCell._keyCellIndex == grant.KeyCellIndex)
+            && (ownerUseCell._keyGeneration == grant.KeyGeneration)
+            && (ownerUseCell._bindingCellIndex == grant.BindingCellIndex)
+            && (ownerUseCell._bindingGeneration == grant.BindingGeneration);
+    }
+
     internal bool TryCommitFresh(in WorldGuidGrant grant)
     {
         if (!grant.IsOwnedBy(this))

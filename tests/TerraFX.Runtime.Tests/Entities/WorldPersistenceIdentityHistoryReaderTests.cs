@@ -329,6 +329,99 @@ internal sealed class WorldPersistenceIdentityHistoryReaderTests
     }
 
     [Test]
+    public void CreatesReplacementConstructionPlanFromAdmittedBranchHistory()
+    {
+        using var domain = new WorldAdmissionDomain(8 * 1024 * 1024);
+        var history = CreateValidatedLiveEntityHistory();
+        var configuration = CreateConfiguration(maximumIdentityBranches: 2);
+        var branchId = Guid.NewGuid();
+        var sourceCheckpointDigest = new byte[32];
+        sourceCheckpointDigest[0] = 0xA5;
+        var restoreState = WorldRestoreIdentityState.CreateBranch(
+            history,
+            branchId,
+            sourceCheckpointDigest,
+            nextTick: 5,
+            isStrictLocal: false,
+            configuration);
+
+        Assert.That(domain.TryReserveWorld(4096, out var sourceReservation), Is.True);
+        using var retainedSourceReservation = sourceReservation!;
+        Assert.That(
+            domain.TryReserveFreshLineageHistory(
+                retainedSourceReservation,
+                history.LineageMembership,
+                out var sourceLineageGrant,
+                out _),
+            Is.True);
+        Assert.That(domain.TryCommitFreshLineage(sourceLineageGrant), Is.True);
+
+        var registration = new WorldRegistrationBuilder(new CompiledContentSchemaRegistry([])).Build();
+        using var targetWorld = World.Create(new WorldOptions(registration) {
+            AdmissionDomain = domain,
+            CpuWorkerCount = 0,
+            InitialReplayLineageId = Guid.NewGuid(),
+            WorldGuid = Guid.NewGuid(),
+        });
+        Assert.That(
+            targetWorld.TryPrepareLoadReplacement(
+                history.WorldGuid,
+                sourceBytes: 4096,
+                targetBytes: 4096,
+                dataBytes: 4096,
+                cleanupBytes: 4096,
+                out var replacementPreparation,
+                out var bindingRefusal,
+                out var operationRefusal),
+            Is.True);
+        Assert.That(bindingRefusal.IsNone, Is.True);
+        Assert.That(operationRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+        using var preparation = replacementPreparation!;
+
+        Assert.That(
+            targetWorld.TryPrepareRestoreConstructionPlan(
+                restoreState,
+                configuration,
+                preparation,
+                tickRate: 60,
+                timeScale: 1,
+                out var constructionPlan,
+                out bindingRefusal,
+                out operationRefusal),
+            Is.True);
+        Assert.That(bindingRefusal.IsNone, Is.True);
+        Assert.That(operationRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+        var plan = constructionPlan!;
+
+        try
+        {
+            plan.ValidateForConstruction();
+            Assert.Multiple(() => {
+                Assert.That(plan.WorldGuid, Is.EqualTo(history.WorldGuid));
+                Assert.That(plan.IdentityBranchId, Is.EqualTo(branchId));
+                Assert.That(plan.ReplayLineageId, Is.EqualTo(history.ReplayLineageId));
+                Assert.That(plan.RestoreIdentityState, Is.SameAs(restoreState));
+                Assert.That(plan.OwnsAdmissionDomain, Is.False);
+                Assert.That(plan.OwnsWorkerPool, Is.False);
+            });
+
+            using (var candidate = World.CreateRestoreCandidate(plan))
+            {
+                World.InitializeRestoreCandidate(candidate);
+            }
+
+            Assert.That(domain.TryReserveWorld(64, out var probeReservation), Is.True);
+            probeReservation!.Dispose();
+        }
+        finally
+        {
+            plan.ReleaseUntransferredRestoreResources();
+        }
+
+        Assert.That(domain.TryRollbackFreshLineage(sourceLineageGrant), Is.True);
+    }
+
+    [Test]
     public void ForkImportedIdentityRequiresValidForkSource()
     {
         var worldGuid = Guid.NewGuid();

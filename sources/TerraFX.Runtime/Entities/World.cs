@@ -273,6 +273,7 @@ public sealed partial class World : IDisposable
         _initialFrame3 = currentFrame3;
         _initialFrame2 = currentFrame2;
         _currentFrameCohort = new WorldFrameCohort(currentFrame3, currentFrame2, cohortGeneration: 1);
+        constructionPlan.TransferRestoreResourcesToWorld();
     }
 
     /// <summary>Gets the current 2D spatial frame, when 2D frame admission is enabled.</summary>
@@ -397,7 +398,21 @@ public sealed partial class World : IDisposable
             throw new ArgumentException("A restore candidate requires a validated target identity state.", nameof(constructionPlan));
         }
 
-        return new World(constructionPlan);
+        World? candidate = null;
+
+        try
+        {
+            candidate = new World(constructionPlan);
+            (constructionPlan.ReplacementPreparation
+                ?? throw new InvalidOperationException("The restore construction plan omitted its replacement preparation."))
+                .TransferReplacementGrantToCandidate();
+            return candidate;
+        }
+        catch
+        {
+            candidate?.Dispose();
+            throw;
+        }
     }
 
     internal static void InitializeRestoreCandidate(World candidate)
@@ -1234,7 +1249,8 @@ public sealed partial class World : IDisposable
 
             try
             {
-                lineageRetired = _admissionDomain.TryRollbackFreshLineage(_lineageGrant);
+                lineageRetired = _admissionDomain.TryRollbackFreshLineage(_lineageGrant)
+                    || _admissionDomain.TryReleaseFreshLineage(_lineageGrant);
             }
             finally
             {

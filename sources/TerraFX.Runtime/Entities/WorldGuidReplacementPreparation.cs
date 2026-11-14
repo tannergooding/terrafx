@@ -12,6 +12,7 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
     private readonly WorldGuidGrant _currentGrant;
     private bool _isCommitted;
     private bool _isDisposed;
+    private bool _isReplacementGrantTransferred;
     private readonly WorldGuidRegistry _registry;
     private readonly WorldGuidGrant _replacementGrant;
 
@@ -42,7 +43,7 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
             {
                 try
                 {
-                    if (!_registry.TryReleaseFresh(_replacementGrant))
+                    if (!_isReplacementGrantTransferred && !_registry.TryReleaseFresh(_replacementGrant))
                     {
                         throw new InvalidOperationException("The prepared WorldGuid successor grant could not be released.");
                     }
@@ -81,6 +82,42 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
         }
     }
 
+    internal bool IsBoundTo(WorldGuidRegistry registry, in WorldGuidGrant currentGrant)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+
+        lock (_gate)
+        {
+            return !_isDisposed
+                && !_isCommitted
+                && ReferenceEquals(_registry, registry)
+                && _currentGrant.Equals(currentGrant);
+        }
+    }
+
+    internal bool IsTargetCurrent()
+    {
+        lock (_gate)
+        {
+            return !_isDisposed
+                && !_isCommitted
+                && _registry.IsActive(_currentGrant);
+        }
+    }
+
+    internal void TransferReplacementGrantToCandidate()
+    {
+        lock (_gate)
+        {
+            if (_isDisposed || _isCommitted || _isReplacementGrantTransferred)
+            {
+                throw new InvalidOperationException("The prepared WorldGuid grant cannot be transferred to this candidate.");
+            }
+
+            _isReplacementGrantTransferred = true;
+        }
+    }
+
     internal bool TryCommit(out WorldGuidGrant replacementGrant)
     {
         lock (_gate)
@@ -98,7 +135,7 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
 
             if (!_registry.TryCommitReplacement(_currentGrant, _replacementGrant))
             {
-                if (!_registry.TryReleaseFresh(_replacementGrant))
+                if (!_isReplacementGrantTransferred && !_registry.TryReleaseFresh(_replacementGrant))
                 {
                     throw new InvalidOperationException("The rejected WorldGuid successor grant could not be released.");
                 }
@@ -129,7 +166,7 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
 
             if (!_registry.TryCommitReplacement(_currentGrant, _replacementGrant))
             {
-                if (!_registry.TryReleaseFresh(_replacementGrant))
+                if (!_isReplacementGrantTransferred && !_registry.TryReleaseFresh(_replacementGrant))
                 {
                     throw new InvalidOperationException("The rejected WorldGuid successor grant could not be released.");
                 }
@@ -146,6 +183,21 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
             replacementGrant = _replacementGrant;
             credits = _credits;
             _credits = null;
+            return true;
+        }
+    }
+
+    internal bool TryGetReplacementGrant(out WorldGuidGrant replacementGrant)
+    {
+        lock (_gate)
+        {
+            if (_isDisposed || _isCommitted)
+            {
+                replacementGrant = default;
+                return false;
+            }
+
+            replacementGrant = _replacementGrant;
             return true;
         }
     }
