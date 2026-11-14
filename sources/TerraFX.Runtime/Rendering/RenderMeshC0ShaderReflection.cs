@@ -68,6 +68,7 @@ internal static class RenderMeshC0ShaderReflection
                         new ShaderFieldLayout("AmbientIrradiance", ShaderValueType.Float4, 96, 16, 1, 0),
                         new ShaderFieldLayout("LightDirection", ShaderValueType.Float4, 112, 16, 1, 0),
                         new ShaderFieldLayout("LightRadiance", ShaderValueType.Float4, 128, 16, 1, 0),
+                        new ShaderFieldLayout("LightParameters", ShaderValueType.Float4, 144, 16, 1, 0),
                     ]),
                 new ShaderRecordLayout(
                     "MaterialData",
@@ -117,6 +118,7 @@ internal static class RenderMeshC0ShaderReflection
                         new ShaderFieldLayout("AmbientIrradiance", ShaderValueType.Float4, 96, 16, 1, 0),
                         new ShaderFieldLayout("LightDirection", ShaderValueType.Float4, 112, 16, 1, 0),
                         new ShaderFieldLayout("LightRadiance", ShaderValueType.Float4, 128, 16, 1, 0),
+                        new ShaderFieldLayout("LightParameters", ShaderValueType.Float4, 144, 16, 1, 0),
                     ]),
                 new ShaderRecordLayout(
                     "ObjectData",

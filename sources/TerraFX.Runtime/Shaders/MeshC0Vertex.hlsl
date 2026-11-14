@@ -15,6 +15,7 @@ cbuffer FrameData : register(b0, space0)
     float4 AmbientIrradiance;
     float4 LightDirection;
     float4 LightRadiance;
+    float4 LightParameters;
 };
 
 #if defined(TERRAFX_SPIRV)

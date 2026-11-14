@@ -30,20 +30,42 @@ public sealed partial class Renderer
         for (var cameraIndex = 0; cameraIndex < snapshot.Cameras.Length; cameraIndex++)
         {
             var camera = snapshot.Cameras[cameraIndex];
+            var lightPosition = Vector3.Zero;
+            var lightColor = Vector3.Zero;
+            var lightIntensity = 0.0f;
+            var lightRange = 0.0f;
+            var isPointLight = false;
+            var lightEnabled = false;
 
             if (!snapshot.MeshCameraOrders[cameraIndex].DrawIndices.IsEmpty)
             {
-                ValidateNoMeshC0Lights(snapshot, camera);
+                ValidateNoDirectionalOrSpotMeshC0Lights(snapshot, camera);
+
+                if (GetMeshC0PointLight(snapshot, camera) is RenderPointLightSnapshot pointLight)
+                {
+                    if (!SpatialMath.TryToFrameRelative(pointLight.Position, camera.Frame3, out lightPosition))
+                    {
+                        throw new InvalidOperationException("The selected point light is outside the camera spatial frame.");
+                    }
+
+                    lightColor = pointLight.Color;
+                    lightIntensity = pointLight.LuminousFlux;
+                    lightRange = pointLight.Range;
+                    isPointLight = true;
+                    lightEnabled = true;
+                }
             }
 
             var area = RenderCameraViewport.CreateArea(camera.Viewport, snapshot.TargetExtent);
             RenderMeshC0FrameData.Create(
                 camera,
                 area,
-                Vector3.Zero,
-                Vector3.Zero,
-                illuminance: 0.0f,
-                lightEnabled: false).WriteTo(
+                lightPosition,
+                lightColor,
+                lightIntensity,
+                lightEnabled,
+                isPointLight,
+                lightRange).WriteTo(
                     buffer.AsSpan(checked(cameraIndex * frameStride), RenderMeshC0FrameData.SizeInBytes));
         }
 
@@ -147,6 +169,28 @@ public sealed partial class Renderer
             metadata3: 0);
     }
 
+    private static RenderPointLightSnapshot? GetMeshC0PointLight(RenderSnapshot3D snapshot, CameraSnapshot camera)
+    {
+        RenderPointLightSnapshot? selectedLight = null;
+
+        foreach (var light in snapshot.PointLights)
+        {
+            if ((light.LayerMask & camera.LayerMask) == 0)
+            {
+                continue;
+            }
+
+            if (selectedLight.HasValue)
+            {
+                throw new NotSupportedException("Mesh C0 currently admits at most one active point light per camera.");
+            }
+
+            selectedLight = light;
+        }
+
+        return selectedLight;
+    }
+
     private static GraphTextureVersion GetMeshC0TextureVersion(
         RenderGraph graph,
         RenderSnapshotAssetPins.SceneAssetPins sceneAssets,
@@ -210,21 +254,13 @@ public sealed partial class Renderer
         && (binding.Sampler.AddressU == 0)
         && (binding.Sampler.AddressV == 0);
 
-    private static void ValidateNoMeshC0Lights(RenderSnapshot3D snapshot, CameraSnapshot camera)
+    private static void ValidateNoDirectionalOrSpotMeshC0Lights(RenderSnapshot3D snapshot, CameraSnapshot camera)
     {
         foreach (var light in snapshot.DirectionalLights)
         {
             if ((light.LayerMask & camera.LayerMask) != 0)
             {
-                throw new NotSupportedException("Mesh C0 refuses active directional lights until the contracted shadow pass is available.");
-            }
-        }
-
-        foreach (var light in snapshot.PointLights)
-        {
-            if ((light.LayerMask & camera.LayerMask) != 0)
-            {
-                throw new NotSupportedException("Mesh C0 refuses point lights until their contracted attenuation and shadow paths are available.");
+                throw new NotSupportedException("Mesh C0 refuses directional lights until the contracted cascade-shadow pass is available.");
             }
         }
 

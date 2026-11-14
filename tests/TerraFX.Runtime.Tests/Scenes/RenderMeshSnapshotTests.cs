@@ -116,12 +116,18 @@ internal sealed partial class SceneAssetStoreTests
     private static EbinRecord CreateMeshPositionOrNormalStream(
         string schemaName,
         bool unitNormals = false,
-        Vector3? normalDirection = null)
+        Vector3? normalDirection = null,
+        Vector3? positionOffset = null)
     {
         var elements = new byte[36];
-        WriteMeshVector3(elements, unitNormals ? (normalDirection ?? Vector3.UnitZ) : Vector3.Zero);
-        WriteMeshVector3(elements.AsSpan(12), unitNormals ? (normalDirection ?? Vector3.UnitZ) : Vector3.UnitX);
-        WriteMeshVector3(elements.AsSpan(24), unitNormals ? (normalDirection ?? Vector3.UnitZ) : Vector3.UnitY);
+        var offset = positionOffset ?? Vector3.Zero;
+        WriteMeshVector3(elements, unitNormals ? (normalDirection ?? Vector3.UnitZ) : offset);
+        WriteMeshVector3(
+            elements.AsSpan(12),
+            unitNormals ? (normalDirection ?? Vector3.UnitZ) : offset + Vector3.UnitX);
+        WriteMeshVector3(
+            elements.AsSpan(24),
+            unitNormals ? (normalDirection ?? Vector3.UnitZ) : offset + Vector3.UnitY);
         return new EbinRecord(
             new ContentSchemaIdentityAssignment(schemaName).SchemaId,
             1,
@@ -137,9 +143,13 @@ internal sealed partial class SceneAssetStoreTests
         uint? skeletonAssetId,
         int groupCount = 2,
         bool reverseWinding = false,
-        bool includeUv0 = false)
+        bool includeUv0 = false,
+        Vector3? positionOffset = null)
     {
-        var positions = CreateMeshPositionOrNormalStream("native/mesh-position");
+        var offset = positionOffset ?? Vector3.Zero;
+        var positions = CreateMeshPositionOrNormalStream(
+            "native/mesh-position",
+            positionOffset: offset);
         var normals = CreateMeshPositionOrNormalStream(
             "native/mesh-normal",
             unitNormals: true,
@@ -212,9 +222,9 @@ internal sealed partial class SceneAssetStoreTests
             1,
             0,
             [
-                EbinPrimitives.Geometry(1, Vector3.Zero),
-                EbinPrimitives.Geometry(2, Vector3.One),
-                EbinPrimitives.Geometry(3, new Vector3(0.5f)),
+                EbinPrimitives.Geometry(1, offset),
+                EbinPrimitives.Geometry(2, Vector3.One + offset),
+                EbinPrimitives.Geometry(3, new Vector3(0.5f) + offset),
                 EbinPrimitives.Binary32(4, 1.0f),
             ]);
         var fields = new System.Collections.Generic.List<EbinField> {

@@ -60,6 +60,7 @@ internal sealed partial class SceneAssetStoreTests
         GraphicsBackend graphicsBackend,
         bool unsupportedCullMode = false,
         bool unsupportedActiveLight = false,
+        bool usePointLight = false,
         bool useAlphaMask = false,
         bool useAlphaBlend = false,
         bool useBaseColorTexture = false,
@@ -112,6 +113,11 @@ internal sealed partial class SceneAssetStoreTests
             meshComponents = [.. meshComponents, CreateDirectionalLightRecord(ulong.MaxValue, enabled: true, priority: 0)];
         }
 
+        if (usePointLight)
+        {
+            meshComponents = [.. meshComponents, CreatePointLightRecord(ulong.MaxValue)];
+        }
+
         var sceneRecord = SceneAssetReaderTests.Fixtures.CreateScene(
             sceneAssetId,
             additionalEntityComponents: meshComponents);
@@ -126,7 +132,8 @@ internal sealed partial class SceneAssetStoreTests
                         reverseWinding: true,
                         includeUv0: (useBaseColorTexture
                             || useEmissiveTexture
-                            || usePackedMetalRoughOcclusionTexture) && !missingTextureUv0)))),
+                            || usePackedMetalRoughOcclusionTexture) && !missingTextureUv0,
+                        positionOffset: usePointLight ? Vector3.UnitZ : null)))),
             new Package.Entry(
                 MaterialAssetId,
                 Package.CreateEnvelope(MaterialAssetId, materialRecord)),
@@ -414,17 +421,28 @@ internal sealed partial class SceneAssetStoreTests
             Assert.Multiple(() => {
                 Assert.That(coloredPixelCount, Is.GreaterThan(0), $"Mesh C0 emitted no lit pixels; raster bounds were [{minimumX},{minimumY}]-[{maximumX},{maximumY}].");
                 Assert.That(firstColoredPixelOffset, Is.GreaterThanOrEqualTo(0));
-                Assert.That(
-                    readbackBytes[firstColoredPixelOffset],
-                    Is.EqualTo(useAlphaBlend ? useBaseColorTexture ? (byte)119 : (byte)153 : (byte)2));
-                Assert.That(
-                    readbackBytes[firstColoredPixelOffset + 1],
-                    Is.EqualTo(useAlphaBlend
-                        ? useBaseColorTexture ? 0 : 2
-                        : useEmissiveTexture ? 128 : useBaseColorTexture ? 0 : 2));
-                Assert.That(
-                    readbackBytes[firstColoredPixelOffset + 2],
-                    Is.EqualTo(useBaseColorTexture ? 0 : 2));
+
+                if (usePointLight)
+                {
+                    Assert.That(readbackBytes[firstColoredPixelOffset], Is.GreaterThan(2));
+                    Assert.That(readbackBytes[firstColoredPixelOffset + 1], Is.GreaterThan(readbackBytes[firstColoredPixelOffset]));
+                    Assert.That(readbackBytes[firstColoredPixelOffset + 2], Is.GreaterThan(readbackBytes[firstColoredPixelOffset + 1]));
+                }
+                else
+                {
+                    Assert.That(
+                        readbackBytes[firstColoredPixelOffset],
+                        Is.EqualTo(useAlphaBlend ? useBaseColorTexture ? (byte)119 : (byte)153 : (byte)2));
+                    Assert.That(
+                        readbackBytes[firstColoredPixelOffset + 1],
+                        Is.EqualTo(useAlphaBlend
+                            ? useBaseColorTexture ? 0 : 2
+                            : useEmissiveTexture ? 128 : useBaseColorTexture ? 0 : 2));
+                    Assert.That(
+                        readbackBytes[firstColoredPixelOffset + 2],
+                        Is.EqualTo(useBaseColorTexture ? 0 : 2));
+                }
+
                 Assert.That(readbackBytes[firstColoredPixelOffset + 3], Is.EqualTo(byte.MaxValue));
                 Assert.That(readbackBytes.AsSpan(0, 4).ToArray(), Is.EqualTo(new byte[] { 0, 0, 0, byte.MaxValue }));
             });
@@ -515,6 +533,11 @@ internal sealed partial class SceneAssetStoreTests
         => RunSnapshotBuiltInMeshC0GraphAsync(
             graphicsBackend,
             usePackedMetalRoughOcclusionTexture: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphRendersSinglePointLightAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(graphicsBackend, usePointLight: true);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
