@@ -408,6 +408,15 @@ internal sealed class WorldPersistenceIdentityHistoryReaderTests
             using (var candidate = World.CreateRestoreCandidate(plan))
             {
                 World.InitializeRestoreCandidate(candidate);
+                var entityId = history.AssignmentsByOrdinal[0].StableId;
+                var restoredEntity = candidate.ResolveRestoreEntity(entityId);
+                Assert.Multiple(() => {
+                    Assert.That(restoredEntity.OwnerId, Is.EqualTo(candidate.OwnerId));
+                    Assert.That(restoredEntity.Index, Is.EqualTo(1));
+                    Assert.That(restoredEntity.Generation, Is.EqualTo(1));
+                });
+                _ = Assert.Throws<InvalidOperationException>(() => candidate.ResolveRestoreEntity(Guid.NewGuid()));
+                _ = Assert.Throws<ArgumentException>(() => candidate.ResolveRestoreEntity(Guid.Empty));
             }
 
             Assert.That(domain.TryReserveWorld(64, out var probeReservation), Is.True);
