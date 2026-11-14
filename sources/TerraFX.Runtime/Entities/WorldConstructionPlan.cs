@@ -123,6 +123,8 @@ internal sealed class WorldConstructionPlan
             || ((_restoreIdentityState is not null)
                 && ((_restoreIdentityState.WorldGuid != _worldGuid)
                     || (_restoreIdentityState.ReplayLineageId != ReplayLineageId)
+                    || (_restoreIdentityState.LineageMembership.WorldGuid != _worldGuid)
+                    || (_restoreIdentityState.LineageMembership.ReplayLineageId != ReplayLineageId)
                     || (_restoreIdentityState.ActiveBranchId != _identityBranchId)
                     || !ReferenceEquals(_restoreIdentityState.IdentityLedger, _identityLedger))))
         {

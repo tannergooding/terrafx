@@ -15,6 +15,7 @@ internal sealed class WorldRestoreIdentityState
         Guid issuanceNamespace,
         long nextAssignmentOrdinal,
         long nextTick,
+        WorldPersistenceIdentityHistoryReader.ValidatedLineageMembership lineageMembership,
         StableIdentityLedger identityLedger,
         EntitySlotTable entitySlots,
         World.WorldIdentityBranchRecord[] branches,
@@ -29,6 +30,7 @@ internal sealed class WorldRestoreIdentityState
         IssuanceNamespace = issuanceNamespace;
         NextAssignmentOrdinal = nextAssignmentOrdinal;
         NextTick = nextTick;
+        LineageMembership = lineageMembership;
         IdentityLedger = identityLedger;
         EntitySlots = entitySlots;
         Branches = branches;
@@ -51,6 +53,8 @@ internal sealed class WorldRestoreIdentityState
     internal StableIdentityLedger IdentityLedger { get; }
 
     internal Guid IssuanceNamespace { get; }
+
+    internal WorldPersistenceIdentityHistoryReader.ValidatedLineageMembership LineageMembership { get; }
 
     internal uint[] LocatorsByOrdinal { get; }
 
@@ -200,6 +204,7 @@ internal sealed class WorldRestoreIdentityState
             targetBranchId,
             history.NextAssignmentOrdinal,
             nextTick,
+            history.LineageMembership,
             identityLedger,
             entitySlots,
             branches,
