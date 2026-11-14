@@ -35,11 +35,11 @@ The build declares the source files, relevant options, adapter/tool version and 
 
 Unsupported source features produce specific admission diagnostics. An explicit approximation is permitted only where the native owning subsystem admits it, with retained settings, affected counts, and recomputed bounds. Importer convenience cannot expand a physics shape set, material capability, animation influence budget, or executable-content trust boundary.
 
-## 3. glTF adapter
+## 3. glTF and Wavefront OBJ adapters
 
-glTF 2.0/GLB are admitted source choices, not native record definitions. [11](11-assets-import-streaming-and-packages.md#2-concrete-cooking) owns the supported subset and complete source validation/conversion: source meters per unit, basis/axial signs, winding/tangents, hierarchy/skins, key times/interpolation, and camera restrictions. All conversion occurs once at that adapter boundary; native loading applies none of it again.
+glTF 2.0/GLB and Wavefront OBJ are admitted source choices, not native record definitions. [11](11-assets-import-streaming-and-packages.md#21-bounded-static-mesh-adapters) owns the first supported static-Mesh subset and complete source validation/conversion. Both adapters share the declared RH Y-up +Z-forward meter convention, convert handedness and winding exactly once, and produce the same native Mesh/Material semantics for equivalent geometry. The initial subset excludes material import, textures, animation, and scene construction; those source features reject when present and selected. Native loading applies no source conversion.
 
-Direct native authoring and the glTF adapter must produce equivalent canonical geometry/camera/animation behavior for equivalent authored content. Their package bytes may differ when their effective inputs differ; behavioral equivalence does not require byte-identical source files. Importer/tool identity is a declared build input, not runtime asset identity.
+Direct native authoring bypasses source conversion but passes the same Mesh codec and package validators. Its use does not count as a second source adapter. Package bytes may differ when effective inputs differ; behavioral equivalence does not require byte-identical source files. Importer/tool identity is a declared build input, not runtime asset identity.
 
 ## 4. Acceptance obligations
 

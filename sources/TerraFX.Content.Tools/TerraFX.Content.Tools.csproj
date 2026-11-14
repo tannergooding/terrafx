@@ -9,11 +9,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="TerraFX.Content.Tools.Tests" Key="$(AssemblyOriginatorPublicKey)" />
     <InternalsVisibleTo Include="TerraFX.Graphics.Vulkan.Tests" Key="$(AssemblyOriginatorPublicKey)" />
     <InternalsVisibleTo Include="TerraFX.Runtime.Tests" Key="$(AssemblyOriginatorPublicKey)" />
     <ProjectReference Include="..\TerraFX.Graphics\TerraFX.Graphics.csproj" />
     <ProjectReference Include="..\TerraFX.Runtime\TerraFX.Runtime.csproj" />
     <ProjectReference Include="..\..\tools\TerraFX.ShaderCompiler\TerraFX.ShaderCompiler.csproj" />
+    <Content Include="ContentCooking.targets" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="ShaderToolchainManifest.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Shaders\*.hlsl" Link="Shaders\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

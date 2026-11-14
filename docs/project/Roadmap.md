@@ -17,5 +17,5 @@ This page tracks current milestone state and open gates; it is not implementatio
 ## Next work
 
 1. Close exact M03-B restore state-transfer, candidate-construction/issuance, and host schedule-adoption actors before implementing Chapter 27 Load and restored-World extraction.
-2. Select an explicit bounded source/output subset and a second independent adapter with overlapping native semantics before source-tool implementation; do not infer formats or approximations.
+2. Implement and observe the Chapter 11 GLB/OBJ static-Mesh adapter pair; do not broaden beyond its explicit source subset.
 3. Keep live animation and particles behind their owner contracts. Extend Mesh beyond its bounded C0 subset only with the applicable shadow, light, animation and material variants. Obtain the Chapter 19 attachment-scoped shadow render-area contract before native directional-shadow integration. Complete native/AOT/consumer qualification separately from M05 implementation and M08 release qualification.

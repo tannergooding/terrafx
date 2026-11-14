@@ -44,6 +44,27 @@ dotnet msbuild .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj -targe
 
 `TerraFXSkipShaderCompilation=true` explicitly skips shader compilation and is not shader validation.
 
+## Static Mesh content cooking
+
+Import `sources\TerraFX.Content.Tools\ContentCooking.targets` after declaring `TerraFXStaticMesh` items. Each item names one `.glb` or `.obj` source, a canonical Foundation profile record, a textureless native PBR Material record, stable Mesh/Material AssetIds, a `PackagePath`, and the format. OBJ items also declare `ObjConvention`:
+
+```xml
+<ItemGroup>
+  <ProjectReference Include="..\..\sources\TerraFX.Content.Tools\TerraFX.Content.Tools.csproj" ReferenceOutputAssembly="false" />
+  <TerraFXStaticMesh Include="Assets\triangle.glb">
+    <Format>glb</Format>
+    <ProfileRecord>Assets\profile.ebin</ProfileRecord>
+    <MaterialRecord>Assets\default-pbr.ebin</MaterialRecord>
+    <MeshAssetId>100</MeshAssetId>
+    <MaterialAssetId>101</MaterialAssetId>
+    <PackagePath>$(IntermediateOutputPath)Content\triangle.epkg</PackagePath>
+  </TerraFXStaticMesh>
+</ItemGroup>
+<Import Project="..\..\sources\TerraFX.Content.Tools\ContentCooking.targets" />
+```
+
+`TerraFXCookStaticMeshes` runs before `Build`, declares the source, profile, material, project/target files, and tool assembly as incremental inputs, and publishes only after the package has been decoded through the native Mesh/Material codecs. Set `TerraFXSkipContentCooking=true` only when intentionally skipping content cooking.
+
 ## Specialized procedures
 
 - [Graphics and rendering tests](Building.Graphics.md): D3D12/Vulkan setup, grouped rendering, shader fixtures, and optional budget-pressure probes.

@@ -1,0 +1,28 @@
+<!-- Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information. -->
+<Project>
+  <PropertyGroup>
+    <TerraFXContentToolsAssembly Condition="'$(TerraFXContentToolsAssembly)' == ''">$(MSBuildThisFileDirectory)..\..\artifacts\bin\sources\TerraFX.Content.Tools\$(Configuration)\$(TargetFramework)\TerraFX.Content.Tools.dll</TerraFXContentToolsAssembly>
+    <TerraFXSkipContentCooking Condition="'$(TerraFXSkipContentCooking)' == ''">false</TerraFXSkipContentCooking>
+  </PropertyGroup>
+
+  <Target Name="TerraFXCookStaticMeshes"
+          BeforeTargets="Build"
+          Condition="'@(TerraFXStaticMesh)' != '' and '$(TerraFXSkipContentCooking)' != 'true'"
+          Inputs="@(TerraFXStaticMesh->'%(FullPath)');@(TerraFXStaticMesh->'%(ProfileRecord)');@(TerraFXStaticMesh->'%(MaterialRecord)');$(MSBuildAllProjects);$(TerraFXContentToolsAssembly)"
+          Outputs="@(TerraFXStaticMesh->'%(PackagePath)')">
+    <Error Condition="!Exists('$(TerraFXContentToolsAssembly)')"
+           Text="TerraFXContentToolsAssembly does not identify a built TerraFX.Content.Tools assembly." />
+    <Error Condition="'%(TerraFXStaticMesh.Format)' != 'glb' and '%(TerraFXStaticMesh.Format)' != 'obj'"
+           Text="TerraFXStaticMesh Format must be 'glb' or 'obj'." />
+    <Error Condition="'%(TerraFXStaticMesh.ProfileRecord)' == '' or '%(TerraFXStaticMesh.MaterialRecord)' == '' or '%(TerraFXStaticMesh.MeshAssetId)' == '' or '%(TerraFXStaticMesh.MaterialAssetId)' == '' or '%(TerraFXStaticMesh.PackagePath)' == ''"
+           Text="TerraFXStaticMesh requires ProfileRecord, MaterialRecord, MeshAssetId, MaterialAssetId, and PackagePath metadata." />
+    <Error Condition="'%(TerraFXStaticMesh.Format)' == 'obj' and '%(TerraFXStaticMesh.ObjConvention)' != 'rh-y-up-z-forward-meters'"
+           Text="OBJ sources require ObjConvention='rh-y-up-z-forward-meters'." />
+    <Exec Condition="'%(TerraFXStaticMesh.Format)' == 'glb'"
+          WorkingDirectory="$(MSBuildProjectDirectory)"
+          Command="dotnet &quot;$(TerraFXContentToolsAssembly)&quot; cook-static-mesh glb --source &quot;%(FullPath)&quot; --profile-record &quot;%(TerraFXStaticMesh.ProfileRecord)&quot; --material-record &quot;%(TerraFXStaticMesh.MaterialRecord)&quot; --mesh-id &quot;%(TerraFXStaticMesh.MeshAssetId)&quot; --material-id &quot;%(TerraFXStaticMesh.MaterialAssetId)&quot; --output &quot;%(TerraFXStaticMesh.PackagePath)&quot;" />
+    <Exec Condition="'%(TerraFXStaticMesh.Format)' == 'obj'"
+          WorkingDirectory="$(MSBuildProjectDirectory)"
+          Command="dotnet &quot;$(TerraFXContentToolsAssembly)&quot; cook-static-mesh obj --source &quot;%(FullPath)&quot; --profile-record &quot;%(TerraFXStaticMesh.ProfileRecord)&quot; --material-record &quot;%(TerraFXStaticMesh.MaterialRecord)&quot; --mesh-id &quot;%(TerraFXStaticMesh.MeshAssetId)&quot; --material-id &quot;%(TerraFXStaticMesh.MaterialAssetId)&quot; --output &quot;%(TerraFXStaticMesh.PackagePath)&quot; --obj-convention &quot;%(TerraFXStaticMesh.ObjConvention)&quot;" />
+  </Target>
+</Project>

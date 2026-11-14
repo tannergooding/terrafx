@@ -15,12 +15,15 @@ internal static class Program
 {
     private const string CompileDxilCommand = "compile-m04-dxil";
     private const string CompileShaderCommand = "compile-m04-shader";
+    private const string CookStaticMeshCommand = "cook-static-mesh";
     private const string VerifyDxcCommand = "verify-dxc";
     private static readonly string[] s_usageLines = [
         "Usage:",
         "  TerraFX.Content.Tools verify-dxc",
         "  TerraFX.Content.Tools compile-m04-dxil <new-output-directory>",
         "  TerraFX.Content.Tools compile-m04-shader <new-output-directory>",
+        "  TerraFX.Content.Tools cook-static-mesh <glb|obj> --source <path> --profile-record <path> --material-record <path> --mesh-id <id> --material-id <id> --output <package>",
+        "  OBJ additionally requires --obj-convention rh-y-up-z-forward-meters",
         "  TerraFX.Content.Tools shader compile --source <file> --output <directory> --entry <name> --stage <vertex|pixel|compute> --dxc <path> --vulkan-sdk <path>",
         "  TerraFX.Content.Tools --help",
     ];
@@ -36,13 +39,15 @@ internal static class Program
         var isShaderCompile = (arguments.Length >= 2)
             && StringComparer.Ordinal.Equals(arguments[0], "shader")
             && StringComparer.Ordinal.Equals(arguments[1], "compile");
+        var isStaticMeshCook = (arguments.Length >= 2)
+            && StringComparer.Ordinal.Equals(arguments[0], CookStaticMeshCommand);
         var isM04Compile = (arguments.Length == 2)
             && (StringComparer.Ordinal.Equals(arguments[0], CompileShaderCommand)
                 || StringComparer.Ordinal.Equals(arguments[0], CompileDxilCommand));
         var isDxcVerification = (arguments.Length == 1)
             && StringComparer.Ordinal.Equals(arguments[0], VerifyDxcCommand);
 
-        if (!isShaderCompile && !isM04Compile && !isDxcVerification)
+        if (!isShaderCompile && !isStaticMeshCook && !isM04Compile && !isDxcVerification)
         {
             await WriteUsageAsync().ConfigureAwait(false);
             return arguments.Length == 0 ? 0 : 2;
@@ -60,6 +65,13 @@ internal static class Program
 
         try
         {
+            if (isStaticMeshCook)
+            {
+                return await StaticMeshCookCommand.RunCliAsync(
+                    arguments[1..],
+                    cancellationSource.Token).ConfigureAwait(false);
+            }
+
             if (isShaderCompile)
             {
                 return await ShaderCompileCommand.RunCliAsync(
@@ -104,6 +116,7 @@ internal static class Program
             or FormatException
             or IOException
             or InvalidOperationException
+            or NotSupportedException
             or JsonException
             or PlatformNotSupportedException
             or TimeoutException
