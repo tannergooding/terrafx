@@ -73,14 +73,17 @@ internal sealed partial class SceneAssetStoreTests
         int? emissiveTextureAssetId = null,
         float roughness = 1.0f,
         byte baseTextureMip = 0,
-        byte baseTextureAddressU = 0)
+        byte baseTextureAddressU = 0,
+        byte emissiveTextureAddressU = 0,
+        Vector3? emissiveFactor = null)
     {
+        var emissive = emissiveFactor ?? Vector3.Zero;
         var fields = new System.Collections.Generic.List<SceneHierarchyCodecTests.FixtureBuilder.FixtureField> {
             SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 16, 1.0f, 1.0f, 1.0f, 1.0f),
             SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(2, 10, 0.0f),
             SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(3, 10, roughness),
             SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(4, 10, 1.0f),
-            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(5, 15, 0.0f, 0.0f, 0.0f),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(5, 15, emissive.X, emissive.Y, emissive.Z),
         };
 
         if (baseTextureAssetId is int baseTexture)
@@ -114,7 +117,7 @@ internal sealed partial class SceneAssetStoreTests
         {
             fields.Add(SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(
                 9,
-                CreateRenderMaterialTextureBindingRecord(emissiveTexture),
+                CreateRenderMaterialTextureBindingRecord(emissiveTexture, addressU: emissiveTextureAddressU),
                 isRequired: false));
         }
 

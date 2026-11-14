@@ -14,11 +14,18 @@ internal readonly struct RenderMeshC0MaterialData
     private readonly Vector4 _emissive;
     private readonly Vector4 _factors;
 
-    internal RenderMeshC0MaterialData(RenderMaterialAsset material)
+    internal RenderMeshC0MaterialData(
+        RenderMaterialAsset material,
+        bool hasBaseColorTexture,
+        bool hasEmissiveTexture)
     {
         ArgumentNullException.ThrowIfNull(material);
         _baseColor = material.Parameters.Color;
-        _factors = new Vector4(material.Parameters.Metallic, material.Parameters.Roughness, 0.0f, 0.0f);
+        _factors = new Vector4(
+            material.Parameters.Metallic,
+            material.Parameters.Roughness,
+            hasBaseColorTexture ? 1.0f : 0.0f,
+            hasEmissiveTexture ? 1.0f : 0.0f);
         _emissive = new Vector4(material.Parameters.Emissive, 0.0f);
     }
 

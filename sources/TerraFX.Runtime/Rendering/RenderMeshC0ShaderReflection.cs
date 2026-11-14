@@ -36,14 +36,16 @@ internal static class RenderMeshC0ShaderReflection
             inputs.Add(new ShaderIoSignature("TEXCOORD", 2, 2, ShaderValueType.Float2, ShaderInterpolation.Smooth));
         }
 
-        var resources = ImmutableArray.CreateBuilder<ShaderResourceSignature>(textured ? 4 : 2);
+        var resources = ImmutableArray.CreateBuilder<ShaderResourceSignature>(textured ? 6 : 2);
         resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1));
         resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Material, 0, ShaderResourceKind.UniformBuffer, 1));
 
         if (textured)
         {
             resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Material, 0, ShaderResourceKind.SampledImage, 1));
+            resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Material, 1, ShaderResourceKind.SampledImage, 1));
             resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Material, 0, ShaderResourceKind.Sampler, 1));
+            resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Material, 1, ShaderResourceKind.Sampler, 1));
         }
 
         return new ShaderReflection(

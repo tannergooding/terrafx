@@ -61,8 +61,9 @@ internal sealed partial class SceneAssetStoreTests
         bool unsupportedAlphaMode = false,
         bool unsupportedActiveLight = false,
         bool useBaseColorTexture = false,
-        bool unsupportedBaseTextureSampler = false,
-        bool missingBaseTextureUv0 = false)
+        bool useEmissiveTexture = false,
+        bool unsupportedTextureSampler = false,
+        bool missingTextureUv0 = false)
     {
         if ((graphicsBackend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -73,13 +74,17 @@ internal sealed partial class SceneAssetStoreTests
         const uint MeshAssetId = 1;
         const uint MaterialAssetId = 2;
         const uint BaseColorTextureAssetId = 4;
+        const uint EmissiveTextureAssetId = 5;
         const int SceneAssetId = 3;
         var sceneAssetId = new AssetId(SceneAssetId);
         var materialRecord = CreateRenderMaterialAssetRecord(
             isSprite: false,
             CreateRenderMaterialPbrParametersRecord(
                 baseTextureAssetId: useBaseColorTexture ? checked((int)BaseColorTextureAssetId) : null,
-                baseTextureAddressU: unsupportedBaseTextureSampler ? (byte)1 : (byte)0),
+                emissiveTextureAssetId: useEmissiveTexture ? checked((int)EmissiveTextureAssetId) : null,
+                baseTextureAddressU: unsupportedTextureSampler ? (byte)1 : (byte)0,
+                emissiveTextureAddressU: unsupportedTextureSampler ? (byte)1 : (byte)0,
+                emissiveFactor: useEmissiveTexture ? Vector3.UnitY : Vector3.Zero),
             alphaMode: (byte)(unsupportedAlphaMode ? 2 : 0),
             doubleSided: true,
             depthTest: true,
@@ -106,7 +111,7 @@ internal sealed partial class SceneAssetStoreTests
                         skeletonAssetId: null,
                         groupCount: 2,
                         reverseWinding: true,
-                        includeUv0: useBaseColorTexture && !missingBaseTextureUv0)))),
+                        includeUv0: (useBaseColorTexture || useEmissiveTexture) && !missingTextureUv0)))),
             new Package.Entry(
                 MaterialAssetId,
                 Package.CreateEnvelope(MaterialAssetId, materialRecord)),
@@ -131,6 +136,25 @@ internal sealed partial class SceneAssetStoreTests
                             RenderTextureSemantic.Color,
                             RenderTextureMipPolicy.BaseOnly,
                             CreateRenderTextureMipRecord(0, 1, 1, [byte.MaxValue, 0, 0, byte.MaxValue])))),
+            ];
+        }
+
+        if (useEmissiveTexture)
+        {
+            packageEntries = [
+                .. packageEntries,
+                new Package.Entry(
+                    EmissiveTextureAssetId,
+                    Package.CreateEnvelope(
+                        EmissiveTextureAssetId,
+                        CreateRenderTextureAssetRecord(
+                            1,
+                            1,
+                            RenderTextureColorSpace.Srgb,
+                            RenderTextureAlphaMode.Straight,
+                            RenderTextureSemantic.Color,
+                            RenderTextureMipPolicy.BaseOnly,
+                            CreateRenderTextureMipRecord(0, 1, 1, [0, byte.MaxValue, 0, byte.MaxValue])))),
             ];
         }
 
@@ -181,7 +205,7 @@ internal sealed partial class SceneAssetStoreTests
                 loader = new SceneLoader(world, engineHost.Assets);
             }).ConfigureAwait(false);
 
-            if (missingBaseTextureUv0)
+            if (missingTextureUv0)
             {
                 _ = Assert.ThrowsAsync<InvalidDataException>(
                     () => loader!.PrepareAsync(sceneAssetId, new SceneLoadOptions()));
@@ -263,8 +287,8 @@ internal sealed partial class SceneAssetStoreTests
 
             if (unsupportedAlphaMode
                 || unsupportedActiveLight
-                || unsupportedBaseTextureSampler
-                || missingBaseTextureUv0)
+                || unsupportedTextureSampler
+                || missingTextureUv0)
             {
                 _ = Assert.Throws<NotSupportedException>(() => engineHost.Renderer.BuildGraph(meshSnapshot, targetTexture));
                 return;
@@ -276,7 +300,9 @@ internal sealed partial class SceneAssetStoreTests
             var plan = compileResponse.Plan
                 ?? throw new InvalidOperationException("The Mesh graph compile omitted its plan.");
             Assert.That(plan.BuiltInSpriteState?.MeshPasses, Has.Count.EqualTo(2));
-            Assert.That(plan.BuiltInSpriteState?.MeshDeferredTextures, Has.Length.EqualTo(useBaseColorTexture ? 1 : 0));
+            Assert.That(
+                plan.BuiltInSpriteState?.MeshDeferredTextures,
+                Has.Length.EqualTo((useBaseColorTexture ? 1 : 0) + (useEmissiveTexture ? 1 : 0)));
             var meshVertexBufferCount = 0;
             var meshIndexBufferCount = 0;
 
@@ -341,7 +367,9 @@ internal sealed partial class SceneAssetStoreTests
                 Assert.That(coloredPixelCount, Is.GreaterThan(0), $"Mesh C0 emitted no lit pixels; raster bounds were [{minimumX},{minimumY}]-[{maximumX},{maximumY}].");
                 Assert.That(firstColoredPixelOffset, Is.GreaterThanOrEqualTo(0));
                 Assert.That(readbackBytes[firstColoredPixelOffset], Is.EqualTo(2));
-                Assert.That(readbackBytes[firstColoredPixelOffset + 1], Is.EqualTo(useBaseColorTexture ? 0 : 2));
+                Assert.That(
+                    readbackBytes[firstColoredPixelOffset + 1],
+                    Is.EqualTo(useEmissiveTexture ? 128 : useBaseColorTexture ? 0 : 2));
                 Assert.That(readbackBytes[firstColoredPixelOffset + 2], Is.EqualTo(useBaseColorTexture ? 0 : 2));
                 Assert.That(readbackBytes[firstColoredPixelOffset + 3], Is.EqualTo(byte.MaxValue));
                 Assert.That(readbackBytes.AsSpan(0, 4).ToArray(), Is.EqualTo(new byte[] { 0, 0, 0, byte.MaxValue }));
@@ -370,23 +398,36 @@ internal sealed partial class SceneAssetStoreTests
         => RunSnapshotBuiltInMeshC0GraphAsync(
             GraphicsBackend.Vulkan,
             useBaseColorTexture: true,
-            missingBaseTextureUv0: true);
+            missingTextureUv0: true);
 
     [Test]
     public Task SnapshotBuiltInMeshC0GraphRejectsBlendMaterialAsync()
         => RunSnapshotBuiltInMeshC0GraphAsync(GraphicsBackend.Vulkan, unsupportedAlphaMode: true);
 
     [Test]
-    public Task SnapshotBuiltInMeshC0GraphRejectsUnsupportedBaseTextureSamplerAsync()
+    public Task SnapshotBuiltInMeshC0GraphRejectsUnsupportedTextureSamplerAsync()
         => RunSnapshotBuiltInMeshC0GraphAsync(
             GraphicsBackend.Vulkan,
             useBaseColorTexture: true,
-            unsupportedBaseTextureSampler: true);
+            unsupportedTextureSampler: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphRendersBaseAndEmissiveTexturesAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useBaseColorTexture: true,
+            useEmissiveTexture: true);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
     public Task SnapshotBuiltInMeshC0GraphRendersBaseColorTextureAsync(GraphicsBackend graphicsBackend)
         => RunSnapshotBuiltInMeshC0GraphAsync(graphicsBackend, useBaseColorTexture: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphRendersEmissiveTextureAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(graphicsBackend, useEmissiveTexture: true);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]

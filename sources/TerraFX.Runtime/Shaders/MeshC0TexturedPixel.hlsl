@@ -33,9 +33,19 @@ cbuffer MaterialData : register(b0, space1)
 Texture2D<float4> BaseColorTexture : register(t0, space1);
 
 #if defined(TERRAFX_SPIRV)
+[[vk::binding(17, 1)]]
+#endif
+Texture2D<float4> EmissiveTexture : register(t1, space1);
+
+#if defined(TERRAFX_SPIRV)
 [[vk::binding(40, 1)]]
 #endif
 SamplerState BaseColorSampler : register(s0, space1);
+
+#if defined(TERRAFX_SPIRV)
+[[vk::binding(41, 1)]]
+#endif
+SamplerState EmissiveSampler : register(s1, space1);
 
 struct PixelInput
 {
@@ -56,7 +66,13 @@ struct PixelInput
 
 float4 PSMain(PixelInput input) : SV_Target0
 {
-    float3 baseColor = BaseColorTexture.Sample(BaseColorSampler, input.Uv0).rgb * BaseColor.rgb;
+    float3 baseColor = BaseColor.rgb;
+
+    if (Factors.z > 0.0f)
+    {
+        baseColor *= BaseColorTexture.Sample(BaseColorSampler, input.Uv0).rgb;
+    }
+
     float metallic = Factors.x;
     float roughness = Factors.y;
     float3 n = normalize(input.WorldNormal);
@@ -90,7 +106,14 @@ float4 PSMain(PixelInput input) : SV_Target0
         }
     }
 
-    color += Emissive.rgb;
+    float3 emissive = Emissive.rgb;
+
+    if (Factors.w > 0.0f)
+    {
+        emissive *= EmissiveTexture.Sample(EmissiveSampler, input.Uv0).rgb;
+    }
+
+    color += emissive;
     float visibility = input.Position.w > 0.0f ? 1.0f : 0.0f;
     return float4(color, 1.0f) * visibility;
 }

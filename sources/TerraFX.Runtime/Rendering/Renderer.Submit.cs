@@ -234,7 +234,7 @@ public sealed partial class Renderer
 
                 foreach (var meshPass in spriteState.MeshPasses.Values)
                 {
-                    if (meshPass.BaseTexture is null)
+                    if ((meshPass.BaseColorTexture is null) && (meshPass.EmissiveTexture is null))
                     {
                         hasUntexturedMeshPass = true;
                     }
