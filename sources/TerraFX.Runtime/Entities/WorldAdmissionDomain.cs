@@ -985,8 +985,28 @@ public sealed class WorldAdmissionDomain : IDisposable
         out WorldLineageGrant grant,
         out WorldAdmissionRefusal refusal)
     {
+        ArgumentNullException.ThrowIfNull(membership);
+        return TryReserveRetainedLineageHistoryForBranch(
+            reservation,
+            membership,
+            membership.ActiveBranchId,
+            membership.IssuanceNamespace,
+            out grant,
+            out refusal);
+    }
+
+    internal bool TryReserveRetainedLineageHistoryForBranch(
+        WorldDomainReservation reservation,
+        WorldPersistenceIdentityHistoryReader.ValidatedLineageMembership membership,
+        Guid identityBranchId,
+        Guid issuanceNamespace,
+        out WorldLineageGrant grant,
+        out WorldAdmissionRefusal refusal)
+    {
         ArgumentNullException.ThrowIfNull(reservation);
         ArgumentNullException.ThrowIfNull(membership);
+        ArgumentOutOfRangeException.ThrowIfEqual(identityBranchId, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfEqual(issuanceNamespace, Guid.Empty);
 
         var membershipKeys = membership.LineageIds;
         var membershipBytes = ArrayCharge(membershipKeys.Length, Unsafe.SizeOf<Guid>());
@@ -1128,8 +1148,8 @@ public sealed class WorldAdmissionDomain : IDisposable
                 reservedEntry.Generation = (reservedEntry.Generation == 0) ? 1U : reservedEntry.Generation;
                 reservedEntry.State = StateReserved;
                 reservedEntry.WorldGuid = membership.WorldGuid;
-                reservedEntry.IdentityBranchId = membership.ActiveBranchId;
-                reservedEntry.IssuanceNamespace = membership.IssuanceNamespace;
+                reservedEntry.IdentityBranchId = identityBranchId;
+                reservedEntry.IssuanceNamespace = issuanceNamespace;
                 reservedEntry.OwnsCurrentLineageEdge = false;
                 reservedEntry.MembershipKeys = ownedMembershipKeys;
                 reservedEntry.MembershipBytes = membershipBytes;
@@ -1156,8 +1176,8 @@ public sealed class WorldAdmissionDomain : IDisposable
                     reservedEntry.Generation,
                     membership.WorldGuid,
                     membership.ReplayLineageId,
-                    membership.ActiveBranchId,
-                    membership.IssuanceNamespace);
+                    identityBranchId,
+                    issuanceNamespace);
                 refusal = WorldAdmissionRefusal.None;
                 membershipBytesTransferred = true;
                 return true;

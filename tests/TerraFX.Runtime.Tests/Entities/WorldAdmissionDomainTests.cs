@@ -467,6 +467,55 @@ internal sealed class WorldAdmissionDomainTests
     }
 
     [Test]
+    public void RetainedHistoryCanReserveReplacementBranchNamespace()
+    {
+        using var domain = new WorldAdmissionDomain(8 * 1024 * 1024);
+        var worldGuid = Guid.NewGuid();
+        var lineageId = Guid.NewGuid();
+        var sourceBranchId = Guid.NewGuid();
+        var targetBranchId = Guid.NewGuid();
+        var targetNamespace = Guid.NewGuid();
+        Guid[] membership = [lineageId];
+
+        Assert.That(domain.TryReserveWorld(4096, out var sourceReservation), Is.True);
+        using var sourceWorld = sourceReservation!;
+        Assert.That(
+            domain.TryReserveFreshLineageHistory(
+                sourceWorld,
+                worldGuid,
+                lineageId,
+                sourceBranchId,
+                membership,
+                out var sourceGrant,
+                out _),
+            Is.True);
+        Assert.That(domain.TryCommitFreshLineage(sourceGrant), Is.True);
+
+        var sourceHistory = WorldPersistenceIdentityHistoryReader.ValidatedLineageMembership.CreateValidated(
+            worldGuid,
+            lineageId,
+            sourceBranchId,
+            sourceBranchId,
+            membership);
+        Assert.That(domain.TryReserveWorld(4096, out var targetReservation), Is.True);
+        using var targetWorld = targetReservation!;
+        Assert.That(
+            domain.TryReserveRetainedLineageHistoryForBranch(
+                targetWorld,
+                sourceHistory,
+                targetBranchId,
+                targetNamespace,
+                out var targetGrant,
+                out _),
+            Is.True);
+        Assert.That(targetGrant.IdentityBranchId, Is.EqualTo(targetBranchId));
+        Assert.That(targetGrant.IssuanceNamespace, Is.EqualTo(targetNamespace));
+        Assert.That(targetGrant.LineageId, Is.EqualTo(lineageId));
+        Assert.That(domain.TryCommitFreshLineage(targetGrant), Is.True);
+        Assert.That(domain.TryRollbackFreshLineage(sourceGrant), Is.True);
+    }
+
+    [Test]
     public void RollbackCommittedFreshLineageReleasesMembership()
     {
         var domain = new WorldAdmissionDomain(8 * 1024 * 1024);
