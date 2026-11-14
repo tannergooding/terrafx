@@ -274,8 +274,7 @@ public sealed partial class Renderer
                     ? PipelineDepthMode.ReversedGreaterEqualReadOnly
                     : PipelineDepthMode.ReversedGreaterEqualWrite,
                 normalMapped ? PipelineCullMode.Back : PipelineCullMode.None,
-                // Vulkan and D3D12 present opposite viewport winding conventions for the authored Mesh indices.
-                frontFaceClockwise: normalMapped && (device.Capabilities.Backend is GraphicsBackend.D3D12),
+                frontFaceClockwise: normalMapped,
                 bindingLayoutVersion: 1),
             cancellationToken).ConfigureAwait(false);
     }

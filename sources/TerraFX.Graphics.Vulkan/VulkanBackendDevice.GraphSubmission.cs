@@ -1319,9 +1319,10 @@ internal sealed unsafe partial class VulkanBackendDevice
 
                 var viewport = new VkViewport {
                     x = renderAreaX,
-                    y = renderAreaY,
+                    // A negative height keeps Vulkan's front-face convention aligned with D3D12's +Y-up projection.
+                    y = renderAreaY + renderAreaHeight,
                     width = renderAreaWidth,
-                    height = renderAreaHeight,
+                    height = -renderAreaHeight,
                     minDepth = 0.0f,
                     maxDepth = 1.0f,
                 };
