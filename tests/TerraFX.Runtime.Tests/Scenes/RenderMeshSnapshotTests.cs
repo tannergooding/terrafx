@@ -148,7 +148,8 @@ internal sealed partial class SceneAssetStoreTests
         Vector3? positionOffset = null,
         Vector3? normalDirection = null,
         bool useMixedJointInfluences = false,
-        bool includeColors = false)
+        bool includeColors = false,
+        Vector4? vertexColor = null)
     {
         var offset = positionOffset ?? Vector3.Zero;
         var positions = CreateMeshPositionOrNormalStream(
@@ -200,14 +201,15 @@ internal sealed partial class SceneAssetStoreTests
         if (includeColors)
         {
             var colorElements = new byte[48];
+            var color = vertexColor ?? new Vector4(0.5f, 1.0f, 1.0f, 1.0f);
 
             for (var index = 0; index < 3; index++)
             {
                 var colorOffset = index * 16;
-                BinaryPrimitives.WriteInt32LittleEndian(colorElements.AsSpan(colorOffset), BitConverter.SingleToInt32Bits(0.5f));
-                BinaryPrimitives.WriteInt32LittleEndian(colorElements.AsSpan(colorOffset + 4), BitConverter.SingleToInt32Bits(1.0f));
-                BinaryPrimitives.WriteInt32LittleEndian(colorElements.AsSpan(colorOffset + 8), BitConverter.SingleToInt32Bits(1.0f));
-                BinaryPrimitives.WriteInt32LittleEndian(colorElements.AsSpan(colorOffset + 12), BitConverter.SingleToInt32Bits(1.0f));
+                BinaryPrimitives.WriteInt32LittleEndian(colorElements.AsSpan(colorOffset), BitConverter.SingleToInt32Bits(color.X));
+                BinaryPrimitives.WriteInt32LittleEndian(colorElements.AsSpan(colorOffset + 4), BitConverter.SingleToInt32Bits(color.Y));
+                BinaryPrimitives.WriteInt32LittleEndian(colorElements.AsSpan(colorOffset + 8), BitConverter.SingleToInt32Bits(color.Z));
+                BinaryPrimitives.WriteInt32LittleEndian(colorElements.AsSpan(colorOffset + 12), BitConverter.SingleToInt32Bits(color.W));
             }
 
             streams.Add(new EbinRecord(

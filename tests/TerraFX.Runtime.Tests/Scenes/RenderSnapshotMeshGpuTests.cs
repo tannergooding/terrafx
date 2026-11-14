@@ -84,7 +84,8 @@ internal sealed partial class SceneAssetStoreTests
         bool missingTextureUv0 = false,
         bool missingTangents = false,
         byte baseColorTextureAlpha = byte.MaxValue,
-        float baseColorAlpha = 1.0f)
+        float baseColorAlpha = 1.0f,
+        float vertexColorAlpha = 1.0f)
     {
         if ((graphicsBackend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -157,7 +158,8 @@ internal sealed partial class SceneAssetStoreTests
                         positionOffset: usePointLight ? Vector3.UnitZ : null,
                         normalDirection: useNormalMap ? Vector3.UnitZ : null,
                         useMixedJointInfluences: useSkinning,
-                        includeColors: useVertexColor)))),
+                        includeColors: useVertexColor,
+                        vertexColor: new Vector4(0.5f, 1.0f, 1.0f, vertexColorAlpha))))),
             new Package.Entry(
                 MaterialAssetId,
                 Package.CreateEnvelope(MaterialAssetId, materialRecord)),
@@ -547,9 +549,9 @@ internal sealed partial class SceneAssetStoreTests
                 }
             }
 
-            var alpha = useBaseColorTexture
-                ? (float)baseColorTextureAlpha / byte.MaxValue
-                : baseColorAlpha;
+            var alpha = baseColorAlpha
+                * (useBaseColorTexture ? (float)baseColorTextureAlpha / byte.MaxValue : 1.0f)
+                * (useVertexColor ? vertexColorAlpha : 1.0f);
 
             if (useAlphaMask && (alpha < 0.5f))
             {
@@ -622,6 +624,19 @@ internal sealed partial class SceneAssetStoreTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphAppliesUntexturedVertexColorsAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(graphicsBackend, useVertexColor: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphAppliesUntexturedVertexColorsWithStaticSkinningAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useSkinning: true,
+            useVertexColor: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SnapshotBuiltInMeshC0GraphDiscardsBaseColorBelowAlphaCutoffAsync(GraphicsBackend graphicsBackend)
         => RunSnapshotBuiltInMeshC0GraphAsync(
             graphicsBackend,
@@ -639,12 +654,30 @@ internal sealed partial class SceneAssetStoreTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphDiscardsVertexColorAlphaBelowCutoffAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useAlphaMask: true,
+            useVertexColor: true,
+            vertexColorAlpha: 0.49f);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SnapshotBuiltInMeshC0GraphKeepsAlphaMaskAtCutoffAsync(GraphicsBackend graphicsBackend)
         => RunSnapshotBuiltInMeshC0GraphAsync(
             graphicsBackend,
             useAlphaMask: true,
             useBaseColorTexture: true,
             baseColorTextureAlpha: 128);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphKeepsVertexColorAlphaAtCutoffAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useAlphaMask: true,
+            useVertexColor: true,
+            vertexColorAlpha: 0.5f);
 
     [Test]
     public Task SnapshotBuiltInMeshC0GraphRejectsActiveLightWithoutShadowPassAsync()
@@ -805,4 +838,13 @@ internal sealed partial class SceneAssetStoreTests
             graphicsBackend,
             useAlphaBlend: true,
             baseColorAlpha: 0.5f);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphUsesVertexColorAlphaForPremultipliedBlendAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useAlphaBlend: true,
+            useVertexColor: true,
+            vertexColorAlpha: 0.5f);
 }
