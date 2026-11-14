@@ -144,7 +144,9 @@ internal sealed partial class SceneAssetStoreTests
         int groupCount = 2,
         bool reverseWinding = false,
         bool includeUv0 = false,
-        Vector3? positionOffset = null)
+        bool includeTangents = false,
+        Vector3? positionOffset = null,
+        Vector3? normalDirection = null)
     {
         var offset = positionOffset ?? Vector3.Zero;
         var positions = CreateMeshPositionOrNormalStream(
@@ -153,8 +155,29 @@ internal sealed partial class SceneAssetStoreTests
         var normals = CreateMeshPositionOrNormalStream(
             "native/mesh-normal",
             unitNormals: true,
-            normalDirection: reverseWinding ? -Vector3.UnitZ : Vector3.UnitZ);
+            normalDirection: normalDirection ?? (reverseWinding ? -Vector3.UnitZ : Vector3.UnitZ));
         var streams = new System.Collections.Generic.List<EbinRecord> { positions, normals };
+
+        if (includeTangents)
+        {
+            var tangentElements = new byte[48];
+
+            for (var index = 0; index < 3; index++)
+            {
+                var tangentOffset = index * 16;
+                BinaryPrimitives.WriteInt32LittleEndian(tangentElements.AsSpan(tangentOffset), BitConverter.SingleToInt32Bits(1.0f));
+                BinaryPrimitives.WriteInt32LittleEndian(tangentElements.AsSpan(tangentOffset + 12), BitConverter.SingleToInt32Bits(1.0f));
+            }
+
+            streams.Add(new EbinRecord(
+                new ContentSchemaIdentityAssignment("native/mesh-tangent").SchemaId,
+                1,
+                0,
+                [
+                    EbinPrimitives.UInt32(1, 16),
+                    CreateMeshFixedArrayField(2, elementKind: 16, stride: 16, tangentElements),
+                ]));
+        }
 
         if (includeUv0)
         {

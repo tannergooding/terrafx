@@ -43,6 +43,10 @@ struct VertexInput
     [[vk::location(2)]]
 #endif
     float2 Uv0 : TEXCOORD0;
+#if defined(TERRAFX_SPIRV)
+    [[vk::location(3)]]
+#endif
+    float4 Tangent : TANGENT0;
 };
 
 struct VertexOutput
@@ -60,6 +64,10 @@ struct VertexOutput
     [[vk::location(2)]]
 #endif
     float2 Uv0 : TEXCOORD2;
+#if defined(TERRAFX_SPIRV)
+    [[vk::location(3)]]
+#endif
+    float4 WorldTangent : TEXCOORD3;
 };
 
 VertexOutput VSMain(VertexInput input)
@@ -70,5 +78,6 @@ VertexOutput VSMain(VertexInput input)
     output.WorldPosition = worldPosition.xyz;
     output.WorldNormal = normalize(mul(input.Normal, float3x3(NormalRow0.xyz, NormalRow1.xyz, NormalRow2.xyz)));
     output.Uv0 = input.Uv0;
+    output.WorldTangent = float4(mul(input.Tangent.xyz, (float3x3)World), input.Tangent.w);
     return output;
 }

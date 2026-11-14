@@ -122,6 +122,7 @@ public sealed partial class Renderer
         GpuPipeline? meshAlphaMaskPipeline = null;
         GpuPipeline? meshPipeline = null;
         GpuPipeline? meshBlendPipeline = null;
+        GpuPipeline? normalMappedMeshPipeline = null;
         GpuPipeline? texturedMeshAlphaMaskPipeline = null;
         GpuPipeline? texturedMeshPipeline = null;
         GpuPipeline? texturedMeshBlendPipeline = null;
@@ -239,14 +240,20 @@ public sealed partial class Renderer
                 var hasTexturedMeshPass = false;
                 var hasTexturedAlphaMaskPass = false;
                 var hasTexturedBlendPass = false;
+                var hasNormalMappedMeshPass = false;
 
                 foreach (var meshPass in spriteState.MeshPasses.Values)
                 {
                     var hasTexture = (meshPass.BaseColorTexture is not null)
                         || (meshPass.EmissiveTexture is not null)
-                        || (meshPass.PackedMetalRoughOcclusionTexture is not null);
+                        || (meshPass.PackedMetalRoughOcclusionTexture is not null)
+                        || (meshPass.NormalTexture is not null);
 
-                    if (meshPass.AlphaBlend)
+                    if (meshPass.NormalTexture is not null)
+                    {
+                        hasNormalMappedMeshPass = true;
+                    }
+                    else if (meshPass.AlphaBlend)
                     {
                         hasTexturedBlendPass |= hasTexture;
                         hasUntexturedBlendPass |= !hasTexture;
@@ -308,6 +315,13 @@ public sealed partial class Renderer
                         cancellationToken).ConfigureAwait(false);
                 }
 
+                if (hasNormalMappedMeshPass)
+                {
+                    normalMappedMeshPipeline = await CreateTexturedMeshC0NormalMappedPipelineAsync(
+                        spriteState.SpriteColorTargetFormat,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
                 if (spriteState.ToneMapPasses.Count != 0)
                 {
                     spriteToneMapPipeline = await CreateSpriteToneMapPipelineAsync(
@@ -319,6 +333,7 @@ public sealed partial class Renderer
                     || (hasUntexturedAlphaMaskPass && (meshAlphaMaskPipeline is null))
                     || (hasUntexturedMeshPass && (meshPipeline is null))
                     || (hasUntexturedBlendPass && (meshBlendPipeline is null))
+                    || (hasNormalMappedMeshPass && (normalMappedMeshPipeline is null))
                     || (hasTexturedAlphaMaskPass && (texturedMeshAlphaMaskPipeline is null))
                     || (hasTexturedMeshPass && (texturedMeshPipeline is null))
                     || (hasTexturedBlendPass && (texturedMeshBlendPipeline is null))
@@ -331,6 +346,7 @@ public sealed partial class Renderer
                     || hasTexturedMeshPass
                     || hasTexturedAlphaMaskPass
                     || hasTexturedBlendPass
+                    || hasNormalMappedMeshPass
                     || spriteState.ToneMapPasses.Count != 0)
                 {
                     spriteSampler = await device.CreateSamplerAsync(
@@ -354,6 +370,7 @@ public sealed partial class Renderer
                         spritePipeline,
                         meshPipeline,
                         meshBlendPipeline,
+                        normalMappedMeshPipeline,
                         texturedMeshAlphaMaskPipeline,
                         texturedMeshPipeline,
                         texturedMeshBlendPipeline,
@@ -598,6 +615,7 @@ public sealed partial class Renderer
                 meshAlphaMaskPipeline?.Dispose();
                 meshBlendPipeline?.Dispose();
                 meshPipeline?.Dispose();
+                normalMappedMeshPipeline?.Dispose();
                 texturedMeshAlphaMaskPipeline?.Dispose();
                 texturedMeshBlendPipeline?.Dispose();
                 texturedMeshPipeline?.Dispose();

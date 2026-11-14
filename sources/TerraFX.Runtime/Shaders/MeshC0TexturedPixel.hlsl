@@ -34,6 +34,7 @@ cbuffer MaterialData : register(b0, space1)
     float4 Factors;
     float4 Emissive;
     float4 RenderOptions;
+    float4 NormalOptions;
 };
 
 #if defined(TERRAFX_SPIRV)
@@ -66,6 +67,16 @@ SamplerState EmissiveSampler : register(s1, space1);
 #endif
 SamplerState PackedMetalRoughOcclusionSampler : register(s2, space1);
 
+#if defined(TERRAFX_SPIRV)
+[[vk::binding(19, 1)]]
+#endif
+Texture2D<float4> NormalTexture : register(t3, space1);
+
+#if defined(TERRAFX_SPIRV)
+[[vk::binding(43, 1)]]
+#endif
+SamplerState NormalSampler : register(s3, space1);
+
 struct PixelInput
 {
     float4 Position : SV_Position;
@@ -81,6 +92,10 @@ struct PixelInput
     [[vk::location(2)]]
 #endif
     float2 Uv0 : TEXCOORD2;
+#if defined(TERRAFX_SPIRV)
+    [[vk::location(3)]]
+#endif
+    float4 WorldTangent : TEXCOORD3;
 };
 
 float4 PSMain(PixelInput input) : SV_Target0
@@ -115,6 +130,16 @@ float4 PSMain(PixelInput input) : SV_Target0
     float roughness = max(Factors.y * packedMetalRoughOcclusion.g, 0.045f);
     float occlusion = packedMetalRoughOcclusion.r;
     float3 n = normalize(input.WorldNormal);
+
+    if (NormalOptions.y > 0.5f)
+    {
+        float3 t = normalize(input.WorldTangent.xyz - (n * dot(n, input.WorldTangent.xyz)));
+        float3 b = normalize(cross(n, t)) * input.WorldTangent.w;
+        float3 tangentNormal = (NormalTexture.Sample(NormalSampler, input.Uv0).xyz * 2.0f) - 1.0f;
+        tangentNormal.xy *= NormalOptions.x;
+        n = normalize((t * tangentNormal.x) + (b * tangentNormal.y) + (n * tangentNormal.z));
+    }
+
     float3 v = normalize(CameraPosition.xyz - input.WorldPosition);
     float3 color = AmbientIrradiance.rgb * baseColor * (1.0f - metallic) * occlusion / 3.14159265358979323846f;
 

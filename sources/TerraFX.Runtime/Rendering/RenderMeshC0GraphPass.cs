@@ -25,6 +25,7 @@ internal sealed class RenderMeshC0GraphPass
         GraphTextureVersion? baseColorTexture,
         GraphTextureVersion? emissiveTexture,
         GraphTextureVersion? packedMetalRoughOcclusionTexture,
+        GraphTextureVersion? normalTexture,
         bool alphaMask,
         bool alphaBlend)
     {
@@ -63,6 +64,7 @@ internal sealed class RenderMeshC0GraphPass
         BaseColorTexture = baseColorTexture;
         EmissiveTexture = emissiveTexture;
         PackedMetalRoughOcclusionTexture = packedMetalRoughOcclusionTexture;
+        NormalTexture = normalTexture;
         AlphaMask = alphaMask;
         AlphaBlend = alphaBlend;
     }
@@ -93,6 +95,8 @@ internal sealed class RenderMeshC0GraphPass
 
     internal RenderMeshIndexFormat MeshIndexFormat { get; }
 
+    internal GraphTextureVersion? NormalTexture { get; }
+
     internal GraphBufferVersion ObjectBuffer { get; }
 
     internal int ObjectStride { get; }
@@ -107,14 +111,17 @@ internal sealed class RenderMeshC0GraphPass
     {
         var hasTexture = (BaseColorTexture is not null)
             || (EmissiveTexture is not null)
-            || (PackedMetalRoughOcclusionTexture is not null);
-        var pipeline = (hasTexture, AlphaMask, AlphaBlend) switch {
-            (false, false, false) => resources.MeshPipeline,
-            (false, true, false) => resources.MeshAlphaMaskPipeline,
-            (false, false, true) => resources.MeshBlendPipeline,
-            (true, false, false) => resources.TexturedMeshPipeline,
-            (true, true, false) => resources.TexturedMeshAlphaMaskPipeline,
-            (true, false, true) => resources.TexturedMeshBlendPipeline,
+            || (PackedMetalRoughOcclusionTexture is not null)
+            || (NormalTexture is not null);
+        var pipeline = (NormalTexture is not null, hasTexture, AlphaMask, AlphaBlend) switch {
+            (true, _, false, false) => resources.NormalMappedMeshPipeline,
+            (true, _, _, _) => throw new InvalidOperationException("The built-in normal-mapped Mesh pass has an invalid alpha mode."),
+            (false, false, false, false) => resources.MeshPipeline,
+            (false, false, true, false) => resources.MeshAlphaMaskPipeline,
+            (false, false, false, true) => resources.MeshBlendPipeline,
+            (false, true, false, false) => resources.TexturedMeshPipeline,
+            (false, true, true, false) => resources.TexturedMeshAlphaMaskPipeline,
+            (false, true, false, true) => resources.TexturedMeshBlendPipeline,
             _ => throw new InvalidOperationException("The built-in Mesh pass has an invalid alpha mode."),
         }
             ?? throw new InvalidOperationException("The built-in Mesh pass has no Mesh pipeline.");
@@ -128,7 +135,7 @@ internal sealed class RenderMeshC0GraphPass
             IndexBuffer,
             new GraphBufferRange(0, IndexBuffer.Description.ByteLength),
             MeshIndexFormat == RenderMeshIndexFormat.UInt16 ? TerraFX.Graphics.IndexFormat.UInt16 : TerraFX.Graphics.IndexFormat.UInt32));
-        var sharedTexture = BaseColorTexture ?? EmissiveTexture ?? PackedMetalRoughOcclusionTexture;
+        var sharedTexture = BaseColorTexture ?? EmissiveTexture ?? PackedMetalRoughOcclusionTexture ?? NormalTexture;
         ImmutableArray<TextureBinding> textures = hasTexture
             ? [
                 new TextureBinding(
@@ -152,6 +159,13 @@ internal sealed class RenderMeshC0GraphPass
                     PackedMetalRoughOcclusionTexture ?? sharedTexture
                         ?? throw new InvalidOperationException("The textured Mesh pass has no packed data binding."),
                     new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)),
+                new TextureBinding(
+                    ShaderBindingGroup.Material,
+                    3,
+                    ShaderResourceKind.SampledImage,
+                    NormalTexture ?? sharedTexture
+                        ?? throw new InvalidOperationException("The textured Mesh pass has no normal binding."),
+                    new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color)),
             ]
             : [];
         ImmutableArray<SamplerBinding> samplers = hasTexture
@@ -169,6 +183,11 @@ internal sealed class RenderMeshC0GraphPass
                 new SamplerBinding(
                     ShaderBindingGroup.Material,
                     2,
+                    resources.Sampler
+                        ?? throw new InvalidOperationException("The textured Mesh pass has no default sampler.")),
+                new SamplerBinding(
+                    ShaderBindingGroup.Material,
+                    3,
                     resources.Sampler
                         ?? throw new InvalidOperationException("The textured Mesh pass has no default sampler.")),
             ]

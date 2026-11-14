@@ -36,17 +36,35 @@ public sealed partial class Renderer
     internal Task<GpuPipeline> CreateMeshC0AlphaMaskPipelineAsync(
         TextureFormat colorTargetFormat,
         CancellationToken cancellationToken = default)
-        => CreateMeshC0PipelineAsync(colorTargetFormat, textured: false, alphaMask: true, alphaBlend: false, cancellationToken);
+        => CreateMeshC0PipelineAsync(
+            colorTargetFormat,
+            textured: false,
+            alphaMask: true,
+            alphaBlend: false,
+            normalMapped: false,
+            cancellationToken);
 
     internal Task<GpuPipeline> CreateMeshC0BlendPipelineAsync(
         TextureFormat colorTargetFormat,
         CancellationToken cancellationToken = default)
-        => CreateMeshC0PipelineAsync(colorTargetFormat, textured: false, alphaMask: false, alphaBlend: true, cancellationToken);
+        => CreateMeshC0PipelineAsync(
+            colorTargetFormat,
+            textured: false,
+            alphaMask: false,
+            alphaBlend: true,
+            normalMapped: false,
+            cancellationToken);
 
     internal Task<GpuPipeline> CreateMeshC0PipelineAsync(
         TextureFormat colorTargetFormat,
         CancellationToken cancellationToken = default)
-        => CreateMeshC0PipelineAsync(colorTargetFormat, textured: false, alphaMask: false, alphaBlend: false, cancellationToken);
+        => CreateMeshC0PipelineAsync(
+            colorTargetFormat,
+            textured: false,
+            alphaMask: false,
+            alphaBlend: false,
+            normalMapped: false,
+            cancellationToken);
 
     internal async Task<GpuPipeline> CreateSpriteC0PipelineAsync(
         TextureFormat colorTargetFormat,
@@ -151,26 +169,62 @@ public sealed partial class Renderer
     internal Task<GpuPipeline> CreateTexturedMeshC0AlphaMaskPipelineAsync(
         TextureFormat colorTargetFormat,
         CancellationToken cancellationToken = default)
-        => CreateMeshC0PipelineAsync(colorTargetFormat, textured: true, alphaMask: true, alphaBlend: false, cancellationToken);
+        => CreateMeshC0PipelineAsync(
+            colorTargetFormat,
+            textured: true,
+            alphaMask: true,
+            alphaBlend: false,
+            normalMapped: false,
+            cancellationToken);
 
     internal Task<GpuPipeline> CreateTexturedMeshC0BlendPipelineAsync(
         TextureFormat colorTargetFormat,
         CancellationToken cancellationToken = default)
-        => CreateMeshC0PipelineAsync(colorTargetFormat, textured: true, alphaMask: false, alphaBlend: true, cancellationToken);
+        => CreateMeshC0PipelineAsync(
+            colorTargetFormat,
+            textured: true,
+            alphaMask: false,
+            alphaBlend: true,
+            normalMapped: false,
+            cancellationToken);
+
+    internal Task<GpuPipeline> CreateTexturedMeshC0NormalMappedPipelineAsync(
+        TextureFormat colorTargetFormat,
+        CancellationToken cancellationToken = default)
+        => CreateMeshC0PipelineAsync(
+            colorTargetFormat,
+            textured: true,
+            alphaMask: false,
+            alphaBlend: false,
+            normalMapped: true,
+            cancellationToken);
 
     internal Task<GpuPipeline> CreateTexturedMeshC0PipelineAsync(
         TextureFormat colorTargetFormat,
         CancellationToken cancellationToken = default)
-        => CreateMeshC0PipelineAsync(colorTargetFormat, textured: true, alphaMask: false, alphaBlend: false, cancellationToken);
+        => CreateMeshC0PipelineAsync(
+            colorTargetFormat,
+            textured: true,
+            alphaMask: false,
+            alphaBlend: false,
+            normalMapped: false,
+            cancellationToken);
 
     private async Task<GpuPipeline> CreateMeshC0PipelineAsync(
         TextureFormat colorTargetFormat,
         bool textured,
         bool alphaMask,
         bool alphaBlend,
+        bool normalMapped,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+
+        if (normalMapped && (!textured || alphaMask || alphaBlend))
+        {
+            throw new InvalidOperationException("The built-in normal-map pipeline requires an opaque textured material.");
+        }
+
         var device = _graphicsDevice
             ?? throw new NotSupportedException("Headless rendering does not create Mesh pipelines.");
         var binaryFormat = device.Capabilities.Backend switch {
@@ -209,6 +263,7 @@ public sealed partial class Renderer
                     new VertexElementDescription(0, VertexElementFormat.Float3, 0),
                     new VertexElementDescription(1, VertexElementFormat.Float3, 3 * sizeof(float)),
                     new VertexElementDescription(2, VertexElementFormat.Float2, 6 * sizeof(float)),
+                    new VertexElementDescription(3, VertexElementFormat.Float4, 8 * sizeof(float)),
                 ],
                 vertexStride: RenderMeshC0VertexBufferBuilder.VertexStride,
                 [colorTargetFormat],
@@ -218,8 +273,9 @@ public sealed partial class Renderer
                 alphaBlend
                     ? PipelineDepthMode.ReversedGreaterEqualReadOnly
                     : PipelineDepthMode.ReversedGreaterEqualWrite,
-                PipelineCullMode.None,
-                frontFaceClockwise: false,
+                normalMapped ? PipelineCullMode.Back : PipelineCullMode.None,
+                // Vulkan and D3D12 present opposite viewport winding conventions for the authored Mesh indices.
+                frontFaceClockwise: normalMapped && (device.Capabilities.Backend is GraphicsBackend.D3D12),
                 bindingLayoutVersion: 1),
             cancellationToken).ConfigureAwait(false);
     }

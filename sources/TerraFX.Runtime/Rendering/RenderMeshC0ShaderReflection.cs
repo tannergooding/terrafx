@@ -26,7 +26,7 @@ internal static class RenderMeshC0ShaderReflection
 
     private static ShaderReflection CreatePixel(bool textured)
     {
-        var inputs = ImmutableArray.CreateBuilder<ShaderIoSignature>(textured ? 4 : 3);
+        var inputs = ImmutableArray.CreateBuilder<ShaderIoSignature>(textured ? 5 : 3);
         inputs.Add(new ShaderIoSignature("SV_Position", 0, null, ShaderValueType.Float4, ShaderInterpolation.NoPerspective));
         inputs.Add(new ShaderIoSignature("TEXCOORD", 0, 0, ShaderValueType.Float3, ShaderInterpolation.Smooth));
         inputs.Add(new ShaderIoSignature("TEXCOORD", 1, 1, ShaderValueType.Float3, ShaderInterpolation.Smooth));
@@ -34,9 +34,10 @@ internal static class RenderMeshC0ShaderReflection
         if (textured)
         {
             inputs.Add(new ShaderIoSignature("TEXCOORD", 2, 2, ShaderValueType.Float2, ShaderInterpolation.Smooth));
+            inputs.Add(new ShaderIoSignature("TEXCOORD", 3, 3, ShaderValueType.Float4, ShaderInterpolation.Smooth));
         }
 
-        var resources = ImmutableArray.CreateBuilder<ShaderResourceSignature>(textured ? 9 : 3);
+        var resources = ImmutableArray.CreateBuilder<ShaderResourceSignature>(textured ? 11 : 3);
         resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1));
         resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 1, ShaderResourceKind.UniformBuffer, 1));
         resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Material, 0, ShaderResourceKind.UniformBuffer, 1));
@@ -46,9 +47,11 @@ internal static class RenderMeshC0ShaderReflection
             resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Material, 0, ShaderResourceKind.SampledImage, 1));
             resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Material, 1, ShaderResourceKind.SampledImage, 1));
             resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Material, 2, ShaderResourceKind.SampledImage, 1));
+            resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Material, 3, ShaderResourceKind.SampledImage, 1));
             resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Material, 0, ShaderResourceKind.Sampler, 1));
             resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Material, 1, ShaderResourceKind.Sampler, 1));
             resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Material, 2, ShaderResourceKind.Sampler, 1));
+            resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Material, 3, ShaderResourceKind.Sampler, 1));
         }
 
         return new ShaderReflection(
@@ -77,6 +80,7 @@ internal static class RenderMeshC0ShaderReflection
                         new ShaderFieldLayout("Factors", ShaderValueType.Float4, 16, 16, 1, 0),
                         new ShaderFieldLayout("Emissive", ShaderValueType.Float4, 32, 16, 1, 0),
                         new ShaderFieldLayout("RenderOptions", ShaderValueType.Float4, 48, 16, 1, 0),
+                        new ShaderFieldLayout("NormalOptions", ShaderValueType.Float4, 64, 16, 1, 0),
                     ]),
                 new ShaderRecordLayout(
                     "PointLightData",
@@ -114,12 +118,14 @@ internal static class RenderMeshC0ShaderReflection
                 new ShaderIoSignature("POSITION", 0, 0, ShaderValueType.Float3, ShaderInterpolation.Smooth),
                 new ShaderIoSignature("NORMAL", 0, 1, ShaderValueType.Float3, ShaderInterpolation.Smooth),
                 new ShaderIoSignature("TEXCOORD", 0, 2, ShaderValueType.Float2, ShaderInterpolation.Smooth),
+                new ShaderIoSignature("TANGENT", 0, 3, ShaderValueType.Float4, ShaderInterpolation.Smooth),
             ],
             [
                 new ShaderIoSignature("SV_Position", 0, null, ShaderValueType.Float4, ShaderInterpolation.NoPerspective),
                 new ShaderIoSignature("TEXCOORD", 0, 0, ShaderValueType.Float3, ShaderInterpolation.Smooth),
                 new ShaderIoSignature("TEXCOORD", 1, 1, ShaderValueType.Float3, ShaderInterpolation.Smooth),
                 new ShaderIoSignature("TEXCOORD", 2, 2, ShaderValueType.Float2, ShaderInterpolation.Smooth),
+                new ShaderIoSignature("TEXCOORD", 3, 3, ShaderValueType.Float4, ShaderInterpolation.Smooth),
             ],
             [
                 new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1),

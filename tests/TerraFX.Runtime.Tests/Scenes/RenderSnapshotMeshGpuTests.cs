@@ -67,8 +67,10 @@ internal sealed partial class SceneAssetStoreTests
         bool useBaseColorTexture = false,
         bool useEmissiveTexture = false,
         bool usePackedMetalRoughOcclusionTexture = false,
+        bool useNormalMap = false,
         bool unsupportedTextureSampler = false,
         bool missingTextureUv0 = false,
+        bool missingTangents = false,
         byte baseColorTextureAlpha = byte.MaxValue,
         float baseColorAlpha = 1.0f)
     {
@@ -83,6 +85,7 @@ internal sealed partial class SceneAssetStoreTests
         const uint BaseColorTextureAssetId = 4;
         const uint EmissiveTextureAssetId = 5;
         const uint PackedTextureAssetId = 6;
+        const uint NormalTextureAssetId = 7;
         const int SceneAssetId = 3;
         var sceneAssetId = new AssetId(SceneAssetId);
         var materialRecord = CreateRenderMaterialAssetRecord(
@@ -90,6 +93,7 @@ internal sealed partial class SceneAssetStoreTests
             CreateRenderMaterialPbrParametersRecord(
                 baseTextureAssetId: useBaseColorTexture ? checked((int)BaseColorTextureAssetId) : null,
                 packedTextureAssetId: usePackedMetalRoughOcclusionTexture ? checked((int)PackedTextureAssetId) : null,
+                normalTextureAssetId: useNormalMap ? checked((int)NormalTextureAssetId) : null,
                 emissiveTextureAssetId: useEmissiveTexture ? checked((int)EmissiveTextureAssetId) : null,
                 metallic: usePackedMetalRoughOcclusionTexture ? 0.5f : 0.0f,
                 baseTextureAddressU: unsupportedTextureSampler ? (byte)1 : (byte)0,
@@ -99,14 +103,15 @@ internal sealed partial class SceneAssetStoreTests
                     : useEmissiveTexture ? Vector3.UnitY : Vector3.Zero,
                 baseColorAlpha: baseColorAlpha),
             alphaMode: (byte)(useAlphaBlend ? 2 : useAlphaMask ? 1 : 0),
-            doubleSided: !unsupportedCullMode,
+            doubleSided: !unsupportedCullMode && !useNormalMap,
             depthTest: true,
             depthWrite: !useAlphaBlend,
-            cullMode: unsupportedCullMode ? (byte)1 : (byte)0,
+            cullMode: unsupportedCullMode || useNormalMap ? (byte)1 : (byte)0,
             outputAlpha: useAlphaBlend ? (byte)1 : (byte)0,
             requiredCapabilities: 0x191UL
                 | (useAlphaMask ? 0x004UL : 0UL)
-                | (useAlphaBlend ? 0x008UL : 0UL));
+                | (useAlphaBlend ? 0x008UL : 0UL)
+                | (useNormalMap ? 0x040UL : 0UL));
         byte[][] meshComponents = [CreateMeshComponentRecord(checked((int)MeshAssetId), layerMask: ulong.MaxValue)];
 
         if (unsupportedActiveLight)
@@ -133,8 +138,11 @@ internal sealed partial class SceneAssetStoreTests
                         reverseWinding: true,
                         includeUv0: (useBaseColorTexture
                             || useEmissiveTexture
-                            || usePackedMetalRoughOcclusionTexture) && !missingTextureUv0,
-                        positionOffset: usePointLight ? Vector3.UnitZ : null)))),
+                            || usePackedMetalRoughOcclusionTexture
+                            || useNormalMap) && !missingTextureUv0,
+                        includeTangents: useNormalMap && !missingTangents,
+                        positionOffset: usePointLight ? Vector3.UnitZ : null,
+                        normalDirection: useNormalMap ? Vector3.UnitZ : null)))),
             new Package.Entry(
                 MaterialAssetId,
                 Package.CreateEnvelope(MaterialAssetId, materialRecord)),
@@ -200,6 +208,25 @@ internal sealed partial class SceneAssetStoreTests
             ];
         }
 
+        if (useNormalMap)
+        {
+            packageEntries = [
+                .. packageEntries,
+                new Package.Entry(
+                    NormalTextureAssetId,
+                    Package.CreateEnvelope(
+                        NormalTextureAssetId,
+                        CreateRenderTextureAssetRecord(
+                            1,
+                            1,
+                            RenderTextureColorSpace.Linear,
+                            RenderTextureAlphaMode.Straight,
+                            RenderTextureSemantic.Normal,
+                            RenderTextureMipPolicy.BaseOnly,
+                            CreateRenderTextureMipRecord(0, 1, 1, [128, 128, 0, byte.MaxValue])))),
+            ];
+        }
+
         var packageBytes = Package.CreatePackage(packageEntries);
         var packagePath = Package.WritePackage(packageBytes);
         var schemas = CreateRendererRegistry();
@@ -248,6 +275,13 @@ internal sealed partial class SceneAssetStoreTests
             }).ConfigureAwait(false);
 
             if (missingTextureUv0)
+            {
+                _ = Assert.ThrowsAsync<InvalidDataException>(
+                    () => loader!.PrepareAsync(sceneAssetId, new SceneLoadOptions()));
+                return;
+            }
+
+            if (missingTangents)
             {
                 _ = Assert.ThrowsAsync<InvalidDataException>(
                     () => loader!.PrepareAsync(sceneAssetId, new SceneLoadOptions()));
@@ -364,7 +398,8 @@ internal sealed partial class SceneAssetStoreTests
                 Has.Length.EqualTo(
                     (useBaseColorTexture ? 1 : 0)
                     + (useEmissiveTexture ? 1 : 0)
-                    + (usePackedMetalRoughOcclusionTexture ? 1 : 0)));
+                    + (usePackedMetalRoughOcclusionTexture ? 1 : 0)
+                    + (useNormalMap ? 1 : 0)));
             var meshVertexBufferCount = 0;
             var meshIndexBufferCount = 0;
 
@@ -517,6 +552,13 @@ internal sealed partial class SceneAssetStoreTests
             missingTextureUv0: true);
 
     [Test]
+    public Task SnapshotBuiltInMeshC0GraphRejectsNormalMapWithoutTangentsAsync()
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            GraphicsBackend.Vulkan,
+            useNormalMap: true,
+            missingTangents: true);
+
+    [Test]
     public Task SnapshotBuiltInMeshC0GraphRejectsSingleSidedMaterialAsync()
         => RunSnapshotBuiltInMeshC0GraphAsync(GraphicsBackend.Vulkan, unsupportedCullMode: true);
 
@@ -552,6 +594,14 @@ internal sealed partial class SceneAssetStoreTests
             graphicsBackend,
             usePointLight: true,
             useMultiplePointLights: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphRendersNormalMapWithPointLightingAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            usePointLight: true,
+            useNormalMap: true);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]

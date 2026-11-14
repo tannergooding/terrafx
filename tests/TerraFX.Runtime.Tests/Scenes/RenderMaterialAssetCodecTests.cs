@@ -73,6 +73,7 @@ internal sealed partial class SceneAssetStoreTests
         int? emissiveTextureAssetId = null,
         float metallic = 0.0f,
         float roughness = 1.0f,
+        float normalScale = 1.0f,
         byte baseTextureMip = 0,
         byte baseTextureAddressU = 0,
         byte packedTextureAddressU = 0,
@@ -85,7 +86,7 @@ internal sealed partial class SceneAssetStoreTests
             SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 16, 1.0f, 1.0f, 1.0f, baseColorAlpha),
             SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(2, 10, metallic),
             SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(3, 10, roughness),
-            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(4, 10, 1.0f),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(4, 10, normalScale),
             SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(5, 15, emissive.X, emissive.Y, emissive.Z),
         };
 

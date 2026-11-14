@@ -34,6 +34,7 @@ cbuffer MaterialData : register(b0, space1)
     float4 Factors;
     float4 Emissive;
     float4 RenderOptions;
+    float4 NormalOptions;
 };
 
 struct PixelInput
