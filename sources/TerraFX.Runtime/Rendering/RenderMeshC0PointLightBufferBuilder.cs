@@ -9,7 +9,7 @@ namespace TerraFX.Rendering;
 
 internal static class RenderMeshC0PointLightBufferBuilder
 {
-    internal const int Capacity = 256;
+    internal const int Capacity = Renderer.MaximumLightCount;
     internal const int PositionRangeOffset = 0;
     internal const int RadianceOffset = Capacity * sizeof(float) * 4;
     internal const int SizeInBytes = 2 * Capacity * sizeof(float) * 4;

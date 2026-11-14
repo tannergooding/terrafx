@@ -16,10 +16,11 @@ namespace TerraFX.Rendering;
 /// <summary>Extracts immutable CPU render snapshots from committed World state.</summary>
 public sealed partial class Renderer
 {
+    internal const int MaximumLightCount = 256;
+
     private const ulong DefaultSpriteLayerMask = ulong.MaxValue;
     private const int MaximumBonePaletteEntryCount = 2048;
     private const int MaximumDrawInstanceCount = 131072;
-    private const int MaximumLightCount = 256;
     private static readonly Guid s_directionalLightSchemaId = new ContentSchemaIdentityAssignment("render/directional-light").SchemaId;
     private static readonly IComparer<MeshSortKey> s_meshSortKeyComparer = Comparer<MeshSortKey>.Create(CompareMeshSortKeys);
     private static readonly Guid s_pointLightSchemaId = new ContentSchemaIdentityAssignment("render/point-light").SchemaId;
