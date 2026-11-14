@@ -262,6 +262,7 @@ public sealed partial class World
             var componentField = entityRecord.GetField(1);
             var tagField = entityRecord.GetField(2);
             var transientSchemaField = entityRecord.GetField(3);
+            var archetypePlan = restoreEcsPlan.GetArchetype(restoreEcsPlan.GetEntityArchetypeIndex(index));
 
             if ((entityRecord.Header.SchemaId != new ContentSchemaIdentityAssignment("state/entity").SchemaId)
                 || (entityRecord.Header.Major != 1)
@@ -270,58 +271,58 @@ public sealed partial class World
                 || (componentField.Tag != 2)
                 || (componentField.Kind != 24)
                 || !componentField.IsRequired
-                || (componentField.Count != (ulong)restoreEcsPlan.PersistentComponentCount)
+                || (componentField.Count != (ulong)archetypePlan.PersistentComponentCount)
                 || (tagField.Tag != 3)
                 || (tagField.Kind != 24)
                 || !tagField.IsRequired
-                || (tagField.Count != (ulong)restoreEcsPlan.Tags.Length)
+                || (tagField.Count != (ulong)archetypePlan.Tags.Length)
                 || (transientSchemaField.Tag != 4)
                 || (transientSchemaField.Kind != 24)
                 || !transientSchemaField.IsRequired
-                || (transientSchemaField.Count != (ulong)restoreEcsPlan.TransientComponentCount)
+                || (transientSchemaField.Count != (ulong)archetypePlan.TransientComponentCount)
                 || entityRecord.TryGetField(6, out _))
             {
-                throw new NotSupportedException("This candidate restore slice supports one homogeneous component and tag signature without Scene ownership.");
+                throw new NotSupportedException("This candidate restore slice does not support Scene-owned ECS Entities.");
             }
 
-            for (var componentIndex = 0; componentIndex < restoreEcsPlan.PersistentComponentCount; componentIndex++)
+            for (var componentIndex = 0; componentIndex < archetypePlan.PersistentComponentCount; componentIndex++)
             {
                 var componentRecord = entityRecord.GetRecordArrayElement(2, componentIndex);
                 var header = componentRecord.Header;
-                var registration = restoreEcsPlan.Components[componentIndex];
+                var registration = archetypePlan.Components[componentIndex];
 
                 if ((header.SchemaId != registration.SchemaReference.SchemaId)
                     || (header.Major != registration.SchemaReference.Major)
                     || (header.Minor != registration.SchemaReference.Minor))
                 {
-                    throw new ArgumentException("A candidate ECS component does not match the preflighted homogeneous component set.", nameof(ecsRecord));
+                    throw new ArgumentException("A candidate ECS component does not match its preflighted archetype.", nameof(ecsRecord));
                 }
             }
 
-            for (var tagIndex = 0; tagIndex < restoreEcsPlan.Tags.Length; tagIndex++)
+            for (var tagIndex = 0; tagIndex < archetypePlan.Tags.Length; tagIndex++)
             {
                 var tagRecord = entityRecord.GetRecordArrayElement(3, tagIndex);
                 var tagSchema = WorldPersistenceEcsReader.ReadTagSchemaReferenceForRestore(
                     tagRecord,
                     nameof(ecsRecord));
 
-                if (tagSchema != restoreEcsPlan.Tags[tagIndex])
+                if (tagSchema != archetypePlan.Tags[tagIndex])
                 {
-                    throw new ArgumentException("A candidate ECS tag does not match the preflighted homogeneous signature.", nameof(ecsRecord));
+                    throw new ArgumentException("A candidate ECS tag does not match its preflighted archetype.", nameof(ecsRecord));
                 }
             }
 
-            for (var transientIndex = 0; transientIndex < restoreEcsPlan.TransientComponentCount; transientIndex++)
+            for (var transientIndex = 0; transientIndex < archetypePlan.TransientComponentCount; transientIndex++)
             {
                 var schemaRecord = entityRecord.GetRecordArrayElement(4, transientIndex);
                 var transientSchema = WorldPersistenceEcsReader.ReadTransientComponentSchemaReference(
                     schemaRecord,
                     nameof(ecsRecord));
-                var registration = restoreEcsPlan.Components[restoreEcsPlan.PersistentComponentCount + transientIndex];
+                var registration = archetypePlan.Components[archetypePlan.PersistentComponentCount + transientIndex];
 
                 if (transientSchema != registration.SchemaReference)
                 {
-                    throw new ArgumentException("A candidate ECS transient schema does not match the preflighted component set.", nameof(ecsRecord));
+                    throw new ArgumentException("A candidate ECS transient schema does not match its preflighted archetype.", nameof(ecsRecord));
                 }
             }
 
@@ -392,56 +393,81 @@ public sealed partial class World
             return;
         }
 
-        var hasArchetype = !restoreEcsPlan.Components.IsEmpty || !restoreEcsPlan.Tags.IsEmpty;
-        var metadataBytes = hasArchetype
-            ? WorldArchetype.GetMetadataByteReservation(restoreEcsPlan.Components.Length, restoreEcsPlan.Tags.Length)
-            : 0L;
-        WorldArchetype? candidateArchetype = null;
-        WorldArchetype archetype;
+        var archetypeCount = restoreEcsPlan.ArchetypeCount;
+        var archetypesByPlan = new WorldArchetype[archetypeCount];
+        var componentInitializationsByPlan = new ComponentInitialization?[archetypeCount][];
+        var metadataBytes = 0L;
+        var storageBytes = 0L;
+        var workPlanCount = 0;
+        var componentWorkspaceBytes = checked(2 * ArrayBytes(archetypeCount, IntPtr.Size));
+        var nextWorldArchetypeIndex = 1;
 
-        if (hasArchetype)
+        for (var archetypeIndex = 0; archetypeIndex < archetypeCount; archetypeIndex++)
         {
-            if ((_archetypeCount != 1) || (_archetypes[1] is not null))
+            var archetypePlan = restoreEcsPlan.GetArchetype(archetypeIndex);
+            var hasSignature = !archetypePlan.Components.IsEmpty || !archetypePlan.Tags.IsEmpty;
+            WorldArchetype archetype;
+
+            if (hasSignature)
             {
-                throw new InvalidOperationException("The restore candidate does not have the preflighted component archetype slot.");
+                if ((_archetypeCount != 1)
+                    || (nextWorldArchetypeIndex >= _archetypes.Length)
+                    || (_archetypes[nextWorldArchetypeIndex] is not null))
+                {
+                    throw new InvalidOperationException("The restore candidate does not have its preflighted archetype directory slots.");
+                }
+
+                var tagIds = ImmutableArray.CreateBuilder<Guid>(archetypePlan.Tags.Length);
+
+                foreach (var tag in archetypePlan.Tags)
+                {
+                    tagIds.Add(tag.SchemaId);
+                }
+
+                archetype = new WorldArchetype(
+                    _ownerId,
+                    nextWorldArchetypeIndex,
+                    _maximumLiveEntities,
+                    archetypePlan.Components,
+                    tagIds.MoveToImmutable());
+                nextWorldArchetypeIndex++;
+                metadataBytes = checked(metadataBytes + archetype.MetadataByteReservation);
+            }
+            else
+            {
+                archetype = _archetypes[0]
+                    ?? throw new InvalidOperationException("The restore candidate omitted its empty archetype.");
             }
 
-            var tagIds = ImmutableArray.CreateBuilder<Guid>(restoreEcsPlan.Tags.Length);
+            archetypesByPlan[archetypeIndex] = archetype;
+            storageBytes = checked(
+                storageBytes
+                + archetype.Storage.GetCapacityPreparationBytes(archetypePlan.EntityCount));
+            var chunksPerFullPage = (archetype.Storage.RowCapacity + 63) / 64;
+            var fullChunkCount = archetypePlan.EntityCount / archetype.Storage.RowCapacity;
+            var lastChunkEntityCount = archetypePlan.EntityCount % archetype.Storage.RowCapacity;
+            workPlanCount = checked(
+                workPlanCount
+                + (fullChunkCount * chunksPerFullPage)
+                + ((lastChunkEntityCount + 63) / 64));
 
-            foreach (var tag in restoreEcsPlan.Tags)
+            if (!archetypePlan.Components.IsEmpty)
             {
-                tagIds.Add(tag.SchemaId);
+                componentInitializationsByPlan[archetypeIndex] =
+                    new ComponentInitialization?[archetypePlan.Components.Length];
+                componentWorkspaceBytes = checked(
+                    componentWorkspaceBytes
+                    + ArrayBytes(archetypePlan.Components.Length, IntPtr.Size)
+                    + (archetypePlan.Components.Length * 128L));
             }
-
-            candidateArchetype = new WorldArchetype(
-                _ownerId,
-                1,
-                _maximumLiveEntities,
-                restoreEcsPlan.Components,
-                tagIds.MoveToImmutable());
-            archetype = candidateArchetype;
-        }
-        else
-        {
-            archetype = _archetypes[0]
-                ?? throw new InvalidOperationException("The restore candidate omitted its empty archetype.");
+            else
+            {
+                componentInitializationsByPlan[archetypeIndex] = [];
+            }
         }
 
-        var storage = archetype.Storage;
-        var storageBytes = storage.GetCapacityPreparationBytes(contents.EntityCount);
-        var chunksPerFullPage = (storage.RowCapacity + 63) / 64;
-        var fullChunkCount = contents.EntityCount / storage.RowCapacity;
-        var lastChunkEntityCount = contents.EntityCount % storage.RowCapacity;
-        var workPlanCount = checked(
-            (fullChunkCount * chunksPerFullPage)
-            + ((lastChunkEntityCount + 63) / 64));
         var workPlanCapacity = _restoreWorkPlanCapacity;
         var workPlanBytes = _restoreWorkPlanByteReservation;
-        var componentWorkspaceBytes = restoreEcsPlan.Components.IsEmpty
-            ? 0
-            : checked(
-                ArrayBytes(restoreEcsPlan.Components.Length, IntPtr.Size)
-                + (restoreEcsPlan.Components.Length * 128L));
         var growthBytes = checked(
             metadataBytes
             + storageBytes
@@ -461,26 +487,35 @@ public sealed partial class World
         }
 
         var workPlan = new WorldChunkWorkPlanEntry[workPlanCapacity];
-        var componentInitializations = new ComponentInitialization?[restoreEcsPlan.Components.Length];
 
-        if (!storage.PrepareCapacity(contents.EntityCount))
+        for (var archetypeIndex = 0; archetypeIndex < archetypeCount; archetypeIndex++)
         {
-            throw new InvalidOperationException("The restore candidate could not prepare its validated ECS row capacity.");
-        }
+            var archetypePlan = restoreEcsPlan.GetArchetype(archetypeIndex);
+            var storage = archetypesByPlan[archetypeIndex].Storage;
 
-        for (var componentIndex = restoreEcsPlan.PersistentComponentCount; componentIndex < restoreEcsPlan.Components.Length; componentIndex++)
-        {
-            var registration = restoreEcsPlan.Components[componentIndex];
-
-            if (registration.Descriptor.Restore == ComponentTransientRestore.Reset)
+            if (!storage.PrepareCapacity(archetypePlan.EntityCount))
             {
-                componentInitializations[componentIndex] = registration.CreateDefaultInitialization();
+                throw new InvalidOperationException("The restore candidate could not prepare its validated ECS row capacity.");
             }
-        }
 
-        if (candidateArchetype is not null)
-        {
-            InstallArchetype(candidateArchetype);
+            var componentInitializations = componentInitializationsByPlan[archetypeIndex];
+
+            for (var componentIndex = archetypePlan.PersistentComponentCount;
+                 componentIndex < archetypePlan.Components.Length;
+                 componentIndex++)
+            {
+                var registration = archetypePlan.Components[componentIndex];
+
+                if (registration.Descriptor.Restore == ComponentTransientRestore.Reset)
+                {
+                    componentInitializations[componentIndex] = registration.CreateDefaultInitialization();
+                }
+            }
+
+            if (archetypesByPlan[archetypeIndex].Index != 0)
+            {
+                InstallArchetype(archetypesByPlan[archetypeIndex]);
+            }
         }
 
         _nextChunkOrdinal = 0;
@@ -491,15 +526,19 @@ public sealed partial class World
             var entityRecord = root.GetRecordArrayElement(1, index);
             var entityId = new Guid(entityRecord.GetField(0).Payload, bigEndian: true);
             var entity = ResolveRestoreEntity(entityId);
+            var archetypeIndex = restoreEcsPlan.GetEntityArchetypeIndex(index);
+            var archetypePlan = restoreEcsPlan.GetArchetype(archetypeIndex);
+            var archetypeStorage = archetypesByPlan[archetypeIndex].Storage;
+            var componentInitializations = componentInitializationsByPlan[archetypeIndex];
 
-            if (!storage.TryGetNextAppendLocation(_nextChunkOrdinal, out var chunkIndex, out var row))
+            if (!archetypeStorage.TryGetNextAppendLocation(_nextChunkOrdinal, out var chunkIndex, out var row))
             {
                 throw new InvalidOperationException("The restore candidate could not locate a preflighted ECS row.");
             }
 
-            for (var componentIndex = 0; componentIndex < restoreEcsPlan.PersistentComponentCount; componentIndex++)
+            for (var componentIndex = 0; componentIndex < archetypePlan.PersistentComponentCount; componentIndex++)
             {
-                var registration = restoreEcsPlan.Components[componentIndex];
+                var registration = archetypePlan.Components[componentIndex];
                 var componentRecord = entityRecord.GetRecordArrayElement(2, componentIndex);
                 var restoreResult = RestoreComponentRecord(
                     entity,
@@ -527,16 +566,16 @@ public sealed partial class World
             {
                 if (componentInitializations[componentIndex] is { } initialization)
                 {
-                    storage.InitializeColumnRow(componentIndex, chunkIndex, row, initialization, _spatialSettings);
+                    archetypeStorage.InitializeColumnRow(componentIndex, chunkIndex, row, initialization, _spatialSettings);
                 }
             }
 
-            if (!storage.TryAppend(entity, _entitySlots, ref _nextChunkOrdinal))
+            if (!archetypeStorage.TryAppend(entity, _entitySlots, ref _nextChunkOrdinal))
             {
                 throw new InvalidOperationException("The restore candidate could not append a prevalidated ECS row.");
             }
 
-            Array.Clear(componentInitializations, 0, restoreEcsPlan.PersistentComponentCount);
+            Array.Clear(componentInitializations, 0, archetypePlan.PersistentComponentCount);
         }
 
         _componentTagWorkPlan = workPlan;
@@ -544,26 +583,32 @@ public sealed partial class World
 
         RebuildComponentTagWorkPlan();
 
-        for (var componentIndex = 0; componentIndex < restoreEcsPlan.Components.Length; componentIndex++)
+        for (var archetypeIndex = 0; archetypeIndex < archetypeCount; archetypeIndex++)
         {
-            if (restoreEcsPlan.Components[componentIndex].Descriptor.Restore == ComponentTransientRestore.Derived)
-            {
-                continue;
-            }
+            var archetypePlan = restoreEcsPlan.GetArchetype(archetypeIndex);
+            var storage = archetypesByPlan[archetypeIndex].Storage;
 
-            for (var chunkIndex = 0; chunkIndex < storage.ChunkCount; chunkIndex++)
+            for (var componentIndex = 0; componentIndex < archetypePlan.Components.Length; componentIndex++)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                for (var row = 0; row < storage.GetChunkRowCount(chunkIndex); row++)
+                if (archetypePlan.Components[componentIndex].Descriptor.Restore == ComponentTransientRestore.Derived)
                 {
-                    storage.ValidateEntityReferencesColumnRow(
-                        componentIndex,
-                        chunkIndex,
-                        row,
-                        this,
-                        excludedEntity: null,
-                        parameterName: nameof(ecsRecord));
+                    continue;
+                }
+
+                for (var chunkIndex = 0; chunkIndex < storage.ChunkCount; chunkIndex++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    for (var row = 0; row < storage.GetChunkRowCount(chunkIndex); row++)
+                    {
+                        storage.ValidateEntityReferencesColumnRow(
+                            componentIndex,
+                            chunkIndex,
+                            row,
+                            this,
+                            excludedEntity: null,
+                            parameterName: nameof(ecsRecord));
+                    }
                 }
             }
         }
@@ -574,6 +619,10 @@ public sealed partial class World
             var entityRecord = root.GetRecordArrayElement(1, entityIndex);
             var entityId = new Guid(entityRecord.GetField(0).Payload, bigEndian: true);
             var entity = ResolveRestoreEntity(entityId);
+            var archetypePlanIndex = restoreEcsPlan.GetEntityArchetypeIndex(entityIndex);
+            var archetypePlan = restoreEcsPlan.GetArchetype(archetypePlanIndex);
+            var archetype = archetypesByPlan[archetypePlanIndex];
+            var storage = archetype.Storage;
 
             if (!_entitySlots.TryGetLocation(entity.Index, entity.Generation, out var archetypeIndex, out var chunkOrdinal, out var row)
                 || (archetypeIndex != archetype.Index))
@@ -586,9 +635,11 @@ public sealed partial class World
                 throw new InvalidOperationException("The restored Entity has no preflighted archetype chunk.");
             }
 
-            for (var componentIndex = restoreEcsPlan.PersistentComponentCount; componentIndex < restoreEcsPlan.Components.Length; componentIndex++)
+            for (var componentIndex = archetypePlan.PersistentComponentCount;
+                 componentIndex < archetypePlan.Components.Length;
+                 componentIndex++)
             {
-                var registration = restoreEcsPlan.Components[componentIndex];
+                var registration = archetypePlan.Components[componentIndex];
 
                 if (registration.Descriptor.Restore != ComponentTransientRestore.Derived)
                 {
@@ -600,28 +651,40 @@ public sealed partial class World
             }
         }
 
-        for (var chunkIndex = 0; chunkIndex < storage.ChunkCount; chunkIndex++)
+        for (var archetypeIndex = 0; archetypeIndex < archetypeCount; archetypeIndex++)
         {
-            for (var row = 0; row < storage.GetChunkRowCount(chunkIndex); row++)
+            var archetypePlan = restoreEcsPlan.GetArchetype(archetypeIndex);
+            var storage = archetypesByPlan[archetypeIndex].Storage;
+
+            for (var chunkIndex = 0; chunkIndex < storage.ChunkCount; chunkIndex++)
             {
-                for (var componentIndex = 0; componentIndex < restoreEcsPlan.Components.Length; componentIndex++)
+                for (var row = 0; row < storage.GetChunkRowCount(chunkIndex); row++)
                 {
-                    ThrowIfValidationFailed(
-                        storage.ValidateColumnRow(componentIndex, chunkIndex, row, cancellationToken),
-                        nameof(ecsRecord),
-                        "A restored component failed its registered validation.");
-                    storage.ValidateEntityReferencesColumnRow(
-                        componentIndex,
-                        chunkIndex,
-                        row,
-                        this,
-                        excludedEntity: null,
-                        parameterName: nameof(ecsRecord));
+                    for (var componentIndex = 0; componentIndex < archetypePlan.Components.Length; componentIndex++)
+                    {
+                        ThrowIfValidationFailed(
+                            storage.ValidateColumnRow(componentIndex, chunkIndex, row, cancellationToken),
+                            nameof(ecsRecord),
+                            "A restored component failed its registered validation.");
+                        storage.ValidateEntityReferencesColumnRow(
+                            componentIndex,
+                            chunkIndex,
+                            row,
+                            this,
+                            excludedEntity: null,
+                            parameterName: nameof(ecsRecord));
+                    }
                 }
             }
         }
 
-        Array.Clear(componentInitializations);
+        for (var archetypeIndex = 0; archetypeIndex < componentInitializationsByPlan.Length; archetypeIndex++)
+        {
+            Array.Clear(componentInitializationsByPlan[archetypeIndex]);
+        }
+
+        Array.Clear(archetypesByPlan);
+        Array.Clear(componentInitializationsByPlan);
 
         if (componentWorkspaceBytes != 0)
         {

@@ -26,13 +26,15 @@ internal static class WorldPersistenceEcsReader
     private static readonly Guid s_schemaReferenceSchemaId = new ContentSchemaIdentityAssignment("content/schema-ref").SchemaId;
     private static readonly Guid s_systemStateSchemaId = new ContentSchemaIdentityAssignment("state/system-state").SchemaId;
 
-    internal static WorldRestoreEcsPlan CreateHomogeneousRestorePlan(
+    internal static WorldRestoreEcsPlan CreateRestorePlan(
         ReadOnlyMemory<byte> ecsRecord,
         WorldPersistenceEcsContents contents,
-        WorldRegistration targetRegistration)
+        WorldRegistration targetRegistration,
+        WorldPersistenceConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(contents);
         ArgumentNullException.ThrowIfNull(targetRegistration);
+        ArgumentNullException.ThrowIfNull(configuration);
 
         if ((contents.LiveEntityCount != contents.EntityCount)
             || (contents.LiveSceneInstanceCount != 0)
@@ -44,153 +46,83 @@ internal static class WorldPersistenceEcsReader
         }
 
         var record = new EbinRecordReadView(ecsRecord.Span);
-        var persistentField = (contents.EntityCount == 0)
-            ? default
-            : record.GetRecordArrayElement(1, 0).GetField(1);
-        var tagField = (contents.EntityCount == 0)
-            ? default
-            : record.GetRecordArrayElement(1, 0).GetField(2);
-        var transientField = (contents.EntityCount == 0)
-            ? default
-            : record.GetRecordArrayElement(1, 0).GetField(3);
 
-        if ((contents.EntityCount != 0)
-            && ((persistentField.Tag != 2)
-                || (persistentField.Kind != ArrayKind)
-                || !persistentField.IsRequired
-                || (persistentField.Count > int.MaxValue)
-                || (tagField.Tag != 3)
-                || (tagField.Kind != ArrayKind)
-                || !tagField.IsRequired
-                || (tagField.Count > int.MaxValue)
-                || (transientField.Tag != 4)
-                || (transientField.Kind != ArrayKind)
-                || !transientField.IsRequired
-                || (transientField.Count > int.MaxValue)))
+        if (contents.EntityCount == 0)
         {
-            throw new ArgumentException("The first candidate ECS Entity has an invalid component schema array.", nameof(ecsRecord));
+            return WorldRestoreEcsPlan.Create(0, [], 0, []);
         }
 
-        var persistentCount = (contents.EntityCount == 0) ? 0 : checked((int)persistentField.Count);
-        var tagCount = (contents.EntityCount == 0) ? 0 : checked((int)tagField.Count);
-        var transientCount = (contents.EntityCount == 0) ? 0 : checked((int)transientField.Count);
-        var components = ImmutableArray.CreateBuilder<IComponentRegistration>(checked(persistentCount + transientCount));
-
-        for (var componentIndex = 0; componentIndex < persistentCount; componentIndex++)
-        {
-            var componentRecord = record.GetRecordArrayElement(1, 0).GetRecordArrayElement(2, componentIndex);
-            var schema = ReadContentSchemaReference(componentRecord, nameof(ecsRecord));
-            IComponentRegistration registration;
-
-            try
-            {
-                registration = targetRegistration.GetComponentRegistration(schema);
-            }
-            catch (KeyNotFoundException exception)
-            {
-                throw new ArgumentException("A candidate ECS component schema is not registered in the target World.", nameof(ecsRecord), exception);
-            }
-
-            if (registration.Descriptor.Flags != ComponentStorageFlags.Persistent)
-            {
-                throw new ArgumentException("A candidate ECS persistent component schema does not match its target registration.", nameof(ecsRecord));
-            }
-
-            components.Add(registration);
-        }
-
-        for (var transientIndex = 0; transientIndex < transientCount; transientIndex++)
-        {
-            var schemaRecord = record.GetRecordArrayElement(1, 0).GetRecordArrayElement(4, transientIndex);
-            var schema = ReadSchemaReference(schemaRecord, nameof(ecsRecord));
-            IComponentRegistration registration;
-
-            try
-            {
-                registration = targetRegistration.GetComponentRegistration(schema);
-            }
-            catch (KeyNotFoundException exception)
-            {
-                throw new ArgumentException("A candidate ECS transient schema is not registered in the target World.", nameof(ecsRecord), exception);
-            }
-
-            if ((registration.Descriptor.Flags != ComponentStorageFlags.Transient)
-                || (registration.Descriptor.Restore is not ComponentTransientRestore.Reset and not ComponentTransientRestore.Derived))
-            {
-                throw new ArgumentException("A candidate ECS transient schema does not match a restorable target registration.", nameof(ecsRecord));
-            }
-
-            components.Add(registration);
-        }
-
-        var componentResult = components.MoveToImmutable();
-        var tags = ImmutableArray.CreateBuilder<ContentSchemaReference>(tagCount);
-
-        for (var tagIndex = 0; tagIndex < tagCount; tagIndex++)
-        {
-            var tagRecord = record.GetRecordArrayElement(1, 0).GetRecordArrayElement(3, tagIndex);
-            var tagSchema = ReadTagSchemaReference(tagRecord, nameof(ecsRecord));
-            ValidateTagSchema(
-                tagSchema,
-                targetRegistration,
-                schemas: targetRegistration.Schemas,
-                parameterName: nameof(ecsRecord));
-            tags.Add(tagSchema);
-        }
-
-        var tagResult = tags.MoveToImmutable();
-        ValidateDerivedDependencies(componentResult, persistentCount);
+        var archetypeCapacity = Math.Min(contents.EntityCount, configuration.MaximumArchetypes);
+        var archetypes = new WorldRestoreEcsArchetypePlan?[archetypeCapacity];
+        var entityArchetypeIndices = new int[contents.EntityCount];
+        var hashTable = new int[WorldRestoreEcsPlan.GetArchetypeHashTableLength(archetypeCapacity)];
+        var archetypeCount = 0;
+        var hashMask = hashTable.Length - 1;
 
         for (var entityIndex = 0; entityIndex < contents.EntityCount; entityIndex++)
         {
             var entity = record.GetRecordArrayElement(1, entityIndex);
-            var currentPersistentComponents = entity.GetField(1);
-            var entityTagField = entity.GetField(2);
-            var currentTransientSchemas = entity.GetField(3);
 
-            if ((currentPersistentComponents.Count != (ulong)persistentCount)
-                || (entityTagField.Count != (ulong)tagResult.Length)
-                || (currentTransientSchemas.Count != (ulong)transientCount)
-                || entity.TryGetField(6, out _))
+            if (entity.TryGetField(6, out _))
             {
-                throw new NotSupportedException("The candidate restore slice requires one homogeneous component and tag signature without Scene ownership.");
+                throw new NotSupportedException("The candidate restore slice does not support Scene-owned ECS Entities.");
             }
 
-            for (var componentIndex = 0; componentIndex < persistentCount; componentIndex++)
-            {
-                var componentRecord = entity.GetRecordArrayElement(2, componentIndex);
-                var schema = ReadContentSchemaReference(componentRecord, nameof(ecsRecord));
+            var signatureHash = GetArchetypeSignatureHash(entity, nameof(ecsRecord));
+            var hashSlot = unchecked((int)((uint)signatureHash & (uint)hashMask));
+            var found = false;
 
-                if (schema != componentResult[componentIndex].SchemaReference)
+            for (var probe = 0; probe < hashTable.Length; probe++)
+            {
+                var encodedArchetypeIndex = hashTable[hashSlot];
+
+                if (encodedArchetypeIndex == 0)
                 {
-                    throw new NotSupportedException("The candidate restore slice requires every Entity to use one homogeneous Persistent component set.");
+                    if (archetypeCount == archetypeCapacity)
+                    {
+                        throw new NotSupportedException("The restored ECS archetype count exceeds its configured capacity.");
+                    }
+
+                    var archetype = CreateArchetypePlan(
+                        entity,
+                        targetRegistration,
+                        signatureHash,
+                        nameof(ecsRecord));
+                    archetypes[archetypeCount] = archetype;
+                    hashTable[hashSlot] = archetypeCount + 1;
+                    entityArchetypeIndices[entityIndex] = archetypeCount;
+                    archetypeCount++;
+                    found = true;
+                    break;
                 }
+
+                var candidateIndex = encodedArchetypeIndex - 1;
+                var candidate = archetypes[candidateIndex]
+                    ?? throw new InvalidOperationException("The restored ECS signature table contains an empty archetype slot.");
+
+                if ((candidate.SignatureHash == signatureHash)
+                    && MatchesArchetypeSignature(candidate, entity, nameof(ecsRecord)))
+                {
+                    candidate.AddEntity();
+                    entityArchetypeIndices[entityIndex] = candidateIndex;
+                    found = true;
+                    break;
+                }
+
+                hashSlot = (hashSlot + 1) & hashMask;
             }
 
-            for (var transientIndex = 0; transientIndex < transientCount; transientIndex++)
+            if (!found)
             {
-                var schemaRecord = entity.GetRecordArrayElement(4, transientIndex);
-                var schema = ReadSchemaReference(schemaRecord, nameof(ecsRecord));
-
-                if (schema != componentResult[persistentCount + transientIndex].SchemaReference)
-                {
-                    throw new NotSupportedException("The candidate restore slice requires every Entity to use one homogeneous transient component set.");
-                }
-            }
-
-            for (var tagIndex = 0; tagIndex < tagResult.Length; tagIndex++)
-            {
-                var tagRecord = entity.GetRecordArrayElement(3, tagIndex);
-                var tagSchema = ReadTagSchemaReference(tagRecord, nameof(ecsRecord));
-
-                if (tagSchema != tagResult[tagIndex])
-                {
-                    throw new NotSupportedException("The candidate restore slice requires every Entity to use one homogeneous tag set.");
-                }
+                throw new InvalidOperationException("The restored ECS signature table is full before its admitted archetype bound.");
             }
         }
 
-        return WorldRestoreEcsPlan.Create(contents.EntityCount, persistentCount, componentResult, tagResult);
+        return WorldRestoreEcsPlan.Create(
+            contents.EntityCount,
+            archetypes,
+            archetypeCount,
+            entityArchetypeIndices);
     }
 
     internal static WorldPersistenceEcsContents Read(
@@ -660,6 +592,134 @@ internal static class WorldPersistenceEcsReader
         return (comparison != 0) ? comparison : left.Scope.CompareTo(right.Scope);
     }
 
+    private static WorldRestoreEcsArchetypePlan CreateArchetypePlan(
+        EbinRecordReadView entity,
+        WorldRegistration targetRegistration,
+        int signatureHash,
+        string parameterName)
+    {
+        var persistentField = GetRequiredField(entity, 2, ArrayKind, expectedCount: null, parameterName);
+        var tagField = GetRequiredField(entity, 3, ArrayKind, expectedCount: null, parameterName);
+        var transientField = GetRequiredField(entity, 4, ArrayKind, expectedCount: null, parameterName);
+
+        if ((persistentField.Count > int.MaxValue)
+            || (tagField.Count > int.MaxValue)
+            || (transientField.Count > int.MaxValue))
+        {
+            throw new ArgumentException("A state/entity signature exceeds its supported component or tag count.", parameterName);
+        }
+
+        var persistentCount = checked((int)persistentField.Count);
+        var tagCount = checked((int)tagField.Count);
+        var transientCount = checked((int)transientField.Count);
+        var components = ImmutableArray.CreateBuilder<IComponentRegistration>(checked(persistentCount + transientCount));
+
+        for (var componentIndex = 0; componentIndex < persistentCount; componentIndex++)
+        {
+            var componentRecord = entity.GetRecordArrayElement(2, componentIndex);
+            var schema = ReadContentSchemaReference(componentRecord, parameterName);
+            IComponentRegistration registration;
+
+            try
+            {
+                registration = targetRegistration.GetComponentRegistration(schema);
+            }
+            catch (KeyNotFoundException exception)
+            {
+                throw new ArgumentException("A candidate ECS component schema is not registered in the target World.", parameterName, exception);
+            }
+
+            if (registration.Descriptor.Flags != ComponentStorageFlags.Persistent)
+            {
+                throw new ArgumentException("A candidate ECS persistent component schema does not match its target registration.", parameterName);
+            }
+
+            components.Add(registration);
+        }
+
+        for (var transientIndex = 0; transientIndex < transientCount; transientIndex++)
+        {
+            var schema = ReadSchemaReference(entity.GetRecordArrayElement(4, transientIndex), parameterName);
+            IComponentRegistration registration;
+
+            try
+            {
+                registration = targetRegistration.GetComponentRegistration(schema);
+            }
+            catch (KeyNotFoundException exception)
+            {
+                throw new ArgumentException("A candidate ECS transient schema is not registered in the target World.", parameterName, exception);
+            }
+
+            if ((registration.Descriptor.Flags != ComponentStorageFlags.Transient)
+                || (registration.Descriptor.Restore is not ComponentTransientRestore.Reset and not ComponentTransientRestore.Derived))
+            {
+                throw new ArgumentException("A candidate ECS transient schema does not match a restorable target registration.", parameterName);
+            }
+
+            components.Add(registration);
+        }
+
+        var componentResult = components.MoveToImmutable();
+        var tags = ImmutableArray.CreateBuilder<ContentSchemaReference>(tagCount);
+
+        for (var tagIndex = 0; tagIndex < tagCount; tagIndex++)
+        {
+            var schema = ReadTagSchemaReference(entity.GetRecordArrayElement(3, tagIndex), parameterName);
+            ValidateTagSchema(schema, targetRegistration, targetRegistration.Schemas, parameterName);
+            tags.Add(schema);
+        }
+
+        var tagResult = tags.MoveToImmutable();
+        ValidateDerivedDependencies(componentResult, persistentCount);
+        return WorldRestoreEcsArchetypePlan.Create(
+            signatureHash,
+            persistentCount,
+            componentResult,
+            tagResult);
+    }
+
+    private static int GetArchetypeSignatureHash(EbinRecordReadView entity, string parameterName)
+    {
+        var persistentField = GetRequiredField(entity, 2, ArrayKind, expectedCount: null, parameterName);
+        var tagField = GetRequiredField(entity, 3, ArrayKind, expectedCount: null, parameterName);
+        var transientField = GetRequiredField(entity, 4, ArrayKind, expectedCount: null, parameterName);
+
+        if ((persistentField.Count > int.MaxValue)
+            || (tagField.Count > int.MaxValue)
+            || (transientField.Count > int.MaxValue))
+        {
+            throw new ArgumentException("A state/entity signature exceeds its supported component or tag count.", parameterName);
+        }
+
+        var persistentCount = checked((int)persistentField.Count);
+        var tagCount = checked((int)tagField.Count);
+        var transientCount = checked((int)transientField.Count);
+        var hash = new HashCode();
+        hash.Add(persistentCount);
+
+        for (var componentIndex = 0; componentIndex < persistentCount; componentIndex++)
+        {
+            hash.Add(ReadContentSchemaReference(entity.GetRecordArrayElement(2, componentIndex), parameterName));
+        }
+
+        hash.Add(tagCount);
+
+        for (var tagIndex = 0; tagIndex < tagCount; tagIndex++)
+        {
+            hash.Add(ReadTagSchemaReference(entity.GetRecordArrayElement(3, tagIndex), parameterName));
+        }
+
+        hash.Add(transientCount);
+
+        for (var transientIndex = 0; transientIndex < transientCount; transientIndex++)
+        {
+            hash.Add(ReadSchemaReference(entity.GetRecordArrayElement(4, transientIndex), parameterName));
+        }
+
+        return hash.ToHashCode();
+    }
+
     private static EbinFieldReadView GetRequiredField(
         EbinRecordReadView record,
         uint tag,
@@ -676,6 +736,52 @@ internal static class WorldPersistenceEcsReader
         }
 
         return field;
+    }
+
+    private static bool MatchesArchetypeSignature(
+        WorldRestoreEcsArchetypePlan archetype,
+        EbinRecordReadView entity,
+        string parameterName)
+    {
+        var persistentField = GetRequiredField(entity, 2, ArrayKind, expectedCount: null, parameterName);
+        var tagField = GetRequiredField(entity, 3, ArrayKind, expectedCount: null, parameterName);
+        var transientField = GetRequiredField(entity, 4, ArrayKind, expectedCount: null, parameterName);
+
+        if ((persistentField.Count != (ulong)archetype.PersistentComponentCount)
+            || (tagField.Count != (ulong)archetype.Tags.Length)
+            || (transientField.Count != (ulong)archetype.TransientComponentCount))
+        {
+            return false;
+        }
+
+        for (var componentIndex = 0; componentIndex < archetype.PersistentComponentCount; componentIndex++)
+        {
+            if (ReadContentSchemaReference(entity.GetRecordArrayElement(2, componentIndex), parameterName)
+                != archetype.Components[componentIndex].SchemaReference)
+            {
+                return false;
+            }
+        }
+
+        for (var tagIndex = 0; tagIndex < archetype.Tags.Length; tagIndex++)
+        {
+            if (ReadTagSchemaReference(entity.GetRecordArrayElement(3, tagIndex), parameterName)
+                != archetype.Tags[tagIndex])
+            {
+                return false;
+            }
+        }
+
+        for (var transientIndex = 0; transientIndex < archetype.TransientComponentCount; transientIndex++)
+        {
+            if (ReadSchemaReference(entity.GetRecordArrayElement(4, transientIndex), parameterName)
+                != archetype.Components[archetype.PersistentComponentCount + transientIndex].SchemaReference)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static int ReadArrayCount(

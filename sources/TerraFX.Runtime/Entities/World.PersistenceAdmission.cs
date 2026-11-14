@@ -166,47 +166,66 @@ public sealed partial class World
             throw new ArgumentException("The restore ECS plan does not match the candidate identity state.", nameof(restoreEcsPlan));
         }
 
-        if ((entityCount == 0) && (!restoreEcsPlan.Components.IsEmpty || !restoreEcsPlan.Tags.IsEmpty))
-        {
-            throw new ArgumentException("An empty restore cannot declare an ECS signature.", nameof(restoreEcsPlan));
-        }
-
         if (entityCount == 0)
         {
+            if (restoreEcsPlan.ArchetypeCount != 0)
+            {
+                throw new ArgumentException("An empty restore cannot declare ECS archetypes.", nameof(restoreEcsPlan));
+            }
+
             return (0, 0, 0, 0, 0);
         }
 
-        var hasArchetype = !restoreEcsPlan.Components.IsEmpty || !restoreEcsPlan.Tags.IsEmpty;
+        var metadataBytes = 0L;
+        var storageBytes = 0L;
+        var requiredWorkPlanCount = 0;
+        var nonemptyArchetypeCount = 0;
+        var componentWorkspaceBytes = checked(2 * ArrayBytes(restoreEcsPlan.ArchetypeCount, IntPtr.Size));
 
-        if (hasArchetype && (options.MaximumArchetypes < 2))
+        for (var archetypeIndex = 0; archetypeIndex < restoreEcsPlan.ArchetypeCount; archetypeIndex++)
         {
-            throw new InvalidOperationException("The restore World archetype limit cannot admit its ECS signature.");
+            var archetypePlan = restoreEcsPlan.GetArchetype(archetypeIndex);
+            var hasSignature = !archetypePlan.Components.IsEmpty || !archetypePlan.Tags.IsEmpty;
+            var storage = new EntityArchetypeStorage(
+                ownerId,
+                archetypeIndex: hasSignature ? nonemptyArchetypeCount + 1 : 0,
+                options.MaximumLiveEntities,
+                archetypePlan.Components);
+            storageBytes = checked(storageBytes + storage.GetCapacityPreparationBytes(archetypePlan.EntityCount));
+            var chunksPerFullPage = (storage.RowCapacity + 63) / 64;
+            var fullChunkCount = archetypePlan.EntityCount / storage.RowCapacity;
+            var lastChunkEntityCount = archetypePlan.EntityCount % storage.RowCapacity;
+            requiredWorkPlanCount = checked(
+                requiredWorkPlanCount
+                + (fullChunkCount * chunksPerFullPage)
+                + ((lastChunkEntityCount + 63) / 64));
+
+            if (hasSignature)
+            {
+                metadataBytes = checked(
+                    metadataBytes
+                    + WorldArchetype.GetMetadataByteReservation(archetypePlan.Components.Length, archetypePlan.Tags.Length));
+                nonemptyArchetypeCount++;
+            }
+
+            if (!archetypePlan.Components.IsEmpty)
+            {
+                componentWorkspaceBytes = checked(
+                    componentWorkspaceBytes
+                    + ArrayBytes(archetypePlan.Components.Length, IntPtr.Size)
+                    + (archetypePlan.Components.Length * 128L));
+            }
         }
 
-        var storage = new EntityArchetypeStorage(
-            ownerId,
-            archetypeIndex: hasArchetype ? 1 : 0,
-            options.MaximumLiveEntities,
-            restoreEcsPlan.Components);
-        var storageBytes = storage.GetCapacityPreparationBytes(entityCount);
-        var chunksPerFullPage = (storage.RowCapacity + 63) / 64;
-        var fullChunkCount = entityCount / storage.RowCapacity;
-        var lastChunkEntityCount = entityCount % storage.RowCapacity;
-        var requiredWorkPlanCount = checked(
-            (fullChunkCount * chunksPerFullPage)
-            + ((lastChunkEntityCount + 63) / 64));
+        if (nonemptyArchetypeCount + 1 > options.MaximumArchetypes)
+        {
+            throw new InvalidOperationException("The restore World archetype limit cannot admit its ECS signatures.");
+        }
+
         var workPlanCapacity = GetRestoreWorkPlanCapacity(
             requiredWorkPlanCount,
             options.MaximumLiveEntities,
             options.SchedulingLimits.MaximumWorkPlanBytes);
-        var metadataBytes = hasArchetype
-            ? WorldArchetype.GetMetadataByteReservation(restoreEcsPlan.Components.Length, restoreEcsPlan.Tags.Length)
-            : 0;
-        var componentWorkspaceBytes = restoreEcsPlan.Components.IsEmpty
-            ? 0
-            : checked(
-                ArrayBytes(restoreEcsPlan.Components.Length, IntPtr.Size)
-                + (restoreEcsPlan.Components.Length * 128L));
         return (
             metadataBytes,
             storageBytes,
@@ -224,11 +243,7 @@ public sealed partial class World
     {
         ArgumentNullException.ThrowIfNull(restoreIdentityState);
         ArgumentNullException.ThrowIfNull(configuration);
-        restoreEcsPlan ??= WorldRestoreEcsPlan.Create(
-            restoreIdentityState.EntitySlots.LiveEntityCount,
-            0,
-            [],
-            []);
+        restoreEcsPlan ??= WorldRestoreEcsPlan.CreateEmpty(restoreIdentityState.EntitySlots.LiveEntityCount);
         var options = CreateRestoreOptions(this, restoreIdentityState, configuration, tickRate, timeScale);
         var resolvedOptions = options.ValidateAndResolve();
         var (metadataBytes, storageBytes, _, workPlanBytes, componentWorkspaceBytes) =
@@ -490,11 +505,7 @@ public sealed partial class World
 
         var options = CreateRestoreOptions(this, restoreIdentityState, configuration, tickRate, timeScale);
         var resolvedOptions = options.ValidateAndResolve();
-        restoreEcsPlan ??= WorldRestoreEcsPlan.Create(
-            restoreIdentityState.EntitySlots.LiveEntityCount,
-            0,
-            [],
-            []);
+        restoreEcsPlan ??= WorldRestoreEcsPlan.CreateEmpty(restoreIdentityState.EntitySlots.LiveEntityCount);
         var (restoreEcsArchetypeMetadataBytes, restoreEcsStorageBytes, restoreWorkPlanCapacity, restoreWorkPlanBytes, restoreComponentWorkspaceBytes) =
             MeasureRestoreEcsStorage(_ownerId, options, restoreIdentityState, restoreEcsPlan);
         var worldOwnedBytes = CalculateRestoreWorldOwnedBytes(

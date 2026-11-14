@@ -1216,10 +1216,11 @@ public sealed class WorldPersistence : IAsyncDisposable
 
             try
             {
-                restoreEcsPlan = WorldPersistenceEcsReader.CreateHomogeneousRestorePlan(
+                restoreEcsPlan = WorldPersistenceEcsReader.CreateRestorePlan(
                     checkpointContents.WorldContents.EcsRecord,
                     checkpointContents.WorldContents.Ecs,
-                    targetWorld.Options.Registration);
+                    targetWorld.Options.Registration,
+                    checkpointContents.WorldContents.Configuration);
             }
             catch (NotSupportedException exception)
             {

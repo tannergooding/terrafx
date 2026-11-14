@@ -63,7 +63,13 @@ internal static class WorldPersistenceLoadWorkspace
         var scratchWorkspaceBytes = checked(
             assignmentBytes
             + lineageBytes
-            + WorldPersistenceLiveIdentitySet.MeasureReadWorkspaceBytes(liveIdentityCount));
+            + WorldPersistenceLiveIdentitySet.MeasureReadWorkspaceBytes(liveIdentityCount)
+            + ((liveEntityCount == 0)
+                ? 0
+                : ArrayBytes(
+                    WorldRestoreEcsPlan.GetArchetypeHashTableLength(
+                        Math.Min(liveEntityCount, configuration.MaximumArchetypes)),
+                    sizeof(int))));
         return new Requirements(
             configuration,
             headerRecordBytes,

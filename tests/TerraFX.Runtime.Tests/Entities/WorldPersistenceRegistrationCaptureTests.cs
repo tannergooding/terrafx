@@ -463,6 +463,14 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             ComponentInitialization.Value(in sourceDerived),
             ComponentInitialization.Value(in sourceReset),
         ], tags: [tagSchema.SchemaId]));
+        var secondPointLight = new RenderComponentDefinitions.PointLightComponent(
+            new Vector3(0.25f, 0.5f, 1.0f),
+            luminousFlux: 250.0f,
+            range: 4.0f,
+            layerMask: 0x0F);
+        var secondEntity = world.CreateEntity(new EntityDescription(components: [
+            ComponentInitialization.Value(in secondPointLight),
+        ]));
         _ = world.Step();
         var metadata = WorldPersistenceHeaderWriterTests.CreateMetadata();
         var profileRecord = WorldPersistenceHeaderWriterTests.CreateFoundationProfileRecord();
@@ -514,16 +522,30 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
         var checkpoint = checkpointContents
             ?? throw new InvalidOperationException("The real World capture did not produce validated checkpoint contents.");
         var capturedEcs = new EbinRecordReadView(checkpoint.WorldContents.EcsRecord.Span);
-        var capturedEntity = capturedEcs.GetRecordArrayElement(1, 0);
         var capturedTransientSchemas = new ContentSchemaReference[2];
+        var foundTransientSignature = false;
 
-        for (var index = 0; index < capturedTransientSchemas.Length; index++)
+        for (var entityIndex = 0; entityIndex < checkpoint.WorldContents.Ecs.EntityCount; entityIndex++)
         {
-            capturedTransientSchemas[index] = WorldPersistenceEcsReader.ReadTransientComponentSchemaReference(
-                capturedEntity.GetRecordArrayElement(4, index),
-                nameof(checkpoint));
+            var capturedEntity = capturedEcs.GetRecordArrayElement(1, entityIndex);
+
+            if (capturedEntity.GetField(3).Count != (ulong)capturedTransientSchemas.Length)
+            {
+                continue;
+            }
+
+            for (var index = 0; index < capturedTransientSchemas.Length; index++)
+            {
+                capturedTransientSchemas[index] = WorldPersistenceEcsReader.ReadTransientComponentSchemaReference(
+                    capturedEntity.GetRecordArrayElement(4, index),
+                    nameof(checkpoint));
+            }
+
+            foundTransientSignature = true;
+            break;
         }
 
+        Assert.That(foundTransientSignature, Is.True);
         Assert.That(capturedTransientSchemas, Does.Contain(derivedSchemaReference));
         Assert.That(capturedTransientSchemas, Does.Contain(resetSchemaReference));
         var identityHistory = checkpoint.WorldContents.Ecs.ValidatedIdentityHistory
@@ -535,10 +557,11 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             checkpoint.NextTick,
             isStrictLocal: false,
             checkpoint.WorldContents.Configuration);
-        var restoreEcsPlan = WorldPersistenceEcsReader.CreateHomogeneousRestorePlan(
+        var restoreEcsPlan = WorldPersistenceEcsReader.CreateRestorePlan(
             checkpoint.WorldContents.EcsRecord,
             checkpoint.WorldContents.Ecs,
-            registration);
+            registration,
+            checkpoint.WorldContents.Configuration);
         var targetBytes = world.MeasureRestoreWorldOwnedBytes(
             restoreState,
             checkpoint.WorldContents.Configuration,
@@ -590,6 +613,11 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
             Assert.That(candidate.TryGet(restoredEntity, out DerivedLightFlux restoredDerived), Is.True);
             Assert.That(candidate.TryGet(restoredEntity, out ResetMarker restoredReset), Is.True);
             Assert.That(candidate.HasTag(restoredEntity, tagSchema.SchemaId), Is.True);
+            Assert.That(candidate.TryGetEntity(world.GetEntityId(secondEntity), out var restoredSecondEntity), Is.True);
+            Assert.That(candidate.TryGet(restoredSecondEntity, out RenderComponentDefinitions.PointLightComponent restoredSecondPointLight), Is.True);
+            Assert.That(candidate.TryGet(restoredSecondEntity, out DerivedLightFlux _), Is.False);
+            Assert.That(candidate.TryGet(restoredSecondEntity, out ResetMarker _), Is.False);
+            Assert.That(candidate.HasTag(restoredSecondEntity, tagSchema.SchemaId), Is.False);
             Assert.Multiple(() => {
                 Assert.That(restoredPointLight.Color, Is.EqualTo(pointLight.Color));
                 Assert.That(restoredPointLight.LuminousFlux, Is.EqualTo(pointLight.LuminousFlux));
@@ -597,6 +625,10 @@ internal sealed class WorldPersistenceRegistrationCaptureTests
                 Assert.That(restoredPointLight.LayerMask, Is.EqualTo(pointLight.LayerMask));
                 Assert.That(restoredDerived.LuminousFlux, Is.EqualTo(pointLight.LuminousFlux * 2.0f));
                 Assert.That(restoredReset.Value, Is.EqualTo(17));
+                Assert.That(restoredSecondPointLight.Color, Is.EqualTo(secondPointLight.Color));
+                Assert.That(restoredSecondPointLight.LuminousFlux, Is.EqualTo(secondPointLight.LuminousFlux));
+                Assert.That(restoredSecondPointLight.Range, Is.EqualTo(secondPointLight.Range));
+                Assert.That(restoredSecondPointLight.LayerMask, Is.EqualTo(secondPointLight.LayerMask));
             });
         }
         finally
