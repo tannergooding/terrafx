@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Security.Cryptography;
 using System.Threading;
 using TerraFX.Entities;
 
@@ -15,6 +16,7 @@ public sealed class WorldLoadPlan : IDisposable
     private byte[]? _sourceCheckpointDigest;
     private byte[]? _sourcePayloadDigest;
     private WorldLoadPreparedState? _state;
+    private readonly World _targetWorld;
 
     internal WorldLoadPlan(
         World targetWorld,
@@ -24,10 +26,12 @@ public sealed class WorldLoadPlan : IDisposable
         long snapshotTick)
     {
         ArgumentNullException.ThrowIfNull(targetWorld);
+        ArgumentOutOfRangeException.ThrowIfNotEqual(targetWorld.WorldGuid, targetWorldGuid);
         ArgumentOutOfRangeException.ThrowIfEqual(targetWorldGuid, Guid.Empty);
         ArgumentOutOfRangeException.ThrowIfEqual(sourceWorldGuid, Guid.Empty);
         ArgumentOutOfRangeException.ThrowIfEqual(targetRecordWorldGuid, Guid.Empty);
         ArgumentOutOfRangeException.ThrowIfNegative(snapshotTick);
+        _targetWorld = targetWorld;
         TargetWorldGuid = targetWorldGuid;
         SourceWorldGuid = sourceWorldGuid;
         TargetRecordWorldGuid = targetRecordWorldGuid;
@@ -65,6 +69,8 @@ public sealed class WorldLoadPlan : IDisposable
     /// <summary>Gets the semantic World identity used by the target records.</summary>
     public Guid WorldGuid => TargetRecordWorldGuid;
 
+    internal World TargetWorld => _targetWorld;
+
     /// <summary>Closes plan acquisition; an already captured commit retains independent ownership.</summary>
     public void Dispose()
     {
@@ -94,6 +100,20 @@ public sealed class WorldLoadPlan : IDisposable
         if ((sourceCheckpointDigest.Length != 32) || (sourcePayloadDigest.Length != 32))
         {
             throw new ArgumentException("World load source digests must each contain exactly 32 bytes.");
+        }
+
+        Span<byte> expectedPayloadDigest = stackalloc byte[32];
+        _ = SHA256.HashData(state.Checkpoint.WorldRecord.Span, expectedPayloadDigest);
+
+        if ((state.Checkpoint.WorldGuid != SourceWorldGuid)
+            || (state.Checkpoint.NextTick != SnapshotTick)
+            || (state.ConstructionPlan.WorldGuid != TargetRecordWorldGuid)
+            || (state.ConstructionPlan.RestoreIdentityState is null)
+            || (state.RestoreIntent is WorldRestoreIntent.None)
+            || !CryptographicOperations.FixedTimeEquals(sourceCheckpointDigest, state.Checkpoint.CheckpointDigest.Span)
+            || !CryptographicOperations.FixedTimeEquals(sourcePayloadDigest, expectedPayloadDigest))
+        {
+            throw new ArgumentException("The prepared World state does not match the load plan's target or source identity.", nameof(state));
         }
 
         var checkpointDigest = sourceCheckpointDigest.ToArray();
