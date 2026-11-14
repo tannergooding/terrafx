@@ -17,6 +17,7 @@ internal sealed class WorldConstructionPlan
     private readonly bool _ownsWorkerPool;
     private readonly WorldGuidRegistry _registry;
     private readonly ResolvedWorldOptions _resolvedOptions;
+    private readonly WorldRestoreIdentityState? _restoreIdentityState;
     private readonly WorldSystemQuarantineReservation _systemQuarantineReservation;
     private readonly WorldWorkerPool _workerPool;
     private readonly Guid _worldGuid;
@@ -38,7 +39,8 @@ internal sealed class WorldConstructionPlan
         WorldDiagnosticsCapability diagnosticsCapability,
         StableIdentityLedger identityLedger,
         WorldSystemQuarantineReservation systemQuarantineReservation,
-        WorldWorkerPool workerPool)
+        WorldWorkerPool workerPool,
+        WorldRestoreIdentityState? restoreIdentityState = null)
     {
         _resolvedOptions = resolvedOptions;
         ReplayLineageId = replayLineageId;
@@ -56,6 +58,7 @@ internal sealed class WorldConstructionPlan
         _identityLedger = identityLedger;
         _systemQuarantineReservation = systemQuarantineReservation;
         _workerPool = workerPool;
+        _restoreIdentityState = restoreIdentityState;
     }
 
     internal WorldAdmissionDomain AdmissionDomain => _admissionDomain;
@@ -83,6 +86,8 @@ internal sealed class WorldConstructionPlan
     internal Guid ReplayLineageId { get; }
 
     internal ResolvedWorldOptions ResolvedOptions => _resolvedOptions;
+
+    internal WorldRestoreIdentityState? RestoreIdentityState => _restoreIdentityState;
 
     internal WorldSystemQuarantineReservation SystemQuarantineReservation => _systemQuarantineReservation;
 
@@ -114,7 +119,12 @@ internal sealed class WorldConstructionPlan
             || (_systemQuarantineReservation is null)
             || (_workerPool is null)
             || (_workerPool.WorkerCount != _resolvedOptions.CpuWorkerCount)
-            || (_resolvedOptions.Options.Registration is null))
+            || (_resolvedOptions.Options.Registration is null)
+            || ((_restoreIdentityState is not null)
+                && ((_restoreIdentityState.WorldGuid != _worldGuid)
+                    || (_restoreIdentityState.ReplayLineageId != ReplayLineageId)
+                    || (_restoreIdentityState.ActiveBranchId != _identityBranchId)
+                    || !ReferenceEquals(_restoreIdentityState.IdentityLedger, _identityLedger))))
         {
             throw new InvalidOperationException("The standalone World construction plan is incomplete or inconsistent.");
         }

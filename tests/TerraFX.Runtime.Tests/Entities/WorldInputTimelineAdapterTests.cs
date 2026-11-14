@@ -220,6 +220,53 @@ internal sealed class WorldInputTimelineAdapterTests
     }
 
     [Test]
+    public void ReplacementRebasesPendingInputToRestoredWorldTick()
+    {
+        using var previousWorld = CreateWorld(initialTimeScale: 1.0f);
+        using var replacementWorld = CreateWorld(initialTimeScale: 0.5f);
+        var adapter = new WorldInputTimelineAdapter(previousWorld);
+
+        try
+        {
+            var key = new KeyboardControl(7, 4);
+            Assert.That(adapter.Router.RegisterMap(CreateDigitalMap(key)).Status, Is.EqualTo(InputMapStatus.Registered));
+            _ = adapter.BeginPumpBoundary(hostTimestamp: 0, isPaused: false);
+            Assert.That(
+                adapter.InjectHeadlessInput(new InputInjection(key, InputKeyEventKind.Down), 1).AssignedTick,
+                Is.Zero);
+            Assert.That(adapter.PublishInputStage(0).Actions[0].IsDownAtEnd, Is.True);
+            _ = previousWorld.Step();
+
+            _ = adapter.BeginPumpBoundary(hostTimestamp: 166_667, isPaused: false);
+            Assert.That(adapter.PublishInputStage(1).Actions[0].IsDownAtEnd, Is.True);
+            _ = previousWorld.Step();
+
+            var pendingRelease = adapter.InjectHeadlessInput(new InputInjection(key, InputKeyEventKind.Up), 333_334);
+            Assert.That(pendingRelease.AssignedTick, Is.EqualTo(2));
+
+            adapter.AdoptWorld(previousWorld, replacementWorld, hostTimestamp: 400_000, isPaused: false);
+
+            Assert.Multiple(() => {
+                Assert.That(adapter.World, Is.SameAs(replacementWorld));
+                Assert.That(adapter.CurrentSegment.NextOpenTick, Is.Zero);
+                Assert.That(adapter.CurrentSegment.SimulationElapsedStartTicks, Is.Zero);
+                Assert.That(adapter.Router.NextOpenTick, Is.Zero);
+            });
+
+            var replacementSnapshot = adapter.PublishInputStage(0);
+            Assert.Multiple(() => {
+                Assert.That(replacementSnapshot.AssignedTick, Is.Zero);
+                Assert.That(replacementSnapshot.Actions[0].IsDownAtEnd, Is.False);
+                Assert.That(replacementSnapshot.Actions[0].ReleasedThisTick, Is.True);
+            });
+        }
+        finally
+        {
+            _ = adapter.DisposeAndGetTransitions();
+        }
+    }
+
+    [Test]
     public void RequiresPauseReconciliationBeforeInstallingSegment()
     {
         using var world = CreateWorld(initialTimeScale: 1.0f);

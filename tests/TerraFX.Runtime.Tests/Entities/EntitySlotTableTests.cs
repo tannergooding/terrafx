@@ -360,4 +360,22 @@ internal sealed class EntitySlotTableTests
         Assert.That(table.LiveEntityCount, Is.Zero);
         Assert.That(table.FreeSlotCount, Is.EqualTo(2));
     }
+
+    [Test]
+    public void StandardRestoreRebuildsDenseLiveSlotsWithFreshGenerations()
+    {
+        var table = EntitySlotTable.CreateStandardRestore(maximumSlots: 4, liveEntityCount: 3);
+
+        Assert.Multiple(() => {
+            Assert.That(table.AllocatedSlotCount, Is.EqualTo(3));
+            Assert.That(table.LiveEntityCount, Is.EqualTo(3));
+            Assert.That(table.FreeSlotCount, Is.Zero);
+            Assert.That(table.IsLive(1, 1), Is.True);
+            Assert.That(table.IsLive(2, 1), Is.True);
+            Assert.That(table.IsLive(3, 1), Is.True);
+            Assert.That(table.IsLive(4, 1), Is.False);
+            Assert.That(table.TryGetLocation(1, 1, out _, out _, out _), Is.False);
+            Assert.That(table.GetCapacityPreparationBytes(3, 0), Is.Zero);
+        });
+    }
 }

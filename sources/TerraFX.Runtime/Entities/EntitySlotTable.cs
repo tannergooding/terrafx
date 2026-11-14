@@ -50,6 +50,35 @@ internal sealed class EntitySlotTable
     internal static EntitySlotTable CreateForTesting(int maximumSlots, uint initialGeneration)
         => new EntitySlotTable(maximumSlots, initialGeneration);
 
+    internal static EntitySlotTable CreateStandardRestore(int maximumSlots, int liveEntityCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(liveEntityCount);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(liveEntityCount, maximumSlots);
+        var table = new EntitySlotTable(maximumSlots);
+
+        if (liveEntityCount == 0)
+        {
+            return table;
+        }
+
+        table._slots = new Slot[checked(liveEntityCount + 1)];
+        table._allocatedSlotCount = liveEntityCount;
+        table._liveEntityCount = liveEntityCount;
+
+        for (var index = 1; index <= liveEntityCount; index++)
+        {
+            table._slots[index] = new Slot {
+                _archetypeIndex = -1,
+                _chunkOrdinal = -1,
+                _generation = 1,
+                _row = -1,
+                _state = SlotState.Live,
+            };
+        }
+
+        return table;
+    }
+
     private static long ArrayBytes(long count, int elementSize)
         => checked(64 + ((checked(count * elementSize) + 7) & ~7L));
 

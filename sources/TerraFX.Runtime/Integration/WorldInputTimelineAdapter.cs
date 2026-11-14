@@ -17,7 +17,7 @@ internal sealed class WorldInputTimelineAdapter
     private readonly InputRouter _router;
     private SimulationClockSegment _segment;
     private readonly HostEventSequenceLease _sequenceLease;
-    private readonly World _world;
+    private World _world;
 
     internal WorldInputTimelineAdapter(
         World world,
@@ -94,6 +94,26 @@ internal sealed class WorldInputTimelineAdapter
             ThrowIfDisposed();
             return _world;
         }
+    }
+
+    internal void AdoptWorld(World previousWorld, World replacementWorld, long hostTimestamp, bool isPaused)
+    {
+        ValidateAdoption(previousWorld, replacementWorld, hostTimestamp, isPaused);
+        var nextOpenTick = replacementWorld.NextTickIndex;
+        _router.RebaseSimulationTimelineForWorldReplacement(nextOpenTick, hostTimestamp);
+        var segment = new SimulationClockSegment(
+            _segment.IsValid ? checked(_segment.Revision + 1) : 1,
+            hostTimestamp,
+            _sequenceLease.Allocate(),
+            simulationElapsedStartTicks: 0,
+            fractionalSimulationTicks: 0,
+            replacementWorld.TickRate,
+            nextOpenTick,
+            replacementWorld.CurrentTimeScale,
+            isPaused);
+        _router.SetSimulationClockSegment(in segment);
+        _world = replacementWorld;
+        _segment = segment;
     }
 
     internal void BeginPhysicalInputReconciliationAtBoundary(long hostTimestamp)
@@ -358,6 +378,33 @@ internal sealed class WorldInputTimelineAdapter
         var overflow = _router.ServiceHostControlBoundary();
         _ = _router.ServiceInputControlBoundary();
         return overflow;
+    }
+
+    internal void ValidateAdoption(World previousWorld, World replacementWorld, long hostTimestamp, bool isPaused)
+    {
+        EnsureOwnerThread();
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(previousWorld);
+        ArgumentNullException.ThrowIfNull(replacementWorld);
+
+        if (!ReferenceEquals(_world, previousWorld) || ReferenceEquals(previousWorld, replacementWorld))
+        {
+            throw new InvalidOperationException("The input timeline is not bound to the exact replaced World.");
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
+
+        if (_segment.IsValid && (hostTimestamp < _segment.HostTimestampStartTicks))
+        {
+            throw new InvalidOperationException("The input replacement boundary precedes its current segment.");
+        }
+
+        if (_router.IsPaused != isPaused)
+        {
+            throw new InvalidOperationException("The World schedule and input recipient pause state disagree at replacement.");
+        }
+
+        _router.ValidateSimulationTimelineRebase(replacementWorld.NextTickIndex, hostTimestamp);
     }
 
     private SimulationClockSegment CreateClockSegment(

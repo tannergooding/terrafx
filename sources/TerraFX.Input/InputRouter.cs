@@ -35,6 +35,7 @@ public sealed partial class InputRouter
     private SimulationClockSegment _simulationClockSegment;
     private readonly TextInputBatchBudget _textInputBatchBudget;
     private readonly WindowHandle? _window;
+    private bool _worldReplacementRebasePending;
 
     internal InputRouter(
         InputRecipientKind recipientKind,
@@ -585,6 +586,31 @@ public sealed partial class InputRouter
         return ProcessSimulationInputStage(assignedTick);
     }
 
+    internal void RebaseSimulationTimelineForWorldReplacement(long nextOpenTick, long hostTimestamp)
+    {
+        ValidateSimulationTimelineRebase(nextOpenTick, hostTimestamp);
+
+        foreach (var envelope in _inputInbox)
+        {
+            envelope.RebaseAssignedTick(nextOpenTick);
+        }
+
+        for (var index = 0; index < _pendingReboundActions.Count; index++)
+        {
+            _pendingReboundActions[index] = _pendingReboundActions[index] with {
+                AssignedTick = nextOpenTick,
+            };
+        }
+
+        _simulationClockSegment = default;
+        _nextOpenTick = nextOpenTick;
+        _lastAssignedInputTick = (_inputInbox.Count == 0) ? (nextOpenTick - 1) : nextOpenTick;
+        _hostControlTimestamp = hostTimestamp;
+        _controlCommandsInBoundary = 0;
+        _worldReplacementRebasePending = true;
+        _inputRecorder?.MarkDiscontinuity(_sequenceLease.Allocate());
+    }
+
     internal void UpdateHostControlTimestamp(long hostTimestamp)
     {
         EnsureOwnerThread();
@@ -596,6 +622,38 @@ public sealed partial class InputRouter
         }
 
         _hostControlTimestamp = hostTimestamp;
+    }
+
+    internal void ValidateSimulationTimelineRebase(long nextOpenTick, long hostTimestamp)
+    {
+        EnsureOwnerThread();
+        ArgumentOutOfRangeException.ThrowIfNegative(nextOpenTick);
+        ArgumentOutOfRangeException.ThrowIfNegative(hostTimestamp);
+
+        if (_recipientKind is not InputRecipientKind.SimulationTimeline)
+        {
+            throw new InvalidOperationException("Only a simulation timeline can be rebound to a replacement World.");
+        }
+
+        if ((hostTimestamp < _hostControlTimestamp)
+            || (hostTimestamp < _lastSeenHostTimestamp)
+            || _pauseControlPending)
+        {
+            throw new InvalidOperationException("The input timeline cannot be rebased at the selected World replacement boundary.");
+        }
+
+        if (_worldReplacementRebasePending)
+        {
+            throw new InvalidOperationException("A previous World replacement rebase has not installed its clock segment.");
+        }
+
+        foreach (var envelope in _inputInbox)
+        {
+            if (!envelope.AssignedTick.HasValue)
+            {
+                throw new InvalidOperationException("A simulation timeline contains an input event without an assigned tick.");
+            }
+        }
     }
 
     private bool CanAdmitControlCommand() => _controlCommandsInBoundary < MaximumControlCommandsPerBoundary;

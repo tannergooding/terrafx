@@ -58,6 +58,8 @@ public sealed partial class World : IDisposable
     private readonly SpatialFrame3 _initialFrame3;
     private readonly float _initialTimeScale;
     private int _isAttachmentCallbackActive;
+    private bool _isCandidateInitialized;
+    private readonly bool _isRestoreCandidate;
     private int _isStructuralOperationActive;
     private int _isSystemCleanupActive;
     private int _isTickActive;
@@ -183,10 +185,26 @@ public sealed partial class World : IDisposable
         _archetypes = new WorldArchetype?[options.MaximumArchetypes];
         _queryArchetypes = new WorldArchetype?[options.MaximumArchetypes];
         _domainReservation = constructionPlan.DomainReservation;
-        _entitySlots = new EntitySlotTable(options.MaximumEntitySlots);
+        var restoreIdentityState = constructionPlan.RestoreIdentityState;
+        _isRestoreCandidate = restoreIdentityState is not null;
+        _entitySlots = restoreIdentityState?.EntitySlots ?? new EntitySlotTable(options.MaximumEntitySlots);
         _executionSessionId = constructionPlan.ExecutionSessionId;
         _identityBranchId = constructionPlan.IdentityBranchId;
         _identityLedger = constructionPlan.IdentityLedger;
+        _identityBranches = restoreIdentityState?.Branches
+            ?? [
+                new WorldIdentityBranchRecord(
+                    constructionPlan.IdentityBranchId,
+                    constructionPlan.WorldGuid,
+                    constructionPlan.ReplayLineageId,
+                    parentBranchId: null,
+                    createdAtNextTick: 0,
+                    firstAssignmentOrdinal: 1,
+                    directoryIndex: 0),
+            ];
+        _identityBranchCount = _identityBranches.Length;
+        _currentIdentityBranchIndex = restoreIdentityState?.ActiveBranchIndex ?? 0;
+        _nextTickIndex = restoreIdentityState?.NextTick ?? 0;
         _lineageGrant = constructionPlan.LineageGrant;
         _maximumArchetypes = options.MaximumArchetypes;
         _maximumIdentityBranches = options.MaximumIdentityBranches;
@@ -222,18 +240,6 @@ public sealed partial class World : IDisposable
         Registration = options.Registration;
         Profile = options.Profile;
         _diagnosticsCapability = constructionPlan.DiagnosticsCapability;
-        _identityBranches =
-        [
-            new WorldIdentityBranchRecord(
-                constructionPlan.IdentityBranchId,
-                _worldGuid,
-                _replayLineageId,
-                parentBranchId: null,
-                createdAtNextTick: 0,
-                firstAssignmentOrdinal: 1,
-                directoryIndex: 0),
-        ];
-        _identityBranchCount = 1;
 
         _ownerId = OwnerIdAllocator.Allocate();
         _ownerThreadId = Environment.CurrentManagedThreadId;
@@ -380,6 +386,43 @@ public sealed partial class World : IDisposable
     /// <exception cref="InvalidOperationException">A WorldGuid/domain/lineage admission is refused or owner issuance is exhausted.</exception>
     public static World Create(WorldOptions options)
         => AdmitWorld(options, sharedWorkerPool: null, sharedDiagnostics: null, hostAdmissionDomain: null);
+
+    internal static World CreateRestoreCandidate(WorldConstructionPlan constructionPlan)
+    {
+        ArgumentNullException.ThrowIfNull(constructionPlan);
+        constructionPlan.ValidateForConstruction();
+
+        if (constructionPlan.RestoreIdentityState is null)
+        {
+            throw new ArgumentException("A restore candidate requires a validated target identity state.", nameof(constructionPlan));
+        }
+
+        return new World(constructionPlan);
+    }
+
+    internal static void InitializeRestoreCandidate(World candidate)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        candidate.EnsureOwnerThread();
+        candidate.ThrowIfDisposed();
+
+        if (!candidate._isRestoreCandidate || candidate._isCandidateInitialized)
+        {
+            throw new InvalidOperationException("The World is not an uninitialized restore candidate.");
+        }
+
+        candidate._isCandidateInitialized = true;
+        candidate.InitializeSceneSupport(candidate._options);
+        candidate.InitializeCpuExtractionSupport(candidate._options);
+        candidate.InitializeSystemInstances();
+
+        for (var index = 0; index < candidate._options.Registration.Resources.Length; index++)
+        {
+            candidate._options.Registration.Resources[index].InitializeAndValidate(candidate._resourceStorage[index]);
+        }
+
+        candidate.ConfigureOwnedStateBudget();
+    }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The reserved identity, domain charge, and returned World transfer together only after both admission commits; the finally path releases them on failure.")]
     private static World AdmitWorld(
@@ -1589,6 +1632,16 @@ public sealed partial class World : IDisposable
         var registration = Registration.GetComponentRegistration(schema);
         return archetype.GetComponentIndex(registration.ComponentType) >= 0;
     }
+
+    internal bool IsHostedBy(
+        WorldWorkerPool workerPool,
+        DiagnosticsService diagnostics,
+        WorldAdmissionDomain admissionDomain)
+        => !_ownsAdmissionDomain
+            && !_ownsWorkerPool
+            && ReferenceEquals(_workerPool, workerPool)
+            && ReferenceEquals(_diagnosticsCapability.Diagnostics, diagnostics)
+            && ReferenceEquals(_admissionDomain, admissionDomain);
 
     internal void ReleaseSceneStorageReservation(long bytes)
     {

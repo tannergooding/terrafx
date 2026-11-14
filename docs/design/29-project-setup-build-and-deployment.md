@@ -209,14 +209,29 @@ the only Runtime caller of `Allocate`; it consumes the exact Entities-owned admi
 plan, validates its final target/domain/root/reservation/handoff grants before issuing
 once, then initializes live storage. A later initialization failure burns the ID.
 `World.Create(WorldOptions)`, `World.CreateHosted(...)` and the contractually specified
-`World.CreateRestoreCandidate(...)` prepare fresh or restored plans through the same
-private constructor; the World factory is the only fresh-lineage selector, and a
-restore candidate consumes only source/transformation identity already admitted by
-the plan. The WorldAdmissionDomain's registrar, reservations and interests do not
-issue owners or accept identity from GUID-only metadata. A default-domain replacement
-transfers its existing close-owner credit exactly once at successful publication;
-ordinary interests do not grant close authority, and retiring the former World
-releases only its own interests.
+`World.CreateRestoreCandidate(WorldConstructionPlan)` prepare fresh or restored plans
+through the same private constructor; the World factory is the only fresh-lineage
+selector, and a restore candidate consumes only source/transformation identity already
+admitted by the plan. The restored candidate factory is called only by the exact
+captured `WorldReplacementOperation`, after source-dependent checks and before
+candidate factories or Restore. The WorldAdmissionDomain's registrar, reservations
+and interests do not issue owners or accept identity from GUID-only metadata. A
+default-domain replacement transfers its existing close-owner credit exactly once at
+successful publication; ordinary interests do not grant close authority, and retiring
+the former World releases only its own interests.
+
+The host-owned `WorldPersistence.CommitLoadAsync` captures its exact
+`WorldPreparedReplacement` synchronously, then queues one typed owner request through
+`EngineHost.TryEnqueueWorldReplacement`. The request executes at an owner-loop
+boundary and adopts the replacement before servicing another host request or
+simulation tick. Adoption replaces only the exact old schedule entry, retains its
+pause/physical-input-reconciliation state and router/event-sequence lease, and starts a
+new host-clock segment at the replacement's `NextTick` with no debt carried from the
+old World. An attached `WorldInputTimelineAdapter` is rebound at that same boundary;
+already admitted router state is routed to the replacement's next tick. A standalone
+`WorldPersistence.CommitLoadAsync` runs only on the exact target World owner thread
+and uses that World's owner boundary directly. Neither path queues an arbitrary
+callback or lets caller cancellation revoke captured work.
 
 The only `Entity`-constructor caller is the private
 `World.CreateEntityHandle(uint slotIndex, uint generation)`, which uses its receiver's

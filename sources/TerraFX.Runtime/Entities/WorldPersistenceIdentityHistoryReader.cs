@@ -481,6 +481,104 @@ internal static class WorldPersistenceIdentityHistoryReader
         }
     }
 
+    internal static ValidatedWorldIdentityHistory ReadValidated(
+        scoped ReadOnlySpan<byte> historyRecord,
+        EbinReadLimits limits,
+        WorldPersistenceConfiguration configuration,
+        WorldPersistenceLiveIdentitySet liveIdentities,
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
+        scoped Span<Guid> lineageMembershipScratch,
+        long nextTick,
+        string parameterName)
+    {
+        var (
+            worldGuid,
+            replayLineageId,
+            activeBranchId,
+            issuanceNamespace,
+            nextAssignmentOrdinal,
+            branchCount,
+            pageCount,
+            liveEntityCount,
+            liveSceneInstanceCount) = Read(
+            historyRecord,
+            limits,
+            configuration,
+            liveIdentities,
+            identityScratch,
+            nextTick,
+            parameterName,
+            lineageMembershipScratch,
+            out var lineageMembershipCount);
+        var lineageMembership = ValidatedLineageMembership.CreateValidated(
+            worldGuid,
+            replayLineageId,
+            activeBranchId,
+            issuanceNamespace,
+            lineageMembershipScratch[..lineageMembershipCount]);
+        var record = new EbinRecordReadView(historyRecord);
+        var branches = new ValidatedWorldIdentityBranch[branchCount];
+
+        for (var index = 0; index < branches.Length; index++)
+        {
+            var branch = record.GetRecordArrayElement(6, index);
+            var ignoredLineageMembershipCount = 0;
+            var (
+                branchId,
+                creationLineageId,
+                branchIssuanceNamespace,
+                sourceIdentityNamespace,
+                parentBranchId,
+                createdAtNextTick,
+                firstAssignmentOrdinal,
+                _) = ReadBranch(
+                branch,
+                index,
+                nextAssignmentOrdinal,
+                nextTick,
+                worldGuid,
+                limits,
+                [],
+                ref ignoredLineageMembershipCount,
+                parameterName);
+            var sourceCheckpointDigest = branch.TryGetField(7, out var sourceDigestField)
+                ? sourceDigestField.Payload.ToArray()
+                : [];
+            var forkSourceRecord = branch.TryGetField(8, out var forkSourceField)
+                ? forkSourceField.Payload.ToArray()
+                : [];
+            branches[index] = new ValidatedWorldIdentityBranch(
+                branchId,
+                creationLineageId,
+                branchIssuanceNamespace,
+                sourceIdentityNamespace,
+                (parentBranchId == Guid.Empty) ? null : parentBranchId,
+                createdAtNextTick,
+                checked((uint)firstAssignmentOrdinal),
+                ReadUInt8(branch, 9, parameterName),
+                sourceCheckpointDigest,
+                forkSourceRecord);
+        }
+
+        var assignmentsByOrdinal = identityScratch.ToArray();
+        Array.Sort(
+            assignmentsByOrdinal,
+            static (left, right) => left.AssignmentOrdinal.CompareTo(right.AssignmentOrdinal));
+        return ValidatedWorldIdentityHistory.CreateValidated(
+            worldGuid,
+            replayLineageId,
+            activeBranchId,
+            issuanceNamespace,
+            nextAssignmentOrdinal,
+            pageCount,
+            liveEntityCount,
+            liveSceneInstanceCount,
+            historyRecord,
+            assignmentsByOrdinal,
+            branches,
+            lineageMembership);
+    }
+
     private static void AppendLineageMembership(
         Guid lineageId,
         scoped Span<Guid> lineageMembershipScratch,

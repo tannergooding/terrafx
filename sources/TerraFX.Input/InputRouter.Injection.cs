@@ -1599,20 +1599,30 @@ public sealed partial class InputRouter
             throw new ArgumentException("The simulation clock segment starts before the recipient's next host event.", nameof(segment));
         }
 
+        var segmentNextOpenTick = segment.NextOpenTick;
+
         if (_simulationClockSegment.IsValid)
         {
             if ((segment.Revision <= _simulationClockSegment.Revision)
                 || (segment.TickRate != _simulationClockSegment.TickRate)
                 || (segment.HostTimestampStartTicks < _simulationClockSegment.HostTimestampStartTicks)
                 || (segment.HostSequenceStart < _simulationClockSegment.HostSequenceStart)
-                || (segment.NextOpenTick != _nextOpenTick))
+                || (segmentNextOpenTick != _nextOpenTick))
             {
                 throw new ArgumentException("The simulation clock segment regresses or disagrees with the recipient timeline.", nameof(segment));
             }
         }
         else
         {
-            if ((_inputInbox.Count != 0)
+            if (_worldReplacementRebasePending)
+            {
+                if ((segmentNextOpenTick != _nextOpenTick)
+                    || _inputInbox.Any(envelope => envelope.AssignedTick != segmentNextOpenTick))
+                {
+                    throw new ArgumentException("The replacement clock segment does not match the rebased recipient timeline.", nameof(segment));
+                }
+            }
+            else if ((_inputInbox.Count != 0)
                 || (_inputControlInbox.Count != 0)
                 || (_lastAssignedInputTick >= 0)
                 || (segment.NextOpenTick < _nextOpenTick))
@@ -1624,6 +1634,7 @@ public sealed partial class InputRouter
         }
 
         _simulationClockSegment = segment;
+        _worldReplacementRebasePending = false;
         _inputRecorder?.Record(new InputRecordingEntry(
             InputRecordingEntryKind.ClockSegment,
             segment.HostTimestampStartTicks,
@@ -2334,6 +2345,7 @@ public sealed partial class InputRouter
         _hostControlTimestamp = 0;
         _isPaused = false;
         _pauseControlPending = false;
+        _worldReplacementRebasePending = false;
         _pendingReconciliationInputCount = 0;
         _pendingReboundActions.Clear();
         _orderedConsumableBindings = [];
@@ -3930,7 +3942,7 @@ public sealed partial class InputRouter
             UiCapturedClasses = uiCapturedClasses;
         }
 
-        internal long? AssignedTick { get; }
+        internal long? AssignedTick { get; private set; }
 
         internal InputControlKey Control { get; }
 
@@ -3948,7 +3960,7 @@ public sealed partial class InputRouter
 
         internal long LastHostTimestamp => _lastHostTimestamp;
 
-        internal bool Late { get; }
+        internal bool Late { get; private set; }
 
         internal PhysicalInputEvent? PhysicalEvent { get; }
 
@@ -3967,6 +3979,17 @@ public sealed partial class InputRouter
                 && (injection.Kind is InputInjectionKind.GamepadAxis
                     or InputInjectionKind.GamepadStick
                     or InputInjectionKind.GamepadTrigger);
+        }
+
+        internal void RebaseAssignedTick(long tick)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(tick);
+
+            if (AssignedTick.HasValue)
+            {
+                AssignedTick = tick;
+                Late = true;
+            }
         }
 
         internal bool TryCoalesceWith(InputEnvelope next)

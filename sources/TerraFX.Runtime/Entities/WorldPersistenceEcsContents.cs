@@ -20,7 +20,8 @@ internal sealed class WorldPersistenceEcsContents
         long nextAssignmentOrdinal,
         int identityBranchCount,
         int identityPageCount,
-        WorldPersistenceIdentityHistoryReader.ValidatedLineageMembership? lineageMembership)
+        WorldPersistenceIdentityHistoryReader.ValidatedLineageMembership? lineageMembership,
+        ValidatedWorldIdentityHistory? validatedIdentityHistory)
     {
         EntityCount = entityCount;
         SystemCount = systemCount;
@@ -36,6 +37,7 @@ internal sealed class WorldPersistenceEcsContents
         IdentityBranchCount = identityBranchCount;
         IdentityPageCount = identityPageCount;
         LineageMembership = lineageMembership;
+        ValidatedIdentityHistory = validatedIdentityHistory;
     }
 
     internal Guid ActiveBranchId { get; }
@@ -65,6 +67,8 @@ internal sealed class WorldPersistenceEcsContents
     internal int ResourceCount { get; }
 
     internal int SystemCount { get; }
+
+    internal ValidatedWorldIdentityHistory? ValidatedIdentityHistory { get; }
 
     internal Guid WorldGuid { get; }
 }

@@ -313,6 +313,55 @@ internal static class WorldPersistenceCheckpointWriter
         return reader.TransactionGeneration;
     }
 
+    internal static string? ValidateHeaderCompatibility(
+        scoped ReadOnlySpan<byte> headerRecord,
+        EbinReadLimits limits,
+        WorldPersistenceMetadata metadata,
+        WorldPersistenceMode expectedMode,
+        scoped ReadOnlySpan<byte> expectedPackageSha256,
+        scoped ReadOnlySpan<byte> expectedProfileRecord)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+        ArgumentNullException.ThrowIfNull(metadata);
+
+        if (!Enum.IsDefined(expectedMode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(expectedMode));
+        }
+
+        var projection = ReadHeaderProjection(headerRecord, limits);
+
+        if (projection.Mode != (byte)expectedMode)
+        {
+            return "The checkpoint save mode does not match the target World profile.";
+        }
+
+        if (!projection.ApplicationRecord.AsSpan().SequenceEqual(metadata.ApplicationRecord.AsSpan()))
+        {
+            return "The checkpoint application identity does not match the active application.";
+        }
+
+        if (!projection.ProfileRecord.AsSpan().SequenceEqual(expectedProfileRecord))
+        {
+            return "The checkpoint spatial profile does not match the target World.";
+        }
+
+        if (expectedMode is WorldPersistenceMode.StrictLocal)
+        {
+            if (!projection.RuntimeProfileRecord.AsSpan().SequenceEqual(metadata.RuntimeProfileRecord.AsSpan()))
+            {
+                return "The StrictLocal checkpoint runtime profile does not match the active runtime.";
+            }
+
+            if (!projection.PackageSha256.AsSpan().SequenceEqual(expectedPackageSha256))
+            {
+                return "The StrictLocal checkpoint package digest does not match the selected package.";
+            }
+        }
+
+        return null;
+    }
+
     private static ulong Align16(ulong value)
     {
         if (value > (ulong.MaxValue - 15))

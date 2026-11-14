@@ -100,6 +100,90 @@ internal sealed class WorldPersistenceHeaderWriterTests
     }
 
     [Test]
+    public void HeaderCompatibilityBindsApplicationSpatialProfileAndStrictPackage()
+    {
+        var metadata = CreateMetadata();
+        var profileRecord = CreateFoundationProfileRecord();
+        var worldGuid = new Guid("30000000-0000-0000-0000-000000000000");
+        var lineageGuid = new Guid("40000000-0000-0000-0000-000000000000");
+        var packageDigest = CreateDigest(0xAB);
+        var standardRecord = WorldPersistenceHeaderWriter.Create(
+            metadata,
+            WorldPersistenceMode.Standard,
+            [],
+            worldGuid,
+            lineageGuid,
+            nextTick: 12,
+            captureWorkerCount: 4,
+            profileRecord);
+        var strictRecord = WorldPersistenceHeaderWriter.Create(
+            metadata,
+            WorldPersistenceMode.StrictLocal,
+            packageDigest,
+            worldGuid,
+            lineageGuid,
+            nextTick: 12,
+            captureWorkerCount: 4,
+            profileRecord);
+        var changedApplication = new WorldPersistenceMetadata(
+            new WorldPersistenceApplication(
+                new Guid("50000000-0000-0000-0000-000000000000"),
+                1,
+                0,
+                []),
+            new WorldPersistenceRuntimeProfile(
+                CreateDigest(1),
+                CreateDigest(1),
+                CreateDigest(1),
+                WorldPersistenceOperatingSystem.Windows,
+                WorldPersistenceCodeGeneration.Jit,
+                WorldPersistenceInstructionSet.None,
+                CreateDigest(1),
+                WorldPersistenceFmaPolicy.Disallowed,
+                0,
+                []));
+
+        Assert.Multiple(() => {
+            Assert.That(
+                WorldPersistenceCheckpointWriter.ValidateHeaderCompatibility(
+                    standardRecord,
+                    EbinReadLimits.Foundation,
+                    metadata,
+                    WorldPersistenceMode.Standard,
+                    [],
+                    profileRecord),
+                Is.Null);
+            Assert.That(
+                WorldPersistenceCheckpointWriter.ValidateHeaderCompatibility(
+                    standardRecord,
+                    EbinReadLimits.Foundation,
+                    changedApplication,
+                    WorldPersistenceMode.Standard,
+                    [],
+                    profileRecord),
+                Is.Not.Null);
+            Assert.That(
+                WorldPersistenceCheckpointWriter.ValidateHeaderCompatibility(
+                    strictRecord,
+                    EbinReadLimits.Foundation,
+                    metadata,
+                    WorldPersistenceMode.StrictLocal,
+                    packageDigest,
+                    profileRecord),
+                Is.Null);
+            Assert.That(
+                WorldPersistenceCheckpointWriter.ValidateHeaderCompatibility(
+                    strictRecord,
+                    EbinReadLimits.Foundation,
+                    metadata,
+                    WorldPersistenceMode.StrictLocal,
+                    CreateDigest(0xAC),
+                    profileRecord),
+                Is.Not.Null);
+        });
+    }
+
+    [Test]
     public void HeaderWriterIncludesPackageDigestOnlyForStrictLocal()
     {
         var metadata = CreateMetadata();

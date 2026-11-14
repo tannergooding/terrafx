@@ -95,18 +95,64 @@ internal static class WorldPersistenceEcsReader
         ValidateArrayChildren(record, 4, attachmentCount, s_attachmentSchemaId, minimumFieldCount: 2, maximumFieldCount: 3, nameof(ecsRecord));
         var historyField = GetRequiredField(record, 5, RecordKind, expectedCount: 1, nameof(ecsRecord));
         var history = new EbinRecordReadView(historyField.Payload);
-        var (worldGuid, replayLineageId, activeBranchId, issuanceNamespace, nextAssignmentOrdinal, branchCount, pageCount, liveEntityCount, liveSceneInstanceCount) =
-            WorldPersistenceIdentityHistoryReader.ReadAndIssueLineageMembership(
+        Guid worldGuid;
+        Guid replayLineageId;
+        Guid activeBranchId;
+        Guid issuanceNamespace;
+        long nextAssignmentOrdinal;
+        int branchCount;
+        int pageCount;
+        int liveEntityCount;
+        int liveSceneInstanceCount;
+        WorldPersistenceIdentityHistoryReader.ValidatedLineageMembership? validatedLineageMembership;
+        ValidatedWorldIdentityHistory? validatedIdentityHistory = null;
+
+        if (lineageMembershipScratch.IsEmpty)
+        {
+            (
+                worldGuid,
+                replayLineageId,
+                activeBranchId,
+                issuanceNamespace,
+                nextAssignmentOrdinal,
+                branchCount,
+                pageCount,
+                liveEntityCount,
+                liveSceneInstanceCount) = WorldPersistenceIdentityHistoryReader.Read(
+                    history.EncodedBytes,
+                    limits,
+                    configuration,
+                    liveIdentities,
+                    identityScratch,
+                    clock.NextTick,
+                    nameof(ecsRecord));
+            validatedLineageMembership = null;
+            lineageMembershipCount = 0;
+        }
+        else
+        {
+            validatedIdentityHistory = WorldPersistenceIdentityHistoryReader.ReadValidated(
                 history.EncodedBytes,
                 limits,
                 configuration,
                 liveIdentities,
                 identityScratch,
-                clock.NextTick,
-                nameof(ecsRecord),
                 lineageMembershipScratch,
-                out var validatedLineageMembership);
-        lineageMembershipCount = validatedLineageMembership?.Count ?? 0;
+                clock.NextTick,
+                nameof(ecsRecord));
+            worldGuid = validatedIdentityHistory.WorldGuid;
+            replayLineageId = validatedIdentityHistory.ReplayLineageId;
+            activeBranchId = validatedIdentityHistory.ActiveBranchId;
+            issuanceNamespace = validatedIdentityHistory.IssuanceNamespace;
+            nextAssignmentOrdinal = validatedIdentityHistory.NextAssignmentOrdinal;
+            branchCount = validatedIdentityHistory.Branches.Length;
+            pageCount = validatedIdentityHistory.PageCount;
+            liveEntityCount = validatedIdentityHistory.LiveEntityCount;
+            liveSceneInstanceCount = validatedIdentityHistory.LiveSceneInstanceCount;
+            validatedLineageMembership = validatedIdentityHistory.LineageMembership;
+            lineageMembershipCount = validatedLineageMembership.Count;
+        }
+
         ValidateEntityChildren(
             record,
             entityCount,
@@ -145,7 +191,8 @@ internal static class WorldPersistenceEcsReader
             nextAssignmentOrdinal,
             branchCount,
             pageCount,
-            validatedLineageMembership);
+            validatedLineageMembership,
+            validatedIdentityHistory);
     }
 
     internal static void ValidateAttachmentOwner(

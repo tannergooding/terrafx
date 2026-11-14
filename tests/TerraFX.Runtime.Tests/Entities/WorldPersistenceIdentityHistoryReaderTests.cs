@@ -17,7 +17,7 @@ namespace TerraFX.Runtime.Tests.Entities;
 [TestFixture]
 internal sealed class WorldPersistenceIdentityHistoryReaderTests
 {
-    private static WorldPersistenceConfiguration CreateConfiguration()
+    private static WorldPersistenceConfiguration CreateConfiguration(int maximumIdentityBranches = 1)
         => new(
             maximumLiveEntities: 1,
             maximumEntitySlots: 1,
@@ -28,7 +28,7 @@ internal sealed class WorldPersistenceIdentityHistoryReaderTests
             maximumRecordedControls: 1,
             maximumIdentityAssignments: 1,
             schedulingLimits: WorldSchedulingLimits.Default,
-            maximumIdentityBranches: 1,
+            maximumIdentityBranches,
             maximumEntityReferencePositions: 1,
             maximumActiveSceneInstances: 1,
             maximumSceneOccurrences: 1,
@@ -221,6 +221,41 @@ internal sealed class WorldPersistenceIdentityHistoryReaderTests
         return payload;
     }
 
+    private static ValidatedWorldIdentityHistory CreateValidatedLiveEntityHistory()
+    {
+        var worldGuid = Guid.NewGuid();
+        var replayLineageId = Guid.NewGuid();
+        var branchId = Guid.NewGuid();
+        var issuanceNamespace = Guid.NewGuid();
+        var entityId = StableIdentityLedger.CreateAutomaticIdentity(issuanceNamespace, IdentityKind.Entity, 1);
+        var metadata = (1U << 14) | (1U << 12) | (1U << 10);
+        var pageRecord = CreateIdentityPageRecord(entityId, metadata);
+        var branchRecord = CreateIdentityBranchRecord(branchId, replayLineageId, issuanceNamespace, forkSourceRecord: null);
+        var historyRecord = CreateIdentityHistoryRecord(
+            worldGuid,
+            replayLineageId,
+            branchId,
+            issuanceNamespace,
+            branchRecord,
+            pageRecord);
+        var configuration = CreateConfiguration();
+        var lineageScratch = new Guid[
+            WorldPersistenceIdentityHistoryReader.MeasureLineageMembershipScratchCapacity(
+                historyRecord,
+                EbinReadLimits.Foundation,
+                configuration,
+                nameof(historyRecord))];
+        return WorldPersistenceIdentityHistoryReader.ReadValidated(
+            historyRecord,
+            EbinReadLimits.Foundation,
+            configuration,
+            new WorldPersistenceLiveIdentitySet(maximumCount: 1),
+            new WorldPersistenceIdentityScratchEntry[1],
+            lineageScratch,
+            nextTick: 1,
+            nameof(historyRecord));
+    }
+
     private static byte[] WriteRecord(
         Guid schemaId,
         scoped ReadOnlySpan<EbinFieldSource> fields,
@@ -233,6 +268,57 @@ internal sealed class WorldPersistenceIdentityHistoryReaderTests
         Assert.That(EbinStructuralWriter.Write(in source, EbinReadLimits.Foundation, candidate, record, out var bytesWritten, out diagnostic), Is.EqualTo(EbinWriteStatus.Complete), diagnostic?.ToString());
         Assert.That(bytesWritten, Is.EqualTo(record.Length));
         return record;
+    }
+
+    [Test]
+    public void CreatesBranchRestoreIdentityStatePreservingAssignmentOrdinals()
+    {
+        var history = CreateValidatedLiveEntityHistory();
+        var newBranchId = Guid.NewGuid();
+        var state = WorldRestoreIdentityState.CreateBranch(
+            history,
+            newBranchId,
+            nextTick: 5,
+            isStrictLocal: false,
+            CreateConfiguration(maximumIdentityBranches: 2));
+
+        Assert.Multiple(() => {
+            Assert.That(state.ActiveBranchIndex, Is.EqualTo(1));
+            Assert.That(state.ActiveBranchId, Is.EqualTo(newBranchId));
+            Assert.That(state.Branches, Has.Length.EqualTo(2));
+            Assert.That(state.Branches[1].BranchId, Is.EqualTo(newBranchId));
+            Assert.That(state.Branches[1].ParentBranchId, Is.EqualTo(history.ActiveBranchId));
+            Assert.That(state.Branches[1].CreatedAtNextTick, Is.EqualTo(5));
+            Assert.That(state.Branches[1].FirstAssignmentOrdinal, Is.EqualTo(2));
+            Assert.That(state.LocatorsByOrdinal, Is.EqualTo([1u]));
+            Assert.That(state.IdentityLedger.AssignmentCount, Is.EqualTo(1));
+        });
+    }
+
+    [Test]
+    public void CreatesBranchRestoreIdentityStateWithDenseLiveSlots()
+    {
+        var history = CreateValidatedLiveEntityHistory();
+        var newBranchId = Guid.NewGuid();
+        var state = WorldRestoreIdentityState.CreateBranch(
+            history,
+            newBranchId,
+            nextTick: 5,
+            isStrictLocal: false,
+            CreateConfiguration(maximumIdentityBranches: 2));
+
+        Assert.Multiple(() => {
+            Assert.That(state.WorldGuid, Is.EqualTo(history.WorldGuid));
+            Assert.That(state.ReplayLineageId, Is.EqualTo(history.ReplayLineageId));
+            Assert.That(state.ActiveBranchId, Is.EqualTo(newBranchId));
+            Assert.That(state.ActiveBranchIndex, Is.EqualTo(1));
+            Assert.That(state.Branches, Has.Length.EqualTo(2));
+            Assert.That(state.IdentityLedger.AssignmentCount, Is.EqualTo(1));
+            Assert.That(state.IdentityLedger.EntityCount, Is.EqualTo(1));
+            Assert.That(state.EntitySlots.IsLive(1, 1), Is.True);
+            Assert.That(state.LocatorsByOrdinal, Is.EqualTo([1u]));
+            Assert.That(state.EntitySlotsByLocator, Is.EqualTo([(Locator: 1u, Ordinal: 1u)]));
+        });
     }
 
     [Test]
@@ -418,6 +504,27 @@ internal sealed class WorldPersistenceIdentityHistoryReaderTests
             Is.EqualTo(expectedLineageMembership));
         Array.Fill(lineageMembershipScratch, Guid.Empty);
         Assert.That(validatedLineageMembership.LineageIds.ToArray(), Is.EqualTo(expectedLineageMembership));
+
+        var validatedHistory = WorldPersistenceIdentityHistoryReader.ReadValidated(
+            historyRecord,
+            EbinReadLimits.Foundation,
+            configuration,
+            new WorldPersistenceLiveIdentitySet(maximumCount: 1),
+            new WorldPersistenceIdentityScratchEntry[1],
+            new Guid[lineageMembershipScratch.Length],
+            nextTick: 1,
+            nameof(historyRecord));
+        Assert.Multiple(() => {
+            Assert.That(validatedHistory.WorldGuid, Is.EqualTo(worldGuid));
+            Assert.That(validatedHistory.ReplayLineageId, Is.EqualTo(creationLineageId));
+            Assert.That(validatedHistory.ActiveBranchId, Is.EqualTo(branchId));
+            Assert.That(validatedHistory.AssignmentsByOrdinal, Has.Length.EqualTo(1));
+            Assert.That(validatedHistory.AssignmentsByOrdinal[0].AssignmentOrdinal, Is.EqualTo(1));
+            Assert.That(validatedHistory.Branches, Has.Length.EqualTo(1));
+            Assert.That(validatedHistory.Branches[0].SourceIdentityNamespace, Is.EqualTo(deepestNamespace));
+            Assert.That(validatedHistory.Branches[0].ForkSourceRecord.IsEmpty, Is.False);
+            Assert.That(validatedHistory.LineageMembership.LineageIds.ToArray(), Is.EqualTo(expectedLineageMembership));
+        });
 
         using var admissionDomain = new WorldAdmissionDomain(8 * 1024 * 1024);
         Assert.That(admissionDomain.TryReserveWorld(4096, out var admissionReservation), Is.True);

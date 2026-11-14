@@ -23,8 +23,11 @@ internal static class WorldPersistenceRecoveryReader
         ArgumentNullException.ThrowIfNull(backupPath);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSnapshotBytes);
 
-        // Both candidate buffers and the largest semantic-validation copy can coexist.
-        return checked((3 * maximumSnapshotBytes) + FileStreamBufferBytes + RecoveryControlBytes);
+        var targetLength = ReadCandidateLength(targetPath, maximumSnapshotBytes);
+        var backupLength = ReadCandidateLength(backupPath, maximumSnapshotBytes);
+        var candidateBytes = checked(targetLength + backupLength);
+        var largestValidationCopy = Math.Max(targetLength, backupLength);
+        return checked(candidateBytes + largestValidationCopy + FileStreamBufferBytes + RecoveryControlBytes);
     }
 
     internal static async Task<(

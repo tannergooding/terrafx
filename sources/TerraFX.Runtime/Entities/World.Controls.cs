@@ -522,6 +522,41 @@ public sealed partial class World
         }
     }
 
+    internal readonly struct WorldIdentityBranchRecord
+    {
+        internal WorldIdentityBranchRecord(
+            Guid branchId,
+            Guid namespaceId,
+            Guid lineageId,
+            Guid? parentBranchId,
+            long createdAtNextTick,
+            uint firstAssignmentOrdinal,
+            int directoryIndex)
+        {
+            BranchId = branchId;
+            NamespaceId = namespaceId;
+            LineageId = lineageId;
+            ParentBranchId = parentBranchId;
+            CreatedAtNextTick = createdAtNextTick;
+            FirstAssignmentOrdinal = firstAssignmentOrdinal;
+            DirectoryIndex = directoryIndex;
+        }
+
+        internal Guid BranchId { get; }
+
+        internal long CreatedAtNextTick { get; }
+
+        internal int DirectoryIndex { get; }
+
+        internal uint FirstAssignmentOrdinal { get; }
+
+        internal Guid LineageId { get; }
+
+        internal Guid NamespaceId { get; }
+
+        internal Guid? ParentBranchId { get; }
+    }
+
     internal sealed class WorldSceneControlAppend : IDisposable
     {
         private readonly byte[] _candidateStorage;
@@ -810,40 +845,5 @@ public sealed partial class World
         internal SpatialFrame2? Frame2 { get; }
 
         internal SpatialFrame3 Frame3 { get; }
-    }
-
-    private readonly struct WorldIdentityBranchRecord
-    {
-        internal WorldIdentityBranchRecord(
-            Guid branchId,
-            Guid namespaceId,
-            Guid lineageId,
-            Guid? parentBranchId,
-            long createdAtNextTick,
-            uint firstAssignmentOrdinal,
-            int directoryIndex)
-        {
-            BranchId = branchId;
-            NamespaceId = namespaceId;
-            LineageId = lineageId;
-            ParentBranchId = parentBranchId;
-            CreatedAtNextTick = createdAtNextTick;
-            FirstAssignmentOrdinal = firstAssignmentOrdinal;
-            DirectoryIndex = directoryIndex;
-        }
-
-        internal Guid BranchId { get; }
-
-        internal long CreatedAtNextTick { get; }
-
-        internal int DirectoryIndex { get; }
-
-        internal uint FirstAssignmentOrdinal { get; }
-
-        internal Guid LineageId { get; }
-
-        internal Guid NamespaceId { get; }
-
-        internal Guid? ParentBranchId { get; }
     }
 }
