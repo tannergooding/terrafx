@@ -2,8 +2,11 @@
 
 using System;
 using NUnit.Framework;
+using TerraFX;
+using TerraFX.Graphics;
 using TerraFX.Numerics;
 using TerraFX.Rendering;
+using TerraFX.Scenes;
 
 namespace TerraFX.Runtime.Tests.Rendering;
 
@@ -26,6 +29,46 @@ internal sealed class RenderingKernelsTests
     {
         Span<float> splits = stackalloc float[5];
         RenderingKernels.ComputeCascadeSplits(-1.0f, 10.0f, perspective: true, splits);
+    }
+
+    private static CameraSnapshot CreateCascadeCamera(
+        CameraProjectionKind projectionKind,
+        float near,
+        float far,
+        float orthographicHeight,
+        float aspectRatio,
+        SpatialPosition3 position,
+        Quaternion? rotation = null)
+    {
+        var origin = default(SpatialPosition3);
+        var frame = new SpatialFrame3(
+            1,
+            SpatialProfileId.Default,
+            SpatialSettings.Default,
+            origin,
+            1,
+            new Vector3(-4096),
+            new Vector3(4096));
+        return new CameraSnapshot(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            order: 0,
+            frame,
+            new PixelSize(16, 16),
+            position,
+            rotation ?? Quaternion.Identity,
+            projectionKind,
+            (float)Math.PI / 2.0f,
+            orthographicHeight,
+            near,
+            CameraFarMode.Finite,
+            far,
+            aspectRatio,
+            new Vector4(0.0f, 0.0f, 1.0f, 1.0f),
+            CameraClearFlags.Color,
+            Vector4.Zero,
+            ulong.MaxValue);
     }
 
     [Test]
@@ -108,6 +151,77 @@ internal sealed class RenderingKernelsTests
             Is.EqualTo(new Vector4(0.125f, 0.25f, 0.375f, 0.5f)));
         Assert.That(RenderingKernels.ToneMapReinhard(new Vector3(0.0f, 1.0f, 3.0f)), Is.EqualTo(new Vector3(0.0f, 0.5f, 0.75f)));
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => RenderingKernels.ToneMapReinhard(new Vector3(-0.01f, 0.0f, 0.0f)));
+    }
+
+    [Test]
+    public void DirectionalCascadeCornersRespectPerspectiveAndSignedOrthographicDepth()
+    {
+        var corners = new Vector3[8];
+        var perspectiveCamera = CreateCascadeCamera(
+            CameraProjectionKind.Perspective,
+            near: 0.1f,
+            far: 10.0f,
+            orthographicHeight: 4.0f,
+            aspectRatio: 2.0f,
+            new SpatialPosition3(default, new Vector3(1.0f, 2.0f, 3.0f)));
+        RenderingKernels.CreateDirectionalCascadeCorners(perspectiveCamera, 2.0f, 4.0f, corners);
+        Vector3[] perspectiveExpected = [
+            new Vector3(-3.0f, 0.0f, 5.0f),
+            new Vector3(-3.0f, 4.0f, 5.0f),
+            new Vector3(5.0f, 4.0f, 5.0f),
+            new Vector3(5.0f, 0.0f, 5.0f),
+            new Vector3(-7.0f, -2.0f, 7.0f),
+            new Vector3(-7.0f, 6.0f, 7.0f),
+            new Vector3(9.0f, 6.0f, 7.0f),
+            new Vector3(9.0f, -2.0f, 7.0f),
+        ];
+        Assert.That(corners, Is.EqualTo(perspectiveExpected));
+
+        var rotatedPerspectiveCamera = CreateCascadeCamera(
+            CameraProjectionKind.Perspective,
+            near: 0.1f,
+            far: 10.0f,
+            orthographicHeight: 4.0f,
+            aspectRatio: 2.0f,
+            default,
+            new Quaternion(0.0f, 1.0f, 0.0f, 0.0f));
+        RenderingKernels.CreateDirectionalCascadeCorners(rotatedPerspectiveCamera, 2.0f, 4.0f, corners);
+        Vector3[] rotatedExpected = [
+            new Vector3(4.0f, -2.0f, -2.0f),
+            new Vector3(4.0f, 2.0f, -2.0f),
+            new Vector3(-4.0f, 2.0f, -2.0f),
+            new Vector3(-4.0f, -2.0f, -2.0f),
+            new Vector3(8.0f, -4.0f, -4.0f),
+            new Vector3(8.0f, 4.0f, -4.0f),
+            new Vector3(-8.0f, 4.0f, -4.0f),
+            new Vector3(-8.0f, -4.0f, -4.0f),
+        ];
+        Assert.That(corners, Is.EqualTo(rotatedExpected));
+
+        var orthographicCamera = CreateCascadeCamera(
+            CameraProjectionKind.Orthographic,
+            near: -1.0f,
+            far: 5.0f,
+            orthographicHeight: 4.0f,
+            aspectRatio: 1.5f,
+            default);
+        RenderingKernels.CreateDirectionalCascadeCorners(orthographicCamera, -1.0f, 2.0f, corners);
+        Vector3[] orthographicExpected = [
+            new Vector3(-3.0f, -2.0f, -1.0f),
+            new Vector3(-3.0f, 2.0f, -1.0f),
+            new Vector3(3.0f, 2.0f, -1.0f),
+            new Vector3(3.0f, -2.0f, -1.0f),
+            new Vector3(-3.0f, -2.0f, 2.0f),
+            new Vector3(-3.0f, 2.0f, 2.0f),
+            new Vector3(3.0f, 2.0f, 2.0f),
+            new Vector3(3.0f, -2.0f, 2.0f),
+        ];
+        Assert.That(corners, Is.EqualTo(orthographicExpected));
+
+        _ = Assert.Throws<ArgumentOutOfRangeException>(
+            () => RenderingKernels.CreateDirectionalCascadeCorners(perspectiveCamera, 0.0f, 4.0f, corners));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(
+            () => RenderingKernels.CreateDirectionalCascadeCorners(orthographicCamera, 2.0f, 2.0f, corners));
     }
 
     [Test]

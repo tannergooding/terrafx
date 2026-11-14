@@ -1,7 +1,9 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using TerraFX;
 using TerraFX.Numerics;
+using TerraFX.Scenes;
 
 namespace TerraFX.Rendering;
 
@@ -90,6 +92,84 @@ internal static class RenderingKernels
 
         var maximumDerivative = MathF.Max(MathF.Abs(depthDerivativeX), MathF.Abs(depthDerivativeY));
         return Math.Clamp(constantDepthBias + (slopeScale * maximumDerivative), 0.0f, maxDepthBias);
+    }
+
+    internal static void CreateDirectionalCascadeCorners(
+        CameraSnapshot camera,
+        float start,
+        float end,
+        Span<Vector3> corners)
+    {
+        if (corners.Length != 8)
+        {
+            throw new ArgumentException("A directional cascade requires exactly eight camera-frustum corners.", nameof(corners));
+        }
+
+        if (!float.IsFinite(start)
+            || ((camera.ProjectionKind is CameraProjectionKind.Perspective) && (start <= 0.0f)))
+        {
+            throw new ArgumentOutOfRangeException(nameof(start));
+        }
+
+        if (!float.IsFinite(end) || (end <= start))
+        {
+            throw new ArgumentOutOfRangeException(nameof(end));
+        }
+
+        if (!SpatialMath.TryToFrameRelative(camera.Position, camera.Frame3, out var cameraPosition))
+        {
+            throw new InvalidOperationException("The cascade camera position is outside its captured spatial frame.");
+        }
+
+        var area = RenderCameraViewport.CreateArea(camera.Viewport, camera.TargetExtent);
+        var aspectRatio = camera.AspectRatioOverride ?? ((float)area.Width / area.Height);
+        var cameraRotation = Matrix4x4.CreateFromQuaternion(camera.Rotation);
+        var isPerspective = camera.ProjectionKind is CameraProjectionKind.Perspective;
+        var tangentHalfFieldOfView = isPerspective
+            ? MathF.Tan(camera.VerticalFieldOfView * 0.5f)
+            : 0.0f;
+        var halfHeight = isPerspective
+            ? new Vector2(start * tangentHalfFieldOfView, end * tangentHalfFieldOfView)
+            : new Vector2(camera.OrthographicHeight * 0.5f);
+
+        if (!halfHeight.IsFinite().All()
+            || (halfHeight.X <= 0.0f)
+            || (halfHeight.Y <= 0.0f)
+            || !float.IsFinite(aspectRatio)
+            || (aspectRatio <= 0.0f))
+        {
+            throw new ArgumentOutOfRangeException(nameof(end));
+        }
+
+        var halfWidth = halfHeight * aspectRatio;
+
+        if (!halfWidth.IsFinite().All())
+        {
+            throw new ArgumentOutOfRangeException(nameof(end));
+        }
+
+        for (var depthIndex = 0; depthIndex < 2; depthIndex++)
+        {
+            var xExtent = depthIndex == 0 ? halfWidth.X : halfWidth.Y;
+            var yExtent = depthIndex == 0 ? halfHeight.X : halfHeight.Y;
+            var depth = depthIndex == 0 ? start : end;
+            var cornerOffset = depthIndex * 4;
+
+            for (var cornerIndex = 0; cornerIndex < 4; cornerIndex++)
+            {
+                var x = cornerIndex < 2 ? -xExtent : xExtent;
+                var y = (cornerIndex is 0 or 3) ? -yExtent : yExtent;
+                var localCorner = new Vector3(x, y, depth);
+                var worldCorner = cameraPosition + Vector3.TransformDirection(localCorner, cameraRotation);
+
+                if (!worldCorner.IsFinite().All())
+                {
+                    throw new ArgumentOutOfRangeException(nameof(end));
+                }
+
+                corners[cornerOffset + cornerIndex] = worldCorner;
+            }
+        }
     }
 
     internal static Vector3 DecodeSrgb(Vector3 encoded)
