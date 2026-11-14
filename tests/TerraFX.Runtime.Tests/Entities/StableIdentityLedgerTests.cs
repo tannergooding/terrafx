@@ -620,6 +620,94 @@ internal sealed class StableIdentityLedgerTests
         Assert.That(GetRecord(ledger, 1), Is.EqualTo(expected));
     }
 
+    [Test]
+    public void RestoredHistoryRebuildsIdentityIndexAndLocatorMaps()
+    {
+        var firstId = CreateId(81);
+        var retiredId = CreateId(82);
+        var sceneId = CreateId(83);
+        WorldPersistenceIdentityScratchEntry[] history = [
+            new(firstId, (byte)IdentityKind.Entity, 1, 0, s_namespace, (byte)IdentityOrigin.Explicit, isLive: true),
+            new(retiredId, (byte)IdentityKind.Entity, 2, 0, s_namespace, (byte)IdentityOrigin.Explicit),
+            new(sceneId, (byte)IdentityKind.SceneInstance, 3, 0, s_namespace, (byte)IdentityOrigin.Explicit, isLive: true),
+        ];
+        var reservation = StableIdentityLedger.GetRestoredByteReservation(
+            assignmentCount: history.Length,
+            entitySlotCount: 2,
+            sceneInstanceCount: 1);
+        var ledger = StableIdentityLedger.CreateRestored(
+            maximumOwnedBytes: reservation,
+            maximumAssignments: 8,
+            maximumEntitySlots: 4,
+            maximumSceneInstances: 4,
+            branchCount: 1,
+            history,
+            [7, 0, 3],
+            [(7, 1), (8, 0)],
+            [(3, 3)]);
+
+        Assert.Multiple(() => {
+            Assert.That(ledger.AssignmentCount, Is.EqualTo(3));
+            Assert.That(ledger.EntityCount, Is.EqualTo(1));
+            Assert.That(ledger.EntitySlotCount, Is.EqualTo(2));
+            Assert.That(ledger.SceneInstanceCount, Is.EqualTo(1));
+            Assert.That(ledger.TryFind(retiredId, out var retiredOrdinal), Is.True);
+            Assert.That(retiredOrdinal, Is.EqualTo(2));
+            Assert.That(ledger.GetLiveOrdinal(IdentityKind.Entity, 8), Is.Zero);
+            Assert.That(ledger.GetAssignedId(IdentityKind.Entity, 7), Is.EqualTo(firstId));
+            Assert.That(ledger.GetAssignedId(IdentityKind.SceneInstance, 3), Is.EqualTo(sceneId));
+            Assert.That(ledger.OwnedByteReservation, Is.LessThanOrEqualTo(reservation));
+        });
+
+        Commit(ledger, [Automatic(8)]);
+        Assert.That(ledger.GetLiveOrdinal(IdentityKind.Entity, 8), Is.EqualTo(4));
+        Assert.That(
+            ledger.GetAssignedId(IdentityKind.Entity, 8),
+            Is.EqualTo(StableIdentityLedger.CreateAutomaticIdentity(s_namespace, IdentityKind.Entity, 4)));
+    }
+
+    [Test]
+    public void RestoredHistoryRejectsDuplicateStableIdentities()
+    {
+        var duplicateId = CreateId(84);
+        WorldPersistenceIdentityScratchEntry[] history = [
+            new(duplicateId, (byte)IdentityKind.Entity, 1, 0, s_namespace, (byte)IdentityOrigin.Explicit, isLive: true),
+            new(duplicateId, (byte)IdentityKind.Entity, 2, 0, s_namespace, (byte)IdentityOrigin.Explicit),
+        ];
+
+        _ = Assert.Throws<ArgumentException>(() =>
+            StableIdentityLedger.CreateRestored(
+            maximumOwnedBytes: SharedBytes,
+                maximumAssignments: 8,
+                maximumEntitySlots: 4,
+                maximumSceneInstances: 4,
+                branchCount: 1,
+                history,
+                [7, 0],
+                [(7, 1), (8, 0)],
+                []));
+    }
+
+    [Test]
+    public void RestoredHistoryReservesStorageBeforeAllocating()
+    {
+        WorldPersistenceIdentityScratchEntry[] history = [
+            new(CreateId(85), (byte)IdentityKind.Entity, 1, 0, s_namespace, (byte)IdentityOrigin.Explicit, isLive: true),
+        ];
+
+        _ = Assert.Throws<InvalidOperationException>(() =>
+            StableIdentityLedger.CreateRestored(
+                maximumOwnedBytes: 0,
+                maximumAssignments: 8,
+                maximumEntitySlots: 4,
+                maximumSceneInstances: 4,
+                branchCount: 1,
+                history,
+                [7],
+                [(7, 1)],
+                []));
+    }
+
     [TestCase(IdentityKind.Entity)]
     [TestCase(IdentityKind.SceneInstance)]
     public void RetirementClearsOnlyLocatorAndLiveMetadataAndPreservesIndex(IdentityKind kind)

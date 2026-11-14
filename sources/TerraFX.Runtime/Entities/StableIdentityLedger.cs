@@ -113,6 +113,220 @@ internal sealed class StableIdentityLedger
         return FoundationNameUuid.Create(worldGuid, name);
     }
 
+    // The persistence reader validates record recipes and provenance; this rebuilds the target's
+    // paged index and locator maps only after the caller has reserved the identity-storage peak.
+    internal static StableIdentityLedger CreateRestored(
+        long maximumOwnedBytes,
+        int maximumAssignments,
+        int maximumEntitySlots,
+        int maximumSceneInstances,
+        int branchCount,
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> history,
+        scoped ReadOnlySpan<uint> locatorsByOrdinal,
+        scoped ReadOnlySpan<(uint Locator, uint Ordinal)> entitySlots,
+        scoped ReadOnlySpan<(uint Locator, uint Ordinal)> sceneInstances)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(maximumOwnedBytes);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(
+            maximumOwnedBytes,
+            WorldSchedulingLimits.Default.MaximumOwnedStateBytes);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumAssignments);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumAssignments, MaximumAssignments);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumEntitySlots);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumEntitySlots, MaximumEntitySlots);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSceneInstances);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumSceneInstances, MaximumSceneInstances);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(branchCount);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(branchCount, MaximumBranches);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(history.Length, maximumAssignments);
+
+        if (locatorsByOrdinal.Length != history.Length)
+        {
+            throw new ArgumentException("Restored identity locators must align with the complete assignment history.", nameof(locatorsByOrdinal));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(entitySlots.Length, maximumEntitySlots, nameof(entitySlots));
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(sceneInstances.Length, maximumSceneInstances, nameof(sceneInstances));
+
+        var reservation = GetRestoredByteReservation(history.Length, entitySlots.Length, sceneInstances.Length);
+
+        if (reservation > maximumOwnedBytes)
+        {
+            throw new InvalidOperationException($"Restored identity storage requires {reservation} shared-state bytes; the grant is {maximumOwnedBytes}.");
+        }
+
+        var entityCount = 0;
+        var sceneInstanceCount = 0;
+
+        for (var index = 0; index < history.Length; index++)
+        {
+            var entry = history[index];
+            var expectedOrdinal = checked((uint)(index + 1));
+
+            if ((entry.AssignmentOrdinal != expectedOrdinal)
+                || (entry.StableId == Guid.Empty)
+                || (entry.Kind is not (byte)IdentityKind.Entity and not (byte)IdentityKind.SceneInstance)
+                || (entry.Origin is < (byte)IdentityOrigin.Automatic or > (byte)IdentityOrigin.ForkImported)
+                || (entry.BranchIndex >= branchCount)
+                || (entry.IsLive != (locatorsByOrdinal[index] != 0)))
+            {
+                throw new ArgumentException("The restored identity history is incomplete or inconsistent.", nameof(history));
+            }
+
+            if (entry.Kind == (byte)IdentityKind.Entity)
+            {
+                entityCount += entry.IsLive ? 1 : 0;
+            }
+            else
+            {
+                sceneInstanceCount += entry.IsLive ? 1 : 0;
+            }
+        }
+
+        if (entityCount > maximumEntitySlots || sceneInstanceCount > maximumSceneInstances)
+        {
+            throw new ArgumentOutOfRangeException(nameof(history));
+        }
+
+        var ledgerPageCount = GetLedgerPageCount(history.Length);
+        var ledgerPages = new byte[ledgerPageCount][];
+
+        for (var pageIndex = 0; pageIndex < ledgerPages.Length; pageIndex++)
+        {
+            ledgerPages[pageIndex] = new byte[RecordSize * RecordsPerPage];
+        }
+
+        for (var index = 0; index < history.Length; index++)
+        {
+            var entry = history[index];
+            var recordIndex = index % RecordsPerPage;
+            var record = ledgerPages[index / RecordsPerPage].AsSpan(recordIndex * RecordSize, RecordSize);
+            _ = entry.StableId.TryWriteBytes(record[..16], bigEndian: true, out _);
+            BinaryPrimitives.WriteUInt32LittleEndian(record[16..], locatorsByOrdinal[index]);
+            var metadata = (uint)entry.BranchIndex
+                | ((uint)entry.Kind << 10)
+                | ((uint)entry.Origin << 12)
+                | (entry.IsLive ? (uint)LiveMask : 0u);
+            BinaryPrimitives.WriteUInt32LittleEndian(record[20..], metadata);
+        }
+
+        var entityReverse = new Dictionary<uint, uint>(entitySlots.Length);
+        var sceneReverse = new Dictionary<uint, uint>(sceneInstances.Length);
+        AddRestoredLocators(entitySlots, IdentityKind.Entity, history, locatorsByOrdinal, entityReverse, nameof(entitySlots));
+        AddRestoredLocators(sceneInstances, IdentityKind.SceneInstance, history, locatorsByOrdinal, sceneReverse, nameof(sceneInstances));
+
+        for (var index = 0; index < history.Length; index++)
+        {
+            var entry = history[index];
+
+            if (!entry.IsLive)
+            {
+                continue;
+            }
+
+            var locators = entry.Kind == (byte)IdentityKind.Entity ? entityReverse : sceneReverse;
+
+            if (!locators.TryGetValue(locatorsByOrdinal[index], out var ordinal)
+                || (ordinal != entry.AssignmentOrdinal))
+            {
+                throw new ArgumentException("Every live restored identity must have one matching target locator.", nameof(history));
+            }
+        }
+
+        var directoryCapacity = IdentityGuidIndex.GetMaximumPages(history.Length);
+        var indexBuilder = new IdentityGuidIndex.Builder(s_emptyState.Index, ledgerPages, directoryCapacity);
+
+        for (var index = 0; index < history.Length; index++)
+        {
+            indexBuilder.Insert(checked((uint)(index + 1)));
+        }
+
+        var identityIndex = indexBuilder.Finish();
+        Span<byte> stableIdBytes = stackalloc byte[16];
+
+        for (var index = 0; index < history.Length; index++)
+        {
+            _ = history[index].StableId.TryWriteBytes(stableIdBytes, bigEndian: true, out _);
+
+            if (identityIndex.Find(stableIdBytes) != checked((uint)(index + 1)))
+            {
+                throw new ArgumentException("The restored identity history contains a duplicate stable identity.", nameof(history));
+            }
+        }
+
+        var ledger = new StableIdentityLedger(maximumAssignments, maximumEntitySlots, maximumSceneInstances) {
+            _state = new State(
+                ledgerPages,
+                entityReverse,
+                sceneReverse,
+                identityIndex,
+                history.Length,
+                entityCount),
+        };
+        return ledger;
+    }
+
+    internal static long GetRestoredByteReservation(int assignmentCount, int entitySlotCount, int sceneInstanceCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(assignmentCount);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(assignmentCount, MaximumAssignments);
+        ArgumentOutOfRangeException.ThrowIfNegative(entitySlotCount);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(entitySlotCount, MaximumEntitySlots);
+        ArgumentOutOfRangeException.ThrowIfNegative(sceneInstanceCount);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(sceneInstanceCount, MaximumSceneInstances);
+
+        var ledgerPages = GetLedgerPageCount(assignmentCount);
+        var identityIndexPages = IdentityGuidIndex.GetMaximumPages(assignmentCount);
+        var reverseEntityCapacity = checked((entitySlotCount * 2) + 3);
+        var reverseSceneCapacity = checked((sceneInstanceCount * 2) + 3);
+        return checked(
+            ArrayBytes(ledgerPages, IntPtr.Size)
+            + ArrayBytes(identityIndexPages, IntPtr.Size)
+            + ArrayBytes(identityIndexPages, 1)
+            + (ledgerPages * ArrayBytes(RecordSize * RecordsPerPage, 1))
+            + (identityIndexPages * ArrayBytes(IdentityGuidIndex.PageSize, 1))
+            + DictionaryBytes(reverseEntityCapacity)
+            + DictionaryBytes(reverseSceneCapacity)
+            + 4096);
+    }
+
+    private static void AddRestoredLocators(
+        scoped ReadOnlySpan<(uint Locator, uint Ordinal)> source,
+        IdentityKind kind,
+        scoped ReadOnlySpan<WorldPersistenceIdentityScratchEntry> history,
+        scoped ReadOnlySpan<uint> locatorsByOrdinal,
+        Dictionary<uint, uint> destination,
+        string parameterName)
+    {
+        uint previousLocator = 0;
+
+        foreach (var (locator, ordinal) in source)
+        {
+            if ((locator == 0)
+                || (locator <= previousLocator)
+                || ((kind == IdentityKind.SceneInstance) && (ordinal == 0))
+                || (ordinal > history.Length)
+                || !destination.TryAdd(locator, ordinal))
+            {
+                throw new ArgumentException("Restored identity locators must be nonempty, ordered, and unique.", parameterName);
+            }
+
+            if (ordinal != 0)
+            {
+                var entry = history[checked((int)ordinal - 1)];
+
+                if ((entry.Kind != (byte)kind)
+                    || !entry.IsLive
+                    || (locatorsByOrdinal[checked((int)ordinal - 1)] != locator))
+                {
+                    throw new ArgumentException("A restored locator does not match its live identity assignment.", parameterName);
+                }
+            }
+
+            previousLocator = locator;
+        }
+    }
+
     // Conservative managed reservations: 64 bytes per array header/alignment, eight-byte
     // payload alignment, and explicit object/scratch headroom. These are accounting credits,
     // not a measured footprint or workload qualification on every CLR.
