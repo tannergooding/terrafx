@@ -403,6 +403,9 @@ internal sealed class WorldPersistenceIdentityHistoryReaderTests
                 Assert.That(plan.RestoreIdentityState, Is.SameAs(restoreState));
                 Assert.That(plan.OwnsAdmissionDomain, Is.False);
                 Assert.That(plan.OwnsWorkerPool, Is.False);
+                Assert.That(plan.RestoreEcsStorageByteReservation, Is.GreaterThan(0));
+                Assert.That(plan.RestoreWorkPlanCapacity, Is.GreaterThan(0));
+                Assert.That(plan.RestoreWorkPlanByteReservation, Is.GreaterThan(0));
             });
 
             using (var candidate = World.CreateRestoreCandidate(plan))
