@@ -122,15 +122,12 @@ public sealed partial class World : IDisposable
     private readonly Guid _worldGuid;
     private readonly WorldGuidGrant _worldGuidGrant;
 
-    private World(
-        WorldConstructionPlan constructionPlan,
-        WorldSystemQuarantineReservation systemQuarantineReservation,
-        WorldWorkerPool workerPool)
+    private World(WorldConstructionPlan constructionPlan)
     {
         ArgumentNullException.ThrowIfNull(constructionPlan);
-        ArgumentNullException.ThrowIfNull(systemQuarantineReservation);
-        ArgumentNullException.ThrowIfNull(workerPool);
         constructionPlan.ValidateForConstruction();
+        var systemQuarantineReservation = constructionPlan.SystemQuarantineReservation;
+        var workerPool = constructionPlan.WorkerPool;
 
         var options = constructionPlan.Options;
         var resolvedOptions = constructionPlan.ResolvedOptions;
@@ -523,6 +520,8 @@ public sealed partial class World : IDisposable
                 options.MaximumIdentityAssignments,
                 options.MaximumEntitySlots,
                 options.MaximumActiveSceneInstances);
+            systemQuarantineReservation = WorldSystemInstanceRegistry.ReserveQuarantineCapacity(options.Registration.Systems.Length);
+            workerPool = sharedWorkerPool ?? new WorldWorkerPool(resolvedOptions.CpuWorkerCount);
             var constructionPlan = new WorldConstructionPlan(
                 resolvedOptions,
                 worldGuid,
@@ -537,10 +536,10 @@ public sealed partial class World : IDisposable
                 registry,
                 worldGuidGrant,
                 diagnosticsCapability,
-                identityLedger);
-            systemQuarantineReservation = WorldSystemInstanceRegistry.ReserveQuarantineCapacity(options.Registration.Systems.Length);
-            workerPool = sharedWorkerPool ?? new WorldWorkerPool(resolvedOptions.CpuWorkerCount);
-            var world = new World(constructionPlan, systemQuarantineReservation, workerPool);
+                identityLedger,
+                systemQuarantineReservation,
+                workerPool);
+            var world = new World(constructionPlan);
 
             try
             {

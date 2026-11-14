@@ -17,6 +17,8 @@ internal sealed class WorldConstructionPlan
     private readonly bool _ownsWorkerPool;
     private readonly WorldGuidRegistry _registry;
     private readonly ResolvedWorldOptions _resolvedOptions;
+    private readonly WorldSystemQuarantineReservation _systemQuarantineReservation;
+    private readonly WorldWorkerPool _workerPool;
     private readonly Guid _worldGuid;
     private readonly WorldGuidGrant _worldGuidGrant;
 
@@ -34,7 +36,9 @@ internal sealed class WorldConstructionPlan
         WorldGuidRegistry registry,
         WorldGuidGrant worldGuidGrant,
         WorldDiagnosticsCapability diagnosticsCapability,
-        StableIdentityLedger identityLedger)
+        StableIdentityLedger identityLedger,
+        WorldSystemQuarantineReservation systemQuarantineReservation,
+        WorldWorkerPool workerPool)
     {
         _resolvedOptions = resolvedOptions;
         ReplayLineageId = replayLineageId;
@@ -50,6 +54,8 @@ internal sealed class WorldConstructionPlan
         _worldGuidGrant = worldGuidGrant;
         _diagnosticsCapability = diagnosticsCapability;
         _identityLedger = identityLedger;
+        _systemQuarantineReservation = systemQuarantineReservation;
+        _workerPool = workerPool;
     }
 
     internal WorldAdmissionDomain AdmissionDomain => _admissionDomain;
@@ -78,6 +84,10 @@ internal sealed class WorldConstructionPlan
 
     internal ResolvedWorldOptions ResolvedOptions => _resolvedOptions;
 
+    internal WorldSystemQuarantineReservation SystemQuarantineReservation => _systemQuarantineReservation;
+
+    internal WorldWorkerPool WorkerPool => _workerPool;
+
     internal Guid WorldGuid => _worldGuid;
 
     internal WorldGuidGrant WorldGuidGrant => _worldGuidGrant;
@@ -101,6 +111,9 @@ internal sealed class WorldConstructionPlan
             || (_diagnosticsCapability.WorldGuid != _worldGuid)
             || (_diagnosticsCapability.ExecutionSessionId != _executionSessionId)
             || (_identityLedger is null)
+            || (_systemQuarantineReservation is null)
+            || (_workerPool is null)
+            || (_workerPool.WorkerCount != _resolvedOptions.CpuWorkerCount)
             || (_resolvedOptions.Options.Registration is null))
         {
             throw new InvalidOperationException("The standalone World construction plan is incomplete or inconsistent.");
