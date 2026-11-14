@@ -2,6 +2,7 @@
 
 using System;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using NUnit.Framework;
 using TerraFX;
 using TerraFX.Entities;
@@ -70,7 +71,8 @@ internal sealed class WorldStateRestoreBindingTests
 
         using var world = World.Create(new WorldOptions(registration));
         var target = world.CreateEntity(new EntityDescription());
-        var binding = new WorldStateRestoreBinding(new RestoreContext(target, targetId, absentTargetId));
+        var context = new RestoreContext(target, targetId, absentTargetId);
+        var binding = new WorldStateRestoreBinding(context);
 
         Assert.That(binding.ResolveOptionalEntity(optionalField, targetId), Is.EqualTo(target));
         Assert.That(binding.ResolveOptionalEntity(optionalField, absentTargetId), Is.Null);
@@ -80,16 +82,21 @@ internal sealed class WorldStateRestoreBindingTests
         Assert.That(
             () => binding.ResolveOptionalEntity(optionalField, Guid.Empty),
             Throws.ArgumentException);
+        var failure = context.Failure;
+        Assert.That(failure, Is.TypeOf<ArgumentException>());
+        Assert.That(context.ThrowIfFailed, Throws.ArgumentException);
 
         binding.Revoke();
         Assert.That(
             () => binding.ResolveOptionalEntity(optionalField, targetId),
             Throws.InvalidOperationException);
+        Assert.That(context.Failure, Is.SameAs(failure));
     }
 
     private sealed class RestoreContext : IComponentRestoreContext
     {
         private readonly Guid _absentTargetId;
+        private Exception? _failure;
         private readonly Entity _target;
         private readonly Guid _targetId;
 
@@ -101,6 +108,8 @@ internal sealed class WorldStateRestoreBindingTests
             OwnerThreadId = Environment.CurrentManagedThreadId;
         }
 
+        public Exception? Failure => _failure;
+
         public bool IsActive => true;
 
         public int OwnerThreadId { get; }
@@ -108,6 +117,12 @@ internal sealed class WorldStateRestoreBindingTests
         public TDependency ReadSameEntity<TDependency>()
             where TDependency : unmanaged
             => throw new InvalidOperationException("The test restore context has no Derived dependencies.");
+
+        public void RecordFailure(Exception exception)
+        {
+            ArgumentNullException.ThrowIfNull(exception);
+            _failure ??= exception;
+        }
 
         public Entity ResolveEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId)
             => throw new InvalidOperationException("The test restore context has no required Entity references.");
@@ -128,6 +143,14 @@ internal sealed class WorldStateRestoreBindingTests
             }
 
             throw new InvalidOperationException("The test restore context does not contain the selected target.");
+        }
+
+        public void ThrowIfFailed()
+        {
+            if (Failure is { } failure)
+            {
+                ExceptionDispatchInfo.Capture(failure).Throw();
+            }
         }
     }
 }

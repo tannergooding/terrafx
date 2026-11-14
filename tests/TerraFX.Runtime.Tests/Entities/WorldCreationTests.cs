@@ -1577,6 +1577,9 @@ internal sealed class WorldCreationTests
 
         public object CreateColumn(int capacity) => new OptionalEntityReferenceComponent[capacity];
 
+        public ComponentInitialization CreateDefaultInitialization()
+            => ComponentInitialization.Defaults<OptionalEntityReferenceComponent>();
+
         public ComponentInitialization CreateInitializedValue(ComponentInitialization initialization, SpatialSettings spatialSettings)
         {
             ArgumentNullException.ThrowIfNull(initialization);
@@ -1616,6 +1619,11 @@ internal sealed class WorldCreationTests
             var values = (OptionalEntityReferenceComponent[])column;
             values[destinationRow] = values[sourceRow];
         }
+
+        public ComponentInitialization RebuildDerived(
+            WorldStateRestoreBinding binding,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
 
         public ComponentRecordRestoreResult RestoreFromRecord(
             scoped ReadOnlySpan<byte> source,
@@ -2356,6 +2364,9 @@ internal sealed class WorldCreationTests
 
         public object CreateColumn(int capacity) => new int[capacity];
 
+        public ComponentInitialization CreateDefaultInitialization()
+            => ComponentInitialization.Defaults<int>();
+
         public ComponentInitialization CreateInitializedValue(ComponentInitialization initialization, SpatialSettings spatialSettings)
         {
             ArgumentNullException.ThrowIfNull(initialization);
@@ -2395,6 +2406,11 @@ internal sealed class WorldCreationTests
             var values = (int[])column;
             values[destinationRow] = values[sourceRow];
         }
+
+        public ComponentInitialization RebuildDerived(
+            WorldStateRestoreBinding binding,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
 
         public ComponentRecordRestoreResult RestoreFromRecord(
             scoped ReadOnlySpan<byte> source,
@@ -2503,6 +2519,9 @@ internal sealed class WorldCreationTests
 
         public object CreateColumn(int capacity) => new long[capacity];
 
+        public ComponentInitialization CreateDefaultInitialization()
+            => ComponentInitialization.Defaults<long>();
+
         public ComponentInitialization CreateInitializedValue(ComponentInitialization initialization, SpatialSettings spatialSettings)
         {
             ArgumentNullException.ThrowIfNull(initialization);
@@ -2537,6 +2556,11 @@ internal sealed class WorldCreationTests
             var values = (long[])column;
             values[destinationRow] = values[sourceRow];
         }
+
+        public ComponentInitialization RebuildDerived(
+            WorldStateRestoreBinding binding,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
 
         public ComponentRecordRestoreResult RestoreFromRecord(
             scoped ReadOnlySpan<byte> source,

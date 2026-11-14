@@ -301,6 +301,24 @@ public sealed class ComponentFactoryBinding<T>
         return defaultRoot.IsEntityReferencePath(path);
     }
 
+    internal T RebuildDerived(WorldStateRestoreBinding binding, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(binding);
+
+        if ((_descriptor.Flags != ComponentStorageFlags.Transient)
+            || (_descriptor.Restore != ComponentTransientRestore.Derived))
+        {
+            throw new InvalidOperationException("Only a Derived transient component can be rebuilt during candidate restoration.");
+        }
+
+        if (_providerRoots is not IRestoreProviderRoot restoreRoot)
+        {
+            throw new InvalidOperationException("The captured component factory has no Derived restore root.");
+        }
+
+        return restoreRoot.RebuildDerived(binding, cancellationToken);
+    }
+
     internal ComponentRecordRestoreResult RestoreFromRecord(
         scoped ReadOnlySpan<byte> source,
         IComponentRestoreContext context,
@@ -464,6 +482,14 @@ public sealed class ComponentFactoryBinding<T>
             return false;
         }
 
+        public T RebuildDerived(WorldStateRestoreBinding binding, CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(binding);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return Restorer.RebuildDerived(binding, cancellationToken);
+        }
+
         public ComponentRecordRestoreResult RestoreFromRecord(
             scoped ReadOnlySpan<byte> source,
             IComponentRestoreContext context,
@@ -512,6 +538,7 @@ public sealed class ComponentFactoryBinding<T>
             try
             {
                 var value = Restorer.Restore(in author, restoreBinding, cancellationToken);
+                context.ThrowIfFailed();
                 return ComponentRecordRestoreResult.Read(ComponentInitialization.Value(in value));
             }
             finally
@@ -619,6 +646,8 @@ public sealed class ComponentFactoryBinding<T>
 
     private interface IRestoreProviderRoot
     {
+        T RebuildDerived(WorldStateRestoreBinding binding, CancellationToken cancellationToken);
+
         ComponentRecordRestoreResult RestoreFromRecord(
             scoped ReadOnlySpan<byte> source,
             IComponentRestoreContext context,

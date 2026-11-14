@@ -1,6 +1,8 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.ExceptionServices;
 
 namespace TerraFX.Entities;
 
@@ -36,23 +38,32 @@ public sealed class WorldStateRestoreBinding
     public Entity ResolveEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId)
     {
         EnsureActive();
-        ArgumentNullException.ThrowIfNull(referenceField);
+
+        try
+        {
+            ArgumentNullException.ThrowIfNull(referenceField);
+        }
+        catch (ArgumentNullException exception)
+        {
+            _context.RecordFailure(exception);
+            throw;
+        }
 
         if ((referenceField.Field.WireKind != 11) || (referenceField.Field.Reference != ContentReferenceKind.Entity))
         {
-            throw new ArgumentException("The selected field is not a declared Entity reference.", nameof(referenceField));
+            ThrowActiveMisuse(new ArgumentException("The selected field is not a declared Entity reference.", nameof(referenceField)));
         }
 
         if (targetEntityId == Guid.Empty)
         {
-            throw new ArgumentException("A stable Entity identity must be nonempty.", nameof(targetEntityId));
+            ThrowActiveMisuse(new ArgumentException("A stable Entity identity must be nonempty.", nameof(targetEntityId)));
         }
 
         var entity = _context.ResolveEntity(referenceField, targetEntityId);
 
         if (!entity.IsValid)
         {
-            throw new InvalidOperationException("The restore map returned an invalid Entity handle.");
+            ThrowActiveMisuse(new InvalidOperationException("The restore map returned an invalid Entity handle."));
         }
 
         return entity;
@@ -67,23 +78,32 @@ public sealed class WorldStateRestoreBinding
     public Entity ResolveEntity(WorldSystemFieldDescriptor referenceField, Guid targetEntityId)
     {
         EnsureActive();
-        ArgumentNullException.ThrowIfNull(referenceField);
+
+        try
+        {
+            ArgumentNullException.ThrowIfNull(referenceField);
+        }
+        catch (ArgumentNullException exception)
+        {
+            _context.RecordFailure(exception);
+            throw;
+        }
 
         if ((referenceField.Field.WireKind != 11) || (referenceField.Field.Reference != ContentReferenceKind.Entity))
         {
-            throw new ArgumentException("The selected field is not a declared Entity reference.", nameof(referenceField));
+            ThrowActiveMisuse(new ArgumentException("The selected field is not a declared Entity reference.", nameof(referenceField)));
         }
 
         if (targetEntityId == Guid.Empty)
         {
-            throw new ArgumentException("A stable Entity identity must be nonempty.", nameof(targetEntityId));
+            ThrowActiveMisuse(new ArgumentException("A stable Entity identity must be nonempty.", nameof(targetEntityId)));
         }
 
         var entity = _context.ResolveEntity(referenceField, targetEntityId);
 
         if (!entity.IsValid)
         {
-            throw new InvalidOperationException("The restore map returned an invalid Entity handle.");
+            ThrowActiveMisuse(new InvalidOperationException("The restore map returned an invalid Entity handle."));
         }
 
         return entity;
@@ -98,25 +118,34 @@ public sealed class WorldStateRestoreBinding
     public Entity? ResolveOptionalEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId)
     {
         EnsureActive();
-        ArgumentNullException.ThrowIfNull(referenceField);
+
+        try
+        {
+            ArgumentNullException.ThrowIfNull(referenceField);
+        }
+        catch (ArgumentNullException exception)
+        {
+            _context.RecordFailure(exception);
+            throw;
+        }
 
         if ((referenceField.Field.WireKind != 11)
             || (referenceField.Field.Reference != ContentReferenceKind.Entity)
             || referenceField.Field.IsRequired)
         {
-            throw new ArgumentException("The selected field is not an optional Entity reference.", nameof(referenceField));
+            ThrowActiveMisuse(new ArgumentException("The selected field is not an optional Entity reference.", nameof(referenceField)));
         }
 
         if (targetEntityId == Guid.Empty)
         {
-            throw new ArgumentException("A stable Entity identity must be nonempty.", nameof(targetEntityId));
+            ThrowActiveMisuse(new ArgumentException("A stable Entity identity must be nonempty.", nameof(targetEntityId)));
         }
 
         var entity = _context.ResolveOptionalEntity(referenceField, targetEntityId);
 
         if (entity is { IsValid: false })
         {
-            throw new InvalidOperationException("The restore map returned a default Entity handle for an optional reference.");
+            ThrowActiveMisuse(new InvalidOperationException("The restore map returned a default Entity handle for an optional reference."));
         }
 
         return entity;
@@ -133,7 +162,14 @@ public sealed class WorldStateRestoreBinding
 
         if (Environment.CurrentManagedThreadId != _context.OwnerThreadId)
         {
-            throw new InvalidOperationException("The world-state restore binding is restricted to its issuing thread.");
+            ThrowActiveMisuse(new InvalidOperationException("The world-state restore binding is restricted to its issuing thread."));
         }
+    }
+
+    [DoesNotReturn]
+    private void ThrowActiveMisuse(Exception exception)
+    {
+        _context.RecordFailure(exception);
+        ExceptionDispatchInfo.Capture(exception).Throw();
     }
 }

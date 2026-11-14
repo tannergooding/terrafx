@@ -6,12 +6,18 @@ namespace TerraFX.Entities;
 
 internal interface IComponentRestoreContext : IComponentProviderScope
 {
+    Exception? Failure { get; }
+
     TDependency ReadSameEntity<TDependency>()
         where TDependency : unmanaged;
+
+    void RecordFailure(Exception exception);
 
     Entity ResolveEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId);
 
     Entity ResolveEntity(WorldSystemFieldDescriptor referenceField, Guid targetEntityId);
 
     Entity? ResolveOptionalEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId);
+
+    void ThrowIfFailed();
 }

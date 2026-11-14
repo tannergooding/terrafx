@@ -2,6 +2,9 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Diagnostics.CodeAnalysis;
+using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 
 namespace TerraFX.Entities;
@@ -33,7 +36,123 @@ public sealed partial class World
         return CreateEntityHandle(locator, generation: 1);
     }
 
-    internal void RestoreEmptyEcsRows(
+    internal ComponentRecordRestoreResult RestoreComponentRecord(
+        Entity entity,
+        IComponentRegistration registration,
+        scoped ReadOnlySpan<byte> source,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(registration);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+        ThrowIfFaulted();
+        EnsureOwnerThread();
+
+        if (!_isRestoreCandidate || !_isCandidateInitialized || (registration.Descriptor.Flags != ComponentStorageFlags.Persistent))
+        {
+            throw new InvalidOperationException("Only a registered Persistent component can be restored by this candidate operation.");
+        }
+
+        if (!entity.IsValid
+            || (entity.OwnerId != _ownerId)
+            || !_entitySlots.IsLive(entity.Index, entity.Generation)
+            || (_identityLedger.GetLiveOrdinal(IdentityKind.Entity, entity.Index) == 0))
+        {
+            throw new ArgumentException("The selected restore Entity is not part of this candidate identity map.", nameof(entity));
+        }
+
+        var isRegistered = false;
+
+        foreach (var candidate in Registration.Components)
+        {
+            isRegistered |= ReferenceEquals(candidate, registration);
+        }
+
+        if (!isRegistered)
+        {
+            throw new ArgumentException("The selected component registration does not belong to this candidate.", nameof(registration));
+        }
+
+        var context = _restoreContext
+            ?? throw new InvalidOperationException("The restore candidate omitted its pre-admitted component context.");
+        context.Activate(entity, registration, allowSameEntityRead: false);
+
+        try
+        {
+            var result = registration.RestoreFromRecord(source, context, cancellationToken);
+            context.ThrowIfFailed();
+            return result;
+        }
+        finally
+        {
+            context.Revoke();
+        }
+    }
+
+    internal ComponentInitialization RestoreDerivedComponent(
+        Entity entity,
+        IComponentRegistration registration,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(registration);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+        ThrowIfFaulted();
+        EnsureOwnerThread();
+
+        if (!_isRestoreCandidate
+            || !_isCandidateInitialized
+            || (registration.Descriptor.Flags != ComponentStorageFlags.Transient)
+            || (registration.Descriptor.Restore != ComponentTransientRestore.Derived))
+        {
+            throw new InvalidOperationException("Only a registered Derived transient component can be rebuilt by this candidate operation.");
+        }
+
+        if (!entity.IsValid
+            || (entity.OwnerId != _ownerId)
+            || !_entitySlots.IsLive(entity.Index, entity.Generation)
+            || (_identityLedger.GetLiveOrdinal(IdentityKind.Entity, entity.Index) == 0))
+        {
+            throw new ArgumentException("The selected restore Entity is not part of this candidate identity map.", nameof(entity));
+        }
+
+        var isRegistered = false;
+
+        foreach (var candidate in Registration.Components)
+        {
+            isRegistered |= ReferenceEquals(candidate, registration);
+        }
+
+        if (!isRegistered)
+        {
+            throw new ArgumentException("The selected component registration does not belong to this candidate.", nameof(registration));
+        }
+
+        var context = _restoreContext
+            ?? throw new InvalidOperationException("The restore candidate omitted its pre-admitted component context.");
+        context.Activate(entity, registration, allowSameEntityRead: true);
+        var binding = new WorldStateRestoreBinding(context);
+
+        try
+        {
+            var initialization = registration.RebuildDerived(binding, cancellationToken);
+            context.ThrowIfFailed();
+
+            if (initialization.IsDefault || (initialization.ComponentType != registration.ComponentType))
+            {
+                throw new InvalidOperationException("The Derived component rebuild did not produce its exact typed value.");
+            }
+
+            return initialization;
+        }
+        finally
+        {
+            binding.Revoke();
+            context.Revoke();
+        }
+    }
+
+    internal void RestoreEcsRows(
         ReadOnlyMemory<byte> ecsRecord,
         WorldPersistenceEcsContents contents,
         CancellationToken cancellationToken)
@@ -49,11 +168,14 @@ public sealed partial class World
             throw new InvalidOperationException("ECS rows can be restored only once into an initialized restore candidate.");
         }
 
+        var restoreEcsPlan = _restoreEcsPlan
+            ?? throw new InvalidOperationException("The restore candidate omitted its preflighted ECS plan.");
         var identityHistory = contents.ValidatedIdentityHistory
             ?? throw new ArgumentException("Candidate ECS restoration requires the validated source identity history.", nameof(contents));
 
         if ((contents.WorldGuid != _worldGuid)
             || (contents.ReplayLineageId != _replayLineageId)
+            || (contents.EntityCount != restoreEcsPlan.EntityCount)
             || (contents.LiveEntityCount != contents.EntityCount)
             || (_entitySlots.LiveEntityCount != contents.LiveEntityCount))
         {
@@ -147,7 +269,7 @@ public sealed partial class World
                 || (componentField.Tag != 2)
                 || (componentField.Kind != 24)
                 || !componentField.IsRequired
-                || (componentField.Count != 0)
+                || (componentField.Count != (ulong)restoreEcsPlan.PersistentComponentCount)
                 || (tagField.Tag != 3)
                 || (tagField.Kind != 24)
                 || !tagField.IsRequired
@@ -155,10 +277,38 @@ public sealed partial class World
                 || (transientSchemaField.Tag != 4)
                 || (transientSchemaField.Kind != 24)
                 || !transientSchemaField.IsRequired
-                || (transientSchemaField.Count != 0)
+                || (transientSchemaField.Count != (ulong)restoreEcsPlan.TransientComponentCount)
                 || entityRecord.TryGetField(6, out _))
             {
-                throw new NotSupportedException("This candidate restore slice supports only Entities without components, tags, transient state, or Scene ownership.");
+                throw new NotSupportedException("This candidate restore slice supports only homogeneous component signatures without tags or Scene ownership.");
+            }
+
+            for (var componentIndex = 0; componentIndex < restoreEcsPlan.PersistentComponentCount; componentIndex++)
+            {
+                var componentRecord = entityRecord.GetRecordArrayElement(2, componentIndex);
+                var header = componentRecord.Header;
+                var registration = restoreEcsPlan.Components[componentIndex];
+
+                if ((header.SchemaId != registration.SchemaReference.SchemaId)
+                    || (header.Major != registration.SchemaReference.Major)
+                    || (header.Minor != registration.SchemaReference.Minor))
+                {
+                    throw new ArgumentException("A candidate ECS component does not match the preflighted homogeneous component set.", nameof(ecsRecord));
+                }
+            }
+
+            for (var transientIndex = 0; transientIndex < restoreEcsPlan.TransientComponentCount; transientIndex++)
+            {
+                var schemaRecord = entityRecord.GetRecordArrayElement(4, transientIndex);
+                var transientSchema = WorldPersistenceEcsReader.ReadTransientComponentSchemaReference(
+                    schemaRecord,
+                    nameof(ecsRecord));
+                var registration = restoreEcsPlan.Components[restoreEcsPlan.PersistentComponentCount + transientIndex];
+
+                if (transientSchema != registration.SchemaReference)
+                {
+                    throw new ArgumentException("A candidate ECS transient schema does not match the preflighted component set.", nameof(ecsRecord));
+                }
             }
 
             var identityField = entityRecord.GetField(0);
@@ -214,46 +364,102 @@ public sealed partial class World
 
         if (contents.EntityCount == 0)
         {
-            if ((_restoreEcsStorageByteReservation != 0)
+            if ((_restoreEcsArchetypeMetadataByteReservation != 0)
+                || (_restoreEcsStorageByteReservation != 0)
                 || (_restoreWorkPlanCapacity != 0)
-                || (_restoreWorkPlanByteReservation != 0))
+                || (_restoreWorkPlanByteReservation != 0)
+                || (_restoreComponentWorkspaceByteReservation != 0))
             {
                 throw new InvalidOperationException("The empty restore candidate has unexpected ECS storage reservations.");
             }
 
             _isRestoreEcsRowsRestored = true;
+            _restoreEcsPlan = null;
             return;
         }
 
-        var archetype = _archetypes[0]
-            ?? throw new InvalidOperationException("The restore candidate omitted its empty archetype.");
+        var hasComponents = !restoreEcsPlan.Components.IsEmpty;
+        var metadataBytes = hasComponents
+            ? WorldArchetype.GetMetadataByteReservation(restoreEcsPlan.Components.Length, tagCount: 0)
+            : 0L;
+        WorldArchetype? candidateArchetype = null;
+        WorldArchetype archetype;
+
+        if (hasComponents)
+        {
+            if ((_archetypeCount != 1) || (_archetypes[1] is not null))
+            {
+                throw new InvalidOperationException("The restore candidate does not have the preflighted component archetype slot.");
+            }
+
+            candidateArchetype = new WorldArchetype(
+                _ownerId,
+                1,
+                _maximumLiveEntities,
+                restoreEcsPlan.Components,
+                []);
+            archetype = candidateArchetype;
+        }
+        else
+        {
+            archetype = _archetypes[0]
+                ?? throw new InvalidOperationException("The restore candidate omitted its empty archetype.");
+        }
+
         var storage = archetype.Storage;
         var storageBytes = storage.GetCapacityPreparationBytes(contents.EntityCount);
-        var workPlanCount = checked((contents.EntityCount + 63) / 64);
+        var chunksPerFullPage = (storage.RowCapacity + 63) / 64;
+        var fullChunkCount = contents.EntityCount / storage.RowCapacity;
+        var lastChunkEntityCount = contents.EntityCount % storage.RowCapacity;
+        var workPlanCount = checked(
+            (fullChunkCount * chunksPerFullPage)
+            + ((lastChunkEntityCount + 63) / 64));
         var workPlanCapacity = _restoreWorkPlanCapacity;
         var workPlanBytes = _restoreWorkPlanByteReservation;
-        var growthBytes = checked(storageBytes + workPlanBytes);
+        var componentWorkspaceBytes = restoreEcsPlan.Components.IsEmpty
+            ? 0
+            : checked(
+                ArrayBytes(restoreEcsPlan.Components.Length, IntPtr.Size)
+                + (restoreEcsPlan.Components.Length * 128L));
+        var growthBytes = checked(
+            metadataBytes
+            + storageBytes
+            + workPlanBytes
+            + componentWorkspaceBytes);
         var existingBytes = GetWorldOwnedStateBytes();
 
-        if ((storageBytes != _restoreEcsStorageByteReservation)
+        if ((metadataBytes != _restoreEcsArchetypeMetadataByteReservation)
+            || (storageBytes != _restoreEcsStorageByteReservation)
             || (workPlanCapacity < workPlanCount)
             || (workPlanCapacity == 0)
             || (CalculateComponentTagWorkPlanByteReservation(workPlanCapacity) != workPlanBytes)
+            || (componentWorkspaceBytes != _restoreComponentWorkspaceByteReservation)
             || (growthBytes > _maximumOwnedStateBytes - existingBytes))
         {
-            throw new InvalidOperationException("The candidate restore plan did not pre-admit its ECS rows and query work plan.");
+            throw new InvalidOperationException("The candidate restore plan did not pre-admit its ECS rows, archetype, query work plan, and component workspace.");
         }
 
-        WorldChunkWorkPlanEntry[]? workPlan = null;
-
-        if (workPlanCapacity > _componentTagWorkPlan.Length)
-        {
-            workPlan = new WorldChunkWorkPlanEntry[workPlanCapacity];
-        }
+        var workPlan = new WorldChunkWorkPlanEntry[workPlanCapacity];
+        var componentInitializations = new ComponentInitialization?[restoreEcsPlan.Components.Length];
 
         if (!storage.PrepareCapacity(contents.EntityCount))
         {
             throw new InvalidOperationException("The restore candidate could not prepare its validated ECS row capacity.");
+        }
+
+        for (var componentIndex = restoreEcsPlan.PersistentComponentCount; componentIndex < restoreEcsPlan.Components.Length; componentIndex++)
+        {
+            var registration = restoreEcsPlan.Components[componentIndex];
+
+            if (registration.Descriptor.Restore == ComponentTransientRestore.Reset)
+            {
+                componentInitializations[componentIndex] = registration.CreateDefaultInitialization();
+            }
+        }
+
+        if (candidateArchetype is not null)
+        {
+            InstallArchetype(candidateArchetype);
         }
 
         _nextChunkOrdinal = 0;
@@ -265,19 +471,347 @@ public sealed partial class World
             var entityId = new Guid(entityRecord.GetField(0).Payload, bigEndian: true);
             var entity = ResolveRestoreEntity(entityId);
 
+            if (!storage.TryGetNextAppendLocation(_nextChunkOrdinal, out var chunkIndex, out var row))
+            {
+                throw new InvalidOperationException("The restore candidate could not locate a preflighted ECS row.");
+            }
+
+            for (var componentIndex = 0; componentIndex < restoreEcsPlan.PersistentComponentCount; componentIndex++)
+            {
+                var registration = restoreEcsPlan.Components[componentIndex];
+                var componentRecord = entityRecord.GetRecordArrayElement(2, componentIndex);
+                var restoreResult = RestoreComponentRecord(
+                    entity,
+                    registration,
+                    componentRecord.EncodedBytes,
+                    cancellationToken);
+
+                if (restoreResult.Status is ComponentReadStatus.Rejected)
+                {
+                    var diagnostic = restoreResult.Diagnostics[0];
+                    throw new InvalidDataException($"{diagnostic.Code}: {diagnostic.Message}");
+                }
+
+                if (!restoreResult.TryGetInitialization(out var initialization)
+                    || (initialization is null))
+                {
+                    throw new InvalidOperationException("The successful Persistent component restore did not produce an initialization.");
+                }
+
+                var initializedValue = registration.CreateInitializedValue(initialization, _spatialSettings);
+                componentInitializations[componentIndex] = initializedValue;
+            }
+
+            for (var componentIndex = 0; componentIndex < componentInitializations.Length; componentIndex++)
+            {
+                if (componentInitializations[componentIndex] is { } initialization)
+                {
+                    storage.InitializeColumnRow(componentIndex, chunkIndex, row, initialization, _spatialSettings);
+                }
+            }
+
             if (!storage.TryAppend(entity, _entitySlots, ref _nextChunkOrdinal))
             {
                 throw new InvalidOperationException("The restore candidate could not append a prevalidated ECS row.");
             }
+
+            Array.Clear(componentInitializations, 0, restoreEcsPlan.PersistentComponentCount);
         }
 
-        if (workPlan is not null)
-        {
-            _componentTagWorkPlan = workPlan;
-            _componentTagWorkPlanByteReservation = workPlanBytes;
-        }
+        _componentTagWorkPlan = workPlan;
+        _componentTagWorkPlanByteReservation = workPlanBytes;
 
         RebuildComponentTagWorkPlan();
+
+        for (var componentIndex = 0; componentIndex < restoreEcsPlan.Components.Length; componentIndex++)
+        {
+            if (restoreEcsPlan.Components[componentIndex].Descriptor.Restore == ComponentTransientRestore.Derived)
+            {
+                continue;
+            }
+
+            for (var chunkIndex = 0; chunkIndex < storage.ChunkCount; chunkIndex++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                for (var row = 0; row < storage.GetChunkRowCount(chunkIndex); row++)
+                {
+                    storage.ValidateEntityReferencesColumnRow(
+                        componentIndex,
+                        chunkIndex,
+                        row,
+                        this,
+                        excludedEntity: null,
+                        parameterName: nameof(ecsRecord));
+                }
+            }
+        }
+
+        for (var entityIndex = 0; entityIndex < contents.EntityCount; entityIndex++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var entityRecord = root.GetRecordArrayElement(1, entityIndex);
+            var entityId = new Guid(entityRecord.GetField(0).Payload, bigEndian: true);
+            var entity = ResolveRestoreEntity(entityId);
+
+            if (!_entitySlots.TryGetLocation(entity.Index, entity.Generation, out var archetypeIndex, out var chunkOrdinal, out var row)
+                || (archetypeIndex != archetype.Index))
+            {
+                throw new InvalidOperationException("The restored Entity is not located in its preflighted component archetype.");
+            }
+
+            if (!storage.TryFindChunkIndex(chunkOrdinal, out var chunkIndex))
+            {
+                throw new InvalidOperationException("The restored Entity has no preflighted archetype chunk.");
+            }
+
+            for (var componentIndex = restoreEcsPlan.PersistentComponentCount; componentIndex < restoreEcsPlan.Components.Length; componentIndex++)
+            {
+                var registration = restoreEcsPlan.Components[componentIndex];
+
+                if (registration.Descriptor.Restore != ComponentTransientRestore.Derived)
+                {
+                    continue;
+                }
+
+                var initialization = RestoreDerivedComponent(entity, registration, cancellationToken);
+                storage.InitializeExistingColumnRow(componentIndex, chunkIndex, row, initialization, _spatialSettings);
+            }
+        }
+
+        for (var chunkIndex = 0; chunkIndex < storage.ChunkCount; chunkIndex++)
+        {
+            for (var row = 0; row < storage.GetChunkRowCount(chunkIndex); row++)
+            {
+                for (var componentIndex = 0; componentIndex < restoreEcsPlan.Components.Length; componentIndex++)
+                {
+                    ThrowIfValidationFailed(
+                        storage.ValidateColumnRow(componentIndex, chunkIndex, row, cancellationToken),
+                        nameof(ecsRecord),
+                        "A restored component failed its registered validation.");
+                    storage.ValidateEntityReferencesColumnRow(
+                        componentIndex,
+                        chunkIndex,
+                        row,
+                        this,
+                        excludedEntity: null,
+                        parameterName: nameof(ecsRecord));
+                }
+            }
+        }
+
+        Array.Clear(componentInitializations);
+
+        if (componentWorkspaceBytes != 0)
+        {
+            _domainReservation.ReleaseAdditional(componentWorkspaceBytes);
+            _restoreComponentWorkspaceByteReservation = 0;
+        }
+
         _isRestoreEcsRowsRestored = true;
+        _restoreEcsPlan = null;
+    }
+
+    private sealed class WorldComponentRestoreContext : IComponentRestoreContext
+    {
+        private bool _allowSameEntityRead;
+        private Entity _entity;
+        private Exception? _failure;
+        private int _isActive;
+        private IComponentRegistration? _registration;
+        private readonly World _world;
+
+        internal WorldComponentRestoreContext(World world)
+        {
+            ArgumentNullException.ThrowIfNull(world);
+            _world = world;
+            OwnerThreadId = world._ownerThreadId;
+        }
+
+        public Exception? Failure => Volatile.Read(ref _failure);
+
+        public bool IsActive => Volatile.Read(ref _isActive) == 1;
+
+        public int OwnerThreadId { get; }
+
+        private static bool ContainsDerivedDependency(
+            IComponentRegistration registration,
+            IComponentRegistration dependencyRegistration)
+        {
+            foreach (var dependency in registration.Descriptor.DerivedDependencies)
+            {
+                if ((dependency.ComponentType == dependencyRegistration.ComponentType)
+                    && (dependency.Schema == dependencyRegistration.SchemaReference))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public TDependency ReadSameEntity<TDependency>()
+            where TDependency : unmanaged
+        {
+            EnsureActive();
+
+            if (!_allowSameEntityRead)
+            {
+                return Fail<TDependency>(new InvalidOperationException("Only a Derived component restore may read same-Entity dependencies."));
+            }
+
+            var registration = _registration
+                ?? throw new InvalidOperationException("The component restore context omitted its registration.");
+            IComponentRegistration? dependencyRegistration = null;
+
+            foreach (var candidate in _world.Registration.Components)
+            {
+                if (candidate.ComponentType == typeof(TDependency))
+                {
+                    dependencyRegistration = candidate;
+                    break;
+                }
+            }
+
+            if (dependencyRegistration is null
+                || (dependencyRegistration.Descriptor.Flags != ComponentStorageFlags.Persistent)
+                || !ContainsDerivedDependency(registration, dependencyRegistration))
+            {
+                return Fail<TDependency>(new InvalidOperationException("The requested component is not an exact declared Persistent Derived dependency."));
+            }
+
+            if (!_world.TryGet(_entity, out TDependency value))
+            {
+                return Fail<TDependency>(new InvalidOperationException("The declared Persistent Derived dependency is not present on the receiving Entity."));
+            }
+
+            return value;
+        }
+
+        public void RecordFailure(Exception exception)
+        {
+            ArgumentNullException.ThrowIfNull(exception);
+            _ = Interlocked.CompareExchange(ref _failure, exception, null);
+        }
+
+        public Entity ResolveEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId)
+        {
+            EnsureActive();
+
+            if (referenceField is null)
+            {
+                ThrowActiveMisuse(new ArgumentNullException(nameof(referenceField)));
+            }
+
+            if ((_registration is null)
+                || (referenceField.ComponentSchema != _registration.SchemaReference)
+                || !_registration.IsEntityReferencePath(referenceField.Path))
+            {
+                ThrowActiveMisuse(new ArgumentException("The selected field is not an exact registered Entity reference.", nameof(referenceField)));
+            }
+
+            if (targetEntityId == Guid.Empty)
+            {
+                ThrowActiveMisuse(new ArgumentException("A stable Entity identity must be nonempty.", nameof(targetEntityId)));
+            }
+
+            return _world.ResolveRestoreEntity(targetEntityId);
+        }
+
+        public Entity ResolveEntity(WorldSystemFieldDescriptor referenceField, Guid targetEntityId)
+        {
+            _ = referenceField;
+            _ = targetEntityId;
+            EnsureActive();
+            return Fail<Entity>(new InvalidOperationException("A component restore context cannot resolve system state references."));
+        }
+
+        public Entity? ResolveOptionalEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId)
+        {
+            EnsureActive();
+
+            if (referenceField is null)
+            {
+                ThrowActiveMisuse(new ArgumentNullException(nameof(referenceField)));
+            }
+
+            if ((_registration is null)
+                || (referenceField.ComponentSchema != _registration.SchemaReference)
+                || !_registration.IsEntityReferencePath(referenceField.Path)
+                || referenceField.Field.IsRequired)
+            {
+                ThrowActiveMisuse(new ArgumentException("The selected field is not an exact optional Entity reference.", nameof(referenceField)));
+            }
+
+            if (targetEntityId == Guid.Empty)
+            {
+                ThrowActiveMisuse(new ArgumentException("A stable Entity identity must be nonempty.", nameof(targetEntityId)));
+            }
+
+            if (!_world._identityLedger.TryGetLiveLocator(targetEntityId, IdentityKind.Entity, out _))
+            {
+                return null;
+            }
+
+            return _world.ResolveRestoreEntity(targetEntityId);
+        }
+
+        public void ThrowIfFailed()
+        {
+            if (Failure is { } failure)
+            {
+                ExceptionDispatchInfo.Capture(failure).Throw();
+            }
+        }
+
+        internal void Activate(Entity entity, IComponentRegistration registration, bool allowSameEntityRead)
+        {
+            ArgumentNullException.ThrowIfNull(registration);
+
+            if (Interlocked.CompareExchange(ref _isActive, 2, 0) != 0)
+            {
+                throw new InvalidOperationException("The World already has an active component restore callback.");
+            }
+
+            _entity = entity;
+            _registration = registration;
+            _allowSameEntityRead = allowSameEntityRead;
+            Volatile.Write(ref _failure, null);
+            Volatile.Write(ref _isActive, 1);
+        }
+
+        internal void Revoke()
+        {
+            Volatile.Write(ref _isActive, 0);
+            _registration = null;
+            _entity = default;
+            _allowSameEntityRead = false;
+        }
+
+        private void EnsureActive()
+        {
+            if (!IsActive)
+            {
+                throw new InvalidOperationException("The component restore context has expired.");
+            }
+
+            if (Environment.CurrentManagedThreadId != OwnerThreadId)
+            {
+                ThrowActiveMisuse(new InvalidOperationException("The component restore context is restricted to its issuing thread."));
+            }
+        }
+
+        private T Fail<T>(Exception exception)
+        {
+            ThrowActiveMisuse(exception);
+            throw new InvalidOperationException("The restore callback continued after an active authority failure.");
+        }
+
+        [DoesNotReturn]
+        private void ThrowActiveMisuse(Exception exception)
+        {
+            RecordFailure(exception);
+            ExceptionDispatchInfo.Capture(exception).Throw();
+        }
     }
 }

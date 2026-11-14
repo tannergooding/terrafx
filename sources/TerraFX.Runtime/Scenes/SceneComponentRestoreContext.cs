@@ -3,7 +3,10 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.Runtime.ExceptionServices;
+using System.Threading;
 using TerraFX;
 using TerraFX.Entities;
 
@@ -14,6 +17,7 @@ internal sealed class SceneComponentRestoreContext : IComponentRestoreContext
     private readonly ImmutableArray<Entity> _candidateEntities;
     private readonly ContentSchemaReference _componentSchema;
     private readonly int _expandedEntityIndex;
+    private Exception? _failure;
     private bool _isActive = true;
     private readonly SceneLoadOptionsSnapshot _options;
     private readonly int _ownerThreadId;
@@ -52,7 +56,9 @@ internal sealed class SceneComponentRestoreContext : IComponentRestoreContext
         _ownerThreadId = Environment.CurrentManagedThreadId;
     }
 
-    public bool IsActive => _isActive;
+    public Exception? Failure => Volatile.Read(ref _failure);
+
+    public bool IsActive => Volatile.Read(ref _isActive);
 
     public int OwnerThreadId => _ownerThreadId;
 
@@ -106,31 +112,60 @@ internal sealed class SceneComponentRestoreContext : IComponentRestoreContext
             return value;
         }
 
-        throw new InvalidOperationException("The exact Scene Entity restore dependency has not been restored.");
+        return Fail<TDependency>(new InvalidOperationException("The exact Scene Entity restore dependency has not been restored."));
+    }
+
+    public void RecordFailure(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        _ = Interlocked.CompareExchange(ref _failure, exception, null);
     }
 
     public Entity ResolveEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId)
     {
         EnsureActive();
-        ArgumentNullException.ThrowIfNull(referenceField);
+
+        if (referenceField is null)
+        {
+            return Fail<Entity>(new ArgumentNullException(nameof(referenceField)));
+        }
+
         ValidateComponentField(referenceField);
-        return ResolveTarget(FindReference(referenceField, targetEntityId))
-            ?? throw new InvalidDataException("A required Scene Entity reference resolved to null.");
+        var target = ResolveTarget(FindReference(referenceField, targetEntityId));
+
+        if (target is null)
+        {
+            return Fail<Entity>(new InvalidDataException("A required Scene Entity reference resolved to null."));
+        }
+
+        return target.Value;
     }
 
     public Entity ResolveEntity(WorldSystemFieldDescriptor referenceField, Guid targetEntityId)
     {
         EnsureActive();
-        ArgumentNullException.ThrowIfNull(referenceField);
-        throw new ArgumentException("A Scene component restore cannot resolve a World system field.", nameof(referenceField));
+        return Fail<Entity>(new ArgumentException("A Scene component restore cannot resolve a World system field.", nameof(referenceField)));
     }
 
     public Entity? ResolveOptionalEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId)
     {
         EnsureActive();
-        ArgumentNullException.ThrowIfNull(referenceField);
+
+        if (referenceField is null)
+        {
+            return Fail<Entity?>(new ArgumentNullException(nameof(referenceField)));
+        }
+
         ValidateComponentField(referenceField);
         return ResolveTarget(FindReference(referenceField, targetEntityId));
+    }
+
+    public void ThrowIfFailed()
+    {
+        if (Failure is { } failure)
+        {
+            ExceptionDispatchInfo.Capture(failure).Throw();
+        }
     }
 
     internal void Revoke() => _isActive = false;
@@ -144,70 +179,98 @@ internal sealed class SceneComponentRestoreContext : IComponentRestoreContext
 
         if (Environment.CurrentManagedThreadId != _ownerThreadId)
         {
-            throw new InvalidOperationException("The Scene component restore context is restricted to its issuing thread.");
+            ThrowActiveMisuse(new InvalidOperationException("The Scene component restore context is restricted to its issuing thread."));
         }
+    }
+
+    private T Fail<T>(Exception exception)
+    {
+        ThrowActiveMisuse(exception);
+        throw new InvalidOperationException("The Scene restore context returned from a sticky failure.");
     }
 
     private SceneExpandedReferenceBinding FindReference(ComponentFieldDescriptor field, Guid targetEntityId)
     {
         if (targetEntityId == Guid.Empty)
         {
-            throw new ArgumentException("A Scene reference token must be nonempty.", nameof(targetEntityId));
+            ThrowActiveMisuse(new ArgumentException("A Scene reference token must be nonempty.", nameof(targetEntityId)));
         }
 
         SceneExpandedReferenceBinding? selected = null;
 
         foreach (var binding in _plan.ReferenceBindings)
         {
-            if ((binding.ExpandedEntityIndex != _expandedEntityIndex)
-                || (binding.ComponentSchema != _componentSchema)
-                || !PathMatches(binding.PropertyPath, field.Path)
-                || !TargetMatches(binding.Target, targetEntityId))
+            bool matches;
+
+            try
+            {
+                matches = (binding.ExpandedEntityIndex == _expandedEntityIndex)
+                    && (binding.ComponentSchema == _componentSchema)
+                    && PathMatches(binding.PropertyPath, field.Path)
+                    && TargetMatches(binding.Target, targetEntityId);
+            }
+            catch (InvalidDataException exception)
+            {
+                return Fail<SceneExpandedReferenceBinding>(exception);
+            }
+
+            if (!matches)
             {
                 continue;
             }
 
             if (selected is not null)
             {
-                throw new InvalidDataException("A Scene component field has duplicate expanded reference bindings.");
+                ThrowActiveMisuse(new InvalidDataException("A Scene component field has duplicate expanded reference bindings."));
             }
 
             selected = binding;
         }
 
         return selected
-            ?? throw new InvalidDataException("A Scene component field has no exact expanded reference binding.");
+            ?? Fail<SceneExpandedReferenceBinding>(
+                new InvalidDataException("A Scene component field has no exact expanded reference binding."));
     }
 
     private Entity? ResolveTarget(SceneExpandedReferenceBinding binding)
     {
         if (binding.ResolvedTargetExpandedEntityIndex is int expandedEntityIndex)
         {
+            if ((uint)expandedEntityIndex >= (uint)_candidateEntities.Length)
+            {
+                return Fail<Entity?>(new InvalidDataException("The Scene reference binding has an invalid expanded Entity map index."));
+            }
+
             return _candidateEntities[expandedEntityIndex];
         }
 
         if (binding.ResolvedExternalSlotBindingIndex is not int externalSlotBindingIndex)
         {
-            throw new InvalidDataException("The Scene reference binding has no resolved target.");
+            return Fail<Entity?>(new InvalidDataException("The Scene reference binding has no resolved target."));
         }
 
         var externalBindings = _plan.ExternalSlotBindings;
 
         if ((uint)externalSlotBindingIndex >= (uint)externalBindings.Length)
         {
-            throw new InvalidDataException("The Scene reference binding has an invalid external-slot map index.");
+            return Fail<Entity?>(new InvalidDataException("The Scene reference binding has an invalid external-slot map index."));
         }
 
         var externalSlotBinding = externalBindings[externalSlotBindingIndex];
 
         if (externalSlotBinding.TargetExpandedEntityIndex is int targetExpandedEntityIndex)
         {
+            if ((uint)targetExpandedEntityIndex >= (uint)_candidateEntities.Length)
+            {
+                return Fail<Entity?>(new InvalidDataException("The Scene external-slot binding has an invalid expanded Entity map index."));
+            }
+
             return _candidateEntities[targetExpandedEntityIndex];
         }
 
         if (externalSlotBinding.RootExternalSlotId is not Guid rootSlotId)
         {
-            throw new InvalidDataException("The Scene external-slot target did not resolve to a root slot or expanded Entity.");
+            return Fail<Entity?>(new InvalidDataException("The Scene external-slot target did not resolve to a root slot or expanded Entity."));
         }
 
         var suppliedBindings = _options.ExternalBindings;
@@ -221,7 +284,15 @@ internal sealed class SceneComponentRestoreContext : IComponentRestoreContext
 
             if (suppliedBindings[index].Target is { } target)
             {
-                _world.ValidateEntityReference(target, excludedEntity: null, parameterName: null);
+                try
+                {
+                    _world.ValidateEntityReference(target, excludedEntity: null, parameterName: null);
+                }
+                catch (ArgumentException exception)
+                {
+                    ThrowActiveMisuse(exception);
+                }
+
                 return target;
             }
 
@@ -231,17 +302,24 @@ internal sealed class SceneComponentRestoreContext : IComponentRestoreContext
         return null;
     }
 
+    [DoesNotReturn]
+    private void ThrowActiveMisuse(Exception exception)
+    {
+        RecordFailure(exception);
+        ExceptionDispatchInfo.Capture(exception).Throw();
+    }
+
     private void ValidateComponentField(ComponentFieldDescriptor referenceField)
     {
         if (referenceField.ComponentSchema != _componentSchema)
         {
-            throw new ArgumentException("The selected reference field belongs to another component schema.", nameof(referenceField));
+            ThrowActiveMisuse(new ArgumentException("The selected reference field belongs to another component schema.", nameof(referenceField)));
         }
 
         if ((referenceField.Field.WireKind != 11)
             || (referenceField.Field.Reference != ContentReferenceKind.Entity))
         {
-            throw new ArgumentException("The selected component field is not a declared Entity reference.", nameof(referenceField));
+            ThrowActiveMisuse(new ArgumentException("The selected component field is not a declared Entity reference.", nameof(referenceField)));
         }
     }
 }

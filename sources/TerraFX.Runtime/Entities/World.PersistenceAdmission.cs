@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 
@@ -12,11 +13,15 @@ public sealed partial class World
         WorldOptions options,
         ResolvedWorldOptions resolvedOptions,
         WorldRestoreIdentityState restoreIdentityState,
+        long restoreEcsArchetypeMetadataBytes,
         long restoreEcsStorageBytes,
-        long restoreWorkPlanBytes)
+        long restoreWorkPlanBytes,
+        long restoreComponentWorkspaceBytes)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreEcsArchetypeMetadataBytes);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreEcsStorageBytes);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreWorkPlanBytes);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreComponentWorkspaceBytes);
         var archetypeDirectoryBytes = checked(2 * ArrayBytes(options.MaximumArchetypes, IntPtr.Size));
         var resourceBytes = 0L;
         var systemBytes = checked(
@@ -41,6 +46,7 @@ public sealed partial class World
         var ownerControlQueueBytes = ArrayBytes(options.MaximumPendingOwnerRequests, IntPtr.Size);
         var worldOwnedBytes = checked(
             FreshWorldControlBytes
+            + RestoreContextControlBytes
             + archetypeDirectoryBytes
             + ownerControlQueueBytes
             + resourceAndSystemStateBytes
@@ -49,8 +55,10 @@ public sealed partial class World
             + CalculateSubscriptionStorageByteReservation()
             + restoreIdentityState.IdentityLedger.OwnedByteReservation
             + restoreIdentityState.EntitySlots.OwnedByteReservation
+            + restoreEcsArchetypeMetadataBytes
             + restoreEcsStorageBytes
-            + restoreWorkPlanBytes);
+            + restoreWorkPlanBytes
+            + restoreComponentWorkspaceBytes);
 
         if (worldOwnedBytes > options.SchedulingLimits.MaximumOwnedStateBytes)
         {
@@ -136,50 +144,102 @@ public sealed partial class World
         return capacity;
     }
 
-    private static (long StorageBytes, int WorkPlanCapacity, long WorkPlanBytes) MeasureEmptyRestoreEcsStorage(
+    private static (
+        long ArchetypeMetadataBytes,
+        long StorageBytes,
+        int WorkPlanCapacity,
+        long WorkPlanBytes,
+        long ComponentWorkspaceBytes)
+        MeasureRestoreEcsStorage(
         uint ownerId,
         WorldOptions options,
-        WorldRestoreIdentityState restoreIdentityState)
+        WorldRestoreIdentityState restoreIdentityState,
+        WorldRestoreEcsPlan restoreEcsPlan)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(restoreIdentityState);
-        var entityCount = restoreIdentityState.EntitySlots.LiveEntityCount;
+        ArgumentNullException.ThrowIfNull(restoreEcsPlan);
+        var entityCount = restoreEcsPlan.EntityCount;
+
+        if (entityCount != restoreIdentityState.EntitySlots.LiveEntityCount)
+        {
+            throw new ArgumentException("The restore ECS plan does not match the candidate identity state.", nameof(restoreEcsPlan));
+        }
+
+        if ((entityCount == 0) && !restoreEcsPlan.Components.IsEmpty)
+        {
+            throw new ArgumentException("An empty restore cannot declare Persistent components.", nameof(restoreEcsPlan));
+        }
 
         if (entityCount == 0)
         {
-            return (0, 0, 0);
+            return (0, 0, 0, 0, 0);
         }
 
-        var storage = new EntityArchetypeStorage(ownerId, 0, options.MaximumLiveEntities, []);
+        var hasComponents = !restoreEcsPlan.Components.IsEmpty;
+
+        if (hasComponents && (options.MaximumArchetypes < 2))
+        {
+            throw new InvalidOperationException("The restore World archetype limit cannot admit its Persistent component signature.");
+        }
+
+        var storage = new EntityArchetypeStorage(
+            ownerId,
+            archetypeIndex: hasComponents ? 1 : 0,
+            options.MaximumLiveEntities,
+            restoreEcsPlan.Components);
         var storageBytes = storage.GetCapacityPreparationBytes(entityCount);
-        var requiredWorkPlanCount = checked((entityCount + 63) / 64);
+        var chunksPerFullPage = (storage.RowCapacity + 63) / 64;
+        var fullChunkCount = entityCount / storage.RowCapacity;
+        var lastChunkEntityCount = entityCount % storage.RowCapacity;
+        var requiredWorkPlanCount = checked(
+            (fullChunkCount * chunksPerFullPage)
+            + ((lastChunkEntityCount + 63) / 64));
         var workPlanCapacity = GetRestoreWorkPlanCapacity(
             requiredWorkPlanCount,
             options.MaximumLiveEntities,
             options.SchedulingLimits.MaximumWorkPlanBytes);
+        var metadataBytes = hasComponents
+            ? WorldArchetype.GetMetadataByteReservation(restoreEcsPlan.Components.Length, 0)
+            : 0;
+        var componentWorkspaceBytes = restoreEcsPlan.Components.IsEmpty
+            ? 0
+            : checked(
+                ArrayBytes(restoreEcsPlan.Components.Length, IntPtr.Size)
+                + (restoreEcsPlan.Components.Length * 128L));
         return (
+            metadataBytes,
             storageBytes,
             workPlanCapacity,
-            CalculateComponentTagWorkPlanByteReservation(workPlanCapacity));
+            CalculateComponentTagWorkPlanByteReservation(workPlanCapacity),
+            componentWorkspaceBytes);
     }
 
     internal long MeasureRestoreWorldOwnedBytes(
         WorldRestoreIdentityState restoreIdentityState,
         WorldPersistenceConfiguration configuration,
         int tickRate,
-        float timeScale)
+        float timeScale,
+        WorldRestoreEcsPlan? restoreEcsPlan = null)
     {
         ArgumentNullException.ThrowIfNull(restoreIdentityState);
         ArgumentNullException.ThrowIfNull(configuration);
+        restoreEcsPlan ??= WorldRestoreEcsPlan.Create(
+            restoreIdentityState.EntitySlots.LiveEntityCount,
+            0,
+            []);
         var options = CreateRestoreOptions(this, restoreIdentityState, configuration, tickRate, timeScale);
         var resolvedOptions = options.ValidateAndResolve();
-        var (storageBytes, _, workPlanBytes) = MeasureEmptyRestoreEcsStorage(_ownerId, options, restoreIdentityState);
+        var (metadataBytes, storageBytes, _, workPlanBytes, componentWorkspaceBytes) =
+            MeasureRestoreEcsStorage(_ownerId, options, restoreIdentityState, restoreEcsPlan);
         return CalculateRestoreWorldOwnedBytes(
             options,
             resolvedOptions,
             restoreIdentityState,
+            metadataBytes,
             storageBytes,
-            workPlanBytes);
+            workPlanBytes,
+            componentWorkspaceBytes);
     }
 
     internal void ReleasePersistenceAdmissionBytes(long bytes)
@@ -395,7 +455,8 @@ public sealed partial class World
         float timeScale,
         out WorldConstructionPlan? constructionPlan,
         out WorldGuidRefusal bindingRefusal,
-        out WorldAdmissionRefusal admissionRefusal)
+        out WorldAdmissionRefusal admissionRefusal,
+        WorldRestoreEcsPlan? restoreEcsPlan = null)
     {
         ArgumentNullException.ThrowIfNull(restoreIdentityState);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -428,14 +489,20 @@ public sealed partial class World
 
         var options = CreateRestoreOptions(this, restoreIdentityState, configuration, tickRate, timeScale);
         var resolvedOptions = options.ValidateAndResolve();
-        var (restoreEcsStorageBytes, restoreWorkPlanCapacity, restoreWorkPlanBytes) =
-            MeasureEmptyRestoreEcsStorage(_ownerId, options, restoreIdentityState);
+        restoreEcsPlan ??= WorldRestoreEcsPlan.Create(
+            restoreIdentityState.EntitySlots.LiveEntityCount,
+            0,
+            []);
+        var (restoreEcsArchetypeMetadataBytes, restoreEcsStorageBytes, restoreWorkPlanCapacity, restoreWorkPlanBytes, restoreComponentWorkspaceBytes) =
+            MeasureRestoreEcsStorage(_ownerId, options, restoreIdentityState, restoreEcsPlan);
         var worldOwnedBytes = CalculateRestoreWorldOwnedBytes(
             options,
             resolvedOptions,
             restoreIdentityState,
+            restoreEcsArchetypeMetadataBytes,
             restoreEcsStorageBytes,
-            restoreWorkPlanBytes);
+            restoreWorkPlanBytes,
+            restoreComponentWorkspaceBytes);
         WorldDomainReservation? domainReservation = null;
         WorldSystemQuarantineReservation? quarantineReservation = null;
         WorldDiagnosticsCapability? diagnosticsCapability = null;
@@ -523,9 +590,12 @@ public sealed partial class World
                 _workerPool,
                 restoreIdentityState,
                 replacementPreparation,
+                restoreEcsPlan,
+                restoreEcsArchetypeMetadataBytes,
                 restoreEcsStorageBytes,
                 restoreWorkPlanCapacity,
-                restoreWorkPlanBytes);
+                restoreWorkPlanBytes,
+                restoreComponentWorkspaceBytes);
             domainReservation = null;
             planCreated = true;
             return true;

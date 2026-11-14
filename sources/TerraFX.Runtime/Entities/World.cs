@@ -16,6 +16,7 @@ public sealed partial class World : IDisposable
 {
     private const long DefaultAdmissionDomainBytes = 8_589_934_592L;
     private const long FreshWorldControlBytes = 4096;
+    private const long RestoreContextControlBytes = 128;
 
     private long _acceptedOwnerRequests;
     private HashSet<Entity>? _activeCommandExcludedEntityHandles;
@@ -103,6 +104,10 @@ public sealed partial class World : IDisposable
     private readonly Guid _replayLineageId;
     private ImmutableArray<object> _resourceStorage;
     private readonly long _resourceStorageByteReservation;
+    private long _restoreComponentWorkspaceByteReservation;
+    private readonly WorldComponentRestoreContext? _restoreContext;
+    private readonly long _restoreEcsArchetypeMetadataByteReservation;
+    private WorldRestoreEcsPlan? _restoreEcsPlan;
     private readonly long _restoreEcsStorageByteReservation;
     private readonly long _restoreWorkPlanByteReservation;
     private readonly int _restoreWorkPlanCapacity;
@@ -192,8 +197,11 @@ public sealed partial class World : IDisposable
         var restoreIdentityState = constructionPlan.RestoreIdentityState;
         _isRestoreCandidate = restoreIdentityState is not null;
         _restoreEcsStorageByteReservation = constructionPlan.RestoreEcsStorageByteReservation;
+        _restoreEcsArchetypeMetadataByteReservation = constructionPlan.RestoreEcsArchetypeMetadataByteReservation;
+        _restoreEcsPlan = constructionPlan.RestoreEcsPlan;
         _restoreWorkPlanByteReservation = constructionPlan.RestoreWorkPlanByteReservation;
         _restoreWorkPlanCapacity = constructionPlan.RestoreWorkPlanCapacity;
+        _restoreComponentWorkspaceByteReservation = constructionPlan.RestoreComponentWorkspaceByteReservation;
         _entitySlots = restoreIdentityState?.EntitySlots ?? new EntitySlotTable(options.MaximumEntitySlots);
         _executionSessionId = constructionPlan.ExecutionSessionId;
         _identityBranchId = constructionPlan.IdentityBranchId;
@@ -250,6 +258,7 @@ public sealed partial class World : IDisposable
 
         _ownerId = OwnerIdAllocator.Allocate();
         _ownerThreadId = Environment.CurrentManagedThreadId;
+        _restoreContext = _isRestoreCandidate ? new WorldComponentRestoreContext(this) : null;
         _diagnosticsCapability.BindOwner(_ownerId);
         _archetypes[0] = new WorldArchetype(_ownerId, 0, _maximumLiveEntities, [], []);
         _queryArchetypes[0] = _archetypes[0];

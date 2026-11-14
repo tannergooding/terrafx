@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using TerraFX;
 
 namespace TerraFX.Entities;
@@ -24,6 +25,139 @@ internal static class WorldPersistenceEcsReader
     private static readonly Guid s_resourceStateSchemaId = new ContentSchemaIdentityAssignment("state/resource-state").SchemaId;
     private static readonly Guid s_schemaReferenceSchemaId = new ContentSchemaIdentityAssignment("content/schema-ref").SchemaId;
     private static readonly Guid s_systemStateSchemaId = new ContentSchemaIdentityAssignment("state/system-state").SchemaId;
+
+    internal static WorldRestoreEcsPlan CreateHomogeneousRestorePlan(
+        ReadOnlyMemory<byte> ecsRecord,
+        WorldPersistenceEcsContents contents,
+        WorldRegistration targetRegistration)
+    {
+        ArgumentNullException.ThrowIfNull(contents);
+        ArgumentNullException.ThrowIfNull(targetRegistration);
+
+        if ((contents.LiveEntityCount != contents.EntityCount)
+            || (contents.LiveSceneInstanceCount != 0)
+            || (contents.SystemCount != 0)
+            || (contents.ResourceCount != 0)
+            || (contents.AttachmentCount != 0))
+        {
+            throw new NotSupportedException("The candidate restore slice does not support Scene identities or system, resource, or attachment state.");
+        }
+
+        var record = new EbinRecordReadView(ecsRecord.Span);
+        var persistentField = (contents.EntityCount == 0)
+            ? default
+            : record.GetRecordArrayElement(1, 0).GetField(1);
+        var transientField = (contents.EntityCount == 0)
+            ? default
+            : record.GetRecordArrayElement(1, 0).GetField(3);
+
+        if ((contents.EntityCount != 0)
+            && ((persistentField.Tag != 2)
+                || (persistentField.Kind != ArrayKind)
+                || !persistentField.IsRequired
+                || (persistentField.Count > int.MaxValue)
+                || (transientField.Tag != 4)
+                || (transientField.Kind != ArrayKind)
+                || !transientField.IsRequired
+                || (transientField.Count > int.MaxValue)))
+        {
+            throw new ArgumentException("The first candidate ECS Entity has an invalid component schema array.", nameof(ecsRecord));
+        }
+
+        var persistentCount = (contents.EntityCount == 0) ? 0 : checked((int)persistentField.Count);
+        var transientCount = (contents.EntityCount == 0) ? 0 : checked((int)transientField.Count);
+        var components = ImmutableArray.CreateBuilder<IComponentRegistration>(checked(persistentCount + transientCount));
+
+        for (var componentIndex = 0; componentIndex < persistentCount; componentIndex++)
+        {
+            var componentRecord = record.GetRecordArrayElement(1, 0).GetRecordArrayElement(2, componentIndex);
+            var schema = ReadContentSchemaReference(componentRecord, nameof(ecsRecord));
+            IComponentRegistration registration;
+
+            try
+            {
+                registration = targetRegistration.GetComponentRegistration(schema);
+            }
+            catch (KeyNotFoundException exception)
+            {
+                throw new ArgumentException("A candidate ECS component schema is not registered in the target World.", nameof(ecsRecord), exception);
+            }
+
+            if (registration.Descriptor.Flags != ComponentStorageFlags.Persistent)
+            {
+                throw new ArgumentException("A candidate ECS persistent component schema does not match its target registration.", nameof(ecsRecord));
+            }
+
+            components.Add(registration);
+        }
+
+        for (var transientIndex = 0; transientIndex < transientCount; transientIndex++)
+        {
+            var schemaRecord = record.GetRecordArrayElement(1, 0).GetRecordArrayElement(4, transientIndex);
+            var schema = ReadSchemaReference(schemaRecord, nameof(ecsRecord));
+            IComponentRegistration registration;
+
+            try
+            {
+                registration = targetRegistration.GetComponentRegistration(schema);
+            }
+            catch (KeyNotFoundException exception)
+            {
+                throw new ArgumentException("A candidate ECS transient schema is not registered in the target World.", nameof(ecsRecord), exception);
+            }
+
+            if ((registration.Descriptor.Flags != ComponentStorageFlags.Transient)
+                || (registration.Descriptor.Restore is not ComponentTransientRestore.Reset and not ComponentTransientRestore.Derived))
+            {
+                throw new ArgumentException("A candidate ECS transient schema does not match a restorable target registration.", nameof(ecsRecord));
+            }
+
+            components.Add(registration);
+        }
+
+        var componentResult = components.MoveToImmutable();
+        ValidateDerivedDependencies(componentResult, persistentCount);
+
+        for (var entityIndex = 0; entityIndex < contents.EntityCount; entityIndex++)
+        {
+            var entity = record.GetRecordArrayElement(1, entityIndex);
+            var currentPersistentComponents = entity.GetField(1);
+            var tags = entity.GetField(2);
+            var currentTransientSchemas = entity.GetField(3);
+
+            if ((currentPersistentComponents.Count != (ulong)persistentCount)
+                || (tags.Count != 0)
+                || (currentTransientSchemas.Count != (ulong)transientCount)
+                || entity.TryGetField(6, out _))
+            {
+                throw new NotSupportedException("The candidate restore slice requires one homogeneous component set without tags or Scene ownership.");
+            }
+
+            for (var componentIndex = 0; componentIndex < persistentCount; componentIndex++)
+            {
+                var componentRecord = entity.GetRecordArrayElement(2, componentIndex);
+                var schema = ReadContentSchemaReference(componentRecord, nameof(ecsRecord));
+
+                if (schema != componentResult[componentIndex].SchemaReference)
+                {
+                    throw new NotSupportedException("The candidate restore slice requires every Entity to use one homogeneous Persistent component set.");
+                }
+            }
+
+            for (var transientIndex = 0; transientIndex < transientCount; transientIndex++)
+            {
+                var schemaRecord = entity.GetRecordArrayElement(4, transientIndex);
+                var schema = ReadSchemaReference(schemaRecord, nameof(ecsRecord));
+
+                if (schema != componentResult[persistentCount + transientIndex].SchemaReference)
+                {
+                    throw new NotSupportedException("The candidate restore slice requires every Entity to use one homogeneous transient component set.");
+                }
+            }
+        }
+
+        return WorldRestoreEcsPlan.Create(contents.EntityCount, persistentCount, componentResult);
+    }
 
     internal static WorldPersistenceEcsContents Read(
         ReadOnlyMemory<byte> ecsRecord,
@@ -194,6 +328,11 @@ internal static class WorldPersistenceEcsReader
             validatedLineageMembership,
             validatedIdentityHistory);
     }
+
+    internal static ContentSchemaReference ReadTransientComponentSchemaReference(
+        EbinRecordReadView record,
+        string parameterName)
+        => ReadSchemaReference(record, parameterName);
 
     internal static void ValidateAttachmentOwner(
         EbinRecordReadView attachment,
@@ -928,6 +1067,43 @@ internal static class WorldPersistenceEcsReader
             previousHasOwner = hasOwner;
             previousOwnerId = ownerId;
             previousSchema = schema;
+        }
+    }
+
+    private static void ValidateDerivedDependencies(
+        ImmutableArray<IComponentRegistration> components,
+        int persistentComponentCount)
+    {
+        for (var componentIndex = persistentComponentCount; componentIndex < components.Length; componentIndex++)
+        {
+            var component = components[componentIndex];
+
+            if (component.Descriptor.Restore != ComponentTransientRestore.Derived)
+            {
+                continue;
+            }
+
+            foreach (var dependency in component.Descriptor.DerivedDependencies)
+            {
+                var isPresent = false;
+
+                for (var candidateIndex = 0; candidateIndex < persistentComponentCount; candidateIndex++)
+                {
+                    var candidate = components[candidateIndex];
+
+                    if ((candidate.ComponentType == dependency.ComponentType)
+                        && (candidate.SchemaReference == dependency.Schema))
+                    {
+                        isPresent = true;
+                        break;
+                    }
+                }
+
+                if (!isPresent)
+                {
+                    throw new NotSupportedException("The candidate ECS signature omits a declared Persistent Derived dependency.");
+                }
+            }
         }
     }
 

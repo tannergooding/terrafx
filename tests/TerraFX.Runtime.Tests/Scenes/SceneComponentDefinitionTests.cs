@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using NUnit.Framework;
 using TerraFX;
@@ -322,10 +323,14 @@ internal sealed class SceneComponentDefinitionTests
 
     private sealed class RestoreContext : IComponentRestoreContext
     {
+        private Exception? _failure;
+
         internal RestoreContext()
         {
             OwnerThreadId = Environment.CurrentManagedThreadId;
         }
+
+        public Exception? Failure => _failure;
 
         public bool IsActive => true;
 
@@ -335,6 +340,12 @@ internal sealed class SceneComponentDefinitionTests
             where TDependency : unmanaged
             => throw new InvalidOperationException("The LocalTransform restore does not read same-entity dependencies.");
 
+        public void RecordFailure(Exception exception)
+        {
+            ArgumentNullException.ThrowIfNull(exception);
+            _failure ??= exception;
+        }
+
         public Entity ResolveEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId)
             => throw new InvalidOperationException("The LocalTransform restore does not resolve Entity references.");
 
@@ -343,5 +354,13 @@ internal sealed class SceneComponentDefinitionTests
 
         public Entity? ResolveOptionalEntity(ComponentFieldDescriptor referenceField, Guid targetEntityId)
             => throw new InvalidOperationException("The LocalTransform restore does not resolve optional Entity references.");
+
+        public void ThrowIfFailed()
+        {
+            if (Failure is { } failure)
+            {
+                ExceptionDispatchInfo.Capture(failure).Throw();
+            }
+        }
     }
 }

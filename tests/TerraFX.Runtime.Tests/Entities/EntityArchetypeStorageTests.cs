@@ -402,6 +402,9 @@ internal sealed class EntityArchetypeStorageTests
 
         public object CreateColumn(int capacity) => new int[capacity];
 
+        public ComponentInitialization CreateDefaultInitialization()
+            => ComponentInitialization.Defaults<int>();
+
         public ComponentInitialization CreateInitializedValue(ComponentInitialization initialization, SpatialSettings spatialSettings)
         {
             ArgumentNullException.ThrowIfNull(initialization);
@@ -436,6 +439,11 @@ internal sealed class EntityArchetypeStorageTests
             var values = (int[])column;
             values[destinationRow] = values[sourceRow];
         }
+
+        public ComponentInitialization RebuildDerived(
+            WorldStateRestoreBinding binding,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
 
         public ComponentRecordRestoreResult RestoreFromRecord(
             scoped ReadOnlySpan<byte> source,

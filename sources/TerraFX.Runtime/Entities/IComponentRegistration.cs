@@ -24,6 +24,8 @@ internal interface IComponentRegistration
 
     object CreateColumn(int capacity);
 
+    ComponentInitialization CreateDefaultInitialization();
+
     ComponentInitialization CreateInitializedValue(ComponentInitialization initialization, SpatialSettings spatialSettings);
 
     long GetColumnArrayBytes(int capacity);
@@ -33,6 +35,10 @@ internal interface IComponentRegistration
     bool IsEntityReferencePath(ComponentFieldPath path);
 
     void MoveColumnRow(object column, int sourceRow, int destinationRow);
+
+    ComponentInitialization RebuildDerived(
+        WorldStateRestoreBinding binding,
+        CancellationToken cancellationToken);
 
     ComponentRecordRestoreResult RestoreFromRecord(
         scoped ReadOnlySpan<byte> source,

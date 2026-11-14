@@ -1212,6 +1212,20 @@ public sealed class WorldPersistence : IAsyncDisposable
 
             var tickRate = checkpointContents.WorldContents.Clock.TickRate;
             var timeScale = checkpointContents.WorldContents.Clock.TimeScale;
+            WorldRestoreEcsPlan restoreEcsPlan;
+
+            try
+            {
+                restoreEcsPlan = WorldPersistenceEcsReader.CreateHomogeneousRestorePlan(
+                    checkpointContents.WorldContents.EcsRecord,
+                    checkpointContents.WorldContents.Ecs,
+                    targetWorld.Options.Registration);
+            }
+            catch (NotSupportedException exception)
+            {
+                return CreateLoadRejected("load-state-not-supported", exception.Message, targetWorldGuid);
+            }
+
             long targetBytes;
 
             try
@@ -1220,7 +1234,8 @@ public sealed class WorldPersistence : IAsyncDisposable
                     restoreIdentityState,
                     checkpointContents.WorldContents.Configuration,
                     tickRate,
-                    timeScale);
+                    timeScale,
+                    restoreEcsPlan);
             }
             catch (InvalidOperationException exception)
             {
@@ -1230,7 +1245,12 @@ public sealed class WorldPersistence : IAsyncDisposable
             var sourceBytes = Math.Max(1L, checked((long)fileRecord.Length + readWorkspaceBytes));
             var dataBytes = Math.Max(
                 1L,
-                checked(restoreStateBytes + checkpointContents.WorldRecord.Length + checkpointContents.HeaderRecord.Length + 512L));
+                checked(
+                    restoreStateBytes
+                    + restoreEcsPlan.OwnedByteReservation
+                    + checkpointContents.WorldRecord.Length
+                    + checkpointContents.HeaderRecord.Length
+                    + 512L));
             var cleanupBytes = Math.Max(1L, targetBytes);
 
             if (!targetWorld.TryPrepareLoadReplacement(
@@ -1258,7 +1278,8 @@ public sealed class WorldPersistence : IAsyncDisposable
                     timeScale,
                     out constructionPlan,
                     out bindingRefusal,
-                    out admissionRefusal)
+                    out admissionRefusal,
+                    restoreEcsPlan)
                 || (constructionPlan is null))
             {
                 var message = (bindingRefusal.Code == WorldGuidRefusal.TargetBindingStale)

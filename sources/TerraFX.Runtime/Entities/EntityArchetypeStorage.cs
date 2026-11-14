@@ -502,6 +502,29 @@ internal sealed class EntityArchetypeStorage
         _components[componentIndex].InitializeColumn(chunk._columns[componentIndex], row, initialization, spatialSettings);
     }
 
+    internal void InitializeExistingColumnRow(
+        int componentIndex,
+        int chunkIndex,
+        int row,
+        ComponentInitialization initialization,
+        SpatialSettings spatialSettings)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(componentIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(componentIndex, _components.Length);
+        ArgumentNullException.ThrowIfNull(initialization);
+        ArgumentOutOfRangeException.ThrowIfNegative(chunkIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(chunkIndex, _chunks.Length);
+        ArgumentOutOfRangeException.ThrowIfNegative(row);
+        ref var chunk = ref _chunks[chunkIndex];
+
+        if (row >= chunk._count)
+        {
+            throw new InvalidOperationException("A rebuilt component value must target an existing archetype row.");
+        }
+
+        _components[componentIndex].InitializeColumn(chunk._columns[componentIndex], row, initialization, spatialSettings);
+    }
+
     internal bool PrepareCapacity(int requiredEntityCount)
     {
         if (!IsCapacityValid(requiredEntityCount))

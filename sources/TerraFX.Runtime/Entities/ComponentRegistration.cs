@@ -87,6 +87,9 @@ internal sealed class ComponentRegistration<T> : IComponentCaptureRegistration
         return new T[capacity];
     }
 
+    public ComponentInitialization CreateDefaultInitialization()
+        => ComponentInitialization.Defaults<T>();
+
     public ComponentInitialization CreateInitializedValue(ComponentInitialization initialization, SpatialSettings spatialSettings)
     {
         ArgumentNullException.ThrowIfNull(initialization);
@@ -167,6 +170,22 @@ internal sealed class ComponentRegistration<T> : IComponentCaptureRegistration
         ArgumentOutOfRangeException.ThrowIfNegative(destinationRow);
         var values = (T[])column;
         values[destinationRow] = values[sourceRow];
+    }
+
+    public ComponentInitialization RebuildDerived(
+        WorldStateRestoreBinding binding,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(binding);
+
+        if ((Descriptor.Flags != ComponentStorageFlags.Transient)
+            || (Descriptor.Restore != ComponentTransientRestore.Derived))
+        {
+            throw new InvalidOperationException("Only a Derived transient component can be rebuilt during candidate restoration.");
+        }
+
+        var value = Binding.RebuildDerived(binding, cancellationToken);
+        return ComponentInitialization.Value(in value);
     }
 
     public ComponentRecordRestoreResult RestoreFromRecord(
