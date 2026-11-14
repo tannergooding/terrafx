@@ -520,6 +520,40 @@ internal sealed class WorldPersistenceIdentityHistoryReaderTests
         Assert.That(identityScratch[0].IsLive, Is.False);
         Assert.That(identityScratch[1].IsLive, Is.True);
 
+        var historyByOrdinal = new WorldPersistenceIdentityScratchEntry[assignmentCount];
+        var liveEntityOrdinal = 0;
+
+        foreach (var entry in identityScratch)
+        {
+            historyByOrdinal[checked((int)entry.AssignmentOrdinal - 1)] = entry;
+
+            if (entry.IsLive)
+            {
+                liveEntityOrdinal = checked((int)entry.AssignmentOrdinal);
+            }
+        }
+
+        Assert.That(liveEntityOrdinal, Is.GreaterThan(0));
+        var restoredLocatorsByOrdinal = new uint[assignmentCount];
+        restoredLocatorsByOrdinal[liveEntityOrdinal - 1] = 1;
+        var restoredIdentityLedger = StableIdentityLedger.CreateRestored(
+            maximumOwnedBytes: StableIdentityLedger.GetRestoredByteReservation(
+                assignmentCount,
+                entitySlotCount: 1,
+                sceneInstanceCount: 0),
+            maximumAssignments: world.Options.MaximumIdentityAssignments,
+            maximumEntitySlots: world.Options.MaximumEntitySlots,
+            maximumSceneInstances: world.Options.MaximumActiveSceneInstances,
+            branchCount: contents.Ecs.IdentityBranchCount,
+            historyByOrdinal,
+            restoredLocatorsByOrdinal,
+            [(1, checked((uint)liveEntityOrdinal))],
+            []);
+        Assert.That(restoredIdentityLedger.TryFind(firstEntityId, out var retiredOrdinal), Is.True);
+        Assert.That(retiredOrdinal, Is.EqualTo(1));
+        Assert.That(restoredIdentityLedger.TryGetLiveLocator(firstEntityId, IdentityKind.Entity, out _), Is.False);
+        Assert.That(restoredIdentityLedger.GetAssignedId(IdentityKind.Entity, 1), Is.EqualTo(secondEntityId));
+
         var duplicateRecord = (byte[])worldRecord.Clone();
         Span<byte> firstEntityIdBytes = stackalloc byte[16];
         Span<byte> secondEntityIdBytes = stackalloc byte[16];
