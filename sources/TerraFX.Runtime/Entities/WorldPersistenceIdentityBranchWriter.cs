@@ -15,7 +15,7 @@ internal static class WorldPersistenceIdentityBranchWriter
         out int recordBytes,
         out EbinStructuralDiagnostic? diagnostic)
     {
-        Span<EbinFieldSource> fields = stackalloc EbinFieldSource[8];
+        Span<EbinFieldSource> fields = stackalloc EbinFieldSource[10];
         Span<byte> payloadStorage = stackalloc byte[128];
         var status = BuildFields(
             in branch,
@@ -48,7 +48,7 @@ internal static class WorldPersistenceIdentityBranchWriter
         out int bytesWritten,
         out EbinStructuralDiagnostic? diagnostic)
     {
-        Span<EbinFieldSource> fields = stackalloc EbinFieldSource[8];
+        Span<EbinFieldSource> fields = stackalloc EbinFieldSource[10];
         Span<byte> payloadStorage = stackalloc byte[128];
         var status = BuildFields(
             in branch,
@@ -98,6 +98,38 @@ internal static class WorldPersistenceIdentityBranchWriter
 
         fields[fieldCount++] = new EbinFieldSource(tag, 11, isRequired ? (ushort)1 : (ushort)0, 1, new EbinPayloadSlice(payloadBytes, fieldBytes));
         payloadBytes = checked(payloadBytes + fieldBytes);
+        return EbinWriteStatus.Complete;
+    }
+
+    private static EbinWriteStatus AddHashField(
+        uint tag,
+        scoped ReadOnlySpan<byte> value,
+        scoped Span<EbinFieldSource> fields,
+        ref int fieldCount,
+        scoped Span<byte> payloadStorage,
+        ref int payloadBytes,
+        out EbinStructuralDiagnostic? diagnostic)
+    {
+        diagnostic = null;
+
+        if (value.Length != 32)
+        {
+            throw new InvalidOperationException("An identity branch source checkpoint digest must contain exactly 32 bytes.");
+        }
+
+        if (value.Length > payloadStorage.Length - payloadBytes)
+        {
+            throw new InvalidOperationException("The identity branch writer payload workspace is smaller than its exact measured extent.");
+        }
+
+        value.CopyTo(payloadStorage[payloadBytes..]);
+        fields[fieldCount++] = new EbinFieldSource(
+            tag,
+            13,
+            0,
+            checked((ulong)value.Length),
+            new EbinPayloadSlice(payloadBytes, value.Length));
+        payloadBytes = checked(payloadBytes + value.Length);
         return EbinWriteStatus.Complete;
     }
 
@@ -177,6 +209,11 @@ internal static class WorldPersistenceIdentityBranchWriter
         fieldCount = 0;
         payloadBytes = 0;
         diagnostic = null;
+
+        if (!branch.CurrentForkSourceRecord.IsEmpty)
+        {
+            throw new NotSupportedException("The identity-branch writer does not yet support fork-source records.");
+        }
 
         var status = AddUInt16Field(
             1,
@@ -267,6 +304,25 @@ internal static class WorldPersistenceIdentityBranchWriter
         if (status is not EbinWriteStatus.Complete)
         {
             return status;
+        }
+
+        var sourceCheckpointDigest = branch.CurrentSourceCheckpointDigest;
+
+        if (!sourceCheckpointDigest.IsEmpty)
+        {
+            status = AddHashField(
+                7,
+                sourceCheckpointDigest.Span,
+                fields,
+                ref fieldCount,
+                payloadStorage,
+                ref payloadBytes,
+                out diagnostic);
+
+            if (status is not EbinWriteStatus.Complete)
+            {
+                return status;
+            }
         }
 
         status = AddUInt8Field(

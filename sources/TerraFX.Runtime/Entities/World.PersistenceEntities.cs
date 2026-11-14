@@ -597,6 +597,15 @@ public sealed partial class World
             }
         }
 
+        internal readonly ReadOnlyMemory<byte> CurrentForkSourceRecord
+        {
+            get
+            {
+                var branch = GetCurrentBranch();
+                return branch.ForkSourceRecord;
+            }
+        }
+
         internal readonly byte CurrentKind
         {
             get
@@ -636,6 +645,15 @@ public sealed partial class World
             {
                 var branch = GetCurrentBranch();
                 return branch.ParentBranchId;
+            }
+        }
+
+        internal readonly ReadOnlyMemory<byte> CurrentSourceCheckpointDigest
+        {
+            get
+            {
+                var branch = GetCurrentBranch();
+                return branch.SourceCheckpointDigest;
             }
         }
 

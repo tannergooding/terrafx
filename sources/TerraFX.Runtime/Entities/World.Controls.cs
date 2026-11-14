@@ -531,8 +531,15 @@ public sealed partial class World
             Guid? parentBranchId,
             long createdAtNextTick,
             uint firstAssignmentOrdinal,
-            int directoryIndex)
+            int directoryIndex,
+            ReadOnlyMemory<byte> sourceCheckpointDigest = default,
+            ReadOnlyMemory<byte> forkSourceRecord = default)
         {
+            if (!sourceCheckpointDigest.IsEmpty && (sourceCheckpointDigest.Length != 32))
+            {
+                throw new ArgumentException("An identity branch source checkpoint digest must contain exactly 32 bytes.", nameof(sourceCheckpointDigest));
+            }
+
             BranchId = branchId;
             NamespaceId = namespaceId;
             LineageId = lineageId;
@@ -540,6 +547,8 @@ public sealed partial class World
             CreatedAtNextTick = createdAtNextTick;
             FirstAssignmentOrdinal = firstAssignmentOrdinal;
             DirectoryIndex = directoryIndex;
+            SourceCheckpointDigest = sourceCheckpointDigest.ToArray();
+            ForkSourceRecord = forkSourceRecord.ToArray();
         }
 
         internal Guid BranchId { get; }
@@ -550,11 +559,15 @@ public sealed partial class World
 
         internal uint FirstAssignmentOrdinal { get; }
 
+        internal ReadOnlyMemory<byte> ForkSourceRecord { get; }
+
         internal Guid LineageId { get; }
 
         internal Guid NamespaceId { get; }
 
         internal Guid? ParentBranchId { get; }
+
+        internal ReadOnlyMemory<byte> SourceCheckpointDigest { get; }
     }
 
     internal sealed class WorldSceneControlAppend : IDisposable

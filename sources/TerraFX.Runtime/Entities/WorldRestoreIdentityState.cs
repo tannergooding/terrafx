@@ -67,12 +67,19 @@ internal sealed class WorldRestoreIdentityState
     internal static WorldRestoreIdentityState CreateBranch(
         ValidatedWorldIdentityHistory history,
         Guid identityBranchId,
+        scoped ReadOnlySpan<byte> sourceCheckpointDigest,
         long nextTick,
         bool isStrictLocal,
         WorldPersistenceConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(history);
         ArgumentNullException.ThrowIfNull(configuration);
+
+        if (sourceCheckpointDigest.Length != 32)
+        {
+            throw new ArgumentException("A restore branch requires the exact 32-byte source checkpoint digest.", nameof(sourceCheckpointDigest));
+        }
+
         ArgumentOutOfRangeException.ThrowIfLessThan(nextTick, 1);
 
         if (isStrictLocal)
@@ -121,11 +128,6 @@ internal sealed class WorldRestoreIdentityState
         {
             var branch = history.Branches[index];
 
-            if (!branch.ForkSourceRecord.IsEmpty)
-            {
-                throw new NotSupportedException("This restore path requires the fork-source branch extension.");
-            }
-
             branches[index] = new World.WorldIdentityBranchRecord(
                 branch.BranchId,
                 branch.IssuanceNamespace,
@@ -133,7 +135,9 @@ internal sealed class WorldRestoreIdentityState
                 branch.ParentBranchId,
                 branch.CreatedAtNextTick,
                 branch.FirstAssignmentOrdinal,
-                index);
+                index,
+                branch.SourceCheckpointDigest,
+                branch.ForkSourceRecord);
         }
 
         branches[^1] = new World.WorldIdentityBranchRecord(
@@ -143,7 +147,8 @@ internal sealed class WorldRestoreIdentityState
             history.ActiveBranchId,
             createdAtNextTick: nextTick,
             checked((uint)history.NextAssignmentOrdinal),
-            activeBranchIndex);
+            activeBranchIndex,
+            sourceCheckpointDigest.ToArray());
 
         var locatorsByOrdinal = new uint[history.AssignmentsByOrdinal.Length];
         var entitySlotsByLocator = new List<(uint Locator, uint Ordinal)>(history.LiveEntityCount);

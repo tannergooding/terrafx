@@ -275,9 +275,12 @@ internal sealed class WorldPersistenceIdentityHistoryReaderTests
     {
         var history = CreateValidatedLiveEntityHistory();
         var newBranchId = Guid.NewGuid();
+        var sourceCheckpointDigest = new byte[32];
+        sourceCheckpointDigest[0] = 0xA5;
         var state = WorldRestoreIdentityState.CreateBranch(
             history,
             newBranchId,
+            sourceCheckpointDigest,
             nextTick: 5,
             isStrictLocal: false,
             CreateConfiguration(maximumIdentityBranches: 2));
@@ -290,6 +293,7 @@ internal sealed class WorldPersistenceIdentityHistoryReaderTests
             Assert.That(state.Branches[1].ParentBranchId, Is.EqualTo(history.ActiveBranchId));
             Assert.That(state.Branches[1].CreatedAtNextTick, Is.EqualTo(5));
             Assert.That(state.Branches[1].FirstAssignmentOrdinal, Is.EqualTo(2));
+            Assert.That(state.Branches[1].SourceCheckpointDigest.ToArray(), Is.EqualTo(sourceCheckpointDigest));
             Assert.That(state.LocatorsByOrdinal, Is.EqualTo([1u]));
             Assert.That(state.IdentityLedger.AssignmentCount, Is.EqualTo(1));
         });
@@ -300,9 +304,12 @@ internal sealed class WorldPersistenceIdentityHistoryReaderTests
     {
         var history = CreateValidatedLiveEntityHistory();
         var newBranchId = Guid.NewGuid();
+        var sourceCheckpointDigest = new byte[32];
+        sourceCheckpointDigest[0] = 0xA5;
         var state = WorldRestoreIdentityState.CreateBranch(
             history,
             newBranchId,
+            sourceCheckpointDigest,
             nextTick: 5,
             isStrictLocal: false,
             CreateConfiguration(maximumIdentityBranches: 2));

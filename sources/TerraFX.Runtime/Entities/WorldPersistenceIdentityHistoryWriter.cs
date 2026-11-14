@@ -125,7 +125,12 @@ internal static class WorldPersistenceIdentityHistoryWriter
 
             branchSlices[branchIndex++] = new EbinPayloadSlice(checked((int)branchOffset), childRecordBytes);
             childCandidateBytes = Math.Max(childCandidateBytes, childRecordBytes);
-            aggregateFields = checked(aggregateFields + (branches.CurrentParentBranchId.HasValue ? 8 : 7));
+            aggregateFields = checked(
+                aggregateFields
+                + 7
+                + (branches.CurrentParentBranchId.HasValue ? 1 : 0)
+                + (branches.CurrentSourceCheckpointDigest.IsEmpty ? 0 : 1)
+                + (branches.CurrentForkSourceRecord.IsEmpty ? 0 : 1));
         }
 
         if (branchIndex != branchCount)
