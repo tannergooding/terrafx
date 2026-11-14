@@ -60,11 +60,14 @@ internal sealed partial class SceneAssetStoreTests
         GraphicsBackend graphicsBackend,
         bool unsupportedAlphaMode = false,
         bool unsupportedActiveLight = false,
+        bool useAlphaMask = false,
         bool useBaseColorTexture = false,
         bool useEmissiveTexture = false,
         bool usePackedMetalRoughOcclusionTexture = false,
         bool unsupportedTextureSampler = false,
-        bool missingTextureUv0 = false)
+        bool missingTextureUv0 = false,
+        byte baseColorTextureAlpha = byte.MaxValue,
+        float baseColorAlpha = 1.0f)
     {
         if ((graphicsBackend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -89,14 +92,17 @@ internal sealed partial class SceneAssetStoreTests
                 baseTextureAddressU: unsupportedTextureSampler ? (byte)1 : (byte)0,
                 packedTextureAddressU: unsupportedTextureSampler ? (byte)1 : (byte)0,
                 emissiveTextureAddressU: unsupportedTextureSampler ? (byte)1 : (byte)0,
-                emissiveFactor: useEmissiveTexture ? Vector3.UnitY : Vector3.Zero),
-            alphaMode: (byte)(unsupportedAlphaMode ? 2 : 0),
+                emissiveFactor: useEmissiveTexture ? Vector3.UnitY : Vector3.Zero,
+                baseColorAlpha: baseColorAlpha),
+            alphaMode: (byte)(unsupportedAlphaMode ? 2 : useAlphaMask ? 1 : 0),
             doubleSided: true,
             depthTest: true,
             depthWrite: !unsupportedAlphaMode,
             cullMode: 0,
             outputAlpha: unsupportedAlphaMode ? (byte)1 : (byte)0,
-            requiredCapabilities: unsupportedAlphaMode ? 0x199UL : 0x191UL);
+            requiredCapabilities: unsupportedAlphaMode
+                ? 0x199UL
+                : 0x191UL | (useAlphaMask ? 0x004UL : 0UL));
         byte[][] meshComponents = [CreateMeshComponentRecord(checked((int)MeshAssetId), layerMask: ulong.MaxValue)];
 
         if (unsupportedActiveLight)
@@ -142,7 +148,7 @@ internal sealed partial class SceneAssetStoreTests
                             RenderTextureAlphaMode.Straight,
                             RenderTextureSemantic.Color,
                             RenderTextureMipPolicy.BaseOnly,
-                            CreateRenderTextureMipRecord(0, 1, 1, [byte.MaxValue, 0, 0, byte.MaxValue])))),
+                            CreateRenderTextureMipRecord(0, 1, 1, [byte.MaxValue, 0, 0, baseColorTextureAlpha])))),
             ];
         }
 
@@ -392,6 +398,17 @@ internal sealed partial class SceneAssetStoreTests
                 }
             }
 
+            var alpha = useBaseColorTexture
+                ? (float)baseColorTextureAlpha / byte.MaxValue
+                : baseColorAlpha;
+
+            if (useAlphaMask && (alpha < 0.5f))
+            {
+                Assert.That(coloredPixelCount, Is.Zero);
+                Assert.That(readbackBytes.AsSpan(0, 4).ToArray(), Is.EqualTo(new byte[] { 0, 0, 0, byte.MaxValue }));
+                return;
+            }
+
             Assert.Multiple(() => {
                 Assert.That(coloredPixelCount, Is.GreaterThan(0), $"Mesh C0 emitted no lit pixels; raster bounds were [{minimumX},{minimumY}]-[{maximumX},{maximumY}].");
                 Assert.That(firstColoredPixelOffset, Is.GreaterThanOrEqualTo(0));
@@ -417,6 +434,32 @@ internal sealed partial class SceneAssetStoreTests
             File.Delete(packagePath);
         }
     }
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphDiscardsBaseColorBelowAlphaCutoffAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useAlphaMask: true,
+            useBaseColorTexture: true,
+            baseColorTextureAlpha: 127);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphDiscardsUntexturedBaseColorBelowAlphaCutoffAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useAlphaMask: true,
+            baseColorAlpha: 0.49f);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphKeepsAlphaMaskAtCutoffAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            useAlphaMask: true,
+            useBaseColorTexture: true,
+            baseColorTextureAlpha: 128);
 
     [Test]
     public Task SnapshotBuiltInMeshC0GraphRejectsActiveLightWithoutShadowPassAsync()

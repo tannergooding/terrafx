@@ -25,6 +25,7 @@ cbuffer MaterialData : register(b0, space1)
     float4 BaseColor;
     float4 Factors;
     float4 Emissive;
+    float4 RenderOptions;
 };
 
 struct PixelInput
@@ -42,6 +43,13 @@ struct PixelInput
 
 float4 PSMain(PixelInput input) : SV_Target0
 {
+#if defined(TERRAFX_ALPHA_MASK)
+    if (BaseColor.a < RenderOptions.x)
+    {
+        discard;
+    }
+#endif
+
     float3 baseColor = BaseColor.rgb;
     float metallic = Factors.x;
     float roughness = Factors.y;

@@ -23,7 +23,8 @@ internal sealed class RenderMeshC0GraphPass
         GraphBufferVersion indexBuffer,
         GraphTextureVersion? baseColorTexture,
         GraphTextureVersion? emissiveTexture,
-        GraphTextureVersion? packedMetalRoughOcclusionTexture)
+        GraphTextureVersion? packedMetalRoughOcclusionTexture,
+        bool alphaMask)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(drawIndex);
         ArgumentNullException.ThrowIfNull(frameBuffer);
@@ -52,7 +53,10 @@ internal sealed class RenderMeshC0GraphPass
         BaseColorTexture = baseColorTexture;
         EmissiveTexture = emissiveTexture;
         PackedMetalRoughOcclusionTexture = packedMetalRoughOcclusionTexture;
+        AlphaMask = alphaMask;
     }
+
+    internal bool AlphaMask { get; }
 
     internal GraphTextureVersion? BaseColorTexture { get; }
 
@@ -89,7 +93,12 @@ internal sealed class RenderMeshC0GraphPass
         var hasTexture = (BaseColorTexture is not null)
             || (EmissiveTexture is not null)
             || (PackedMetalRoughOcclusionTexture is not null);
-        var pipeline = (hasTexture ? resources.TexturedMeshPipeline : resources.MeshPipeline)
+        var pipeline = (hasTexture, AlphaMask) switch {
+            (false, false) => resources.MeshPipeline,
+            (false, true) => resources.MeshAlphaMaskPipeline,
+            (true, false) => resources.TexturedMeshPipeline,
+            (true, true) => resources.TexturedMeshAlphaMaskPipeline,
+        }
             ?? throw new InvalidOperationException("The built-in Mesh pass has no Mesh pipeline.");
         recorder.SetPipeline(pipeline.Handle);
         recorder.SetVertexBuffer(new VertexBufferBinding(

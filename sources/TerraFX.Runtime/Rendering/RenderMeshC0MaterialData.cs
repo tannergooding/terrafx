@@ -8,11 +8,12 @@ namespace TerraFX.Rendering;
 
 internal readonly struct RenderMeshC0MaterialData
 {
-    internal const int SizeInBytes = 48;
+    internal const int SizeInBytes = 64;
 
     private readonly Vector4 _baseColor;
     private readonly Vector4 _emissive;
     private readonly Vector4 _factors;
+    private readonly Vector4 _renderOptions;
 
     internal RenderMeshC0MaterialData(
         RenderMaterialAsset material,
@@ -28,6 +29,11 @@ internal readonly struct RenderMeshC0MaterialData
             hasBaseColorTexture ? 1.0f : 0.0f,
             hasEmissiveTexture ? 1.0f : 0.0f);
         _emissive = new Vector4(material.Parameters.Emissive, hasPackedMetalRoughOcclusionTexture ? 1.0f : 0.0f);
+        _renderOptions = new Vector4(
+            material.AlphaCutoff,
+            material.AlphaMode is RenderMaterialAsset.MaterialAlphaMode.Mask ? 1.0f : 0.0f,
+            0.0f,
+            0.0f);
     }
 
     private static void WriteSingle(Span<byte> destination, int offset, float value)
@@ -53,5 +59,6 @@ internal readonly struct RenderMeshC0MaterialData
         WriteVector4(destination, 0, _baseColor);
         WriteVector4(destination, 16, _factors);
         WriteVector4(destination, 32, _emissive);
+        WriteVector4(destination, 48, _renderOptions);
     }
 }

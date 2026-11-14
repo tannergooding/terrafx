@@ -183,13 +183,14 @@ public sealed partial class Renderer
         && (material.ShaderId == s_meshC0ShaderId)
         && (material.PassId == s_meshC0PassId)
         && (material.LayoutId == s_meshC0LayoutId)
-        && (material.AlphaMode == RenderMaterialAsset.MaterialAlphaMode.Opaque)
+        && (material.AlphaMode is RenderMaterialAsset.MaterialAlphaMode.Opaque or RenderMaterialAsset.MaterialAlphaMode.Mask)
         && (material.OutputAlpha == RenderMaterialAsset.MaterialOutputAlpha.Straight)
         && material.DepthTest
         && material.DepthWrite
         && material.DoubleSided
         && (material.CullMode == RenderMaterialAsset.MaterialCullMode.None)
-        && (material.RequiredCapabilities == 0x191)
+        && (material.RequiredCapabilities
+            == (0x191UL | (material.AlphaMode is RenderMaterialAsset.MaterialAlphaMode.Mask ? 0x004UL : 0UL)))
         && !material.Parameters.NormalTexture.HasValue;
 
     private static bool IsSupportedMeshC0Texture(RenderMaterialAsset.TextureBinding binding)
@@ -577,7 +578,8 @@ public sealed partial class Renderer
                     indexBuffer,
                     baseColorTextureVersions[drawIndex],
                     emissiveTextureVersions[drawIndex],
-                    packedMetalRoughOcclusionTextureVersions[drawIndex]);
+                    packedMetalRoughOcclusionTextureVersions[drawIndex],
+                    materialAssets[selectedIndex].AlphaMode is RenderMaterialAsset.MaterialAlphaMode.Mask);
                 var pass = graph.AddBuiltInMeshRasterPass(
                     new RenderPassDescription(
                         $"TerraFX.MeshC0.Camera{cameraIndex}.Draw{orderIndex}",

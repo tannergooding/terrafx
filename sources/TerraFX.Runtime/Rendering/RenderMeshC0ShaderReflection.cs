@@ -76,6 +76,7 @@ internal static class RenderMeshC0ShaderReflection
                         new ShaderFieldLayout("BaseColor", ShaderValueType.Float4, 0, 16, 1, 0),
                         new ShaderFieldLayout("Factors", ShaderValueType.Float4, 16, 16, 1, 0),
                         new ShaderFieldLayout("Emissive", ShaderValueType.Float4, 32, 16, 1, 0),
+                        new ShaderFieldLayout("RenderOptions", ShaderValueType.Float4, 48, 16, 1, 0),
                     ]),
             ],
             [],

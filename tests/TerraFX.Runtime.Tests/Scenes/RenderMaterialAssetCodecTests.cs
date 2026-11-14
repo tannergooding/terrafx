@@ -77,11 +77,12 @@ internal sealed partial class SceneAssetStoreTests
         byte baseTextureAddressU = 0,
         byte packedTextureAddressU = 0,
         byte emissiveTextureAddressU = 0,
-        Vector3? emissiveFactor = null)
+        Vector3? emissiveFactor = null,
+        float baseColorAlpha = 1.0f)
     {
         var emissive = emissiveFactor ?? Vector3.Zero;
         var fields = new System.Collections.Generic.List<SceneHierarchyCodecTests.FixtureBuilder.FixtureField> {
-            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 16, 1.0f, 1.0f, 1.0f, 1.0f),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 16, 1.0f, 1.0f, 1.0f, baseColorAlpha),
             SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(2, 10, metallic),
             SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(3, 10, roughness),
             SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(4, 10, 1.0f),

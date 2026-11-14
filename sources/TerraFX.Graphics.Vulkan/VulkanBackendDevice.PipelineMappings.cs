@@ -139,7 +139,8 @@ internal sealed unsafe partial class VulkanBackendDevice
         BufferReadLease<byte> bytecode,
         int index,
         IReadOnlySet<string> enabledSpirvExtensions,
-        bool fragmentStoresAndAtomicsEnabled)
+        bool fragmentStoresAndAtomicsEnabled,
+        bool demoteToHelperInvocationEnabled)
     {
         ArgumentNullException.ThrowIfNull(shader);
         ArgumentNullException.ThrowIfNull(bytecode);
@@ -169,7 +170,12 @@ internal sealed unsafe partial class VulkanBackendDevice
             throw new ArgumentException("SPIR-V bytecode length must be a positive multiple of four.", nameof(bytecode));
         }
 
-        SpirvReflectionValidator.Validate(shader, bytecode, index, enabledSpirvExtensions);
+        SpirvReflectionValidator.Validate(
+            shader,
+            bytecode,
+            index,
+            enabledSpirvExtensions,
+            demoteToHelperInvocationEnabled);
         ValidateStorageStageFeatures(shader.Reflection, fragmentStoresAndAtomicsEnabled);
     }
 }

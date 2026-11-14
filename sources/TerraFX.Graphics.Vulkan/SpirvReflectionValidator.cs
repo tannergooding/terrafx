@@ -17,6 +17,7 @@ internal static class SpirvReflectionValidator
     private const uint BuiltInInstanceIndex = 43;
     private const uint BuiltInPosition = 0;
     private const uint BuiltInVertexIndex = 42;
+    private const uint CapabilityDemoteToHelperInvocation = 5379;
     private const uint CapabilityMatrix = 0;
     private const uint CapabilityShader = 1;
     private const uint DecorationArrayStride = 6;
@@ -87,7 +88,8 @@ internal static class SpirvReflectionValidator
         ShaderBytecodeInput shader,
         BufferReadLease<byte> bytecode,
         int index,
-        IReadOnlySet<string> enabledSpirvExtensions)
+        IReadOnlySet<string> enabledSpirvExtensions,
+        bool demoteToHelperInvocationEnabled = false)
     {
         ArgumentNullException.ThrowIfNull(shader);
         ArgumentNullException.ThrowIfNull(bytecode);
@@ -110,6 +112,11 @@ internal static class SpirvReflectionValidator
         bytecode.UseWindow(0, checked((int)byteLength), ref copyAction);
 
         var module = Parse(words);
+
+        if (module.HasDemoteToHelperInvocationCapability && !demoteToHelperInvocationEnabled)
+        {
+            throw new NotSupportedException("The Vulkan device has not enabled shaderDemoteToHelperInvocation.");
+        }
 
         foreach (var extension in module.Extensions)
         {
@@ -1080,12 +1087,13 @@ internal static class SpirvReflectionValidator
                     throw new ArgumentException("SPIR-V OpCapability has an invalid operand count.");
                 }
 
-                if (operands[0] is not (CapabilityMatrix or CapabilityShader))
+                if (operands[0] is not (CapabilityMatrix or CapabilityShader or CapabilityDemoteToHelperInvocation))
                 {
                     throw new NotSupportedException($"SPIR-V capability {operands[0]} is not implemented by the Vulkan pipeline baseline.");
                 }
 
                 module.HasShaderCapability |= operands[0] == CapabilityShader;
+                module.HasDemoteToHelperInvocationCapability |= operands[0] == CapabilityDemoteToHelperInvocation;
                 break;
             }
 
@@ -1725,6 +1733,7 @@ internal static class SpirvReflectionValidator
 
     private sealed class Module
     {
+        internal bool HasDemoteToHelperInvocationCapability;
         internal bool HasShaderCapability;
 
         internal Module(uint idBound)

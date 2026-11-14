@@ -25,6 +25,7 @@ cbuffer MaterialData : register(b0, space1)
     float4 BaseColor;
     float4 Factors;
     float4 Emissive;
+    float4 RenderOptions;
 };
 
 #if defined(TERRAFX_SPIRV)
@@ -77,11 +78,21 @@ struct PixelInput
 float4 PSMain(PixelInput input) : SV_Target0
 {
     float3 baseColor = BaseColor.rgb;
+    float alpha = BaseColor.a;
 
     if (Factors.z > 0.0f)
     {
-        baseColor *= BaseColorTexture.Sample(BaseColorSampler, input.Uv0).rgb;
+        float4 baseColorSample = BaseColorTexture.Sample(BaseColorSampler, input.Uv0);
+        baseColor *= baseColorSample.rgb;
+        alpha *= baseColorSample.a;
     }
+
+#if defined(TERRAFX_ALPHA_MASK)
+    if (alpha < RenderOptions.x)
+    {
+        discard;
+    }
+#endif
 
     float3 packedMetalRoughOcclusion = float3(1.0f, 1.0f, 1.0f);
 

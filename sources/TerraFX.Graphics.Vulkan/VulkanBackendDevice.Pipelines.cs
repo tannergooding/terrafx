@@ -62,7 +62,8 @@ internal sealed unsafe partial class VulkanBackendDevice
                 bytecodeLeases[index],
                 index,
                 _enabledSpirvExtensions,
-                _fragmentStoresAndAtomicsEnabled);
+                _fragmentStoresAndAtomicsEnabled,
+                _demoteToHelperInvocationEnabled);
         }
 
         switch (description)

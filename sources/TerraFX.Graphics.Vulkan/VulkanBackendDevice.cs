@@ -19,6 +19,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
     private VkCommandBuffer _commandBuffer;
     private readonly VkCommandPool _commandPool;
     private readonly Func<long, long>? _completedGraphFenceValueOverride;
+    private readonly bool _demoteToHelperInvocationEnabled;
     private readonly VkDevice _device;
     private readonly ImmutableHashSet<string> _enabledSpirvExtensions;
     private readonly bool _fragmentStoresAndAtomicsEnabled;
@@ -62,6 +63,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         GraphicsCapabilities capabilities,
         ImmutableHashSet<string> enabledSpirvExtensions,
         bool fragmentStoresAndAtomicsEnabled,
+        bool demoteToHelperInvocationEnabled,
         string? swapchainMaintenanceExtensionName,
         GraphicsPlatformKind platformKind,
         Func<VkResult, VkResult>? transferWaitResultOverride,
@@ -96,6 +98,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         _device = device;
         _enabledSpirvExtensions = enabledSpirvExtensions;
         _fragmentStoresAndAtomicsEnabled = fragmentStoresAndAtomicsEnabled;
+        _demoteToHelperInvocationEnabled = demoteToHelperInvocationEnabled;
         _queue = queue;
         _queueFamilyIndex = queueFamilyIndex;
         _queueFamilyIndices = queueFamilyIndices;
@@ -311,6 +314,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                     logicalDevice,
                     enabledSpirvExtensions,
                     fragmentStoresAndAtomicsEnabled,
+                    demoteToHelperInvocationEnabled,
                     queueFamilyIndices,
                     queues) = CreateLogicalDevice(
                     physicalDevice,
@@ -371,6 +375,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
                     capabilities,
                     enabledSpirvExtensions,
                     fragmentStoresAndAtomicsEnabled,
+                    demoteToHelperInvocationEnabled,
                     swapchainMaintenanceExtensionName,
                     platformKind,
                     transferWaitResultOverride,
@@ -658,6 +663,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         VkDevice Device,
         ImmutableHashSet<string> EnabledSpirvExtensions,
         bool FragmentStoresAndAtomicsEnabled,
+        bool DemoteToHelperInvocationEnabled,
         uint[] QueueFamilyIndices,
         VkQueue[] Queues) CreateLogicalDevice(
         VkPhysicalDevice physicalDevice,
@@ -692,6 +698,17 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
         features13.sType = VkStructureType.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
         features13.synchronization2 = 1;
         features13.dynamicRendering = 1;
+        var supportedFeatures13 = default(VkPhysicalDeviceVulkan13Features);
+        supportedFeatures13.sType = VkStructureType.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+        var supportedFeatures12 = default(VkPhysicalDeviceVulkan12Features);
+        supportedFeatures12.sType = VkStructureType.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        supportedFeatures12.pNext = &supportedFeatures13;
+        var supportedFeatures2 = default(VkPhysicalDeviceFeatures2);
+        supportedFeatures2.sType = VkStructureType.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        supportedFeatures2.pNext = &supportedFeatures12;
+        VulkanApi.vkGetPhysicalDeviceFeatures2(physicalDevice, &supportedFeatures2);
+        var demoteToHelperInvocationEnabled = supportedFeatures13.shaderDemoteToHelperInvocation != 0;
+        features13.shaderDemoteToHelperInvocation = supportedFeatures13.shaderDemoteToHelperInvocation;
         var swapchainMaintenanceFeatures = default(VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR);
 
         if (profile == GraphicsDeviceProfile.Interactive)
@@ -803,6 +820,7 @@ internal sealed unsafe partial class VulkanBackendDevice : IGraphicsBackendDevic
             device,
             enabledSpirvExtensions.ToImmutable(),
             enabledFeatures.fragmentStoresAndAtomics != 0,
+            demoteToHelperInvocationEnabled,
             queueFamilyIndices,
             queues);
     }
