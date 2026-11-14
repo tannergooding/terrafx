@@ -9,6 +9,7 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using TerraFX;
@@ -30,6 +31,7 @@ public sealed class WorldPersistence : IAsyncDisposable
     private const ushort UInt32Kind = 3;
     private static readonly ConcurrentDictionary<string, SavePathState> s_savePaths = new(
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+    private int _activeLoads;
     private int _activeSaves;
     private readonly AssetStore _assets;
     private TaskCompletionSource? _disposeCompletion;
@@ -81,6 +83,48 @@ public sealed class WorldPersistence : IAsyncDisposable
             message: message,
             context: []);
 
+    private static Diagnostic CreateLoadDiagnostic(string code, string message, Guid? worldGuid)
+        => new(
+            code,
+            DiagnosticSeverity.Error,
+            Stopwatch.GetTimestamp(),
+            hostId: null,
+            worldGuid: worldGuid,
+            deviceId: null,
+            surfaceId: null,
+            deviceEpoch: null,
+            surfaceEpoch: null,
+            swapchainEpoch: null,
+            tick: null,
+            systemId: null,
+            passId: null,
+            assetId: null,
+            commandIdentity: null,
+            operation: "PrepareLoadAsync",
+            nativeResult: null,
+            message: message,
+            context: []);
+
+    private static EbinReadLimits CreateLoadLimits(WorldOptions options, long maximumSnapshotBytes)
+    {
+        var defaults = WorldPersistenceEbinLimits.Create(options);
+        return new EbinReadLimits(
+            checked((int)maximumSnapshotBytes),
+            defaults.MaximumFieldsPerRecord,
+            defaults.MaximumDepth,
+            defaults.MaximumArrayElements,
+            defaults.MaximumUtf8Bytes,
+            defaults.MaximumAggregateRecords,
+            defaults.MaximumAggregateFields,
+            defaults.MaximumAggregateArrayElements);
+    }
+
+    private static WorldLoadPreparation CreateLoadRejected(string code, string message, Guid? worldGuid)
+        => new(
+            WorldLoadPreparationStatus.Rejected,
+            plan: null,
+            [CreateLoadDiagnostic(code, message, worldGuid)]);
+
     private static SaveReceipt CreateRejected(string code, string message, Guid? worldGuid)
         => new(SaveStatus.Rejected, transactionGeneration: null, diagnostic: CreateDiagnostic(code, message, worldGuid));
 
@@ -117,6 +161,12 @@ public sealed class WorldPersistence : IAsyncDisposable
 
         return null;
     }
+
+    private static bool IsLoadRejection(Exception exception)
+        => exception is ArgumentException
+            or InvalidDataException
+            or NotSupportedException
+            or OverflowException;
 
     private static bool IsSaveRejection(Exception exception)
         => exception is ArgumentException
@@ -484,7 +534,7 @@ public sealed class WorldPersistence : IAsyncDisposable
 
             _disposed = true;
 
-            if (_activeSaves == 0)
+            if ((_activeSaves == 0) && (_activeLoads == 0))
             {
                 return ValueTask.CompletedTask;
             }
@@ -492,6 +542,57 @@ public sealed class WorldPersistence : IAsyncDisposable
             _disposeCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             return new ValueTask(_disposeCompletion.Task);
         }
+    }
+
+    /// <summary>Validates a bounded checkpoint and prepares a target-bound World replacement plan.</summary>
+    /// <param name="targetWorld">The exact active World that will be replaced.</param>
+    /// <param name="savePath">The absolute checkpoint path.</param>
+    /// <param name="options">The explicit restore intent and source limit.</param>
+    /// <param name="cancellationToken">The token that cancels source inspection.</param>
+    /// <returns>The terminal preparation outcome.</returns>
+    /// <exception cref="ArgumentNullException">A required argument is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="savePath"/> is empty, whitespace, or not absolute.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">A load option is outside its supported range.</exception>
+    /// <exception cref="ObjectDisposedException">This persistence service has been disposed.</exception>
+    /// <exception cref="OperationCanceledException">Cancellation was requested before source inspection was admitted.</exception>
+    public Task<WorldLoadPreparation> PrepareLoadAsync(
+        World targetWorld,
+        string savePath,
+        LoadOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(targetWorld);
+        ArgumentNullException.ThrowIfNull(savePath);
+        ArgumentNullException.ThrowIfNull(options);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (string.IsNullOrWhiteSpace(savePath) || !Path.IsPathFullyQualified(savePath))
+        {
+            throw new ArgumentException("The State2 checkpoint path must be a nonempty absolute path.", nameof(savePath));
+        }
+
+        options.ValidateForPrepareLoad(targetWorld.Options.MaximumSnapshotBytes);
+        var targetPath = Path.GetFullPath(savePath);
+        Guid targetWorldGuid;
+
+        using (var captureLease = targetWorld.AcquirePersistenceCaptureLease())
+        {
+            targetWorldGuid = captureLease.WorldGuid;
+        }
+
+        BeginLoad();
+
+        if ((options.RestoreIntent is not WorldRestoreIntent.Branch)
+            || (targetWorld.Options.Profile is not SimulationProfile.Standard))
+        {
+            EndLoad();
+            return Task.FromResult(CreateLoadRejected(
+                "load-intent-not-supported",
+                "This restore path currently admits only Standard Branch replacements.",
+                targetWorldGuid));
+        }
+
+        return PrepareLoadCoreAsync(targetWorld, targetWorldGuid, targetPath, options, cancellationToken);
     }
 
     /// <summary>Captures a committed World synchronously on its owner and atomically writes one checkpoint.</summary>
@@ -740,6 +841,15 @@ public sealed class WorldPersistence : IAsyncDisposable
         }
     }
 
+    private void BeginLoad()
+    {
+        lock (_lifetimeGate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _activeLoads = checked(_activeLoads + 1);
+        }
+    }
+
     private void BeginSave()
     {
         lock (_lifetimeGate)
@@ -761,6 +871,24 @@ public sealed class WorldPersistence : IAsyncDisposable
         }
     }
 
+    private void EndLoad()
+    {
+        lock (_lifetimeGate)
+        {
+            if (_activeLoads <= 0)
+            {
+                throw new InvalidOperationException("The persistence service has no admitted load to complete.");
+            }
+
+            _activeLoads--;
+
+            if (_disposed && (_activeLoads == 0) && (_activeSaves == 0))
+            {
+                _ = (_disposeCompletion?.TrySetResult());
+            }
+        }
+    }
+
     private void EndSave()
     {
         lock (_lifetimeGate)
@@ -772,10 +900,435 @@ public sealed class WorldPersistence : IAsyncDisposable
 
             _activeSaves--;
 
-            if (_disposed && (_activeSaves == 0))
+            if (_disposed && (_activeSaves == 0) && (_activeLoads == 0))
             {
                 _ = (_disposeCompletion?.TrySetResult());
             }
+        }
+    }
+
+    private async Task<WorldLoadPreparation> PrepareLoadCoreAsync(
+        World targetWorld,
+        Guid targetWorldGuid,
+        string targetPath,
+        LoadOptions options,
+        CancellationToken cancellationToken)
+    {
+        AssetPackageLease? packageLease = null;
+        WorldPersistenceAdmissionReservation? sourceAdmission = null;
+        WorldPersistenceAdmissionReservation? restoreStateAdmission = null;
+        IDisposable? sourcePerWorldUse = null;
+        IDisposable? restoreIdentityUse = null;
+        IDisposable? recoveryUse = null;
+        WorldGuidReplacementPreparation? readPreparation = null;
+        WorldGuidReplacementPreparation? replacementPreparation = null;
+        WorldConstructionPlan? constructionPlan = null;
+        WorldLoadPreparedState? preparedState = null;
+        WorldLoadPlan? loadPlan = null;
+        WorldPersistenceUseLease? combinedUse = null;
+        byte[]? fileRecord = null;
+        WorldPersistenceCheckpointContents? checkpointContents = null;
+        var sourceMismatch = (string?)null;
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            packageLease = _assets.AcquirePackageLease();
+
+            if (!ReferenceEquals(targetWorld.Options.Registration.Schemas, packageLease.Registration.Schemas))
+            {
+                return CreateLoadRejected(
+                    "load-schema-registration-mismatch",
+                    "The target World and selected AssetStore package do not share the exact compiled schema registry.",
+                    targetWorldGuid);
+            }
+
+            var limits = CreateLoadLimits(targetWorld.Options, options.MaximumSnapshotBytes);
+            var profileMeasureStatus = FoundationProfileWriter.Measure(
+                targetWorld.SpatialProfileId,
+                targetWorld.SpatialSettings,
+                limits,
+                out var profileRecordBytes,
+                out var profileDiagnostic);
+
+            if (profileMeasureStatus is not EbinWriteStatus.Complete)
+            {
+                return CreateLoadRejected(
+                    "load-profile-measurement-rejected",
+                    profileDiagnostic?.Category ?? $"Foundation profile measurement returned {profileMeasureStatus}.",
+                    targetWorldGuid);
+            }
+
+            var backupPath = string.Concat(targetPath, ".bak");
+            var readWorkspaceBytes = WorldPersistenceRecoveryReader.MeasureCandidateReadWorkspaceBytes(
+                targetPath,
+                backupPath,
+                options.MaximumSnapshotBytes);
+
+            if (!targetWorld.TryReservePersistenceAdmissionBytes(readWorkspaceBytes, out sourceAdmission))
+            {
+                return CreateLoadRejected(
+                    "load-admission-rejected",
+                    "The target World cannot admit the bounded primary/backup source-read workspace.",
+                    targetWorldGuid);
+            }
+
+            var retainedSourceAdmission = sourceAdmission
+                ?? throw new InvalidOperationException("The successful load source admission did not retain its reservation.");
+            sourcePerWorldUse = retainedSourceAdmission.AcquireRetainedUse(targetWorld, readWorkspaceBytes);
+            retainedSourceAdmission.Dispose();
+            sourceAdmission = null;
+
+            if (!targetWorld.TryPrepareLoadReplacement(
+                    targetWorldGuid,
+                    sourceBytes: readWorkspaceBytes,
+                    targetBytes: 1,
+                    dataBytes: 1,
+                    cleanupBytes: 1,
+                    out readPreparation,
+                    out var readBindingRefusal,
+                    out var readAdmissionRefusal))
+            {
+                var message = (readBindingRefusal.Code == WorldGuidRefusal.TargetBindingStale)
+                    ? "The exact target World binding became stale before source inspection."
+                    : $"The target World refused source-read credits with admission code {readAdmissionRefusal}.";
+                return CreateLoadRejected("load-target-admission-rejected", message, targetWorldGuid);
+            }
+
+            var expectedMode = WorldPersistenceMode.Standard;
+
+            async ValueTask<WorldPersistenceRecoveryReader.CandidateValidation?> ValidateCandidateAsync(
+                ReadOnlyMemory<byte> candidate,
+                CancellationToken validationCancellationToken)
+            {
+                WorldPersistenceLoadWorkspace.Requirements requirements;
+
+                try
+                {
+                    requirements = WorldPersistenceLoadWorkspace.Measure(candidate, limits);
+                }
+                catch (Exception exception) when (exception is ArgumentException or OverflowException or NotSupportedException)
+                {
+                    sourceMismatch = exception.Message;
+                    return null;
+                }
+
+                if (options.NewReplayLineageId.HasValue)
+                {
+                    sourceMismatch = "A compatible Standard Branch restore retains its replay lineage and does not accept a replacement lineage.";
+                    return null;
+                }
+
+                if (requirements.BranchCount >= requirements.Configuration.MaximumIdentityBranches)
+                {
+                    sourceMismatch = "The source identity history has no capacity for the requested Branch record.";
+                    return null;
+                }
+
+                var profileWorkspaceBytes = checked((long)profileRecordBytes * 2);
+                var validationWorkspaceBytes = checked(requirements.TotalWorkspaceBytes + profileWorkspaceBytes);
+
+                if (!targetWorld.TryReservePersistenceAdmissionBytes(
+                        validationWorkspaceBytes,
+                        out var validationReservation)
+                    || (validationReservation is null))
+                {
+                    sourceMismatch = "The target World cannot admit the source validation and decoded World data.";
+                    return null;
+                }
+
+                using (validationReservation)
+                {
+                    var activeValidationUse = validationReservation.AcquireRetainedUse(
+                        targetWorld,
+                        validationWorkspaceBytes);
+                    WorldPersistenceCheckpointContents? validatedContents = null;
+
+                    try
+                    {
+                        var profileCandidateStorage = new byte[profileRecordBytes];
+                        var profileRecord = new byte[profileRecordBytes];
+                        var profileWriteStatus = FoundationProfileWriter.Write(
+                            targetWorld.SpatialProfileId,
+                            targetWorld.SpatialSettings,
+                            limits,
+                            profileCandidateStorage,
+                            profileRecord,
+                            out var profileBytesWritten,
+                            out var writeProfileDiagnostic);
+
+                        if ((profileWriteStatus is not EbinWriteStatus.Complete)
+                            || (profileBytesWritten != profileRecord.Length))
+                        {
+                            throw new InvalidOperationException(
+                                writeProfileDiagnostic?.Category ?? $"Foundation profile writing returned {profileWriteStatus}.");
+                        }
+
+                        var fileView = new EbinRecordReadView(candidate.Span);
+                        var checkpointRecordView = fileView.GetRecord(2);
+                        var headerRecord = checkpointRecordView.GetRecord(1).EncodedBytes;
+                        var headerMismatch = WorldPersistenceCheckpointWriter.ValidateHeaderCompatibility(
+                            headerRecord,
+                            limits,
+                            _metadata,
+                            expectedMode,
+                            expectedPackageSha256: [],
+                            profileRecord);
+
+                        if (headerMismatch is not null)
+                        {
+                            sourceMismatch = headerMismatch;
+                            return null;
+                        }
+
+                        var identityScratch = new WorldPersistenceIdentityScratchEntry[requirements.IdentityAssignmentCount];
+                        var lineageMembershipScratch = new Guid[requirements.LineageMembershipScratchCapacity];
+                        var strictLayoutBuffers = default(WorldPersistenceStrictLayoutReadBuffers);
+                        validatedContents = WorldPersistenceCheckpointWriter.ReadContentsWithLineageMembership(
+                            candidate.Span,
+                            limits,
+                            targetWorld.Options.Registration,
+                            identityScratch,
+                            lineageMembershipScratch,
+                            ref strictLayoutBuffers);
+                        var history = validatedContents.WorldContents.Ecs.ValidatedIdentityHistory
+                            ?? throw new InvalidOperationException("The validated State2 checkpoint omitted its identity history.");
+
+                        for (var index = 0; index < history.Branches.Length; index++)
+                        {
+                            if (history.Branches[index].BranchId == options.IdentityBranchId)
+                            {
+                                sourceMismatch = "The selected identity branch is already present in the source history.";
+                                return null;
+                            }
+                        }
+
+                        var missingAssetId = FindMissingPackageAssetId(
+                            validatedContents.WorldRecord.Span,
+                            validatedContents.WorldContents.AssetIdCount,
+                            packageLease
+                                ?? throw new InvalidOperationException("The load lost its selected package lease."));
+
+                        if (missingAssetId is { } assetId)
+                        {
+                            sourceMismatch = $"The selected package does not contain referenced asset {assetId}.";
+                            return null;
+                        }
+
+                        var checkpointRecord = WorldPersistenceCheckpointWriter.ReadCheckpointRecord(candidate.Span, limits);
+                        await WorldPersistenceScenesReader.ValidatePackageSourceClosureAsync(
+                            checkpointRecord,
+                            packageLease,
+                            limits,
+                            validationCancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception exception) when (
+                        exception is ArgumentException
+                            or InvalidDataException
+                            or NotSupportedException
+                            or OverflowException)
+                    {
+                        sourceMismatch = exception.Message;
+                        return null;
+                    }
+                    finally
+                    {
+                        activeValidationUse.Dispose();
+                    }
+
+                    validationReservation.Shrink(
+                        checked(validationWorkspaceBytes - requirements.RetainedContentsBytes));
+                    var retainedUse = validationReservation.AcquireRetainedUse(
+                        targetWorld,
+                        requirements.RetainedContentsBytes);
+                    return new WorldPersistenceRecoveryReader.CandidateValidation(validatedContents!, retainedUse);
+                }
+            }
+
+            var selected = await WorldPersistenceRecoveryReader.ReadLatestCommittedWithRetentionAsync(
+                targetPath,
+                backupPath,
+                readPreparation
+                    ?? throw new InvalidOperationException("The source validation preparation was not retained."),
+                options.MaximumSnapshotBytes,
+                limits,
+                ValidateCandidateAsync,
+                cancellationToken).ConfigureAwait(false);
+            readPreparation.Dispose();
+            readPreparation = null;
+
+            if (selected is null)
+            {
+                return CreateLoadRejected(
+                    "load-checkpoint-rejected",
+                    sourceMismatch ?? "The primary and backup files contain no valid committed Standard State2 checkpoint.",
+                    targetWorldGuid);
+            }
+
+            fileRecord = selected.Value.FileRecord;
+            checkpointContents = selected.Value.Contents;
+            recoveryUse = selected.Value.SourceUse;
+            var identityHistory = checkpointContents.WorldContents.Ecs.ValidatedIdentityHistory
+                ?? throw new InvalidOperationException("The validated State2 checkpoint omitted its complete identity history.");
+            var identityBranchId = options.IdentityBranchId
+                ?? throw new InvalidOperationException("The Branch restore option omitted its identity branch.");
+            var restoreStateBytes = WorldRestoreIdentityState.MeasureBranchOwnedByteReservation(
+                identityHistory,
+                identityBranchId,
+                checkpointContents.CheckpointDigest.Span,
+                checkpointContents.WorldContents.Configuration);
+
+            if (!targetWorld.TryReservePersistenceAdmissionBytes(restoreStateBytes, out restoreStateAdmission)
+                || (restoreStateAdmission is null))
+            {
+                return CreateLoadRejected(
+                    "load-identity-admission-rejected",
+                    "The target World cannot admit the restored identity directory and locator maps.",
+                    targetWorldGuid);
+            }
+
+            var retainedRestoreReservation = restoreStateAdmission
+                ?? throw new InvalidOperationException("The identity restoration reservation was not retained.");
+            restoreIdentityUse = retainedRestoreReservation.AcquireRetainedUse(targetWorld, restoreStateBytes);
+            retainedRestoreReservation.Dispose();
+            restoreStateAdmission = null;
+
+            WorldRestoreIdentityState restoreIdentityState;
+
+            try
+            {
+                restoreIdentityState = WorldRestoreIdentityState.CreateBranch(
+                    identityHistory,
+                    identityBranchId,
+                    checkpointContents.CheckpointDigest.Span,
+                    checkpointContents.NextTick,
+                    isStrictLocal: false,
+                    checkpointContents.WorldContents.Configuration);
+            }
+            catch (InvalidOperationException exception)
+            {
+                return CreateLoadRejected("load-identity-rejected", exception.Message, targetWorldGuid);
+            }
+
+            var tickRate = checkpointContents.WorldContents.Clock.TickRate;
+            var timeScale = checkpointContents.WorldContents.Clock.TimeScale;
+            long targetBytes;
+
+            try
+            {
+                targetBytes = targetWorld.MeasureRestoreWorldOwnedBytes(
+                    restoreIdentityState,
+                    checkpointContents.WorldContents.Configuration,
+                    tickRate,
+                    timeScale);
+            }
+            catch (InvalidOperationException exception)
+            {
+                return CreateLoadRejected("load-target-budget-rejected", exception.Message, targetWorldGuid);
+            }
+
+            var sourceBytes = Math.Max(1L, checked((long)fileRecord.Length + readWorkspaceBytes));
+            var dataBytes = Math.Max(
+                1L,
+                checked(restoreStateBytes + checkpointContents.WorldRecord.Length + checkpointContents.HeaderRecord.Length + 512L));
+            var cleanupBytes = Math.Max(1L, targetBytes);
+
+            if (!targetWorld.TryPrepareLoadReplacement(
+                    checkpointContents.WorldGuid,
+                    sourceBytes,
+                    targetBytes,
+                    dataBytes,
+                    cleanupBytes,
+                    out replacementPreparation,
+                    out var bindingRefusal,
+                    out var admissionRefusal))
+            {
+                var message = (bindingRefusal.Code == WorldGuidRefusal.TargetBindingStale)
+                    ? "The exact target World binding became stale during checkpoint preparation."
+                    : $"The target World refused replacement credits with admission code {admissionRefusal}.";
+                return CreateLoadRejected("load-target-admission-rejected", message, targetWorldGuid);
+            }
+
+            if (!targetWorld.TryPrepareRestoreConstructionPlan(
+                    restoreIdentityState,
+                    checkpointContents.WorldContents.Configuration,
+                    replacementPreparation
+                        ?? throw new InvalidOperationException("The replacement preparation was not retained."),
+                    tickRate,
+                    timeScale,
+                    out constructionPlan,
+                    out bindingRefusal,
+                    out admissionRefusal)
+                || (constructionPlan is null))
+            {
+                var message = (bindingRefusal.Code == WorldGuidRefusal.TargetBindingStale)
+                    ? "The exact target World binding became stale before the prepared plan could be returned."
+                    : $"The target World refused restore construction admission with code {admissionRefusal}.";
+                return CreateLoadRejected("load-construction-admission-rejected", message, targetWorldGuid);
+            }
+
+            combinedUse = new WorldPersistenceUseLease(
+                recoveryUse,
+                sourcePerWorldUse,
+                restoreIdentityUse);
+            recoveryUse = null;
+            sourcePerWorldUse = null;
+            restoreIdentityUse = null;
+            preparedState = new WorldLoadPreparedState(
+                constructionPlan,
+                replacementPreparation,
+                packageLease,
+                combinedUse,
+                fileRecord,
+                checkpointContents,
+                options.RestoreIntent);
+            constructionPlan = null;
+            replacementPreparation = null;
+            packageLease = null;
+            combinedUse = null;
+            fileRecord = null;
+            var payloadDigest = SHA256.HashData(checkpointContents.WorldRecord.Span);
+            loadPlan = new WorldLoadPlan(
+                targetWorld,
+                targetWorldGuid,
+                checkpointContents.WorldGuid,
+                checkpointContents.WorldGuid,
+                checkpointContents.NextTick);
+            loadPlan.Initialize(
+                preparedState,
+                checkpointContents.CheckpointDigest.Span,
+                payloadDigest);
+            preparedState = null;
+            var preparation = new WorldLoadPreparation(
+                WorldLoadPreparationStatus.Prepared,
+                loadPlan,
+                []);
+            loadPlan = null;
+            return preparation;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (IsLoadRejection(exception))
+        {
+            return CreateLoadRejected("load-preparation-rejected", exception.Message, targetWorldGuid);
+        }
+        finally
+        {
+            loadPlan?.Dispose();
+            preparedState?.Dispose();
+            constructionPlan?.ReleaseUntransferredRestoreResources();
+            replacementPreparation?.Dispose();
+            readPreparation?.Dispose();
+            combinedUse?.Dispose();
+            recoveryUse?.Dispose();
+            sourcePerWorldUse?.Dispose();
+            sourceAdmission?.Dispose();
+            restoreStateAdmission?.Dispose();
+            restoreIdentityUse?.Dispose();
+            packageLease?.Dispose();
+            EndLoad();
         }
     }
 

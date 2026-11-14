@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 
 namespace TerraFX.Entities;
 
@@ -23,6 +24,31 @@ internal sealed class WorldPersistenceLiveIdentitySet
     {
         ArgumentOutOfRangeException.ThrowIfNegative(maximumCount);
         _maximumCount = maximumCount;
+    }
+
+    internal static long MeasureReadWorkspaceBytes(int liveIdentityCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(liveIdentityCount);
+
+        if (liveIdentityCount == 0)
+        {
+            return 128;
+        }
+
+        var maximumCapacity = checked(((long)liveIdentityCount * 3) + 8);
+        var entryBytes = checked(
+            Unsafe.SizeOf<Guid>()
+            + Unsafe.SizeOf<(uint State, long Ordinal, Guid SceneOwnerId, int ArchetypeIndex, long ChunkOrdinal, int Row)>()
+            + (2 * sizeof(int))
+            + 16);
+        var bucketPayloadBytes = checked(maximumCapacity * sizeof(int));
+        var entryPayloadBytes = checked(maximumCapacity * entryBytes);
+        return checked(128 + ArrayReservation(bucketPayloadBytes) + ArrayReservation(entryPayloadBytes));
+
+        static long ArrayReservation(long payloadBytes)
+        {
+            return checked(64L + ((payloadBytes + 7L) & ~7L));
+        }
     }
 
     internal void Add(Guid identity, uint identityKind, long assignmentOrdinal, string parameterName)

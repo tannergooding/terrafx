@@ -563,7 +563,8 @@ public sealed partial class World : IDisposable
                 replayLineageId,
                 identityBranchId,
                 out lineageGrant,
-                out var lineageRefusal))
+                out var lineageRefusal,
+                issuanceNamespace: worldGuid))
             {
                 if (lineageRefusal == WorldAdmissionRefusal.LineageAlreadyRetained
                     && options.InitialReplayLineageId.HasValue)

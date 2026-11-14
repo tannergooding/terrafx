@@ -79,6 +79,12 @@ internal sealed class EntitySlotTable
         return table;
     }
 
+    internal static long GetStandardRestoreByteReservation(int liveEntityCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(liveEntityCount);
+        return ArrayBytes((liveEntityCount == 0) ? 1 : checked((long)liveEntityCount + 1), Unsafe.SizeOf<Slot>());
+    }
+
     private static long ArrayBytes(long count, int elementSize)
         => checked(64 + ((checked(count * elementSize) + 7) & ~7L));
 

@@ -654,6 +654,19 @@ internal static class WorldPersistenceWorldRecordReader
             limits,
             parsedConfiguration.MaximumComponentTypes,
             targetRegistration);
+        var ecsRoot = new EbinRecordReadView(ecsRecord.Span);
+        var scenesRoot = new EbinRecordReadView(scenesRecord.Span);
+
+        if (!ecsRoot.TryGetField(1, out var entityRows)
+            || (entityRows.Kind != ArrayKind)
+            || (entityRows.Count > (ulong)parsedConfiguration.MaximumLiveEntities)
+            || !scenesRoot.TryGetField(1, out var sceneInstances)
+            || (sceneInstances.Kind != ArrayKind)
+            || (sceneInstances.Count > (ulong)parsedConfiguration.MaximumActiveSceneInstances))
+        {
+            throw new ArgumentException("The state/ecs Entity or state/scenes instance count exceeds its configured limit.", nameof(worldRecord));
+        }
+
         var maximumLiveIdentityCount = checked(
             (long)parsedConfiguration.MaximumLiveEntities
             + parsedConfiguration.MaximumActiveSceneInstances);

@@ -114,6 +114,21 @@ internal sealed class WorldPersistenceAdmissionReservation : IDisposable
         }
     }
 
+    internal void Shrink(long bytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);
+
+        lock (_disposeGate)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(bytes, _bytes - _activeWorkspaceBytes);
+            _domainReservation.ReleaseAdditional(bytes);
+            _world.ReleasePersistenceAdmissionBytes(bytes);
+            _bytes -= bytes;
+        }
+    }
+
     internal bool TryGrow(long bytes)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);

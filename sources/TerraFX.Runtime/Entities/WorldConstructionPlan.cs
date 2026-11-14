@@ -149,6 +149,8 @@ internal sealed class WorldConstructionPlan
 
     internal void ValidateForConstruction()
     {
+        var expectedIssuanceNamespace = _restoreIdentityState?.IssuanceNamespace ?? _worldGuid;
+
         if ((_worldGuid == Guid.Empty)
             || (ReplayLineageId == Guid.Empty)
             || (_identityBranchId == Guid.Empty)
@@ -158,7 +160,7 @@ internal sealed class WorldConstructionPlan
             || (_lineageGrant.WorldGuid != _worldGuid)
             || (_lineageGrant.LineageId != ReplayLineageId)
             || (_lineageGrant.IdentityBranchId != _identityBranchId)
-            || (_lineageGrant.IssuanceNamespace != _identityBranchId)
+            || (_lineageGrant.IssuanceNamespace != expectedIssuanceNamespace)
             || !_domainReservation.IsOwnedBy(_admissionDomain)
             || !_lineageGrant.IsOwnedBy(_admissionDomain)
             || !(_lineageGrant.Reservation?.IsOwnedBy(_admissionDomain) ?? false)

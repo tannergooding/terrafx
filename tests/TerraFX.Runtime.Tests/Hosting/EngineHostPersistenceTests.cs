@@ -105,6 +105,35 @@ internal sealed partial class EngineHostOptionsTests
                 world.Options.Registration,
                 identityScratch: new WorldPersistenceIdentityScratchEntry[identityAssignmentCount]);
             var worldContents = checkpoint.WorldContents;
+            Task<WorldLoadPreparation>? loadPreparationTask = null;
+            await host.InvokeAsync(_ => loadPreparationTask = host.Persistence.PrepareLoadAsync(
+                    world,
+                    savePath,
+                    new LoadOptions(WorldRestoreIntent.Branch) {
+                        IdentityBranchId = Guid.NewGuid(),
+                    }))
+                .ConfigureAwait(false);
+            using (var loadPreparation = await (loadPreparationTask
+                ?? throw new InvalidOperationException("The hosted Load preparation was not admitted."))
+                .ConfigureAwait(false))
+            {
+                var preparationDiagnostic = loadPreparation.Diagnostics.IsEmpty
+                    ? "The Load preparation did not return a diagnostic."
+                    : loadPreparation.Diagnostics[0].Message;
+                Assert.That(loadPreparation.Status, Is.EqualTo(WorldLoadPreparationStatus.Prepared), preparationDiagnostic);
+                var loadPlan = loadPreparation.Plan
+                    ?? throw new InvalidOperationException("The valid hosted checkpoint did not produce a Load plan.");
+                Assert.Multiple(() => {
+                    Assert.That(loadPreparation.Status, Is.EqualTo(WorldLoadPreparationStatus.Prepared));
+                    Assert.That(loadPlan.TargetWorldGuid, Is.EqualTo(world.WorldGuid));
+                    Assert.That(loadPlan.SourceWorldGuid, Is.EqualTo(checkpoint.WorldGuid));
+                    Assert.That(loadPlan.TargetRecordWorldGuid, Is.EqualTo(checkpoint.WorldGuid));
+                    Assert.That(loadPlan.SnapshotTick, Is.EqualTo(checkpoint.NextTick));
+                    Assert.That(loadPlan.SourceCheckpointDigest.Length, Is.EqualTo(32));
+                    Assert.That(loadPlan.SourcePayloadDigest.Length, Is.EqualTo(32));
+                });
+            }
+
             var candidateIdentityScratch = new WorldPersistenceIdentityScratchEntry[identityAssignmentCount];
 
             WorldPersistenceCheckpointContents? ValidateCandidate(ReadOnlyMemory<byte> candidateFile)
@@ -265,6 +294,7 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(recovery.Generation, Is.EqualTo(1));
             Assert.That(recovery.FileRecord, Is.EqualTo(fileRecord));
             recoverySourceUse.Dispose();
+            recoveryPreparationScope.Dispose();
 
             var mismatchedHeaderRecord = WorldPersistenceHeaderWriter.Create(
                 options.PersistenceMetadata,
@@ -284,10 +314,27 @@ internal sealed partial class EngineHostOptionsTests
                 checkpointRecord: mismatchedCheckpointRecord,
                 limits: limits).FileRecord;
             await File.WriteAllBytesAsync(savePath, semanticallyInvalidPrimary).ConfigureAwait(false);
+            var semanticSourceBytes = WorldPersistenceRecoveryReader.MeasureCandidateReadWorkspaceBytes(
+                savePath,
+                backupPath,
+                world.Options.MaximumSnapshotBytes);
+            Assert.That(
+                world.TryPrepareLoadReplacement(
+                    semanticSourceBytes,
+                    1,
+                    1,
+                    1,
+                    out var semanticPreparation,
+                    out var semanticBindingRefusal,
+                    out var semanticCreditRefusal),
+                Is.True);
+            Assert.That(semanticBindingRefusal.IsNone, Is.True);
+            Assert.That(semanticCreditRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+            using var semanticPreparationScope = semanticPreparation!;
             var semanticFallbackCandidate = await WorldPersistenceRecoveryReader.ReadLatestCommittedAsync(
                 savePath,
                 backupPath,
-                recoveryPreparationScope,
+                semanticPreparationScope,
                 world.Options.MaximumSnapshotBytes,
                 limits,
                 ValidateCandidate,
@@ -298,7 +345,45 @@ internal sealed partial class EngineHostOptionsTests
             Assert.That(semanticFallback.Path, Is.EqualTo(backupPath));
             Assert.That(semanticFallback.Generation, Is.EqualTo(1));
             semanticFallbackSourceUse.Dispose();
+            semanticPreparationScope.Dispose();
+
+            Task<WorldLoadPreparation>? fallbackLoadPreparationTask = null;
+            await host.InvokeAsync(_ => fallbackLoadPreparationTask = host.Persistence.PrepareLoadAsync(
+                    world,
+                    savePath,
+                    new LoadOptions(WorldRestoreIntent.Branch) {
+                        IdentityBranchId = Guid.NewGuid(),
+                    }))
+                .ConfigureAwait(false);
+            using (var fallbackLoadPreparation = await (fallbackLoadPreparationTask
+                ?? throw new InvalidOperationException("The backup Load preparation was not admitted."))
+                .ConfigureAwait(false))
+            {
+                var fallbackLoadPlan = fallbackLoadPreparation.Plan
+                    ?? throw new InvalidOperationException("The valid backup did not produce a Load plan.");
+                Assert.That(fallbackLoadPreparation.Status, Is.EqualTo(WorldLoadPreparationStatus.Prepared));
+                Assert.That(fallbackLoadPlan.SourceCheckpointDigest.ToArray(), Is.EqualTo(checkpoint.CheckpointDigest.ToArray()));
+            }
+
             await File.WriteAllBytesAsync(savePath, fileRecord).ConfigureAwait(false);
+
+            var retrySourceBytes = WorldPersistenceRecoveryReader.MeasureCandidateReadWorkspaceBytes(
+                savePath,
+                backupPath,
+                world.Options.MaximumSnapshotBytes);
+            Assert.That(
+                world.TryPrepareLoadReplacement(
+                    retrySourceBytes,
+                    1,
+                    1,
+                    1,
+                    out var retryPreparation,
+                    out var retryBindingRefusal,
+                    out var retryCreditRefusal),
+                Is.True);
+            Assert.That(retryBindingRefusal.IsNone, Is.True);
+            Assert.That(retryCreditRefusal, Is.EqualTo(WorldAdmissionRefusal.None));
+            using var retryPreparationScope = retryPreparation!;
 
             using var cancelAfterValidation = new CancellationTokenSource();
             Task? cancellationCallbacks = null;
@@ -317,7 +402,7 @@ internal sealed partial class EngineHostOptionsTests
                 var unexpectedCandidate = await WorldPersistenceRecoveryReader.ReadLatestCommittedAsync(
                     savePath,
                     backupPath,
-                    recoveryPreparationScope,
+                    retryPreparationScope,
                     world.Options.MaximumSnapshotBytes,
                     limits,
                     ValidateAndCancel,
@@ -337,7 +422,7 @@ internal sealed partial class EngineHostOptionsTests
             var retryAfterCancellationCandidate = await WorldPersistenceRecoveryReader.ReadLatestCommittedAsync(
                 savePath,
                 backupPath,
-                recoveryPreparationScope,
+                retryPreparationScope,
                 world.Options.MaximumSnapshotBytes,
                 limits,
                 ValidateCandidate,
@@ -347,7 +432,7 @@ internal sealed partial class EngineHostOptionsTests
             using var retrySourceUse = retryAfterCancellation.SourceUse;
             Assert.That(retryAfterCancellation.Path, Is.EqualTo(savePath));
             retrySourceUse.Dispose();
-            recoveryPreparationScope.Dispose();
+            retryPreparationScope.Dispose();
 
             var strictLocalHeaderRecord = WorldPersistenceHeaderWriter.Create(
                 options.PersistenceMetadata,

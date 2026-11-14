@@ -291,6 +291,23 @@ internal static class WorldPersistenceCheckpointWriter
             [],
             ref strictLayoutBuffers);
 
+    internal static WorldPersistenceCheckpointContents ReadContentsWithLineageMembership(
+        scoped ReadOnlySpan<byte> fileRecord,
+        EbinReadLimits limits,
+        WorldRegistration? targetRegistration,
+        scoped Span<WorldPersistenceIdentityScratchEntry> identityScratch,
+        scoped Span<Guid> lineageMembershipScratch,
+        scoped ref WorldPersistenceStrictLayoutReadBuffers strictLayoutBuffers)
+        => ReadContentsCore(
+            fileRecord,
+            limits,
+            targetRegistration,
+            assetReferenceSchemas: null,
+            assetIdScratch: [],
+            identityScratch,
+            lineageMembershipScratch,
+            ref strictLayoutBuffers);
+
     internal static long ReadTransactionGeneration(
         scoped ReadOnlySpan<byte> fileRecord,
         EbinReadLimits limits)

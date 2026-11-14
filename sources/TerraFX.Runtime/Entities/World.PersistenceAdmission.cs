@@ -83,6 +83,19 @@ public sealed partial class World
             WorldGuid = restoreIdentityState.WorldGuid,
         };
 
+    internal long MeasureRestoreWorldOwnedBytes(
+        WorldRestoreIdentityState restoreIdentityState,
+        WorldPersistenceConfiguration configuration,
+        int tickRate,
+        float timeScale)
+    {
+        ArgumentNullException.ThrowIfNull(restoreIdentityState);
+        ArgumentNullException.ThrowIfNull(configuration);
+        var options = CreateRestoreOptions(this, restoreIdentityState, configuration, tickRate, timeScale);
+        var resolvedOptions = options.ValidateAndResolve();
+        return CalculateRestoreWorldOwnedBytes(options, resolvedOptions, restoreIdentityState);
+    }
+
     internal void ReleasePersistenceAdmissionBytes(long bytes)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytes);

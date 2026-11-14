@@ -30,7 +30,7 @@ internal static class WorldPersistenceRecoveryReader
         return checked(candidateBytes + largestValidationCopy + FileStreamBufferBytes + RecoveryControlBytes);
     }
 
-    internal static async Task<(
+    internal static Task<(
         string Path,
         long Generation,
         byte[] FileRecord,
@@ -44,6 +44,36 @@ internal static class WorldPersistenceRecoveryReader
         Func<ReadOnlyMemory<byte>, WorldPersistenceCheckpointContents?> validateCandidate,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(validateCandidate);
+        return ReadLatestCommittedWithRetentionAsync(
+            targetPath,
+            backupPath,
+            preparation,
+            maximumSnapshotBytes,
+            limits,
+            (candidate, _) => {
+                var contents = validateCandidate(candidate);
+                return ValueTask.FromResult((contents is null)
+                    ? null
+                    : new CandidateValidation(contents, EmptyDisposable.Instance));
+            },
+            cancellationToken);
+    }
+
+    internal static async Task<(
+        string Path,
+        long Generation,
+        byte[] FileRecord,
+        WorldPersistenceCheckpointContents Contents,
+        IDisposable SourceUse)?> ReadLatestCommittedWithRetentionAsync(
+        string targetPath,
+        string backupPath,
+        WorldGuidReplacementPreparation preparation,
+        long maximumSnapshotBytes,
+        EbinReadLimits limits,
+        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask<CandidateValidation?>> validateCandidate,
+        CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(targetPath);
         ArgumentNullException.ThrowIfNull(backupPath);
         ArgumentNullException.ThrowIfNull(preparation);
@@ -53,6 +83,7 @@ internal static class WorldPersistenceRecoveryReader
         cancellationToken.ThrowIfCancellationRequested();
 
         IDisposable? sourceUse = null;
+        (string Path, long Generation, byte[] FileRecord, CandidateValidation Validation)? latest = null;
 
         try
         {
@@ -63,7 +94,6 @@ internal static class WorldPersistenceRecoveryReader
                 0);
             var targetLength = ReadCandidateLength(targetPath, maximumSnapshotBytes);
             var backupLength = ReadCandidateLength(backupPath, maximumSnapshotBytes);
-            (string Path, long Generation, byte[] FileRecord, WorldPersistenceCheckpointContents Contents)? latest = null;
             latest = await ReadCandidateAsync(
                 targetPath,
                 targetLength,
@@ -88,18 +118,23 @@ internal static class WorldPersistenceRecoveryReader
                 return null;
             }
 
+            var validationUse = latest.Value.Validation.RetainedUse;
+            var retainedUse = new CompositeDisposable(sourceUse, validationUse);
+            sourceUse = null;
+            latest.Value.Validation.RetainedUse = EmptyDisposable.Instance;
             var result = (
                 latest.Value.Path,
                 latest.Value.Generation,
                 latest.Value.FileRecord,
-                latest.Value.Contents,
-                sourceUse);
-            sourceUse = null;
+                latest.Value.Validation.Contents,
+                retainedUse);
+            latest = null;
             return result;
         }
         finally
         {
             sourceUse?.Dispose();
+            latest?.Validation.RetainedUse.Dispose();
         }
     }
 
@@ -107,13 +142,13 @@ internal static class WorldPersistenceRecoveryReader
         string Path,
         long Generation,
         byte[] FileRecord,
-        WorldPersistenceCheckpointContents Contents)?> ReadCandidateAsync(
+        CandidateValidation Validation)?> ReadCandidateAsync(
         string candidatePath,
         long expectedLength,
         long maximumSnapshotBytes,
         EbinReadLimits limits,
-        (string Path, long Generation, byte[] FileRecord, WorldPersistenceCheckpointContents Contents)? latest,
-        Func<ReadOnlyMemory<byte>, WorldPersistenceCheckpointContents?> validateCandidate,
+        (string Path, long Generation, byte[] FileRecord, CandidateValidation Validation)? latest,
+        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask<CandidateValidation?>> validateCandidate,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -172,11 +207,24 @@ internal static class WorldPersistenceRecoveryReader
                     return latest;
                 }
 
-                var contents = validateCandidate(candidate);
-                cancellationToken.ThrowIfCancellationRequested();
-                return (contents is null)
-                    ? latest
-                    : (candidatePath, generation, candidate, contents);
+                var validation = await validateCandidate(candidate, cancellationToken).ConfigureAwait(false);
+
+                if (validation is null)
+                {
+                    return latest;
+                }
+
+                try
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    latest?.Validation.RetainedUse.Dispose();
+                    return (candidatePath, generation, candidate, validation);
+                }
+                catch
+                {
+                    validation.RetainedUse.Dispose();
+                    throw;
+                }
             }
         }
         catch (FileNotFoundException)
@@ -216,6 +264,62 @@ internal static class WorldPersistenceRecoveryReader
         catch (DirectoryNotFoundException)
         {
             return 0;
+        }
+    }
+
+    internal sealed class CandidateValidation
+    {
+        internal CandidateValidation(
+            WorldPersistenceCheckpointContents contents,
+            IDisposable retainedUse)
+        {
+            ArgumentNullException.ThrowIfNull(contents);
+            ArgumentNullException.ThrowIfNull(retainedUse);
+            Contents = contents;
+            RetainedUse = retainedUse;
+        }
+
+        internal WorldPersistenceCheckpointContents Contents { get; }
+
+        internal IDisposable RetainedUse { get; set; }
+    }
+
+    private sealed class CompositeDisposable : IDisposable
+    {
+        private readonly IDisposable _first;
+        private int _isDisposed;
+        private readonly IDisposable _second;
+
+        internal CompositeDisposable(IDisposable first, IDisposable second)
+        {
+            _first = first;
+            _second = second;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
+            {
+                return;
+            }
+
+            try
+            {
+                _second.Dispose();
+            }
+            finally
+            {
+                _first.Dispose();
+            }
+        }
+    }
+
+    private sealed class EmptyDisposable : IDisposable
+    {
+        internal static EmptyDisposable Instance { get; } = new();
+
+        public void Dispose()
+        {
         }
     }
 }

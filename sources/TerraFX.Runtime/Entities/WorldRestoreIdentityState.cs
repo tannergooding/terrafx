@@ -1,8 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
-using System.Collections.Generic;
-using System.Linq;
+using System.Runtime.CompilerServices;
 
 namespace TerraFX.Entities;
 
@@ -91,8 +90,6 @@ internal sealed class WorldRestoreIdentityState
             throw new NotSupportedException("StrictLocal restore requires exact slot, chunk, and free-list reconstruction.");
         }
 
-        var targetBranchId = history.ActiveBranchId;
-
         if (identityBranchId == Guid.Empty)
         {
             throw new ArgumentException("Branch restore requires a nonempty identity branch.", nameof(identityBranchId));
@@ -102,10 +99,14 @@ internal sealed class WorldRestoreIdentityState
 
         for (var index = 0; index < history.Branches.Length; index++)
         {
+            if (history.Branches[index].BranchId == identityBranchId)
+            {
+                throw new ArgumentException("The selected identity branch is already present in the source history.", nameof(identityBranchId));
+            }
+
             if (history.Branches[index].BranchId == history.ActiveBranchId)
             {
                 activeBranchIndex = index;
-                break;
             }
         }
 
@@ -114,17 +115,12 @@ internal sealed class WorldRestoreIdentityState
             throw new InvalidOperationException("The validated identity history lost its active branch.");
         }
 
-        if (history.Branches.Any(branch => branch.BranchId == identityBranchId))
-        {
-            throw new ArgumentException("The selected identity branch is already present in the source history.", nameof(identityBranchId));
-        }
-
         if (history.Branches.Length >= configuration.MaximumIdentityBranches)
         {
             throw new InvalidOperationException("The target World identity branch limit would be exceeded.");
         }
 
-        targetBranchId = identityBranchId;
+        var targetBranchId = identityBranchId;
         activeBranchIndex = history.Branches.Length;
         var branches = new World.WorldIdentityBranchRecord[history.Branches.Length + 1];
 
@@ -155,8 +151,10 @@ internal sealed class WorldRestoreIdentityState
             sourceCheckpointDigest.ToArray());
 
         var locatorsByOrdinal = new uint[history.AssignmentsByOrdinal.Length];
-        var entitySlotsByLocator = new List<(uint Locator, uint Ordinal)>(history.LiveEntityCount);
-        var sceneInstancesByLocator = new List<(uint Locator, uint Ordinal)>(history.LiveSceneInstanceCount);
+        var entitySlotsByLocator = new (uint Locator, uint Ordinal)[history.LiveEntityCount];
+        var sceneInstancesByLocator = new (uint Locator, uint Ordinal)[history.LiveSceneInstanceCount];
+        var entitySlotCount = 0;
+        var sceneInstanceSlotCount = 0;
         uint nextEntitySlot = 1;
         uint nextSceneInstanceSlot = 1;
 
@@ -172,13 +170,13 @@ internal sealed class WorldRestoreIdentityState
             if (assignment.Kind is (byte)IdentityKind.Entity)
             {
                 locatorsByOrdinal[index] = nextEntitySlot;
-                entitySlotsByLocator.Add((nextEntitySlot, assignment.AssignmentOrdinal));
+                entitySlotsByLocator[entitySlotCount++] = (nextEntitySlot, assignment.AssignmentOrdinal);
                 nextEntitySlot = checked(nextEntitySlot + 1);
             }
             else
             {
                 locatorsByOrdinal[index] = nextSceneInstanceSlot;
-                sceneInstancesByLocator.Add((nextSceneInstanceSlot, assignment.AssignmentOrdinal));
+                sceneInstancesByLocator[sceneInstanceSlotCount++] = (nextSceneInstanceSlot, assignment.AssignmentOrdinal);
                 nextSceneInstanceSlot = checked(nextSceneInstanceSlot + 1);
             }
         }
@@ -191,8 +189,8 @@ internal sealed class WorldRestoreIdentityState
             branches.Length,
             history.AssignmentsByOrdinal.AsSpan(),
             locatorsByOrdinal,
-            [.. entitySlotsByLocator],
-            [.. sceneInstancesByLocator]);
+            entitySlotsByLocator,
+            sceneInstancesByLocator);
         var entitySlots = EntitySlotTable.CreateStandardRestore(
             configuration.MaximumEntitySlots,
             history.LiveEntityCount);
@@ -210,7 +208,63 @@ internal sealed class WorldRestoreIdentityState
             branches,
             activeBranchIndex,
             locatorsByOrdinal,
-            [.. entitySlotsByLocator],
-            [.. sceneInstancesByLocator]);
+            entitySlotsByLocator,
+            sceneInstancesByLocator);
+    }
+
+    internal static long MeasureBranchOwnedByteReservation(
+        ValidatedWorldIdentityHistory history,
+        Guid identityBranchId,
+        scoped ReadOnlySpan<byte> sourceCheckpointDigest,
+        WorldPersistenceConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(history);
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentOutOfRangeException.ThrowIfEqual(identityBranchId, Guid.Empty);
+
+        if (sourceCheckpointDigest.Length != 32)
+        {
+            throw new ArgumentException("A restore branch requires the exact 32-byte source checkpoint digest.", nameof(sourceCheckpointDigest));
+        }
+
+        var branchCount = checked(history.Branches.Length + 1);
+        var bytes = checked(
+            256L
+            + StableIdentityLedger.GetRestoredByteReservation(
+                history.AssignmentsByOrdinal.Length,
+                history.LiveEntityCount,
+                history.LiveSceneInstanceCount)
+            + EntitySlotTable.GetStandardRestoreByteReservation(history.LiveEntityCount)
+            + ArrayBytes(branchCount, Unsafe.SizeOf<World.WorldIdentityBranchRecord>())
+            + ArrayBytes(history.AssignmentsByOrdinal.Length, sizeof(uint))
+            + ArrayBytes(history.LiveEntityCount, Unsafe.SizeOf<(uint Locator, uint Ordinal)>())
+            + ArrayBytes(history.LiveSceneInstanceCount, Unsafe.SizeOf<(uint Locator, uint Ordinal)>())
+            + ArrayBytes(sourceCheckpointDigest.Length, sizeof(byte)));
+
+        foreach (var branch in history.Branches)
+        {
+            if (!branch.SourceCheckpointDigest.IsEmpty)
+            {
+                bytes = checked(bytes + ArrayBytes(branch.SourceCheckpointDigest.Length, sizeof(byte)));
+            }
+
+            if (!branch.ForkSourceRecord.IsEmpty)
+            {
+                bytes = checked(bytes + ArrayBytes(branch.ForkSourceRecord.Length, sizeof(byte)));
+            }
+        }
+
+        return bytes;
+    }
+
+    private static long ArrayBytes(long count, int elementSize)
+    {
+        if (count == 0)
+        {
+            return 0;
+        }
+
+        var payloadBytes = checked(count * elementSize);
+        return checked(64L + ((payloadBytes + 15L) & ~15L));
     }
 }
