@@ -18,8 +18,11 @@ internal sealed class WorldConstructionPlan
     private readonly WorldGuidRegistry _registry;
     private readonly WorldGuidReplacementPreparation? _replacementPreparation;
     private readonly ResolvedWorldOptions _resolvedOptions;
+    private readonly long _restoreEcsStorageByteReservation;
     private readonly WorldRestoreIdentityState? _restoreIdentityState;
     private int _restoreResourcesState;
+    private readonly long _restoreWorkPlanByteReservation;
+    private readonly int _restoreWorkPlanCapacity;
     private readonly WorldSystemQuarantineReservation _systemQuarantineReservation;
     private readonly WorldWorkerPool _workerPool;
     private readonly Guid _worldGuid;
@@ -43,8 +46,23 @@ internal sealed class WorldConstructionPlan
         WorldSystemQuarantineReservation systemQuarantineReservation,
         WorldWorkerPool workerPool,
         WorldRestoreIdentityState? restoreIdentityState = null,
-        WorldGuidReplacementPreparation? replacementPreparation = null)
+        WorldGuidReplacementPreparation? replacementPreparation = null,
+        long restoreEcsStorageByteReservation = 0,
+        int restoreWorkPlanCapacity = 0,
+        long restoreWorkPlanByteReservation = 0)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreEcsStorageByteReservation);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreWorkPlanCapacity);
+        ArgumentOutOfRangeException.ThrowIfNegative(restoreWorkPlanByteReservation);
+
+        if ((restoreIdentityState is null)
+            && ((restoreEcsStorageByteReservation != 0)
+                || (restoreWorkPlanCapacity != 0)
+                || (restoreWorkPlanByteReservation != 0)))
+        {
+            throw new ArgumentException("Fresh World construction cannot own restore ECS storage reservations.", nameof(restoreIdentityState));
+        }
+
         _resolvedOptions = resolvedOptions;
         ReplayLineageId = replayLineageId;
         _identityBranchId = identityBranchId;
@@ -63,6 +81,9 @@ internal sealed class WorldConstructionPlan
         _workerPool = workerPool;
         _restoreIdentityState = restoreIdentityState;
         _replacementPreparation = replacementPreparation;
+        _restoreEcsStorageByteReservation = restoreEcsStorageByteReservation;
+        _restoreWorkPlanCapacity = restoreWorkPlanCapacity;
+        _restoreWorkPlanByteReservation = restoreWorkPlanByteReservation;
     }
 
     internal WorldAdmissionDomain AdmissionDomain => _admissionDomain;
@@ -93,7 +114,13 @@ internal sealed class WorldConstructionPlan
 
     internal ResolvedWorldOptions ResolvedOptions => _resolvedOptions;
 
+    internal long RestoreEcsStorageByteReservation => _restoreEcsStorageByteReservation;
+
     internal WorldRestoreIdentityState? RestoreIdentityState => _restoreIdentityState;
+
+    internal long RestoreWorkPlanByteReservation => _restoreWorkPlanByteReservation;
+
+    internal int RestoreWorkPlanCapacity => _restoreWorkPlanCapacity;
 
     internal WorldSystemQuarantineReservation SystemQuarantineReservation => _systemQuarantineReservation;
 
@@ -150,6 +177,7 @@ internal sealed class WorldConstructionPlan
     internal void ValidateForConstruction()
     {
         var expectedIssuanceNamespace = _restoreIdentityState?.IssuanceNamespace ?? _worldGuid;
+        var hasRestoreEntityRows = (_restoreIdentityState?.EntitySlots.LiveEntityCount ?? 0) != 0;
 
         if ((_worldGuid == Guid.Empty)
             || (ReplayLineageId == Guid.Empty)
@@ -172,6 +200,7 @@ internal sealed class WorldConstructionPlan
             || (_workerPool is null)
             || (_workerPool.WorkerCount != _resolvedOptions.CpuWorkerCount)
             || (_resolvedOptions.Options.Registration is null)
+            || (_restoreWorkPlanByteReservation > _resolvedOptions.Options.SchedulingLimits.MaximumWorkPlanBytes)
             || ((_restoreIdentityState is not null)
                 && ((_restoreIdentityState.WorldGuid != _worldGuid)
                     || (_restoreIdentityState.ReplayLineageId != ReplayLineageId)
@@ -179,6 +208,9 @@ internal sealed class WorldConstructionPlan
                     || (_restoreIdentityState.LineageMembership.ReplayLineageId != ReplayLineageId)
                     || (_restoreIdentityState.ActiveBranchId != _identityBranchId)
                     || !ReferenceEquals(_restoreIdentityState.IdentityLedger, _identityLedger)
+                    || hasRestoreEntityRows != (_restoreEcsStorageByteReservation > 0)
+                    || hasRestoreEntityRows != (_restoreWorkPlanCapacity > 0)
+                    || hasRestoreEntityRows != (_restoreWorkPlanByteReservation > 0)
                     || (_replacementPreparation is null))))
         {
             throw new InvalidOperationException("The standalone World construction plan is incomplete or inconsistent.");

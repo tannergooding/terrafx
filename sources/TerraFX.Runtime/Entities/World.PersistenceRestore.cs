@@ -76,6 +76,7 @@ public sealed partial class World
         if ((_archetypeCount != 1)
             || (_archetypes[0]?.Storage.EntityCount != 0)
             || (_componentTagWorkPlanCount != 0)
+            || (_componentTagWorkPlan.Length != 0)
             || (_nextChunkOrdinal != 0))
         {
             throw new InvalidOperationException("The restore candidate already contains ECS storage.");
@@ -213,6 +214,13 @@ public sealed partial class World
 
         if (contents.EntityCount == 0)
         {
+            if ((_restoreEcsStorageByteReservation != 0)
+                || (_restoreWorkPlanCapacity != 0)
+                || (_restoreWorkPlanByteReservation != 0))
+            {
+                throw new InvalidOperationException("The empty restore candidate has unexpected ECS storage reservations.");
+            }
+
             _isRestoreEcsRowsRestored = true;
             return;
         }
@@ -222,22 +230,23 @@ public sealed partial class World
         var storage = archetype.Storage;
         var storageBytes = storage.GetCapacityPreparationBytes(contents.EntityCount);
         var workPlanCount = checked((contents.EntityCount + 63) / 64);
-        var workPlanCapacity = GetComponentTagWorkPlanCapacityFor(workPlanCount);
-        var workPlanBytes = (workPlanCapacity > _componentTagWorkPlan.Length)
-            ? CalculateComponentTagWorkPlanByteReservation(workPlanCapacity)
-            : 0L;
+        var workPlanCapacity = _restoreWorkPlanCapacity;
+        var workPlanBytes = _restoreWorkPlanByteReservation;
         var growthBytes = checked(storageBytes + workPlanBytes);
         var existingBytes = GetWorldOwnedStateBytes();
 
-        if ((growthBytes > _maximumOwnedStateBytes - existingBytes)
-            || !_domainReservation.TryReserveAdditional(growthBytes))
+        if ((storageBytes != _restoreEcsStorageByteReservation)
+            || (workPlanCapacity < workPlanCount)
+            || (workPlanCapacity == 0)
+            || (CalculateComponentTagWorkPlanByteReservation(workPlanCapacity) != workPlanBytes)
+            || (growthBytes > _maximumOwnedStateBytes - existingBytes))
         {
-            throw new InvalidOperationException("The restore candidate cannot admit its empty-archetype rows and query work plan.");
+            throw new InvalidOperationException("The candidate restore plan did not pre-admit its ECS rows and query work plan.");
         }
 
         WorldChunkWorkPlanEntry[]? workPlan = null;
 
-        if (workPlanBytes != 0)
+        if (workPlanCapacity > _componentTagWorkPlan.Length)
         {
             workPlan = new WorldChunkWorkPlanEntry[workPlanCapacity];
         }

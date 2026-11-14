@@ -103,6 +103,9 @@ public sealed partial class World : IDisposable
     private readonly Guid _replayLineageId;
     private ImmutableArray<object> _resourceStorage;
     private readonly long _resourceStorageByteReservation;
+    private readonly long _restoreEcsStorageByteReservation;
+    private readonly long _restoreWorkPlanByteReservation;
+    private readonly int _restoreWorkPlanCapacity;
     private long _sceneControlPayloadByteReservation;
     private IWorldSceneParticipant? _sceneParticipant;
     private long _scenePlanStorageByteReservation;
@@ -188,6 +191,9 @@ public sealed partial class World : IDisposable
         _domainReservation = constructionPlan.DomainReservation;
         var restoreIdentityState = constructionPlan.RestoreIdentityState;
         _isRestoreCandidate = restoreIdentityState is not null;
+        _restoreEcsStorageByteReservation = constructionPlan.RestoreEcsStorageByteReservation;
+        _restoreWorkPlanByteReservation = constructionPlan.RestoreWorkPlanByteReservation;
+        _restoreWorkPlanCapacity = constructionPlan.RestoreWorkPlanCapacity;
         _entitySlots = restoreIdentityState?.EntitySlots ?? new EntitySlotTable(options.MaximumEntitySlots);
         _executionSessionId = constructionPlan.ExecutionSessionId;
         _identityBranchId = constructionPlan.IdentityBranchId;
