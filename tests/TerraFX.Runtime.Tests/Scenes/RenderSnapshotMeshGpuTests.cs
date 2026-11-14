@@ -61,6 +61,7 @@ internal sealed partial class SceneAssetStoreTests
         bool unsupportedCullMode = false,
         bool unsupportedActiveLight = false,
         bool usePointLight = false,
+        bool useMultiplePointLights = false,
         bool useAlphaMask = false,
         bool useAlphaBlend = false,
         bool useBaseColorTexture = false,
@@ -289,6 +290,17 @@ internal sealed partial class SceneAssetStoreTests
                 world.Add(cameraEntity, in localTransform);
                 world.Add(cameraEntity, in rootPosition);
                 world.Add(cameraEntity, in camera);
+
+                if (useMultiplePointLights)
+                {
+                    var secondPointLight = new RenderComponentDefinitions.PointLightComponent(
+                        new Vector3(0.25f, 0.5f, 1.0f),
+                        luminousFlux: 1.0f,
+                        range: 12.0f,
+                        layerMask: ulong.MaxValue);
+                    world.Add(cameraEntity, in secondPointLight);
+                }
+
                 cameraId = world.GetEntityId(cameraEntity);
                 frame3 = world.Step().Frame3;
             }).ConfigureAwait(false);
@@ -314,6 +326,12 @@ internal sealed partial class SceneAssetStoreTests
                 ?? throw new InvalidOperationException("The host renderer omitted its Mesh snapshot.");
             Assert.That(meshSnapshot.MeshDraws, Has.Length.EqualTo(2));
             Assert.That(meshSnapshot.SpriteDraws, Is.Empty);
+
+            if (usePointLight)
+            {
+                Assert.That(meshSnapshot.PointLights, Has.Length.EqualTo(useMultiplePointLights ? 2 : 1));
+            }
+
             targetTexture = await graphicsDevice.CreateTextureAsync(
                 new TextureDescription(
                     TextureDimension.Dimension2D,
@@ -526,6 +544,14 @@ internal sealed partial class SceneAssetStoreTests
     [TestCase(GraphicsBackend.Vulkan)]
     public Task SnapshotBuiltInMeshC0GraphRendersEmissiveTextureAsync(GraphicsBackend graphicsBackend)
         => RunSnapshotBuiltInMeshC0GraphAsync(graphicsBackend, useEmissiveTexture: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphRendersMultiplePointLightsAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            usePointLight: true,
+            useMultiplePointLights: true);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]

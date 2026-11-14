@@ -3,6 +3,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Runtime.InteropServices;
 using TerraFX;
 using TerraFX.Assets;
@@ -21,51 +22,33 @@ public sealed partial class Renderer
 
     private static byte[] CreateMeshFrameBuffer(
         RenderSnapshot3D snapshot,
+        ImmutableArray<RenderPointLightSnapshot>[] pointLightsByCamera,
         int uniformStride,
         out int frameStride)
     {
+        if (pointLightsByCamera.Length != snapshot.Cameras.Length)
+        {
+            throw new ArgumentException("Point-light data must be captured for every selected Mesh camera.", nameof(pointLightsByCamera));
+        }
+
         frameStride = uniformStride;
         var buffer = new byte[checked(snapshot.Cameras.Length * frameStride)];
 
         for (var cameraIndex = 0; cameraIndex < snapshot.Cameras.Length; cameraIndex++)
         {
             var camera = snapshot.Cameras[cameraIndex];
-            var lightPosition = Vector3.Zero;
-            var lightColor = Vector3.Zero;
-            var lightIntensity = 0.0f;
-            var lightRange = 0.0f;
-            var isPointLight = false;
-            var lightEnabled = false;
+            var pointLights = pointLightsByCamera[cameraIndex];
 
-            if (!snapshot.MeshCameraOrders[cameraIndex].DrawIndices.IsEmpty)
+            if (pointLights.IsDefault)
             {
-                ValidateNoDirectionalOrSpotMeshC0Lights(snapshot, camera);
-
-                if (GetMeshC0PointLight(snapshot, camera) is RenderPointLightSnapshot pointLight)
-                {
-                    if (!SpatialMath.TryToFrameRelative(pointLight.Position, camera.Frame3, out lightPosition))
-                    {
-                        throw new InvalidOperationException("The selected point light is outside the camera spatial frame.");
-                    }
-
-                    lightColor = pointLight.Color;
-                    lightIntensity = pointLight.LuminousFlux;
-                    lightRange = pointLight.Range;
-                    isPointLight = true;
-                    lightEnabled = true;
-                }
+                throw new ArgumentException("Point-light data must be initialized for every Mesh camera.", nameof(pointLightsByCamera));
             }
 
             var area = RenderCameraViewport.CreateArea(camera.Viewport, snapshot.TargetExtent);
             RenderMeshC0FrameData.Create(
                 camera,
                 area,
-                lightPosition,
-                lightColor,
-                lightIntensity,
-                lightEnabled,
-                isPointLight,
-                lightRange).WriteTo(
+                pointLights.Length).WriteTo(
                     buffer.AsSpan(checked(cameraIndex * frameStride), RenderMeshC0FrameData.SizeInBytes));
         }
 
@@ -169,26 +152,26 @@ public sealed partial class Renderer
             metadata3: 0);
     }
 
-    private static RenderPointLightSnapshot? GetMeshC0PointLight(RenderSnapshot3D snapshot, CameraSnapshot camera)
+    private static byte[] CreateMeshPointLightBuffer(
+        ImmutableArray<RenderPointLightSnapshot> pointLights,
+        SpatialFrame3 frame3)
+        => RenderMeshC0PointLightBufferBuilder.Create(pointLights.AsSpan(), frame3);
+
+    private static ImmutableArray<RenderPointLightSnapshot> GetMeshC0PointLights(
+        RenderSnapshot3D snapshot,
+        CameraSnapshot camera)
     {
-        RenderPointLightSnapshot? selectedLight = null;
+        var selectedLights = new List<RenderPointLightSnapshot>(snapshot.PointLights.Length);
 
         foreach (var light in snapshot.PointLights)
         {
-            if ((light.LayerMask & camera.LayerMask) == 0)
+            if ((light.LayerMask & camera.LayerMask) != 0)
             {
-                continue;
+                selectedLights.Add(light);
             }
-
-            if (selectedLight.HasValue)
-            {
-                throw new NotSupportedException("Mesh C0 currently admits at most one active point light per camera.");
-            }
-
-            selectedLight = light;
         }
 
-        return selectedLight;
+        return [.. selectedLights];
     }
 
     private static GraphTextureVersion GetMeshC0TextureVersion(
@@ -313,7 +296,28 @@ public sealed partial class Renderer
 
         var alignment = checked((int)device.Capabilities.Limits.UniformBufferOffsetAlignment);
         var uniformStride = ObjectGpuData.GetUniformAllocationStride(alignment);
-        var frameBytes = CreateMeshFrameBuffer(meshSnapshot, uniformStride, out var frameStride);
+        var pointLightsByCamera = new ImmutableArray<RenderPointLightSnapshot>[meshSnapshot.Cameras.Length];
+
+        for (var cameraIndex = 0; cameraIndex < meshSnapshot.Cameras.Length; cameraIndex++)
+        {
+            var camera = meshSnapshot.Cameras[cameraIndex];
+
+            if (meshSnapshot.MeshCameraOrders[cameraIndex].DrawIndices.IsEmpty)
+            {
+                pointLightsByCamera[cameraIndex] = [];
+            }
+            else
+            {
+                ValidateNoDirectionalOrSpotMeshC0Lights(meshSnapshot, camera);
+                pointLightsByCamera[cameraIndex] = GetMeshC0PointLights(meshSnapshot, camera);
+            }
+        }
+
+        var frameBytes = CreateMeshFrameBuffer(
+            meshSnapshot,
+            pointLightsByCamera,
+            uniformStride,
+            out var frameStride);
         var selectedDrawsInOrder = new List<RenderMeshSnapshot>(selectedDrawCount);
         var meshAssets = new List<RenderMeshAsset>(selectedDrawCount);
         var materialAssets = new List<RenderMaterialAsset>(selectedDrawCount);
@@ -455,6 +459,23 @@ public sealed partial class Renderer
                 structuredStride: null,
                 "mesh-frame-data"),
             frameBytes);
+        var pointLightBuffers = new GraphBufferVersion[pointLightsByCamera.Length];
+
+        for (var cameraIndex = 0; cameraIndex < pointLightsByCamera.Length; cameraIndex++)
+        {
+            var pointLightBytes = CreateMeshPointLightBuffer(
+                pointLightsByCamera[cameraIndex],
+                meshSnapshot.Cameras[cameraIndex].Frame3);
+            pointLightBuffers[cameraIndex] = graph.CreateInitializedTransientBuffer(
+                new BufferDescription(
+                    pointLightBytes.Length,
+                    BufferUsage.Uniform | BufferUsage.CopyDestination,
+                    GpuMemoryKind.DeviceLocal,
+                    structuredStride: null,
+                    $"mesh-point-lights-{cameraIndex}"),
+                pointLightBytes);
+        }
+
         var objectBuffer = graph.CreateInitializedTransientBuffer(
             new BufferDescription(
                 objectBytes.Length,
@@ -613,6 +634,7 @@ public sealed partial class Renderer
                     group,
                     mesh.IndexFormat,
                     frameBuffer,
+                    pointLightBuffers[cameraIndex],
                     frameStride,
                     cameraIndex,
                     objectBuffer,
@@ -639,6 +661,11 @@ public sealed partial class Renderer
                     frameBuffer,
                     GraphBufferUsage.UniformRead,
                     new GraphBufferRange(0, frameBuffer.Description.ByteLength));
+                graph.ReadBuffer(
+                    pass,
+                    pointLightBuffers[cameraIndex],
+                    GraphBufferUsage.UniformRead,
+                    new GraphBufferRange(0, pointLightBuffers[cameraIndex].Description.ByteLength));
                 graph.ReadBuffer(
                     pass,
                     objectBuffer,

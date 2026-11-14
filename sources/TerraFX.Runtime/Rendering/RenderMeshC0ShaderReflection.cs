@@ -36,8 +36,9 @@ internal static class RenderMeshC0ShaderReflection
             inputs.Add(new ShaderIoSignature("TEXCOORD", 2, 2, ShaderValueType.Float2, ShaderInterpolation.Smooth));
         }
 
-        var resources = ImmutableArray.CreateBuilder<ShaderResourceSignature>(textured ? 8 : 2);
+        var resources = ImmutableArray.CreateBuilder<ShaderResourceSignature>(textured ? 9 : 3);
         resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1));
+        resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 1, ShaderResourceKind.UniformBuffer, 1));
         resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Material, 0, ShaderResourceKind.UniformBuffer, 1));
 
         if (textured)
@@ -66,9 +67,7 @@ internal static class RenderMeshC0ShaderReflection
                         new ShaderFieldLayout("RenderArea", ShaderValueType.Float4, 64, 16, 1, 0),
                         new ShaderFieldLayout("CameraPosition", ShaderValueType.Float4, 80, 16, 1, 0),
                         new ShaderFieldLayout("AmbientIrradiance", ShaderValueType.Float4, 96, 16, 1, 0),
-                        new ShaderFieldLayout("LightDirection", ShaderValueType.Float4, 112, 16, 1, 0),
-                        new ShaderFieldLayout("LightRadiance", ShaderValueType.Float4, 128, 16, 1, 0),
-                        new ShaderFieldLayout("LightParameters", ShaderValueType.Float4, 144, 16, 1, 0),
+                        new ShaderFieldLayout("PointLightCount", ShaderValueType.UInt4, 112, 16, 1, 0),
                     ]),
                 new ShaderRecordLayout(
                     "MaterialData",
@@ -78,6 +77,25 @@ internal static class RenderMeshC0ShaderReflection
                         new ShaderFieldLayout("Factors", ShaderValueType.Float4, 16, 16, 1, 0),
                         new ShaderFieldLayout("Emissive", ShaderValueType.Float4, 32, 16, 1, 0),
                         new ShaderFieldLayout("RenderOptions", ShaderValueType.Float4, 48, 16, 1, 0),
+                    ]),
+                new ShaderRecordLayout(
+                    "PointLightData",
+                    RenderMeshC0PointLightBufferBuilder.SizeInBytes,
+                    [
+                        new ShaderFieldLayout(
+                            "PointLightPositionRange",
+                            ShaderValueType.Float4,
+                            RenderMeshC0PointLightBufferBuilder.PositionRangeOffset,
+                            16,
+                            RenderMeshC0PointLightBufferBuilder.Capacity,
+                            16),
+                        new ShaderFieldLayout(
+                            "PointLightRadiance",
+                            ShaderValueType.Float4,
+                            RenderMeshC0PointLightBufferBuilder.RadianceOffset,
+                            16,
+                            RenderMeshC0PointLightBufferBuilder.Capacity,
+                            16),
                     ]),
             ],
             [],
@@ -116,9 +134,7 @@ internal static class RenderMeshC0ShaderReflection
                         new ShaderFieldLayout("RenderArea", ShaderValueType.Float4, 64, 16, 1, 0),
                         new ShaderFieldLayout("CameraPosition", ShaderValueType.Float4, 80, 16, 1, 0),
                         new ShaderFieldLayout("AmbientIrradiance", ShaderValueType.Float4, 96, 16, 1, 0),
-                        new ShaderFieldLayout("LightDirection", ShaderValueType.Float4, 112, 16, 1, 0),
-                        new ShaderFieldLayout("LightRadiance", ShaderValueType.Float4, 128, 16, 1, 0),
-                        new ShaderFieldLayout("LightParameters", ShaderValueType.Float4, 144, 16, 1, 0),
+                        new ShaderFieldLayout("PointLightCount", ShaderValueType.UInt4, 112, 16, 1, 0),
                     ]),
                 new ShaderRecordLayout(
                     "ObjectData",

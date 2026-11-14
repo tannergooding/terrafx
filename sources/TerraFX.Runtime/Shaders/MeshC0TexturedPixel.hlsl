@@ -13,9 +13,16 @@ cbuffer FrameData : register(b0, space0)
     float4 RenderArea;
     float4 CameraPosition;
     float4 AmbientIrradiance;
-    float4 LightDirection;
-    float4 LightRadiance;
-    float4 LightParameters;
+    uint4 PointLightCount;
+};
+
+#if defined(TERRAFX_SPIRV)
+[[vk::binding(1, 0)]]
+#endif
+cbuffer PointLightData : register(b1, space0)
+{
+    float4 PointLightPositionRange[256];
+    float4 PointLightRadiance[256];
 };
 
 #if defined(TERRAFX_SPIRV)
@@ -111,26 +118,16 @@ float4 PSMain(PixelInput input) : SV_Target0
     float3 v = normalize(CameraPosition.xyz - input.WorldPosition);
     float3 color = AmbientIrradiance.rgb * baseColor * (1.0f - metallic) * occlusion / 3.14159265358979323846f;
 
-    if (LightRadiance.w > 0.0f)
+    for (uint lightIndex = 0; lightIndex < PointLightCount.x; lightIndex++)
     {
-        float3 l;
-        float attenuation = 1.0f;
-
-        if (LightParameters.y > 0.5f)
-        {
-            float3 toLight = LightDirection.xyz - input.WorldPosition;
-            float distanceSquared = dot(toLight, toLight);
-            float lightDistance = sqrt(distanceSquared);
-            l = toLight / max(lightDistance, 1.0e-5f);
-            float rangeRatio = lightDistance / LightParameters.x;
-            float rangeFactor = max(0.0f, 1.0f - pow(rangeRatio, 4.0f));
-            attenuation = (rangeFactor * rangeFactor) / max(distanceSquared, 0.0001f);
-        }
-        else
-        {
-            l = normalize(LightDirection.xyz);
-        }
-
+        float4 positionRange = PointLightPositionRange[lightIndex];
+        float3 toLight = positionRange.xyz - input.WorldPosition;
+        float distanceSquared = dot(toLight, toLight);
+        float lightDistance = sqrt(distanceSquared);
+        float3 l = toLight / max(lightDistance, 1.0e-5f);
+        float rangeRatio = lightDistance / positionRange.w;
+        float rangeFactor = max(0.0f, 1.0f - pow(rangeRatio, 4.0f));
+        float attenuation = (rangeFactor * rangeFactor) / max(distanceSquared, 0.0001f);
         float nDotL = saturate(dot(n, l));
         float nDotV = saturate(dot(n, v));
 
@@ -151,7 +148,7 @@ float4 PSMain(PixelInput input) : SV_Target0
             float3 fresnel = f0 + (1.0f - f0) * pow(1.0f - vDotH, 5.0f);
             float3 specular = distribution * fresnel * visibility;
             float3 diffuse = (1.0f - metallic) * (1.0f - fresnel) * baseColor / 3.14159265358979323846f;
-            color += LightRadiance.rgb * (specular + diffuse) * nDotL * attenuation;
+            color += PointLightRadiance[lightIndex].rgb * (specular + diffuse) * nDotL * attenuation;
         }
     }
 

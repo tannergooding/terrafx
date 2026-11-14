@@ -13,6 +13,7 @@ internal sealed class RenderMeshC0GraphPass
         RenderMeshGroup group,
         RenderMeshIndexFormat indexFormat,
         GraphBufferVersion frameBuffer,
+        GraphBufferVersion pointLightBuffer,
         int frameStride,
         int cameraIndex,
         GraphBufferVersion objectBuffer,
@@ -35,6 +36,7 @@ internal sealed class RenderMeshC0GraphPass
         }
 
         ArgumentNullException.ThrowIfNull(frameBuffer);
+        ArgumentNullException.ThrowIfNull(pointLightBuffer);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(frameStride);
         ArgumentOutOfRangeException.ThrowIfNegative(cameraIndex);
         ArgumentNullException.ThrowIfNull(objectBuffer);
@@ -49,6 +51,7 @@ internal sealed class RenderMeshC0GraphPass
         Group = group;
         MeshIndexFormat = indexFormat;
         FrameBuffer = frameBuffer;
+        PointLightBuffer = pointLightBuffer;
         FrameStride = frameStride;
         CameraIndex = cameraIndex;
         ObjectBuffer = objectBuffer;
@@ -95,6 +98,8 @@ internal sealed class RenderMeshC0GraphPass
     internal int ObjectStride { get; }
 
     internal GraphTextureVersion? PackedMetalRoughOcclusionTexture { get; }
+
+    internal GraphBufferVersion PointLightBuffer { get; }
 
     internal GraphBufferVersion VertexBuffer { get; }
 
@@ -178,6 +183,12 @@ internal sealed class RenderMeshC0GraphPass
                     new GraphBufferRange(
                         checked((long)CameraIndex * FrameStride),
                         RenderMeshC0FrameData.SizeInBytes)),
+                new BufferBinding(
+                    ShaderBindingGroup.Frame,
+                    1,
+                    ShaderResourceKind.UniformBuffer,
+                    PointLightBuffer,
+                    new GraphBufferRange(0, PointLightBuffer.Description.ByteLength)),
                 new BufferBinding(
                     ShaderBindingGroup.ObjectData,
                     0,

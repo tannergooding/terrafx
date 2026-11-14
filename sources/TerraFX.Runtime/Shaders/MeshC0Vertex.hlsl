@@ -13,9 +13,7 @@ cbuffer FrameData : register(b0, space0)
     float4 RenderArea;
     float4 CameraPosition;
     float4 AmbientIrradiance;
-    float4 LightDirection;
-    float4 LightRadiance;
-    float4 LightParameters;
+    uint4 PointLightCount;
 };
 
 #if defined(TERRAFX_SPIRV)
