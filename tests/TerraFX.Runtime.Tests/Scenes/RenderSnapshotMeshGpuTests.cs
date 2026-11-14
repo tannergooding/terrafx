@@ -59,7 +59,10 @@ internal sealed partial class SceneAssetStoreTests
     private static async Task RunSnapshotBuiltInMeshC0GraphAsync(
         GraphicsBackend graphicsBackend,
         bool unsupportedAlphaMode = false,
-        bool unsupportedActiveLight = false)
+        bool unsupportedActiveLight = false,
+        bool useBaseColorTexture = false,
+        bool unsupportedBaseTextureSampler = false,
+        bool missingBaseTextureUv0 = false)
     {
         if ((graphicsBackend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
@@ -69,11 +72,14 @@ internal sealed partial class SceneAssetStoreTests
 
         const uint MeshAssetId = 1;
         const uint MaterialAssetId = 2;
+        const uint BaseColorTextureAssetId = 4;
         const int SceneAssetId = 3;
         var sceneAssetId = new AssetId(SceneAssetId);
         var materialRecord = CreateRenderMaterialAssetRecord(
             isSprite: false,
-            CreateRenderMaterialPbrParametersRecord(),
+            CreateRenderMaterialPbrParametersRecord(
+                baseTextureAssetId: useBaseColorTexture ? checked((int)BaseColorTextureAssetId) : null,
+                baseTextureAddressU: unsupportedBaseTextureSampler ? (byte)1 : (byte)0),
             alphaMode: (byte)(unsupportedAlphaMode ? 2 : 0),
             doubleSided: true,
             depthTest: true,
@@ -91,17 +97,44 @@ internal sealed partial class SceneAssetStoreTests
         var sceneRecord = SceneAssetReaderTests.Fixtures.CreateScene(
             sceneAssetId,
             additionalEntityComponents: meshComponents);
-        var packageBytes = Package.CreatePackage(
+        Package.Entry[] packageEntries = [
             new Package.Entry(
                 MeshAssetId,
                 Package.CreateEnvelope(MeshAssetId, EbinPrimitives.Encode(
-                    CreateMeshRecord(MaterialAssetId, skeletonAssetId: null, groupCount: 2, reverseWinding: true)))),
+                    CreateMeshRecord(
+                        MaterialAssetId,
+                        skeletonAssetId: null,
+                        groupCount: 2,
+                        reverseWinding: true,
+                        includeUv0: useBaseColorTexture && !missingBaseTextureUv0)))),
             new Package.Entry(
                 MaterialAssetId,
                 Package.CreateEnvelope(MaterialAssetId, materialRecord)),
             new Package.Entry(
                 checked((uint)sceneAssetId.Value),
-                Package.CreateEnvelope(checked((uint)sceneAssetId.Value), sceneRecord)));
+                Package.CreateEnvelope(checked((uint)sceneAssetId.Value), sceneRecord)),
+        ];
+
+        if (useBaseColorTexture)
+        {
+            packageEntries = [
+                .. packageEntries,
+                new Package.Entry(
+                    BaseColorTextureAssetId,
+                    Package.CreateEnvelope(
+                        BaseColorTextureAssetId,
+                        CreateRenderTextureAssetRecord(
+                            1,
+                            1,
+                            RenderTextureColorSpace.Srgb,
+                            RenderTextureAlphaMode.Straight,
+                            RenderTextureSemantic.Color,
+                            RenderTextureMipPolicy.BaseOnly,
+                            CreateRenderTextureMipRecord(0, 1, 1, [byte.MaxValue, 0, 0, byte.MaxValue])))),
+            ];
+        }
+
+        var packageBytes = Package.CreatePackage(packageEntries);
         var packagePath = Package.WritePackage(packageBytes);
         var schemas = CreateRendererRegistry();
         EngineHost? host = null;
@@ -147,6 +180,13 @@ internal sealed partial class SceneAssetStoreTests
                 });
                 loader = new SceneLoader(world, engineHost.Assets);
             }).ConfigureAwait(false);
+
+            if (missingBaseTextureUv0)
+            {
+                _ = Assert.ThrowsAsync<InvalidDataException>(
+                    () => loader!.PrepareAsync(sceneAssetId, new SceneLoadOptions()));
+                return;
+            }
 
             using (var prepared = await loader!.PrepareAsync(
                        sceneAssetId,
@@ -221,7 +261,10 @@ internal sealed partial class SceneAssetStoreTests
                     TextureUsage.ColorAttachment | TextureUsage.CopySource,
                     "mesh-c0-readback-target")).ConfigureAwait(false);
 
-            if (unsupportedAlphaMode || unsupportedActiveLight)
+            if (unsupportedAlphaMode
+                || unsupportedActiveLight
+                || unsupportedBaseTextureSampler
+                || missingBaseTextureUv0)
             {
                 _ = Assert.Throws<NotSupportedException>(() => engineHost.Renderer.BuildGraph(meshSnapshot, targetTexture));
                 return;
@@ -233,6 +276,7 @@ internal sealed partial class SceneAssetStoreTests
             var plan = compileResponse.Plan
                 ?? throw new InvalidOperationException("The Mesh graph compile omitted its plan.");
             Assert.That(plan.BuiltInSpriteState?.MeshPasses, Has.Count.EqualTo(2));
+            Assert.That(plan.BuiltInSpriteState?.MeshDeferredTextures, Has.Length.EqualTo(useBaseColorTexture ? 1 : 0));
             var meshVertexBufferCount = 0;
             var meshIndexBufferCount = 0;
 
@@ -297,8 +341,8 @@ internal sealed partial class SceneAssetStoreTests
                 Assert.That(coloredPixelCount, Is.GreaterThan(0), $"Mesh C0 emitted no lit pixels; raster bounds were [{minimumX},{minimumY}]-[{maximumX},{maximumY}].");
                 Assert.That(firstColoredPixelOffset, Is.GreaterThanOrEqualTo(0));
                 Assert.That(readbackBytes[firstColoredPixelOffset], Is.EqualTo(2));
-                Assert.That(readbackBytes[firstColoredPixelOffset + 1], Is.EqualTo(2));
-                Assert.That(readbackBytes[firstColoredPixelOffset + 2], Is.EqualTo(2));
+                Assert.That(readbackBytes[firstColoredPixelOffset + 1], Is.EqualTo(useBaseColorTexture ? 0 : 2));
+                Assert.That(readbackBytes[firstColoredPixelOffset + 2], Is.EqualTo(useBaseColorTexture ? 0 : 2));
                 Assert.That(readbackBytes[firstColoredPixelOffset + 3], Is.EqualTo(byte.MaxValue));
                 Assert.That(readbackBytes.AsSpan(0, 4).ToArray(), Is.EqualTo(new byte[] { 0, 0, 0, byte.MaxValue }));
             });
@@ -322,8 +366,27 @@ internal sealed partial class SceneAssetStoreTests
         => RunSnapshotBuiltInMeshC0GraphAsync(GraphicsBackend.Vulkan, unsupportedActiveLight: true);
 
     [Test]
+    public Task SnapshotBuiltInMeshC0GraphRejectsBaseTextureWithoutUv0Async()
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            GraphicsBackend.Vulkan,
+            useBaseColorTexture: true,
+            missingBaseTextureUv0: true);
+
+    [Test]
     public Task SnapshotBuiltInMeshC0GraphRejectsBlendMaterialAsync()
         => RunSnapshotBuiltInMeshC0GraphAsync(GraphicsBackend.Vulkan, unsupportedAlphaMode: true);
+
+    [Test]
+    public Task SnapshotBuiltInMeshC0GraphRejectsUnsupportedBaseTextureSamplerAsync()
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            GraphicsBackend.Vulkan,
+            useBaseColorTexture: true,
+            unsupportedBaseTextureSampler: true);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphRendersBaseColorTextureAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(graphicsBackend, useBaseColorTexture: true);
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]

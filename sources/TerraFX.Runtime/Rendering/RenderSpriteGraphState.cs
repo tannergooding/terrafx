@@ -13,6 +13,7 @@ internal sealed class RenderSpriteGraphState
         TextureFormat toneMapColorTargetFormat,
         ImmutableArray<RenderSpriteGraphBufferUpload> bufferUploads,
         ImmutableArray<RenderSpriteGraphDeferredTexture> deferredTextures,
+        ImmutableArray<RenderMeshGraphDeferredTexture> meshDeferredTextures,
         ImmutableDictionary<RenderPassId, RenderSpriteC0GraphPass> passes,
         ImmutableDictionary<RenderPassId, RenderMeshC0GraphPass> meshPasses,
         ImmutableDictionary<RenderPassId, RenderSpriteToneMapGraphPass> toneMapPasses)
@@ -24,6 +25,7 @@ internal sealed class RenderSpriteGraphState
 
         if (bufferUploads.IsDefault
             || deferredTextures.IsDefault
+            || meshDeferredTextures.IsDefault
             || passes is null
             || meshPasses is null
             || toneMapPasses is null)
@@ -35,6 +37,7 @@ internal sealed class RenderSpriteGraphState
         ToneMapColorTargetFormat = toneMapColorTargetFormat;
         BufferUploads = bufferUploads;
         DeferredTextures = deferredTextures;
+        MeshDeferredTextures = meshDeferredTextures;
         Passes = passes;
         MeshPasses = meshPasses;
         ToneMapPasses = toneMapPasses;
@@ -43,6 +46,8 @@ internal sealed class RenderSpriteGraphState
     internal ImmutableArray<RenderSpriteGraphBufferUpload> BufferUploads { get; }
 
     internal ImmutableArray<RenderSpriteGraphDeferredTexture> DeferredTextures { get; }
+
+    internal ImmutableArray<RenderMeshGraphDeferredTexture> MeshDeferredTextures { get; }
 
     internal ImmutableDictionary<RenderPassId, RenderMeshC0GraphPass> MeshPasses { get; }
 

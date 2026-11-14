@@ -22,6 +22,7 @@
     <TerraFXShaderSource Include="Shaders\SpriteToneMapPixel.hlsl" EntryPoint="PSMain" Stage="pixel" />
     <TerraFXShaderSource Include="Shaders\MeshC0Vertex.hlsl" EntryPoint="VSMain" Stage="vertex" />
     <TerraFXShaderSource Include="Shaders\MeshC0Pixel.hlsl" EntryPoint="PSMain" Stage="pixel" />
+    <TerraFXShaderSource Include="Shaders\MeshC0TexturedPixel.hlsl" EntryPoint="PSMain" Stage="pixel" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(OS)' != 'Windows_NT'">
@@ -35,6 +36,8 @@
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0Vertex.vertex.spv" />
     <EmbeddedResource Include="Shaders\Cooked\MeshC0Pixel.pixel.spv"
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0Pixel.pixel.spv" />
+    <EmbeddedResource Include="Shaders\Cooked\MeshC0TexturedPixel.pixel.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedPixel.pixel.spv" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
@@ -58,6 +61,10 @@
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0Pixel.pixel.dxil" />
     <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0Pixel\MeshC0Pixel.pixel.spv"
                       LogicalName="TerraFX.Rendering.Shaders.MeshC0Pixel.pixel.spv" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0TexturedPixel\MeshC0TexturedPixel.pixel.dxil"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedPixel.pixel.dxil" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)TerraFXShaders\MeshC0TexturedPixel\MeshC0TexturedPixel.pixel.spv"
+                      LogicalName="TerraFX.Rendering.Shaders.MeshC0TexturedPixel.pixel.spv" />
   </ItemGroup>
 
   <Import Project="..\..\tools\TerraFX.ShaderCompiler\ShaderCompilation.targets" />

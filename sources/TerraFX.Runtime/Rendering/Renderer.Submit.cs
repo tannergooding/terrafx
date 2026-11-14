@@ -114,12 +114,13 @@ public sealed partial class Renderer
         var transientTextures = new List<GpuTexture>(graph.TransientTextures.Length);
         var transientTextureGroups = new List<GraphicsTransientTextureGroup>(graph.TransientTextureGroups.Length);
         var transientTexturesByResourceId = new Dictionary<ulong, GpuTexture>(graph.TransientTextures.Length);
-        var spritePageResidencies = new Dictionary<ulong, GpuResidencyLease>();
-        var spritePageInitialStates = new Dictionary<ulong, GraphResourceState>();
-        var spritePageLeases = new List<GpuResidencyLease>();
+        var deferredTextureResidencies = new Dictionary<ulong, GpuResidencyLease>();
+        var deferredTextureInitialStates = new Dictionary<ulong, GraphResourceState>();
+        var deferredTextureLeases = new List<GpuResidencyLease>();
         var initializedSpriteBufferIds = new HashSet<ulong>();
         GpuPipeline? spritePipeline = null;
         GpuPipeline? meshPipeline = null;
+        GpuPipeline? texturedMeshPipeline = null;
         GpuPipeline? spriteToneMapPipeline = null;
         GpuSampler? spriteSampler = null;
         RenderBuiltInSubmissionResources? builtInResources = null;
@@ -159,7 +160,7 @@ public sealed partial class Renderer
                         deferredTexture.DrawIndex,
                         new ResidencyOptions(TextureUsage.Sampled),
                         cancellationToken).ConfigureAwait(false);
-                    spritePageLeases.Add(residency);
+                    deferredTextureLeases.Add(residency);
 
                     if ((residency.DeviceEpoch != graph.DeviceEpoch)
                         || !MatchesTextureDescription(
@@ -169,7 +170,7 @@ public sealed partial class Renderer
                         throw new InvalidOperationException("A Sprite Atlas page residency does not match the compiled graph resource.");
                     }
 
-                    spritePageResidencies.Add(deferredTexture.Version.ResourceId, residency);
+                    deferredTextureResidencies.Add(deferredTexture.Version.ResourceId, residency);
                     var (pageState, pageContentsValid) =
                         residency.Texture.ResourceOwner.GetGraphImportState(deferredTexture.Version.Range);
 
@@ -179,7 +180,46 @@ public sealed partial class Renderer
                         throw new InvalidOperationException("A Sprite Atlas page has unsupported content or state for sampling.");
                     }
 
-                    spritePageInitialStates.Add(deferredTexture.Version.ResourceId, pageState);
+                    deferredTextureInitialStates.Add(deferredTexture.Version.ResourceId, pageState);
+                }
+
+                foreach (var deferredTexture in spriteState.MeshDeferredTextures)
+                {
+                    var meshDraws = snapshot is RenderSnapshot3D meshSnapshot
+                        ? meshSnapshot.MeshDraws
+                        : throw new InvalidOperationException("The built-in Mesh graph has no 3D snapshot.");
+                    var meshDraw = meshDraws[deferredTexture.DrawIndex];
+                    var sceneAssets = retainedAssetPins.GetSceneAssets(meshDraw.SceneInstanceId);
+                    var textureSet = sceneAssets.GetMaterialTextureSet(meshDraw.MaterialAssetId)
+                        ?? throw new InvalidOperationException("The Mesh Material base-color texture is not retained by its Scene assets.");
+                    using var textureAssetLease = textureSet.RetainTexture(new TerraFX.Assets.AssetId(deferredTexture.TextureAssetId));
+                    var residency = await (_gpuResidencyService
+                        ?? throw new InvalidOperationException("The built-in Mesh graph has no GPU residency service."))
+                        .EnsureGpuResidencyAsync(
+                            textureAssetLease,
+                            new ResidencyOptions(TextureUsage.Sampled),
+                            cancellationToken).ConfigureAwait(false);
+                    deferredTextureLeases.Add(residency);
+
+                    if ((residency.DeviceEpoch != graph.DeviceEpoch)
+                        || !MatchesTextureDescription(
+                            residency.Texture.Description,
+                            deferredTexture.Version.Description))
+                    {
+                        throw new InvalidOperationException("A Mesh base-color texture residency does not match the compiled graph resource.");
+                    }
+
+                    deferredTextureResidencies.Add(deferredTexture.Version.ResourceId, residency);
+                    var (textureState, textureContentsValid) =
+                        residency.Texture.ResourceOwner.GetGraphImportState(deferredTexture.Version.Range);
+
+                    if (!textureContentsValid
+                        || (textureState is not (GraphResourceState.General or GraphResourceState.ShaderSampledRead)))
+                    {
+                        throw new InvalidOperationException("A Mesh base-color texture has unsupported content or state for sampling.");
+                    }
+
+                    deferredTextureInitialStates.Add(deferredTexture.Version.ResourceId, textureState);
                 }
 
                 if (spriteState.Passes.Count != 0)
@@ -189,9 +229,31 @@ public sealed partial class Renderer
                         cancellationToken).ConfigureAwait(false);
                 }
 
-                if (spriteState.MeshPasses.Count != 0)
+                var hasUntexturedMeshPass = false;
+                var hasTexturedMeshPass = false;
+
+                foreach (var meshPass in spriteState.MeshPasses.Values)
+                {
+                    if (meshPass.BaseTexture is null)
+                    {
+                        hasUntexturedMeshPass = true;
+                    }
+                    else
+                    {
+                        hasTexturedMeshPass = true;
+                    }
+                }
+
+                if (hasUntexturedMeshPass)
                 {
                     meshPipeline = await CreateMeshC0PipelineAsync(
+                        spriteState.SpriteColorTargetFormat,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                if (hasTexturedMeshPass)
+                {
+                    texturedMeshPipeline = await CreateTexturedMeshC0PipelineAsync(
                         spriteState.SpriteColorTargetFormat,
                         cancellationToken).ConfigureAwait(false);
                 }
@@ -204,13 +266,16 @@ public sealed partial class Renderer
                 }
 
                 if (((spriteState.Passes.Count != 0) && (spritePipeline is null))
-                    || ((spriteState.MeshPasses.Count != 0) && (meshPipeline is null))
+                    || (hasUntexturedMeshPass && (meshPipeline is null))
+                    || (hasTexturedMeshPass && (texturedMeshPipeline is null))
                     || ((spriteState.ToneMapPasses.Count != 0) && (spriteToneMapPipeline is null)))
                 {
                     throw new InvalidOperationException("The built-in render graph has an incomplete pipeline set.");
                 }
 
-                if (spriteState.Passes.Count != 0 || spriteState.ToneMapPasses.Count != 0)
+                if (spriteState.Passes.Count != 0
+                    || hasTexturedMeshPass
+                    || spriteState.ToneMapPasses.Count != 0)
                 {
                     spriteSampler = await device.CreateSamplerAsync(
                         new SamplerDescription(
@@ -231,6 +296,7 @@ public sealed partial class Renderer
                     builtInResources = new RenderBuiltInSubmissionResources(
                         spritePipeline,
                         meshPipeline,
+                        texturedMeshPipeline,
                         spriteToneMapPipeline,
                         spriteSampler);
                 }
@@ -336,7 +402,7 @@ public sealed partial class Renderer
                 {
                     var transientVersion = transientGroup[0];
 
-                    if (spritePageResidencies.TryGetValue(transientVersion.ResourceId, out var residency))
+                    if (deferredTextureResidencies.TryGetValue(transientVersion.ResourceId, out var residency))
                     {
                         transientTexturesByResourceId.Add(transientVersion.ResourceId, residency.Texture);
                     }
@@ -357,14 +423,14 @@ public sealed partial class Renderer
             {
                 var texture = transientTexturesByResourceId[transientVersion.ResourceId];
 
-                if (spritePageResidencies.ContainsKey(transientVersion.ResourceId))
+                if (deferredTextureResidencies.ContainsKey(transientVersion.ResourceId))
                 {
                     var (state, contentsValid) = texture.ResourceOwner.GetGraphImportState(transientVersion.Range);
-                    var expectedState = spritePageInitialStates[transientVersion.ResourceId];
+                    var expectedState = deferredTextureInitialStates[transientVersion.ResourceId];
 
                     if ((state != expectedState) || !contentsValid)
                     {
-                        throw new InvalidOperationException("A Sprite Atlas page changed state before graph submission.");
+                        throw new InvalidOperationException("A deferred Sprite or Mesh texture changed state before graph submission.");
                     }
 
                     transientTextureImports.Add(new GraphTextureImportRecord(
@@ -427,7 +493,7 @@ public sealed partial class Renderer
                     commandLists,
                     transientBufferImports.MoveToImmutable(),
                     transientTextureImports.MoveToImmutable(),
-                    spritePageInitialStates);
+                    deferredTextureInitialStates);
             }
             catch
             {
@@ -470,11 +536,12 @@ public sealed partial class Renderer
                 spriteSampler?.Dispose();
                 spriteToneMapPipeline?.Dispose();
                 meshPipeline?.Dispose();
+                texturedMeshPipeline?.Dispose();
                 spritePipeline?.Dispose();
 
-                foreach (var spritePageLease in spritePageLeases)
+                foreach (var deferredTextureLease in deferredTextureLeases)
                 {
-                    spritePageLease.Dispose();
+                    deferredTextureLease.Dispose();
                 }
 
                 foreach (var transientBufferGroup in transientBufferGroups)

@@ -9,10 +9,12 @@ internal sealed class RenderBuiltInSubmissionResources
     internal RenderBuiltInSubmissionResources(
         GpuPipeline? spritePipeline,
         GpuPipeline? meshPipeline,
+        GpuPipeline? texturedMeshPipeline,
         GpuPipeline? toneMapPipeline,
         GpuSampler? sampler)
     {
         MeshPipeline = meshPipeline;
+        TexturedMeshPipeline = texturedMeshPipeline;
         Sampler = sampler;
         SpritePipeline = spritePipeline;
         ToneMapPipeline = toneMapPipeline;
@@ -23,6 +25,8 @@ internal sealed class RenderBuiltInSubmissionResources
     internal GpuSampler? Sampler { get; }
 
     internal GpuPipeline? SpritePipeline { get; }
+
+    internal GpuPipeline? TexturedMeshPipeline { get; }
 
     internal GpuPipeline? ToneMapPipeline { get; }
 }

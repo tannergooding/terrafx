@@ -8,7 +8,7 @@ namespace TerraFX.Rendering;
 
 internal static class RenderMeshC0VertexBufferBuilder
 {
-    internal const int VertexStride = 6 * sizeof(float);
+    internal const int VertexStride = 8 * sizeof(float);
 
     internal static byte[] Create(RenderMeshAsset mesh)
     {
@@ -26,6 +26,11 @@ internal static class RenderMeshC0VertexBufferBuilder
             var offset = checked(index * VertexStride);
             WriteVector3(bytes, offset, mesh.Positions[index]);
             WriteVector3(bytes, offset + (3 * sizeof(float)), mesh.Normals[index]);
+
+            if (!mesh.Uv0.IsDefault)
+            {
+                WriteVector2(bytes, offset + (6 * sizeof(float)), mesh.Uv0[index]);
+            }
         }
 
         return bytes;
@@ -35,6 +40,12 @@ internal static class RenderMeshC0VertexBufferBuilder
         => BinaryPrimitives.WriteInt32LittleEndian(
             destination.Slice(offset, sizeof(float)),
             BitConverter.SingleToInt32Bits(value));
+
+    private static void WriteVector2(Span<byte> destination, int offset, Vector2 value)
+    {
+        WriteSingle(destination, offset, value.X);
+        WriteSingle(destination, offset + sizeof(float), value.Y);
+    }
 
     private static void WriteVector3(Span<byte> destination, int offset, Vector3 value)
     {

@@ -146,10 +146,17 @@ public sealed partial class Renderer
         && material.DoubleSided
         && (material.CullMode == RenderMaterialAsset.MaterialCullMode.None)
         && (material.RequiredCapabilities == 0x191)
-        && !material.Parameters.BaseTexture.HasValue
         && !material.Parameters.PackedMetalRoughOcclusion.HasValue
         && !material.Parameters.NormalTexture.HasValue
         && !material.Parameters.EmissiveTexture.HasValue;
+
+    private static bool IsSupportedMeshC0BaseTexture(RenderMaterialAsset.TextureBinding binding)
+        => (binding.UvSet == 0)
+        && (binding.Sampler.Minification == 1)
+        && (binding.Sampler.Magnification == 1)
+        && (binding.Sampler.Mip == 0)
+        && (binding.Sampler.AddressU == 0)
+        && (binding.Sampler.AddressV == 0);
 
     private static void ValidateNoMeshC0Lights(RenderSnapshot3D snapshot, CameraSnapshot camera)
     {
@@ -224,9 +231,11 @@ public sealed partial class Renderer
         var materialAssets = new List<RenderMaterialAsset>(selectedDrawCount);
         var vertexBytesByMesh = new List<byte[]>(selectedDrawCount);
         var indexBytesByMesh = new List<byte[]>(selectedDrawCount);
+        var baseTextureVersions = new GraphTextureVersion?[meshSnapshot.MeshDraws.Length];
         var meshGeometryIndices = new int[meshSnapshot.MeshDraws.Length];
         Array.Fill(meshGeometryIndices, -1);
         var meshGeometryIndexByKey = new Dictionary<(Guid SceneInstanceId, int MeshAssetId), int>();
+        var meshTextureVersionsByKey = new Dictionary<(AssetPackageBackingToken BackingToken, int TextureAssetId), GraphTextureVersion>();
         var preparedIndex = 0;
 
         for (var drawIndex = 0; drawIndex < meshSnapshot.MeshDraws.Length; drawIndex++)
@@ -243,7 +252,40 @@ public sealed partial class Renderer
 
             if (!IsMeshC0Material(material))
             {
-                throw new NotSupportedException("Mesh C0 admits only opaque, double-sided PBR materials without texture bindings or blending.");
+                throw new NotSupportedException("Mesh C0 admits only opaque, double-sided PBR materials with no maps other than an optional base-color texture.");
+            }
+
+            if (material.Parameters.BaseTexture is RenderMaterialAsset.TextureBinding baseTextureBinding)
+            {
+                if (!IsSupportedMeshC0BaseTexture(baseTextureBinding))
+                {
+                    throw new NotSupportedException("Mesh C0 base-color textures require UV0, linear minification/magnification, no mip filtering, and clamp addressing.");
+                }
+
+                if (mesh.Uv0.IsDefault)
+                {
+                    throw new NotSupportedException("Mesh C0 base-color textures require an authored UV0 vertex stream.");
+                }
+
+                var textureSet = sceneAssets.GetMaterialTextureSet(draw.MaterialAssetId)
+                    ?? throw new InvalidOperationException("The Mesh Material base-color texture is not retained by its Scene assets.");
+                using var textureLease = textureSet.RetainTexture(baseTextureBinding.TextureAssetId);
+                var textureKey = (textureLease.BackingToken, baseTextureBinding.TextureAssetId.Value);
+
+                if (!meshTextureVersionsByKey.TryGetValue(textureKey, out var textureVersion))
+                {
+                    var textureDescription = GpuResidencyService.CreateTextureDescription(
+                        textureLease.Value,
+                        TextureUsage.Sampled,
+                        $"mesh-base-color-{baseTextureBinding.TextureAssetId.Value}");
+                    textureVersion = graph.CreateDeferredMeshTexture(
+                        textureDescription,
+                        drawIndex,
+                        baseTextureBinding.TextureAssetId.Value);
+                    meshTextureVersionsByKey.Add(textureKey, textureVersion);
+                }
+
+                baseTextureVersions[drawIndex] = textureVersion;
             }
 
             if (!mesh.Colors.IsDefault)
@@ -453,7 +495,8 @@ public sealed partial class Renderer
                     materialBuffer,
                     uniformStride,
                     vertexBuffer,
-                    indexBuffer);
+                    indexBuffer,
+                    baseTextureVersions[drawIndex]);
                 var pass = graph.AddBuiltInMeshRasterPass(
                     new RenderPassDescription(
                         $"TerraFX.MeshC0.Camera{cameraIndex}.Draw{orderIndex}",
@@ -487,6 +530,16 @@ public sealed partial class Renderer
                     indexBuffer,
                     GraphBufferUsage.IndexRead,
                     new GraphBufferRange(0, indexBuffer.Description.ByteLength));
+
+                if (baseTextureVersions[drawIndex] is GraphTextureVersion baseTexture)
+                {
+                    graph.ReadTexture(
+                        pass,
+                        baseTexture,
+                        GraphTextureUsage.SampledRead,
+                        new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color));
+                }
+
                 var colorLoadAction = AttachmentLoadAction.Load;
                 var depthLoadAction = AttachmentLoadAction.Load;
 

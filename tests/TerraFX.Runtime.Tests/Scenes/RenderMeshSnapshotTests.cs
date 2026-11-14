@@ -136,7 +136,8 @@ internal sealed partial class SceneAssetStoreTests
         uint materialAssetId,
         uint? skeletonAssetId,
         int groupCount = 2,
-        bool reverseWinding = false)
+        bool reverseWinding = false,
+        bool includeUv0 = false)
     {
         var positions = CreateMeshPositionOrNormalStream("native/mesh-position");
         var normals = CreateMeshPositionOrNormalStream(
@@ -144,6 +145,22 @@ internal sealed partial class SceneAssetStoreTests
             unitNormals: true,
             normalDirection: reverseWinding ? -Vector3.UnitZ : Vector3.UnitZ);
         var streams = new System.Collections.Generic.List<EbinRecord> { positions, normals };
+
+        if (includeUv0)
+        {
+            var uvElements = new byte[24];
+            BinaryPrimitives.WriteInt32LittleEndian(uvElements.AsSpan(8), BitConverter.SingleToInt32Bits(1.0f));
+            BinaryPrimitives.WriteInt32LittleEndian(uvElements.AsSpan(20), BitConverter.SingleToInt32Bits(1.0f));
+            streams.Add(new EbinRecord(
+                new ContentSchemaIdentityAssignment("native/mesh-uv").SchemaId,
+                1,
+                0,
+                [
+                    EbinPrimitives.UInt8(1, 0),
+                    EbinPrimitives.UInt32(2, 8),
+                    CreateMeshFixedArrayField(3, elementKind: 14, stride: 8, uvElements),
+                ]));
+        }
 
         if (skeletonAssetId is not null)
         {

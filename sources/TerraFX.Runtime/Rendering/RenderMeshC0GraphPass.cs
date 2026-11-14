@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Collections.Immutable;
 using TerraFX.Graphics;
 
 namespace TerraFX.Rendering;
@@ -19,7 +20,8 @@ internal sealed class RenderMeshC0GraphPass
         GraphBufferVersion materialBuffer,
         int materialStride,
         GraphBufferVersion vertexBuffer,
-        GraphBufferVersion indexBuffer)
+        GraphBufferVersion indexBuffer,
+        GraphTextureVersion? baseTexture)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(drawIndex);
         ArgumentNullException.ThrowIfNull(frameBuffer);
@@ -45,7 +47,10 @@ internal sealed class RenderMeshC0GraphPass
         MaterialStride = materialStride;
         VertexBuffer = vertexBuffer;
         IndexBuffer = indexBuffer;
+        BaseTexture = baseTexture;
     }
+
+    internal GraphTextureVersion? BaseTexture { get; }
 
     internal int CameraIndex { get; }
 
@@ -73,7 +78,7 @@ internal sealed class RenderMeshC0GraphPass
 
     internal void Record(scoped ref CommandRecorder recorder, RenderBuiltInSubmissionResources resources)
     {
-        var pipeline = resources.MeshPipeline
+        var pipeline = (BaseTexture is null ? resources.MeshPipeline : resources.TexturedMeshPipeline)
             ?? throw new InvalidOperationException("The built-in Mesh pass has no Mesh pipeline.");
         recorder.SetPipeline(pipeline.Handle);
         recorder.SetVertexBuffer(new VertexBufferBinding(
@@ -85,6 +90,25 @@ internal sealed class RenderMeshC0GraphPass
             IndexBuffer,
             new GraphBufferRange(0, IndexBuffer.Description.ByteLength),
             MeshIndexFormat == RenderMeshIndexFormat.UInt16 ? TerraFX.Graphics.IndexFormat.UInt16 : TerraFX.Graphics.IndexFormat.UInt32));
+        ImmutableArray<TextureBinding> textures = BaseTexture is GraphTextureVersion baseTexture
+            ? [
+                new TextureBinding(
+                ShaderBindingGroup.Material,
+                0,
+                ShaderResourceKind.SampledImage,
+                baseTexture,
+                new GraphTextureRange(0, 1, 0, 1, TextureAspect.Color))
+            ]
+            : [];
+        ImmutableArray<SamplerBinding> samplers = BaseTexture is null
+            ? []
+            : [
+                new SamplerBinding(
+                ShaderBindingGroup.Material,
+                0,
+                resources.Sampler
+                    ?? throw new InvalidOperationException("The textured Mesh pass has no default sampler."))
+            ];
         var bindings = new BindingSet(
             [
                 new BufferBinding(
@@ -112,8 +136,8 @@ internal sealed class RenderMeshC0GraphPass
                         checked((long)DrawIndex * MaterialStride),
                         RenderMeshC0MaterialData.SizeInBytes)),
             ],
-            [],
-            []);
+            textures,
+            samplers);
         recorder.SetBindings(bindings);
         recorder.DrawIndexed(new DrawIndexedArguments(
             Group.IndexCount,

@@ -72,7 +72,8 @@ internal sealed partial class SceneAssetStoreTests
         int? normalTextureAssetId = null,
         int? emissiveTextureAssetId = null,
         float roughness = 1.0f,
-        byte baseTextureMip = 0)
+        byte baseTextureMip = 0,
+        byte baseTextureAddressU = 0)
     {
         var fields = new System.Collections.Generic.List<SceneHierarchyCodecTests.FixtureBuilder.FixtureField> {
             SceneHierarchyCodecTests.FixtureBuilder.CreateFloatGeometryField(1, 16, 1.0f, 1.0f, 1.0f, 1.0f),
@@ -86,7 +87,10 @@ internal sealed partial class SceneAssetStoreTests
         {
             fields.Add(SceneHierarchyCodecTests.FixtureBuilder.CreateRecordField(
                 6,
-                CreateRenderMaterialTextureBindingRecord(baseTexture, mip: baseTextureMip),
+                CreateRenderMaterialTextureBindingRecord(
+                    baseTexture,
+                    mip: baseTextureMip,
+                    addressU: baseTextureAddressU),
                 isRequired: false));
         }
 
@@ -151,7 +155,12 @@ internal sealed partial class SceneAssetStoreTests
             [.. fields]);
     }
 
-    private static byte[] CreateRenderMaterialTextureBindingRecord(int textureAssetId, byte mip = 0, byte uvSet = 0)
+    private static byte[] CreateRenderMaterialTextureBindingRecord(
+        int textureAssetId,
+        byte mip = 0,
+        byte uvSet = 0,
+        byte addressU = 0,
+        byte addressV = 0)
     {
         var textureReference = SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
             new ContentSchemaIdentityAssignment("native/asset-reference").SchemaId,
@@ -169,8 +178,8 @@ internal sealed partial class SceneAssetStoreTests
             SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(1, 1),
             SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(2, 1),
             SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(3, mip),
-            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(4, 0),
-            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(5, 0));
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(4, addressU),
+            SceneHierarchyCodecTests.FixtureBuilder.CreateUInt8Field(5, addressV));
         return SceneHierarchyCodecTests.FixtureBuilder.EncodeRecord(
             new ContentSchemaIdentityAssignment("native/texture-binding").SchemaId,
             1,

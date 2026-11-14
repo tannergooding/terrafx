@@ -33,9 +33,15 @@ public sealed partial class Renderer
         return storage.TransferToOwnedBuffer();
     }
 
-    internal async Task<GpuPipeline> CreateMeshC0PipelineAsync(
+    internal Task<GpuPipeline> CreateMeshC0PipelineAsync(
         TextureFormat colorTargetFormat,
         CancellationToken cancellationToken = default)
+        => CreateMeshC0PipelineAsync(colorTargetFormat, textured: false, cancellationToken);
+
+    internal async Task<GpuPipeline> CreateMeshC0PipelineAsync(
+        TextureFormat colorTargetFormat,
+        bool textured,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var device = _graphicsDevice
@@ -49,7 +55,9 @@ public sealed partial class Renderer
             "TerraFX.Rendering.Shaders.MeshC0Vertex.vertex.",
             binaryFormat);
         using var pixelStorage = LoadShaderBytecode(
-            "TerraFX.Rendering.Shaders.MeshC0Pixel.pixel.",
+            textured
+                ? "TerraFX.Rendering.Shaders.MeshC0TexturedPixel.pixel."
+                : "TerraFX.Rendering.Shaders.MeshC0Pixel.pixel.",
             binaryFormat);
         using var vertexBytecode = vertexStorage.AcquireReadLease(0, vertexStorage.Length);
         using var pixelBytecode = pixelStorage.AcquireReadLease(0, pixelStorage.Length);
@@ -65,11 +73,12 @@ public sealed partial class Renderer
                         ShaderStage.Pixel,
                         binaryFormat,
                         pixelBytecode,
-                        RenderMeshC0ShaderReflection.Pixel),
+                        textured ? RenderMeshC0ShaderReflection.TexturedPixel : RenderMeshC0ShaderReflection.Pixel),
                 ],
                 [
                     new VertexElementDescription(0, VertexElementFormat.Float3, 0),
                     new VertexElementDescription(1, VertexElementFormat.Float3, 3 * sizeof(float)),
+                    new VertexElementDescription(2, VertexElementFormat.Float2, 6 * sizeof(float)),
                 ],
                 vertexStride: RenderMeshC0VertexBufferBuilder.VertexStride,
                 [colorTargetFormat],
@@ -182,4 +191,9 @@ public sealed partial class Renderer
                 bindingLayoutVersion: 1),
             cancellationToken).ConfigureAwait(false);
     }
+
+    internal Task<GpuPipeline> CreateTexturedMeshC0PipelineAsync(
+        TextureFormat colorTargetFormat,
+        CancellationToken cancellationToken = default)
+        => CreateMeshC0PipelineAsync(colorTargetFormat, textured: true, cancellationToken);
 }

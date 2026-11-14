@@ -21,7 +21,10 @@ public sealed class RenderGraph
     private const string UninitializedReadCode = "render-graph.uninitialized-read";
     private static long s_nextGraphOwnerId;
     private readonly List<RenderGraphAttachmentWrite> _attachmentWrites = [];
+    private readonly List<RenderMeshGraphDeferredTexture> _builtInMeshDeferredTextures = [];
     private readonly Dictionary<RenderPassId, RenderMeshC0GraphPass> _builtInMeshPasses = [];
+    private readonly List<RenderSpriteGraphBufferUpload> _builtInSpriteBufferUploads = [];
+    private readonly List<RenderSpriteGraphDeferredTexture> _builtInSpriteDeferredTextures = [];
     private readonly Dictionary<RenderPassId, RenderSpriteC0GraphPass> _builtInSpritePasses = [];
     private readonly Dictionary<RenderPassId, RenderSpriteToneMapGraphPass> _builtInSpriteToneMapPasses = [];
     private RenderGraphCompileResponse? _compiledResponse;
@@ -32,8 +35,6 @@ public sealed class RenderGraph
     private readonly Dictionary<RenderPassId, RenderPassCallback> _passCallbacks = [];
     private readonly Dictionary<RenderPassId, RenderGraphPassKind> _passKinds = [];
     private readonly Dictionary<RenderPassId, RenderArea?> _passRenderAreas = [];
-    private readonly List<RenderSpriteGraphBufferUpload> _builtInSpriteBufferUploads = [];
-    private readonly List<RenderSpriteGraphDeferredTexture> _builtInSpriteDeferredTextures = [];
     private readonly HashSet<ulong> _nonAliasableTransientBufferIds = [];
     private readonly HashSet<ulong> _nonAliasableTransientTextureIds = [];
     private GraphTextureVersion? _builtInSurfaceColorTargetVersion;
@@ -572,6 +573,30 @@ public sealed class RenderGraph
         return pass;
     }
 
+    internal GraphTextureVersion CreateDeferredMeshTexture(
+        TextureDescription description,
+        int drawIndex,
+        int textureAssetId)
+    {
+        EnsureCanMutate();
+        ArgumentNullException.ThrowIfNull(description);
+        ArgumentOutOfRangeException.ThrowIfNegative(drawIndex);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(textureAssetId);
+
+        if ((description.Usage & TextureUsage.Sampled) == 0)
+        {
+            throw new ArgumentException("A deferred Mesh texture must support sampling.", nameof(description));
+        }
+
+        var version = _resources.CreateTransientTexture(
+            description,
+            contentsValid: true,
+            GraphResourceState.General);
+        _builtInMeshDeferredTextures.Add(new RenderMeshGraphDeferredTexture(version, drawIndex, textureAssetId));
+        _ = _nonAliasableTransientTextureIds.Add(version.ResourceId);
+        return version;
+    }
+
     internal GraphTextureVersion CreateDeferredTransientTexture(TextureDescription description, int drawIndex)
     {
         EnsureCanMutate();
@@ -706,7 +731,8 @@ public sealed class RenderGraph
             && _builtInMeshPasses.Count == 0
             && _builtInSpriteToneMapPasses.Count == 0
             && _builtInSpriteBufferUploads.Count == 0
-            && _builtInSpriteDeferredTextures.Count == 0)
+            && _builtInSpriteDeferredTextures.Count == 0
+            && _builtInMeshDeferredTextures.Count == 0)
         {
             return null;
         }
@@ -719,6 +745,7 @@ public sealed class RenderGraph
             targetFormat,
             [.. _builtInSpriteBufferUploads],
             [.. _builtInSpriteDeferredTextures],
+            [.. _builtInMeshDeferredTextures],
             _builtInSpritePasses.ToImmutableDictionary(),
             _builtInMeshPasses.ToImmutableDictionary(),
             _builtInSpriteToneMapPasses.ToImmutableDictionary());

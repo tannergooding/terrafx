@@ -94,6 +94,21 @@ internal sealed class RenderMaterialTextureSet : IDisposable
         }
     }
 
+    internal AssetLease<RenderTextureAsset> RetainTexture(AssetId assetId)
+    {
+        ThrowIfDisposed();
+
+        foreach (var textureLease in _textureLeases)
+        {
+            if (textureLease.AssetId == assetId)
+            {
+                return textureLease.Retain();
+            }
+        }
+
+        throw new ArgumentException("The Texture is not retained by this Material texture set.", nameof(assetId));
+    }
+
     private void ThrowIfDisposed()
         => ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
 }
