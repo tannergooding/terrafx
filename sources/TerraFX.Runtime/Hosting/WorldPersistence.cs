@@ -36,6 +36,7 @@ public sealed class WorldPersistence : IAsyncDisposable
     private readonly AssetStore _assets;
     private TaskCompletionSource? _disposeCompletion;
     private bool _disposed;
+    private readonly EngineHost? _host;
     private readonly Lock _lifetimeGate = new();
     private readonly WorldPersistenceMetadata _metadata;
 
@@ -44,12 +45,31 @@ public sealed class WorldPersistence : IAsyncDisposable
     /// <param name="metadata">The caller-supplied application and runtime identity.</param>
     /// <exception cref="ArgumentNullException">Either argument is null.</exception>
     public WorldPersistence(AssetStore assets, WorldPersistenceMetadata metadata)
+        : this(assets, metadata, host: null)
+    {
+    }
+
+    internal WorldPersistence(AssetStore assets, WorldPersistenceMetadata metadata, EngineHost? host)
     {
         ArgumentNullException.ThrowIfNull(assets);
         ArgumentNullException.ThrowIfNull(metadata);
         _assets = assets;
         _metadata = metadata;
+        _host = host;
     }
+
+    internal EngineHost? Host => _host;
+
+    internal static WorldLoadReceipt CreateLoadRejectedReceipt(string code, string message, Guid? worldGuid)
+        => new(
+            WorldLoadStatus.Rejected,
+            replacementWorld: null,
+            oldWorldRetirement: null,
+            identityRemap: null,
+            sourceWorldGuid: null,
+            targetRecordWorldGuid: null,
+            loadedTick: null,
+            rejection: CreateCommitLoadDiagnostic(code, message, worldGuid));
 
     private static long Align16(long value)
     {
@@ -60,6 +80,28 @@ public sealed class WorldPersistence : IAsyncDisposable
 
         return (value + 15) & ~15L;
     }
+
+    private static Diagnostic CreateCommitLoadDiagnostic(string code, string message, Guid? worldGuid)
+        => new(
+            code,
+            DiagnosticSeverity.Error,
+            Stopwatch.GetTimestamp(),
+            hostId: null,
+            worldGuid: worldGuid,
+            deviceId: null,
+            surfaceId: null,
+            deviceEpoch: null,
+            surfaceEpoch: null,
+            swapchainEpoch: null,
+            tick: null,
+            systemId: null,
+            passId: null,
+            assetId: null,
+            commandIdentity: null,
+            operation: "CommitLoadAsync",
+            nativeResult: null,
+            message: message,
+            context: []);
 
     private static Diagnostic CreateDiagnostic(string code, string message, Guid? worldGuid)
         => new(
@@ -520,6 +562,93 @@ public sealed class WorldPersistence : IAsyncDisposable
                 || string.Equals(drive.DriveFormat, "ReFS", StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>Captures and publishes one prepared World replacement at its exact owner boundary.</summary>
+    /// <param name="plan">The single-use target-bound restore plan.</param>
+    /// <param name="cancellationToken">The token checked before commit capture.</param>
+    /// <returns>The terminal load outcome.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="plan"/> is null.</exception>
+    /// <exception cref="ObjectDisposedException">This persistence service has been disposed.</exception>
+    /// <exception cref="OperationCanceledException">Cancellation was requested before commit capture.</exception>
+    public Task<WorldLoadReceipt> CommitLoadAsync(
+        WorldLoadPlan plan,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        cancellationToken.ThrowIfCancellationRequested();
+        var targetWorld = plan.TargetWorld;
+
+        if (_host is null)
+        {
+            if (targetWorld.IsHostedWorld)
+            {
+                return Task.FromResult(CreateLoadRejectedReceipt(
+                    "load-target-binding-stale",
+                    "The target World is owned by an EngineHost and cannot be replaced by standalone persistence.",
+                    targetWorld.WorldGuid));
+            }
+
+            targetWorld.EnsureLoadCommitOwnerThread();
+        }
+        else if (!targetWorld.IsHostedWorld)
+        {
+            return Task.FromResult(CreateLoadRejectedReceipt(
+                "load-target-binding-stale",
+                "The target World is not owned by this EngineHost.",
+                targetWorld.WorldGuid));
+        }
+
+        BeginLoad();
+        WorldReplacementOperation? operation = null;
+
+        try
+        {
+            operation = new WorldReplacementOperation(this, plan);
+
+            if (!operation.TryCapture(out var captureRejection))
+            {
+                operation.EndLoadOperation();
+                return Task.FromResult(captureRejection
+                    ?? throw new InvalidOperationException("A refused load capture omitted its rejection receipt."));
+            }
+
+            if (_host is null)
+            {
+                try
+                {
+                    return Task.FromResult(operation.ExecuteAtOwnerBoundary());
+                }
+                finally
+                {
+                    operation.EndLoadOperation();
+                }
+            }
+
+            if (!_host.TryEnqueueWorldReplacement(operation, out var completion))
+            {
+                var rejection = operation.RejectQueueFull();
+                operation.EndLoadOperation();
+                return Task.FromResult(rejection);
+            }
+
+            return completion
+                ?? throw new InvalidOperationException("The EngineHost admitted a World replacement without its completion task.");
+        }
+        catch
+        {
+            if (operation is null)
+            {
+                EndLoad();
+            }
+            else
+            {
+                operation.AbandonCapturedState();
+                operation.EndLoadOperation();
+            }
+
+            throw;
+        }
+    }
+
     /// <summary>Waits for accepted saves without disposing the caller-owned AssetStore.</summary>
     public ValueTask DisposeAsync()
     {
@@ -840,6 +969,9 @@ public sealed class WorldPersistence : IAsyncDisposable
             }
         }
     }
+
+    internal void EndLoadOperation()
+        => EndLoad();
 
     private void BeginLoad()
     {
@@ -1249,11 +1381,15 @@ public sealed class WorldPersistence : IAsyncDisposable
             }
 
             var sourceBytes = Math.Max(1L, checked((long)fileRecord.Length + readWorkspaceBytes));
+            var remapBytes = WorldIdentityRemapHelpers.MeasureRetainedBytes(
+                checkpointContents.WorldContents.Ecs.LiveEntityCount,
+                checkpointContents.WorldContents.Ecs.LiveSceneInstanceCount);
             var dataBytes = Math.Max(
                 1L,
                 checked(
                     restoreStateBytes
                     + restoreEcsPlan.OwnedByteReservation
+                    + remapBytes
                     + checkpointContents.WorldRecord.Length
                     + checkpointContents.HeaderRecord.Length
                     + 512L));
@@ -1306,6 +1442,7 @@ public sealed class WorldPersistence : IAsyncDisposable
             sourcePerWorldUse = null;
             restoreIdentityUse = null;
             preparedState = new WorldLoadPreparedState(
+                _assets,
                 constructionPlan,
                 replacementPreparation,
                 packageLease,

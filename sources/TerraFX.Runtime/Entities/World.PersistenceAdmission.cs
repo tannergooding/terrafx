@@ -654,7 +654,8 @@ public sealed partial class World
                 GetRestoreControlStorageByteReservation(restoreControlRecordCount),
                 restoreSceneControlPayloadBytes,
                 restoreAttachmentCount,
-                GetRestoreAttachmentStorageByteReservation(restoreAttachmentCount));
+                GetRestoreAttachmentStorageByteReservation(restoreAttachmentCount),
+                targetWorld: this);
             domainReservation = null;
             planCreated = true;
             return true;

@@ -226,6 +226,16 @@ internal static class WorldPersistenceIdentityHistoryReader
                 ref lineageMembershipCount,
                 parameterName);
 
+            if ((branchData.createdAtNextTick == nextTick)
+                && ((branchData.branchId != activeBranchId)
+                    || (index != (branchCount - 1))
+                    || (branchData.firstAssignmentOrdinal != nextAssignmentOrdinal)
+                    || branchData.hasForkSource
+                    || !branch.TryGetField(7, out _)))
+            {
+                throw new ArgumentException("Only a new active source-bound Branch may begin at the restored next tick.", parameterName);
+            }
+
             if ((index > 0) && (branchData.firstAssignmentOrdinal < previousFirstOrdinal))
             {
                 throw new ArgumentException("Identity branches are not ordered by their first assignment ordinal.", parameterName);
@@ -686,7 +696,7 @@ internal static class WorldPersistenceIdentityHistoryReader
             || (expectedIndex == 0 != !hasParent)
             || ((expectedIndex == 0) && ((createdAtNextTick != 0) || (firstAssignmentOrdinal != 1)))
             || (createdAtNextTick < 0)
-            || (createdAtNextTick >= nextTick)
+            || (createdAtNextTick > nextTick)
             || (firstAssignmentOrdinal < 1)
             || (firstAssignmentOrdinal > nextAssignmentOrdinal)
             || (kind != (expectedIndex == 0 ? 1 : 2)))

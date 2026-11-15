@@ -30,6 +30,8 @@ internal sealed class WorldDomainOperationCreditBundle : IDisposable
 
     internal WorldDomainOperationCredit Data => _data;
 
+    internal WorldAdmissionDomain Domain => _source.Domain;
+
     internal WorldDomainOperationCredit Source => _source;
 
     internal WorldDomainOperationCredit Target => _target;

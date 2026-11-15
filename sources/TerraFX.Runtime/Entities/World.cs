@@ -97,7 +97,7 @@ public sealed partial class World : IDisposable
     private readonly WorldOwnerControlRequest?[] _ownerControlRequests;
     private readonly uint _ownerId;
     private readonly int _ownerThreadId;
-    private readonly bool _ownsAdmissionDomain;
+    private bool _ownsAdmissionDomain;
     private readonly bool _ownsWorkerPool;
     private readonly Lock _persistenceAdmissionGate = new();
     private long _publicationSequence;
@@ -1364,8 +1364,18 @@ public sealed partial class World : IDisposable
         }
         finally
         {
-            attachmentQuarantineReservation?.Release();
-            _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
+            var restoreLifetimeLease = _restoreLifetimeLease;
+            _restoreLifetimeLease = null;
+
+            try
+            {
+                restoreLifetimeLease?.Dispose();
+            }
+            finally
+            {
+                attachmentQuarantineReservation?.Release();
+                _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
+            }
         }
     }
 

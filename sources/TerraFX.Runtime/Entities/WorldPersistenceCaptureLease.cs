@@ -19,6 +19,7 @@ internal ref struct WorldPersistenceCaptureLease
     private readonly SpatialFrame3 _initialFrame3;
     private readonly float _initialTimeScale;
     private bool _isDisposed;
+    private readonly bool _isRestoreValidation;
     private readonly long _nextControlSequence;
     private readonly long _nextOwnerRequestSequence;
     private readonly long _nextTickIndex;
@@ -55,7 +56,8 @@ internal ref struct WorldPersistenceCaptureLease
         SpatialFrame2? initialFrame2,
         SpatialFrame3 frame3,
         SpatialFrame2? frame2,
-        IWorldSceneParticipant? sceneParticipant)
+        IWorldSceneParticipant? sceneParticipant,
+        bool isRestoreValidation = false)
     {
         ArgumentNullException.ThrowIfNull(world);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sequence);
@@ -102,6 +104,7 @@ internal ref struct WorldPersistenceCaptureLease
         Frame2 = frame2;
         _sceneParticipant = sceneParticipant;
         _isDisposed = false;
+        _isRestoreValidation = isRestoreValidation;
     }
 
     internal readonly long AcceptedOwnerRequests => _acceptedOwnerRequests;
@@ -127,6 +130,8 @@ internal ref struct WorldPersistenceCaptureLease
     internal readonly float InitialTimeScale => _initialTimeScale;
 
     internal readonly bool IsDisposed => _isDisposed;
+
+    internal readonly bool IsRestoreValidation => _isRestoreValidation;
 
     internal readonly long NextBarrierEpoch => checked(_nextTickIndex + 1);
 

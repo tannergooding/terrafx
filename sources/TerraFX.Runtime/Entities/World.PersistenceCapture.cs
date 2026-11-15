@@ -110,6 +110,112 @@ public sealed partial class World
         }
     }
 
+    internal WorldPersistenceCaptureLease AcquireRestoreValidationCaptureLease()
+    {
+        ThrowIfAttachmentCallbackActive();
+        ThrowIfSystemInvocationActive();
+        ThrowIfDisposed();
+        ThrowIfFaulted();
+        EnsureOwnerThread();
+
+        if (!_isRestoreCandidate
+            || !_isCandidateInitialized
+            || !_isRestoreEcsRowsRestored
+            || !_isRestoreHierarchyInstalled
+            || !_isRestoreClockStateRestored)
+        {
+            throw new InvalidOperationException("Restore validation capture requires a complete unpublished restore candidate.");
+        }
+
+        if (Interlocked.CompareExchange(ref _isStructuralOperationActive, 1, 0) != 0)
+        {
+            throw new InvalidOperationException("The restore candidate cannot begin canonical validation during another operation.");
+        }
+
+        IWorldSceneParticipant? sceneParticipant = null;
+        var sceneCaptureActive = false;
+        long acceptedOwnerRequests;
+        long nextOwnerRequestSequence;
+
+        try
+        {
+            lock (_ownerControlGate)
+            {
+                if ((_ownerControlRequestCount != 0)
+                    || (_acceptedOwnerRequests != _completedOwnerRequests)
+                    || (_completedOwnerRequests != _committedOwnerRequests))
+                {
+                    throw new InvalidOperationException("Restore validation requires every candidate owner request to be committed.");
+                }
+
+                _isPersistenceCaptureLeaseActive = true;
+                acceptedOwnerRequests = _acceptedOwnerRequests;
+                nextOwnerRequestSequence = _nextOwnerRequestSequence;
+            }
+
+            sceneParticipant = _sceneParticipant;
+
+            if ((sceneParticipant is not null) && !sceneParticipant.TryBeginPersistenceCapture())
+            {
+                throw new InvalidOperationException("Restore validation requires an empty, quiescent Scene owner-request queue.");
+            }
+
+            sceneCaptureActive = sceneParticipant is not null;
+
+            if (_canonicalMutationRevision != _committedMutationRevision)
+            {
+                throw new InvalidOperationException("Restore validation requires a stable candidate mutation revision.");
+            }
+
+            var sequence = checked(_nextPersistenceCaptureLeaseSequence + 1);
+            _nextPersistenceCaptureLeaseSequence = sequence;
+            _activePersistenceCaptureLeaseSequence = sequence;
+            var frameCohort = _currentFrameCohort;
+
+            return new WorldPersistenceCaptureLease(
+                this,
+                sequence,
+                frameCohort.CohortGeneration,
+                _canonicalMutationRevision,
+                _committedMutationRevision,
+                _publicationSequence,
+                checked(_nextTickIndex - 1),
+                _nextTickIndex,
+                _worldGuid,
+                _tickRate,
+                _initialTimeScale,
+                _timeScale,
+                _timeScaleSegmentSequence,
+                _nextControlSequence,
+                nextOwnerRequestSequence,
+                acceptedOwnerRequests,
+                Profile,
+                _controlRecordCount,
+                _initialFrame3,
+                _initialFrame2,
+                frameCohort.Frame3,
+                frameCohort.Frame2,
+                sceneCaptureActive ? sceneParticipant : null,
+                isRestoreValidation: true);
+        }
+        catch
+        {
+            if (sceneCaptureActive && (sceneParticipant is not null))
+            {
+                sceneParticipant.EndPersistenceCapture();
+            }
+
+            lock (_ownerControlGate)
+            {
+                _isPersistenceCaptureLeaseActive = false;
+            }
+
+            _activePersistenceCaptureLeaseSequence = 0;
+            _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
+            throw;
+        }
+    }
+
     internal void CopyPersistenceFreeSlots(WorldPersistenceCaptureLease lease, scoped Span<uint> destination)
     {
         ValidatePersistenceCaptureLease(lease);
@@ -564,6 +670,22 @@ public sealed partial class World
             || (lease.WorldGuid != _worldGuid))
         {
             throw new InvalidOperationException("The persistence capture lease is stale or no longer active.");
+        }
+
+        if (lease.IsRestoreValidation)
+        {
+            if (!_isRestoreCandidate
+                || !_isRestoreEcsRowsRestored
+                || !_isRestoreHierarchyInstalled
+                || !_isRestoreClockStateRestored
+                || (lease.PublicationSequence != _publicationSequence)
+                || (lease.CompletedTick != checked(_nextTickIndex - 1))
+                || (lease.NextTickIndex != _nextTickIndex))
+            {
+                throw new InvalidOperationException("The unpublished restore validation state changed during capture.");
+            }
+
+            return;
         }
 
         var publication = Volatile.Read(ref _committedPublication);

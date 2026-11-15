@@ -10,6 +10,7 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
     private readonly Lock _gate = new();
     private WorldDomainOperationCreditBundle? _credits;
     private readonly WorldGuidGrant _currentGrant;
+    private bool _isCaptured;
     private bool _isCommitted;
     private bool _isDisposed;
     private bool _isReplacementGrantTransferred;
@@ -26,6 +27,20 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
         _currentGrant = currentGrant;
         _replacementGrant = replacementGrant;
         _credits = credits;
+    }
+
+    internal WorldDomainOperationCredit DataCredit
+    {
+        get
+        {
+            lock (_gate)
+            {
+                ObjectDisposedException.ThrowIf(_isDisposed, this);
+                return (_credits
+                    ?? throw new InvalidOperationException("The replacement preparation has no load operation-credit bundle."))
+                    .Data;
+            }
+        }
     }
 
     public void Dispose()
@@ -105,6 +120,17 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
         }
     }
 
+    internal bool MarkCapturedUnderAdmissionGate()
+    {
+        if (_isDisposed || _isCommitted || _isCaptured || (_credits is null))
+        {
+            return false;
+        }
+
+        _isCaptured = true;
+        return true;
+    }
+
     internal void TransferReplacementGrantToCandidate()
     {
         lock (_gate)
@@ -115,6 +141,29 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
             }
 
             _isReplacementGrantTransferred = true;
+        }
+    }
+
+    internal bool TryCaptureCommit(
+        out WorldGuidRefusal bindingRefusal,
+        out WorldAdmissionRefusal admissionRefusal)
+    {
+        lock (_gate)
+        {
+            if (_isDisposed || _isCommitted || _isCaptured || (_credits is null))
+            {
+                bindingRefusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
+                admissionRefusal = WorldAdmissionRefusal.None;
+                return false;
+            }
+
+            return _registry.TryCaptureReplacement(
+                _currentGrant,
+                _replacementGrant,
+                _credits.Domain,
+                this,
+                out bindingRefusal,
+                out admissionRefusal);
         }
     }
 
@@ -153,7 +202,8 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
 
     internal bool TryCommitWithCredits(
         out WorldGuidGrant replacementGrant,
-        out WorldDomainOperationCreditBundle? credits)
+        out WorldDomainOperationCreditBundle? credits,
+        WorldLineageGrant? replacementLineageGrant = null)
     {
         lock (_gate)
         {
@@ -164,7 +214,15 @@ internal sealed class WorldGuidReplacementPreparation : IDisposable
                 return false;
             }
 
-            if (!_registry.TryCommitReplacement(_currentGrant, _replacementGrant))
+            var replacementCommitted = (replacementLineageGrant is WorldLineageGrant lineageGrant)
+                ? _registry.TryCommitReplacementWithLineage(
+                    _currentGrant,
+                    _replacementGrant,
+                    _credits.Domain,
+                    lineageGrant)
+                : _registry.TryCommitReplacement(_currentGrant, _replacementGrant);
+
+            if (!replacementCommitted)
             {
                 if (!_isReplacementGrantTransferred && !_registry.TryReleaseFresh(_replacementGrant))
                 {

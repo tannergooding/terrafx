@@ -76,7 +76,7 @@ public sealed partial class EngineHost : IAsyncDisposable
         _graphicsDevice = graphicsDevice;
         graphicsDevice?.SetDeviceLostCallback(HandleGraphicsDeviceLost);
         _gpuResidency = (graphicsDevice is null) ? null : new GpuResidencyService(graphicsDevice);
-        _persistence = new WorldPersistence(assets, options.PersistenceMetadata);
+        _persistence = new WorldPersistence(assets, options.PersistenceMetadata, this);
         _renderer = Renderer.Create(graphicsDevice, _gpuResidency);
         _ownerThread = new Thread(RunOwnerLoop) {
             IsBackground = true,

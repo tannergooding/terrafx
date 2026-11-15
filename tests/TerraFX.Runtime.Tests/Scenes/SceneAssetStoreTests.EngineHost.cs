@@ -70,6 +70,7 @@ internal sealed partial class SceneAssetStoreTests
 
             RenderExtractionResponse? response = null;
             var cameraId = Guid.Empty;
+            var nextTickBeforeExtraction = 0L;
 
             await host.InvokeAsync(context => {
                 if (!activation.Instance!.TryGetEntity(SceneAssetReaderTests.Fixtures.RootEntityId, out var cameraEntity))
@@ -78,8 +79,21 @@ internal sealed partial class SceneAssetStoreTests
                 }
 
                 cameraId = world!.GetEntityId(cameraEntity);
-                _ = world!.Step();
-                var currentFrame = world.CurrentFrame3;
+                nextTickBeforeExtraction = world.NextTickIndex;
+            }).ConfigureAwait(false);
+
+            var nextTickAfterExtraction = nextTickBeforeExtraction;
+
+            for (var attempt = 0; (attempt < 100) && (nextTickAfterExtraction <= nextTickBeforeExtraction); attempt++)
+            {
+                await Task.Delay(25).ConfigureAwait(false);
+                await host!.InvokeAsync(_ => nextTickAfterExtraction = world!.NextTickIndex).ConfigureAwait(false);
+            }
+
+            Assert.That(nextTickAfterExtraction, Is.GreaterThan(nextTickBeforeExtraction));
+
+            await host!.InvokeAsync(_ => {
+                var currentFrame = world!.CurrentFrame3;
                 response = host.Renderer.Extract(
                     world,
                     new RenderExtractionOptions3D(

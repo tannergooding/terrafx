@@ -135,19 +135,32 @@ public sealed class WorldLoadPlan : IDisposable
         }
     }
 
-    internal bool TryCaptureCommit(out WorldLoadPreparedState? state)
+    internal bool TryCaptureCommit(
+        out WorldLoadPreparedState? state,
+        out WorldGuidRefusal bindingRefusal,
+        out WorldAdmissionRefusal admissionRefusal)
     {
         lock (_gate)
         {
-            if (_isDisposed
-                || !_isInitialized
-                || !_state!.TryCaptureCommit())
+            if (_isDisposed || !_isInitialized)
             {
                 state = null;
+                bindingRefusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
+                admissionRefusal = WorldAdmissionRefusal.None;
                 return false;
             }
 
-            state = _state;
+            var preparedState = _state
+                ?? throw new InvalidOperationException("The initialized World load plan omitted its prepared state.");
+
+            if (!preparedState.TryCaptureCommit(out bindingRefusal, out admissionRefusal))
+            {
+                state = null;
+                preparedState.CloseAcquisition();
+                return false;
+            }
+
+            state = preparedState;
             return true;
         }
     }

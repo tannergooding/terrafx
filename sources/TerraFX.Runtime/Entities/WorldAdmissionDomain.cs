@@ -351,6 +351,33 @@ public sealed class WorldAdmissionDomain : IDisposable
         }
     }
 
+    internal bool TryCaptureLoadCommit(
+        WorldGuidReplacementPreparation preparation,
+        out WorldAdmissionRefusal refusal)
+    {
+        ArgumentNullException.ThrowIfNull(preparation);
+
+        using var growthScope = ReentrantGate.EnterScope(ref _growthGate);
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if (_isDisposed)
+            {
+                refusal = WorldAdmissionRefusal.DomainClosed;
+                return false;
+            }
+
+            if (!preparation.MarkCapturedUnderAdmissionGate())
+            {
+                refusal = WorldAdmissionRefusal.OperationCapacity;
+                return false;
+            }
+        }
+
+        refusal = WorldAdmissionRefusal.None;
+        return true;
+    }
+
     internal bool TryCommitFreshLineage(in WorldLineageGrant grant)
     {
         if (!grant.IsOwnedBy(this) || !(grant.Reservation?.IsOwnedBy(this) ?? false))
@@ -416,6 +443,86 @@ public sealed class WorldAdmissionDomain : IDisposable
 
             entry.State = StateCommitted;
             ReleaseReservation(grant.Index);
+            return true;
+        }
+    }
+
+    internal bool TryCommitLineageForReplacement(
+        in WorldLineageGrant grant,
+        WorldGuidRegistry registry,
+        in WorldGuidGrant currentWorldGrant,
+        in WorldGuidGrant replacementWorldGrant)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+
+        if (!grant.IsOwnedBy(this) || !(grant.Reservation?.IsOwnedBy(this) ?? false))
+        {
+            return false;
+        }
+
+        using var growthScope = ReentrantGate.EnterScope(ref _growthGate);
+
+        using (ReentrantGate.EnterScope(ref _gate))
+        {
+            if (!IsActiveWorldReservation(grant.Reservation!)
+                || ((uint)grant.Index >= (uint)_lineages.Length))
+            {
+                return false;
+            }
+
+            ref var entry = ref _lineages[grant.Index];
+            var keyOffset = grant.Index * FreshRootLineageKeyCount;
+            ref var reservation = ref _reservations[grant.Index];
+            var lineageBucketIndex = FindLineageIndexBucket(grant.LineageId);
+
+            if ((entry.Generation != grant.Generation)
+                || (entry.WorldGuid != grant.WorldGuid)
+                || (entry.IdentityBranchId != grant.IdentityBranchId)
+                || (entry.IssuanceNamespace != grant.IssuanceNamespace)
+                || (_lineageKeys[keyOffset] != grant.LineageId)
+                || (lineageBucketIndex < 0)
+                || !IsMatchingReservation(reservation, grant)
+                || (entry.State != StateReserved))
+            {
+                return false;
+            }
+
+            ref var lineageBucket = ref _lineageIndex[lineageBucketIndex];
+
+            if ((lineageBucket._reservedRootIndexPlusOne != grant.Index + 1)
+                || (lineageBucket._reservedGeneration != grant.Generation))
+            {
+                return false;
+            }
+
+            if (entry.MembershipKeys is { } membershipKeys
+                && !TryCommitLineageMembership(grant, membershipKeys, lineageBucketIndex))
+            {
+                return false;
+            }
+
+            if (entry.MembershipKeys is null)
+            {
+                var committedBucketIndex = FindLineageIndexBucket(grant.LineageId);
+
+                if (committedBucketIndex < 0)
+                {
+                    return false;
+                }
+
+                ref var committedBucket = ref _lineageIndex[committedBucketIndex];
+                committedBucket._reservedRootIndexPlusOne = 0;
+                committedBucket._reservedGeneration = 0;
+            }
+
+            entry.State = StateCommitted;
+            ReleaseReservation(grant.Index);
+
+            if (!registry.TryCommitReplacement(currentWorldGrant, replacementWorldGrant))
+            {
+                throw new InvalidOperationException("The prepared WorldGuid replacement became stale during its domain commit.");
+            }
+
             return true;
         }
     }

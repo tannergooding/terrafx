@@ -21,6 +21,8 @@ internal sealed class WorldDomainOperationCredit : IDisposable
         _bytes = bytes;
     }
 
+    internal WorldAdmissionDomain Domain => _domain;
+
     public void Dispose()
     {
         lock (_gate)

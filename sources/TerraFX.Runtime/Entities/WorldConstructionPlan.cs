@@ -15,6 +15,7 @@ internal sealed class WorldConstructionPlan
     private readonly WorldLineageGrant _lineageGrant;
     private readonly bool _ownsAdmissionDomain;
     private readonly bool _ownsWorkerPool;
+    private readonly WorldPreparedReplacement? _preparedReplacement;
     private readonly WorldGuidRegistry _registry;
     private readonly WorldGuidReplacementPreparation? _replacementPreparation;
     private readonly ResolvedWorldOptions _resolvedOptions;
@@ -32,6 +33,7 @@ internal sealed class WorldConstructionPlan
     private readonly long _restoreWorkPlanByteReservation;
     private readonly int _restoreWorkPlanCapacity;
     private readonly WorldSystemQuarantineReservation _systemQuarantineReservation;
+    private readonly World? _targetWorld;
     private readonly WorldWorkerPool _workerPool;
     private readonly Guid _worldGuid;
     private readonly WorldGuidGrant _worldGuidGrant;
@@ -65,7 +67,8 @@ internal sealed class WorldConstructionPlan
         long restoreControlStorageByteReservation = 0,
         long restoreSceneControlPayloadByteReservation = 0,
         int restoreAttachmentCount = 0,
-        long restoreAttachmentStorageByteReservation = 0)
+        long restoreAttachmentStorageByteReservation = 0,
+        World? targetWorld = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(restoreAttachmentCount);
         ArgumentOutOfRangeException.ThrowIfNegative(restoreAttachmentStorageByteReservation);
@@ -89,9 +92,16 @@ internal sealed class WorldConstructionPlan
                 || (restoreControlStorageByteReservation != 0)
                 || (restoreSceneControlPayloadByteReservation != 0)
                 || (restoreAttachmentCount != 0)
-                || (restoreAttachmentStorageByteReservation != 0)))
+                || (restoreAttachmentStorageByteReservation != 0)
+                || (targetWorld is not null)))
         {
             throw new ArgumentException("Fresh World construction cannot own restore ECS storage reservations.", nameof(restoreIdentityState));
+        }
+
+        if ((restoreIdentityState is not null)
+            && ((replacementPreparation is null) || (targetWorld is null)))
+        {
+            throw new ArgumentException("A restore construction plan requires its exact target and replacement preparation.", nameof(replacementPreparation));
         }
 
         _resolvedOptions = resolvedOptions;
@@ -120,9 +130,18 @@ internal sealed class WorldConstructionPlan
         _restoreComponentWorkspaceByteReservation = restoreComponentWorkspaceByteReservation;
         _restoreAttachmentCount = restoreAttachmentCount;
         _restoreAttachmentStorageByteReservation = restoreAttachmentStorageByteReservation;
+        _targetWorld = targetWorld;
         _restoreControlRecordCount = restoreControlRecordCount;
         _restoreControlStorageByteReservation = restoreControlStorageByteReservation;
         _restoreSceneControlPayloadByteReservation = restoreSceneControlPayloadByteReservation;
+        _preparedReplacement = (restoreIdentityState is null)
+            ? null
+            : new WorldPreparedReplacement(
+                targetWorld
+                    ?? throw new InvalidOperationException("The restore plan omitted its target World."),
+                this,
+                replacementPreparation
+                    ?? throw new InvalidOperationException("The restore plan omitted its replacement preparation."));
     }
 
     internal WorldAdmissionDomain AdmissionDomain => _admissionDomain;
@@ -144,6 +163,8 @@ internal sealed class WorldConstructionPlan
     internal bool OwnsAdmissionDomain => _ownsAdmissionDomain;
 
     internal bool OwnsWorkerPool => _ownsWorkerPool;
+
+    internal WorldPreparedReplacement? PreparedReplacement => _preparedReplacement;
 
     internal WorldGuidRegistry Registry => _registry;
 
@@ -178,6 +199,8 @@ internal sealed class WorldConstructionPlan
     internal int RestoreWorkPlanCapacity => _restoreWorkPlanCapacity;
 
     internal WorldSystemQuarantineReservation SystemQuarantineReservation => _systemQuarantineReservation;
+
+    internal World? TargetWorld => _targetWorld;
 
     internal WorldWorkerPool WorkerPool => _workerPool;
 
@@ -260,6 +283,10 @@ internal sealed class WorldConstructionPlan
             || (_workerPool is null)
             || (_workerPool.WorkerCount != _resolvedOptions.CpuWorkerCount)
             || (_resolvedOptions.Options.Registration is null)
+            || ((_restoreIdentityState is null) != (_preparedReplacement is null))
+            || ((_restoreIdentityState is not null)
+                && (!_preparedReplacement!.IsBoundTo(this)
+                    || !ReferenceEquals(_preparedReplacement.TargetWorld, _targetWorld)))
             || (_restoreControlRecordCount > _resolvedOptions.Options.MaximumRecordedControls)
             || hasRestoreControlRecords != hasRestoreControlStorage
             || hasRestoreAttachments != (_restoreAttachmentStorageByteReservation != 0)

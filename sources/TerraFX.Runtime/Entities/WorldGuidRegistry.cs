@@ -320,6 +320,41 @@ internal sealed class WorldGuidRegistry
             && (ownerUseCell._bindingGeneration == grant.BindingGeneration);
     }
 
+    internal bool TryCaptureReplacement(
+        in WorldGuidGrant current,
+        in WorldGuidGrant replacement,
+        WorldAdmissionDomain domain,
+        WorldGuidReplacementPreparation preparation,
+        out WorldGuidRefusal bindingRefusal,
+        out WorldAdmissionRefusal admissionRefusal)
+    {
+        ArgumentNullException.ThrowIfNull(domain);
+        ArgumentNullException.ThrowIfNull(preparation);
+        bindingRefusal = default;
+        admissionRefusal = WorldAdmissionRefusal.None;
+
+        if (!current.IsOwnedBy(this) || !replacement.IsOwnedBy(this))
+        {
+            bindingRefusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
+            return false;
+        }
+
+        using var scope = ReentrantGate.EnterScope(ref _admissionGate);
+
+        if (!IsActive(current))
+        {
+            bindingRefusal = new WorldGuidRefusal(WorldGuidRefusal.TargetBindingStale);
+            return false;
+        }
+
+        if (!domain.TryCaptureLoadCommit(preparation, out admissionRefusal))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
     internal bool TryCommitFresh(in WorldGuidGrant grant)
     {
         if (!grant.IsOwnedBy(this))
@@ -438,6 +473,35 @@ internal sealed class WorldGuidRegistry
         replacementKeyCell._roleCount -= 2;
         currentBinding._state = CellStateRevoked;
         return true;
+    }
+
+    internal bool TryCommitReplacementWithLineage(
+        in WorldGuidGrant current,
+        in WorldGuidGrant replacement,
+        WorldAdmissionDomain domain,
+        in WorldLineageGrant lineageGrant)
+    {
+        ArgumentNullException.ThrowIfNull(domain);
+
+        if (!current.IsOwnedBy(this)
+            || !replacement.IsOwnedBy(this)
+            || !lineageGrant.IsOwnedBy(domain))
+        {
+            return false;
+        }
+
+        using var scope = ReentrantGate.EnterScope(ref _admissionGate);
+
+        if (!IsActive(current))
+        {
+            return false;
+        }
+
+        return domain.TryCommitLineageForReplacement(
+            lineageGrant,
+            this,
+            current,
+            replacement);
     }
 
     internal bool TryPrepareReplacement(

@@ -3387,7 +3387,6 @@ internal sealed partial class SceneAssetStoreTests
                 {
                     using var candidate = World.CreateRestoreCandidate(candidatePlan);
                     World.InitializeRestoreCandidate(candidate);
-                    candidate.RestoreEcsRows(savedWorld.EcsRecord, savedWorld.Ecs, CancellationToken.None);
                     using var packageLease = assets.AcquirePackageLease();
                     using var preparedRestore = ScenePersistenceRestorer.PrepareAsync(
                         candidate,
@@ -3396,6 +3395,7 @@ internal sealed partial class SceneAssetStoreTests
                         savedWorld.ScenesRecord,
                         savedWorld.Scenes,
                         CancellationToken.None).GetAwaiter().GetResult();
+                    candidate.RestoreEcsRows(savedWorld.EcsRecord, savedWorld.Ecs, CancellationToken.None);
                     ScenePersistenceRestorer.RestorePrepared(candidate, preparedRestore, CancellationToken.None);
                     candidate.RestoreCheckpointClockAndControls(
                         worldRecord,
