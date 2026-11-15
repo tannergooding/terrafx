@@ -1,6 +1,7 @@
 // Copyright © Tanner Gooding and Contributors. Licensed under the MIT License (MIT). See LICENSE.md in the repository root for more information.
 
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using NUnit.Framework;
 using TerraFX.Entities;
@@ -17,6 +18,10 @@ internal sealed class WorldLifetimeControlQuarantineTests
         GC.Collect();
     }
 
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "A successful lifetime quarantine transfers the admission reservation to the pre-reserved process anchor; all failed paths release it here.")]
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static WeakReference<WorldLifetimeControl> CreateQuarantinedLifetimeControl(
         WorldGuidRegistry registry,
@@ -25,6 +30,8 @@ internal sealed class WorldLifetimeControlQuarantineTests
     {
         var reservation = WorldSystemInstanceRegistry.ReserveQuarantineCapacity(0);
         WorldGuidGrant grant = default;
+        WorldLineageGrant lineageGrant = default;
+        WorldDomainReservation? domainReservation = null;
         WorldLifetimeControl? lifetimeControl = null;
 
         try
@@ -34,16 +41,39 @@ internal sealed class WorldLifetimeControlQuarantineTests
                 throw new InvalidOperationException("The quarantine test could not reserve its WorldGuid.");
             }
 
+            if (!domain.TryReserveWorld(4096, out domainReservation)
+                || (domainReservation is null)
+                || !domain.TryReserveFreshLineage(
+                    domainReservation,
+                    worldGuid,
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    out lineageGrant,
+                    out _,
+                    issuanceNamespace: worldGuid))
+            {
+                throw new InvalidOperationException("The quarantine test could not reserve its World history.");
+            }
+
+            if (!registry.TryCommitFresh(grant)
+                || !domain.TryCommitFreshLineage(lineageGrant))
+            {
+                throw new InvalidOperationException("The quarantine test could not publish its World identity.");
+            }
+
             lifetimeControl = new WorldLifetimeControl(
                 registry,
                 domain,
                 grant,
                 defaultDomainOwner: null,
+                domainReservation,
+                lineageGrant,
                 isReplacementCandidate: false);
+            lifetimeControl.PublishFresh();
 
             if (!lifetimeControl.BeginRetirement() || !lifetimeControl.QuarantineAfterCleanupFailure())
             {
-                throw new InvalidOperationException("The quarantine test could not revoke and quarantine its unpublished WorldGuid.");
+                throw new InvalidOperationException("The quarantine test could not revoke and quarantine its WorldGuid.");
             }
 
             WorldSystemInstanceRegistry.QuarantineLifetimeControl(lifetimeControl, reservation);
@@ -53,14 +83,33 @@ internal sealed class WorldLifetimeControlQuarantineTests
         {
             if ((lifetimeControl is not null) && !lifetimeControl.IsQuarantined)
             {
+                if (lineageGrant.IsValid)
+                {
+                    _ = domain.TryRollbackFreshLineage(lineageGrant)
+                        || domain.TryReleaseFreshLineage(lineageGrant);
+                }
+
+                domainReservation?.Dispose();
+
                 if (lifetimeControl.BeginRetirement())
                 {
                     _ = lifetimeControl.CompleteRetirement();
                 }
             }
-            else if (lifetimeControl is null && grant.IsValid)
+            else if (lifetimeControl is null)
             {
-                _ = registry.TryReleaseFresh(grant);
+                if (lineageGrant.IsValid)
+                {
+                    _ = domain.TryRollbackFreshLineage(lineageGrant)
+                        || domain.TryReleaseFreshLineage(lineageGrant);
+                }
+
+                domainReservation?.Dispose();
+
+                if (grant.IsValid)
+                {
+                    _ = registry.TryReleaseFresh(grant);
+                }
             }
 
             reservation.Release();
@@ -85,6 +134,7 @@ internal sealed class WorldLifetimeControlQuarantineTests
             Assert.That(retainedLifetime!.IsQuarantined, Is.True);
             Assert.That(retainedLifetime.CompleteRetirement(), Is.False);
             Assert.That(registry.TryReserveFresh(worldGuid, out _, out _), Is.False);
+            Assert.That(domain.Retirement.IsCompleted, Is.False);
         }
         finally
         {

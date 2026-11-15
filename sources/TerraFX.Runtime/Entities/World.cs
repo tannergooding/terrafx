@@ -551,13 +551,6 @@ public sealed partial class World : IDisposable
             defaultDomainOwner = ownsAdmissionDomain
                 ? new WorldDefaultDomainOwner(admissionDomain, worldGuidGrant)
                 : null;
-            lifetimeControl = new WorldLifetimeControl(
-                registry,
-                admissionDomain,
-                worldGuidGrant,
-                defaultDomainOwner,
-                isReplacementCandidate: false);
-            defaultDomainOwner = null;
 
             var maximumDiagnosticBytes = options.SchedulingLimits.MaximumDiagnosticBytes;
             var diagnosticRecordCount = DiagnosticsService.GetMaximumRecordCount(maximumDiagnosticBytes);
@@ -633,6 +626,16 @@ public sealed partial class World : IDisposable
 
                 throw new InvalidOperationException($"Replay-lineage admission was refused with code {lineageRefusal}.");
             }
+
+            lifetimeControl = new WorldLifetimeControl(
+                registry,
+                admissionDomain,
+                worldGuidGrant,
+                defaultDomainOwner,
+                domainReservation,
+                lineageGrant,
+                isReplacementCandidate: false);
+            defaultDomainOwner = null;
 
             var identityLedger = StableIdentityLedger.CreateForWorld(
                 options.MaximumIdentityAssignments,
@@ -725,6 +728,8 @@ public sealed partial class World : IDisposable
                         diagnostics?.Close();
                     }
 
+                    var retainsQuarantineDomain = systemQuarantineReservation?.RetainsDomainReservation == true;
+
                     if (lineageGrant.IsValid && (admissionDomain is not null))
                     {
                         if (lineageCommitted)
@@ -739,7 +744,7 @@ public sealed partial class World : IDisposable
 
                     systemQuarantineReservation?.Release();
 
-                    if (systemQuarantineReservation?.RetainsDomainReservation != true)
+                    if (!constructionCleanupFailed && !retainsQuarantineDomain)
                     {
                         domainReservation?.Dispose();
                     }
@@ -1345,12 +1350,21 @@ public sealed partial class World : IDisposable
             }
 
             var lineageRetired = false;
-            var attachmentQuarantineRetainsReservation = false;
+            var attachmentQuarantineRetainsReservation =
+                WorldAttachmentInstanceRegistry.HasRetainedDomainReservation(_domainReservation);
+            var cleanupRequiresQuarantine = (systemCleanupReport.FailureCount != 0)
+                || (attachmentCleanupException is not null)
+                || _systemQuarantineReservation.RetainsDomainReservation
+                || attachmentQuarantineRetainsReservation;
+            var preserveCommittedHistory = cleanupRequiresQuarantine && _lifetimeControl.HasCommittedHistory;
 
             try
             {
-                lineageRetired = _admissionDomain.TryRollbackFreshLineage(_lineageGrant)
-                    || _admissionDomain.TryReleaseFreshLineage(_lineageGrant);
+                if (!preserveCommittedHistory)
+                {
+                    lineageRetired = _admissionDomain.TryRollbackFreshLineage(_lineageGrant)
+                        || _admissionDomain.TryReleaseFreshLineage(_lineageGrant);
+                }
             }
             finally
             {
@@ -1374,15 +1388,14 @@ public sealed partial class World : IDisposable
                 _archetypeCount = 0;
                 _ = _attachments.ReleaseOwnedStorage();
 
-                attachmentQuarantineRetainsReservation =
-                    WorldAttachmentInstanceRegistry.HasRetainedDomainReservation(_domainReservation);
-
                 if (sceneControlPayloadBytes != 0)
                 {
                     _domainReservation.ReleaseAdditional(sceneControlPayloadBytes);
                 }
 
-                if (!_systemQuarantineReservation.RetainsDomainReservation && !attachmentQuarantineRetainsReservation)
+                if (lineageRetired
+                    && !_systemQuarantineReservation.RetainsDomainReservation
+                    && !attachmentQuarantineRetainsReservation)
                 {
                     _domainReservation.Dispose();
                 }
@@ -1417,7 +1430,7 @@ public sealed partial class World : IDisposable
 
             _lifetimeControl.CloseDefaultDomain();
 
-            if (!lineageRetired || lifetimeRetirementFailure)
+            if (!cleanupRequiresQuarantine && (!lineageRetired || lifetimeRetirementFailure))
             {
                 var lifetimeFailure = new InvalidOperationException(
                     !lineageRetired

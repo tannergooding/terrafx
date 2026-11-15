@@ -88,6 +88,8 @@ internal sealed class WorldDefaultDomainOwnershipTests
         var registry = WorldGuidRegistry.GetSelected();
         WorldGuidGrant grant = default;
         WorldGuidGrant retryGrant = default;
+        WorldLineageGrant lineageGrant = default;
+        WorldDomainReservation? domainReservation = null;
         WorldDefaultDomainOwner? owner = null;
         WorldLifetimeControl? lifetime = null;
 
@@ -95,18 +97,34 @@ internal sealed class WorldDefaultDomainOwnershipTests
         {
             Assert.That(registry.TryReserveFresh(Guid.NewGuid(), out grant, out _), Is.True);
             Assert.That(registry.TryCommitFresh(grant), Is.True);
+            Assert.That(domain.TryReserveWorld(4096, out domainReservation), Is.True);
+            Assert.That(
+                domain.TryReserveFreshLineage(
+                    domainReservation!,
+                    grant.WorldGuid,
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    out lineageGrant,
+                    out _,
+                    issuanceNamespace: grant.WorldGuid),
+                Is.True);
+            Assert.That(domain.TryCommitFreshLineage(lineageGrant), Is.True);
             owner = new WorldDefaultDomainOwner(domain, grant);
             lifetime = new WorldLifetimeControl(
                 registry,
                 domain,
                 grant,
                 owner,
+                domainReservation!,
+                lineageGrant,
                 isReplacementCandidate: false);
             lifetime.PublishFresh();
             Assert.That(registry.IsActive(grant), Is.True);
             Assert.That(lifetime.BeginRetirement(), Is.True);
             Assert.That(registry.IsActive(grant), Is.False);
             Assert.That(registry.TryReserveFresh(grant.WorldGuid, out _, out _), Is.False);
+            Assert.That(domain.TryRollbackFreshLineage(lineageGrant), Is.True);
+            domainReservation?.Dispose();
             Assert.That(lifetime.CompleteRetirement(), Is.True);
             Assert.That(registry.TryReserveFresh(grant.WorldGuid, out retryGrant, out _), Is.True);
             Assert.That(registry.TryReleaseFresh(retryGrant), Is.True);
@@ -117,6 +135,14 @@ internal sealed class WorldDefaultDomainOwnershipTests
         }
         finally
         {
+            if (lineageGrant.IsValid)
+            {
+                _ = domain.TryRollbackFreshLineage(lineageGrant)
+                    || domain.TryReleaseFreshLineage(lineageGrant);
+            }
+
+            domainReservation?.Dispose();
+
             if (lifetime is not null)
             {
                 if (lifetime.BeginRetirement() && lifetime.CompleteRetirement())
@@ -136,6 +162,123 @@ internal sealed class WorldDefaultDomainOwnershipTests
     }
 
     [Test]
+    public void ReplacementCandidateHistoryRemainsProvisionalUntilPublication()
+    {
+        var domain = new WorldAdmissionDomain(16 * 1024 * 1024);
+        var registry = WorldGuidRegistry.GetSelected();
+        var worldGuid = Guid.NewGuid();
+        WorldGuidGrant currentGrant = default;
+        WorldGuidGrant replacementGrant = default;
+        WorldLineageGrant currentLineageGrant = default;
+        WorldLineageGrant replacementLineageGrant = default;
+        WorldDomainReservation? currentReservation = null;
+        WorldDomainReservation? replacementReservation = null;
+        WorldLifetimeControl? currentLifetime = null;
+        WorldLifetimeControl? replacementLifetime = null;
+
+        try
+        {
+            Assert.That(registry.TryReserveFresh(worldGuid, out currentGrant, out _), Is.True);
+            Assert.That(registry.TryCommitFresh(currentGrant), Is.True);
+            Assert.That(domain.TryReserveWorld(4096, out currentReservation), Is.True);
+            Assert.That(
+                domain.TryReserveFreshLineage(
+                    currentReservation!,
+                    worldGuid,
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    out currentLineageGrant,
+                    out _,
+                    issuanceNamespace: worldGuid),
+                Is.True);
+            Assert.That(domain.TryCommitFreshLineage(currentLineageGrant), Is.True);
+            currentLifetime = new WorldLifetimeControl(
+                registry,
+                domain,
+                currentGrant,
+                defaultDomainOwner: null,
+                currentReservation!,
+                currentLineageGrant,
+                isReplacementCandidate: false);
+            currentLifetime.PublishFresh();
+
+            Assert.That(
+                registry.TryReserveReplacement(currentGrant, worldGuid, out replacementGrant, out _),
+                Is.True);
+            Assert.That(domain.TryReserveWorld(4096, out replacementReservation), Is.True);
+            Assert.That(
+                domain.TryReserveFreshLineage(
+                    replacementReservation!,
+                    worldGuid,
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    out replacementLineageGrant,
+                    out _,
+                    issuanceNamespace: worldGuid),
+                Is.True);
+            replacementLifetime = new WorldLifetimeControl(
+                registry,
+                domain,
+                replacementGrant,
+                defaultDomainOwner: null,
+                replacementReservation!,
+                replacementLineageGrant,
+                isReplacementCandidate: true);
+            replacementLifetime.AdoptReplacementGrant();
+
+            Assert.That(replacementLifetime.HasCommittedHistory, Is.False);
+            Assert.That(replacementLifetime.BeginRetirement(), Is.True);
+            Assert.That(domain.TryRollbackFreshLineage(replacementLineageGrant), Is.True);
+            replacementReservation?.Dispose();
+            Assert.That(replacementLifetime.CompleteRetirement(), Is.True);
+            Assert.That(currentLifetime.HasCommittedHistory, Is.True);
+
+            Assert.That(currentLifetime.BeginRetirement(), Is.True);
+            Assert.That(domain.TryRollbackFreshLineage(currentLineageGrant), Is.True);
+            currentReservation?.Dispose();
+            Assert.That(currentLifetime.CompleteRetirement(), Is.True);
+        }
+        finally
+        {
+            if (replacementLineageGrant.IsValid)
+            {
+                _ = domain.TryRollbackFreshLineage(replacementLineageGrant)
+                    || domain.TryReleaseFreshLineage(replacementLineageGrant);
+            }
+
+            replacementReservation?.Dispose();
+
+            if (replacementLifetime is not null)
+            {
+                if (replacementLifetime.BeginRetirement() && replacementLifetime.CompleteRetirement())
+                {
+                    replacementLifetime.CloseDefaultDomain();
+                }
+            }
+
+            if (currentLineageGrant.IsValid)
+            {
+                _ = domain.TryRollbackFreshLineage(currentLineageGrant)
+                    || domain.TryReleaseFreshLineage(currentLineageGrant);
+            }
+
+            currentReservation?.Dispose();
+
+            if (currentLifetime is not null)
+            {
+                if (currentLifetime.BeginRetirement() && currentLifetime.CompleteRetirement())
+                {
+                    currentLifetime.CloseDefaultDomain();
+                }
+            }
+
+            domain.Dispose();
+            _ = registry.TryReleaseFresh(replacementGrant);
+            _ = registry.TryReleaseFresh(currentGrant);
+        }
+    }
+
+    [Test]
     public void UnpublishedLifetimeRetirementReleasesItsReservedWorldGuid()
     {
         var domain = new WorldAdmissionDomain(16 * 1024 * 1024);
@@ -143,17 +286,34 @@ internal sealed class WorldDefaultDomainOwnershipTests
         var worldGuid = Guid.NewGuid();
         WorldGuidGrant grant = default;
         WorldGuidGrant retryGrant = default;
+        WorldLineageGrant lineageGrant = default;
+        WorldDomainReservation? domainReservation = null;
         WorldLifetimeControl? lifetimeControl = null;
 
         try
         {
             Assert.That(registry.TryReserveFresh(worldGuid, out grant, out _), Is.True);
+            Assert.That(domain.TryReserveWorld(4096, out domainReservation), Is.True);
+            Assert.That(
+                domain.TryReserveFreshLineage(
+                    domainReservation!,
+                    worldGuid,
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    out lineageGrant,
+                    out _,
+                    issuanceNamespace: worldGuid),
+                Is.True);
             lifetimeControl = new WorldLifetimeControl(
                 registry,
                 domain,
                 grant,
                 defaultDomainOwner: null,
+                domainReservation!,
+                lineageGrant,
                 isReplacementCandidate: false);
+            Assert.That(domain.TryRollbackFreshLineage(lineageGrant), Is.True);
+            domainReservation?.Dispose();
             lifetimeControl.AbandonUnpublished();
 
             Assert.That(registry.TryReserveFresh(worldGuid, out retryGrant, out _), Is.True);
@@ -161,6 +321,14 @@ internal sealed class WorldDefaultDomainOwnershipTests
         }
         finally
         {
+            if (lineageGrant.IsValid)
+            {
+                _ = domain.TryRollbackFreshLineage(lineageGrant)
+                    || domain.TryReleaseFreshLineage(lineageGrant);
+            }
+
+            domainReservation?.Dispose();
+
             if (lifetimeControl is not null)
             {
                 if (lifetimeControl.BeginRetirement() && lifetimeControl.CompleteRetirement())

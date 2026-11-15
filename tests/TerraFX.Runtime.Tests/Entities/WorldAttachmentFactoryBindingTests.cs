@@ -14,6 +14,55 @@ namespace TerraFX.Runtime.Tests.Entities;
 [TestFixture]
 internal sealed class WorldAttachmentFactoryBindingTests
 {
+    private static WorldRegistration CreateHistoryRetentionRegistration(out AttachmentStateProvider provider)
+    {
+        var assignment = new ContentSchemaIdentityAssignment("application/attachment-state/history-retention/v1");
+        var schema = new ContentSchemaReference(assignment.SchemaId, 1, 0, ContentSchemaScope.Content);
+        var valueField = new ContentFieldDescriptor(
+            1,
+            8,
+            0,
+            true,
+            1,
+            1,
+            [],
+            0,
+            ContentUnit.None,
+            ContentReferenceKind.None,
+            ContentAuthoring.None,
+            null);
+        var schemas = new CompiledContentSchemaRegistry([
+            new DataSchema(
+                schema,
+                assignment,
+                ContentSchemaRole.AttachmentState,
+                ContentSchemaOwner.Application,
+                ContentSchemaStorage.NotComponent,
+                ContentTransientRestore.NotApplicable,
+                [valueField]),
+        ]);
+        var valueBinding = WorldAttachmentFieldBinding<ProbeAttachment, ProbeAuthor>.Value<
+            long,
+            AttachmentCounterReader,
+            AuthorCounterReader>(
+                schemas,
+                schema,
+                new ComponentFieldPath([ComponentPropertySegment.FieldTag(1)]),
+                default,
+                default);
+        provider = new AttachmentStateProvider();
+        var binding = WorldAttachmentFactoryBinding<ProbeAttachment, ProbeAuthor>.Create(
+            Guid.NewGuid(),
+            1,
+            schemas,
+            schema,
+            [valueBinding],
+            provider);
+        var builder = new WorldRegistrationBuilder(schemas);
+        _ = builder.RegisterAttachment(AttachmentScope.World, binding);
+        return builder.Build();
+    }
+
     [Test]
     public void FactoryBindingCapturesCompleteAttachmentStateFamily()
     {
@@ -426,6 +475,59 @@ internal sealed class WorldAttachmentFactoryBindingTests
         Assert.That(disposalException.PrimaryFailure.OwnerEntityId, Is.Null);
         Assert.That(provider.LastReleaseBinding!.ReplacementInstallationId, Is.Null);
         Assert.That(provider.ReleaseCount, Is.EqualTo(74));
+    }
+
+    [Test]
+    public void PriorAttachmentQuarantineRetainsLineageThroughWorldDisposal()
+    {
+        var registration = CreateHistoryRetentionRegistration(out var provider);
+        var domain = new WorldAdmissionDomain(16 * 1024 * 1024);
+        var worldGuid = Guid.NewGuid();
+        var lineageId = Guid.NewGuid();
+        World? world = null;
+        WorldDomainReservation? probeReservation = null;
+
+        try
+        {
+            world = World.Create(new WorldOptions(registration) {
+                AdmissionDomain = domain,
+                InitialReplayLineageId = lineageId,
+                WorldGuid = worldGuid,
+            });
+            world.SetAttachment(new ProbeAttachment { Counter = 1 }, AttachmentOwnership.Transferred);
+            provider.ReleaseFailure = new InvalidOperationException("The prior attachment release failed.");
+            Assert.That(
+                Assert.Throws<WorldAttachmentReleaseException>(() => world.RemoveAttachment<ProbeAttachment>())?.FailureCount,
+                Is.EqualTo(1));
+            provider.ReleaseFailure = null;
+            world.Dispose();
+            world = null;
+
+            var registry = WorldGuidRegistry.GetSelected();
+            Assert.That(registry.TryReserveFresh(worldGuid, out _, out _), Is.False);
+            Assert.That(domain.TryReserveWorld(4096, out probeReservation), Is.True);
+            var probeWorldGuid = Guid.NewGuid();
+            Assert.That(
+                domain.TryReserveFreshLineage(
+                    probeReservation
+                        ?? throw new InvalidOperationException("The lineage probe omitted its domain reservation."),
+                    probeWorldGuid,
+                    lineageId,
+                    Guid.NewGuid(),
+                    out _,
+                    out _,
+                    issuanceNamespace: probeWorldGuid),
+                Is.False);
+        }
+        finally
+        {
+            provider.ReleaseFailure = null;
+            world?.Dispose();
+            probeReservation?.Dispose();
+            domain.Dispose();
+        }
+
+        Assert.That(domain.Retirement.IsCompleted, Is.False);
     }
 
     [Test]

@@ -17,7 +17,10 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
 
     private readonly WorldAdmissionDomain _admissionDomain;
     private WorldDefaultDomainOwner? _defaultDomainOwner;
+    private WorldDomainReservation? _domainReservation;
     private readonly Lock _gate = new();
+    private bool _hasCommittedHistory;
+    private WorldLineageGrant _lineageGrant;
     private readonly WorldGuidRegistry _registry;
     private int _state;
     private readonly WorldGuidGrant _worldGuidGrant;
@@ -27,14 +30,25 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
         WorldAdmissionDomain admissionDomain,
         in WorldGuidGrant worldGuidGrant,
         WorldDefaultDomainOwner? defaultDomainOwner,
+        WorldDomainReservation domainReservation,
+        in WorldLineageGrant lineageGrant,
         bool isReplacementCandidate)
     {
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(admissionDomain);
+        ArgumentNullException.ThrowIfNull(domainReservation);
 
         if (!worldGuidGrant.IsOwnedBy(registry))
         {
             throw new ArgumentException("The World lifetime requires its exact WorldGuid registry binding.", nameof(worldGuidGrant));
+        }
+
+        if (!domainReservation.IsOwnedBy(admissionDomain)
+            || !lineageGrant.IsOwnedBy(admissionDomain)
+            || !ReferenceEquals(lineageGrant.Reservation, domainReservation)
+            || (lineageGrant.WorldGuid != worldGuidGrant.WorldGuid))
+        {
+            throw new ArgumentException("The World lifetime requires its exact admission-domain interest and lineage root.", nameof(lineageGrant));
         }
 
         if ((defaultDomainOwner is not null)
@@ -47,10 +61,14 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
         _admissionDomain = admissionDomain;
         _worldGuidGrant = worldGuidGrant;
         _defaultDomainOwner = defaultDomainOwner;
+        _domainReservation = domainReservation;
+        _lineageGrant = lineageGrant;
         _state = isReplacementCandidate ? StateReplacementCandidatePrepared : StateFreshPrepared;
     }
 
     internal WorldDefaultDomainOwner? DefaultDomainOwner => _defaultDomainOwner;
+
+    internal bool HasCommittedHistory => Volatile.Read(ref _hasCommittedHistory);
 
     internal bool IsQuarantined => Volatile.Read(ref _state) == StateQuarantined;
 
@@ -139,6 +157,9 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
             if (_state == StateReplacementCandidatePrepared)
             {
                 _state = StateRetired;
+                _hasCommittedHistory = false;
+                _domainReservation = null;
+                _lineageGrant = default;
                 return true;
             }
 
@@ -155,6 +176,9 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
             }
 
             _state = StateRetired;
+            _hasCommittedHistory = false;
+            _domainReservation = null;
+            _lineageGrant = default;
             return true;
         }
     }
@@ -226,6 +250,7 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
             }
 
             _state = StateActive;
+            _hasCommittedHistory = true;
         }
     }
 
@@ -233,7 +258,10 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
     {
         lock (_gate)
         {
-            if (_state != StateRevoked)
+            if ((_state != StateRevoked)
+                || (_domainReservation is null)
+                || !_lineageGrant.IsOwnedBy(_admissionDomain)
+                || !ReferenceEquals(_lineageGrant.Reservation, _domainReservation))
             {
                 return false;
             }
@@ -280,6 +308,7 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
 
                 _state = StateRevoked;
                 replacement._state = StateActive;
+                replacement._hasCommittedHistory = true;
             }
         }
     }

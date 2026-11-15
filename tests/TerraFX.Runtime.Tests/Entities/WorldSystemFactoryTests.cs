@@ -178,12 +178,13 @@ internal sealed class WorldSystemFactoryTests
         var registration = builder.Build();
         var domain = new WorldAdmissionDomain(16 * 1024 * 1024);
         var worldGuid = Guid.NewGuid();
+        var lineageId = Guid.NewGuid();
 
         try
         {
             var exception = Assert.Throws<WorldSystemCleanupException>(() => World.Create(new WorldOptions(registration) {
                 AdmissionDomain = domain,
-                InitialReplayLineageId = Guid.NewGuid(),
+                InitialReplayLineageId = lineageId,
                 WorldGuid = worldGuid,
             }));
 
@@ -192,6 +193,30 @@ internal sealed class WorldSystemFactoryTests
 
             var registry = WorldGuidRegistry.GetSelected();
             Assert.That(registry.TryReserveFresh(worldGuid, out _, out _), Is.False);
+
+            WorldDomainReservation? probeReservation = null;
+
+            try
+            {
+                Assert.That(domain.TryReserveWorld(4096, out probeReservation), Is.True);
+                var probeWorldGuid = Guid.NewGuid();
+                Assert.That(
+                    domain.TryReserveFreshLineage(
+                        probeReservation
+                            ?? throw new InvalidOperationException("The World history probe omitted its reservation."),
+                        probeWorldGuid,
+                        lineageId,
+                        Guid.NewGuid(),
+                        out var probeLineageGrant,
+                        out _,
+                        issuanceNamespace: probeWorldGuid),
+                    Is.True);
+                Assert.That(domain.TryRollbackFreshLineage(probeLineageGrant), Is.True);
+            }
+            finally
+            {
+                probeReservation?.Dispose();
+            }
         }
         finally
         {

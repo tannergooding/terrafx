@@ -808,6 +808,9 @@ public sealed partial class World
                 _admissionDomain,
                 replacementGrant,
                 defaultDomainOwner: null,
+                domainReservation
+                    ?? throw new InvalidOperationException("The restore plan omitted its admission-domain reservation."),
+                lineageGrant,
                 isReplacementCandidate: true);
 
             if (!replacementPreparation.IsTargetCurrent())
