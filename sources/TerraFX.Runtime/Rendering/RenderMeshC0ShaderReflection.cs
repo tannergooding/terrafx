@@ -47,10 +47,11 @@ internal static class RenderMeshC0ShaderReflection
             ? new ShaderIoSignature("TEXCOORD", 4, 4, ShaderValueType.Float4, ShaderInterpolation.Smooth)
             : new ShaderIoSignature("TEXCOORD", 2, 2, ShaderValueType.Float4, ShaderInterpolation.Smooth));
 
-        var resources = ImmutableArray.CreateBuilder<ShaderResourceSignature>(textured ? 14 : 6);
+        var resources = ImmutableArray.CreateBuilder<ShaderResourceSignature>(textured ? 15 : 7);
         resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.UniformBuffer, 1));
         resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 1, ShaderResourceKind.UniformBuffer, 1));
         resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 2, ShaderResourceKind.UniformBuffer, 1));
+        resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 3, ShaderResourceKind.UniformBuffer, 1));
         resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.SampledImage, 1));
         resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Frame, 0, ShaderResourceKind.Sampler, 1));
         resources.Add(new ShaderResourceSignature(ShaderBindingGroup.Material, 0, ShaderResourceKind.UniformBuffer, 1));
@@ -90,6 +91,13 @@ internal static class RenderMeshC0ShaderReflection
                             "ShadowViewProjectionRows",
                             ShaderValueType.Float4,
                             160,
+                            16,
+                            16,
+                            16),
+                        new ShaderFieldLayout(
+                            "SpotShadowViewProjectionRows",
+                            ShaderValueType.Float4,
+                            416,
                             16,
                             16,
                             16),
@@ -141,6 +149,40 @@ internal static class RenderMeshC0ShaderReflection
                             RenderDirectionalLightBufferBuilder.RadianceOffset,
                             16,
                             RenderDirectionalLightBufferBuilder.Capacity,
+                            16),
+                    ]),
+                new ShaderRecordLayout(
+                    "SpotLightData",
+                    RenderMeshC0SpotLightBufferBuilder.SizeInBytes,
+                    [
+                        new ShaderFieldLayout("SpotLightCount", ShaderValueType.UInt4, RenderMeshC0SpotLightBufferBuilder.CountOffset, 16, 1, 0),
+                        new ShaderFieldLayout(
+                            "SpotLightPositionRange",
+                            ShaderValueType.Float4,
+                            RenderMeshC0SpotLightBufferBuilder.PositionRangeOffset,
+                            16,
+                            RenderMeshC0SpotLightBufferBuilder.Capacity,
+                            16),
+                        new ShaderFieldLayout(
+                            "SpotLightDirectionOuterCosine",
+                            ShaderValueType.Float4,
+                            RenderMeshC0SpotLightBufferBuilder.DirectionOuterCosineOffset,
+                            16,
+                            RenderMeshC0SpotLightBufferBuilder.Capacity,
+                            16),
+                        new ShaderFieldLayout(
+                            "SpotLightRadiance",
+                            ShaderValueType.Float4,
+                            RenderMeshC0SpotLightBufferBuilder.RadianceOffset,
+                            16,
+                            RenderMeshC0SpotLightBufferBuilder.Capacity,
+                            16),
+                        new ShaderFieldLayout(
+                            "SpotLightInnerCosineShadowSlot",
+                            ShaderValueType.Float4,
+                            RenderMeshC0SpotLightBufferBuilder.InnerCosineShadowSlotOffset,
+                            16,
+                            RenderMeshC0SpotLightBufferBuilder.Capacity,
                             16),
                     ]),
             ],
@@ -223,6 +265,13 @@ internal static class RenderMeshC0ShaderReflection
                             "ShadowViewProjectionRows",
                             ShaderValueType.Float4,
                             160,
+                            16,
+                            16,
+                            16),
+                        new ShaderFieldLayout(
+                            "SpotShadowViewProjectionRows",
+                            ShaderValueType.Float4,
+                            416,
                             16,
                             16,
                             16),

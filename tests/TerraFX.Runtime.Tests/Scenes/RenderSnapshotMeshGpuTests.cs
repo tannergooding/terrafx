@@ -72,6 +72,7 @@ internal sealed partial class SceneAssetStoreTests
         bool unsupportedCullMode = false,
         bool useDirectionalLight = false,
         bool useSecondDirectionalLight = false,
+        int spotLightCount = 0,
         bool useShadowCaster = false,
         bool usePointLight = false,
         bool useMultiplePointLights = false,
@@ -93,9 +94,13 @@ internal sealed partial class SceneAssetStoreTests
         float vertexColorAlpha = 1.0f,
         float cameraNear = 0.1f,
         float cameraFar = 1000.0f,
+        float cameraPositionX = 0.25f,
+        float shadowCasterLocalPositionX = -1.0f,
         string? expectedBuildWarning = null,
         Action<ReadOnlyMemory<byte>, PixelSize, long>? readbackObserver = null)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(spotLightCount);
+
         if ((graphicsBackend == GraphicsBackend.D3D12) && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
         {
             Assert.Ignore("The D3D12 Mesh graph requires Windows 11.");
@@ -185,7 +190,7 @@ internal sealed partial class SceneAssetStoreTests
                 SceneAssetReaderTests.Fixtures.CreateRootPose(
                     shadowCasterEntityId,
                     includeRootPosition: false,
-                    localPositionX: -1.0f,
+                    localPositionX: shadowCasterLocalPositionX,
                     localPositionZ: -1.0f),
                 additionalEntityComponents: meshComponents,
                 placementPrefabAssetId: new AssetId(checked((int)ShadowCasterPrefabAssetId)))
@@ -444,7 +449,7 @@ internal sealed partial class SceneAssetStoreTests
                     Quaternion.Identity,
                     Vector3.One);
                 var rootPosition = new SceneComponentDefinitions.RootPositionComponent(
-                    new SpatialPosition3(default, new Vector3(0.25f, 0.25f, -5.0f)));
+                    new SpatialPosition3(default, new Vector3(cameraPositionX, 0.25f, -5.0f)));
                 var camera = new SceneComponentDefinitions.CameraComponent(
                     (byte)CameraProjectionKind.Perspective,
                     float.Pi / 3.0f,
@@ -461,6 +466,30 @@ internal sealed partial class SceneAssetStoreTests
                 world.Add(cameraEntity, in localTransform);
                 world.Add(cameraEntity, in rootPosition);
                 world.Add(cameraEntity, in camera);
+
+                for (var spotIndex = 0; spotIndex < spotLightCount; spotIndex++)
+                {
+                    var spotEntity = world.CreateEntity(new EntityDescription(Guid.NewGuid()));
+                    var spotTransform = SceneComponentDefinitions.CreateAssignedLocalTransform(
+                        Vector3.Zero,
+                        Quaternion.Identity,
+                        Vector3.One);
+                    var spotRootPosition = new SceneComponentDefinitions.RootPositionComponent(
+                        new SpatialPosition3(default, new Vector3(-2.0f, 0.0f, -5.0f)));
+                    var spotLight = new RenderComponentDefinitions.SpotLightComponent(
+                        Vector3.One,
+                        luminousFlux: 5000.0f,
+                        range: 100.0f,
+                        direction: new Vector3(2.0f, 0.0f, 5.0f),
+                        innerConeAngle: 0.4f,
+                        outerConeAngle: 0.7f,
+                        layerMask: ulong.MaxValue,
+                        enabled: true,
+                        priority: spotIndex);
+                    world.Add(spotEntity, in spotTransform);
+                    world.Add(spotEntity, in spotRootPosition);
+                    world.Add(spotEntity, in spotLight);
+                }
 
                 if (useSecondDirectionalLight)
                 {
@@ -554,7 +583,7 @@ internal sealed partial class SceneAssetStoreTests
 
                 Assert.That(uniqueMeshPositions, Has.Count.EqualTo(2));
                 Assert.That(uniqueMeshPositions, Does.Contain(Vector3.Zero));
-                Assert.That(uniqueMeshPositions, Does.Contain(new Vector3(-1.0f, 0.0f, -1.0f)));
+                Assert.That(uniqueMeshPositions, Does.Contain(new Vector3(shadowCasterLocalPositionX, 0.0f, -1.0f)));
             }
 
             Assert.That(meshSnapshot.SpriteDraws, Has.Length.EqualTo(includeSprite ? 1 : 0));
@@ -623,9 +652,59 @@ internal sealed partial class SceneAssetStoreTests
                 });
             }
 
+            if (spotLightCount != 0)
+            {
+                var builtInState = plan.BuiltInSpriteState
+                    ?? throw new InvalidOperationException("The spot-light graph omitted its built-in state.");
+                var spotLightUpload = builtInState.BufferUploads.Single(
+                    static upload => StringComparer.Ordinal.Equals(upload.Version.Description.DebugName, "mesh-spot-lights-0"));
+                var spotFrameUpload = builtInState.BufferUploads.Single(
+                    static upload => StringComparer.Ordinal.Equals(upload.Version.Description.DebugName, "mesh-frame-data"));
+                var spotShadowFrameUpload = builtInState.BufferUploads.Single(
+                    static upload => StringComparer.Ordinal.Equals(upload.Version.Description.DebugName, "mesh-shadow-frame-data"));
+                var shadowFrameStride = spotShadowFrameUpload.Bytes.Length
+                    / (RenderDirectionalShadowCameraData.CascadeCount * 2);
+                var firstSpotShadowPass = builtInState.MeshShadowPasses
+                    .First(pair => plan.Passes.Single(pass => pass.Id == pair.Key).Description.Name.Contains(".Shadow4.", StringComparison.Ordinal))
+                    .Value;
+                Assert.Multiple(() => {
+                    Assert.That(BinaryPrimitives.ReadUInt32LittleEndian(spotLightUpload.Bytes), Is.EqualTo((uint)spotLightCount));
+
+                    for (var spotIndex = 0; spotIndex < spotLightCount; spotIndex++)
+                    {
+                        var light = meshSnapshot.SpotLights[spotIndex];
+                        var firstShadowPriority = Math.Max(0, spotLightCount - RenderSpotShadowData.Capacity);
+                        var expectedShadowSlot = light.Priority < firstShadowPriority
+                            ? 0
+                            : spotLightCount - light.Priority;
+                        var shadowSlot = BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(
+                            spotLightUpload.Bytes.AsSpan(
+                                RenderMeshC0SpotLightBufferBuilder.InnerCosineShadowSlotOffset
+                                + (spotIndex * 4 * sizeof(float))
+                                + sizeof(float))));
+                        Assert.That(shadowSlot, Is.EqualTo((float)expectedShadowSlot));
+                    }
+
+                    Assert.That(
+                        BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(
+                            spotFrameUpload.Bytes.AsSpan(416))),
+                        Is.Not.EqualTo(1.0f));
+                    Assert.That(
+                        BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(
+                            spotShadowFrameUpload.Bytes.AsSpan(checked(shadowFrameStride * RenderDirectionalShadowCameraData.CascadeCount)))),
+                        Is.Not.EqualTo(1.0f));
+                    Assert.That(firstSpotShadowPass.FrameOffset, Is.EqualTo(checked((long)shadowFrameStride * RenderDirectionalShadowCameraData.CascadeCount)));
+                    Assert.That(
+                        spotFrameUpload.Bytes.AsSpan(416, RenderSpotShadowData.SizeInBytes).ToArray(),
+                        Is.EqualTo(spotShadowFrameUpload.Bytes.AsSpan(
+                            checked(shadowFrameStride * RenderDirectionalShadowCameraData.CascadeCount),
+                            RenderSpotShadowData.SizeInBytes).ToArray()));
+                });
+            }
+
             Assert.That(
                 plan.BuiltInSpriteState?.MeshShadowPasses,
-                useDirectionalLight ? Has.Count.GreaterThan(0) : Has.Count.Zero);
+                (useDirectionalLight || (spotLightCount != 0)) ? Has.Count.GreaterThan(0) : Has.Count.Zero);
 
             if (useShadowCaster)
             {
@@ -635,12 +714,25 @@ internal sealed partial class SceneAssetStoreTests
                     .ToArray();
                 Assert.That(shadowedDrawIndices, Has.Length.EqualTo(meshDrawCount));
 
-                var cascadeZeroDrawIndices = plan.BuiltInSpriteState.MeshShadowPasses
-                    .Where(pair => plan.Passes.Single(pass => pass.Id == pair.Key).Description.Name.Contains(".Shadow0.", StringComparison.Ordinal))
-                    .Select(static pair => pair.Value.DrawIndex)
-                    .Distinct()
-                    .ToArray();
-                Assert.That(cascadeZeroDrawIndices, Has.Length.EqualTo(meshDrawCount));
+                if (useDirectionalLight)
+                {
+                    var cascadeZeroDrawIndices = plan.BuiltInSpriteState.MeshShadowPasses
+                        .Where(pair => plan.Passes.Single(pass => pass.Id == pair.Key).Description.Name.Contains(".Shadow0.", StringComparison.Ordinal))
+                        .Select(static pair => pair.Value.DrawIndex)
+                        .Distinct()
+                        .ToArray();
+                    Assert.That(cascadeZeroDrawIndices, Has.Length.EqualTo(meshDrawCount));
+                }
+
+                if (spotLightCount != 0)
+                {
+                    var firstSpotDrawIndices = plan.BuiltInSpriteState.MeshShadowPasses
+                        .Where(pair => plan.Passes.Single(pass => pass.Id == pair.Key).Description.Name.Contains(".Shadow4.", StringComparison.Ordinal))
+                        .Select(static pair => pair.Value.DrawIndex)
+                        .Distinct()
+                        .ToArray();
+                    Assert.That(firstSpotDrawIndices, Has.Length.EqualTo(meshDrawCount));
+                }
             }
 
             Assert.That(plan.BuiltInSpriteState?.Passes, Has.Count.EqualTo(includeSprite ? cameraCount : 0));
@@ -834,7 +926,7 @@ internal sealed partial class SceneAssetStoreTests
                 Assert.That(coloredPixelCount, Is.GreaterThan(0), $"Mesh C0 emitted no lit pixels; raster bounds were [{minimumX},{minimumY}]-[{maximumX},{maximumY}].");
                 Assert.That(firstColoredPixelOffset, Is.GreaterThanOrEqualTo(0));
 
-                if (useDirectionalLight)
+                if (useDirectionalLight || (spotLightCount != 0))
                 {
                     Assert.That(readbackBytes[firstColoredPixelOffset], Is.GreaterThan(100));
                     Assert.That(readbackBytes[firstColoredPixelOffset + 1], Is.GreaterThan(100));
@@ -1136,6 +1228,60 @@ internal sealed partial class SceneAssetStoreTests
 
     [TestCase(GraphicsBackend.D3D12)]
     [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphRendersSpotLightingAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(graphicsBackend, spotLightCount: 1);
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public async Task SnapshotBuiltInMeshC0GraphRendersSpotShadowOcclusionAsync(GraphicsBackend graphicsBackend)
+    {
+        byte[] unoccludedReadback = [];
+        byte[] occludedReadback = [];
+        long rowPitch = 0;
+
+        await RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            spotLightCount: 1,
+            cameraPositionX: 2.5f,
+            readbackObserver: (bytes, _, pitch) => {
+                unoccludedReadback = bytes.ToArray();
+                rowPitch = pitch;
+            }).ConfigureAwait(false);
+        await RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            spotLightCount: 1,
+            useShadowCaster: true,
+            shadowCasterLocalPositionX: -0.5f,
+            cameraPositionX: 2.5f,
+            readbackObserver: (bytes, _, pitch) => {
+                occludedReadback = bytes.ToArray();
+                rowPitch = pitch;
+            }).ConfigureAwait(false);
+
+        Assert.That(unoccludedReadback, Is.Not.Empty);
+        Assert.That(occludedReadback, Is.Not.Empty);
+        var darkenedPixels = 0;
+
+        for (var y = 0; y < 64; y++)
+        {
+            for (var x = 0; x < 64; x++)
+            {
+                var pixelOffset = checked((int)((rowPitch * y) + (x * 4)));
+                var darkening = unoccludedReadback[pixelOffset] - occludedReadback[pixelOffset];
+
+                if ((unoccludedReadback[pixelOffset] > 20)
+                    && (darkening > 10))
+                {
+                    darkenedPixels++;
+                }
+            }
+        }
+
+        Assert.That(darkenedPixels, Is.GreaterThan(0), "No spot-shadowed receiver pixels were observed.");
+    }
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
     public Task SnapshotBuiltInMeshC0GraphRendersStaticBindPoseSkinningAsync(GraphicsBackend graphicsBackend)
         => RunSnapshotBuiltInMeshC0GraphAsync(
             graphicsBackend,
@@ -1227,4 +1373,12 @@ internal sealed partial class SceneAssetStoreTests
             cameraNear: 100.0f,
             cameraFar: 101.0f,
             expectedBuildWarning: "ShadowRangeInvalid");
+
+    [TestCase(GraphicsBackend.D3D12)]
+    [TestCase(GraphicsBackend.Vulkan)]
+    public Task SnapshotBuiltInMeshC0GraphWarnsForSpotShadowBudgetAsync(GraphicsBackend graphicsBackend)
+        => RunSnapshotBuiltInMeshC0GraphAsync(
+            graphicsBackend,
+            spotLightCount: 5,
+            expectedBuildWarning: "ShadowBudgetExceeded");
 }

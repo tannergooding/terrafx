@@ -17,6 +17,7 @@ internal sealed class RenderMeshC0GraphPass
         GraphBufferVersion frameBuffer,
         GraphBufferVersion pointLightBuffer,
         GraphBufferVersion directionalLightBuffer,
+        GraphBufferVersion spotLightBuffer,
         GraphTextureVersion shadowAtlas,
         int frameStride,
         int cameraIndex,
@@ -45,6 +46,7 @@ internal sealed class RenderMeshC0GraphPass
         ArgumentNullException.ThrowIfNull(frameBuffer);
         ArgumentNullException.ThrowIfNull(pointLightBuffer);
         ArgumentNullException.ThrowIfNull(directionalLightBuffer);
+        ArgumentNullException.ThrowIfNull(spotLightBuffer);
         ArgumentNullException.ThrowIfNull(shadowAtlas);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(frameStride);
         ArgumentOutOfRangeException.ThrowIfNegative(cameraIndex);
@@ -68,6 +70,7 @@ internal sealed class RenderMeshC0GraphPass
         FrameBuffer = frameBuffer;
         PointLightBuffer = pointLightBuffer;
         DirectionalLightBuffer = directionalLightBuffer;
+        SpotLightBuffer = spotLightBuffer;
         ShadowAtlas = shadowAtlas;
         FrameStride = frameStride;
         CameraIndex = cameraIndex;
@@ -130,6 +133,8 @@ internal sealed class RenderMeshC0GraphPass
     internal GraphTextureVersion ShadowAtlas { get; }
 
     internal bool Skinned { get; }
+
+    internal GraphBufferVersion SpotLightBuffer { get; }
 
     internal GraphBufferVersion VertexBuffer { get; }
 
@@ -245,7 +250,7 @@ internal sealed class RenderMeshC0GraphPass
         }
 
         var samplers = samplersBuilder.MoveToImmutable();
-        var bufferBindings = ImmutableArray.CreateBuilder<BufferBinding>(Skinned ? 6 : 5);
+        var bufferBindings = ImmutableArray.CreateBuilder<BufferBinding>(Skinned ? 7 : 6);
         bufferBindings.Add(new BufferBinding(
             ShaderBindingGroup.Frame,
             0,
@@ -266,6 +271,12 @@ internal sealed class RenderMeshC0GraphPass
             ShaderResourceKind.UniformBuffer,
             DirectionalLightBuffer,
             new GraphBufferRange(0, DirectionalLightBuffer.Description.ByteLength)));
+        bufferBindings.Add(new BufferBinding(
+            ShaderBindingGroup.Frame,
+            3,
+            ShaderResourceKind.UniformBuffer,
+            SpotLightBuffer,
+            new GraphBufferRange(0, SpotLightBuffer.Description.ByteLength)));
         bufferBindings.Add(new BufferBinding(
             ShaderBindingGroup.ObjectData,
             0,

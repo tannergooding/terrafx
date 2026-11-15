@@ -18,6 +18,7 @@ cbuffer FrameData : register(b0, space0)
     float4 CascadeEnds;
     // Keep FrameData identical to the pixel-stage CPU layout.
     float4 ShadowViewProjectionRows[16];
+    float4 SpotShadowViewProjectionRows[16];
 };
 
 #if defined(TERRAFX_SPIRV)

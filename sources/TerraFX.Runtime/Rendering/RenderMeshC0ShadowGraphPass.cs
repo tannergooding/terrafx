@@ -94,7 +94,7 @@ internal sealed class RenderMeshC0ShadowGraphPass
             (false, true) => resources.TexturedMeshShadowPipeline,
             (true, false) => resources.SkinnedMeshShadowPipeline,
             (true, true) => resources.SkinnedTexturedMeshShadowPipeline,
-        } ?? throw new InvalidOperationException("The built-in directional shadow pass has no Mesh pipeline.");
+        } ?? throw new InvalidOperationException("The built-in Mesh shadow pass has no Mesh pipeline.");
 
         recorder.SetPipeline(pipeline.Handle);
         recorder.SetVertexBuffer(new VertexBufferBinding(
@@ -136,7 +136,7 @@ internal sealed class RenderMeshC0ShadowGraphPass
         if (Skinned)
         {
             var bonePaletteBuffer = BonePaletteBuffer
-                ?? throw new InvalidOperationException("A skinned directional shadow pass has no bone-palette buffer.");
+                ?? throw new InvalidOperationException("A skinned Mesh shadow pass has no bone-palette buffer.");
             bufferBindings.Add(new BufferBinding(
                 ShaderBindingGroup.ObjectData,
                 0,
@@ -162,7 +162,7 @@ internal sealed class RenderMeshC0ShadowGraphPass
                 ShaderBindingGroup.Material,
                 0,
                 resources.Sampler
-                    ?? throw new InvalidOperationException("The textured directional shadow pass has no sampler.")),
+                    ?? throw new InvalidOperationException("The textured Mesh shadow pass has no sampler.")),
             ]
             : [];
 
@@ -180,11 +180,11 @@ internal sealed class RenderMeshC0ShadowGraphPass
         ArgumentNullException.ThrowIfNull(version);
 
         var bonePaletteBuffer = BonePaletteBuffer
-            ?? throw new InvalidOperationException("A skinned directional shadow pass has no bone-palette source buffer.");
+            ?? throw new InvalidOperationException("A skinned Mesh shadow pass has no bone-palette source buffer.");
 
         if (_bonePaletteWriteVersionSet || (version.ResourceId != bonePaletteBuffer.ResourceId))
         {
-            throw new InvalidOperationException("The directional shadow bone-palette version does not match its source buffer.");
+            throw new InvalidOperationException("The Mesh shadow bone-palette version does not match its source buffer.");
         }
 
         BonePaletteBuffer = version;

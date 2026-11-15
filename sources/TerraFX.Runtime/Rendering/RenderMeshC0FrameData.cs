@@ -2,6 +2,7 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Collections.Immutable;
 using TerraFX;
 using TerraFX.Graphics;
 using TerraFX.Numerics;
@@ -10,19 +11,21 @@ namespace TerraFX.Rendering;
 
 internal readonly struct RenderMeshC0FrameData
 {
-    internal const int SizeInBytes = 128 + (4 * sizeof(float)) + RenderDirectionalShadowCameraData.SizeInBytes;
+    internal const int SizeInBytes = SpotShadowDataOffset + (RenderSpotShadowData.Capacity * RenderSpotShadowData.SizeInBytes);
 
     private const int AmbientOffset = 96;
     private const int CameraForwardOffset = 128;
     private const int CameraPositionOffset = 80;
     private const int PointLightCountOffset = 112;
     private const int ShadowDataOffset = 144;
+    private const int SpotShadowDataOffset = ShadowDataOffset + RenderDirectionalShadowCameraData.SizeInBytes;
     private readonly Vector4 _ambient;
     private readonly RenderCameraGpuData _camera;
     private readonly Vector4 _cameraForward;
     private readonly Vector4 _cameraPosition;
     private readonly RenderDirectionalShadowCameraData? _directionalShadowData;
     private readonly uint _pointLightCount;
+    private readonly ImmutableArray<RenderSpotShadowData> _spotShadowData;
 
     private RenderMeshC0FrameData(
         RenderCameraGpuData camera,
@@ -30,7 +33,8 @@ internal readonly struct RenderMeshC0FrameData
         Vector4 cameraForward,
         Vector4 ambient,
         uint pointLightCount,
-        RenderDirectionalShadowCameraData? directionalShadowData)
+        RenderDirectionalShadowCameraData? directionalShadowData,
+        ImmutableArray<RenderSpotShadowData> spotShadowData)
     {
         _camera = camera;
         _cameraPosition = cameraPosition;
@@ -38,13 +42,15 @@ internal readonly struct RenderMeshC0FrameData
         _ambient = ambient;
         _pointLightCount = pointLightCount;
         _directionalShadowData = directionalShadowData;
+        _spotShadowData = spotShadowData;
     }
 
     internal static RenderMeshC0FrameData Create(
         CameraSnapshot camera,
         RenderArea area,
         int pointLightCount,
-        RenderDirectionalShadowCameraData? directionalShadowData)
+        RenderDirectionalShadowCameraData? directionalShadowData,
+        ImmutableArray<RenderSpotShadowData> spotShadowData)
     {
         if (!SpatialMath.TryToFrameRelative(camera.Position, camera.Frame3, out var relativeCameraPosition))
         {
@@ -52,6 +58,13 @@ internal readonly struct RenderMeshC0FrameData
         }
 
         ArgumentOutOfRangeException.ThrowIfNegative(pointLightCount);
+
+        if (spotShadowData.IsDefault)
+        {
+            throw new ArgumentException("Spot shadow data must be initialized.", nameof(spotShadowData));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(spotShadowData.Length, RenderSpotShadowData.Capacity);
         var cameraForward = Vector3.TransformDirection(
             Vector3.UnitZ,
             Matrix4x4.CreateFromQuaternion(camera.Rotation));
@@ -62,7 +75,8 @@ internal readonly struct RenderMeshC0FrameData
             new Vector4(cameraForward, 0.0f),
             new Vector4(0.03f, 0.03f, 0.03f, 1.0f),
             checked((uint)pointLightCount),
-            directionalShadowData);
+            directionalShadowData,
+            spotShadowData);
     }
 
     internal static int GetUniformAllocationStride(int uniformBufferOffsetAlignment)
@@ -105,5 +119,19 @@ internal readonly struct RenderMeshC0FrameData
             destination.Slice(PointLightCountOffset, sizeof(uint)),
             _pointLightCount);
         _directionalShadowData.GetValueOrDefault().WriteTo(destination, ShadowDataOffset);
+
+        for (var index = 0; index < RenderSpotShadowData.Capacity; index++)
+        {
+            var spotShadowDestination = SpotShadowDataOffset + (index * RenderSpotShadowData.SizeInBytes);
+
+            if (index < _spotShadowData.Length)
+            {
+                _spotShadowData[index].WriteViewProjectionTo(destination, spotShadowDestination);
+            }
+            else
+            {
+                RenderSpotShadowData.WriteIdentityViewProjectionTo(destination, spotShadowDestination);
+            }
+        }
     }
 }

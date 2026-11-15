@@ -18,6 +18,7 @@ cbuffer FrameData : register(b0, space0)
     float4 CascadeEnds;
     // Keep the CPU row-major payload explicit across DXIL and SPIR-V matrix lowering.
     float4 ShadowViewProjectionRows[16];
+    float4 SpotShadowViewProjectionRows[16];
 };
 
 #if defined(TERRAFX_SPIRV)
@@ -37,6 +38,18 @@ cbuffer DirectionalLightData : register(b2, space0)
     uint4 DirectionalLightCount;
     float4 DirectionalLightDirectionAndShadow[256];
     float4 DirectionalLightRadiance[256];
+};
+
+#if defined(TERRAFX_SPIRV)
+[[vk::binding(3, 0)]]
+#endif
+cbuffer SpotLightData : register(b3, space0)
+{
+    uint4 SpotLightCount;
+    float4 SpotLightPositionRange[256];
+    float4 SpotLightDirectionOuterCosine[256];
+    float4 SpotLightRadiance[256];
+    float4 SpotLightInnerCosineShadowSlot[256];
 };
 
 #if defined(TERRAFX_SPIRV)
@@ -93,9 +106,24 @@ float4 TransformShadowPosition(float3 worldPosition, uint cascadeIndex)
         dot(position, float4(row0.w, row1.w, row2.w, row3.w)));
 }
 
-float SampleDirectionalShadowCascade(
+float4 TransformSpotShadowPosition(float3 worldPosition, uint spotIndex)
+{
+    uint rowOffset = 16 + (spotIndex * 4);
+    float4 position = float4(worldPosition, 1.0f);
+    float4 row0 = SpotShadowViewProjectionRows[rowOffset];
+    float4 row1 = SpotShadowViewProjectionRows[rowOffset + 1];
+    float4 row2 = SpotShadowViewProjectionRows[rowOffset + 2];
+    float4 row3 = SpotShadowViewProjectionRows[rowOffset + 3];
+    return float4(
+        dot(position, float4(row0.x, row1.x, row2.x, row3.x)),
+        dot(position, float4(row0.y, row1.y, row2.y, row3.y)),
+        dot(position, float4(row0.z, row1.z, row2.z, row3.z)),
+        dot(position, float4(row0.w, row1.w, row2.w, row3.w)));
+}
+
+float SampleShadowCell(
     float4 lightPosition,
-    uint cascadeIndex,
+    uint cellIndex,
     float depth,
     float depthDerivativeX,
     float depthDerivativeY)
@@ -122,7 +150,7 @@ float SampleDirectionalShadowCascade(
         0.0f,
         0.05f);
     float2 localUv = float2((lightNdc.x * 0.5f) + 0.5f, 0.5f - (lightNdc.y * 0.5f));
-    int2 cellOrigin = int2((cascadeIndex % 4) * 1024, (cascadeIndex / 4) * 1024);
+    int2 cellOrigin = int2((cellIndex % 4) * 1024, (cellIndex / 4) * 1024);
     int2 centerPixel = cellOrigin + (int2)floor(localUv * 1024.0f);
     int2 minimumPixel = cellOrigin;
     int2 maximumPixel = cellOrigin + 1023;
@@ -190,27 +218,27 @@ float4 PSMain(PixelInput input) : SV_Target0
                         ? 2
                         : 3;
             directionalShadowVisibility = cascadeIndex == 0
-                ? SampleDirectionalShadowCascade(
+                ? SampleShadowCell(
                     shadowPosition0,
                     cascadeIndex,
                     shadowDepth0,
                     shadowDepthDerivativeX0,
                     shadowDepthDerivativeY0)
                 : cascadeIndex == 1
-                    ? SampleDirectionalShadowCascade(
+                    ? SampleShadowCell(
                         shadowPosition1,
                         cascadeIndex,
                         shadowDepth1,
                         shadowDepthDerivativeX1,
                         shadowDepthDerivativeY1)
                     : cascadeIndex == 2
-                        ? SampleDirectionalShadowCascade(
+                        ? SampleShadowCell(
                             shadowPosition2,
                             cascadeIndex,
                             shadowDepth2,
                             shadowDepthDerivativeX2,
                             shadowDepthDerivativeY2)
-                        : SampleDirectionalShadowCascade(
+                        : SampleShadowCell(
                             shadowPosition3,
                             cascadeIndex,
                             shadowDepth3,
@@ -253,6 +281,66 @@ float4 PSMain(PixelInput input) : SV_Target0
         }
     }
 
+    for (uint lightIndex = 0; lightIndex < SpotLightCount.x; lightIndex++)
+    {
+        float4 positionRange = SpotLightPositionRange[lightIndex];
+        float4 directionOuterCosine = SpotLightDirectionOuterCosine[lightIndex];
+        float4 innerCosineShadowSlot = SpotLightInnerCosineShadowSlot[lightIndex];
+        float3 toLight = positionRange.xyz - input.WorldPosition;
+        float distanceSquared = dot(toLight, toLight);
+        float lightDistance = sqrt(distanceSquared);
+        float3 l = toLight / max(lightDistance, 1.0e-5f);
+        float rangeRatio = lightDistance / positionRange.w;
+        float rangeFactor = max(0.0f, 1.0f - pow(rangeRatio, 4.0f));
+        float attenuation = (rangeFactor * rangeFactor) / max(distanceSquared, 0.0001f);
+        float cosine = dot(-l, directionOuterCosine.xyz);
+        float coneFactor = innerCosineShadowSlot.x == directionOuterCosine.w
+            ? cosine >= innerCosineShadowSlot.x ? 1.0f : 0.0f
+            : saturate((cosine - directionOuterCosine.w)
+                / (innerCosineShadowSlot.x - directionOuterCosine.w));
+        coneFactor = coneFactor * coneFactor * (3.0f - (2.0f * coneFactor));
+        uint spotShadowIndex = (uint)max(innerCosineShadowSlot.y - 1.0f, 0.0f);
+        float4 spotShadowPosition = TransformSpotShadowPosition(input.WorldPosition, spotShadowIndex);
+        float spotShadowDepth = spotShadowPosition.z / spotShadowPosition.w;
+        float spotShadowDepthDerivativeX = ddx(spotShadowDepth);
+        float spotShadowDepthDerivativeY = ddy(spotShadowDepth);
+        float spotShadowVisibility = (innerCosineShadowSlot.y > 0.5f)
+            ? SampleShadowCell(
+                spotShadowPosition,
+                4 + spotShadowIndex,
+                spotShadowDepth,
+                spotShadowDepthDerivativeX,
+                spotShadowDepthDerivativeY)
+            : 1.0f;
+        float nDotL = saturate(dot(n, l));
+        float nDotV = saturate(dot(n, v));
+
+        if ((coneFactor > 0.0f) && (nDotL > 0.0f) && (nDotV > 0.0f))
+        {
+            float3 h = normalize(l + v);
+            float nDotH = saturate(dot(n, h));
+            float vDotH = saturate(dot(v, h));
+            float alpha = roughness * roughness;
+            float alphaSquared = alpha * alpha;
+            float distributionDenominator = nDotH * nDotH * (alphaSquared - 1.0f) + 1.0f;
+            float distribution = alphaSquared / (3.14159265358979323846f * distributionDenominator * distributionDenominator);
+            float nDotLRoot = sqrt(nDotV * nDotV * (1.0f - alphaSquared) + alphaSquared);
+            float nDotVRoot = sqrt(nDotL * nDotL * (1.0f - alphaSquared) + alphaSquared);
+            float visibilityDenominator = nDotL * nDotLRoot + nDotV * nDotVRoot;
+            float visibility = 0.5f / max(visibilityDenominator, 1.0e-5f);
+            float3 f0 = lerp(float3(0.04f, 0.04f, 0.04f), baseColor, metallic);
+            float3 fresnel = f0 + (1.0f - f0) * pow(1.0f - vDotH, 5.0f);
+            float3 specular = distribution * fresnel * visibility;
+            float3 diffuse = (1.0f - metallic) * (1.0f - fresnel) * baseColor / 3.14159265358979323846f;
+            color += SpotLightRadiance[lightIndex].rgb
+                * (specular + diffuse)
+                * nDotL
+                * attenuation
+                * coneFactor
+                * spotShadowVisibility;
+        }
+    }
+
     for (uint lightIndex = 0; lightIndex < DirectionalLightCount.x; lightIndex++)
     {
         float4 directionAndShadow = DirectionalLightDirectionAndShadow[lightIndex];
@@ -286,6 +374,7 @@ float4 PSMain(PixelInput input) : SV_Target0
     }
 
     color += Emissive.rgb;
+
     float visibility = input.Position.w > 0.0f ? 1.0f : 0.0f;
 
     if (RenderOptions.z > 0.5f)
