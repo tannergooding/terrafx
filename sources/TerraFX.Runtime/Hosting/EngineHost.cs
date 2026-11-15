@@ -334,73 +334,10 @@ public sealed partial class EngineHost : IAsyncDisposable
         return true;
     }
 
-    internal void AdoptWorldReplacement(World previousWorld, World replacementWorld, long hostTimestamp)
+    internal void AdoptWorldReplacement(WorldReplacementAdoptionPlan adoption)
     {
         EnsureOwnerThread();
-        ArgumentNullException.ThrowIfNull(previousWorld);
-        ArgumentNullException.ThrowIfNull(replacementWorld);
-
-        if (ReferenceEquals(previousWorld, replacementWorld))
-        {
-            throw new ArgumentException("A replacement World must be a distinct object.", nameof(replacementWorld));
-        }
-
-        var workerPool = _workerPool
-            ?? throw new InvalidOperationException("The EngineHost worker pool is not initialized.");
-        var diagnostics = _diagnostics
-            ?? throw new InvalidOperationException("The EngineHost diagnostics service is not initialized.");
-        var admissionDomain = _admissionDomain
-            ?? throw new InvalidOperationException("The EngineHost admission domain is not initialized.");
-
-        if (!replacementWorld.IsHostedBy(workerPool, diagnostics, admissionDomain))
-        {
-            throw new InvalidOperationException("The replacement World was not prepared for this exact EngineHost.");
-        }
-
-        HostedWorldSchedule? schedule = null;
-
-        foreach (var candidate in _worlds)
-        {
-            if (ReferenceEquals(candidate.World, replacementWorld))
-            {
-                throw new InvalidOperationException("The replacement World is already scheduled by this host.");
-            }
-
-            if (ReferenceEquals(candidate.World, previousWorld))
-            {
-                if (schedule is not null)
-                {
-                    throw new InvalidOperationException("The previous World has more than one host schedule.");
-                }
-
-                schedule = candidate;
-            }
-        }
-
-        if (schedule is null)
-        {
-            throw new InvalidOperationException("The previous World is not scheduled by this host.");
-        }
-
-        schedule.ValidateAdoption(previousWorld, replacementWorld, hostTimestamp);
-
-        foreach (var adapter in _inputTimelineByRouter.Values)
-        {
-            if (ReferenceEquals(adapter.World, previousWorld))
-            {
-                adapter.ValidateAdoption(previousWorld, replacementWorld, hostTimestamp, schedule.IsPaused);
-            }
-        }
-
-        schedule.AdoptWorld(previousWorld, replacementWorld, hostTimestamp);
-
-        foreach (var adapter in _inputTimelineByRouter.Values)
-        {
-            if (ReferenceEquals(adapter.World, previousWorld))
-            {
-                adapter.AdoptWorld(previousWorld, replacementWorld, hostTimestamp, schedule.IsPaused);
-            }
-        }
+        adoption.Apply(this);
     }
 
     internal InputBindingReceipt BindGameplayInputFromContext(WindowHandle window, World world)
@@ -1437,6 +1374,45 @@ public sealed partial class EngineHost : IAsyncDisposable
         }
     }
 
+    internal sealed class WorldReplacementAdoptionPlan
+    {
+        private readonly WorldInputTimelineAdapter.WorldReplacementAdoption[] _inputAdoptions;
+        private readonly World _replacementWorld;
+        private readonly int _scheduleIndex;
+        private readonly SimulationClockSegment _scheduleSegment;
+        private readonly long _timeScaleSegmentSequenceAtPause;
+
+        internal WorldReplacementAdoptionPlan(
+            int scheduleIndex,
+            World replacementWorld,
+            long timeScaleSegmentSequenceAtPause,
+            SimulationClockSegment scheduleSegment,
+            WorldInputTimelineAdapter.WorldReplacementAdoption[] inputAdoptions)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(scheduleIndex);
+            ArgumentNullException.ThrowIfNull(replacementWorld);
+            ArgumentNullException.ThrowIfNull(inputAdoptions);
+            _scheduleIndex = scheduleIndex;
+            _replacementWorld = replacementWorld;
+            _timeScaleSegmentSequenceAtPause = timeScaleSegmentSequenceAtPause;
+            _scheduleSegment = scheduleSegment;
+            _inputAdoptions = inputAdoptions;
+        }
+
+        internal void Apply(EngineHost host)
+        {
+            host._worlds[_scheduleIndex].ApplyWorldReplacementAdoption(
+                _replacementWorld,
+                _timeScaleSegmentSequenceAtPause,
+                _scheduleSegment);
+
+            for (var index = 0; index < _inputAdoptions.Length; index++)
+            {
+                _inputAdoptions[index].Apply();
+            }
+        }
+    }
+
     private abstract class HostActionRequest
     {
         internal abstract Task Completion { get; }
@@ -1637,24 +1613,16 @@ public sealed partial class EngineHost : IAsyncDisposable
 
         internal World World => _world;
 
-        internal void AdoptWorld(World previousWorld, World replacementWorld, long hostTimestamp)
+        internal void ApplyWorldReplacementAdoption(
+            World replacementWorld,
+            long timeScaleSegmentSequenceAtPause,
+            SimulationClockSegment segment)
         {
-            ValidateAdoption(previousWorld, replacementWorld, hostTimestamp);
             _world = replacementWorld;
             _isRecoveringOverrun = false;
             DidResumeAtLastBoundary = false;
-            _timeScaleSegmentSequenceAtPause = replacementWorld.TimeScaleSegmentSequence;
-            var nextOpenTick = replacementWorld.NextTickIndex;
-            _segment = new SimulationClockSegment(
-                _segment.IsValid ? checked(_segment.Revision + 1) : 1,
-                hostTimestamp,
-                _sequenceLease.Allocate(),
-                simulationElapsedStartTicks: 0,
-                fractionalSimulationTicks: 0,
-                replacementWorld.TickRate,
-                nextOpenTick,
-                replacementWorld.CurrentTimeScale,
-                _isPaused || _isAwaitingInputReconciliation);
+            _timeScaleSegmentSequenceAtPause = timeScaleSegmentSequenceAtPause;
+            _segment = segment;
         }
 
         internal void BeginInputReconciliationWait(long hostTimestamp)
@@ -1761,6 +1729,23 @@ public sealed partial class EngineHost : IAsyncDisposable
             _isRecoveringOverrun = false;
             _timeScaleSegmentSequenceAtPause = _world.TimeScaleSegmentSequence;
             BeginSegment(hostTimestamp, isPaused: true);
+        }
+
+        internal SimulationClockSegment PrepareWorldReplacementAdoption(
+            World replacementWorld,
+            long hostTimestamp)
+        {
+            var nextOpenTick = replacementWorld.NextTickIndex;
+            return new SimulationClockSegment(
+                _segment.IsValid ? checked(_segment.Revision + 1) : 1,
+                hostTimestamp,
+                _sequenceLease.Allocate(),
+                simulationElapsedStartTicks: 0,
+                fractionalSimulationTicks: 0,
+                replacementWorld.TickRate,
+                nextOpenTick,
+                replacementWorld.CurrentTimeScale,
+                _isPaused || _isAwaitingInputReconciliation);
         }
 
         internal void ValidateAdoption(World previousWorld, World replacementWorld, long hostTimestamp)

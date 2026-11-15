@@ -244,7 +244,11 @@ internal sealed class WorldInputTimelineAdapterTests
             var pendingRelease = adapter.InjectHeadlessInput(new InputInjection(key, InputKeyEventKind.Up), 333_334);
             Assert.That(pendingRelease.AssignedTick, Is.EqualTo(2));
 
-            adapter.AdoptWorld(previousWorld, replacementWorld, hostTimestamp: 400_000, isPaused: false);
+            adapter.PrepareWorldReplacementAdoption(
+                previousWorld,
+                replacementWorld,
+                hostTimestamp: 400_000,
+                isPaused: false).Apply();
 
             Assert.Multiple(() => {
                 Assert.That(adapter.World, Is.SameAs(replacementWorld));

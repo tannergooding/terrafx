@@ -85,7 +85,7 @@ internal sealed partial class WorldReplacementOperation
                 state.ReplacementPreparation.DataCredit);
             var restoredPublication = candidate.PrepareRestoredPublication();
             var hostTimestamp = host?.GetWorldReplacementHostTimestamp() ?? 0;
-            host?.ValidateWorldReplacementAdoption(targetWorld, candidate, hostTimestamp);
+            var hostAdoption = host?.PrepareWorldReplacementAdoption(targetWorld, candidate, hostTimestamp);
             var loadedReceipt = new WorldLoadReceipt(
                 WorldLoadStatus.Loaded,
                 candidate,
@@ -125,7 +125,9 @@ internal sealed partial class WorldReplacementOperation
 
             try
             {
-                host?.AdoptWorldReplacement(targetWorld, loadedReceipt.ReplacementWorld!, hostTimestamp);
+                host?.AdoptWorldReplacement(
+                    hostAdoption
+                        ?? throw new InvalidOperationException("The hosted replacement omitted its prepared schedule adoption."));
             }
             catch (Exception exception)
             {

@@ -1614,15 +1614,7 @@ public sealed partial class InputRouter
         }
         else
         {
-            if (_worldReplacementRebasePending)
-            {
-                if ((segmentNextOpenTick != _nextOpenTick)
-                    || _inputInbox.Any(envelope => envelope.AssignedTick != segmentNextOpenTick))
-                {
-                    throw new ArgumentException("The replacement clock segment does not match the rebased recipient timeline.", nameof(segment));
-                }
-            }
-            else if ((_inputInbox.Count != 0)
+            if ((_inputInbox.Count != 0)
                 || (_inputControlInbox.Count != 0)
                 || (_lastAssignedInputTick >= 0)
                 || (segment.NextOpenTick < _nextOpenTick))
@@ -1634,7 +1626,6 @@ public sealed partial class InputRouter
         }
 
         _simulationClockSegment = segment;
-        _worldReplacementRebasePending = false;
         _inputRecorder?.Record(new InputRecordingEntry(
             InputRecordingEntryKind.ClockSegment,
             segment.HostTimestampStartTicks,
@@ -2345,7 +2336,6 @@ public sealed partial class InputRouter
         _hostControlTimestamp = 0;
         _isPaused = false;
         _pauseControlPending = false;
-        _worldReplacementRebasePending = false;
         _pendingReconciliationInputCount = 0;
         _pendingReboundActions.Clear();
         _orderedConsumableBindings = [];

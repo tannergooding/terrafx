@@ -35,7 +35,6 @@ public sealed partial class InputRouter
     private SimulationClockSegment _simulationClockSegment;
     private readonly TextInputBatchBudget _textInputBatchBudget;
     private readonly WindowHandle? _window;
-    private bool _worldReplacementRebasePending;
 
     internal InputRouter(
         InputRecipientKind recipientKind,
@@ -86,6 +85,8 @@ public sealed partial class InputRouter
 
     /// <summary>Gets the recipient clock kind.</summary>
     public InputRecipientKind RecipientKind => _recipientKind;
+
+    internal bool HasActiveRecording => _inputRecorder is not null;
 
     internal bool IsPauseControlPending => _pauseControlPending;
 
@@ -491,6 +492,32 @@ public sealed partial class InputRouter
             null);
     }
 
+    internal void ApplySimulationTimelineWorldReplacementAdoption(
+        long nextOpenTick,
+        long hostTimestamp,
+        long discontinuityHostSequence,
+        in SimulationClockSegment segment)
+    {
+        foreach (var envelope in _inputInbox)
+        {
+            envelope.RebaseAssignedTick(nextOpenTick);
+        }
+
+        for (var index = 0; index < _pendingReboundActions.Count; index++)
+        {
+            _pendingReboundActions[index] = _pendingReboundActions[index] with {
+                AssignedTick = nextOpenTick,
+            };
+        }
+
+        _nextOpenTick = nextOpenTick;
+        _lastAssignedInputTick = (_inputInbox.Count == 0) ? (nextOpenTick - 1) : nextOpenTick;
+        _hostControlTimestamp = hostTimestamp;
+        _controlCommandsInBoundary = 0;
+        _inputRecorder?.MarkDiscontinuity(discontinuityHostSequence);
+        _simulationClockSegment = segment;
+    }
+
     internal void BeginHostControlBoundary(long nextOpenTick, long hostTimestamp)
     {
         EnsureOwnerThread();
@@ -586,31 +613,6 @@ public sealed partial class InputRouter
         return ProcessSimulationInputStage(assignedTick);
     }
 
-    internal void RebaseSimulationTimelineForWorldReplacement(long nextOpenTick, long hostTimestamp)
-    {
-        ValidateSimulationTimelineRebase(nextOpenTick, hostTimestamp);
-
-        foreach (var envelope in _inputInbox)
-        {
-            envelope.RebaseAssignedTick(nextOpenTick);
-        }
-
-        for (var index = 0; index < _pendingReboundActions.Count; index++)
-        {
-            _pendingReboundActions[index] = _pendingReboundActions[index] with {
-                AssignedTick = nextOpenTick,
-            };
-        }
-
-        _simulationClockSegment = default;
-        _nextOpenTick = nextOpenTick;
-        _lastAssignedInputTick = (_inputInbox.Count == 0) ? (nextOpenTick - 1) : nextOpenTick;
-        _hostControlTimestamp = hostTimestamp;
-        _controlCommandsInBoundary = 0;
-        _worldReplacementRebasePending = true;
-        _inputRecorder?.MarkDiscontinuity(_sequenceLease.Allocate());
-    }
-
     internal void UpdateHostControlTimestamp(long hostTimestamp)
     {
         EnsureOwnerThread();
@@ -640,11 +642,6 @@ public sealed partial class InputRouter
             || _pauseControlPending)
         {
             throw new InvalidOperationException("The input timeline cannot be rebased at the selected World replacement boundary.");
-        }
-
-        if (_worldReplacementRebasePending)
-        {
-            throw new InvalidOperationException("A previous World replacement rebase has not installed its clock segment.");
         }
 
         foreach (var envelope in _inputInbox)

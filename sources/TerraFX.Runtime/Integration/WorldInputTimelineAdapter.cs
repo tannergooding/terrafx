@@ -96,26 +96,6 @@ internal sealed class WorldInputTimelineAdapter
         }
     }
 
-    internal void AdoptWorld(World previousWorld, World replacementWorld, long hostTimestamp, bool isPaused)
-    {
-        ValidateAdoption(previousWorld, replacementWorld, hostTimestamp, isPaused);
-        var nextOpenTick = replacementWorld.NextTickIndex;
-        _router.RebaseSimulationTimelineForWorldReplacement(nextOpenTick, hostTimestamp);
-        var segment = new SimulationClockSegment(
-            _segment.IsValid ? checked(_segment.Revision + 1) : 1,
-            hostTimestamp,
-            _sequenceLease.Allocate(),
-            simulationElapsedStartTicks: 0,
-            fractionalSimulationTicks: 0,
-            replacementWorld.TickRate,
-            nextOpenTick,
-            replacementWorld.CurrentTimeScale,
-            isPaused);
-        _router.SetSimulationClockSegment(in segment);
-        _world = replacementWorld;
-        _segment = segment;
-    }
-
     internal void BeginPhysicalInputReconciliationAtBoundary(long hostTimestamp)
     {
         EnsureOwnerThread();
@@ -276,6 +256,34 @@ internal sealed class WorldInputTimelineAdapter
             nextOpenTick: nextOpenTick,
             beginHostControlBoundary: false);
         return receipt;
+    }
+
+    internal WorldReplacementAdoption PrepareWorldReplacementAdoption(
+        World previousWorld,
+        World replacementWorld,
+        long hostTimestamp,
+        bool isPaused)
+    {
+        ValidateAdoption(previousWorld, replacementWorld, hostTimestamp, isPaused);
+        var nextOpenTick = replacementWorld.NextTickIndex;
+        var discontinuityHostSequence = _router.HasActiveRecording ? _sequenceLease.Allocate() : 0;
+        var segment = new SimulationClockSegment(
+            _segment.IsValid ? checked(_segment.Revision + 1) : 1,
+            hostTimestamp,
+            _sequenceLease.Allocate(),
+            simulationElapsedStartTicks: 0,
+            fractionalSimulationTicks: 0,
+            replacementWorld.TickRate,
+            nextOpenTick,
+            replacementWorld.CurrentTimeScale,
+            isPaused);
+        return new WorldReplacementAdoption(
+            this,
+            replacementWorld,
+            nextOpenTick,
+            hostTimestamp,
+            discontinuityHostSequence,
+            segment);
     }
 
     internal InputActionSnapshot PublishInputStage(long tickIndex)
@@ -498,5 +506,44 @@ internal sealed class WorldInputTimelineAdapter
         }
 
         return nextOpenTick;
+    }
+
+    internal sealed class WorldReplacementAdoption
+    {
+        private readonly WorldInputTimelineAdapter _adapter;
+        private readonly long _discontinuityHostSequence;
+        private readonly long _hostTimestamp;
+        private readonly long _nextOpenTick;
+        private readonly World _replacementWorld;
+        private readonly SimulationClockSegment _segment;
+
+        internal WorldReplacementAdoption(
+            WorldInputTimelineAdapter adapter,
+            World replacementWorld,
+            long nextOpenTick,
+            long hostTimestamp,
+            long discontinuityHostSequence,
+            SimulationClockSegment segment)
+        {
+            ArgumentNullException.ThrowIfNull(adapter);
+            ArgumentNullException.ThrowIfNull(replacementWorld);
+            _adapter = adapter;
+            _replacementWorld = replacementWorld;
+            _nextOpenTick = nextOpenTick;
+            _hostTimestamp = hostTimestamp;
+            _discontinuityHostSequence = discontinuityHostSequence;
+            _segment = segment;
+        }
+
+        internal void Apply()
+        {
+            _adapter._router.ApplySimulationTimelineWorldReplacementAdoption(
+                _nextOpenTick,
+                _hostTimestamp,
+                _discontinuityHostSequence,
+                in _segment);
+            _adapter._world = _replacementWorld;
+            _adapter._segment = _segment;
+        }
     }
 }

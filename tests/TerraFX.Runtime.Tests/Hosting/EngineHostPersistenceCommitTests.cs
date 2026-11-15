@@ -14,6 +14,7 @@ using TerraFX.Assets;
 using TerraFX.Entities;
 using TerraFX.Graphics;
 using TerraFX.Hosting;
+using TerraFX.Input;
 using TerraFX.Platform;
 using TerraFX.Runtime.Tests.Entities;
 using TerraFX.Runtime.Tests.Scenes;
@@ -132,6 +133,8 @@ internal sealed class WorldPersistenceCommitTests
             new AssetStoreOptions(packagePath, SHA256.HashData(packageBytes), assetRegistration));
         EngineHost? host = null;
         World? sourceWorld = null;
+        InputRouter? inputRouter = null;
+        InputRecorder? inputRecorder = null;
 
         try
         {
@@ -147,6 +150,11 @@ internal sealed class WorldPersistenceCommitTests
                     InitialReplayLineageId = Guid.NewGuid(),
                     WorldGuid = Guid.NewGuid(),
                 });
+                inputRouter = context.CreateInputRouter(InputRecipientKind.SimulationTimeline);
+                Assert.That(
+                    context.BindHeadlessGameplayInput(inputRouter, sourceWorld).Status,
+                    Is.EqualTo(InputBindingStatus.Bound));
+                inputRecorder = inputRouter.StartRecording();
                 var entity = sourceWorld.CreateEntity(new EntityDescription());
                 sourceEntityId = sourceWorld.GetEntityId(entity);
             }).ConfigureAwait(false);
@@ -226,6 +234,22 @@ internal sealed class WorldPersistenceCommitTests
                 ?? throw new InvalidOperationException("The successful load receipt omitted old-World retirement."))
                 .WaitAsync(TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
+
+            InputRoutingReceipt? inputReceipt = null;
+            var expectedInputTick = 0L;
+
+            await host.InvokeAsync(context => {
+                expectedInputTick = replacementWorld.NextTickIndex;
+                inputReceipt = context.InjectHeadlessInput(
+                    [inputRouter!],
+                    new InputInjection(new KeyboardControl(7, 4), InputKeyEventKind.Down))[0];
+                Assert.That(inputRecorder!.IsComplete, Is.False);
+            }).ConfigureAwait(false);
+
+            Assert.Multiple(() => {
+                Assert.That(inputReceipt!.Status, Is.EqualTo(InputRoutingStatus.Applied));
+                Assert.That(inputReceipt!.AssignedTick, Is.EqualTo(expectedInputTick));
+            });
 
             var nextTickBeforePump = 0L;
             await host.InvokeAsync(_ => nextTickBeforePump = replacementWorld.NextTickIndex).ConfigureAwait(false);
