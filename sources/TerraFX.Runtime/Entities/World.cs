@@ -709,65 +709,84 @@ public sealed partial class World : IDisposable
         {
             if (!publicationCommitted)
             {
-                if (ownsWorkerPool)
+                try
                 {
-                    workerPool?.Dispose();
-                }
-
-                if (diagnosticsCapability is not null)
-                {
-                    diagnosticsCapability.Close();
-                }
-                else if (sharedDiagnostics is null)
-                {
-                    diagnostics?.Close();
-                }
-
-                if (lineageGrant.IsValid && (admissionDomain is not null))
-                {
-                    if (lineageCommitted)
+                    if (ownsWorkerPool)
                     {
-                        _ = admissionDomain.TryRollbackFreshLineage(lineageGrant);
+                        workerPool?.Dispose();
                     }
-                    else
+
+                    if (diagnosticsCapability is not null)
                     {
-                        _ = admissionDomain.TryReleaseFreshLineage(lineageGrant);
+                        diagnosticsCapability.Close();
                     }
-                }
-
-                systemQuarantineReservation?.Release();
-
-                if (systemQuarantineReservation?.RetainsDomainReservation != true)
-                {
-                    domainReservation?.Dispose();
-                }
-
-                if (lifetimeControl is not null)
-                {
-                    if (constructionCleanupFailed)
+                    else if (sharedDiagnostics is null)
                     {
-                        if (!lifetimeControl.BeginRetirement())
+                        diagnostics?.Close();
+                    }
+
+                    if (lineageGrant.IsValid && (admissionDomain is not null))
+                    {
+                        if (lineageCommitted)
                         {
-                            throw new InvalidOperationException("The failed World construction could not revoke its WorldGuid binding.");
+                            _ = admissionDomain.TryRollbackFreshLineage(lineageGrant);
                         }
-
-                        lifetimeControl.CloseDefaultDomain();
+                        else
+                        {
+                            _ = admissionDomain.TryReleaseFreshLineage(lineageGrant);
+                        }
                     }
-                    else
+
+                    systemQuarantineReservation?.Release();
+
+                    if (systemQuarantineReservation?.RetainsDomainReservation != true)
                     {
-                        lifetimeControl.AbandonUnpublished();
+                        domainReservation?.Dispose();
+                    }
+
+                    if (lifetimeControl is not null)
+                    {
+                        if (constructionCleanupFailed)
+                        {
+                            if (!lifetimeControl.BeginRetirement())
+                            {
+                                throw new InvalidOperationException("The failed World construction could not revoke its WorldGuid binding.");
+                            }
+
+                            if (!lifetimeControl.QuarantineAfterCleanupFailure())
+                            {
+                                throw new InvalidOperationException("The failed World construction could not quarantine its WorldGuid binding.");
+                            }
+
+                            WorldSystemInstanceRegistry.QuarantineLifetimeControl(
+                                lifetimeControl,
+                                systemQuarantineReservation
+                                    ?? throw new InvalidOperationException("The failed World construction has no lifetime quarantine reservation."));
+                            lifetimeControl.CloseDefaultDomain();
+                        }
+                        else
+                        {
+                            lifetimeControl.AbandonUnpublished();
+                        }
+                    }
+                    else if ((registry is not null) && worldGuidGrant.IsValid)
+                    {
+                        _ = registry.TryReleaseFresh(worldGuidGrant);
+                    }
+
+                    defaultDomainOwner?.Close();
+
+                    if (ownsAdmissionDomain)
+                    {
+                        admissionDomain?.Dispose();
                     }
                 }
-                else if ((registry is not null) && worldGuidGrant.IsValid)
+                finally
                 {
-                    _ = registry.TryReleaseFresh(worldGuidGrant);
-                }
-
-                defaultDomainOwner?.Close();
-
-                if (ownsAdmissionDomain)
-                {
-                    admissionDomain?.Dispose();
+                    if (systemQuarantineReservation is not null)
+                    {
+                        WorldSystemInstanceRegistry.ReleaseLifetimeControlCapacity(systemQuarantineReservation);
+                    }
                 }
             }
         }
@@ -1381,6 +1400,21 @@ public sealed partial class World : IDisposable
                 lifetimeRetirementFailure = true;
             }
 
+            if (!lineageRetired
+                || lifetimeRetirementFailure
+                || (systemCleanupReport.FailureCount != 0)
+                || (attachmentCleanupException is not null)
+                || _systemQuarantineReservation.RetainsDomainReservation
+                || attachmentQuarantineRetainsReservation)
+            {
+                if (!_lifetimeControl.QuarantineAfterCleanupFailure())
+                {
+                    throw new InvalidOperationException("The disposed World lifetime could not be quarantined after cleanup failure.");
+                }
+
+                WorldSystemInstanceRegistry.QuarantineLifetimeControl(_lifetimeControl, _systemQuarantineReservation);
+            }
+
             _lifetimeControl.CloseDefaultDomain();
 
             if (!lineageRetired || lifetimeRetirementFailure)
@@ -1426,8 +1460,22 @@ public sealed partial class World : IDisposable
             }
             finally
             {
-                attachmentQuarantineReservation?.Release();
-                _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
+                try
+                {
+                    _systemQuarantineReservation.Release();
+                }
+                finally
+                {
+                    try
+                    {
+                        WorldSystemInstanceRegistry.ReleaseLifetimeControlCapacity(_systemQuarantineReservation);
+                    }
+                    finally
+                    {
+                        attachmentQuarantineReservation?.Release();
+                        _ = Interlocked.Exchange(ref _isStructuralOperationActive, 0);
+                    }
+                }
             }
         }
     }
@@ -2342,7 +2390,6 @@ public sealed partial class World : IDisposable
 
             _systemInstances = [];
             _systemCleanupPreparation.Seal();
-            _systemQuarantineReservation.Release();
             return _systemCleanupPreparation.Report;
         }
         finally

@@ -7,10 +7,14 @@ namespace TerraFX.Entities;
 
 internal sealed class WorldGuidRetirementPermit
 {
+    private const int StateAvailable = 0;
+    private const int StateQuarantined = 2;
+    private const int StateRetired = 1;
+
     private readonly WorldGuidGrant _grant;
-    private int _isConsumed;
     private readonly WorldLifetimeControl _owner;
     private readonly WorldGuidRegistry _registry;
+    private int _state;
 
     internal WorldGuidRetirementPermit(
         WorldLifetimeControl owner,
@@ -39,7 +43,7 @@ internal sealed class WorldGuidRetirementPermit
             || !_owner.WorldGuidGrant.Equals(_grant)
             || !_owner.IsRetirementPermitCurrent(_grant)
             || !_grant.IsOwnedBy(registry)
-            || (Interlocked.CompareExchange(ref _isConsumed, 1, 0) != 0))
+            || (Interlocked.CompareExchange(ref _state, StateRetired, StateAvailable) != StateAvailable))
         {
             grant = default;
             return false;
@@ -47,5 +51,37 @@ internal sealed class WorldGuidRetirementPermit
 
         grant = _grant;
         return true;
+    }
+
+    internal bool TryConsumeForQuarantine(WorldGuidRegistry registry, in WorldGuidGrant grant)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+
+        return ReferenceEquals(_registry, registry)
+            && ReferenceEquals(_owner.Registry, registry)
+            && _owner.WorldGuidGrant.Equals(_grant)
+            && _grant.Equals(grant)
+            && _owner.IsQuarantinePermitCurrent(_grant)
+            && _grant.IsOwnedBy(registry)
+            && (Interlocked.CompareExchange(ref _state, StateQuarantined, StateAvailable) == StateAvailable);
+    }
+
+    internal bool TryGetQuarantineGrant(WorldGuidRegistry registry, out WorldGuidGrant grant)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+
+        if (ReferenceEquals(_registry, registry)
+            && ReferenceEquals(_owner.Registry, registry)
+            && _owner.WorldGuidGrant.Equals(_grant)
+            && _owner.IsQuarantinePermitCurrent(_grant)
+            && _grant.IsOwnedBy(registry)
+            && (Volatile.Read(ref _state) == StateAvailable))
+        {
+            grant = _grant;
+            return true;
+        }
+
+        grant = default;
+        return false;
     }
 }

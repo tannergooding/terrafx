@@ -140,6 +140,68 @@ internal sealed class WorldSystemFactoryTests
     }
 
     [Test]
+    public void WorldConstructionUnwindQuarantinesUnpublishedLifetimeWhenReleaseFails()
+    {
+        var schemas = new CompiledContentSchemaRegistry([]);
+        var releaseFailure = new ReleaseFailureCounter();
+        var firstDescription = new SystemDescription(
+            new Guid("00000000-0000-0000-0000-000000000001"),
+            0,
+            SimulationStage.Input,
+            [],
+            [],
+            [],
+            SystemThreadMode.OwnerThread);
+        var firstBinding = WorldSystemFactoryBinding.Stateless<ProbeSystem, ProbeSystemCreate, ProbeSystemReleaseFailure>(
+            Guid.NewGuid(),
+            1,
+            new WorldSystemSourceStateDeclaration(typeof(ProbeSystem), []),
+            default,
+            new ProbeSystemReleaseFailure(releaseFailure));
+        var secondDescription = new SystemDescription(
+            new Guid("00000000-0000-0000-0000-000000000002"),
+            1,
+            SimulationStage.Input,
+            [],
+            [],
+            [],
+            SystemThreadMode.OwnerThread);
+        var secondBinding = WorldSystemFactoryBinding.Stateless<ConstructionFailureSystem, ConstructionFailureSystemCreate, ConstructionFailureSystemRelease>(
+            Guid.NewGuid(),
+            1,
+            new WorldSystemSourceStateDeclaration(typeof(ConstructionFailureSystem), []),
+            default,
+            default);
+        var builder = new WorldRegistrationBuilder(schemas);
+        _ = builder.RegisterSystem(firstDescription, new ProbeSystemFactory(firstBinding));
+        _ = builder.RegisterSystem(secondDescription, new ProbeSystemFactory(secondBinding));
+        var registration = builder.Build();
+        var domain = new WorldAdmissionDomain(16 * 1024 * 1024);
+        var worldGuid = Guid.NewGuid();
+
+        try
+        {
+            var exception = Assert.Throws<WorldSystemCleanupException>(() => World.Create(new WorldOptions(registration) {
+                AdmissionDomain = domain,
+                InitialReplayLineageId = Guid.NewGuid(),
+                WorldGuid = worldGuid,
+            }));
+
+            Assert.That(exception!.SystemCleanupReport.FailureCount, Is.EqualTo(1));
+            Assert.That(releaseFailure.ReleaseCount, Is.EqualTo(1));
+
+            var registry = WorldGuidRegistry.GetSelected();
+            Assert.That(registry.TryReserveFresh(worldGuid, out _, out _), Is.False);
+        }
+        finally
+        {
+            domain.Dispose();
+        }
+
+        Assert.That(domain.Retirement.IsCompleted, Is.False);
+    }
+
+    [Test]
     public void WorldDisposeAttemptsSystemReleaseOnceAndQuarantinesFailure()
     {
         var sourceState = new WorldSystemSourceStateDeclaration(typeof(ProbeSystem), []);
@@ -287,6 +349,25 @@ internal sealed class WorldSystemFactoryTests
             InitialReplayLineageId = Guid.NewGuid(),
             WorldGuid = Guid.NewGuid(),
         }));
+    }
+
+    private sealed class ConstructionFailureSystem : IWorldSystem
+    {
+        public void Execute(WorldSystemContext context)
+        {
+        }
+    }
+
+    private readonly struct ConstructionFailureSystemCreate : IWorldSystemCreate<ConstructionFailureSystem>
+    {
+        public ConstructionFailureSystem Invoke()
+            => throw new InvalidOperationException("The test system Create callback failed.");
+    }
+
+    private readonly struct ConstructionFailureSystemRelease : IWorldSystemRelease<ConstructionFailureSystem>
+    {
+        public void Invoke(ConstructionFailureSystem system)
+            => ArgumentNullException.ThrowIfNull(system);
     }
 
     private sealed class ForeignProbeSystem : IWorldSystem

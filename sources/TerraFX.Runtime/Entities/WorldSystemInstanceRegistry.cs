@@ -12,7 +12,9 @@ internal static class WorldSystemInstanceRegistry
     private static readonly ConditionalWeakTable<IWorldSystem, WorldSystemInstanceClaim> s_claims = [];
     private static readonly Lock s_gate = new();
     private static readonly List<WorldDomainReservation> s_quarantinedDomainReservations = [];
+    private static readonly List<WorldLifetimeControl> s_quarantinedLifetimeControls = [];
     private static readonly List<IWorldSystem> s_quarantinedSystems = [];
+    private static int s_reservedLifetimeControlSlots;
     private static int s_reservedQuarantineDomainReservations;
     private static int s_reservedQuarantineSlots;
 
@@ -58,6 +60,39 @@ internal static class WorldSystemInstanceRegistry
         }
     }
 
+    internal static void QuarantineLifetimeControl(
+        WorldLifetimeControl lifetimeControl,
+        WorldSystemQuarantineReservation reservation)
+    {
+        ArgumentNullException.ThrowIfNull(lifetimeControl);
+        ArgumentNullException.ThrowIfNull(reservation);
+
+        if (!lifetimeControl.IsQuarantined)
+        {
+            throw new InvalidOperationException("Only a quarantined World lifetime can be retained.");
+        }
+
+        lock (s_gate)
+        {
+            reservation.UseLifetimeControlSlot();
+            s_reservedLifetimeControlSlots--;
+            s_quarantinedLifetimeControls.Add(lifetimeControl);
+        }
+    }
+
+    internal static void ReleaseLifetimeControlCapacity(WorldSystemQuarantineReservation reservation)
+    {
+        ArgumentNullException.ThrowIfNull(reservation);
+
+        lock (s_gate)
+        {
+            if (reservation.ReleaseLifetimeControlCapacity())
+            {
+                s_reservedLifetimeControlSlots--;
+            }
+        }
+    }
+
     internal static void ReleaseQuarantineReservation(WorldSystemQuarantineReservation reservation)
     {
         ArgumentNullException.ThrowIfNull(reservation);
@@ -84,12 +119,16 @@ internal static class WorldSystemInstanceRegistry
             var reserveDomainReservation = maximumFailures != 0;
             var reservedDomainReservations = checked(
                 s_reservedQuarantineDomainReservations + (reserveDomainReservation ? 1 : 0));
+            var reservedLifetimeControlSlots = checked(s_reservedLifetimeControlSlots + 1);
             _ = s_quarantinedSystems.EnsureCapacity(checked(s_quarantinedSystems.Count + reservedSlots));
             _ = s_quarantinedDomainReservations.EnsureCapacity(
                 checked(s_quarantinedDomainReservations.Count + reservedDomainReservations));
+            _ = s_quarantinedLifetimeControls.EnsureCapacity(
+                checked(s_quarantinedLifetimeControls.Count + reservedLifetimeControlSlots));
             var reservation = new WorldSystemQuarantineReservation(maximumFailures);
             s_reservedQuarantineSlots = reservedSlots;
             s_reservedQuarantineDomainReservations = reservedDomainReservations;
+            s_reservedLifetimeControlSlots = reservedLifetimeControlSlots;
             return reservation;
         }
     }

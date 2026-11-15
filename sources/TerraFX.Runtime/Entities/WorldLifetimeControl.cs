@@ -9,6 +9,7 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
 {
     private const int StateActive = 3;
     private const int StateFreshPrepared = 0;
+    private const int StateQuarantined = 6;
     private const int StateReplacementCandidateOwned = 2;
     private const int StateReplacementCandidatePrepared = 1;
     private const int StateRetired = 5;
@@ -51,6 +52,8 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
 
     internal WorldDefaultDomainOwner? DefaultDomainOwner => _defaultDomainOwner;
 
+    internal bool IsQuarantined => Volatile.Read(ref _state) == StateQuarantined;
+
     internal WorldGuidRegistry Registry => _registry;
 
     internal WorldGuidGrant WorldGuidGrant => _worldGuidGrant;
@@ -82,14 +85,12 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
     {
         lock (_gate)
         {
-            if (_state is StateRetired or StateRevoked or StateReplacementCandidatePrepared)
+            if (_state is StateRetired or StateRevoked or StateQuarantined or StateReplacementCandidatePrepared)
             {
                 return true;
             }
 
-            if ((_state is StateActive)
-                || ((_state is StateFreshPrepared or StateReplacementCandidateOwned)
-                    && _registry.IsActive(_worldGuidGrant)))
+            if (_state is StateActive or StateFreshPrepared or StateReplacementCandidateOwned)
             {
                 if (!_registry.TryRevokeForRetirement(_worldGuidGrant))
                 {
@@ -113,6 +114,7 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
                 or StateReplacementCandidatePrepared
                 or StateReplacementCandidateOwned
                 or StateRevoked
+                or StateQuarantined
                 or StateRetired))
             {
                 throw new InvalidOperationException("Only a revoked or retired World lifetime can close its default domain.");
@@ -174,6 +176,10 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
         }
     }
 
+    internal bool IsQuarantinePermitCurrent(in WorldGuidGrant worldGuidGrant)
+        => _worldGuidGrant.Equals(worldGuidGrant)
+            && (Volatile.Read(ref _state) == StateRevoked);
+
     internal bool IsReadyToReplaceWith(
         WorldLifetimeControl replacement,
         WorldDefaultDomainHandoff? defaultDomainHandoff)
@@ -220,6 +226,27 @@ internal sealed class WorldLifetimeControl : IWorldGuidRetentionOwner
             }
 
             _state = StateActive;
+        }
+    }
+
+    internal bool QuarantineAfterCleanupFailure()
+    {
+        lock (_gate)
+        {
+            if (_state != StateRevoked)
+            {
+                return false;
+            }
+
+            var permit = new WorldGuidRetirementPermit(this, _registry, _worldGuidGrant);
+
+            if (!_registry.TryQuarantine(permit))
+            {
+                return false;
+            }
+
+            _state = StateQuarantined;
+            return true;
         }
     }
 

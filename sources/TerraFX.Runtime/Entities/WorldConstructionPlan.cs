@@ -248,7 +248,14 @@ internal sealed class WorldConstructionPlan
             }
             finally
             {
-                _domainReservation.Dispose();
+                try
+                {
+                    WorldSystemInstanceRegistry.ReleaseLifetimeControlCapacity(_systemQuarantineReservation);
+                }
+                finally
+                {
+                    _domainReservation.Dispose();
+                }
             }
         }
     }

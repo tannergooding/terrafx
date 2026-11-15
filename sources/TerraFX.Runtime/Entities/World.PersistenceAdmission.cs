@@ -751,11 +751,21 @@ public sealed partial class World
                 {
                     try
                     {
-                        diagnosticsCapability?.Close();
+                        if (quarantineReservation is not null)
+                        {
+                            WorldSystemInstanceRegistry.ReleaseLifetimeControlCapacity(quarantineReservation);
+                        }
                     }
                     finally
                     {
-                        domainReservation?.Dispose();
+                        try
+                        {
+                            diagnosticsCapability?.Close();
+                        }
+                        finally
+                        {
+                            domainReservation?.Dispose();
+                        }
                     }
                 }
             }

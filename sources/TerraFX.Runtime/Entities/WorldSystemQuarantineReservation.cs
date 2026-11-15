@@ -9,6 +9,7 @@ internal sealed class WorldSystemQuarantineReservation
     private bool _domainReservationRetained;
     private bool _domainReservationSlotReserved;
     private bool _isReleased;
+    private bool _lifetimeControlSlotReserved;
     private int _remainingSlots;
 
     internal WorldSystemQuarantineReservation(int slotCount)
@@ -16,12 +17,24 @@ internal sealed class WorldSystemQuarantineReservation
         ArgumentOutOfRangeException.ThrowIfNegative(slotCount);
         _remainingSlots = slotCount;
         _domainReservationSlotReserved = slotCount != 0;
+        _lifetimeControlSlotReserved = true;
     }
 
     internal bool RetainsDomainReservation => _domainReservationRetained;
 
     internal void Release()
         => WorldSystemInstanceRegistry.ReleaseQuarantineReservation(this);
+
+    internal bool ReleaseLifetimeControlCapacity()
+    {
+        if (!_lifetimeControlSlotReserved)
+        {
+            return false;
+        }
+
+        _lifetimeControlSlotReserved = false;
+        return true;
+    }
 
     internal (int Slots, bool DomainReservationSlot) ReleaseUnusedCapacity()
     {
@@ -57,6 +70,16 @@ internal sealed class WorldSystemQuarantineReservation
         _domainReservationSlotReserved = false;
         _domainReservationRetained = true;
         return true;
+    }
+
+    internal void UseLifetimeControlSlot()
+    {
+        if (!_lifetimeControlSlotReserved)
+        {
+            throw new InvalidOperationException("The system quarantine reservation has no lifetime-control capacity.");
+        }
+
+        _lifetimeControlSlotReserved = false;
     }
 
     internal void UseSlot()

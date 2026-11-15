@@ -538,6 +538,45 @@ internal sealed class WorldGuidRegistry
         out WorldGuidRefusal refusal)
         => TryPrepareReplacement(current, current.WorldGuid, out preparation, out refusal);
 
+    internal bool TryQuarantine(WorldGuidRetirementPermit permit)
+    {
+        ArgumentNullException.ThrowIfNull(permit);
+
+        if (!permit.TryGetQuarantineGrant(this, out var grant))
+        {
+            return false;
+        }
+
+        using var scope = ReentrantGate.EnterScope(ref _admissionGate);
+
+        if (!IsKeyCellValid(grant.KeyCellIndex, grant.KeyGeneration)
+            || !IsBindingCellReleaseValid(grant.BindingCellIndex, grant.BindingGeneration)
+            || !IsUseCellValid(grant.OwnerUseCellIndex, grant.OwnerUseGeneration))
+        {
+            return false;
+        }
+
+        ref var keyCell = ref GetKeyCell(grant.KeyCellIndex);
+        ref var bindingCell = ref GetBindingCell(grant.BindingCellIndex);
+        ref var ownerUseCell = ref GetUseCell(grant.OwnerUseCellIndex);
+
+        if ((keyCell._worldGuid != grant.WorldGuid)
+            || (bindingCell._state != CellStateRevoked)
+            || (bindingCell._keyCellIndex != grant.KeyCellIndex)
+            || (bindingCell._keyGeneration != grant.KeyGeneration)
+            || (ownerUseCell._state != CellStateReserved)
+            || (ownerUseCell._role != UseRoleOwner)
+            || (ownerUseCell._keyCellIndex != grant.KeyCellIndex)
+            || (ownerUseCell._keyGeneration != grant.KeyGeneration)
+            || (ownerUseCell._bindingCellIndex != grant.BindingCellIndex)
+            || (ownerUseCell._bindingGeneration != grant.BindingGeneration))
+        {
+            return false;
+        }
+
+        return permit.TryConsumeForQuarantine(this, grant);
+    }
+
     internal bool TryReleaseFresh(in WorldGuidGrant grant)
     {
         if (!grant.IsOwnedBy(this))
@@ -924,7 +963,7 @@ internal sealed class WorldGuidRegistry
         ref var ownerUseCell = ref GetUseCell(grant.OwnerUseCellIndex);
 
         if ((keyCell._worldGuid != grant.WorldGuid)
-            || (bindingCell._state is not (CellStateActive or CellStateRevoked))
+            || (bindingCell._state is not (CellStateReserved or CellStateActive or CellStateRevoked))
             || (bindingCell._keyCellIndex != grant.KeyCellIndex)
             || (bindingCell._keyGeneration != grant.KeyGeneration)
             || (ownerUseCell._state != CellStateReserved)
@@ -935,6 +974,37 @@ internal sealed class WorldGuidRegistry
             || (ownerUseCell._bindingGeneration != grant.BindingGeneration))
         {
             return false;
+        }
+
+        if (bindingCell._state == CellStateReserved)
+        {
+            if (!IsPreparationCellValid(grant.PreparationCellIndex, grant.PreparationGeneration)
+                || !IsUseCellValid(grant.CoordinatorUseCellIndex, grant.CoordinatorUseGeneration))
+            {
+                return false;
+            }
+
+            ref var preparationCell = ref GetPreparationCell(grant.PreparationCellIndex);
+            ref var coordinatorUseCell = ref GetUseCell(grant.CoordinatorUseCellIndex);
+
+            if ((preparationCell._state != CellStateReserved)
+                || (preparationCell._keyCellIndex != grant.KeyCellIndex)
+                || (preparationCell._keyGeneration != grant.KeyGeneration)
+                || (preparationCell._bindingCellIndex != grant.BindingCellIndex)
+                || (preparationCell._bindingGeneration != grant.BindingGeneration)
+                || (coordinatorUseCell._state != CellStateReserved)
+                || (coordinatorUseCell._role != UseRoleCoordinator)
+                || (coordinatorUseCell._keyCellIndex != grant.KeyCellIndex)
+                || (coordinatorUseCell._keyGeneration != grant.KeyGeneration)
+                || (coordinatorUseCell._bindingCellIndex != grant.BindingCellIndex)
+                || (coordinatorUseCell._bindingGeneration != grant.BindingGeneration))
+            {
+                return false;
+            }
+
+            ReleasePreparationCell(grant.PreparationCellIndex, ref preparationCell);
+            ReleaseUseCell(grant.CoordinatorUseCellIndex, ref coordinatorUseCell);
+            keyCell._roleCount -= 2;
         }
 
         bindingCell._state = CellStateRevoked;

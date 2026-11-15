@@ -136,6 +136,46 @@ internal sealed class WorldDefaultDomainOwnershipTests
     }
 
     [Test]
+    public void UnpublishedLifetimeRetirementReleasesItsReservedWorldGuid()
+    {
+        var domain = new WorldAdmissionDomain(16 * 1024 * 1024);
+        var registry = WorldGuidRegistry.GetSelected();
+        var worldGuid = Guid.NewGuid();
+        WorldGuidGrant grant = default;
+        WorldGuidGrant retryGrant = default;
+        WorldLifetimeControl? lifetimeControl = null;
+
+        try
+        {
+            Assert.That(registry.TryReserveFresh(worldGuid, out grant, out _), Is.True);
+            lifetimeControl = new WorldLifetimeControl(
+                registry,
+                domain,
+                grant,
+                defaultDomainOwner: null,
+                isReplacementCandidate: false);
+            lifetimeControl.AbandonUnpublished();
+
+            Assert.That(registry.TryReserveFresh(worldGuid, out retryGrant, out _), Is.True);
+            Assert.That(registry.TryReleaseFresh(retryGrant), Is.True);
+        }
+        finally
+        {
+            if (lifetimeControl is not null)
+            {
+                if (lifetimeControl.BeginRetirement() && lifetimeControl.CompleteRetirement())
+                {
+                    lifetimeControl.CloseDefaultDomain();
+                }
+            }
+
+            domain.Dispose();
+            _ = registry.TryReleaseFresh(retryGrant);
+            _ = registry.TryReleaseFresh(grant);
+        }
+    }
+
+    [Test]
     public void WorldBindingRemainsReservedUntilReleaseCompletes()
     {
         var schemas = new CompiledContentSchemaRegistry([]);
