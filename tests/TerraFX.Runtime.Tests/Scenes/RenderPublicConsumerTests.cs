@@ -130,7 +130,10 @@ internal sealed partial class SceneAssetStoreTests
                 Package.CreateEnvelope(AtlasAssetId, atlas)));
     }
 
-    private static async Task RunPublicVulkanRendererConsumerAsync(
+    private static async Task RunPublicRendererConsumerAsync(
+        string consumerProjectName,
+        string consumerEnvironmentVariable,
+        string backendName,
         byte[] packageBytes,
         Guid cameraEntityId,
         string renderMode)
@@ -148,19 +151,19 @@ internal sealed partial class SceneAssetStoreTests
                 ?? throw new InvalidOperationException("The renderer consumer test output has no tests directory.");
             var consumerAssembly = Path.Combine(
                 testsOutputDirectory.FullName,
-                "TerraFX.Runtime.Vulkan.Consumer",
+                consumerProjectName,
                 configurationDirectory.Name,
                 outputDirectory.Name,
-                "TerraFX.Runtime.Vulkan.Consumer.dll");
-            Assert.That(File.Exists(consumerAssembly), Is.True, "The public Vulkan consumer project reference must build the separate witness.");
-            var configuredConsumerPath = Environment.GetEnvironmentVariable("TERRAFX_VULKAN_NATIVEAOT_CONSUMER");
+                consumerProjectName + ".dll");
+            Assert.That(File.Exists(consumerAssembly), Is.True, $"The public {backendName} consumer project reference must build the separate witness.");
+            var configuredConsumerPath = Environment.GetEnvironmentVariable(consumerEnvironmentVariable);
             var consumerPath = string.IsNullOrWhiteSpace(configuredConsumerPath)
                 ? consumerAssembly
                 : configuredConsumerPath;
 
             if (!Path.IsPathFullyQualified(consumerPath) || !File.Exists(consumerPath))
             {
-                throw new InvalidOperationException("TERRAFX_VULKAN_NATIVEAOT_CONSUMER must name an existing absolute file.");
+                throw new InvalidOperationException($"{consumerEnvironmentVariable} must name an existing absolute file.");
             }
 
             var isManagedAssembly = StringComparer.OrdinalIgnoreCase.Equals(Path.GetExtension(consumerPath), ".dll");
@@ -181,7 +184,7 @@ internal sealed partial class SceneAssetStoreTests
             startInfo.ArgumentList.Add(packagePath);
             startInfo.ArgumentList.Add(cameraEntityId.ToString("N"));
             using var process = Process.Start(startInfo)
-                ?? throw new InvalidOperationException("The public Vulkan renderer consumer did not start.");
+                ?? throw new InvalidOperationException($"The public {backendName} renderer consumer did not start.");
             var standardOutputTask = process.StandardOutput.ReadToEndAsync();
             var standardErrorTask = process.StandardError.ReadToEndAsync();
 
@@ -195,7 +198,7 @@ internal sealed partial class SceneAssetStoreTests
             {
                 process.Kill(entireProcessTree: true);
                 await process.WaitForExitAsync().ConfigureAwait(false);
-                throw new TimeoutException("The public Vulkan renderer consumer did not exit within two minutes.");
+                throw new TimeoutException($"The public {backendName} renderer consumer did not exit within two minutes.");
             }
 
             var output = await Task.WhenAll(standardOutputTask, standardErrorTask).ConfigureAwait(false);
@@ -203,7 +206,7 @@ internal sealed partial class SceneAssetStoreTests
             Assert.That(process.ExitCode, Is.Zero, processOutput);
             Assert.That(
                 processOutput,
-                Does.Contain("Vulkan offscreen built-in render graph readback and volume texture transfer passed."));
+                Does.Contain($"{backendName} Offscreen built-in render graph readback passed"));
         }
         finally
         {
@@ -212,15 +215,57 @@ internal sealed partial class SceneAssetStoreTests
     }
 
     [Test]
+    public Task PublicD3D12ConsumerRendersPackageBackedMeshAsync()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            Assert.Ignore("The D3D12 consumer path requires Windows 11.");
+            return Task.CompletedTask;
+        }
+
+        return RunPublicRendererConsumerAsync(
+            "TerraFX.Graphics.D3D12.Consumer",
+            "TERRAFX_D3D12_NATIVEAOT_CONSUMER",
+            "D3D12",
+            CreatePublicMeshConsumerPackage(),
+            SceneAssetReaderTests.Fixtures.RootEntityId,
+            "render-mesh");
+    }
+
+    [Test]
+    public Task PublicD3D12ConsumerRendersPackageBackedSpriteAsync()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            Assert.Ignore("The D3D12 consumer path requires Windows 11.");
+            return Task.CompletedTask;
+        }
+
+        return RunPublicRendererConsumerAsync(
+            "TerraFX.Graphics.D3D12.Consumer",
+            "TERRAFX_D3D12_NATIVEAOT_CONSUMER",
+            "D3D12",
+            CreatePublicSpriteConsumerPackage(),
+            SceneAssetReaderTests.Fixtures.RootEntityId,
+            "render-sprite");
+    }
+
+    [Test]
     public Task PublicVulkanConsumerRendersPackageBackedMeshAsync()
-        => RunPublicVulkanRendererConsumerAsync(
+        => RunPublicRendererConsumerAsync(
+            "TerraFX.Runtime.Vulkan.Consumer",
+            "TERRAFX_VULKAN_NATIVEAOT_CONSUMER",
+            "Vulkan",
             CreatePublicMeshConsumerPackage(),
             SceneAssetReaderTests.Fixtures.RootEntityId,
             "render-mesh");
 
     [Test]
     public Task PublicVulkanConsumerRendersPackageBackedSpriteAsync()
-        => RunPublicVulkanRendererConsumerAsync(
+        => RunPublicRendererConsumerAsync(
+            "TerraFX.Runtime.Vulkan.Consumer",
+            "TERRAFX_VULKAN_NATIVEAOT_CONSUMER",
+            "Vulkan",
             CreatePublicSpriteConsumerPackage(),
             SceneAssetReaderTests.Fixtures.RootEntityId,
             "render-sprite");

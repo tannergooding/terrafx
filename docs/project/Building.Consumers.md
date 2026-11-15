@@ -7,16 +7,15 @@ dotnet run --project .\tests\TerraFX.Runtime.ComponentConsumer\TerraFX.Runtime.C
 dotnet run --project .\tests\TerraFX.Runtime.GeneratedComponentConsumer\TerraFX.Runtime.GeneratedComponentConsumer.csproj --configuration Debug
 ```
 
-## First Sprite/Mesh Vulkan consumers
+## First Sprite/Mesh native consumers
 
-These focused tests launch the separate public Vulkan consumer with package-backed Scene content, run `Renderer.Extract` -> `BuildGraph` -> `Compile` -> `SubmitAsync`, and verify non-clear offscreen pixels from each built-in path:
+These focused tests launch the separate public D3D12 and Vulkan consumers with package-backed Scene content, run `Renderer.Extract` -> `BuildGraph` -> `Compile` -> `SubmitAsync`, and verify non-clear offscreen pixels from each built-in path:
 
 ```powershell
-dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~PublicVulkanConsumerRendersPackageBackedMeshAsync|FullyQualifiedName~PublicVulkanConsumerRendersPackageBackedSpriteAsync"
+dotnet test .\tests\TerraFX.Runtime.Tests\TerraFX.Runtime.Tests.csproj --configuration Debug --filter "FullyQualifiedName~PublicD3D12ConsumerRendersPackageBackedMeshAsync|FullyQualifiedName~PublicD3D12ConsumerRendersPackageBackedSpriteAsync|FullyQualifiedName~PublicVulkanConsumerRendersPackageBackedMeshAsync|FullyQualifiedName~PublicVulkanConsumerRendersPackageBackedSpriteAsync"
 ```
 
-This managed-process witness does not establish NativeAOT behavior; publish and execute the target-specific consumer separately below.
-To run the same cases through a published consumer, set `TERRAFX_VULKAN_NATIVEAOT_CONSUMER` to its absolute executable path before running the filter. A `.dll` path is launched through `dotnet`; this still qualifies only the selected host/backend.
+Managed-process witnesses do not establish NativeAOT behavior; publish and execute each target-specific consumer separately below. To run the same cases through published consumers, set `TERRAFX_D3D12_NATIVEAOT_CONSUMER` and/or `TERRAFX_VULKAN_NATIVEAOT_CONSUMER` to their absolute executable paths before running the filter. A `.dll` path is launched through `dotnet`; each run qualifies only the selected host/backend.
 
 ## NativeAOT
 

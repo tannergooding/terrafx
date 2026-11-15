@@ -695,7 +695,7 @@ internal static class Program
         }
 
         Console.WriteLine(renderBuiltIns
-            ? "Vulkan offscreen built-in render graph readback and volume texture transfer passed."
+            ? "Vulkan Offscreen built-in render graph readback passed; volume texture transfer passed."
             : $"Vulkan {args[0]} graph readback and volume texture transfer passed.");
         return 0;
     }
